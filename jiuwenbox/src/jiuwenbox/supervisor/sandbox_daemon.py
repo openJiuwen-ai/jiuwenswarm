@@ -68,10 +68,8 @@ import errno
 import json
 import logging
 import os
-import shutil
 import socket
 import struct
-import subprocess
 import sys
 import threading
 import time
@@ -86,7 +84,7 @@ from typing import Any
 SANDBOX_RESERVED_DIR = "/jiuwenbox"
 SANDBOX_DAEMON_SANDBOX_PATH = f"{SANDBOX_RESERVED_DIR}/sandbox-daemon.py"
 SANDBOX_LAUNCHER_PATH = f"{SANDBOX_RESERVED_DIR}/landlock-launcher.py"
-SANDBOX_DAEMON_COMMAND = ["python3", "-S", SANDBOX_DAEMON_SANDBOX_PATH]
+SANDBOX_DAEMON_COMMAND = ["python3", "-S", "-u", SANDBOX_DAEMON_SANDBOX_PATH]
 LISTENER_FD_ENV = "JIUWENBOX_CONTROL_LISTENER_FD"
 SANDBOX_IP_ENV = "SANDBOX_IP"
 
@@ -540,10 +538,40 @@ _FASTPATH_RESIDENT_MODULES = frozenset(sys.modules) | frozenset(
 
 _FASTPATH_PROBE_LOCK = threading.Lock()
 _FASTPATH_PROBE_CACHE: dict[str, Any] = {}
-# Resolved once at import so the login-env probe uses an absolute path to the
-# interpreter's bash rather than a bare ``"bash"`` lookup (G.EDV.05). Falls back
-# to the conventional ``/bin/bash`` when ``shutil.which`` finds nothing.
-_BASH_BIN = shutil.which("bash") or "/bin/bash"
+# Resolved on first use, after ``shutil`` is imported. The login-env probe
+# needs an absolute bash path rather than a bare ``"bash"`` lookup (G.EDV.05).
+_BASH_BIN: str | None = None
+_DEFERRED_MODULES_LOADED = False
+# Bound here so ``global shutil, subprocess`` names exist before the first exec.
+# The heavy imports stay deferred until after the ready marker.
+shutil: Any = None
+subprocess: Any = None
+
+
+def _load_deferred_modules() -> None:
+    """Import command-execution modules after the ready marker is visible.
+
+    ``shutil`` and ``subprocess`` pull in a large stdlib graph. Sandbox
+    create only needs the process to reach ``accept``; the first exec pays
+    for these imports.
+    """
+    global shutil, subprocess, _DEFERRED_MODULES_LOADED
+    if _DEFERRED_MODULES_LOADED:
+        return
+    import shutil as shutil_mod
+    import subprocess as subprocess_mod
+    shutil = shutil_mod
+    subprocess = subprocess_mod
+    _DEFERRED_MODULES_LOADED = True
+
+
+def _bash_bin() -> str:
+    """Return an absolute bash path, falling back to ``/bin/bash``."""
+    global _BASH_BIN
+    if _BASH_BIN is None:
+        _load_deferred_modules()
+        _BASH_BIN = shutil.which("bash") or "/bin/bash"
+    return _BASH_BIN
 
 
 def _fastpath_script_enabled() -> bool:
@@ -687,7 +715,7 @@ def _fastpath_login_env_safe() -> bool:
     safe = False
     try:
         probe = subprocess.run(
-            [_BASH_BIN, "-lc",
+            [_bash_bin(), "-lc",
              "exec python3 -c 'import json,os,sys;"
              "sys.stdout.write(json.dumps(dict(os.environ)))'"],
             stdin=subprocess.DEVNULL,
@@ -2718,12 +2746,26 @@ def _accept_loop(listener: socket.socket, state: DaemonState) -> None:
         thread.start()
 
 
+class _MillisecondFormatter(logging.Formatter):
+    """stdlib-only copy of the server formatter; this module cannot import jiuwenbox."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        formatted = time.strftime(
+            datefmt or "%Y-%m-%d %H:%M:%S",
+            self.converter(record.created),
+        )
+        return f"{formatted}.{int(record.msecs):03d}"
+
+
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        _MillisecondFormatter(
+            "[%(asctime)s] %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
     state = DaemonState()
     if _fastpath_enabled():
         # Idle-recycle background thread; runs only when the feature is on.
@@ -2733,6 +2775,10 @@ def main() -> int:
             logger.info(
                 "sandbox daemon adopted listener fd; entering accept loop",
             )
+            # Create polls this marker. Write the fd directly so a block
+            # buffer cannot hold JIUWENBOX_DAEMON_READY.
+            os.write(sys.stderr.fileno(), b"JIUWENBOX_DAEMON_READY\n")
+            _load_deferred_modules()
             try:
                 _accept_loop(listener, state)
             finally:

@@ -29,6 +29,11 @@ from pathlib import Path
 _AUDIT_OUTPUT_LIMIT = 4096
 
 
+def _local_now() -> datetime:
+    """Current local time. UTC is converted so the zone argument stays explicit."""
+    return datetime.now(timezone.utc).astimezone()
+
+
 def _truncate_for_audit(text: str | None, *, limit: int = _AUDIT_OUTPUT_LIMIT) -> str:
     """Return ``text`` clipped to ``limit`` chars with a visible marker.
 
@@ -55,6 +60,7 @@ def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
         return False
     return result.error in ("daemon_unavailable", "transport_failure")
 
+from jiuwenbox import perf_trace
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.common import AuditEventType
 from jiuwenbox.models.policy import (
@@ -470,10 +476,9 @@ class SandboxManager:
                     if ref.phase != SandboxPhase.READY:
                         continue
                     reference_ts = ref.last_active_at or ref.started_at or ref.created_at
-                    if reference_ts.tzinfo is None:
-                        # SandboxRef.created_at uses datetime.now() (naive) by
-                        # default; coerce to UTC so the comparison is well-defined.
-                        reference_ts = reference_ts.replace(tzinfo=timezone.utc)
+                    # Naive values are local wall time (same as created_at).
+                    # astimezone() converts those, and older UTC values, to UTC.
+                    reference_ts = reference_ts.astimezone(timezone.utc)
                     if reference_ts.timestamp() < cutoff:
                         expired_ids.append(sid)
 
@@ -572,14 +577,14 @@ class SandboxManager:
 
     @staticmethod
     def _mark_active(ref: SandboxRef) -> None:
-        """Stamp ``ref.last_active_at`` with the current UTC time.
+        """Stamp ``ref.last_active_at`` with the current local time.
 
         Caller must already hold ``self._lock`` (typical pattern: call this
         right after the phase==READY check inside the same ``async with``
         block, so the timestamp is established before the IO call leaves the
         lock and races with the idle reaper).
         """
-        ref.last_active_at = datetime.now(timezone.utc)
+        ref.last_active_at = _local_now()
 
     async def create_sandbox(
         self,
@@ -588,7 +593,9 @@ class SandboxManager:
         policy_mode: PolicyMode = PolicyMode.OVERRIDE,
     ) -> SandboxRef:
         """Create a new sandbox."""
+        lock_wait = perf_trace.begin("api.lock_wait", spec.sandbox_id or "-")
         async with self._lock:
+            lock_wait.close()
             if spec.sandbox_id is None:
                 sandbox_id = generate_sandbox_id()
                 while sandbox_id in self._sandboxes:
@@ -600,71 +607,79 @@ class SandboxManager:
                         f"Sandbox '{spec.sandbox_id}' already exists"
                     )
                 sandbox_id = spec.sandbox_id
-            runtime_name = normalize_sandbox_runtime(spec.sandbox_runtime)
-            policy = self._resolve_effective_policy(policy_data, policy_mode)
-            logger.debug("Creating sandbox %s with policy %s", sandbox_id, str(policy))
-            self.policy_engine.validate_policy(policy)
-            if runtime_name == RUNTIME_CONCH:
-                self.policy_engine.validate_conch_policy(policy)
-            # Create sandbox ref
-            ref = SandboxRef(
-                id=sandbox_id,
-                phase=SandboxPhase.PROVISIONING,
-                runtime=runtime_name,
-                env=dict(spec.env),
-            )
-            self._sandboxes[sandbox_id] = ref
-            self._policies[sandbox_id] = policy
-            try:
-                self._save_state(ref)
-                self.audit.log(AuditEventType.SANDBOX_CREATED, sandbox_id)
-                # Write resolved policy
-                policy_path = self.policy_engine.write_sandbox_policy(
-                    sandbox_id, policy
+            logger.info("Creating sandbox %s", sandbox_id)
+            with perf_trace.span("api.prepare", sandbox_id):
+                runtime_name = normalize_sandbox_runtime(spec.sandbox_runtime)
+                policy = self._resolve_effective_policy(policy_data, policy_mode)
+                logger.debug(
+                    "Creating sandbox %s with policy %s", sandbox_id, str(policy),
                 )
-                self.audit.log(
-                    AuditEventType.POLICY_APPLIED,
-                    sandbox_id,
-                    policy_name=policy.name,
+                self.policy_engine.validate_policy(policy)
+                if runtime_name == RUNTIME_CONCH:
+                    self.policy_engine.validate_conch_policy(policy)
+                # Create sandbox ref
+                ref = SandboxRef(
+                    id=sandbox_id,
+                    phase=SandboxPhase.PROVISIONING,
+                    runtime=runtime_name,
+                    env=dict(spec.env),
                 )
-            except Exception:
-                # Roll back in-memory registration so a failed persist cannot
-                # leave a stuck PROVISIONING orphan that idle reaper skips.
-                self._sandboxes.pop(sandbox_id, None)
-                self._policies.pop(sandbox_id, None)
-                self._delete_state(sandbox_id)
-                self.policy_engine.delete_sandbox_policy(sandbox_id)
-                raise
-            runtime = self._runtime_for(ref)
+                self._sandboxes[sandbox_id] = ref
+                self._policies[sandbox_id] = policy
+                try:
+                    self._save_state(ref)
+                    self.audit.log(AuditEventType.SANDBOX_CREATED, sandbox_id)
+                    # Write resolved policy
+                    policy_path = self.policy_engine.write_sandbox_policy(
+                        sandbox_id, policy,
+                    )
+                    self.audit.log(
+                        AuditEventType.POLICY_APPLIED,
+                        sandbox_id,
+                        policy_name=policy.name,
+                    )
+                except Exception:
+                    # Roll back in-memory registration so a failed persist cannot
+                    # leave a stuck PROVISIONING orphan that idle reaper skips.
+                    self._sandboxes.pop(sandbox_id, None)
+                    self._policies.pop(sandbox_id, None)
+                    self._delete_state(sandbox_id)
+                    self.policy_engine.delete_sandbox_policy(sandbox_id)
+                    raise
+                runtime = self._runtime_for(ref)
 
         # Runtime startup can be expensive. Do it outside the manager-wide lock
         # so independent sandboxes can start in parallel.
         try:
-            pid = await runtime.create(
-                sandbox_id=sandbox_id,
-                policy_path=policy_path,
-                env=ref.env,
-            )
-            ip_address = await self._resolve_sandbox_ip_address(
-                sandbox_id, runtime=runtime,
-            )
-            cleanup_after_create = False
-            async with self._lock:
-                current_ref = self._sandboxes.get(sandbox_id)
-                if current_ref is not ref or ref.phase == SandboxPhase.DELETING:
-                    cleanup_after_create = True
+            with perf_trace.span("api.runtime_create", sandbox_id):
+                pid = await runtime.create(
+                    sandbox_id=sandbox_id,
+                    policy_path=policy_path,
+                    env=ref.env,
+                )
+            with perf_trace.span("api.finalize", sandbox_id):
+                ip_address = await self._resolve_sandbox_ip_address(
+                    sandbox_id, runtime=runtime,
+                )
+                cleanup_after_create = False
+                async with self._lock:
+                    current_ref = self._sandboxes.get(sandbox_id)
+                    if current_ref is not ref or ref.phase == SandboxPhase.DELETING:
+                        cleanup_after_create = True
+                    else:
+                        ref.phase = SandboxPhase.READY
+                        ref.pid = pid
+                        ref.ip_address = ip_address
+                        now = _local_now()
+                        ref.started_at = now
+                        # 沙箱刚创建即视为最近一次活跃, 避免在第一次 exec 到来之前就被
+                        # reaper 当成 idle 误杀 (理论上不会, 但显式初始化更直白)。
+                        ref.last_active_at = now
+                        self._save_state(ref)
+                if cleanup_after_create:
+                    await runtime.cleanup(sandbox_id)
                 else:
-                    ref.phase = SandboxPhase.READY
-                    ref.pid = pid
-                    ref.ip_address = ip_address
-                    now = datetime.now(timezone.utc)
-                    ref.started_at = now
-                    # 沙箱刚创建即视为最近一次活跃, 避免在第一次 exec 到来之前就被
-                    # reaper 当成 idle 误杀 (理论上不会, 但显式初始化更直白)。
-                    ref.last_active_at = now
-                    self._save_state(ref)
-            if cleanup_after_create:
-                await runtime.cleanup(sandbox_id)
+                    logger.info("Created sandbox %s", sandbox_id)
         except Exception as e:
             async with self._lock:
                 current_ref = self._sandboxes.get(sandbox_id)
@@ -731,7 +746,7 @@ class SandboxManager:
             ref.phase = SandboxPhase.READY
             ref.pid = pid
             ref.ip_address = ip_address
-            now = datetime.now(timezone.utc)
+            now = _local_now()
             ref.started_at = now
             ref.last_active_at = now
             ref.error_message = None
@@ -808,7 +823,7 @@ class SandboxManager:
                 current.phase = SandboxPhase.READY
                 current.pid = pid
                 current.ip_address = ip_address
-                now = datetime.now(timezone.utc)
+                now = _local_now()
                 current.started_at = now
                 current.last_active_at = now
                 current.error_message = None
@@ -1747,6 +1762,8 @@ class SandboxManager:
         deep-merged into ``self.policy`` and the result is written to
         ``update_policy.yaml`` (single merged document, overwritten each time).
         On restart that file becomes the default policy when present.
+        The warm pool then adopts that policy: parked sandboxes that no longer
+        match are discarded and later refills use the new template.
         ``timeout`` changes also restart the idle reaper.
         ``inference_privacy_proxies`` is ignored.
 
@@ -1805,6 +1822,9 @@ class SandboxManager:
                     self.start_idle_reaper()
             if update_existing_sandboxes:
                 sandbox_ids = list(self._sandboxes.keys())
+
+        if update_default_policy:
+            await self._refresh_warm_pool(self.policy)
 
         updated_ids: list[str] = []
         skipped: list[dict[str, str]] = []
@@ -1884,6 +1904,18 @@ class SandboxManager:
             "default_updated": update_default_policy,
             "default_policy": default_policy,
         }
+
+    async def _refresh_warm_pool(self, policy: SecurityPolicy) -> None:
+        """Apply a new default policy to the process warm pool, if one is running."""
+        replace = getattr(self.runtime, "replace_warm_pool_template", None)
+        if replace is None:
+            return
+        try:
+            await asyncio.to_thread(replace, policy)
+        except Exception:
+            logger.exception(
+                "Failed to refresh warm pool after default policy update",
+            )
 
     @staticmethod
     def _strip_batch_policy_fragment(

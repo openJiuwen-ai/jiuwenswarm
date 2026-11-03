@@ -87,7 +87,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(panelSource, /active=\{active && selected\}/);
   assert.match(panelSource, /deferredPublishRef\.current = true/);
   assert.match(panelSource, /setPublishedWindow\(\{/);
-  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
+  assert.match(panelSource, /headerItems\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
   assert.match(panelSource, /role="progressbar"/);
   assert.match(panelSource, /initialLoadProgress\.loaded \/ initialLoadProgress\.total/);
   assert.match(panelSource, /error\.code === 'UNSUPPORTED_SESSION_MODE'/);
@@ -114,6 +114,15 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(teamWorkspaceStyles, /border-radius: 0\.5rem/);
   assert.match(teamWorkspaceStyles, /\.lanes[\s\S]*?overflow-y: auto/);
   assert.match(teamWorkspaceStyles, /\.laneRowExpanded[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceSource,
+    /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
+  );
+  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceStyles,
+    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+  );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(

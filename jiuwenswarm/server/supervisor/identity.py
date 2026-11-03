@@ -35,17 +35,20 @@ def _is_launch_parent(parent_pid: int) -> bool:
         return False
 
 
-def launch_identity_payload(fingerprint: str) -> bytes:
+def launch_identity_payload(fingerprint: str, *, runtime_ipc: dict | None = None) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
     observation = None
     if not getattr(sys, "frozen", False):
         from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
 
         observation = launch_source_observation()
-    return (json.dumps({"schema": 1, "parent_pid": os.getpid(),
+    payload = {"schema": 1, "parent_pid": os.getpid(),
         "package": _deployment_path(),
         "data_scope": data_scope(), "build_label": os.environ.get("JIUWENSWARM_BUILD_ID", "").strip(),
-        "code_identity": fingerprint, "source_observation": observation}) + "\n").encode()
+        "code_identity": fingerprint, "source_observation": observation}
+    if runtime_ipc is not None:
+        payload["runtime_ipc"] = runtime_ipc
+    return (json.dumps(payload) + "\n").encode()
 
 
 def _valid_fingerprint(value: object) -> bool:
@@ -53,6 +56,11 @@ def _valid_fingerprint(value: object) -> bool:
 
 
 def read_launch_identity() -> str:
+    """Return the validated code identity from the private spawn pipe."""
+    return read_launch_payload()["code_identity"]
+
+
+def read_launch_payload() -> dict:
     """Consume a one-use parent pipe; environment build labels cannot bypass validation."""
     if sys.stdin is not None:
         value = sys.stdin.buffer.readline(4097)
@@ -103,7 +111,7 @@ def read_launch_identity() -> str:
             observed_identity = code_identity()
         if observed_identity != fingerprint:
             raise ValueError("Worker source changed after the parent validated it")
-        return fingerprint
+        return payload
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("Invalid Worker parent identity") from exc
 

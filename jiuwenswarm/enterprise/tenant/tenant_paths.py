@@ -36,9 +36,7 @@ __all__ = [
 
 def get_agent_workspace_relative_dir() -> Path:
     """Relative agent workspace under a tenant root."""
-    from jiuwenswarm.common.utils import get_agent_workspace_dirname
-
-    return Path("agent") / get_agent_workspace_dirname()
+    return Path("agent") / "workspace"
 
 
 def get_agent_root_relative_dir() -> Path:

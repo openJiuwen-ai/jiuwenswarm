@@ -45,6 +45,8 @@ def _build_topic_starter_services(
     topic_starter_store: Any,
     *,
     active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
+    prepare_service: Any = None,
+    outcome_queue: Any = None,
 ) -> tuple[Any, Any | None, Any]:
     """Always build the prepare lane; leave a misconfigured product lane disabled."""
 
@@ -88,16 +90,20 @@ def _build_topic_starter_services(
         return {sid: permitted_recommendation_history(rows, control)
                 for sid, rows in load_all_session_records().items()}
 
-    topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
-    topic_prepare_service = TopicPrepareService(
-        topic_starter_store,
-        generate=topic_prepare.generate_prepared,
-        prepare_state=topic_prepare.refresh_state,
-    )
-    topic_outcome_queue = NewPageOutcomeQueue()
-    topic_outcome_queue.attach_sink(
-        TopicStarterStoreOutcomeSink(topic_starter_store)
-    )
+    topic_prepare_service = prepare_service
+    if topic_prepare_service is None:
+        topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
+        topic_prepare_service = TopicPrepareService(
+            topic_starter_store,
+            generate=topic_prepare.generate_prepared,
+            prepare_state=topic_prepare.refresh_state,
+        )
+    topic_outcome_queue = outcome_queue
+    if topic_outcome_queue is None:
+        topic_outcome_queue = NewPageOutcomeQueue()
+        topic_outcome_queue.attach_sink(
+            TopicStarterStoreOutcomeSink(topic_starter_store)
+        )
 
     try:
         topic_pipeline = TopicPipeline(
@@ -326,17 +332,30 @@ class RecommendationHost:
 
     def ensure_services(self) -> None:
         if self._services_built:
-            return
+            if self.topic_service is not None:
+                return
+            from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+                OpenJiuwenNativeSearchContractError,
+                selected_topic_search_provider_id,
+            )
+
+            try:
+                selected_topic_search_provider_id()
+            except OpenJiuwenNativeSearchContractError:
+                return
         from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
             TopicStarterStore,
         )
         from jiuwenswarm.common.schema.message import TOPIC_STARTERS_READY_EVENT
         from jiuwenswarm.common.utils import get_agent_workspace_dir
 
-        self.store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
+        if self.store is None:
+            self.store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
         prepare, service, queue = _build_topic_starter_services(
             self.store,
             active_request_ids_loader=lambda: self._active_request_ids(),
+            prepare_service=self.topic_prepare_service if self._services_built else None,
+            outcome_queue=self.topic_outcome_queue if self._services_built else None,
         )
         self.topic_prepare_service = prepare
         self.topic_service = service

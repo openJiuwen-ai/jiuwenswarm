@@ -2466,6 +2466,22 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self.path = quote("/" + rel_path, safe="/")
                     if parsed.query:
                         self.path += "?" + parsed.query
+            # Reuse dev-stable's static-prefix fallback for named public files.
+            # Asset requests stay confined to assets/ and never fall back to public files.
+            missing_public_path = in_base and not target.exists() and not asset_request
+            if missing_public_path and Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS:
+                parts = rel_path.split('/')
+                for index in range(1, len(parts)):
+                    candidate_rel = '/'.join(parts[index:])
+                    candidate = (base_dir / candidate_rel).resolve()
+                    candidate_in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+                    if candidate_in_base and candidate.is_file():
+                        rel_path = candidate_rel
+                        target = candidate
+                        self.path = quote('/' + rel_path, safe='/')
+                        if parsed.query:
+                            self.path += '?' + parsed.query
+                        break
         except (OSError, ValueError):
             self._static_cache_control = None
             self._write_json(400, {"error": "invalid_path"})

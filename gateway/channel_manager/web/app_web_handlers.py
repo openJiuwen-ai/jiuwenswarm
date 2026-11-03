@@ -420,6 +420,11 @@ _FORWARD_REQ_METHODS = frozenset({
     "session.switch",
     "session.fork",
     "acp.tool_response",
+    # Client attachments (e.g. the Office Add-in): attaching a client, renewing it, and its read models.
+    "client.attach",
+    "client.renew",
+    "client.list",
+    "client.conversation.messages",
     "team.delete",
     "command.goal",
     "command.btw",
@@ -640,6 +645,10 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "session.switch",
     "session.fork",
     "acp.tool_response",
+    "client.attach",
+    "client.renew",
+    "client.list",
+    "client.conversation.messages",
     "team.templates.list",
     "team.bindings.list",
     "team.binding.create",
@@ -5449,6 +5458,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, params, session_id, user_id, action="prompt_suggestion_event",
         )
 
+    async def _prompt_suggestion_get(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="prompt_suggestion_get",
+        )
+
     async def _topic_starters_status(ws, req_id, params, session_id, user_id=None):
         await _forward_recommendation(ws, req_id, params, session_id, user_id, action="status")
 
@@ -5812,6 +5826,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("topic_starters.foreground", _topic_starters_foreground)
     channel.register_method("topic_starters.event", _topic_starters_event)
     channel.register_method("prompt_suggestion.event", _prompt_suggestion_event)
+    channel.register_method("prompt_suggestion.get", _prompt_suggestion_get)
     channel.register_method("locale.get_conf", _locale_get_conf)
     channel.register_method("locale.set_conf", _locale_set_conf)
     channel.register_method("updater.get_status", _updater_get_status)

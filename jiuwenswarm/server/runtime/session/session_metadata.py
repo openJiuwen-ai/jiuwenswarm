@@ -2038,9 +2038,17 @@ def set_session_delivery_context(
     source_request_id: str | None,
     route_metadata: dict[str, Any] | None,
     delivery_kind: str = _DELIVERY_KIND_SERVER_PUSH,
+    record_activity: bool = True,
 ) -> dict[str, Any]:
-    """刷新 session 级 delivery context，供异步 server_push 恢复路由上下文。"""
+    """刷新 session 级 delivery context，供异步 server_push 恢复路由上下文。
+
+    ``record_activity=False`` only reroutes the pushes (a client that attaches to the
+    session, not a message): ``last_message_at`` and ``channel_id`` stay, and a
+    session without metadata gets none.
+    """
     metadata = _read_metadata(session_id)
+    if not metadata and not record_activity:
+        return {}
     before = copy.deepcopy(metadata)
     current_context_raw = metadata.get("delivery_context")
     current_context = (
@@ -2088,7 +2096,7 @@ def set_session_delivery_context(
             "pin_order": 0,
             "status": "idle",
         }
-    else:
+    elif record_activity:
         # channel_id：首次锁定——会话归属通道稳定，不被联机场景下其他通道的
         # server_push 覆写；delivery_context.channel_id 仍保持动态更新，
         # 供 build_server_push_message 路由异步推送（evolution watcher 等）到

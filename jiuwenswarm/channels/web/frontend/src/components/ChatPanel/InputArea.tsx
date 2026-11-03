@@ -359,7 +359,7 @@ interface InputAreaProps {
   onInputIntent?: (sessionId: string) => void;
   /** Tab or → in the empty composer; returns true when it filled the composer, which then keeps focus. */
   onEmptyComposerTab?: () => boolean;
-  /** The next-input suggestion, shown in the empty composer while its chip after the reply is out of view. */
+    /** The next question shown in the empty composer after an answer, independent of timeline visibility. */
   suggestionPlaceholder?: string | null;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
@@ -3466,7 +3466,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
     // 提取纯文本
-    const text = extractPlainText();
+    let text = extractPlainText();
+    const editor = inputRef.current;
+    // Browsers leave empty line-break wrappers after deletion, preventing :empty placeholders.
+    if (editor && !isComposingRef.current && !text.trim()
+      && !editor.querySelector('[contenteditable="false"], img')) {
+      editor.replaceChildren();
+      text = '';
+    }
     useChatStore.getState().setInputValue(sid, text);
     if (text.trim() && sid !== NEW_CONVERSATION_ID) {
       notifyKVCInputIntent();
@@ -4372,6 +4379,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       ? t('chat.placeholderVoice')
                       : designLandingSubmitting
                         ? t('chat.placeholder')
+                        : suggestionPlaceholder
+                          ? suggestionPlaceholder
                         : isTeamMode
                           ? (isInterruptible || ownerOrganizationIsProcessing) && !isPaused
                             ? t('chat.placeholderTeamModeProcessing')
@@ -4382,7 +4391,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             ? t('chat.placeholderProcessingQueue')
                             : isInterruptible
                               ? t('chat.placeholderProcessing')
-                              : suggestionPlaceholder || t('chat.placeholder')
+                              : t('chat.placeholder')
               }
               className={cx('chat-input-editor', composerDisabled && 'chat-input-editor--disabled')}
               data-testid="chat-panel-input"

@@ -1202,7 +1202,11 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
-    _enqueue_write(session_id, metadata)
+    _enqueue_write(
+        session_id,
+        metadata,
+        merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_dispatch_mode(
@@ -1248,7 +1252,11 @@ def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) ->
         )
         return
     metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
-    _enqueue_write(session_id, metadata)
+    _enqueue_write(
+        session_id,
+        metadata,
+        merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_bootstrap_mode(
@@ -3523,6 +3531,9 @@ async def _process_team_message_stream(
             bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(team_spec, deep_agent)
         if group_input is not None and request_metadata.get("group_members") is not None:
             update_session_metadata(session_id=session_id,
                 group_members=request_metadata["group_members"],

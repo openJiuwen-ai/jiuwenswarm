@@ -60,12 +60,17 @@ logger = logging.getLogger(__name__)
 _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
 
 
-def _resolve_ws_auth_session(ws: Any) -> str:
-    """从 WS 握手里取登录会话 id：``X-Auth-Session`` 头优先，其次 cookie。
+def _resolve_ws_auth_session(
+    ws: Any,
+    query: dict[str, list[str]] | None = None,
+) -> str:
+    """从 WS 握手里取登录会话 id：头优先，其次 cookie，最后 query 参数。
 
     两种来源对应两类客户端：浏览器靠 cookie（``jiuwenswarm_auth``，登录回调时
     种下、path=/，同源握手会自动带上），TUI / CLI 这类没有 cookie jar 的客户端
-    用请求头。和 ``/api/v1/auth/*`` 的双通道是同一套约定。
+    用请求头。鸿蒙 WebView 既拿不到系统浏览器的 cookie，也不能给原生 WebSocket
+    设置自定义请求头，因此再用 ``auth_session`` query 参数承载本地 localStorage
+    里的会话 id。和 ``/api/v1/auth/*`` 的双通道是同一套约定。
 
     取不到返回空串——这不是错误，只是"这条连接没有登录身份"。
 
@@ -88,6 +93,11 @@ def _resolve_ws_auth_session(ws: Any) -> str:
         name, _, value = part.strip().partition("=")
         if name == "jiuwenswarm_auth" and value.strip():
             return value.strip()
+    values = query.get("auth_session") if query else None
+    if values:
+        value = str(values[0] or "").strip()
+        if value:
+            return value
     return ""
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
@@ -111,6 +121,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.tool_call",
         "chat.tool_update",
         "chat.tool_result",
+        "client.attachments_changed",
         "chat.processing_status",
         "chat.llm_call_start",
         "chat.llm_call_end",
@@ -1797,7 +1808,7 @@ class WebChannel(BaseWsChannel):
         setattr(ws, "_jiuwen_initial_sid", _initial_sid)
         # 握手时把调用方的**登录会话**认出来，供后续每条请求判定"这次是谁"。
         # 只能在这里做：登录凭据在握手的 cookie / 头里，之后的每条 WS 消息都没有它。
-        setattr(ws, "_jiuwen_auth_session", _resolve_ws_auth_session(ws))
+        setattr(ws, "_jiuwen_auth_session", _resolve_ws_auth_session(ws, query))
 
         # 上报连接事件
         self.report_connect(ws)
