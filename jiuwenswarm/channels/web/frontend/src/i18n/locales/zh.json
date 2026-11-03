@@ -1339,6 +1339,8 @@
     "maximize": "放大",
     "restore": "退出全屏",
     "toolTabs": "工具面板页签",
+    "builtinTools": "工具",
+    "closeToolTab": "关闭 {{title}} 页签",
     "taskOverview": "任务概览",
     "elapsedTime": "已花费时间: {{value}}",
     "duration": "耗时",

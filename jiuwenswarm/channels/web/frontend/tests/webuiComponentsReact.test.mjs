@@ -52,11 +52,12 @@ after(() => {
 
 const { act, createElement } = await import('react');
 const { createRoot } = await import('react-dom/client');
+const { renderToStaticMarkup } = await import('react-dom/server');
 const { theme } = await import('antd');
 const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer, FileTree, createComponentState,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
-  WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n,
+  WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n, buttonIcon,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -362,28 +363,65 @@ test('theme initialization preserves cached instances and mounts each host once'
   }
 });
 
-test('icon-only Button keeps its accessible label and node event without visible text', async () => {
-  const tree = { component: 'Button', props: {
-    label: '本轮操作 / Round actions', icon: 'ellipsis', iconOnly: true, variant: 'ghost',
-  }, events };
-  const app = await setup(tree);
+test('text Button preserves labels and selected variants without host artwork', async () => {
+  const app = await setup({ component: 'Button', props: { label: '导出报告', variant: 'ghost' }, events });
   try {
     const button = app.container.querySelector('[data-testid="webui-button"]');
-    assert.equal(button.textContent, '');
-    assert.ok(button.querySelector('svg'));
-    assert.equal(button.getAttribute('aria-label'), tree.props.label);
-    assert.equal(button.title, tree.props.label);
+    assert.equal(button.textContent, '导出报告');
+    assert.equal(button.querySelector('svg'), null);
     assert.match(button.className, /ant-btn-text/);
-    assert.match(button.className, /ant-btn-icon-only/);
     await click(button);
     assert.equal(app.business().length, 1);
-    assert.equal(app.business()[0].payload.action_id, 'confirm');
-    await app.replace({ ...tree, props: { ...tree.props, iconOnly: false } });
-    assert.equal(app.container.querySelector('button').textContent, tree.props.label);
-    await act(async () => app.transport.setConnectionState('disconnected'));
-    assert.equal(app.container.querySelector('button').disabled, true);
+    await app.replace({ component: 'Button', props: { label: '删除记录', variant: 'danger' }, events });
+    assert.equal(app.container.querySelector('button').textContent, '删除记录');
+    assert.match(app.container.querySelector('button').className, /ant-btn-dangerous/);
   } finally { await app.close(); }
 });
+
+test('every whitelisted icon renders themed artwork, including aliases', () => {
+  const whitelist = JSON.parse(readFileSync(new URL('../src/features/webui/icons/whitelist.json', import.meta.url), 'utf8'));
+  const artwork = name => {
+    const element = buttonIcon(name);
+    assert.ok(element, name);
+    const svg = renderToStaticMarkup(element);
+    assert.match(svg, /<svg/);
+    assert.match(svg, /stroke="currentColor"/);
+    assert.match(svg, /width="16"/);
+    assert.match(svg, /aria-hidden="true"/);
+    assert.match(svg, /<(path|circle|rect|line|polyline|polygon|ellipse)\b/);
+    return svg.replace(/ data-variant="[^"]*"/, '');
+  };
+  for (const name of Object.keys(whitelist.icons)) artwork(name);
+  for (const [name, target] of Object.entries(whitelist.aliases)) assert.equal(artwork(name), artwork(target));
+  for (const name of ['not-an-icon', 'constructor', '__proto__', null, {}]) {
+    assert.equal(buttonIcon(name), undefined);
+  }
+});
+
+for (const icon of ['ellipsis', 'refresh', 'camera']) {
+  test(`icon-only Button (${icon}) keeps its accessible label and node event without visible text`, async () => {
+    const tree = { component: 'Button', props: {
+      label: '本轮操作 / Round actions', icon, iconOnly: true, variant: 'ghost',
+    }, events };
+    const app = await setup(tree);
+    try {
+      const button = app.container.querySelector('[data-testid="webui-button"]');
+      assert.equal(button.textContent, '');
+      assert.ok(button.querySelector('svg'));
+      assert.equal(button.getAttribute('aria-label'), tree.props.label);
+      assert.equal(button.title, tree.props.label);
+      assert.match(button.className, /ant-btn-text/);
+      assert.match(button.className, /ant-btn-icon-only/);
+      await click(button);
+      assert.equal(app.business().length, 1);
+      assert.equal(app.business()[0].payload.action_id, 'confirm');
+      await app.replace({ ...tree, props: { ...tree.props, iconOnly: false } });
+      assert.equal(app.container.querySelector('button').textContent, tree.props.label);
+      await act(async () => app.transport.setConnectionState('disconnected'));
+      assert.equal(app.container.querySelector('button').disabled, true);
+    } finally { await app.close(); }
+  });
+}
 
 test('icon Dropdown opens locally, closes on selection and blocks disabled actions', async () => {
   const tree = { component: 'Dropdown', props: {
@@ -512,6 +550,51 @@ test('Select preserves local edits without bindings, resets on replace and block
     await changeInput(app.container.querySelector('input'), 'Beijing');
     assert.equal(app.business().at(-1).payload.revision, 4);
     assert.deepEqual(app.business().at(-1).payload.data, { searchValue: 'Beijing' });
+  } finally { await app.close(); }
+});
+
+test('Select change sends the whole selection on choose, deselect and clear without extra bindings', async () => {
+  const bindings = { 'ui.change': { id: 'update-selection', args: { field: 'cities' } } };
+  const app = await setup(selectTree({ mode: 'multiple', defaultValue: ['a'] }, bindings));
+  const changes = () => app.business().map((request) => request.payload.data.value);
+  try {
+    assert.equal(app.business().length, 0);
+    await changeInput(app.container.querySelector('input'), 'Shanghai');
+    await click(document.querySelector('.ant-select-item-option[title="Shanghai"]'));
+    assert.deepEqual(changes(), [['a', 'b']]);
+    await click(app.container.querySelector('.ant-select-selection-item[title="Beijing"] .ant-select-selection-item-remove'));
+    assert.deepEqual(changes(), [['a', 'b'], ['b']]);
+    await click(app.container.querySelector('.ant-select-clear'));
+    assert.deepEqual(changes(), [['a', 'b'], ['b'], []]);
+    assert.ok(app.business().every((request) => request.event === 'ui.change'));
+    await app.replace(selectTree({ defaultValue: 'a' }, bindings));
+    assert.equal(app.business().length, 3);
+    await click(app.container.querySelector('.ant-select-clear'));
+    assert.deepEqual(changes().at(-1), null);
+    assert.equal(app.business().at(-1).payload.action_id, 'update-selection');
+    await app.replace(selectTree({ disabled: true }, bindings), 3);
+    assert.equal(app.container.querySelector('input').disabled, true);
+    await changeInput(app.container.querySelector('input'), 'Shanghai');
+    assert.equal(app.business().length, 4);
+    await app.replace(selectTree({}, bindings), 4);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('input').disabled, true);
+    await changeInput(app.container.querySelector('input'), 'Shanghai');
+    assert.equal(app.business().length, 4);
+  } finally { await app.close(); }
+});
+
+test('Select tags change reports custom tags and respects maxCount', async () => {
+  const app = await setup(selectTree({ options: [], mode: 'tags', maxCount: 1 }, { 'ui.change': { id: 'tags' } }));
+  try {
+    const input = () => app.container.querySelector('input');
+    await changeInput(input(), 'custom');
+    await pressEnter(input());
+    assert.deepEqual(app.business().map((request) => request.payload.data), [{ value: ['custom'] }]);
+    await changeInput(input(), 'second');
+    await pressEnter(input());
+    assert.ok(app.business().every((request) => request.payload.data.value.length <= 1));
+    assert.ok(!app.container.textContent.includes('second'));
   } finally { await app.close(); }
 });
 
@@ -1069,6 +1152,7 @@ test('host theme maps semantic values, updates on root changes and localizes lib
   const element = document.documentElement;
   element.style.setProperty('--color-action-primary', '#345678');
   element.style.setProperty('--color-text-primary', '#234567');
+  element.style.setProperty('--color-action-secondary', '#f4f4f5');
   element.style.setProperty('--font-size-base', '15px');
   element.style.setProperty('--radius-md', '9px');
   const resolved = resolveWebUITheme(getComputedStyle(element), false);
@@ -1076,6 +1160,8 @@ test('host theme maps semantic values, updates on root changes and localizes lib
   assert.equal(resolved.token.fontSize, 15);
   assert.equal(resolved.token.borderRadius, 9);
   assert.equal(resolved.token.colorError, undefined);
+  assert.equal(resolved.components.Button.textHoverBg, '#f4f4f5');
+  assert.equal(resolveWebUITheme({ getPropertyValue: () => '' }, false).components.Button.textHoverBg, undefined);
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
   let token;
@@ -1090,8 +1176,10 @@ test('host theme maps semantic values, updates on root changes and localizes lib
     assert.match(container.textContent, /No data/);
     await act(async () => {
       element.style.setProperty('--color-action-primary', '#765432');
+      element.style.setProperty('--color-action-secondary', '#303030');
     });
     assert.equal(token.colorPrimary, '#765432');
+    assert.equal(resolveWebUITheme(getComputedStyle(element), true).components.Button.textHoverBg, '#303030');
     await act(async () => { element.dataset.colorMode = 'dark'; });
     assert.notEqual(token.colorPrimary, '#765432');
     assert.equal(resolveWebUITheme(getComputedStyle(element), true).algorithm, theme.darkAlgorithm);
@@ -1123,6 +1211,33 @@ test('Text respects theme sizes, semantic tones and host style precedence', asyn
   } finally { await act(async () => root.unmount()); container.remove(); }
 });
 
+test('Text variants use semantic colors, explicit tone wins and secondary Button is filled', async () => {
+  const app = await setup({ component: 'Text', props: { value: 'Status', variant: 'primary' } });
+  const text = () => app.container.querySelector('[data-testid="webui-text"]');
+  try {
+    const primary = text().style.color;
+    assert.ok(primary);
+    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'ghost' } }, 2);
+    assert.ok(text().style.color);
+    assert.notEqual(text().style.color, primary);
+    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'danger' } }, 3);
+    assert.match(text().className, /ant-typography-danger/);
+    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'danger', tone: 'neutral' } }, 4);
+    assert.doesNotMatch(text().className, /ant-typography-danger/);
+    assert.equal(text().style.color, '');
+    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'primary', tone: 'success' } }, 5);
+    assert.match(text().className, /ant-typography-success/);
+    assert.equal(text().style.color, '');
+    await app.replace({ component: 'Button', props: { label: 'Secondary', variant: 'secondary', size: 'large' } }, 6);
+    const button = app.container.querySelector('[data-testid="webui-button"]');
+    assert.match(button.className, /ant-btn-variant-filled/);
+    assert.match(button.className, /ant-btn-lg/);
+    await app.replace({ component: 'Button', props: { label: 'Default', size: 'lg' } }, 7);
+    assert.doesNotMatch(app.container.querySelector('button').className, /ant-btn-variant-filled/);
+    assert.match(app.container.querySelector('button').className, /ant-btn-lg/);
+  } finally { await app.close(); }
+});
+
 test('Text renders monospace, line limits and info tone from normalized props', async () => {
   const app = await setup({
     component: 'Text', props: { value: 'First\nSecond\nThird', monospace: true, max_lines: 2, tone: 'info' },
@@ -1134,7 +1249,7 @@ test('Text renders monospace, line limits and info tone from normalized props', 
     assert.equal(text.style.getPropertyValue('--webui-text-max-lines'), '2');
     assert.equal(getComputedStyle(text).overflow, 'hidden');
     assert.ok(text.style.color, 'info tone must have a semantic color');
-    await app.replace({ component: 'Text', props: { value: 'Plain', max_lines: 0, monospace: false } });
+    await app.replace({ component: 'Text', props: { value: 'Plain', monospace: false } });
     const plain = app.container.querySelector('[data-testid="webui-text"]');
     assert.equal(plain.style.fontFamily, '');
     assert.equal(plain.style.getPropertyValue('--webui-text-max-lines'), '');

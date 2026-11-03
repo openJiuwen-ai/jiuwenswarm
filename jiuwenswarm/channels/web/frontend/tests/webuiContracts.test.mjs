@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 const componentCases = JSON.parse(readFileSync(new URL('./fixtures/webuiComponentCases.json', import.meta.url), 'utf8'));
+const iconWhitelist = JSON.parse(readFileSync(new URL('../src/features/webui/icons/whitelist.json', import.meta.url), 'utf8'));
 import {
   checkPropValue,
   componentCatalog,
@@ -46,6 +47,19 @@ test('catalog rejects unsupported events', () => {
   const create = (rule) => createCatalog({ components: [rule], slots: [] });
   assert.throws(() => create({ name: 'UnknownEvent', props: {}, allowChildren: false, events: { 'ui.custom': {} } }),
     /unsupported event/);
+});
+
+test('Button and Dropdown accept every whitelist icon and alias, and reject unsupported names', () => {
+  const names = [...Object.keys(iconWhitelist.icons), ...Object.keys(iconWhitelist.aliases)];
+  for (const component of ['Button', 'Dropdown']) {
+    assert.deepEqual(componentCatalog.getComponent(component).props.icon.values, names);
+    const props = component === 'Button' ? { label: 'Action', iconOnly: true }
+      : { items: [{ key: 'action', label: 'Action' }], ariaLabel: 'Actions' };
+    for (const icon of names) assert.equal(checkProps(component, { ...props, icon }).error, undefined, icon);
+    for (const icon of ['not-an-icon', 'Camera', 'constructor', '__proto__', '', null]) {
+      assert.equal(typeof checkProps(component, { ...props, icon }).error, 'string', String(icon));
+    }
+  }
 });
 
 test('Box keeps source layout defaults and supports column direction', () => {
@@ -116,9 +130,29 @@ for (const [name, event, validData, invalidData] of eventCases) {
 
 test('component event sets retain the source restrictions', () => {
   assert.deepEqual(WEBUI_COMPONENT_EVENTS, ['ui.click', 'ui.change', 'ui.press_enter', 'ui.search', 'ui.clear', 'ui.select']);
-  assert.deepEqual(Object.keys(componentCatalog.getComponent('Select').events), ['ui.select', 'ui.search', 'ui.clear']);
+  assert.deepEqual(Object.keys(componentCatalog.getComponent('Select').events), ['ui.change', 'ui.select', 'ui.search', 'ui.clear']);
   assert.equal(componentCatalog.getComponent('Input').events['ui.clear'], undefined);
   assert.equal(componentCatalog.getComponent('Iframe').events, undefined);
   assert.deepEqual(componentCatalog.getComponent('Divider').childComponents, ['Text']);
   assert.deepEqual(componentCatalog.getComponent('Tabs').content, { prop: 'items', children: 'children' });
+});
+
+test('size aliases normalize consistently and compact components reject large sizes', () => {
+  const cases = [
+    ['Text', {}], ['Button', {}], ['Input', {}], ['Select', { options: [] }],
+    ['TreeSelect', { treeData: [] }], ['Tabs', { items: [] }], ['Divider', {}], ['Avatar', { url: '/logo.svg' }],
+  ];
+  for (const [name, props] of cases) {
+    for (const [alias, canonical] of [['sm', 'small'], ['md', 'medium'], ['lg', 'large']]) {
+      assert.equal(checkProps(name, { ...props, size: alias }).value.size, canonical, name);
+      assert.equal(checkProps(name, { ...props, size: canonical }).value.size, canonical, name);
+    }
+  }
+  for (const name of ['Card', 'Switch']) {
+    assert.equal(checkProps(name, { size: 'sm' }).value.size, 'small');
+    assert.equal(checkProps(name, { size: 'md' }).value.size, 'medium');
+    for (const size of ['lg', 'large']) assert.ok(checkProps(name, { size }).error);
+  }
+  assert.equal(checkProps('Avatar', { url: '/logo.svg', size: 'default' }).value.size, 'medium');
+  assert.equal(checkProps('Avatar', { url: '/logo.svg', size: 48 }).value.size, 48);
 });

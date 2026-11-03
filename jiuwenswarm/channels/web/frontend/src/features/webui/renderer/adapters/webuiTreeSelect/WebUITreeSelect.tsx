@@ -8,7 +8,7 @@ interface TreeOption {
   disabled?: boolean; disableCheckbox?: boolean; selectable?: boolean; checkable?: boolean;
 }
 type CheckedStrategy = 'SHOW_CHILD' | 'SHOW_PARENT' | 'SHOW_ALL';
-const checkedStrategies: Record<CheckedStrategy, typeof TreeSelect.SHOW_CHILD> = {
+const checkedStrategies: Record<CheckedStrategy, CheckedStrategy> = {
   SHOW_CHILD: TreeSelect.SHOW_CHILD,
   SHOW_PARENT: TreeSelect.SHOW_PARENT,
   SHOW_ALL: TreeSelect.SHOW_ALL,

@@ -15,6 +15,9 @@ const SIZE_MAP: Readonly<Record<string, ButtonSize>> = {
   sm: 'small',
   md: 'middle',
   lg: 'large',
+  small: 'small',
+  medium: 'middle',
+  large: 'large',
 };
 
 function resolveButton(props: Readonly<Record<string, unknown>>): { type: ButtonType; danger: boolean } {
@@ -67,6 +70,8 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
   return (
     <AntButton
       type={type}
+      color={node.props.variant === 'secondary' ? 'default' : undefined}
+      variant={node.props.variant === 'secondary' ? 'filled' : undefined}
       size={size}
       danger={danger}
       disabled={disabled}

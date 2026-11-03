@@ -1,5 +1,6 @@
 import type { WebUIComponentRule, WebUIPropRule } from '../types.ts';
-import { noData } from './shared.ts';
+import { integer, noData, prepareSize, size } from './shared.ts';
+import { WEBUI_ICON_NAMES } from '../../icons/names.ts';
 
 function token(values: readonly string[]): WebUIPropRule {
   return { kind: 'token', values };
@@ -34,25 +35,27 @@ export const basicComponentRules: readonly WebUIComponentRule[] = [
       value: { kind: 'string', maxBytes: 16 * 1024 },
       variant: token(['default', 'primary', 'secondary', 'danger', 'ghost']),
       tone: token(['neutral', 'info', 'success', 'warning', 'danger']),
-      size: token(['sm', 'md', 'lg']),
+      size,
       weight: token(['regular', 'medium', 'bold']),
-      max_lines: { kind: 'number' },
+      max_lines: integer(1),
       monospace: { kind: 'boolean' },
     },
     allowChildren: false,
+    prepare: prepareSize,
   },
   {
     name: 'Button',
     props: {
       label: { kind: 'string', maxBytes: 16 * 1024 },
       variant: token(['default', 'primary', 'secondary', 'danger', 'ghost']),
-      size: token(['sm', 'md', 'lg']),
+      size,
       disabled: { kind: 'boolean' },
-      icon: token(['ellipsis']),
+      icon: token(WEBUI_ICON_NAMES),
       iconOnly: { kind: 'boolean' },
     },
     allowChildren: false,
     events: { 'ui.click': noData },
+    prepare: prepareSize,
     validate: (props) => props.iconOnly === true && (!props.icon || !String(props.label ?? '').trim())
       ? 'icon-only buttons require an icon and a non-empty label' : null,
   },
