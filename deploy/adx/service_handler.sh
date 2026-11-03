@@ -36,6 +36,7 @@ process_uninstall() {
 
     # 先停用 systemd 服务，再卸载 pip 包，避免卸载后残留 unit 文件
     swarm_disable_systemd
+    rm -f -- "${DEPLOY_VARS["HOME"]}/.jiuwenswarm/config/adx-service.env"
 
     if "${BUSINESS_PYTHON}" -m pip uninstall -y jiuwenswarm workswarm openjiuwen; then
         success "jiuwenswarm and openjiuwen uninstalled on ${local_host}"

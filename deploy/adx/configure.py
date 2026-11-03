@@ -127,13 +127,6 @@ def write_private(path, text):
             os.unlink(temporary)
 
 
-def quote(value):
-    text = str(value)
-    if any(c in text for c in "\r\n\x00"):
-        raise ValueError("deployment values must be single-line")
-    return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
-
-
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -201,20 +194,7 @@ def configure(settings):
     if fresh or not env_file.exists():
         custom = Path(settings.get("business_env_file") or Path(__file__).with_name(".env.custom"))
         write_private(env_file, custom.read_text() if custom.exists() else "")
-    update_environment(env_file, settings)
-    token = Path(settings["token_file"]).read_text().strip()
-    service_env = data / "config/adx-service.env"
-    write_private(service_env, "\n".join(key + "=" + quote(setting) for key, setting in {
-        "ADX_GATEWAY_TOKEN": token, "ADX_TOKEN": token, "SSL_CERT_FILE": settings["ca_file"],
-        "JIUWENSWARM_DATA_DIR": str(data),
-        "AGENTOS_BUILTIN_AGENT_CPU": str(settings["runtime"].get("cpu", 2000)),
-        "AGENTOS_BUILTIN_AGENT_MEMORY": str(settings["runtime"].get("memory", 4096)),
-        "JIUWENSWARM_HOME": str(home), "HOME": str(home), "JIUWENSWARM_RUNTIME_PROFILE": settings.get("profile", "standalone"),
-        "JIUWENSWARM_ADX_NODE_INGRESS_URL": settings["node_ingress_url"],
-        "GATEWAY_HOST": options.get("host", "0.0.0.0"), "GATEWAY_PORT": options.get("port", 19001),
-        "WEB_HOST": options.get("web_host", "127.0.0.1"), "WEB_PORT": options.get("web_port", 19000),
-        "PATH": str(Path(settings["python"]).parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
-    }.items()) + "\n")
+    update_environment(env_file, settings, service=True)
     # Existing users retain model/IAM/session configuration and all data files.
     for user in workspace.iterdir() if settings.get("update_user_configs", False) else ():
         user_config = user / ".jiuwenswarm/config/config.yaml"
@@ -223,10 +203,10 @@ def configure(settings):
         original = read_yaml(user_config)
         write_yaml(user_config, gateway_config(original, settings))
         update_environment(user_config.with_name(".env"), settings, user_config.stat())
-    return service_env
+    return env_file
 
 
-def update_environment(path, settings, owner=None):
+def update_environment(path, settings, owner=None, *, service=False):
     from dotenv import set_key
     if not path.exists():
         write_private(path, "")
@@ -234,8 +214,15 @@ def update_environment(path, settings, owner=None):
             os.chown(path, owner.st_uid, owner.st_gid)
     owner = path.stat()
     token = Path(settings["token_file"]).read_text().strip()
-    for key, setting in {"ADX_TOKEN": token, "ADX_GATEWAY_TOKEN": token,
-                         "SSL_CERT_FILE": settings["ca_file"]}.items():
+    values = {"ADX_TOKEN": token, "ADX_GATEWAY_TOKEN": token,
+              "SSL_CERT_FILE": settings["ca_file"],
+              "JIUWENSWARM_ADX_NODE_INGRESS_URL": settings["node_ingress_url"]}
+    if service:
+        values.update({
+            "AGENTOS_BUILTIN_AGENT_CPU": str(settings["runtime"].get("cpu", 2000)),
+            "AGENTOS_BUILTIN_AGENT_MEMORY": str(settings["runtime"].get("memory", 4096)),
+        })
+    for key, setting in values.items():
         set_key(str(path), key, str(setting))
     os.chown(path, owner.st_uid, owner.st_gid)
     path.chmod(0o600)
@@ -243,13 +230,10 @@ def update_environment(path, settings, owner=None):
 
 def shell_gateway_variables(settings):
     options = settings["gateway"]
-    service_env = data_directory(settings) / "config/adx-service.env"
-    for key, value in read_environment(service_env).items():
-        print("export " + key + "=" + shlex.quote(value))
     values = {"HOME": str(effective_home(settings)), "RUNTIME_PROFILE": settings.get("profile", "standalone"), "JIUWENSWARM_INSTANCE_NAME": options.get("instance_name", ""), "GATEWAY_HOST": options["host"], "GATEWAY_PORT": options["port"],
               "WEB_HOST": options["web_host"], "WEB_PORT": options["web_port"],
               "WEB_STATIC_HOST": options["host"], "WEB_STATIC_PORT": options["static_port"],
-              "SERVICE_ENV_FILE": str(service_env)}
+              "APP_ENV_FILE": str(data_directory(settings) / "config/.env")}
     for key, value in values.items():
         print("DEPLOY_VARS[" + shlex.quote(key) + "]=" + shlex.quote(str(value)))
 

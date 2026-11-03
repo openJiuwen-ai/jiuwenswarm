@@ -88,9 +88,8 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-${exec_start_pre}ExecStart=${gw_bin}
+${exec_start_pre}ExecStart=${gw_bin} --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\"
 Environment=HOME=${DEPLOY_VARS["HOME"]:-/root}
-EnvironmentFile=${DEPLOY_VARS["SERVICE_ENV_FILE"]}
 Restart=on-failure
 RestartSec=3
 
@@ -183,11 +182,11 @@ gateway_start_nohup() {
     # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
-    local log_dir_prefix="JIUWENSWARM_RUNTIME_PROFILE=${DEPLOY_VARS["RUNTIME_PROFILE"]:-standalone} AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
+    local log_dir_prefix="JIUWENSWARM_RUNTIME_PROFILE=${DEPLOY_VARS["RUNTIME_PROFILE"]:-standalone} AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} GATEWAY_HOST=${DEPLOY_VARS["GATEWAY_HOST"]:-0.0.0.0} GATEWAY_PORT=${gw_port} WEB_PORT=${web_port} "
 
-    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\" </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=${DEPLOY_VARS["HOME"]:-/root}/.jiuwenswarm ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=${DEPLOY_VARS["HOME"]:-/root}/.jiuwenswarm ${log_dir_prefix}nohup jiuwenswarm-gateway --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\" </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."

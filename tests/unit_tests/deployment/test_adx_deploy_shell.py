@@ -76,7 +76,7 @@ exec_on_host() { case "$*" in *LoadState*) echo loaded;; *"systemctl stop"*) ret
 
     def test_systemd_handlers_use_private_environment_and_expected_ports(self):
         result = self.run_script('''
-DEPLOY_VARS[SERVICE_ENV_FILE]="$OUTPUT/service.env"
+DEPLOY_VARS[APP_ENV_FILE]="$OUTPUT/service.env"
 SWARM_SERVICE_PREFLIGHT="/bin/true"
 copy_to_host() { cp "$2" "$OUTPUT/$(basename "$3")"; }
 exec_on_host() {
@@ -97,7 +97,8 @@ web_start_systemd 127.0.0.1
         self.assertEqual(result.returncode, 0, result.stderr)
         for service in ("jiuwenswarm-gateway", "jiuwenswarm-web"):
             unit = (self.root / (service + ".service")).read_text()
-            self.assertIn("EnvironmentFile=" + str(self.root / "service.env"), unit)
+            self.assertNotIn("EnvironmentFile=", unit)
+            self.assertIn('--dotenv "' + str(self.root / "service.env") + '"', unit)
             self.assertIn("ExecStartPre=", unit)
         trace = self.trace.read_text()
         for port in (19001, 19000, 5173):
