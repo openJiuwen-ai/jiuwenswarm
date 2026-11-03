@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-03 包管理门面与生命周期 |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py`、`extensions_v2/config.py` |
 | 设计依据 | [F_02 控制面复用](F_02_control-plane.md)、agent-core [Registry](../../../../../agent-core/openjiuwen/core/extension/registry.py) |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-11-03 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
@@ -48,7 +48,8 @@ flowchart TB
     REG --> PM["PackageManager"]
     REG --> RT["Runtime"]
     MGR --> CFG["config.resolve_install_dir"]
-    MGR --> CB["inactive callback"]
+    MGR --> RT
+    RT --> CB["删除 store 前的宿主清理回调"]
     CB --> UI["WebUIRuntime.drop_package"]
 ```
 
@@ -70,14 +71,14 @@ flowchart TB
 
 | 方法 | 签名 | 行为 |
 | --- | --- | --- |
-| `init` | `async init(event_bus, *, host_version=None, host_event_types=None, host_handlers=None)` | 调用 `Registry.init` 注册宿主事件与 Handler，随后 `open_install_dir`；重复调用直接返回 |
+| `init` | 签名见 [S_01](../specs/S_01_extension-management-facade.md#52-初始化) | 注入宿主事件、Handler、store 和资源清理回调，随后 `open_install_dir`；重复调用直接返回 |
 | `install` | `async install(paths: Sequence[Path]) -> list[ActivationReport]` | 委托 `Registry.install`，补偿失败副本 |
 | `load_installed` | `async load_installed() -> list[ActivationReport]` | 每包选最高未生效版本，一次性批量安装 |
-| `uninstall` | `async uninstall(package_id) -> ActivationReport` | 委托 `Registry.uninstall`；未生效时删除残留副本 |
+| `uninstall` | `async uninstall(package_id) -> ActivationReport` | 活动包与未激活副本均委托 Core，成功后通知 |
 | `reload` | `async reload(package_id) -> ActivationReport` | 从安装副本热切换，generation 递增 |
 | `query` | `async query(package_id=None) -> QueryResult` | 触发 `package.query`，返回 agent-core 事实 |
 | `active_packages` | `active_packages() -> tuple[ActivePackageRecord, ...]` | 供界面目录等只读消费者使用 |
-| `set_inactive_callback` | `set_inactive_callback(callback)` | 包卸载或停机后通知宿主清理视图 |
+| `set_inactive_callback` | `set_inactive_callback(callback)` | 包卸载或停机成功后的兼容通知，不承担必须成功的资源清理 |
 | `shutdown` | `async shutdown()` | 逆依赖顺序 `Runtime.unpublish`，不删除副本，重置 Registry |
 
 ### 4.2 返回结构
@@ -115,13 +116,11 @@ manifest 不可读或版本非法的目录记录告警后忽略，不影响其�
 
 ### 5.3 卸载
 
-1. 调用 `Registry.uninstall`。
-2. 成功时通知 inactive callback。
-3. 返回 `EXTENSION_PACKAGE_NOT_INSTALLED` 时，检查安装目录是否存在该包副本：
-   - 存在则删除全部版本目录并返回成功；
-   - 不存在则保留原失败结果。
+1. 活动包与未激活副本均调用 `Registry.uninstall`，由 Core 统一完成资源与文件清理。
+2. AgentServer 装配将既有 `WebUIRuntime.drop_package` 作为 Core 资源清理回调，在删除 store 前执行。
+3. Core 完整清理成功后，在门面操作锁外通知 inactive callback；失败保留 Core 清理记录以便重试。
 
-该分支覆盖“包已复制但尚未生效”和“上次停机遗留副本”两种场景。
+门面不再自行删除未激活副本，避免绕过 Core 的 store 清理。
 
 ### 5.4 停机
 
@@ -162,5 +161,29 @@ manifest 不可读或版本非法的目录记录告警后忽略，不影响其�
 ## 9. 风险与遗留
 
 - 门面依赖 agent-core 当前 `Registry.init` 自动触发 `ops.build` 的语义；对端若改为显式构建，门面需同步。
-- 在途调用计数未接入事件调用路径，`EXTENSION_PACKAGE_BUSY` 目前不可达，详见 F_04。
+- Core 已为发布的 Handler 与 store 调用记录在途占用，忙时卸载返回 `EXTENSION_PACKAGE_BUSY`。
 - `Runtime.unpublish` 不释放 `sys.modules`；重载依赖 agent-core 的模块命名隔离，宿主不额外清理。
+
+### 9.1 store 宿主集成
+
+2026-11-03：本仓只接入 Core 提供的 store 接口，不另定义持久化能力或复制 SDK 文件实现。
+`resolve_store_dir()` 使用当前用户数据根下的 `extension/store`，跟随已有 `JIUWENSWARM_DATA_DIR` 约定；
+AgentServer 将目录传给 `ExtensionManager(store_dir=...)`，由门面构造
+`openjiuwen.core.extension.data.JsonStore` 并注入 Registry。
+目录策略属于 Swarm，Core 不读取 Swarm 配置或约定具体应用路径。
+
+资源回调复用既有视图清理方法，不修改 WebUI 的消息投递与错误语义。
+停机先撤销 Handler，再以 shutdown 原因等待资源清理，成功后释放记录和上下文；安装副本与 store 均保留。
+成功卸载才删除包数据，重载保留数据。Core 的 CRUD 与文件契约引用其 store 规约，不在本仓重复定义。
+
+验证入口为 `tests/unit_tests/extensions_v2/test_store_persistence.py`、`test_config.py` 和
+`management/test_management_shutdown.py`；方案见 [F_27 store 持久化](F_27_store-persistence.md)；
+调试包见 [Store Probe](../../examples/store_probe/README.md)。
+2026-11-03：排除本地依赖、Token Weather 修复、额外 WebUI 清理行为及其测试后，
+使用 rebase 后的本地 Core 执行 Extensions V2 全量回归，结果为 **734 passed、2 skipped**。
+跳过 Windows 环境不支持的符号链接和命名管道用例；未启动真实模型或浏览器。
+
+```powershell
+.venv/Scripts/python.exe -m pytest -q -rs -o addopts= -o log_cli=false `
+  --asyncio-mode=auto tests/unit_tests/extensions_v2
+```

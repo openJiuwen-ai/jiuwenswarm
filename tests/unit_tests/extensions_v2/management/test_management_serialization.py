@@ -134,10 +134,15 @@ async def test_concurrent_init_only_initializes_core_once(
         *,
         host_event_types: Callable[[ExtensionEventBus], None] | None = None,
         host_handlers: Callable[[ExtensionEventBus], None] | None = None,
+        store=None,
+        cleanup_callbacks=(),
     ) -> None:
         entered.set()
         await release.wait()
-        await initialize(event_bus, host_event_types=host_event_types, host_handlers=host_handlers)
+        await initialize(
+            event_bus, host_event_types=host_event_types, host_handlers=host_handlers,
+            store=store, cleanup_callbacks=cleanup_callbacks,
+        )
 
     spy = AsyncMock(side_effect=delayed_init)
     monkeypatch.setattr(manager.registry, "init", spy)

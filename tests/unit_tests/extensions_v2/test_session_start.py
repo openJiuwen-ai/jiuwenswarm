@@ -181,7 +181,8 @@ async def test_start_holds_inflight_but_not_management_lock(host):
         if value["phase"] != "enter":
             return
         query = await host.manager.query("start.a")
-        assert query.inflight["start.a"] == 1
+        # The host gate and SDK handler can each reserve an in-flight use.
+        assert query.inflight["start.a"] >= 1
         reports.append(await host.manager.uninstall("start.a"))
 
     host.controls["on_record"] = query_and_try_uninstall
