@@ -188,7 +188,9 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     # --- en rules ---
     image_url_rule_en = (
         " Do not invent image URLs. Use user-provided HTTPS URLs or verified "
-        "stable sources; do not use guessed upload.wikimedia.org thumbnail paths."
+        "stable sources; do not use guessed upload.wikimedia.org thumbnail paths. "
+        "Every image URL MUST be a valid, reachable link obtained from the user "
+        "or a tool result — never construct a URL path by guesswork."
     )
     unsupported_component_rule_en = (
         " A2UI does not support modal, dialog, popup, alert, toast, "
@@ -302,6 +304,8 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     image_url_rule_zh = (
         " 不要编造图片 URL。使用用户提供的 HTTPS URL 或已验证的稳定来源；"
         "不要使用猜测的 upload.wikimedia.org thumbnail 路径。"
+        "每个图片 URL 必须是有效可访问的链接，且须来自用户提供或工具返回，"
+        "绝不得凭猜测构造 URL 路径。"
     )
     unsupported_component_rule_zh = (
         " A2UI 不支持弹窗、模态框、dialog、popup、alert、toast、浮层。"
