@@ -12,12 +12,14 @@ export const dropdownRule = component('Dropdown', {
   placement: token('bottomLeft', 'bottomRight', 'topLeft', 'topRight'),
   disabled: bool,
   ariaLabel: text,
+  icon: token('ellipsis'),
 }, {
   allowChildren: true,
   required: ['items'],
   defaults: { trigger: 'click', placement: 'topLeft', disabled: false },
   events: { 'ui.select': object({ key: text }, ['key']) },
   validate: (props) => {
+    if (props.icon && !String(props.ariaLabel ?? '').trim()) return 'icon dropdowns require a non-empty ariaLabel';
     const items = props.items as Array<{ key: string; label: string }>;
     if (items.length === 0) return 'dropdown items must not be empty';
     if (new Set(items.map((item) => item.key)).size !== items.length) return 'dropdown item keys must be unique';

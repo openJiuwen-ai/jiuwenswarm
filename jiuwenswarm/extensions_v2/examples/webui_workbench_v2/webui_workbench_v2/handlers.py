@@ -28,6 +28,7 @@ from .views import (
     SLOTS,
     TASK_INSTANCE,
     TURN_SLOTS,
+    TURN_SELECT_ACTION,
     USER_INSTANCE,
     USER_LOGIN_ACTION,
     USER_SELECT_ACTION,
@@ -239,6 +240,11 @@ class WorkbenchHandlers:
         if not isinstance(data, Mapping) or not isinstance(args, Mapping):
             return "invalid"
         if request.target.slot_id in TURN_SLOTS:
+            if action == TURN_SELECT_ACTION:
+                if (request.target.slot_id != "conversation.turn.footer.actions"
+                        or request.event_type != "ui.select" or data.get("key") not in ("refresh", "details")):
+                    return "invalid"
+                action = f"workbench.turn.{data['key']}"
             turn = state.turn(request.target.instance_key)
             if action == "workbench.turn.refresh":
                 turn.summary = state.summary()

@@ -324,6 +324,18 @@ def test_file_tree_event_data_requires_known_nodes():
     assert not validate_event_data("FileTree", "ui.change", {"key": "src", "expanded": False, "expandedKeys": ["src"]}, props)
 
 
+@pytest.mark.parametrize("file,valid", [
+    ({"name": "x.pdf", "path": "x.pdf", "downloadUrl": "/file-api/download?token=test"}, True),
+    ({"name": "x.txt", "path": "x.txt", "content": ""}, True),
+    ({"name": "x.pdf", "path": "x.pdf"}, False),
+    ({"name": "x.pdf", "path": "x.pdf", "downloadUrl": "javascript:alert(1)"}, False),
+    ({"name": "x.pdf", "path": "../x.pdf", "downloadUrl": "/file-api/download?token=test"}, False),
+    ({"name": "x.pdf", "path": "x.pdf", "downloadUrl": ""}, False),
+])
+def test_file_preview_validates_content_or_download_url(file, valid):
+    assert validate_root(RenderNode("FilePreview", {"file": file})).ok is valid
+
+
 def test_file_preview_accepts_plugin_supplied_content_and_rejects_bad_paths():
     good = RenderNode("FilePreview", {
         "file": {

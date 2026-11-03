@@ -70,6 +70,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Button": {"props": {
         "label": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
         "size": token("sm", "md", "lg"), "disabled": BOOL,
+        "icon": token("ellipsis"), "iconOnly": BOOL,
     }, "events": {"ui.click": NO_DATA}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
@@ -152,7 +153,8 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "props": {
             "file": union(NIL, obj({
                 "name": TEXT, "path": TEXT, "mimeType": TEXT, "size": INTEGER, "content": TEXT,
-            }, "name", "path", "content")),
+                "downloadUrl": TEXT,
+            }, "name", "path")),
             "emptyText": TEXT,
             "status": token("ready", "missing", "unsupported", "too_large", "forbidden", "unavailable", "error"),
         },
@@ -169,6 +171,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
             "placement": token("bottomLeft", "bottomRight", "topLeft", "topRight"),
             "disabled": BOOL,
             "ariaLabel": TEXT,
+            "icon": token("ellipsis"),
         },
         "required": ("items",),
         "children": True,
@@ -323,6 +326,11 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     for key, value in props.items():
         if key not in rule["props"] or not check_value(rule["props"][key], value):
             return f"invalid {component}.{key}"
+    if component == "Button" and props.get("iconOnly"):
+        if not props.get("icon") or not props.get("label", "").strip():
+            return "icon-only buttons require an icon and a non-empty label"
+    if component == "Dropdown" and props.get("icon") and not props.get("ariaLabel", "").strip():
+        return "icon dropdowns require a non-empty ariaLabel"
     if component == "Input" and "maxLength" in props:
         if any(len(props[key].encode("utf-16-le")) // 2 > props["maxLength"]
                for key in ("value", "defaultValue") if key in props):
@@ -391,6 +399,10 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         file = props["file"]
         if file is not None and (not file["name"].strip() or not _workspace_path_ok(file["path"])):
             return "invalid preview file"
+        if file is not None and "content" not in file and "downloadUrl" not in file:
+            return "preview content or URL is required"
+        if file is not None and "downloadUrl" in file and not valid_url(file["downloadUrl"]):
+            return "invalid preview URL"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
     url_fields = {"Avatar": ("url",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}

@@ -1,13 +1,31 @@
 .webui-file-tree {
+  position: relative;
   display: flex;
-  flex: 0 1 clamp(140px, 32%, 220px);
+  flex: 0 1 240px;
   flex-direction: column;
   align-self: stretch;
   min-width: 0;
+  max-width: calc(100% - min(160px, 50%));
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--color-border-default);
   color: var(--color-text-primary);
+}
+
+.webui-file-tree__resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.webui-file-tree__resize:hover,
+.webui-file-tree__resize:focus-visible {
+  background: var(--color-border-default);
 }
 
 .webui-file-tree__header {

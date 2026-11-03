@@ -1,6 +1,6 @@
 # WebUI 组件目录与渲染适配
 
-建档日期：2026-10-30。最近修订：2026-11-02。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+建档日期：2026-10-30。最近修订：2026-11-03。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
 本文件说明组件目录、属性校验器与渲染适配器的职责；整体运行时与页面渲染见
 [F_08 前端渲染](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md)。
 
@@ -50,6 +50,23 @@ flowchart LR
 
 ## 渲染与外观
 
+**轮次操作的图标入口**
+
+Workbench 的轮次操作改用一个省略号菜单，保留刷新和详情两项业务行为。实现限定在 WebUI
+组件及示例包，不修改聊天面板的槽位挂载代码。Button 新增受控的 `icon="ellipsis"` 与
+`iconOnly`；纯图标模式保留 label 作为可访问名称。Dropdown 新增同名 icon 属性，由组件
+直接渲染 Ant Design text 按钮，要求提供 ariaLabel；未声明 icon 的旧触发区继续使用 children。
+展开状态只在组件本地保存，展开时保留浅灰背景，选择菜单项后关闭并派发一次 ui.select。
+
+采用 Dropdown 自带图标入口，避免额外嵌套可聚焦按钮；不向插件开放任意 SVG、style 或
+className。图标名称先限定为本次使用的 ellipsis。组件回归验证图标标签、展开/关闭、
+菜单派发和禁用行为；共享属性用例由前后端共同验证。
+
+2026-11-03 定向验证：`test:webui-components` 通过，新增纯图标 Button、Dropdown
+展开/选择/关闭、禁用、断连和旧子节点触发区的回归；`test:webui-contracts` 通过 107 项。
+Python 的 Workbench 轮次菜单与 WebUI 事件测试通过 252 项，覆盖前后端共享属性用例及轮次隔离。
+尚未在实际聊天页面进行视觉验收。
+
 `createComponentRendererRegistry()` 创建只读注册表。宿主组装时必须保证目录与注册表精确对应，
 缺失适配器时拒绝组装；运行中找不到适配器则由实例错误边界处理，不能显示半棵可交互树。
 
@@ -60,6 +77,21 @@ Card、Divider、Empty、Image 和 Tag 使用对应 Ant Design 组件；Panel �
 Iframe 固定使用 sandbox（脚本、表单、弹窗、模态框与下载白名单），不允许 `allow-same-origin`，并保留 referrerPolicy 限制。
 加载提示为不拦截鼠标的角标，避免子资源未加载完时阻挡文档内的点击；隐藏或断连时释放浏览上下文，重新激活后重新加载。
 安全取舍和兼容限制见 [F_08 的 Iframe 决策](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互)。
+
+FileTree 使用现有实例状态端口保存滚动位置和宽度，解决目录数据 replace 后重挂载导致滚动回到顶部的问题。
+组件右侧分界线支持拖拽和左右方向键，默认宽度为 240px；调整时为相邻预览保留空间，窄容器中自动收缩。
+滚动和宽度只在本地保存，不增加协议字段、插件事件或服务端目录缓存；全局重挂载规则保持不变。
+
+FilePreview 保留文件标题和文本视图，在组件内部用原生 img 加载图片，不添加插件子节点。
+宿主文件服务对 16 KiB 以内的文本继续返回 content；更大文本（最多 1 MiB）、图片和 PDF 返回 downloadUrl。
+URL 指向从已授权文件描述符复制的受管快照，有效期为 10 分钟，并携带可信会话上下文中的用户路由信息。
+原文件替换或删除不改变已签发快照；过期后重新选择文件获取新 URL。
+文本 URL 按有界流读取并校验 UTF-8，HTML 仍逐字展示。
+PDF 复用旧文件预览的原生 iframe 方式，不设置 sandbox，但只允许同源签名下载端点。
+前端先以 `Range: bytes=0-4` 请求确认 application/pdf 响应和 `%PDF-` 文件头，拒绝重定向，
+通过后让 iframe 使用原始下载 URL 加载，保留原生查看器的 Range 能力。
+检查只收集前 5 字节，收到足够数据即取消读取，避免服务端忽略 Range 时下载整份文件；切换文件时中止检查。
+后端也检查 PDF 文件头并沿用受管快照签发。文件头检查不保证 PDF 结构完整，最终展示仍取决于浏览器内建查看器。
 
 Input 使用 Ant Design Input 管理本地编辑值，优先从 value、defaultValue 初始化。
 已声明的 `ui.change` 发送 `{value, isComposing}`；未绑定事件时仍可编辑。
@@ -117,3 +149,14 @@ Dropdown 使用 Ant Design Dropdown 渲染触发区与菜单，触发区由子�
 Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、Slider 数值变更、Tabs 页签切换与内容重建、
 Dropdown 菜单展开与 ui.select、宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。
+
+2026-11-03 文件预览及目录交互定向验证：`test:webui-components` 通过 60 项，
+包含目录展开与预览更新后的滚动恢复、拖拽与键盘调宽、节点状态隔离及移除/清空后的重置；
+后端 `test_session_files.py` 与 `test_webui_events.py` 通过 252 项，Windows 下跳过符号链接和 FIFO 两项。
+此前独立测试页中的图片和大文本显示正常；PDF 在带沙箱的试验分支中为空白，曾暂停 PDF 预览。
+本次改用来源受限的原生 PDF iframe，实际浏览器中的显示效果尚待手工验证，不将此前空白的原因认定为已查明。
+本次 `test:webui-components` 通过 65 项；`test_session_files.py` 通过 21 项，Windows 下跳过符号链接和 FIFO 两项。
+回归覆盖原生 PDF iframe、来源及响应检查、有界读取与切换取消，以及可信用户路由、快照隔离、有效期和失败清理。
+本次修复后 `test:webui-components` 通过 63 项；后端文件服务、Ops、组件规则、受管资源和下载端点
+定向测试通过 333 项，Windows 下跳过符号链接及 FIFO 相关测试 6 项；AgentOS 受管下载分支另通过 5 项。
+尚未完成完整 WebClient 跨进程及 AgentOS 部署联调。

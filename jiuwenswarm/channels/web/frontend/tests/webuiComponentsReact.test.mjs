@@ -62,6 +62,213 @@ const {
 const target = {
   session_id: 'sess-1', slot_id: 'conversation.input.above', package_id: 'pkg.demo', instance_key: 'main',
 };
+
+test('FilePreview embeds images and verified PDFs using the native browser viewer', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return new Response('%PDF-', { status: 206, headers: { 'Content-Type': 'application/pdf' } });
+  };
+  const fileTree = (name, mimeType, downloadUrl) => ({
+    component: 'Panel', props: { title: 'Files' }, children: [{
+      component: 'FilePreview', props: { file: { name, path: name, mimeType, downloadUrl } },
+    }],
+  });
+  const app = await setup(fileTree('pic.png', 'image/png', '/file-api/download?token=image#page'),
+    { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const image = app.container.querySelector('[data-testid="webui-file-preview-image"]');
+    assert.ok(image);
+    assert.equal(image.alt, 'pic.png');
+    const imageUrl = new URL(image.src);
+    assert.equal(imageUrl.searchParams.get('token'), 'image');
+    assert.equal(imageUrl.searchParams.get('inline'), '1');
+    assert.equal(imageUrl.hash, '#page');
+    await act(async () => image.dispatchEvent(new window.Event('error')));
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, 'error');
+
+    assert.equal(requests.length, 0, 'the existing image path does not fetch PDF metadata');
+    await app.replace(fileTree('report.pdf', 'application/pdf', '/file-api/download?token=pdf&user_id=user-a#page=2'));
+    const pdf = app.container.querySelector('[data-testid="webui-file-preview-pdf"]');
+    assert.ok(pdf);
+    assert.equal(pdf.title, 'report.pdf');
+    assert.equal(pdf.hasAttribute('sandbox'), false);
+    assert.equal(pdf.getAttribute('referrerpolicy'), 'no-referrer');
+    const pdfUrl = new URL(pdf.src);
+    assert.equal(pdfUrl.origin, window.location.origin);
+    assert.equal(pdfUrl.pathname, '/file-api/download');
+    assert.equal(pdfUrl.searchParams.get('token'), 'pdf');
+    assert.equal(pdfUrl.searchParams.get('user_id'), 'user-a');
+    assert.equal(pdfUrl.searchParams.get('inline'), '1');
+    assert.equal(pdfUrl.hash, '#page=2');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].options.headers.Range, 'bytes=0-4');
+    assert.equal(requests[0].options.redirect, 'error');
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-title"]').textContent, 'report.pdf');
+
+    await app.replace({ component: 'Panel', props: { title: 'Files' }, children: [{
+      component: 'FilePreview', props: { status: 'forbidden', file: null },
+    }] }, 3);
+    assert.equal(app.container.querySelector('iframe, img'), null);
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, 'forbidden');
+  } finally { await app.close(); globalThis.fetch = originalFetch; }
+});
+
+test('FilePreview rejects arbitrary PDF sources and non-PDF download responses before iframe navigation', async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => { requests += 1; throw new Error('must not fetch arbitrary URLs'); };
+  const app = await setup({ component: 'FilePreview', props: { file: null } });
+  const tree = (downloadUrl) => ({ component: 'FilePreview', props: { file: {
+    name: 'report.pdf', path: 'report.pdf', mimeType: 'application/pdf', downloadUrl,
+  } } });
+  try {
+    let revision = 1;
+    for (const url of ['https://example.com/report.pdf', '/page.html?token=test', '/file-api/download']) {
+      await app.replace(tree(url), ++revision);
+      assert.equal(app.container.querySelector('iframe'), null);
+      assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, 'forbidden');
+    }
+    assert.equal(requests, 0);
+    for (const [response, expected] of [
+      [new Response('<html>page</html>', { headers: { 'Content-Type': 'text/html' } }), 'unsupported'],
+      [new Response('%PDF-', { headers: { 'Content-Type': 'text/html' } }), 'unsupported'],
+      [new Response('<html>', { headers: { 'Content-Type': 'application/pdf' } }), 'unsupported'],
+      [new Response('%PDF', { headers: { 'Content-Type': 'application/pdf' } }), 'unsupported'],
+      [new Response('missing', { status: 404 }), 'missing'],
+      [new Response('denied', { status: 403 }), 'forbidden'],
+      [new Response('failed', { status: 500 }), 'error'],
+    ]) {
+      globalThis.fetch = async () => response;
+      await app.replace(tree(`/file-api/download?token=${++revision}`), revision);
+      assert.equal(app.container.querySelector('iframe'), null);
+      assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, expected);
+    }
+  } finally { await app.close(); globalThis.fetch = originalFetch; }
+});
+
+test('FilePreview bounds the PDF probe and cancels a late probe when the selection changes', async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  let reads = 0;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      reads += 1;
+      controller.enqueue(new TextEncoder().encode(reads === 1 ? '%P' : 'DF-more PDF bytes'));
+    },
+    cancel() { cancelled = true; },
+  }), { headers: { 'Content-Type': 'application/pdf; charset=binary' } });
+  const tree = (token) => ({ component: 'FilePreview', props: { file: {
+    name: 'report.pdf', path: 'report.pdf', mimeType: 'application/pdf', downloadUrl: `/file-api/download?token=${token}`,
+  } } });
+  const app = await setup(tree('first'));
+  try {
+    assert.ok(app.container.querySelector('iframe'));
+    assert.ok(cancelled, 'stop the probe even when the server returns a full 200 response');
+    assert.ok(reads <= 3, 'consume only the chunks needed for the PDF signature');
+    let complete;
+    let signal;
+    globalThis.fetch = (_url, options) => {
+      signal = options.signal;
+      return new Promise((resolve) => { complete = resolve; });
+    };
+    await app.replace(tree('pending'));
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, 'loading');
+    await app.replace({ component: 'FilePreview', props: { file: {
+      name: 'text.txt', path: 'text.txt', content: 'current selection',
+    } } }, 3);
+    assert.equal(signal.aborted, true);
+    await act(async () => complete(new Response('%PDF-', { headers: { 'Content-Type': 'application/pdf' } })));
+    assert.equal(app.container.querySelector('iframe'), null);
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-text"]').textContent, 'current selection');
+  } finally { await app.close(); globalThis.fetch = originalFetch; }
+});
+
+test('FilePreview loads larger UTF-8 text while preserving inline text and literal HTML', async () => {
+  const originalFetch = globalThis.fetch;
+  const text = '较大文本\n'.repeat(5000);
+  let requests = 0;
+  globalThis.fetch = async () => { requests += 1; return new Response('\uFEFF' + text); };
+  const app = await setup({ component: 'FilePreview', props: { file: {
+    name: 'large.txt', path: 'large.txt', mimeType: 'text/plain', size: new TextEncoder().encode(text).length,
+    downloadUrl: '/file-api/download?token=text',
+  } } });
+  try {
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-text"]').textContent, text);
+    assert.equal(requests, 1);
+    await app.replace({ component: 'FilePreview', props: { file: {
+      name: 'large.txt', path: 'large.txt', mimeType: 'text/plain', content: 'inline replacement',
+      downloadUrl: '/file-api/download?token=text',
+    } } });
+    assert.equal(requests, 1);
+    let complete;
+    globalThis.fetch = async () => {
+      requests += 1;
+      return new Promise((resolve) => { complete = resolve; });
+    };
+    await app.replace({ component: 'FilePreview', props: { file: {
+      name: 'large.txt', path: 'large.txt', mimeType: 'text/plain', downloadUrl: '/file-api/download?token=text',
+    } } }, 3);
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, 'loading');
+    await act(async () => complete(new Response('refreshed text')));
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-text"]').textContent, 'refreshed text');
+    await app.replace({ component: 'FilePreview', props: { file: {
+      name: 'page.html', path: 'page.html', content: '<script>alert(1)</script>',
+      downloadUrl: '/file-api/download?token=unused',
+    } } }, 4);
+    assert.equal(requests, 2);
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-text"]').textContent, '<script>alert(1)</script>');
+    assert.equal(app.container.querySelector('script, iframe'), null);
+  } finally { await app.close(); globalThis.fetch = originalFetch; }
+});
+
+test('FilePreview bounds fetched text and maps failed requests to existing notices', async () => {
+  const originalFetch = globalThis.fetch;
+  const app = await setup({ component: 'FilePreview', props: { file: null } });
+  try {
+    let revision = 1;
+    for (const [response, expected] of [
+      [new Response('missing', { status: 404 }), 'missing'],
+      [new Response('denied', { status: 403 }), 'forbidden'],
+      [new Response('failed', { status: 500 }), 'error'],
+      [new Response(new Uint8Array(1024 * 1024 + 1)), 'too_large'],
+      [new Response(new Uint8Array([255])), 'unsupported'],
+      [new Response('binary\0data'), 'unsupported'],
+    ]) {
+      globalThis.fetch = async () => response;
+      revision += 1;
+      await app.replace({ component: 'FilePreview', props: { file: {
+        name: 'large.txt', path: 'large.txt', mimeType: 'text/plain',
+        downloadUrl: `/file-api/download?token=${revision}`,
+      } } }, revision);
+      assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, expected);
+    }
+  } finally { await app.close(); globalThis.fetch = originalFetch; }
+});
+
+test('FilePreview aborts pending text on selection changes and ignores a late response', async () => {
+  const originalFetch = globalThis.fetch;
+  let complete;
+  let signal;
+  globalThis.fetch = (_url, options) => {
+    signal = options.signal;
+    return new Promise((resolve) => { complete = resolve; });
+  };
+  const app = await setup({ component: 'FilePreview', props: { file: {
+    name: 'slow.txt', path: 'slow.txt', mimeType: 'text/plain', downloadUrl: '/file-api/download?token=slow',
+  } } });
+  try {
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-state"]').dataset.variant, 'loading');
+    await app.replace({ component: 'FilePreview', props: { file: {
+      name: 'current.txt', path: 'current.txt', content: 'current selection',
+    } } });
+    assert.equal(signal.aborted, true);
+    await act(async () => complete(new Response('stale selection')));
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-text"]').textContent, 'current selection');
+  } finally { await app.close(); globalThis.fetch = originalFetch; }
+});
+
 const frame = (root, revision = 1, scope = target) => ({
   target: scope, schema_version: 1, revision, mode: 'replace', root,
 });
@@ -153,6 +360,86 @@ test('theme initialization preserves cached instances and mounts each host once'
   } finally {
     await act(async () => root.unmount()); runtime.dispose(); container.remove();
   }
+});
+
+test('icon-only Button keeps its accessible label and node event without visible text', async () => {
+  const tree = { component: 'Button', props: {
+    label: '本轮操作 / Round actions', icon: 'ellipsis', iconOnly: true, variant: 'ghost',
+  }, events };
+  const app = await setup(tree);
+  try {
+    const button = app.container.querySelector('[data-testid="webui-button"]');
+    assert.equal(button.textContent, '');
+    assert.ok(button.querySelector('svg'));
+    assert.equal(button.getAttribute('aria-label'), tree.props.label);
+    assert.equal(button.title, tree.props.label);
+    assert.match(button.className, /ant-btn-text/);
+    assert.match(button.className, /ant-btn-icon-only/);
+    await click(button);
+    assert.equal(app.business().length, 1);
+    assert.equal(app.business()[0].payload.action_id, 'confirm');
+    await app.replace({ ...tree, props: { ...tree.props, iconOnly: false } });
+    assert.equal(app.container.querySelector('button').textContent, tree.props.label);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('button').disabled, true);
+  } finally { await app.close(); }
+});
+
+test('icon Dropdown opens locally, closes on selection and blocks disabled actions', async () => {
+  const tree = { component: 'Dropdown', props: {
+    icon: 'ellipsis', ariaLabel: '本轮操作 / Round actions', placement: 'topRight',
+    items: [{ key: 'refresh', label: '刷新本轮' }, { key: 'details', label: '本轮详情', disabled: true }],
+  }, events: { 'ui.select': { id: 'workbench.turn.select' } } };
+  const app = await setup(tree);
+  const trigger = () => app.container.querySelector('[data-testid="webui-dropdown-trigger"]');
+  const item = (key) => document.querySelector(`[data-testid="webui-dropdown-item"][data-variant="${key}"]`);
+  try {
+    assert.equal(trigger().tagName, 'BUTTON');
+    assert.equal(trigger().textContent, '');
+    assert.ok(trigger().querySelector('svg'));
+    assert.equal(trigger().getAttribute('aria-label'), tree.props.ariaLabel);
+    await click(trigger());
+    assert.equal(trigger().getAttribute('aria-expanded'), 'true');
+    assert.equal(app.business().length, 0);
+    await click(item('details'));
+    assert.equal(app.business().length, 0);
+    await click(item('refresh'));
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false');
+    assert.equal(app.business().length, 1);
+    assert.equal(app.business()[0].event, 'ui.select');
+    assert.deepEqual(app.business()[0].payload.data, { key: 'refresh' });
+    assert.equal(app.business()[0].payload.action_id, 'workbench.turn.select');
+    await click(trigger());
+    await pressKey(trigger(), 'Escape', 27);
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false');
+    await click(trigger());
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(trigger().disabled, true);
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false');
+    await act(async () => app.transport.setConnectionState('connected'));
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false');
+    await app.replace({ ...tree, props: { ...tree.props, disabled: true } });
+    await click(trigger());
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false');
+    assert.equal(app.business().length, 1);
+  } finally { await app.close(); }
+});
+
+test('Dropdown keeps child triggers and supports keyboard activation without business events', async () => {
+  const app = await setup({ component: 'Dropdown', props: {
+    ariaLabel: 'User menu', items: [{ key: 'profile', label: 'Profile' }],
+  }, children: [{ component: 'Text', props: { value: 'User' } }] });
+  try {
+    const trigger = app.container.querySelector('[data-testid="webui-dropdown-trigger"]');
+    assert.equal(trigger.tagName, 'SPAN');
+    assert.equal(trigger.textContent, 'User');
+    await pressKey(trigger, 'Enter', 13);
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+    assert.equal(app.business().length, 0);
+    await click(document.querySelector('[data-testid="webui-dropdown-item"][data-variant="profile"]'));
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(app.business().length, 0);
+  } finally { await app.close(); }
 });
 
 test('disabled and unbound buttons never dispatch actions', async () => {
@@ -1013,6 +1300,108 @@ test('WebUIEntryHost skips mounting and ready after an accepted first visit', as
   }
 });
 
+
+test('FileTree retains scrolling across directory expansion and preview data frames', async () => {
+  const directory = (loaded) => ({
+    key: 'dir', title: 'Directory', path: 'dir', kind: 'directory', loaded,
+    ...(loaded ? { children: [{ key: 'child', title: 'Child', path: 'dir/child.txt', kind: 'file' }] } : {}),
+  });
+  const tree = (loaded, content = null) => ({
+    component: 'Panel', props: { title: 'Files' }, children: [{
+      component: 'Box', props: { direction: 'row' }, children: [
+        { component: 'FileTree', props: { treeData: [directory(loaded)] }, events: {
+          'ui.change': { id: 'files.expand' }, 'ui.select': { id: 'files.select' },
+        } },
+        { component: 'FilePreview', props: { file: content === null ? null : {
+          name: 'child.txt', path: 'dir/child.txt', content,
+        } } },
+      ],
+    }],
+  });
+  const app = await setup(tree(false), { ...target, slot_id: 'conversation.panel.right' });
+  const body = () => app.container.querySelector('[data-testid="webui-file-tree-body"]');
+  try {
+    const original = body();
+    original.scrollTop = 320;
+    await act(async () => original.dispatchEvent(new window.Event('scroll')));
+    await click(app.container.querySelector('[data-variant="dir"][data-testid="webui-file-tree-item"]'));
+    assert.equal(body().scrollTop, 320);
+    assert.deepEqual(app.business()[0].payload.data.expandedKeys, ['dir']);
+    await app.replace(tree(true));
+    assert.notEqual(body(), original, 'the existing frame remount behavior is unchanged');
+    assert.equal(body().scrollTop, 320);
+    await click(app.container.querySelector('[data-variant="child"][data-testid="webui-file-tree-item"]'));
+    await app.replace(tree(true, 'selected child'), 3);
+    assert.equal(body().scrollTop, 320);
+    assert.equal(app.container.querySelector('[data-testid="webui-file-preview-text"]').textContent, 'selected child');
+    assert.ok(app.container.querySelector('.ant-tree-node-selected [data-variant="child"]'));
+  } finally { await app.close(); }
+});
+
+test('FileTree resizes with pointer and keyboard, retains width on replace and resets on clear', async () => {
+  const tree = { component: 'FileTree', props: { treeData: [
+    { key: 'file', title: 'File', path: 'file.txt', kind: 'file' },
+  ] } };
+  const app = await setup(tree);
+  const section = () => app.container.querySelector('[data-testid="webui-file-tree"]');
+  const separator = () => app.container.querySelector('[data-testid="webui-file-tree-resize"]');
+  const pointer = async (type, x, pointerId = 7) => {
+    const event = new window.MouseEvent(type, { bubbles: true, button: 0, clientX: x });
+    Object.defineProperty(event, 'pointerId', { value: pointerId });
+    await act(async () => separator().dispatchEvent(event));
+  };
+  try {
+    section().parentElement.getBoundingClientRect = () => ({ width: 600 });
+    section().getBoundingClientRect = () => ({ width: parseFloat(section().style.flexBasis) });
+    let capture = null;
+    separator().setPointerCapture = (id) => { capture = id; };
+    separator().releasePointerCapture = (id) => { assert.equal(capture, id); capture = null; };
+    await pointer('pointerdown', 240);
+    assert.equal(capture, 7);
+    assert.equal(document.activeElement, separator());
+    await pointer('pointermove', 340, 8);
+    assert.equal(section().style.flexBasis, '240px');
+    await pointer('pointermove', 340);
+    assert.equal(section().style.flexBasis, '340px');
+    await pointer('pointermove', 2000);
+    assert.equal(section().style.flexBasis, '440px', 'the preview keeps 160px');
+    await pointer('pointermove', -2000);
+    assert.equal(section().style.flexBasis, '140px');
+    await pointer('pointerup', -2000);
+    assert.equal(capture, null);
+    await pointer('pointermove', 400);
+    assert.equal(section().style.flexBasis, '140px');
+    await pressKey(separator(), 'ArrowRight', 39);
+    assert.equal(section().style.flexBasis, '164px');
+    assert.equal(separator().getAttribute('aria-valuenow'), '164');
+    await app.replace(tree);
+    assert.equal(section().style.flexBasis, '164px');
+    assert.equal(app.business().length, 0, 'resizing sends no plugin actions');
+    await act(async () => app.transport.injectClearFrame({ target, revision: 3, reason: 'completed' }));
+    await app.replace(tree, 4);
+    assert.equal(section().style.flexBasis, '240px');
+    assert.equal(app.container.querySelector('[data-testid="webui-file-tree-body"]').scrollTop, 0);
+  } finally { await app.close(); }
+});
+
+test('FileTree viewport state is isolated by node and discarded when the node is removed', async () => {
+  const fileTree = { component: 'FileTree', props: { treeData: [
+    { key: 'file', title: 'File', path: 'file.txt', kind: 'file' },
+  ] } };
+  const tree = { component: 'Box', children: [fileTree, fileTree] };
+  const app = await setup(tree);
+  const bodies = () => app.container.querySelectorAll('[data-testid="webui-file-tree-body"]');
+  try {
+    bodies()[0].scrollTop = 260;
+    await act(async () => bodies()[0].dispatchEvent(new window.Event('scroll')));
+    await app.replace(tree);
+    assert.equal(bodies()[0].scrollTop, 260);
+    assert.equal(bodies()[1].scrollTop, 0);
+    await app.replace({ component: 'Box', children: [{ component: 'Text', props: { value: 'No files' } }, fileTree] }, 3);
+    await app.replace(tree, 4);
+    assert.equal(bodies()[0].scrollTop, 0);
+  } finally { await app.close(); }
+});
 
 for (const operation of ['expand', 'select']) {
   test(`FileTree rejected ${operation} preserves independent state updates`, async () => {
