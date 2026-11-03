@@ -132,6 +132,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
         finally:
             if conn is not None:
                 await conn.close()
+            await server.close()
     if fatal is not None:
         raise fatal
 
@@ -249,7 +250,9 @@ async def _close_worker(
     runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=remaining(load_timeout))
     if runtime is not None:
         await _shutdown_runtime(runtime, timeout=remaining(runtime_timeout))
-    close = getattr(server, "close", None)
+    # Python 3.12+ Server.wait_closed waits for accepted transports too.
+    # Keep the session open for shutdown.done, then fully close in serve_worker.
+    close = getattr(server, "stop_accepting", None) or getattr(server, "close", None)
     if callable(close):
         await close()
 
