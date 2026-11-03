@@ -305,8 +305,8 @@
 ### EXTV2-18 激活实例首次输入前初始化
 
 - **目标与范围：** session.start 按 Worker 内包激活实例最多一次通知尝试；原生 chat.send unary/stream 在实际模型/目录绑定后、Agent 输入前等待门，不按每轮或重连重复。
-- **必要前置：** 既有 Bus/Registry/Runtime 激活事实、共享 Ops、原生输入边界；配套 Core handler_ids 公共候选筛选，不依赖 PR04 !83 或 PR05 !90 的功能与提交。
-- **责任与契约：** [F_21](../features/F_21_session-start.md) / [S_09](../specs/S_09_session-start.md)；事件/CORE/Manager 门归 Server，Core 只负责通用筛选。
+- **必要前置：** 既有 Bus/Registry/Runtime 激活事实、共享 Ops、原生输入边界；宿主在注册 `session.start` Handler 时绑定包匹配条件，不依赖 Core 调用级 handler_ids 或 PR04 !83、PR05 !90 的功能与提交。
+- **责任与契约：** [F_21](../features/F_21_session-start.md) / [S_09](../specs/S_09_session-start.md)；事件/CORE/Manager 门、注册期包绑定归 Server，Core 保持通用 matcher。
 - **验收：** 多包/新包/重载/卸载重装、并发首输入、失败/取消/重入、防伪、原始 Ops 上下文、原生输入前调用顺序、实际 ZIP 与真实 Worker/模型链路。
 - **范围：** 无新 Ops、Team/Harness 入口、额外 Agent 输入或前端；保留现有进度编号，新增 EXTV2-18 对应 Server PR06。
 
@@ -341,11 +341,11 @@
 | 提交顺序 | 原 PR | 交付内容 |
 | --- | --- | --- |
 | 1 | !92 | cwd/root/model/repo 的字段说明与用户接入文档 |
-| 2 | !91 | session.start、激活实例初始化门和 Core handler_ids 消费方 |
+| 2 | !91 | session.start 与激活实例初始化门；旧版曾消费 Core handler_ids，2026-11-03 改为宿主注册期包匹配 |
 | 3 | !93 | session.end 与主会话运行结束通知（2026-11-02 调整） |
 | 4 | !95 | session.attach/session.detach、关联表与固定 foreground 观察者 |
 
-**整个 Server 合并 PR 的硬前置是 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)，先合入 Core，再合入 Server。** end/attach/detach 单项本身不需要 handler_ids；合并交付并不取消 start 的跨仓依赖。Core !110 同步合并最新目标分支，保留已合入的 EV-06/F_06 包信息能力，待合入的限定派发文档改为 EV-07/F_07。
+2026-10-31 的合并计划曾将 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) 的 handler_ids 作为 Server 前置。2026-11-03 改用宿主注册期包匹配后，这一调用级筛选前置已撤回；仍需 Core 已有的 PackageMetadata、Registry 发布和普通 matcher 能力。旧版合并顺序与验证记录保留为历史，不代表当前部署前置。
 
 本次 Server 1744 项通过、3 项跳过；Core 587 项通过、1 项跳过。原生输入初始化等待、固定删除/foreground 观察者共存、历史与用量 Ops、模型上下文、Runtime 创建/切换/删除及 Gateway 转发在回归范围内。Gateway 断连清理的 1 项失败在未修改目标分支和本分支上独立复现，最终显式排除，未计入通过；证据与边界见 F_21 / F_22 / F_23 / F_24 第 6 节及本地 consolidate-server-prs-20261031 目录。历史真实模型证据保持原日期，本次未重跑。
 
@@ -551,8 +551,12 @@ flowchart LR
 | EXTV2-13 会话工作区查询 | 完成 | 刘瑜 | [!71](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/71) | V2 115 项、原生用量 3 项、无项目工作区 62 项测试通过；独立进程用户包调用链验证通过，见 F_13；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
 | EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
 | EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
-| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_23（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径；2026-10-30 合并目标分支冲突后，513 项定向回归及 1 项同 Handler 历史/统计 Ops 共存用例通过，1 项符号链接环境跳过，未重跑真实模型，见 F_16 第 6 节 | 2026-10-30 |
-| EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_21 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
+| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_18（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径；2026-10-30 合并目标分支冲突后，513 项定向回归及 1 项同 Handler 历史/统计 Ops 共存用例通过，1 项符号链接环境跳过，未重跑真实模型，见 F_16 第 6 节 | 2026-10-30 |
+| EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_17 第 6.2 节 / S_07；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
+| EXTV2-18 激活实例首次输入前初始化 | 本地调整已验证 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91)）；Core !110 调用级筛选撤回 | 2026-11-03 目标分支更新后相关回归 Core 709 passed/1 skipped、Swarm 1458 passed/5 skipped/2 deselected；目标原有 store 测试失败另记 F_21；真实子 Worker 两轮模型输入 A/B 隔离通过 | 2026-11-03 |
+| EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 2026-11-02 运行结束修订：1362 项回归通过，含 29 项定向；真实两个 Worker / 3 轮模型对话、用户资源收尾、历史保留、同 ID 恢复后再次结束、start 粒度保持和进程清理通过；见 F_22 / S_10 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
+| EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_23 / S_11 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
+| EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_24 / S_12 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见本计划 EXTV2-22 历史验证记录 / S_08 | 2026-10-31 |
 | EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91)） / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 2026-11-02 运行结束修订：1362 项回归通过，含 29 项定向；真实两个 Worker / 3 轮模型对话、用户资源收尾、历史保留、同 ID 恢复后再次结束、start 粒度保持和进程清理通过；见 F_24 / S_13 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
