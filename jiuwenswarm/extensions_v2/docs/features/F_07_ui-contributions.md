@@ -155,6 +155,8 @@ sequenceDiagram
 全局槽位挂载时不要求聊天会话。Gateway 从实际 WebSocket 取得连接 ID，并通过 E2A 的 `metadata.ws_id`
 交给 AgentServer；浏览器提交的目标不能指定投递连接。前端的全局宿主可以在没有当前聊天会话时挂载并上报 `ui.ready`。
 
+会话级上行在触发事件前，WebUIRuntime 从宿主的工作区查询取得 `cwd` 与 `project_root`，分别写入 `SessionContext.cwd` 和 `metadata.project_root`；查询失败不阻断事件。插件应以 `cwd` 为工作目录，缺失时再回退 `project_root`。
+
 ### 4.2 上行交互
 
 组件使用 `events` 声明事件及其动作。新组件事件的数据规则由

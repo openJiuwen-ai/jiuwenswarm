@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "probe": {
+      "client_type": "stdio",
+      "server_path": "stdio://probe",
+      "params": {
+        "command": "python",
+        "args": [
+          "-c",
+          "from mcp.server.fastmcp import FastMCP\n\nserver = FastMCP('mcp-probe')\n\n@server.tool()\ndef echo(text: str) -> str:\n    \"\"\"Echo the given text.\"\"\"\n    return 'echo: ' + text\n\n@server.tool()\ndef add(a: int, b: int) -> int:\n    \"\"\"Add two integers.\"\"\"\n    return a + b\n\n@server.tool()\ndef server_info() -> dict:\n    \"\"\"Report the server process.\"\"\"\n    import os, sys\n    return {'name': 'mcp-probe', 'pid': os.getpid(), 'python': sys.version.split()[0]}\n\nserver.run(transport='stdio')\n"
+        ]
+      }
+    }
+  }
+}

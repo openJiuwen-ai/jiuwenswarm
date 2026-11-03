@@ -1,0 +1,21 @@
+schemaVersion: 1
+package:
+  id: example.mcp-probe
+  version: 1.0.0
+  displayName: MCP Probe
+  description: Real MCP server probe over ops.mcp.* with connect, tool refresh and call actions.
+extensions:
+  - id: mcp-probe
+    runtime: backend
+    module: mcp_probe/extension.py
+ui:
+  apiVersion: 1
+  items:
+    - type: web.slot.contribution
+      id: mcp-probe.panel
+      slot: conversation.panel.right
+      order: 40
+      panel:
+        title: MCP Probe
+      renderer:
+        kind: webui-tree
