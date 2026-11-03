@@ -160,15 +160,17 @@ def test_conflicting_author_and_legacy_owner_do_not_lose_either_identity(sync_mo
     assert doc.read_bytes() == before
 
 
-def test_module_groups_count_cross_module_documents_once_globally(sync_module: ModuleType, tmp_path: Path) -> None:
-    """List shared documents under each module without inflating the global count."""
+def test_module_groups_list_shared_documents_without_global_totals(sync_module: ModuleType, tmp_path: Path) -> None:
+    """Retain module navigation and shared entries without document counts."""
     write_doc(tmp_path, "features/F_01_shared.md", "---\nmodules: [runtime, gateway, runtime]\nfiles: [src/shared.py]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# Shared\n")
     write_doc(tmp_path, "features/F_02_runtime.md", "---\nmodules: [runtime]\n---\n\n# Runtime\n")
     sync_module.synchronize(tmp_path, sync_module.GitIdentity("writer", "writer@example.invalid"))
     text = (tmp_path / "features/INDEX.md").read_text(encoding="utf-8")
-    assert "共 2 篇文档" in text
-    assert "| [gateway](#module-1) | 1 |" in text
-    assert "| [runtime](#module-2) | 2 |" in text
+    assert "共 2 篇文档" not in text
+    assert "总数" not in text
+    assert "| [gateway](#module-1) |" in text
+    assert "文档数" not in text
+    assert "| [runtime](#module-2) |" in text
     assert text.count("[F_01_shared]") == 2
     assert text.count("[F_02_runtime]") == 1
     assert text.count("src/shared.py") == 2
@@ -194,3 +196,9 @@ def test_grouping_keeps_author_and_design_links(sync_module: ModuleType, tmp_pat
     assert "@original" in text
     assert "../designs/proposals/D-20261026-1200-topic/design.md" in text
     assert metadata(doc)["author"] == "@original"
+    design_index = (tmp_path / "designs/INDEX.md").read_text(encoding="utf-8")
+    assert "> 开发前" not in design_index
+    assert "全局统计" not in design_index
+    assert "设计数" not in design_index
+    assert "| [runtime](#module-1) |" in design_index
+    assert "[D-20261026-1200-topic]" in design_index
