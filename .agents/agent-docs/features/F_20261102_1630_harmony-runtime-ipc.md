@@ -26,6 +26,7 @@ files:
   - jiuwenswarm/server/worker/gateway_bridge.py
   - tests/unit_tests/agentserver/test_front_loopback_ipc.py
   - tests/unit_tests/agentserver/fixtures/loopback_front.py
+  - tests/unit_tests/agentserver/fixtures/loopback_reaper.py
 designs:
   - D-20261102-1502-harmony-runtime-ipc
 design_note: 用户确认方案并要求分别基于主仓 develop 和 0.2.8 适配；Windows 保留原实现，仅鸿蒙默认采用新路径。
@@ -103,6 +104,19 @@ wheel 探针验证导入来自隔离安装目录而非 editable 源码；测试�
 - 两版本按修正后的源码重新构建 wheel 并隔离安装；Windows 默认 Named Pipe、模拟鸿蒙默认 loopback 的请求均成功，四个 Worker 均以 0 退出且原生 PID 已消失。
 
 本轮证据位于 `D:\work_space\.codex-temp\harmony-ipc-verification-20261103\platform-gate`；前一节 2026-11-02 的结果保留为当时证据，不替代此轮结果。
+
+## 2026-11-03 CodeCheck 与 Linux UT 修复
+
+用户提供的 CodeCheck 导出有七项：三个 Protocol 单行方法定义、一处长行、两处复杂布尔条件以及一处同时捕获父类 OSError 和子类 TimeoutError。Protocol 改为多行方法体；参数校验分为具名校验项，认证分为 listener 准入状态与凭证匹配；保留严格整数、有限正超时、token 常量时间比较、generation/code identity/data scope 绑定和首次认证独占。删除重复的 TimeoutError 捕获并拆分错误消息长行，没有屏蔽规则。
+
+CI 附件对应 PR !9452 的 `9aebee9e4`，Linux CPython 3.11.5，全量结果为 20794 passed、127 skipped、1 failed，另有 22 subtests passed。唯一失败为 `test_killing_real_front_exits_attached_worker` 的 finally 中 psutil 等待超时，底层 waitpid 报 ChildProcessError：被等待者不是 pytest 的直接子进程。报告没有记录该 PID 的现场状态，不能把僵尸状态当作已观察事实。
+
+原测试在 Front 强退后依赖容器 PID 1 回收孤儿 Worker。Linux 测试现在用独立 `loopback_reaper.py` 进程设置 child subreaper、启动真实 Front；Front 被测试杀死后，孤儿 Worker 由该测试进程收养并执行 waitpid 回收。正常路径不向 Worker 发终止信号，同时保留原生 PID 消失断言，增加真实 Worker 退出码为 0 的断言；不放宽超时、不接受仍存在的 zombie 为通过，不修改 pytest 主进程的 subreaper 状态。Windows/macOS 的测试启动方式及产品进程逻辑不变。
+
+补充 transport 错误、空 token、布尔 generation 的认证拒绝用例，新 IPC 专项为 93 项。
+本地 Windows CPython 3.11.15：develop 八文件 296 passed、4 skipped；0.2.8 四文件 172 passed、1 skipped。共享修复分别应用于两版本，保留各自 v2/v1 和平台门禁。
+
+未执行本地格式化或静态检查；本机没有可用 Linux/WSL。Linux 新回收器及远程 CodeCheck 的通过状态须由新 CI 结果确认，本地 Windows 通过不替代它们。原始附件、提取日志与本轮结果保存在本地任务证据目录 `D:\work_space\.codex-temp\harmony-ipc-codecheck-ut-20261103`。
 
 ## 覆盖、检视与限制
 
