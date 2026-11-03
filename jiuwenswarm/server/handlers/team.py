@@ -43,6 +43,55 @@ from jiuwenswarm.server.wire_truncate import (
 logger = logging.getLogger(__name__)
 
 
+def _cleanup_orphaned_generated_team(
+    *,
+    binding_store: Any,
+    team_name: str,
+) -> bool:
+    """Delete a session-generated team only when no sessions remain bound.
+
+    Returns True when the binding record and entity directory were removed.
+    """
+    logical = str(team_name or "").strip()
+    if not logical:
+        return False
+    try:
+        remaining = binding_store.get(logical)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] orphan generated lookup failed: team=%s error=%s",
+            logical,
+            exc,
+        )
+        return False
+    if remaining is not None and remaining.session_ids:
+        return False
+    deleted = True
+    try:
+        binding_store.delete(logical)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] orphan generated binding delete failed: "
+            "team=%s error=%s",
+            logical,
+            exc,
+        )
+        deleted = False
+    try:
+        from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
+
+        get_team_entity_store().delete_team_directory(logical)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[AgentWebSocketServer] orphan generated entity delete failed: "
+            "team=%s error=%s",
+            logical,
+            exc,
+        )
+        deleted = False
+    return deleted
+
+
 def _team_binding_payload(binding: Any) -> dict[str, Any]:
     if hasattr(binding, "to_dict"):
         return binding.to_dict()
@@ -455,21 +504,55 @@ async def handle_team_binding_generate(ctx: RequestContext) -> None:
     await ctx.sink.send_wire(wire)
 
 
+def _resolve_session_dir_for_bind(
+    request: Any,
+    *,
+    session_id: str,
+    sessions_root: str | Path | None,
+):
+    """Resolve session directory for bind; supports legacy root fallback."""
+    from jiuwenswarm.server.runtime.session.session_metadata import resolve_session_subdir
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError
+
+    session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
+    if session_dir is None:
+        raise TeamBindingStoreError("invalid session_id", code="BAD_REQUEST")
+    has_tenant_scope = bool(
+        str(request.service_id or "").strip()
+        or str(request.agent_id or "").strip()
+        or request.channel_id == "officeclaw"
+    )
+    legacy_session_exists = False
+    if not has_tenant_scope and not session_dir.is_dir():
+        legacy_session_dir = resolve_session_subdir(
+            session_id,
+            sessions_root=get_agent_sessions_dir(),
+        )
+        legacy_session_exists = bool(
+            legacy_session_dir is not None and legacy_session_dir.is_dir()
+        )
+    if not session_dir.is_dir() and not legacy_session_exists:
+        raise TeamBindingStoreError("session not found", code="NOT_FOUND")
+    return session_dir
+
+
 async def handle_team_session_bind(ctx: RequestContext) -> None:
     request = ctx.request
     from jiuwenswarm.agents.harness.team import TeamManager, get_team_template_snapshot
     from jiuwenswarm.agents.harness.team.config_loader import TeamTemplateNotFoundError
     from jiuwenswarm.server.runtime.session.session_metadata import (
         capture_session_team_binding_artifacts,
-        resolve_session_subdir,
+        get_session_metadata,
         restore_session_team_binding_artifacts,
         update_session_metadata,
     )
+    from jiuwenswarm.server.runtime.swarm_skill_session import reject_deprecated_dynamic_entry
     from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError, get_team_binding_store
     from jiuwenswarm.server.runtime.team_entity_store import (
         TeamEntityStoreError,
         ensure_team_entity_for_binding,
         get_team_entity_store,
+        normalize_team_entity_snapshot,
     )
 
     params = request.params if isinstance(request.params, dict) else {}
@@ -479,29 +562,14 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
     try:
         if not session_id:
             raise TeamBindingStoreError("session_id is required", code="BAD_REQUEST")
+        reject_deprecated_dynamic_entry(params)
+        if not team_name:
+            raise TeamBindingStoreError("team_name is required", code="BAD_REQUEST")
+
         sessions_root = _sessions_dir_for_request(request)
-        session_dir = resolve_session_subdir(
-            session_id,
-            sessions_root=sessions_root,
+        _resolve_session_dir_for_bind(
+            request, session_id=session_id, sessions_root=sessions_root
         )
-        if session_dir is None:
-            raise TeamBindingStoreError("invalid session_id", code="BAD_REQUEST")
-        has_tenant_scope = bool(
-            str(request.service_id or "").strip()
-            or str(request.agent_id or "").strip()
-            or request.channel_id == "officeclaw"
-        )
-        legacy_session_exists = False
-        if not has_tenant_scope and not session_dir.is_dir():
-            legacy_session_dir = resolve_session_subdir(
-                session_id,
-                sessions_root=get_agent_sessions_dir(),
-            )
-            legacy_session_exists = bool(
-                legacy_session_dir is not None and legacy_session_dir.is_dir()
-            )
-        if not session_dir.is_dir() and not legacy_session_exists:
-            raise TeamBindingStoreError("session not found", code="NOT_FOUND")
         async with _session_team_binding_lock(session_id):
             binding_store = get_team_binding_store()
             existing_binding = binding_store.get(team_name)
@@ -514,7 +582,6 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
             )
             if entity is None:
                 raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
-            from jiuwenswarm.server.runtime.team_entity_store import normalize_team_entity_snapshot
 
             try:
                 raw_snapshot = get_team_template_snapshot(
@@ -528,6 +595,17 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                 session_id,
                 sessions_root=sessions_root,
             )
+            prior_metadata = get_session_metadata(
+                session_id,
+                cache_bust=True,
+                sessions_root=sessions_root,
+            )
+            prior_team_name = str(prior_metadata.get("team_name") or "").strip()
+            from jiuwenswarm.server.runtime.swarm_skill_session import (
+                is_session_generated_team,
+            )
+
+            prior_was_generated = is_session_generated_team(prior_metadata)
             try:
                 update_session_metadata(
                     session_id=session_id,
@@ -540,6 +618,12 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                     ),
                     team_template_id=existing_binding.template_id,
                     team_template_snapshot=session_snapshot,
+                    temporary_team_session=False,
+                    team_lifecycle="",
+                    team_origin="",
+                    team_entry="",
+                    skill_id="",
+                    team_cold_reopen_required=False,
                     sync=True,
                     sessions_root=sessions_root,
                 )
@@ -547,6 +631,17 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                     team_name=team_name,
                     session_id=session_id,
                 )
+                # Rebinding away from a session-generated team must drop the
+                # orphan binding + workspace once no other session holds it.
+                if (
+                    prior_was_generated
+                    and prior_team_name
+                    and prior_team_name != binding.team_name
+                ):
+                    _cleanup_orphaned_generated_team(
+                        binding_store=binding_store,
+                        team_name=prior_team_name,
+                    )
             except Exception as exc:
                 try:
                     restore_session_team_binding_artifacts(
@@ -1060,6 +1155,113 @@ async def handle_team_runtime_dissolve(ctx: RequestContext) -> None:
                             exc,
                         )
                         ok = False
+            # Session-generated / temporary teams: unbind + drop binding/entity
+            # when no other session holds them. Preset/OA: unbind runtime only —
+            # keep team_name / template identity so the same-turn chat.send can
+            # rebuild from the edited config (lazy dissolve + rebuild).
+            catalog_cleaned = False
+            if ok:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    update_session_metadata,
+                )
+                from jiuwenswarm.server.runtime.swarm_skill_session import (
+                    is_session_generated_team,
+                )
+                from jiuwenswarm.server.runtime.team_binding_store import (
+                    get_team_binding_store,
+                )
+
+                async with _session_team_binding_lock(session_id):
+                    if is_session_generated_team(metadata):
+                        logical_team = str(metadata.get("team_name") or "").strip()
+                        binding_store = get_team_binding_store()
+                        cleanup_ok = True
+                        try:
+                            binding_store.unbind_session(
+                                session_id=session_id,
+                                team_name=logical_team or None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve unbind failed: "
+                                "session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
+                            cleanup_ok = False
+                        if logical_team and cleanup_ok:
+                            remaining = binding_store.get(logical_team)
+                            if remaining is not None and remaining.session_ids:
+                                logger.info(
+                                    "[AgentWebSocketServer] dissolve keeps "
+                                    "shared generated team: team=%s "
+                                    "remaining_sessions=%s",
+                                    logical_team,
+                                    len(remaining.session_ids),
+                                )
+                            elif not _cleanup_orphaned_generated_team(
+                                binding_store=binding_store,
+                                team_name=logical_team,
+                            ):
+                                cleanup_ok = False
+                        try:
+                            update_session_metadata(
+                                session_id=session_id,
+                                team_name="",
+                                runtime_team_name="",
+                                team_template_id="",
+                                temporary_team_session=False,
+                                team_lifecycle="",
+                                team_mode="",
+                                team_entry="",
+                                team_origin="",
+                                skill_id="",
+                                team_cold_reopen_required=False,
+                                touch_last_message_at=False,
+                                sync=True,
+                                sessions_root=sessions_root,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve clear temporary "
+                                "metadata failed: session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
+                            cleanup_ok = False
+                        catalog_cleaned = cleanup_ok
+                    elif str(metadata.get("team_name") or "").strip():
+                        # Preset/OA: release binding lock only; retain identity so
+                        # same-turn chat.send rebuilds the original team.
+                        logical_team = str(metadata.get("team_name") or "").strip()
+                        try:
+                            get_team_binding_store().unbind_session(
+                                session_id=session_id,
+                                team_name=logical_team or None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve preset unbind failed: "
+                                "session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
+                        try:
+                            update_session_metadata(
+                                session_id=session_id,
+                                team_cold_reopen_required=False,
+                                team_lifecycle="",
+                                touch_last_message_at=False,
+                                sync=True,
+                                sessions_root=sessions_root,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] dissolve clear preset "
+                                "runtime flags failed: session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -1069,6 +1271,7 @@ async def handle_team_runtime_dissolve(ctx: RequestContext) -> None:
                     "session_id": session_id,
                     # 回显解析后的权威运行时名（relay 可不传 team_name）。
                     "team_name": runtime_team_name,
+                    "temporary_catalog_cleaned": catalog_cleaned,
                 },
                 metadata=request.metadata,
             )

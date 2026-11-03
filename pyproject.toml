@@ -200,9 +200,15 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
+# Local agent-core (swarm-skill TeamSkillUseRail / configure_global_skills_dir).
+# Keep out of the public MR until agent-core lands on dev-stable; needed to run locally.
+override-dependencies = [
+    "openjiuwen",
+]
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }
+openjiuwen = { path = "../../core/agent-core", editable = true }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

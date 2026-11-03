@@ -228,24 +228,11 @@ def _collect_disabled_skills_from_state(skill_dirs: list[str]) -> set[str]:
 
 
 def _list_skill_dirs_for_context(ctx: SwarmBuildContext) -> list[str]:
-    workspace = getattr(ctx, "workspace", None)
-    skill_dirs: list[str] = []
-    if workspace is not None:
-        get_node_path = getattr(workspace, "get_node_path", None)
-        if callable(get_node_path):
-            skills_base = get_node_path("skills")
-            if skills_base:
-                skill_dirs.append(str(skills_base))
+    """Return the single Skill library path used by team/agent listings."""
+    from jiuwenswarm.common.utils import get_agent_skills_dir
 
-        list_team_links = getattr(workspace, "list_team_links", None)
-        if callable(list_team_links):
-            for _team_id, target_path in list_team_links():
-                skill_dirs.append(str(Path(target_path) / "skills"))
-
-    team_skills_dir = getattr(ctx, "team_skills_dir", None)
-    if team_skills_dir:
-        skill_dirs.append(str(team_skills_dir))
-    return list(dict.fromkeys(skill_dirs))
+    library = Path(ctx.global_skills_dir) if ctx.global_skills_dir else get_agent_skills_dir()
+    return [str(library)]
 
 
 def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:

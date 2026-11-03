@@ -15148,9 +15148,9 @@ class JiuWenSwarmDeepAdapter:
             await approve_evolution_records(rail, request_id, approved_record_ids)
             # Sync updated team skill from workspace to global team_skills dir.
             try:
-                from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+                from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
-                refresh_team_shared_skill_links_across_managers(session_id)
+                await reload_team_skill_views_across_managers(session_id)
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] team shared skill link refresh after approval failed: %s", exc)
             logger.info("[JiuWenSwarmDeepAdapter] team skill evolve accepted: request_id=%s", request_id)
@@ -15182,10 +15182,10 @@ class JiuWenSwarmDeepAdapter:
         if accepted:
             await rail.on_approve_simplify(request_id)
             try:
-                from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+                from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
                 if session_id:
-                    refresh_team_shared_skill_links_across_managers(session_id)
+                    await reload_team_skill_views_across_managers(session_id)
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] team shared skill link refresh after simplify failed: %s", exc)
             logger.info("[JiuWenSwarmDeepAdapter] team simplify accepted: request_id=%s", request_id)

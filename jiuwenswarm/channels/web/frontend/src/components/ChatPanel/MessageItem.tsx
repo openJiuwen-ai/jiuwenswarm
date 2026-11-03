@@ -41,6 +41,11 @@ import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { resolveApiUrl } from '../../utils/env';
+import {
+  fileDownloadHead,
+  isFileDownloadExpiredStatus,
+  prepareFileDownload,
+} from '../../services/fileDownload';
 
 export const MarkdownMessageBody = memo(function MarkdownMessageBody({
   content,
@@ -801,16 +806,20 @@ function FileDownloadList({
     files.forEach((file, index) => {
       const rawUrl = fileDownloadUrl(file);
       if (!rawUrl) return;
-      fetch(resolveApiUrl(rawUrl), { method: 'HEAD' })
+      // Only treat definitive Gateway expiry/missing codes as「已过期」.
+      // Network blips / 405 HEAD / 5xx must not grey out the card (align develop).
+      fileDownloadHead(rawUrl)
         .then((res) => {
-          if (!cancelled && !res.ok) {
-            setExpiredSet((prev) => new Set(prev).add(index));
-          }
+          if (cancelled) return;
+          setExpiredSet((prev) => {
+            const next = new Set(prev);
+            if (res.ok) next.delete(index);
+            else if (isFileDownloadExpiredStatus(res.status)) next.add(index);
+            return next;
+          });
         })
         .catch(() => {
-          if (!cancelled) {
-            setExpiredSet((prev) => new Set(prev).add(index));
-          }
+          // Transient probe failure — leave card clickable; GET may still work.
         });
     });
     return () => { cancelled = true; };
@@ -820,13 +829,19 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index)) return;
+    const rawUrl = fileDownloadUrl(file);
+    if (!rawUrl) return;
 
     // 检查是否在 PyWebView 桌面环境中
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
+      if (!(await prepareFileDownload(rawUrl))) {
+        window.alert(t('artifacts.downloadFailed', { name: file.name }));
+        return;
+      }
       // 桌面端：通过 webview API 下载
       const outcome = await executeDesktopSave(() =>
-        pywebviewApi.download_file!(resolveApiUrl(fileDownloadUrl(file) ?? ''), file.name || 'download')
+        pywebviewApi.download_file!(resolveApiUrl(rawUrl), file.name || 'download')
       );
       if (outcome === 'failed') {
         window.alert(t('artifacts.downloadFailed', { name: file.name }));
@@ -835,7 +850,7 @@ function FileDownloadList({
     }
     // 浏览器模式：使用标准 <a> 标签下载
     const link = document.createElement('a');
-    link.href = resolveApiUrl(fileDownloadUrl(file) ?? '');
+    link.href = resolveApiUrl(rawUrl);
     link.download = file.name || '';
     document.body.appendChild(link);
     link.click();

@@ -29,6 +29,7 @@ from jiuwenswarm.server.dispatch import dispatch_with_context
 from jiuwenswarm.server.handlers._default import _handle_stream, _handle_unary
 from jiuwenswarm.server.handlers._shared import _request_query_text
 from jiuwenswarm.server.handlers.chat import _ensure_auto_team_binding_for_chat
+from jiuwenswarm.server.runtime.swarm_skill_session import SwarmSkillSessionError
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,46 @@ async def dispatch_parsed_request(
                     describe_ws_exception(e),
                 ),
             )
+        except SwarmSkillSessionError as e:
+            logger.info(
+                "[AgentWebSocketServer] swarm skill session policy rejected: "
+                "request_id=%s session_id=%s code=%s",
+                request.request_id,
+                e.session_id,
+                e.code,
+            )
+            error_resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload=dict(e.payload),
+                metadata=request.metadata,
+            )
+            wire = encode_agent_response_for_wire(
+                error_resp, response_id=request.request_id
+            )
+            try:
+                await ctx.sink.send_wire(wire)
+            except WebSocketConnectionClosed as send_exc:
+                logger.info(
+                    "[AgentWebSocketServer] WebSocket 已关闭，swarm 策略错误未发送: %s",
+                    format_ws_diagnostics(
+                        {
+                            "request_id": request.request_id,
+                            "channel_id": request.channel_id,
+                            "session_id": request.session_id,
+                            "is_stream": request.is_stream,
+                        },
+                        describe_ws_peer(peer),
+                        describe_ws_exception(send_exc),
+                    ),
+                )
+            except Exception as send_err:
+                logger.warning(
+                    "[AgentWebSocketServer] swarm 策略错误回写失败: request_id=%s: %s",
+                    request.request_id,
+                    send_err,
+                )
         except Exception as e:
             logger.exception(
                 "[AgentWebSocketServer] 处理请求失败: request_id=%s: %s",

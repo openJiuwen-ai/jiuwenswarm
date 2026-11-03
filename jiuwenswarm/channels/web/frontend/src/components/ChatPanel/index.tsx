@@ -38,6 +38,7 @@ import './ChatPanel.css';
 import { WorkspaceQuotaBanner } from '../WorkspacePanel/WorkspaceQuotaBanner';
 import { useWorkspaceQuotaEnabled } from '../../features/workspace/useWorkspaceQuotaEnabled';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
+import { TeamSessionBar } from '../../features/teamCatalog/TeamSessionBar';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
@@ -1281,6 +1282,7 @@ export function ChatPanel({
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
+                <TeamSessionBar isProcessing={isProcessing} />
                 <InputArea
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
@@ -1323,6 +1325,7 @@ export function ChatPanel({
               onClearGoal={onClearGoal}
             />
           )}
+          <TeamSessionBar isProcessing={isProcessing} />
           <InputArea
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
