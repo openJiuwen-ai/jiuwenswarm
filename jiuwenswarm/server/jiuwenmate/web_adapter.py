@@ -805,6 +805,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         bound = _bound_apps()
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value:
             view = service.ensure_default_colleague(WEB_NAMESPACE)
+            if view is not None:
+                conversations = self._conversations or WebConversationStore(service._repository.db_path)
+                conversations.ensure_initial(WEB_NAMESPACE, view.agent_id, created_at=view.created_at)
             return {"colleague": None if view is None else _colleague_wire(view, service, bound)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value:
             return {"colleagues": [
@@ -817,19 +820,17 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             source_template_id = params.get("source_template_id")
             if source_template_id is not None and not isinstance(source_template_id, str):
                 raise PersistentAgentError("source_template_id is required")
-            return {
-                "colleague": _colleague_wire(
-                    service.create_colleague(
-                        WEB_NAMESPACE,
-                        _settings(params),
-                        template_id=template_id or None,
-                        source_template_id=source_template_id or None,
-                        unique_source=params.get("unique_source") is True,
-                    ),
-                    service,
-                    bound,
-                )
-            }
+            created = service.create_colleague(
+                WEB_NAMESPACE,
+                _settings(params),
+                template_id=template_id or None,
+                source_template_id=source_template_id or None,
+                unique_source=params.get("unique_source") is True,
+            )
+            conversations = self._conversations or WebConversationStore(service._repository.db_path)
+            # List the new employee immediately without submitting a Request or starting the runtime.
+            conversations.ensure_initial(WEB_NAMESPACE, created.agent_id, created_at=created.created_at)
+            return {"colleague": _colleague_wire(created, service, bound)}
         # Management works on a colleague's configuration, whose ID is its Web agent's.
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_GET.value:

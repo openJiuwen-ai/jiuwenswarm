@@ -309,3 +309,18 @@ English summary: Verified read-only snapshots remove SQLite writer-lock contenti
 
 
 继续优化（2026-10-31）：线上历史仍约15秒。对真实数据库完整_read_view性能采样显示69条请求打开556次连接、执行2091次SQL，独立读取3.1秒。补充sqlite_store.py显式只读批次上下文，按线程和数据库路径复用查询连接；每个既有只读事务仍独立BEGIN/COMMIT，不跨全量历史保留共享锁。agent_manager.py只在批量视图读取范围使用，不改变写事务、缓存正文、权限或产物核验。新增连接复用、写者可提交、嵌套/异常关闭与线程隔离验证，尚在实施。
+
+
+## 2026-11-01：新员工立即显示会话及模板能力展示修正
+
+问题：创建员工后跳转私聊，但 `web_conversations` 原先只在首条消息受理时登记，导致左侧没有新员工。另有预置模板把岗位能力介绍写入前端 `skills`，详情页将其显示为真实技能，但创建时技能配置为空。
+
+最小方案：Web 员工创建成功后，复用 `WebConversationStore.adopt` 登记一条持久空会话，再返回创建结果。会话仍通过既有列表接口读取；不提交聊天消息、不创建执行请求、不启动模型，不改个人版。仅创建时登记，查看员工不会重新生成已删除会话。预置模板的岗位说明移至 `coreAbilities` 并独立展示；实际 Skill 保留在 `skills`，无配置时明确展示“暂无技能”，已安装专家的真实自带技能继续显示。
+
+2026-11-04 补充修复（已实现，本地回归通过）：上述创建入口遗漏了 `colleague.ensure_default`，全新初始化的小九因此没有会话。默认员工初始化和手动创建共用会话存储的原子首次登记：仅当该员工没有任何会话记录（含已删除记录）时插入一条空会话，已有员工缺失会话可补齐；刷新、并发初始化、已有会话或用户删除后的会话不重复新增。未配置模型同样可登记，不改变发布、消息受理或个人版行为。修改 `web_adapter.py`、`web_conversations.py` 和已有适配器测试；不新增表或生命周期字段。新增 7 项参数化用例先复现 4 项失败、3 项通过，修复后连同原手动创建回归共 8 项通过；覆盖首次初始化、有／无模型、重启持久化、并发、已有／已删会话和已删除默认员工。完整私聊与适配器回归 66 项通过，3 项既有失败（RPC 清单、WeLink 邮箱绑定、共享文件 Session 夹具）与已核对的基线一致；前端页面回归 60 项通过，独立代码复核未发现阻塞问题。按用户要求合并回原“创建员工立即显示会话”提交，不增加独立修复提交。JM-10 整项状态与真实模型验收范围不变。
+
+English (2026-11-04, implemented and locally verified): Include the default employee initialization path in the initial conversation registration. Atomically insert one empty conversation only when no conversation records exist for that employee, including deleted records. Preserve existing and deleted chats, support initialization without a model, and avoid executing messages. The seven new cases initially reproduced four failures; all eight focused cases, including custom creation, now pass. Broader checks passed 66 backend and 60 frontend cases, with three previously verified backend failures unchanged. Fold this correction into the original employee conversation commit as requested, keeping the overall JM-10 acceptance scope unchanged.
+
+验证结果：前端相关回归 75 项通过，后端相关回归 55 项通过；扩展检查发现的 RPC 清单和共享文件夹具两项失败，在未修改的后端代码中同样复现。`npm run build` 成功，源码服务已重启并确认 worker 就绪。实际通过页面创建临时员工，未发送消息即在左侧出现会话；刷新后仍保留同一空会话，历史接口返回零条请求。详情页已显示独立的“核心能力”和“调用技能”，未配置时显示“暂无技能”。临时验证员工已清理。
+
+English: Register one durable empty Web conversation when employee creation succeeds, without submitting messages or starting an execution. Show curated role abilities separately from actual skills, preserving installed experts’ bundled skills. Reopening an employee must not recreate a deleted conversation. Validation: 75 frontend checks and 55 backend checks passed; two unrelated expanded-suite failures reproduce on the unchanged backend. The production build passed and the source service was restarted. UI verification confirmed the new employee appears in the conversation list before any message, retains the same empty conversation after refresh, and has zero message requests. The temporary validation employee was removed.

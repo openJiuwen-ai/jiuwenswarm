@@ -20,6 +20,7 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE, JiuwenMateWebAdapter
+from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from jiuwenswarm.server.runtime.gateway_adapter import AdapterRegistry
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -117,6 +118,72 @@ async def test_opening_the_page_shows_the_default_colleague(host):
     assert [item["agent_id"] for item in listed.payload["colleagues"]] == [colleague["agent_id"]]
 
 
+@pytest.mark.parametrize("model_configured", [True, False])
+async def test_default_colleague_has_one_durable_empty_conversation(host, monkeypatch, model_configured):
+    if not model_configured:
+        monkeypatch.setattr(FakeModels, "default_selection", lambda self: None)
+    ensured = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert ensured.ok
+    colleague = ensured.payload["colleague"]
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    initial = store.list(WEB_NAMESPACE, colleague["agent_id"])
+    assert len(initial) == 1
+    assert initial[0].title == "新对话"
+    assert host.adapter._manager is None
+    if not model_configured:
+        assert colleague["current_version"] is None
+
+    await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    reopened = Host(host.tmp_path)
+    again = await reopened.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert again.payload["colleague"]["agent_id"] == colleague["agent_id"]
+    assert WebConversationStore(host.tmp_path / "agents.sqlite3").list(WEB_NAMESPACE, colleague["agent_id"]) == initial
+    store.delete(WEB_NAMESPACE, colleague["agent_id"], initial[0].conversation_id, now=initial[0].created_at)
+    await reopened.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert store.list(WEB_NAMESPACE, colleague["agent_id"]) == []
+
+
+@pytest.mark.parametrize("existing", ["missing", "active", "deleted"])
+async def test_default_conversation_initialization_preserves_existing_conversation_records(host, existing):
+    colleague = host.adapter._colleagues().ensure_default_colleague(WEB_NAMESPACE)
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    if existing != "missing":
+        store.adopt(WEB_NAMESPACE, colleague.agent_id, "existing-conversation", text="已有会话",
+                    created_at=colleague.created_at, updated_at=colleague.created_at)
+        if existing == "deleted":
+            store.delete(WEB_NAMESPACE, colleague.agent_id, "existing-conversation", now=colleague.created_at)
+
+    response = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+
+    assert response.ok
+    conversations = store.list(WEB_NAMESPACE, colleague.agent_id)
+    if existing == "deleted":
+        assert conversations == []
+    else:
+        assert len(conversations) == 1
+        assert conversations[0].title == ("新对话" if existing == "missing" else "已有会话")
+
+
+async def test_concurrent_default_initialization_creates_only_one_conversation(host):
+    colleague = host.adapter._colleagues().ensure_default_colleague(WEB_NAMESPACE)
+    responses = await asyncio.gather(*[
+        host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT) for _ in range(4)
+    ])
+    assert all(response.ok for response in responses)
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    assert len(store.list(WEB_NAMESPACE, colleague.agent_id)) == 1
+    assert host.adapter._manager is None
+
+
+async def test_deleted_default_colleague_does_not_get_another_conversation(host):
+    colleague = host.adapter._colleagues().ensure_default_colleague(WEB_NAMESPACE)
+    host.adapter._colleagues().hide_colleague(WEB_NAMESPACE, colleague.agent_id)
+    response = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT)
+    assert response.ok and response.payload["colleague"] is None
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    assert store.list(WEB_NAMESPACE, colleague.agent_id) == []
+
+
 async def test_colleague_list_restores_im_binding_status_from_owner_config(host, monkeypatch):
     created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
     agent_id = created.payload["colleague"]["agent_id"]
@@ -147,6 +214,22 @@ async def test_created_colleague_is_published_with_the_default_model(host):
     assert colleague["current_version"] == "v1" and not colleague["has_unpublished_changes"]
     fetched = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=colleague["agent_id"])
     assert fetched.payload["colleague"] == colleague
+
+
+async def test_creating_a_colleague_persists_an_empty_conversation_before_any_message(host):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    assert created.ok
+    agent_id = created.payload["colleague"]["agent_id"]
+    store = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    listed = store.list(WEB_NAMESPACE, agent_id)
+    assert len(listed) == 1
+    assert listed[0].title == "新对话"
+    assert host.adapter._manager is None, "Creating a chat entry must not start model execution"
+    reopened = WebConversationStore(host.tmp_path / "agents.sqlite3")
+    assert reopened.list(WEB_NAMESPACE, agent_id) == listed
+    store.delete(WEB_NAMESPACE, agent_id, listed[0].conversation_id, now=listed[0].created_at)
+    await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
+    assert reopened.list(WEB_NAMESPACE, agent_id) == [], "Reading an employee must not recreate a deleted chat"
 
 
 async def test_settings_change_waits_for_publication(host):
