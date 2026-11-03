@@ -707,7 +707,7 @@ react:
       # max_iterations: 15
   # ============ SkillTurbo 配置 ============
   skill_turbo:
-    enabled: false                   # 总开关（未配置时默认 false）
+    enabled: true                    # 总开关（未配置时默认 false）
     skill_name: pptx-craft           # PPT skill 外部目录名
     skill_checksum: ""               # 外部 skill 目录 SHA256 校验值（空=跳过校验）
   # ============ 统一工具开关（黑名单 disabled_tools）============

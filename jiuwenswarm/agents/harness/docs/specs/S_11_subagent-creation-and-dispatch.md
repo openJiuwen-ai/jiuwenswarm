@@ -8,7 +8,7 @@
 | 编号 / slug | S_11 / subagent-creation-and-dispatch |
 | 关联模块（agent-core 仓，机制主体） | `openjiuwen/harness/deep_agent.py`（`create_subagent` @1173、`_find_subagent_spec` @1361、`_bind_inherited_artifact_root` @1155）、`openjiuwen/harness/schema/config.py`（`SubAgentConfig` @302）、`openjiuwen/harness/subagents/`（七个预置工厂）、`openjiuwen/harness/tools/subagent/type_aliases.py`（`canonicalize_subagent_type`）、`openjiuwen/harness/tools/subagent/task_tool.py`（`_build_sub_session_id` @136、`_summarize_task_description` @40、卡片豁免 @408） |
 | 关联模块（jiuwenswarm 仓，装配） | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_agent_def_to_subagent_config` @24265、`_bind_subagent_model_resolver` @7187、`_build_configured_subagents` @4680）、`interface_code.py`（`_build_configured_subagents` @1124）、`jiuwenswarm/agents/harness/flash/rails/flash_subagent_rail.py`（spec 自注入）、`jiuwenswarm/agents/swarm/providers/code_subagents.py`（swarm.* providers） |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-03 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -91,6 +91,14 @@
 | `_build_configured_subagents`（code） | interface_code.py @1124 | 固定 explore/plan + 按配置 code/browser |
 | `FlashSubagentRail` spec 自注入 | flash_subagent_rail.py | flash 模式用 `_inject_general_purpose_subagent` 从父配置自注入 general-purpose（开关 `react.subagents.general_agent.enabled`，显式 true 才注入）→ [[S_14]] |
 | swarm providers | agents/swarm/providers/code_subagents.py | `swarm.code_agent` / `swarm.browser_agent` 经 `SubAgentSpec.factory_name` 在 `spec.build()` 时解析；explore/plan 由 openjiuwen 提供；browser 每成员独立 browser_key |
+
+TTSE 查询 Rail 经 `common/tools/subagent_executor/ttse.py` 包装统一创建入口。
+未初始化的实例使用 `add_rail` 排队；`is_initialized` 为真的实例，在公开 `invoke` / `stream`
+入口通过同一把异步锁执行 `is_registered_rail` / `register_rail`，注册完成后才执行任务。
+普通注册异常须回滚部分注册并记录 warning，子任务继续执行；`CancelledError` 清理后继续上抛。
+不得改写 SDK 的受保护初始化方法，也不通过读取 Rail 的内部 agent 引用判断注册状态。
+多个子 Agent 共享渐进式工具 Rail 时，公开元数据 `jiuwenswarm_ttse_eager_users` /
+`jiuwenswarm_ttse_eager_original` 维护使用计数与原始 eager 状态，最后一个使用者释放时恢复。
 
 ## 数据结构
 

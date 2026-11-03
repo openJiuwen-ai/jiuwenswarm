@@ -17,6 +17,55 @@ _MARKER = "_jiuwenswarm_ttse_wiring_installed"
 _CHILD_MARKER = "_jiuwenswarm_ttse_consult_rail"
 
 
+def _register_before_execution(child: Any, rail: SubagentTTSEConsultRail) -> None:
+    """在公开执行入口补挂 Rail，避免创建时后台注册的竞态。"""
+    lock = asyncio.Lock()
+
+    async def ensure_registered() -> None:
+        async with lock:
+            try:
+                if child.is_registered_rail(rail):
+                    return
+                await child.register_rail(rail)
+            except asyncio.CancelledError:
+                await rollback_registration()
+                raise
+            except Exception:
+                logger.warning(
+                    "[subagent.ttse] deferred rail registration failed",
+                    exc_info=True,
+                )
+                await rollback_registration()
+
+    async def rollback_registration() -> None:
+        try:
+            await child.unregister_rail(rail)
+        except Exception:
+            logger.warning(
+                "[subagent.ttse] deferred rail registration cleanup failed",
+                exc_info=True,
+            )
+
+    original_invoke = child.invoke
+    original_stream = child.stream
+
+    async def invoke(*args: Any, **kwargs: Any) -> Any:
+        await ensure_registered()
+        return await original_invoke(*args, **kwargs)
+
+    async def stream(*args: Any, **kwargs: Any) -> Any:
+        await ensure_registered()
+        source = original_stream(*args, **kwargs)
+        try:
+            async for chunk in source:
+                yield chunk
+        finally:
+            await source.aclose()
+
+    child.invoke = invoke
+    child.stream = stream
+
+
 def install_subagent_ttse_wiring(agent: Any, provider: TTSEConsultProvider) -> bool:
     if getattr(agent, _MARKER, False):
         return True
@@ -36,19 +85,10 @@ def install_subagent_ttse_wiring(agent: Any, provider: TTSEConsultProvider) -> b
                     args[1] if len(args) > 1 else kwargs.get("subsession_id", "")
                 ),
             )
-            if getattr(child, "_initialized", False):
+            if child.is_initialized:
                 # DeepAgent 实例也可直接作为 spec。已初始化实例的 pending rail
-                # 不会再装配，推迟到下一次初始化边界注册，避免后台注册竞态。
-                original_ensure = child._ensure_initialized
-                lock = asyncio.Lock()
-
-                async def ensure_initialized() -> None:
-                    await original_ensure()
-                    async with lock:
-                        if rail._agent is None:
-                            await child.register_rail(rail)
-
-                child._ensure_initialized = ensure_initialized
+                # 不会再装配，推迟到公开执行入口注册，避免后台注册竞态。
+                _register_before_execution(child, rail)
             else:
                 child.add_rail(rail)
             setattr(child, _CHILD_MARKER, rail)

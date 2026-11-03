@@ -29,7 +29,6 @@ class TTSEConsultDependencies:
     max_rules: int = 40
     default_top_k: int = 8
     rrf_k: int = 60
-    retrieve_mode: str = "hybrid"
 
 
 TTSEConsultProvider = Callable[[], TTSEConsultDependencies | None]
@@ -78,9 +77,9 @@ class SubagentTTSEConsultRail(DeepAgentRail):
                 Runner.resource_mgr.remove_tool(tool.card.id)
         self._dependencies = None
         for rail in self._eager_rails:
-            users = rail._jiuwenswarm_ttse_eager_users - 1
-            rail._jiuwenswarm_ttse_eager_users = users
-            if users == 0 and not rail._jiuwenswarm_ttse_eager_original:
+            users = rail.jiuwenswarm_ttse_eager_users - 1
+            rail.jiuwenswarm_ttse_eager_users = users
+            if users == 0 and not rail.jiuwenswarm_ttse_eager_original:
                 rail.eager_tools = [
                     name for name in rail.eager_tools if name != TOOL_NAME
                 ]
@@ -104,14 +103,12 @@ class SubagentTTSEConsultRail(DeepAgentRail):
                     previous.max_rules,
                     previous.default_top_k,
                     previous.rrf_k,
-                    previous.retrieve_mode,
                 )
                 != (
                     dependencies.max_chars,
                     dependencies.max_rules,
                     dependencies.default_top_k,
                     dependencies.rrf_k,
-                    dependencies.retrieve_mode,
                 )
             )
             if (
@@ -195,10 +192,10 @@ class SubagentTTSEConsultRail(DeepAgentRail):
                 if isinstance(eager, list) and not any(
                     item is rail for item in self._eager_rails
                 ):
-                    users = getattr(rail, "_jiuwenswarm_ttse_eager_users", 0)
+                    users = getattr(rail, "jiuwenswarm_ttse_eager_users", 0)
                     if users == 0:
-                        rail._jiuwenswarm_ttse_eager_original = TOOL_NAME in eager
-                    rail._jiuwenswarm_ttse_eager_users = users + 1
+                        rail.jiuwenswarm_ttse_eager_original = TOOL_NAME in eager
+                    rail.jiuwenswarm_ttse_eager_users = users + 1
                     if TOOL_NAME not in eager:
                         rail.eager_tools = [*eager, TOOL_NAME]
                     self._eager_rails.append(rail)
@@ -356,7 +353,7 @@ class SubagentTTSEConsultRail(DeepAgentRail):
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
-                logger.warning("[subagent.ttse] no running loop for attachment cleanup")
+                asyncio.run(clear_attachments())
             else:
                 task = loop.create_task(clear_attachments())
                 self._cleanup_tasks.add(task)

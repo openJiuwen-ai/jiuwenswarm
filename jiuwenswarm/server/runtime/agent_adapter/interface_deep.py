@@ -5118,7 +5118,6 @@ class JiuWenSwarmDeepAdapter:
             max_rules=int(getattr(rail_config, "consult_max_rules", 40) or 40),
             default_top_k=int(getattr(rail_config, "consult_top_k", 8) or 8),
             rrf_k=int(getattr(rail_config, "consult_rrf_k", 60) or 60),
-            retrieve_mode=str(getattr(rail_config, "consult_retrieve_mode", "hybrid")),
         )
 
     def _bind_subagent_ttse_wiring(self) -> None:
@@ -11149,10 +11148,6 @@ class JiuWenSwarmDeepAdapter:
             react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
             skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
             enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] skill_turbo enabled=%s (config.react.skill_turbo.enabled)",
-                enabled,
-            )
             if not enabled:
                 logger.info("[JiuWenSwarmDeepAdapter] SkillTurbo disabled, skipping tool registration")
                 return
@@ -11188,11 +11183,6 @@ class JiuWenSwarmDeepAdapter:
             react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
             skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
             enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] skill_turbo enabled=%s "
-                "(config.react.skill_turbo.enabled, SkillTurboPromptRail)",
-                enabled,
-            )
             if not enabled:
                 return None
 
@@ -11232,11 +11222,6 @@ class JiuWenSwarmDeepAdapter:
             react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
             skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
             enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] skill_turbo enabled=%s "
-                "(config.react.skill_turbo.enabled, SkillTurboDeliverySummaryRail)",
-                enabled,
-            )
             if not enabled:
                 return None
 

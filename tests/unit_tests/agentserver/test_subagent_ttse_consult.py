@@ -40,6 +40,7 @@ def child_agent(rails=None):
         ),
         configured_rails=lambda: configured,
         add_rail=configured.append,
+        is_initialized=False,
         _initialized=False,
     )
 
@@ -216,14 +217,150 @@ def test_creation_wiring_preserves_arguments_and_is_idempotent(agent_type):
 @pytest.mark.asyncio
 async def test_already_initialized_child_registers_before_execution():
     child = child_agent()
-    child._initialized = True
-    child._ensure_initialized = AsyncMock()
-    child.register_rail = AsyncMock(side_effect=lambda rail: rail.init(child))
+    child.is_initialized = True
+    registered = []
+    closed_streams = []
+
+    async def register(rail):
+        await asyncio.sleep(0)
+        rail.init(child)
+        registered.append(rail)
+
+    async def invoke(query):
+        assert registered
+        return query
+
+    async def stream(query):
+        assert registered
+        try:
+            yield query
+        finally:
+            closed_streams.append(query)
+
+    child.is_registered_rail = lambda rail: rail in registered
+    child.register_rail = AsyncMock(side_effect=register)
+    child.invoke = invoke
+    child.stream = stream
     parent = SimpleNamespace(create_subagent=lambda *args: child)
     install_subagent_ttse_wiring(parent, lambda: None)
     parent.create_subagent("custom", "session")
-    await asyncio.gather(child._ensure_initialized(), child._ensure_initialized())
+    child.register_rail.assert_not_awaited()
+
+    async def collect():
+        return [chunk async for chunk in child.stream("stream")]
+
+    results = await asyncio.gather(child.invoke("invoke"), collect())
+    assert results == ["invoke", ["stream"]]
     child.register_rail.assert_awaited_once()
+    assert await child.invoke("again") == "again"
+    child.register_rail.assert_awaited_once()
+    early_stream = child.stream("early")
+    assert await anext(early_stream) == "early"
+    await early_stream.aclose()
+    assert closed_streams == ["stream", "early"]
+    registered[0].uninit(child)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["invoke", "stream"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_deferred_registration_failure_rolls_back_and_preserves_task(entrypoint, cancel, caplog):
+    child = child_agent()
+    child.is_initialized = True
+    configured = child.configured_rails()
+    fail = True
+    executions = []
+
+    async def register(rail):
+        rail.init(child)
+        configured.append(rail)
+        if fail:
+            if cancel:
+                raise asyncio.CancelledError
+            raise RuntimeError("callback registration failed")
+
+    async def unregister(rail):
+        configured.remove(rail)
+        rail.uninit(child)
+
+    async def invoke():
+        executions.append(child.ability_manager.get("ttse_consult") is not None)
+        return "done"
+
+    async def stream():
+        yield await invoke()
+
+    child.is_registered_rail = lambda rail: rail in configured
+    child.register_rail = AsyncMock(side_effect=register)
+    child.unregister_rail = AsyncMock(side_effect=unregister)
+    child.invoke, child.stream = invoke, stream
+    parent = SimpleNamespace(create_subagent=lambda *args: child)
+    install_subagent_ttse_wiring(parent, lambda: TTSEConsultDependencies(store=object()))
+    parent.create_subagent("custom", "failed-registration")
+
+    async def execute():
+        if entrypoint == "invoke":
+            return await child.invoke()
+        return [chunk async for chunk in child.stream()]
+
+    try:
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await execute()
+            assert executions == []
+        else:
+            assert await execute() == ("done" if entrypoint == "invoke" else ["done"])
+            assert executions == [False]
+            assert "deferred rail registration failed" in caplog.text
+        child.unregister_rail.assert_awaited_once()
+        assert child.ability_manager.get("ttse_consult") is None
+        assert configured == []
+        fail = False
+        await execute()
+        assert executions[-1] is True
+    finally:
+        for rail in list(configured):
+            await child.unregister_rail(rail)
+
+
+def test_uninit_clears_real_attachments_without_running_loop():
+    from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
+
+    child = child_agent()
+    child.prompt_attachment_manager = PromptAttachmentManager()
+    store = SimpleNamespace(catalog_counts=dict)
+    rail = SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=store))
+    rail.init(child)
+    manager = child.prompt_attachment_manager
+    try:
+        asyncio.run(rail.before_model_call(context(child)))
+        assert asyncio.run(manager.collect_for_session("child-session"))
+    finally:
+        rail.uninit(child)
+    assert asyncio.run(manager.collect_for_session("child-session")) == []
+    assert not rail._cleanup_tasks
+
+
+@pytest.mark.asyncio
+async def test_retrieval_uses_live_shared_store_mode(tmp_path, monkeypatch):
+    config = TTSEConfig(store_path=str(tmp_path / "bank.json"), consult_retrieve_mode="bm25")
+    store = TTSERecordStore(config)
+    await store.add_fact("Use pytest for tests.")
+    rank = AsyncMock(return_value=([], "test"))
+    monkeypatch.setattr(store.index, "rank_track", rank)
+    monkeypatch.setattr(store.index, "ensure_chroma", AsyncMock())
+    child = child_agent()
+    rail = SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=store))
+    rail.init(child)
+    try:
+        for mode in ("bm25", "embed", "hybrid"):
+            config.consult_retrieve_mode = mode
+            rank.reset_mock()
+            await rail._tool.invoke({"category": "all", "query": "pytest"})
+            assert rank.await_count == 2
+            assert all(call.kwargs["retrieve_mode"] == mode for call in rank.await_args_list)
+    finally:
+        rail.uninit(child)
 
 
 @pytest.mark.parametrize("mode", ["agent", "flash", "team"])
@@ -256,12 +393,13 @@ def test_adapter_dependency_provider_tracks_parent_and_switches(monkeypatch, mod
 
 
 @pytest.mark.asyncio
-async def test_shared_progressive_rail_survives_other_child_cleanup():
+@pytest.mark.parametrize("originally_eager", [False, True])
+async def test_shared_progressive_rail_survives_other_child_cleanup(originally_eager):
     from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
         ProgressiveToolRail,
     )
 
-    progressive = ProgressiveToolRail(eager_tools=[])
+    progressive = ProgressiveToolRail(eager_tools=["ttse_consult"] if originally_eager else [])
     children = [child_agent([progressive]), child_agent([progressive])]
     rails = [
         SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=object()))
@@ -275,7 +413,7 @@ async def test_shared_progressive_rail_survives_other_child_cleanup():
     finally:
         for child, rail in zip(children, rails):
             rail.uninit(child)
-    assert "ttse_consult" not in progressive.eager_tools
+    assert ("ttse_consult" in progressive.eager_tools) is originally_eager
 
 
 @pytest.mark.asyncio
