@@ -1,5 +1,8 @@
 """Video adapter regressions over the persisted task service (no private queue mirrors)."""
 
+# White-box fixtures inject an isolated persisted service and cached routing state.
+# pylint: disable=protected-access
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -802,7 +805,8 @@ async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
     assert "answered by voice with jiuwen_task_answer" in message
     assert "同意, 允许, 可以 or 批准, choose the allow option" in message
     assert "拒绝, 不要 or 取消这个操作, choose the reject option" in message
-    assert "only when the user says 本会话保持同意" in message and "permanent option (e.g. 永久记住) only when the user explicitly says 永久同意" in message
+    assert "only when the user says 本会话保持同意" in message
+    assert "permanent option (e.g. 永久记住) only when the user explicitly says 永久同意" in message
     assert "ask one short question and do not submit" in message
     assert "several cards are pending, confirm which card" in message
     assert "Never use a new request as an answer to a card" in message

@@ -193,6 +193,7 @@ class FakeChannel:
         self.events = []
         self.registration_options = {}
         self.manager = None
+        self.dispatched = []
 
     def register_method(self, method, handler, **kwargs) -> None:
         self.handlers[method] = handler
@@ -407,6 +408,7 @@ class _FakeHttpResponse:
         self.content = content
         self.status_code = status_code
         self.text = text
+        self.headers = {}
 
     def json(self):
         return self._payload
@@ -799,10 +801,14 @@ async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkey
         assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_FAILED"
         assert provider.await_count == calls
     manager.authorized_scope.return_value = ("alice", "task-duplex:chat-a")
-    await channel.handlers["video.joyai.frame"](ws, "frame-with-token", {**request, "instruction": "", "request_kind": "frame"}, "transport")
+    await channel.handlers["video.joyai.frame"](
+        ws, "frame-with-token", {**request, "instruction": "", "request_kind": "frame"}, "transport",
+    )
     assert channel.responses[-1][1]["ok"] is False
     assert provider.await_count == calls
-    await channel.handlers["video.joyai.frame"](ws, "expired-token", {**request, "restore_token": "expired"}, "transport")
+    await channel.handlers["video.joyai.frame"](
+        ws, "expired-token", {**request, "restore_token": "expired"}, "transport",
+    )
     assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_EXPIRED"
     assert provider.await_count == calls, "expired restore must fail before provider side effects"
     await channel.handlers["video.joyai.frame"](ws, "normal-frame", {
@@ -1227,7 +1233,9 @@ async def test_joyai_missing_delegation_waits_for_review_and_deduplicates_submis
         "response", response="我来设置闹钟。",
     )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={"content": "Test result"})))
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"content": "Test result"},
+    )))
     channel = _video_channel(client)
     params = {"frame_data_url": "", "instruction": instruction, "question": instruction,
               "request_kind": "user", "search_session_id": "scope", "command_id": "stable-alarm"}
@@ -1262,7 +1270,9 @@ async def test_joyai_passive_frames_and_native_delegations_skip_helper(monkeypat
         decision, response="Checking.", delegation=json.dumps(operation) if decision == "delegation" else "",
     )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={"content": "Test result"})))
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"content": "Test result"},
+    )))
     channel = _video_channel(client)
     await channel.handlers["video.joyai.frame"](None, "no-review", {
         "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Create report" if kind == "user" else "",
@@ -1277,7 +1287,9 @@ async def test_joyai_helper_can_clarify_without_creating_a_task(monkeypatch):
 
     reviewer = AsyncMock(return_value=json.dumps({"decision": "clarify", "response": "你指的是哪个闹钟？", "tool": None}))
     monkeypatch.setattr(joyai_action_helper, "request_review", reviewer)
-    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result("response", response="我来操作。")))
+    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result(
+        "response", response="我来操作。",
+    )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     client = SimpleNamespace(send_request=AsyncMock())
     channel = _video_channel(client)
@@ -1294,7 +1306,9 @@ async def test_joyai_helper_timeout_does_not_return_original_promise_or_limit_jo
 
     reviewer = AsyncMock(side_effect=TimeoutError())
     monkeypatch.setattr(joyai_action_helper, "request_review", reviewer)
-    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result("response", response="闹钟已经设置。")))
+    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result(
+        "response", response="闹钟已经设置。",
+    )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     channel = _video_channel()
     await channel.handlers["video.joyai.frame"](None, "timeout", {
@@ -1316,7 +1330,9 @@ async def test_joyai_helper_submission_failure_has_no_success_utterance(monkeypa
         "tool": {"name": "jiuwen_delegate", "arguments": {"task": "设置闹钟", "title": "闹钟"}},
     }))
     monkeypatch.setattr(joyai_action_helper, "request_review", reviewer)
-    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result("response", response="我来设置。")))
+    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result(
+        "response", response="我来设置。",
+    )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     channel = _video_channel()
     monkeypatch.setattr(channel.manager, "start", AsyncMock(side_effect=ValueError("Task admission failed")))
@@ -1474,7 +1490,9 @@ async def test_request_joyai_voice_only_turn_sends_text_without_an_image(monkeyp
     ("user", "data:text/plain;base64,ZmFrZQ==", "你好"),
     ("user", "", ""),
 ])
-async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_images(monkeypatch, kind, frame, instruction):
+async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_images(
+    monkeypatch, kind, frame, instruction,
+):
     from unittest.mock import AsyncMock
 
     channel = _video_channel()
@@ -1746,7 +1764,10 @@ async def test_transcribe_audio_uses_dashscope_run_task_for_wss_fallback(monkeyp
         await conn.recv()
         await conn.send(json.dumps({"header": {"event": "task-started"}}))
         audio = b""
-        while isinstance(message := await conn.recv(), bytes):
+        while True:
+            message = await conn.recv()
+            if not isinstance(message, bytes):
+                break
             audio += message
         seen["audio"] = audio
         sentence = {"text": "<think>x</think>你好。", "sentence_end": True}
@@ -1856,7 +1877,9 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
     channel = _video_channel()
     service = channel.manager.service
     service.started = True
-    service.kick = lambda: None
+    from unittest.mock import Mock
+
+    service.kick = Mock(return_value=None)
     wechat = service.submit("test-user", "scope", "wechat", "打开微信")
     feishu = service.submit("test-user", "scope", "feishu", "打开飞书")
     provider = AsyncMock(return_value=_joyai_result(
@@ -3580,6 +3603,7 @@ async def test_wrong_resource_id_recovers_via_query_and_correct_core_followup(mo
         assert receipts[2]["state"] == "followup"
     else:
         calls = []
+
         async def request(frame, instruction, session):
             calls.append(instruction)
             if len(calls) == 2:
@@ -3695,7 +3719,9 @@ async def test_voice_cancel_routes_original_utterance_to_completed_core_followup
     channel = _video_channel(SimpleNamespace(send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={"content": "Original result with resource-1"}),
     )))
-    job = await channel.manager.start(None, question="Create result", query="Create result", search_session_id="scope", command_id="create")
+    job = await channel.manager.start(
+        None, question="Create result", query="Create result", search_session_id="scope", command_id="create",
+    )
     await _wait_for_event(channel, "video.search.completed")
     utterance = "取消刚才创建的 resource-1，请核验结果。"
     operation = {"name": "jiuwen_task_cancel", "arguments": {"job_id": job["id"]}}
@@ -3707,6 +3733,7 @@ async def test_voice_cancel_routes_original_utterance_to_completed_core_followup
         assert receipt["converted_to"] == "modify" and receipt["state"] == "followup"
     else:
         calls = []
+
         async def request(frame, instruction, session):
             calls.append(instruction)
             if len(calls) == 1:
@@ -3789,8 +3816,10 @@ CARD_STATUS = (
     '[Approval card status] [{"job_id":"","interaction_id":"typed-approval","questions":[{"allow_answer":"本次允许",'
     '"session_answer":"会话内记住","permanent_answer":"永久记住","reject_answer":"拒绝"}]}] is still waiting'
 )
-PERMISSION_OPTIONS = [{"label": label, "value": value} for label, value in [
-    ("本次允许", "allow_once"), ("会话内记住", "session_allow"), ("永久记住", "always_allow"), ("拒绝", "reject")]]
+PERMISSION_CHOICES = [
+    ("本次允许", "allow_once"), ("会话内记住", "session_allow"), ("永久记住", "always_allow"), ("拒绝", "reject"),
+]
+PERMISSION_OPTIONS = [{"label": label, "value": value} for label, value in PERMISSION_CHOICES]
 
 
 def test_joyai_card_status_is_the_last_thing_read_on_a_user_turn():
@@ -3833,14 +3862,15 @@ def _scoped_channel(monkeypatch, card_live=True):
 
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    channel.dispatched = []
 
     async def dispatch(ws, method, params):
         channel.dispatched.append((method, params))
         # Core resumes the answered turn.
-        channel.manager._on_session_event("chat.processing_status", params.get("session_id", ""), {"is_processing": True})
+        channel.manager._on_session_event(
+            "chat.processing_status", params.get("session_id", ""), {"is_processing": True},
+        )
 
-    channel.dispatch_client_request = dispatch
+    monkeypatch.setattr(channel, "dispatch_client_request", dispatch, raising=False)
     return channel
 
 

@@ -1,7 +1,10 @@
+# An isolated service is injected to verify gateway effects without background execution.
+# pylint: disable=protected-access
+
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -41,7 +44,7 @@ async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
 
     service = TaskService(TaskStore(tmp_path / "tasks.sqlite"), None)
     service.started = True
-    service.kick = lambda: None
+    service.kick = Mock(return_value=None)
     wechat = service.submit("alice", "voice", "create-wechat", "打开微信")
     feishu = service.submit("alice", "voice", "create-feishu", "打开飞书")
     manager = VideoSearchManager(None, None, log_event=lambda *a, **k: None, qwen_active=lambda: True)

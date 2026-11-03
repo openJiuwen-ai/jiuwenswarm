@@ -1,5 +1,8 @@
 """Pure-voice approval: new voice tasks queue behind a live card, never answer it (#5486)."""
 
+# White-box fixtures exercise pending-card state and the actual web event handler.
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 
@@ -162,7 +165,7 @@ async def test_voice_answers_typed_card_through_click_path(system, monkeypatch, 
         name="jiuwen_task_query", arguments={}, call_id="q"))
     card = receipt["chat_approval"]
     assert card["job_id"] == "" and card["interaction_id"] == "typed-approval"
-    assert [o["label"] for o in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
+    assert [option["label"] for option in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
 
     answer = SimpleNamespace(name="jiuwen_task_answer", call_id="a", arguments={
         "job_id": "", "interaction_id": "typed-approval", "answers": ["可以吧"]})

@@ -1,5 +1,8 @@
 """Mode dispatch and native Design round ownership without cloud model calls."""
 
+# White-box regressions verify native bindings and inject isolated task services.
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -49,6 +52,7 @@ async def test_admission_uses_server_route_even_if_scheduling_supplies_another_t
     manager = VideoSearchManager(None, client, log_event=lambda *_: None, qwen_active=lambda: True,
                                  authorize=lambda ws, scope: ("alice", scope))
     submitted = []
+
     def submit(owner, scope, command, text, request):
         submitted.append(request)
         return TaskService._new(owner, scope, text, request)
@@ -68,6 +72,7 @@ async def test_native_cancel_routes_to_the_bound_mode_and_project(tmp_path, mode
     with store.transaction() as db:
         store.put(db, task)
     requests = []
+
     async def send(env):
         requests.append(e2a_to_agent_request(env))
         store.update(task["id"], lambda t: t.update(execution_settled=True))
@@ -82,7 +87,9 @@ async def test_native_cancel_routes_to_the_bound_mode_and_project(tmp_path, mode
     await executor.close()
 
 
-@pytest.mark.parametrize("mode,work", [("agent.code.normal", "code"), ("agent.code.plan", "code"), ("team.design", "design")])
+@pytest.mark.parametrize("mode,work", [
+    ("agent.code.normal", "code"), ("agent.code.plan", "code"), ("team.design", "design"),
+])
 async def test_executor_routes_same_session_and_project_and_rejects_changed_binding(tmp_path, mode, work):
     requests = []
     metadata = {"user_id": "alice", "mode": mode, "work_mode": work, "project_id": "p", "project_dir": "/project"}
@@ -142,7 +149,9 @@ def design_host(monkeypatch, tmp_path):
     with store.transaction() as db:
         store.put(db, task)
     request = SimpleNamespace(user_id="alice", session_id="design-chat", request_id=task["request_id"],
-                              channel_id="video_tool", params={"mode": "team.design", "managed_task_binding": endpoint.binding(task)})
+                              channel_id="video_tool", params={
+                                  "mode": "team.design", "managed_task_binding": endpoint.binding(task),
+                              })
     yield store, task, request
     endpoint.close()
     design_execution._rounds.clear()
@@ -190,11 +199,13 @@ async def test_real_team_stream_entry_uses_design_binding(monkeypatch, design_ho
     from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
     store, task, request = design_host
+
     async def native_stream(*_):
         assert store.read(task["id"])["execution_bound"]
         yield "native-design-output"
     monkeypatch.setattr(team_helpers, "_process_team_message_stream_with_design", native_stream)
-    assert [chunk async for chunk in team_helpers.process_team_message_stream(request, {}, None)] == ["native-design-output"]
+    chunks = [chunk async for chunk in team_helpers.process_team_message_stream(request, {}, None)]
+    assert chunks == ["native-design-output"]
     assert store.read(task["id"])["execution_settled"]
 
 
@@ -220,7 +231,9 @@ async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, 
         _bind_permission_request_context=lambda _: nullcontext(),
         _process_message_stream_impl=lambda req, inputs: team_helpers.process_team_message_stream(req, inputs, None),
         _is_session_scoped_adapter=True,
-        task_execution_binding=(SimpleNamespace(_react_agent=object(), active_round=None), SimpleNamespace(managed_tasks={})),
+        task_execution_binding=(
+            SimpleNamespace(_react_agent=object(), active_round=None), SimpleNamespace(managed_tasks={}),
+        ),
     )
     chunks = [chunk async for chunk in JiuWenSwarmDeepAdapter.process_message_stream_impl(adapter, request, {})]
     assert chunks == ["native-design-output"]
@@ -260,15 +273,20 @@ async def test_design_information_answer_reuses_team_input_and_preserves_questio
     monkeypatch.setattr(team_module, "get_team_manager", lambda *_: manager)
     native_answer = object()
     async with design_execution.bind_design_voice_task(request):
-        control = SimpleNamespace(user_id="alice", session_id="design-chat", request_id="answer", channel_id="video_tool", params={
-            "mode": "team.design", "managed_task_request": task["request_id"], "answers": [{"answer": "Scene two"}],
-        })
+        control = SimpleNamespace(
+            user_id="alice", session_id="design-chat", request_id="answer", channel_id="video_tool", params={
+                "mode": "team.design", "managed_task_request": task["request_id"],
+                "answers": [{"answer": "Scene two"}],
+            },
+        )
         result = await design_execution.answer_design_task(control, lambda _: ({"query": native_answer}, None, None))
         assert result.ok
         manager.interact.assert_awaited_once_with("design-chat", native_answer)
 
 
-async def test_design_voice_context_is_bounded_background_and_does_not_replace_current_request(monkeypatch, design_host):
+async def test_design_voice_context_is_bounded_background_and_does_not_replace_current_request(
+    monkeypatch, design_host,
+):
     from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn, TEAM_USER_TURN_KEY
     from jiuwenswarm.server.runtime.session import session_history
 
@@ -294,7 +312,9 @@ async def test_design_voice_context_is_bounded_background_and_does_not_replace_c
 
 async def test_design_history_prepare_failure_is_settled_before_any_native_work(monkeypatch, design_host):
     store, task, request = design_host
-    monkeypatch.setattr(design_execution, "add_voice_context", AsyncMock(side_effect=RuntimeError("History still saving")))
+    monkeypatch.setattr(
+        design_execution, "add_voice_context", AsyncMock(side_effect=RuntimeError("History still saving")),
+    )
     with pytest.raises(RuntimeError, match="History"):
         async with design_execution.bind_design_voice_task(request, {}):
             pytest.fail("native work must not start")

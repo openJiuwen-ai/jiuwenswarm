@@ -1,5 +1,8 @@
 """#5486: an unknown task is settled by Core's confirmation, not held forever."""
 
+# White-box regressions probe reconciliation and native interrupt cleanup directly.
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 
@@ -88,6 +91,7 @@ class CoreSays:
         self.probe_settled, self.cancel_settled = probe_settled, cancel_settled
         self.requests = []
         self.health_requests = 0
+        self.runtime_ready = None
 
     async def send_request(self, request):
         if request.method == ReqMethod.VOICE_TASK_PENDING_INTERRUPT.value:
@@ -97,7 +101,7 @@ class CoreSays:
             if not self.server_ready:
                 raise ConnectionError("Core is disconnected")
             return SimpleNamespace(ok=True, payload={
-                "agent_ready": getattr(self, "runtime_ready", self.agent_ready),
+                "agent_ready": self.agent_ready if self.runtime_ready is None else self.runtime_ready,
             })
         probe = bool((request.params or {}).get("managed_task_probe"))
         self.requests.append(("probe" if probe else "cancel", request.params["managed_task_request"]))

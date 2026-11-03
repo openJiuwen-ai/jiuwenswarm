@@ -335,7 +335,10 @@ def create_voice_handlers(
             })
             await channel.send_event(ws, "video.tts.cancelled", {"stream_id": stream_id})
         except Exception as exc:  # noqa: BLE001
-            error = duplex_failure(exc, stage="TTS 流式合成", request_id=request_id) + f" [stream_id={stream_id}, chunks={sequence}]"
+            error = (
+                duplex_failure(exc, stage="TTS 流式合成", request_id=request_id)
+                + f" [stream_id={stream_id}, chunks={sequence}]"
+            )
             await asyncio.to_thread(log_event, {
                 "stage": "tts_stream_failed",
                 "request_id": request_id,

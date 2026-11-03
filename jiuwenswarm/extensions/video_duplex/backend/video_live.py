@@ -236,7 +236,11 @@ def register_video_live_handler(
         try:
             restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
         except Exception as exc:
-            await channel.send_response(ws, req_id, ok=False, error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id), code="CONTEXT_RESTORE_FAILED")
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id),
+                code="CONTEXT_RESTORE_FAILED",
+            )
             return
         context_payload = {"context_restore": restored} if restored else {}
         if _video_live_mode() == "joyai":
@@ -295,9 +299,11 @@ def register_video_live_handler(
             params.get("reply_language", settings.reply_language())
         )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
-        if (frame_data_url and not _is_allowed_image_data_url(frame_data_url)) or (
-            not frame_data_url and request_kind != "user"
-        ):
+        if frame_data_url:
+            invalid_frame = not _is_allowed_image_data_url(frame_data_url)
+        else:
+            invalid_frame = request_kind != "user"
+        if invalid_frame:
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="frame_data_url must be a base64 JPEG, PNG, or WebP data URL",
@@ -386,7 +392,11 @@ def register_video_live_handler(
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
                 return
             except Exception as exc:
-                await channel.send_response(ws, req_id, ok=False, error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id), code="CONTEXT_RESTORE_FAILED")
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id),
+                    code="CONTEXT_RESTORE_FAILED",
+                )
                 return
         request_log = {
             "request_id": str(req_id),
@@ -436,9 +446,10 @@ def register_video_live_handler(
                     jobs = snapshot["jobs"]
                     active = [job for job in jobs if job["status"] not in {"completed", "failed", "cancelled"}]
                     recent = active[:8] + [job for job in jobs[-8:] if job not in active[:8]]
-                    task_context = [{key: job.get(key) for key in (
+                    task_fields = (
                         "job_id", "title", "question", "status", "revision", "parent_id", "successor_id",
-                    )} for job in recent]
+                    )
+                    task_context = [{key: job.get(key) for key in task_fields} for job in recent]
                     for task in task_context:
                         task["question"] = str(task.get("question") or "")[:1000]
                     result = await joyai_action_helper.review_action(
@@ -520,7 +531,8 @@ def register_video_live_handler(
                     response_text = queue_management.get("response", "")
                     if queue_management.get("state") == "incomplete":
                         response_text = (
-                            "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
+                            "Queue management did not finish. "
+                            "Check the task list and scheduled jobs for any changes already applied."
                             if reply_language == "en" or (
                                 reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", question or instruction)
                             ) else "队列管理未全部完成，请查看任务列表和定时任务确认已执行的操作。"
@@ -585,7 +597,9 @@ def register_video_live_handler(
                 )
             except ValueError as exc:
                 await channel.send_response(
-                    ws, req_id, ok=False, error=duplex_failure(exc, stage="JoyAI 任务提交", request_id=req_id), code="TASK_REQUEST_REJECTED"
+                    ws, req_id, ok=False,
+                    error=duplex_failure(exc, stage="JoyAI 任务提交", request_id=req_id),
+                    code="TASK_REQUEST_REJECTED",
                 )
                 return
             tools_used.append("jiuwen_delegate")
@@ -651,12 +665,15 @@ def register_video_live_handler(
             from .tasks.diagnostics import trace_task
 
             if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
-                allowed["jobs"] = [
-                    {key: job.get(key) for key in (
-                        "job_id", "status", "sequence", "queue_position", "queue_version",
-                    ) if isinstance(job.get(key), (str, int, float, bool))}
-                    for job in params["jobs"][:100] if isinstance(job, dict)
-                ]
+                allowed["jobs"] = []
+                task_fields = ("job_id", "status", "sequence", "queue_position", "queue_version")
+                for job in params["jobs"][:100]:
+                    if not isinstance(job, dict):
+                        continue
+                    allowed["jobs"].append({
+                        key: job.get(key) for key in task_fields
+                        if isinstance(job.get(key), (str, int, float, bool))
+                    })
             trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
         if event_name in {
             "realtime_answer_final",
