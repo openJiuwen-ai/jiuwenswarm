@@ -1721,6 +1721,8 @@ class SandboxManager:
         deep-merged into ``self.policy`` and the result is written to
         ``update_policy.yaml`` (single merged document, overwritten each time).
         On restart that file becomes the default policy when present.
+        The warm pool then adopts that policy: parked sandboxes that no longer
+        match are discarded and later refills use the new template.
         ``timeout`` changes also restart the idle reaper.
         ``inference_privacy_proxies`` is ignored.
 
@@ -1779,6 +1781,9 @@ class SandboxManager:
                     self.start_idle_reaper()
             if update_existing_sandboxes:
                 sandbox_ids = list(self._sandboxes.keys())
+
+        if update_default_policy:
+            await self._refresh_warm_pool(self.policy)
 
         updated_ids: list[str] = []
         skipped: list[dict[str, str]] = []
@@ -1858,6 +1863,18 @@ class SandboxManager:
             "default_updated": update_default_policy,
             "default_policy": default_policy,
         }
+
+    async def _refresh_warm_pool(self, policy: SecurityPolicy) -> None:
+        """Apply a new default policy to the process warm pool, if one is running."""
+        replace = getattr(self.runtime, "replace_warm_pool_template", None)
+        if replace is None:
+            return
+        try:
+            await asyncio.to_thread(replace, policy)
+        except Exception:
+            logger.exception(
+                "Failed to refresh warm pool after default policy update",
+            )
 
     @staticmethod
     def _strip_batch_policy_fragment(

@@ -158,13 +158,21 @@ class _MountClient:
 
 
 class WarmPool:
-    """Keeps ``size`` parked sandboxes and refills after each checkout."""
+    """Keeps ``size`` parked sandboxes and refills after each checkout.
+
+    ``replace_template`` installs a new default policy. Parked sandboxes are
+    kept when network, cgroup, namespace, syscall and Landlock still match;
+    otherwise they are destroyed and the filler parks new ones from the new
+    template.
+    """
 
     def __init__(self, runtime: ProcessRuntime, template: SecurityPolicy, size: int) -> None:
         self._runtime = runtime
         self._template = template
         self._size = size
+        self._epoch = 0
         self._slots: queue.Queue[str] = queue.Queue()
+        self._state_lock = threading.Lock()
         self._stop = threading.Event()
         self._helper = _MountClient()
         self._thread = threading.Thread(
@@ -181,36 +189,84 @@ class WarmPool:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._state_lock:
+            self._epoch += 1
         self._thread.join(timeout=8)
-        while True:
-            try:
-                slot_id = self._slots.get_nowait()
-            except queue.Empty:
-                break
+        for slot_id in self._drain_slots():
             self._runtime.destroy_warm_slot(slot_id)
         self._helper.close()
 
-    def compatible(self, policy: SecurityPolicy) -> bool:
-        return warm_pool_compatible(self._template, policy)
+    def replace_template(self, template: SecurityPolicy) -> None:
+        """Point the pool at ``template`` and drop parked sandboxes that cannot serve it."""
+        with self._state_lock:
+            reusable = warm_pool_compatible(self._template, template)
+            self._template = template
+            if reusable:
+                logger.info("Warm pool template updated; parked sandboxes still match")
+                return
+            self._epoch += 1
+            stale = self._drain_slots_unlocked()
+        logger.info(
+            "Warm pool template changed; discarding %d parked sandbox(es)",
+            len(stale),
+        )
+        for slot_id in stale:
+            try:
+                self._runtime.destroy_warm_slot(slot_id)
+            except Exception:
+                logger.exception("Failed to discard warm slot %s", slot_id)
 
-    def take(self) -> str | None:
-        try:
-            return self._slots.get_nowait()
-        except queue.Empty:
-            return None
+    def acquire(self, policy: SecurityPolicy) -> tuple[bool, str | None]:
+        """Claim a parked sandbox when ``policy`` matches the current template.
+
+        The first value is false when the pool must not serve this policy.
+        It is true with a null slot when the template matches but the queue is empty.
+        """
+        with self._state_lock:
+            if not warm_pool_compatible(self._template, policy):
+                return False, None
+            try:
+                return True, self._slots.get_nowait()
+            except queue.Empty:
+                return True, None
+
+    def _drain_slots(self) -> list[str]:
+        with self._state_lock:
+            return self._drain_slots_unlocked()
+
+    def _drain_slots_unlocked(self) -> list[str]:
+        stale: list[str] = []
+        while True:
+            try:
+                stale.append(self._slots.get_nowait())
+            except queue.Empty:
+                return stale
 
     def _fill_loop(self) -> None:
         while not self._stop.is_set():
-            if self._slots.qsize() >= self._size:
+            with self._state_lock:
+                if self._slots.qsize() >= self._size:
+                    template = None
+                    epoch = self._epoch
+                else:
+                    template = self._template
+                    epoch = self._epoch
+            if template is None:
                 self._stop.wait(0.5)
                 continue
             try:
-                slot_id = self._runtime.spawn_warm_slot(self._template)
+                slot_id = self._runtime.spawn_warm_slot(template)
             except Exception:
                 logger.exception("Warm pool failed to park a sandbox")
                 self._stop.wait(1.0)
                 continue
-            if self._stop.is_set():
+            discard = False
+            with self._state_lock:
+                if self._stop.is_set() or epoch != self._epoch:
+                    discard = True
+                else:
+                    self._slots.put(slot_id)
+            if discard:
                 self._runtime.destroy_warm_slot(slot_id)
-                return
-            self._slots.put(slot_id)
+                if self._stop.is_set():
+                    return

@@ -2293,6 +2293,13 @@ class ProcessRuntime(RuntimeAdapter):
         if pool is not None:
             pool.stop()
 
+    def replace_warm_pool_template(self, template: SecurityPolicy) -> None:
+        """Retarget parked sandboxes after the server default policy changes."""
+        pool = self._warm_pool
+        if pool is None:
+            return
+        pool.replace_template(template)
+
     def attach_mount_client(self, client: Any) -> None:
         self._mount_client = client
 
@@ -2352,12 +2359,14 @@ class ProcessRuntime(RuntimeAdapter):
         env: dict[str, str] | None,
     ) -> int | None:
         pool = self._warm_pool
-        if pool is None or not pool.compatible(policy):
+        if pool is None:
+            return None
+        matched, slot_id = pool.acquire(policy)
+        if not matched:
             return None
         with perf_trace.span("pool.checkout", sandbox_id):
-            slot_id = pool.take()
-        if slot_id is None:
-            return None
+            if slot_id is None:
+                return None
         try:
             return await asyncio.to_thread(
                 self._adopt_warm_slot,
