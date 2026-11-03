@@ -1,7 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Prompt-only global pause rules reach the leader, not the teammates."""
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -44,8 +46,8 @@ def test_existing_sdk_rail_includes_pause_rules_in_leader_system_prompt():
     prompt = _leader_prompt()
     rail = TeamPolicyRail(role=TeamRole.LEADER, member_name="team-leader", base_prompt=prompt)
     builder = SystemPromptBuilder(language="cn")
-    for section in rail._static_sections:
-        builder.add_section(section)
+    rail.init(SimpleNamespace(system_prompt_builder=builder, prompt_attachment_manager=None))
+    asyncio.run(rail.before_model_call(SimpleNamespace(context=None, session=None)))
     rendered = builder.build()
     assert prompt in rendered
     assert 'send_message(to="*"' in rendered

@@ -915,12 +915,14 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_duplex_router_in_config(updates: dict[str, Any]) -> None:
-    """Merge ``updates`` into the ``duplex_router`` section and write it back."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if not isinstance(data.get("duplex_router"), dict):
-        data["duplex_router"] = {}
-    data["duplex_router"].update(updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """Merge ``updates`` into the ``duplex_router`` section under the config write lock."""
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data.get("duplex_router"), dict):
+            data["duplex_router"] = {}
+        data["duplex_router"].update(updates)
+        return data
+
+    update_config(_mutate)
 
 
 def update_browser_decision_in_config(updates: dict[str, Any]) -> None:

@@ -39,7 +39,9 @@ def settings_file(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "get_env_file", lambda: env_file)
     for name in (KEY_ENV, "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.setenv(name, "")
-    return SimpleNamespace(path=path, env_file=env_file, env_writes=env_writes, read=lambda: yaml.safe_load(path.read_text()))
+    return SimpleNamespace(
+        path=path, env_file=env_file, env_writes=env_writes, read=lambda: yaml.safe_load(path.read_text()),
+    )
 
 
 def test_save_keeps_key_in_env_and_only_its_name_in_yaml(settings_file, monkeypatch):
@@ -64,6 +66,8 @@ def test_invalid_or_incomplete_save_writes_nothing(settings_file):
     before = settings_file.path.read_bytes()
     for bad in (
         {**ENABLED, "duplex_router_api_base": "file:///tmp/secret"},
+        {**ENABLED, "duplex_router_api_base": "https://user:pw@relay.example/v1"},
+        {**ENABLED, "duplex_router_api_base": "https://relay.example/v1#frag"},
         {**ENABLED, "duplex_router_format": "grpc"},
         {**ENABLED, "duplex_router_model": ""},
         {**ENABLED, "duplex_router_api_key": ""},
@@ -72,6 +76,21 @@ def test_invalid_or_incomplete_save_writes_nothing(settings_file):
             handlers.apply_config_payload(bad)
     assert settings_file.path.read_bytes() == before
     assert settings_file.env_writes == []
+
+
+def test_save_goes_through_config_write_lock(settings_file, monkeypatch):
+    locked = []
+    real_update_config = config.update_config
+
+    def spy(mutator, **kwargs):
+        locked.append(True)
+        return real_update_config(mutator, **kwargs)
+
+    monkeypatch.setattr(config, "update_config", spy)
+    config.update_duplex_router_in_config({"enabled": False})
+    assert locked == [True]
+    assert settings_file.read()["duplex_router"] == {"enabled": False}
+    assert settings_file.read()["other"] == "keep"
 
 
 def test_turning_off_needs_nothing_else(settings_file):
@@ -127,7 +146,7 @@ def test_loader_adds_duplex_only_when_sdk_declares_it(monkeypatch):
 
     base = {**TEAM, "duplex_router": {"enabled": True, "format": "openai", "api_base": "https://x.example/v1",
                                       "model": "m", "api_key_env": KEY_ENV}}
-    if "duplex" not in blueprint.TeamAgentSpec.model_fields:
+    if blueprint.TeamAgentSpec.model_fields.get("duplex") is None:
         assert "duplex" not in load_team_spec_dict(config_base=base)
         fake = SimpleNamespace(model_fields={"duplex": SimpleNamespace(annotation=dict)})
         monkeypatch.setattr(blueprint, "TeamAgentSpec", fake)

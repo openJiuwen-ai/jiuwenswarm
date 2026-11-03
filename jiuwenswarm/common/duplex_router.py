@@ -113,6 +113,42 @@ def _valid_url(raw: str) -> bool:
     )
 
 
+def _parse_duplex_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The submitted ``duplex_router_*`` fields, normalised and format-checked."""
+    updates: dict[str, Any] = {}
+    for field in DUPLEX_ROUTER_FIELDS:
+        key = f"duplex_router_{field}"
+        if key not in params:
+            continue
+        value = params[key]
+        if field == "enabled":
+            updates[field] = _enabled(value)
+            continue
+        updates[field] = _text(value)
+    if "format" in updates and updates["format"] not in DUPLEX_ROUTER_FORMATS:
+        raise DuplexRouterSettingsError(f"invalid duplex_router.format: {updates['format']!r}")
+    if updates.get("api_base") and not _valid_url(updates["api_base"]):
+        raise DuplexRouterSettingsError("duplex_router.api_base must be an http(s) URL without credentials")
+    return updates
+
+
+def _missing_required(
+    merged: Mapping[str, Any],
+    config: Mapping[str, Any] | None,
+    own_key: str,
+    environment: Mapping[str, str],
+) -> list[str]:
+    """Required fields still empty for an enabled supervisor."""
+    if merged["format"] == "jev":
+        # Empty address / model / key: the browser Jev connection fills them in.
+        jev = browser_jev_connection(config)
+        return [] if own_key or _key_set(jev["api_key_env"], environment) else ["api_key"]
+    missing = [field for field in ("api_base", "model") if not _text(merged[field])]
+    if not own_key:
+        missing.append("api_key")
+    return missing
+
+
 def build_duplex_router_update(
     params: Mapping[str, Any],
     config: Mapping[str, Any] | None,
@@ -127,23 +163,7 @@ def build_duplex_router_update(
     touched = DUPLEX_ROUTER_PARAM_KEYS.intersection(params) or DUPLEX_ROUTER_API_KEY_PARAM in params
     if not touched:
         return {}
-    updates: dict[str, Any] = {}
-    for field in DUPLEX_ROUTER_FIELDS:
-        key = f"duplex_router_{field}"
-        if key not in params:
-            continue
-        value = params[key]
-        if field == "enabled":
-            updates[field] = _enabled(value)
-        elif field == "format":
-            if _text(value) not in DUPLEX_ROUTER_FORMATS:
-                raise DuplexRouterSettingsError(f"invalid duplex_router.format: {_text(value)!r}")
-            updates[field] = _text(value)
-        else:
-            updates[field] = _text(value)
-    if updates.get("api_base") and not _valid_url(updates["api_base"]):
-        raise DuplexRouterSettingsError("duplex_router.api_base must be an http(s) URL without credentials")
-
+    updates = _parse_duplex_params(params)
     typed_key = params.get(DUPLEX_ROUTER_API_KEY_PARAM)
     own_key = _text(typed_key) if typed_key is not None else _text(environment.get(DUPLEX_ROUTER_API_KEY_ENV))
     updates["api_key_env"] = DUPLEX_ROUTER_API_KEY_ENV if own_key else ""
@@ -151,16 +171,7 @@ def build_duplex_router_update(
     merged = {**_section(config), **updates}
     if not _enabled(merged["enabled"]):
         return updates
-    missing: list[str] = []
-    if merged["format"] == "jev":
-        # Empty address / model / key: the browser Jev connection fills them in.
-        jev = browser_jev_connection(config)
-        if not own_key and not _key_set(jev["api_key_env"], environment):
-            missing.append("api_key")
-    else:
-        missing.extend(field for field in ("api_base", "model") if not _text(merged[field]))
-        if not own_key:
-            missing.append("api_key")
+    missing = _missing_required(merged, config, own_key, environment)
     if missing:
         raise DuplexRouterSettingsError(f"duplex_router is enabled but missing: {', '.join(missing)}")
     return updates

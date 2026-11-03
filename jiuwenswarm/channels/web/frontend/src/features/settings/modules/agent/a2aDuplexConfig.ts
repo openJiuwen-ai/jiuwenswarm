@@ -46,6 +46,18 @@ export function createDuplexDraft(saved: DuplexSettings): DuplexDraft {
   return { enabled, format, api_base, model, api_key };
 }
 
+/** Same rule as the server: http(s) with a host, no credentials, no fragment. */
+function isServiceUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  const allowed = ['http:', 'https:'].includes(url.protocol) && url.hostname !== '';
+  return allowed && !url.username && !url.password && !url.hash;
+}
+
 /** Validation for one field. Required fields only apply while the supervisor is on. */
 export function duplexFieldError(
   field: DuplexField,
@@ -53,7 +65,7 @@ export function duplexFieldError(
   saved: Pick<DuplexSettings, 'jev'>,
 ): DuplexFieldError | undefined {
   const value = String(draft[field] ?? '').trim();
-  if (field === 'api_base' && value && !/^https?:\/\/[^\s/@]+/i.test(value)) return 'url';
+  if (field === 'api_base' && value && !isServiceUrl(value)) return 'url';
   if (!draft.enabled) return undefined;
   if (draft.format === 'jev') {
     // Empty address / model / key: the browser Jev connection is used.

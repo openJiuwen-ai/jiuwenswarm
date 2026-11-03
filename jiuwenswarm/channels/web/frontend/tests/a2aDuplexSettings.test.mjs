@@ -51,6 +51,10 @@ test('openai / anthropic need url, model and key only while enabled', () => {
   }
   assert.equal(duplexFieldError('api_base', { ...empty, api_base: 'relay.example' }, view), 'url');
   assert.equal(duplexFieldError('api_base', { ...empty, enabled: false, api_base: 'relay.example' }, view), 'url');
+  for (const bad of ['https://user:pw@relay.example/v1', 'https://relay.example/v1#frag', 'ftp://relay.example']) {
+    assert.equal(duplexFieldError('api_base', { ...empty, api_base: bad }, view), 'url', bad);
+  }
+  assert.equal(duplexFieldError('api_base', { ...empty, api_base: 'https://relay.example/v1' }, view), undefined);
 });
 
 test('jev falls back to the browser connection and only needs a key when none is configured', () => {
