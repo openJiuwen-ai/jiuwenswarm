@@ -28,15 +28,15 @@ def test_a2ui_prompt_discourages_nested_templates():
     assert "indexed valueMap" in instruction
 
 
-def test_a2ui_prompt_titles_input_components_with_text_h5():
+def test_a2ui_prompt_titles_input_components_with_text_caption():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert 'usageHint "h5"' in en
+    assert 'usageHint "caption"' in en
     assert '{"literalString": ""}' in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert 'usageHint="h5"' in zh
+    assert 'usageHint="caption"' in zh
     assert '{"literalString": ""}' in zh
 
 
@@ -62,6 +62,16 @@ def test_a2ui_prompt_enforces_single_parent_tree():
 
     assert "单亲树" in zh
     assert "不得再出现在任何 Column/Row/List 的 children.explicitList" in zh
+
+
+def test_a2ui_prompt_multiplechoice_single_select_max_one():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "single-select, set maxAllowedSelections to 1" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "maxAllowedSelections 必须设为 1" in zh
 
 
 def test_a2ui_prompt_defines_hotel_booking_actions():
