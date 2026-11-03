@@ -27,19 +27,12 @@ generated: true
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-10) |
 | [jiuwenswarm/channels/web](#module-11) |
 | [jiuwenswarm/channels/web/frontend](#module-12) |
-| [jiuwenswarm/common](#module-13) |
-| [jiuwenswarm/gateway/channel_manager/web](#module-14) |
-| [jiuwenswarm/observability](#module-15) |
-| [jiuwenswarm/server/ipc](#module-16) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-17) |
-| [jiuwenswarm/server/runtime/mcp](#module-18) |
-| [jiuwenswarm/server/supervisor](#module-19) |
-| [jiuwenswarm/server/worker](#module-20) |
-| [jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile](#module-21) |
-| [jiuwenswarm_harmony_pc/hnp](#module-22) |
-| [tests/unit_tests/gateway](#module-23) |
-| [tests/unit_tests/personal_context](#module-24) |
-| [未分类](#module-25) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-13) |
+| [jiuwenswarm/observability](#module-14) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-15) |
+| [tests/unit_tests/gateway](#module-16) |
+| [tests/unit_tests/personal_context](#module-17) |
+| [未分类](#module-18) |
 
 <a id="module-1"></a>
 
@@ -151,21 +144,13 @@ generated: true
 
 <a id="module-13"></a>
 
-## jiuwenswarm/common
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261102_1630_harmony-runtime-ipc](features/F_20261102_1630_harmony-runtime-ipc.md) | F | 鸿蒙 Runtime IPC 平台适配与双分支交付 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/ipc, jiuwenswarm/server/runtime/mcp, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/common/runtime_platform.py, jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/ipc/server.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/runtime/mcp/cli_driver.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/stub.py, jiuwenswarm/server/worker/gateway_bridge.py, tests/unit_tests/agentserver/test_front_loopback_ipc.py, tests/unit_tests/agentserver/fixtures/loopback_front.py, tests/unit_tests/agentserver/fixtures/loopback_reaper.py | [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) |
-
-<a id="module-14"></a>
-
 ## jiuwenswarm/gateway/channel_manager/web
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-15"></a>
+<a id="module-14"></a>
 
 ## jiuwenswarm/observability
 
@@ -173,17 +158,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-16"></a>
-
-## jiuwenswarm/server/ipc
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) | D | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | douran | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile, jiuwenswarm_harmony_pc/hnp | — | — |
-| [F_20261102_1630_harmony-runtime-ipc](features/F_20261102_1630_harmony-runtime-ipc.md) | F | 鸿蒙 Runtime IPC 平台适配与双分支交付 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/ipc, jiuwenswarm/server/runtime/mcp, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/common/runtime_platform.py, jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/ipc/server.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/runtime/mcp/cli_driver.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/stub.py, jiuwenswarm/server/worker/gateway_bridge.py, tests/unit_tests/agentserver/test_front_loopback_ipc.py, tests/unit_tests/agentserver/fixtures/loopback_front.py, tests/unit_tests/agentserver/fixtures/loopback_reaper.py | [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) |
-| [S_01_runtime-ipc-transport](specs/jiuwenswarm/server/ipc/S_01_runtime-ipc-transport.md) | S | Runtime IPC transport 与 Worker 生命周期规约 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/common/runtime_platform.py | — |
-
-<a id="module-17"></a>
+<a id="module-15"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -194,51 +169,7 @@ generated: true
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-18"></a>
-
-## jiuwenswarm/server/runtime/mcp
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261102_1630_harmony-runtime-ipc](features/F_20261102_1630_harmony-runtime-ipc.md) | F | 鸿蒙 Runtime IPC 平台适配与双分支交付 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/ipc, jiuwenswarm/server/runtime/mcp, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/common/runtime_platform.py, jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/ipc/server.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/runtime/mcp/cli_driver.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/stub.py, jiuwenswarm/server/worker/gateway_bridge.py, tests/unit_tests/agentserver/test_front_loopback_ipc.py, tests/unit_tests/agentserver/fixtures/loopback_front.py, tests/unit_tests/agentserver/fixtures/loopback_reaper.py | [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) |
-
-<a id="module-19"></a>
-
-## jiuwenswarm/server/supervisor
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) | D | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | douran | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile, jiuwenswarm_harmony_pc/hnp | — | — |
-| [F_20261102_1630_harmony-runtime-ipc](features/F_20261102_1630_harmony-runtime-ipc.md) | F | 鸿蒙 Runtime IPC 平台适配与双分支交付 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/ipc, jiuwenswarm/server/runtime/mcp, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/common/runtime_platform.py, jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/ipc/server.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/runtime/mcp/cli_driver.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/stub.py, jiuwenswarm/server/worker/gateway_bridge.py, tests/unit_tests/agentserver/test_front_loopback_ipc.py, tests/unit_tests/agentserver/fixtures/loopback_front.py, tests/unit_tests/agentserver/fixtures/loopback_reaper.py | [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) |
-| [S_01_runtime-ipc-transport](specs/jiuwenswarm/server/ipc/S_01_runtime-ipc-transport.md) | S | Runtime IPC transport 与 Worker 生命周期规约 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/common/runtime_platform.py | — |
-
-<a id="module-20"></a>
-
-## jiuwenswarm/server/worker
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) | D | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | douran | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile, jiuwenswarm_harmony_pc/hnp | — | — |
-| [F_20261102_1630_harmony-runtime-ipc](features/F_20261102_1630_harmony-runtime-ipc.md) | F | 鸿蒙 Runtime IPC 平台适配与双分支交付 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/ipc, jiuwenswarm/server/runtime/mcp, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/common/runtime_platform.py, jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/ipc/server.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/runtime/mcp/cli_driver.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/stub.py, jiuwenswarm/server/worker/gateway_bridge.py, tests/unit_tests/agentserver/test_front_loopback_ipc.py, tests/unit_tests/agentserver/fixtures/loopback_front.py, tests/unit_tests/agentserver/fixtures/loopback_reaper.py | [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) |
-| [S_01_runtime-ipc-transport](specs/jiuwenswarm/server/ipc/S_01_runtime-ipc-transport.md) | S | Runtime IPC transport 与 Worker 生命周期规约 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker | jiuwenswarm/server/ipc/session.py, jiuwenswarm/server/ipc/loopback.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/supervisor/worker_process.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/common/runtime_platform.py | — |
-
-<a id="module-21"></a>
-
-## jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) | D | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | douran | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile, jiuwenswarm_harmony_pc/hnp | — | — |
-
-<a id="module-22"></a>
-
-## jiuwenswarm_harmony_pc/hnp
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](designs/active/D-20261102-1502-harmony-runtime-ipc/design.md) | D | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | douran | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile, jiuwenswarm_harmony_pc/hnp | — | — |
-
-<a id="module-23"></a>
+<a id="module-16"></a>
 
 ## tests/unit_tests/gateway
 
@@ -246,7 +177,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-24"></a>
+<a id="module-17"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -254,7 +185,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-25"></a>
+<a id="module-18"></a>
 
 ## 未分类
 
