@@ -2,26 +2,36 @@
 
 """Authentication gate: the BUILTIN handler that keeps locked frames out.
 
-The gate owns one platform rule: a browser connection that has not logged in
-must not reach the native dispatch path. Authentication itself is never decided
-here. A USER handler performs the login (usually through ``ops.http.fetch``)
-and records the result as a connection-scoped ``ui.store`` value under
-:data:`AUTH_STORE_KEY`; the gate only reads that fact.
+The gate owns one platform rule: a browser connection without an authorization
+header must not reach the native dispatch path. Authentication itself is never
+decided here, and the platform never renders a login view. The browser stores
+whatever credential a package asks for, sends it in
+``request_context.headers.authorization`` on every frame, and a USER handler
+decides whether that credential is valid. The gate only checks that the header
+is present, so it never parses, caches or revokes credentials.
 
 The level matters. BUILTIN handlers run after every USER handler and before
 the CORE handler, so a package that answers a frame without forwarding bypasses
 the gate. This is the same ordering contract as AgentServer: packages observe
 and replace platform behaviour, the platform rule only applies to frames that
 actually continue inward.
+
+Two generic exemptions keep a plugin-rendered interaction reachable while the
+connection is locked: ``ping`` stays open for keepalive, and frames targeting an
+application-scoped slot the Gateway owns are answered locally. Those slots have
+no AgentServer view, so a package paints and serves them through the Gateway
+``ui.render`` / ``ui.click`` chain that runs before this gate.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Mapping
+from typing import Callable
 
 from openjiuwen.core.events import Event, EventHandler, EventHandlerOps, EventNext
 
+from jiuwenswarm.gateway.extensions_v2.config import AuthPolicy
 from jiuwenswarm.gateway.extensions_v2.models import (
     EVENT_GATEWAY_REQUEST,
     WEBUI_DISPATCH_METHOD,
@@ -29,49 +39,42 @@ from jiuwenswarm.gateway.extensions_v2.models import (
     GatewayRequestOutput,
     GatewayRoute,
 )
-from jiuwenswarm.gateway.extensions_v2.state import SCOPE_CONNECTION, UiStateStore
+from jiuwenswarm.gateway.extensions_v2.webui.constants import SlotScope, WebUIEvent, slot_spec
 
 logger = logging.getLogger(__name__)
-
-#: Connection-scoped key holding the authenticated session of one browser tab.
-AUTH_STORE_KEY = "auth.session"
-
-#: Methods a locked connection may still call: the browser has to be able to
-#: mount the login gate and report a click on it. ``webui.dispatch`` reaches
-#: the gate only when no USER click handler answered the frame earlier.
-LOCKED_ALLOWED_METHODS = frozenset({WEBUI_DISPATCH_METHOD, "ping"})
 
 CODE_AUTH_REQUIRED = "AUTH_REQUIRED"
 AUTH_REQUIRED_MESSAGE = "login required"
 
-LockedCallback = Callable[[str], Awaitable[None]]
+#: Framing/keepalive methods that must work before a login exists.
+ANONYMOUS_METHODS = frozenset({"ping"})
 
 
-def is_authenticated(store: UiStateStore, connection_id: str) -> bool:
-    """Return True when the connection holds a live authentication record."""
+def has_authorization(headers: Mapping[str, str] | None) -> bool:
+    """Return True when the frame carries a non-empty authorization header."""
 
-    if not connection_id:
+    if not isinstance(headers, Mapping):
         return False
-    return store.get(scope=SCOPE_CONNECTION, scope_id=connection_id, key=AUTH_STORE_KEY) is not None
+    for name, value in headers.items():
+        if isinstance(name, str) and name.strip().lower() == "authorization":
+            return isinstance(value, str) and bool(value.strip())
+    return False
 
 
 def build_auth_gate_handler(
-    store: UiStateStore,
     *,
-    on_locked: LockedCallback | None = None,
+    policy: AuthPolicy | None = None,
     enforce: Callable[[], bool] | None = None,
 ) -> EventHandler:
     """Build the BUILTIN handler registered for ``gateway.request``.
 
-    ``on_locked`` is called with the connection id before a frame is denied, so
-    the host can put the login gate on screen without the gate owning render
-    logic.
-
     ``enforce`` reports whether the gate applies at all. The host passes
     ``runtime.has_auth_provider`` so an installation without a login-owning
-    package never shows a login form; ``None`` keeps the gate always on for
+    package never gates frames; ``None`` keeps the gate always on for
     standalone use and tests.
     """
+
+    active_policy = policy or AuthPolicy()
 
     async def auth_gate(
         event: Event,
@@ -82,17 +85,28 @@ def build_auth_gate_handler(
         request = event.event_input
         if not isinstance(request, GatewayRequestInput):
             raise TypeError(f"{EVENT_GATEWAY_REQUEST} requires GatewayRequestInput")
-
         if enforce is not None and not enforce():
             return await next_handler(event)
-        if _lets_through(request, store):
+        if not _gated(request, active_policy):
             return await next_handler(event)
 
-        if on_locked is not None and request.connection_id:
-            try:
-                await on_locked(request.connection_id)
-            except Exception as exc:  # noqa: BLE001 - a hint failure must not open the gate
-                logger.warning("[GatewayExtensions] login gate render failed: %s", exc)
+        gateway_slot_event = _gateway_slot_event(request)
+        if gateway_slot_event == WebUIEvent.READY.value:
+            # The browser mounted a Gateway-owned slot; nothing to forward.
+            return _consumed({"event": WebUIEvent.READY.value, "accepted": True})
+        if gateway_slot_event == WebUIEvent.CHANGE.value:
+            # Field values are local to the browser form, so the draft is dropped.
+            return _consumed({})
+
+        if has_authorization(request.headers):
+            return await next_handler(event)
+        if request.method in ANONYMOUS_METHODS:
+            return await next_handler(event)
+        if gateway_slot_event:
+            # No package handled this interaction on a Gateway-owned slot; the
+            # slot has no AgentServer view, so answer it here instead.
+            return _consumed({})
+
         logger.info(
             "[GatewayExtensions] frame denied before login: method=%s ws_id=%s",
             request.method,
@@ -107,15 +121,37 @@ def build_auth_gate_handler(
     return auth_gate
 
 
-def _lets_through(request: GatewayRequestInput, store: UiStateStore) -> bool:
-    """Return True when the frame may continue towards the CORE handler."""
+def _gated(request: GatewayRequestInput, policy: AuthPolicy) -> bool:
+    """Return True when the platform rule applies to this frame at all."""
 
+    if not policy.enabled:
+        return False
     # A host-triggered event has no browser connection to authenticate.
     if not request.connection_id:
-        return True
+        return False
     # Let the CORE handler answer a malformed frame with BAD_REQUEST.
-    if not isinstance(request.method, str) or not request.method.strip():
-        return True
-    if request.method in LOCKED_ALLOWED_METHODS:
-        return True
-    return is_authenticated(store, request.connection_id)
+    return isinstance(request.method, str) and bool(request.method.strip())
+
+
+def _gateway_slot_event(request: GatewayRequestInput) -> str:
+    """Return the upstream event name when the frame targets a Gateway-owned slot."""
+
+    if request.method != WEBUI_DISPATCH_METHOD or not isinstance(request.params, Mapping):
+        return ""
+    target = request.params.get("target")
+    slot_id = target.get("slot_id") if isinstance(target, Mapping) else ""
+    if not isinstance(slot_id, str):
+        return ""
+    spec = slot_spec(slot_id)
+    if spec is None or spec.scope is not SlotScope.APPLICATION:
+        return ""
+    event_type = request.params.get("event")
+    return event_type.strip().lower() if isinstance(event_type, str) else ""
+
+
+def _consumed(response: Mapping[str, object]) -> GatewayRequestOutput:
+    return GatewayRequestOutput(
+        handled=True,
+        route=GatewayRoute.CONSUME.value,
+        response=response,
+    )

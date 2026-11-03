@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""In-process key/value state used by ``ui.store``.
+"""In-process key/value state reserved for connection-scoped Gateway data.
 
 Entries are scoped to one browser connection, one chat session or the whole
-process. Values never leave the process except through the ``webui.store``
-frame the CORE handler builds from the same entry.
+process. Authentication tokens are not stored here: the browser owns them in
+``localStorage`` and sends them back through ``request_context.headers``.
 """
 
 from __future__ import annotations

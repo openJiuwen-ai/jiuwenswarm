@@ -8,9 +8,11 @@ else keeps the previous behaviour: the frame is proxied to the owning
 AgentServer unchanged. Management frames never enter the extension bus, so an
 extension cannot intercept its own uninstall.
 
-The authentication gate applies when it is active: before a login-owning
-package is published the Gateway has no authentication concept, so management
-stays reachable and the first login package can be installed.
+The authentication gate applies to every inbound frame, including management
+frames: a request without an ``authorization`` header is answered with
+``AUTH_REQUIRED`` by the BUILTIN gate before it reaches this module. Before a
+login-owning package is published the gate stays inert, so management remains
+reachable and the first login package can be installed.
 """
 
 from __future__ import annotations
@@ -31,7 +33,6 @@ MANAGEMENT_METHODS = frozenset(
         ReqMethod.EXTENSIONS_V2_RELOAD.value,
     }
 )
-AUTH_REQUIRED_CODE = "AUTH_REQUIRED"
 INVALID_PARAMS_CODE = "INVALID_PARAMS"
 
 
@@ -104,19 +105,6 @@ async def _handle_locally(
     if runtime is None or not runtime.config.enabled or not isinstance(params, Mapping):
         return False
     manager = runtime.packages
-
-    if runtime.auth_required:
-        connection_id = await runtime.connection_id(ws)
-        if not runtime.is_authenticated(connection_id):
-            await _respond(
-                channel,
-                ws,
-                req_id,
-                ok=False,
-                error="login required to manage packages",
-                code=AUTH_REQUIRED_CODE,
-            )
-            return True
 
     if method is ReqMethod.EXTENSIONS_V2_QUERY:
         package_id = params.get("package_id")

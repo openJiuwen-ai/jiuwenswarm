@@ -13,7 +13,6 @@ from openjiuwen.core.extension import ExtensionFailure
 
 from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers
 from jiuwenswarm.gateway.extensions_v2 import assembly
-from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import AUTH_STORE_KEY
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -209,7 +208,7 @@ async def test_uninstall_of_an_agent_package_is_forwarded(tmp_path, monkeypatch)
     assert runtime.channel.responses == []
 
 
-async def test_management_requires_login_once_the_gate_is_active(tmp_path, monkeypatch):
+async def test_management_frames_cross_the_login_gate(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     await GatewayPackageManager(runtime, tmp_path / "extension_pkgs").install(
         [_package_zip(tmp_path, auth_provider=True)]
@@ -217,27 +216,19 @@ async def test_management_requires_login_once_the_gate_is_active(tmp_path, monke
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
     channel = runtime.channel
     ws = SimpleNamespace()
+    method = extension_package_handlers.ReqMethod.EXTENSIONS_V2_UNINSTALL.value
 
-    handled = await extension_package_handlers._handle_locally(
-        channel=channel,
-        resolve_client=lambda: None,
-        ws=ws,
-        req_id="r3",
-        params={"package_id": "demo.gateway"},
-        session_id=None,
-        user_id=None,
-        method=extension_package_handlers.ReqMethod.EXTENSIONS_V2_UNINSTALL,
-    )
+    visited, _ = await runtime.intercept(ws, "r3", method, {"package_id": "demo.gateway"})
 
-    assert handled is True
+    assert visited is True
     assert channel.responses[0]["code"] == "AUTH_REQUIRED"
 
-    runtime.store.set(
-        scope="connection",
-        scope_id="ws-1",
-        key=AUTH_STORE_KEY,
-        value={"token": "tk"},
+    visited, _ = await runtime.intercept(
+        ws, "r3b", method, {"package_id": "demo.gateway"}, {"authorization": "Bearer tk"}
     )
+
+    assert visited is False
+
     handled = await extension_package_handlers._handle_locally(
         channel=channel,
         resolve_client=lambda: None,

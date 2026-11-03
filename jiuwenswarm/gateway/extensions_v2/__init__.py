@@ -40,9 +40,12 @@ async def intercept_gateway_frame(
     req_id: str,
     method: str,
     params: Mapping[str, Any],
+    headers: Mapping[str, str] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
-    """Run one inbound frame through ``gateway.request``.
+    """Run one frame through ``gateway.request``.
 
+    ``headers`` carries ``request_context.headers`` from the browser frame so the
+    authentication gate and USER handlers can read ``authorization``.
     ``visited=True`` means the frame was answered by the extension runtime and
     the native dispatch must be skipped. Any failure fails open: the frame
     continues on the path it would have taken without extensions.
@@ -54,7 +57,7 @@ async def intercept_gateway_frame(
     if runtime is None or not isinstance(params, Mapping):
         return False, dict(params) if isinstance(params, Mapping) else {}
     try:
-        return await runtime.intercept(ws, req_id, method, dict(params))
+        return await runtime.intercept(ws, req_id, method, dict(params), headers)
     except Exception as exc:  # noqa: BLE001 - fail open to the native path
         logger.warning("[GatewayExtensions] frame interception failed, forwarding: %s", exc)
         return False, dict(params)
