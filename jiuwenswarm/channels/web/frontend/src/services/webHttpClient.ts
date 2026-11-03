@@ -147,6 +147,7 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.uninstall': { verb: 'POST', path: '/skills/actions/uninstall', kind: 'unary' },
   'skills.toggle': { verb: 'POST', path: '/skills/actions/toggle', kind: 'unary' },
   'skills.import_local': { verb: 'POST', path: '/skills/actions/import-local', kind: 'unary' },
+  'skills.import_upload': { verb: 'POST', path: '/skills/actions/import-upload', kind: 'unary' },
   'skills.source.providers': { verb: 'GET', path: '/skills/sources', kind: 'unary' },
   'skills.source.search': { verb: 'GET', path: '/skills/sources/search', kind: 'unary' },
   'skills.source.install': { verb: 'POST', path: '/skills/sources/actions/install', kind: 'unary' },

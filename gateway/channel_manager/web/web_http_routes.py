@@ -204,6 +204,8 @@ def _envelope_from_res(
         "TIMEOUT": 504,
         "SERVICE_UNAVAILABLE": 503,
         "WORKSPACE_QUOTA_EXCEEDED": 403,
+        "SKILL_UPLOAD_PERMISSION_REQUIRED": 403,
+        "SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE": 503,
     }.get(err_code, 500)
     return body, status
 

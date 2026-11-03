@@ -22,6 +22,7 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
     ERROR_SKILL_RESERVED_PATH,
+    ERROR_SKILL_UNSAFE_PATH,
     SkillManager,
     SkillRpcError,
 )
@@ -658,3 +659,105 @@ async def test_skill_rpc_client_rejects_missing_ack(
         await server.wait_closed()
 
     assert "connection.ack" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_import_upload_enterprise_requires_current_session_uploads(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.common.utils as common_utils
+    import jiuwenswarm.server.runtime.skill.skill_manager as skill_manager_module
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    tenant_root = tmp_path / "workspace_t"
+    sessions = tenant_root / "agent" / "sessions"
+    uploads = sessions / "s1" / "uploads"
+    uploads.mkdir(parents=True)
+
+    monkeypatch.setattr(skill_manager_module, "is_enterprise", lambda: True)
+    monkeypatch.setattr(common_utils, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr(
+        TenantContext,
+        "current_tenant_root",
+        classmethod(lambda cls: tenant_root),
+    )
+
+    installed: list[Path] = []
+
+    def _fake_install(skill_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        installed.append(Path(skill_dir))
+        return {"success": True, "skill": {"name": "ok"}}
+
+    monkeypatch.setattr(manager, "_install_imported_skill_dir", _fake_install)
+
+    good = uploads / "good.zip"
+    good.write_bytes(_zip_bytes("good"))
+    result = await manager.handle_skills_import_upload(
+        {"path": str(good), "session_id": "s1"}
+    )
+    assert result["success"] is True
+    assert installed
+
+    outside = tenant_root / "outside.zip"
+    outside.write_bytes(_zip_bytes("outside"))
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload(
+            {"path": str(outside), "session_id": "s1"}
+        )
+    assert exc.value.code == ERROR_SKILL_UNSAFE_PATH
+
+    other_uploads = sessions / "s2" / "uploads"
+    other_uploads.mkdir(parents=True)
+    other = other_uploads / "other.zip"
+    other.write_bytes(_zip_bytes("other"))
+    with pytest.raises(SkillRpcError) as exc2:
+        await manager.handle_skills_import_upload(
+            {"path": str(other), "session_id": "s1"}
+        )
+    assert exc2.value.code == ERROR_SKILL_UNSAFE_PATH
+
+    with pytest.raises(SkillRpcError) as exc3:
+        await manager.handle_skills_import_upload({"path": str(good)})
+    assert exc3.value.code == ERROR_SKILL_UNSAFE_PATH
+
+    with pytest.raises(SkillRpcError) as exc4:
+        await manager.handle_skills_import_upload(
+            {"path": str(good), "session_id": "."}
+        )
+    assert exc4.value.code == ERROR_SKILL_UNSAFE_PATH
+
+
+@pytest.mark.asyncio
+async def test_import_upload_enterprise_rejects_symlink_in_uploads(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.common.utils as common_utils
+    import jiuwenswarm.server.runtime.skill.skill_manager as skill_manager_module
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    tenant_root = tmp_path / "workspace_t"
+    sessions = tenant_root / "agent" / "sessions"
+    uploads = sessions / "s1" / "uploads"
+    uploads.mkdir(parents=True)
+
+    monkeypatch.setattr(skill_manager_module, "is_enterprise", lambda: True)
+    monkeypatch.setattr(common_utils, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr(
+        TenantContext,
+        "current_tenant_root",
+        classmethod(lambda cls: tenant_root),
+    )
+
+    target = uploads / "real.zip"
+    target.write_bytes(_zip_bytes("real"))
+    link = uploads / "link.zip"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not available on this platform")
+
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload(
+            {"path": str(link), "session_id": "s1"}
+        )
+    assert exc.value.code == ERROR_SKILL_UNSAFE_PATH

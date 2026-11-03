@@ -49,8 +49,9 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.uninstall",
     "skills.updates.check",
     "skills.update",
-    # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
+    # 聊天产物「保存」走 download_token → import_local；企业版上传走 import_upload。
     "skills.import_local",
+    "skills.import_upload",
     "skills.enterprise.list",
     "skills.enterprise.install",
     "skills.enterprise.uninstall",
@@ -120,11 +121,16 @@ async def dispatch_web_request(
     outbound: Any,
     session_id: str,
     user_message: Message,
+    authorization: str | None = None,
+    jiuwenclaw_id: str | None = None,
 ) -> None:
     """Run HANDLER_BEFORE → on_message (or bus) → local handler / METHOD_NOT_FOUND.
 
     ``outbound`` is the reply target: a real WebSocket peer or request-scoped
     HTTP Outbound (``HttpJsonOutbound`` / ``HttpSseOutbound``).
+
+    ``authorization`` / ``jiuwenclaw_id`` 只用于企业版上传资格校验，不写入
+    params 或 metadata，因此不会被转发到 AgentServer。
     """
     # Lazy import: avoid import cycle with web_connect.
     from gateway.channel_manager.web.web_connect import (
@@ -137,6 +143,33 @@ async def dispatch_web_request(
             error="企业版配置由管理面统一下发", code="FORBIDDEN",
         )
         return
+
+    if is_enterprise() and method == "skills.import_upload":
+        from gateway.enterprise.capabilities.skill_upload.client import (
+            SkillUploadPermissionError,
+        )
+        from gateway.enterprise.capabilities.skill_upload.guard import (
+            assert_skill_upload_permission,
+        )
+
+        try:
+            await assert_skill_upload_permission(
+                authorization=authorization,
+                jiuwenclaw_id=jiuwenclaw_id,
+                method=method,
+                params=params,
+            )
+        except SkillUploadPermissionError as exc:
+            logger.warning(
+                "[WebChannel] skill upload denied method=%s request_id=%s code=%s",
+                method,
+                request_id,
+                exc.code,
+            )
+            await channel.send_response(
+                outbound, request_id, ok=False, error=exc.message, code=exc.code,
+            )
+            return
 
     handler = _method_handlers(channel).get(method)
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。

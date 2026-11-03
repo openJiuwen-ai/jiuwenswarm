@@ -48,6 +48,19 @@ import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
 import { isEnterprise } from '../../edition';
+import { useEnterpriseContext } from '../../services/enterpriseContext';
+import {
+  fetchSkillUploadPermission,
+  submitSkillUploadPermission,
+  type SkillUploadPermissionState,
+} from '../../services/skillUploadPermission';
+import { importStagedSkill, stageSkillZip, type StagedSkillZip } from '../../services/enterpriseSkillUpload';
+import { SkillUploadPermissionPanel } from './SkillUploadPermissionPanel';
+import {
+  resolveUploadEntry,
+  uploadEntryAction,
+  type UploadPermissionPhase,
+} from './skillUploadPermissionState';
 import {
   EnterpriseSkillSourcePanel,
   fetchEnterpriseSkillSources,
@@ -174,6 +187,8 @@ export function SkillPanel({
   const { t } = useTranslation();
   // 导航与页签
   const enterpriseEdition = isEnterprise();
+  const enterpriseContext = useEnterpriseContext();
+  const activeClusterId = enterpriseContext?.selected?.jiuwenclaw_id ?? '';
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
   const [mySkillsSubTab, setMySkillsSubTab] = useState<MySkillsSubTab>('all');
@@ -212,6 +227,12 @@ export function SkillPanel({
   const [docToSkillModalOpen, setDocToSkillModalOpen] = useState(false);
   const [enableFilterOpen, setEnableFilterOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  // 企业版 Skill 上传资格：状态来自 Manager，每次上传前由 Gateway 再次强制校验。
+  const [uploadPermission, setUploadPermission] = useState<SkillUploadPermissionState | null>(null);
+  const [uploadPermissionPhase, setUploadPermissionPhase] = useState<UploadPermissionPhase>('idle');
+  const [uploadPermissionError, setUploadPermissionError] = useState('');
+  const [applyPanelOpen, setApplyPanelOpen] = useState(false);
+  const [applySubmitting, setApplySubmitting] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [synthesizeTooltip, setSynthesizeTooltip] = useState<{ left: number; top: number } | null>(null);
 
@@ -729,7 +750,7 @@ export function SkillPanel({
   /** 上传技能 .zip 包：先上传到临时目录，再通过 WebSocket 调用 skills.import_upload */
   const handleSkillUpload = useCallback(
     async (file: File) => {
-      setActionTarget('import_local');
+      setActionTarget('import_upload');
       setMessage(null);
       setMessageType(null);
       try {
@@ -791,10 +812,135 @@ export function SkillPanel({
     [uploadTempFile, fetchSkills, fetchSkillDetail, t, withSession, showMessage, setMessage, setMessageType],
   );
 
+  const refreshUploadPermission = useCallback(async () => {
+    if (!enterpriseEdition) return;
+    if (!activeClusterId) {
+      setUploadPermission(null);
+      setUploadPermissionPhase('error');
+      setUploadPermissionError(t('skills.uploadPermission.missingCluster'));
+      return;
+    }
+    setUploadPermissionPhase('loading');
+    try {
+      const next = await fetchSkillUploadPermission(activeClusterId);
+      setUploadPermission(next);
+      setUploadPermissionError('');
+      setUploadPermissionPhase('idle');
+    } catch (error) {
+      setUploadPermission(null);
+      setUploadPermissionPhase('error');
+      setUploadPermissionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [enterpriseEdition, activeClusterId, t]);
+
+  const handleSubmitUploadPermission = useCallback(
+    async (reason: string, approverId: string) => {
+      const ctx = enterpriseContext?.selected;
+      if (!ctx) return;
+      setApplySubmitting(true);
+      try {
+        await submitSkillUploadPermission({
+          jiuwenclawId: ctx.jiuwenclaw_id,
+          groupId: ctx.group_id,
+          botId: ctx.bot_id,
+          reason,
+          approverId,
+        });
+        showMessage('success', t('skills.uploadPermission.applied'));
+        setApplyPanelOpen(false);
+        await refreshUploadPermission();
+      } catch (error) {
+        showErrorToast(error, 'skills.uploadPermission.submitFailed');
+      } finally {
+        setApplySubmitting(false);
+      }
+    },
+    [enterpriseContext, refreshUploadPermission, showMessage, showErrorToast, t],
+  );
+
+  /** 企业版上传：OBS 中继 + skills.import_upload；权限由 Gateway 按用户 JWT 校验。 */
+  const handleEnterpriseSkillUpload = useCallback(
+    async (file: File) => {
+      setActionTarget('import_upload');
+      setMessage(null);
+      setMessageType(null);
+      let staged: StagedSkillZip | null = null;
+      try {
+        staged = await stageSkillZip(webRequest, file, sessionId);
+        const doImport = (overwrite: boolean) =>
+          importStagedSkill(webRequest, sessionId, staged!.path, overwrite);
+        let result;
+        try {
+          result = await doImport(false);
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === 'SKILL_ALREADY_EXISTS' || code === 'SKILL_IMPORT_OVERWRITE_REQUIRED') {
+            const msg = error instanceof Error ? error.message : String(error);
+            const overwrite = window.confirm(`${msg}\n${t('skills.overwriteConfirm')}`);
+            if (!overwrite) return;
+            result = await doImport(true);
+          } else {
+            throw error;
+          }
+        }
+        showMessage('success', t('skills.messages.imported', { name: result.name || file.name }));
+        await fetchSkills();
+        if (result.name) {
+          await fetchSkillDetail(result.name);
+        }
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        // 权限类错误用本地文案，避免把 Gateway 的英文错误直接展示给用户。
+        if (code === 'SKILL_UPLOAD_PERMISSION_REQUIRED') {
+          showMessage('error', t('skills.uploadPermission.required'));
+          await refreshUploadPermission();
+        } else if (code === 'SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE') {
+          showMessage('error', t('skills.uploadPermission.unavailable'));
+          await refreshUploadPermission();
+        } else {
+          showErrorToast(error, 'skills.errors.importFailedHint');
+        }
+        console.error(error);
+      } finally {
+        await staged?.cleanup();
+        setActionTarget(null);
+      }
+    },
+    [
+      sessionId,
+      fetchSkills,
+      fetchSkillDetail,
+      refreshUploadPermission,
+      showMessage,
+      showErrorToast,
+      setMessage,
+      setMessageType,
+      t,
+    ],
+  );
+
+  /** 企业版：进入「我的技能」、面板获得焦点或用户点击刷新时查询资格。 */
+  useEffect(() => {
+    if (!enterpriseEdition || activeTab !== 'my') return;
+    void refreshUploadPermission();
+  }, [enterpriseEdition, activeTab, refreshUploadPermission]);
+
+  useEffect(() => {
+    if (!enterpriseEdition || !isActive || activeTab !== 'my') return;
+    void refreshUploadPermission();
+  }, [enterpriseEdition, isActive, activeTab, refreshUploadPermission]);
+
+  useEffect(() => {
+    if (!enterpriseEdition || activeTab !== 'my') return;
+    const onFocus = () => void refreshUploadPermission();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [enterpriseEdition, activeTab, refreshUploadPermission]);
+
   /** 知识转技能：先上传文件到临时目录（如有），再通过 WebSocket 调用 skills.create_from_knowledge */
   const handleCreateFromKnowledge = useCallback(
     async (params: { file?: File | null; link?: string; skillDescription?: string }) => {
-      setActionTarget('import_local');
+      setActionTarget('import_upload');
       setKnowledgeTaskCount((prev) => prev + 1);
       // 进度由常驻 knowledge banner 展示，避免被广场安装等其它 toast 覆盖。
       setMessage(null);
@@ -1395,6 +1541,8 @@ export function SkillPanel({
     [t],
   );
 
+  const uploadEntry = resolveUploadEntry(uploadPermission, uploadPermissionPhase);
+
   const renderFixedHeader = () => (
     // 固定区（header/toolbar）：page-shell 限宽 1400px 居中，与下方滚动列共用内容线
     <div className="page-shell flex-none">
@@ -1496,12 +1644,33 @@ export function SkillPanel({
               className="focus-visible:border-[color:var(--color-control-emphasis)]"
             />
           )}
-          {/* 企业版不提供个人创建入口（上传 / 知识转技能 / 聊天创建） */}
+          {/* 企业版只开放 Skill 上传；授权状态决定展示上传还是页内申请。 */}
+          {activeTab === 'my' && enterpriseEdition && (
+            <button
+              className="flex items-center justify-center gap-1 h-8 px-3 rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 disabled:opacity-60"
+              disabled={actionTarget === 'import_upload' || uploadPermissionPhase === 'loading'}
+              data-testid="skill-panel-enterprise-upload-btn"
+              onClick={() => {
+                if (uploadEntry === 'upload') {
+                  setUploadSkillModalOpen(true);
+                  return;
+                }
+                setApplyPanelOpen(true);
+                void refreshUploadPermission();
+              }}
+            >
+              {t(
+                uploadEntryAction(uploadEntry) === 'upload'
+                  ? 'skills.uploadPermission.upload'
+                  : 'skills.uploadPermission.apply',
+              )}
+            </button>
+          )}
           {activeTab === 'my' && !enterpriseEdition && (
             <CreateSkillMenu
               open={createMenuOpen}
               onToggle={setCreateMenuOpen}
-              uploadDisabled={actionTarget === 'import_local'}
+              uploadDisabled={actionTarget === 'import_upload'}
               onUploadLocal={() => {
                 setCreateMenuOpen(false);
                 setUploadSkillModalOpen(true);
@@ -1518,6 +1687,17 @@ export function SkillPanel({
           )}
         </div>
       </PageToolbar>
+      {enterpriseEdition && activeTab === 'my' && applyPanelOpen && (
+        <SkillUploadPermissionPanel
+          state={uploadPermission}
+          phase={uploadPermissionPhase}
+          errorMessage={uploadPermissionError}
+          submitting={applySubmitting}
+          onRefresh={() => void refreshUploadPermission()}
+          onSubmit={(reason, approverId) => void handleSubmitUploadPermission(reason, approverId)}
+          onCancel={() => setApplyPanelOpen(false)}
+        />
+      )}
     </div>
   );
 
@@ -1565,7 +1745,7 @@ export function SkillPanel({
       {uploadSkillModalOpen && (
         <UploadSkillModal
           actionTarget={actionTarget}
-          onUpload={handleSkillUpload}
+          onUpload={enterpriseEdition ? handleEnterpriseSkillUpload : handleSkillUpload}
           onClose={() => setUploadSkillModalOpen(false)}
         />
       )}

@@ -96,14 +96,14 @@ export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkil
           </button>
           <button
             type="button"
-            disabled={!uploadSkillFile || actionTarget === 'import_local'}
+            disabled={!uploadSkillFile || actionTarget === 'import_upload'}
             onClick={() => {
               const file = uploadSkillFile;
               onClose();
               if (file) onUpload(file);
             }}
             className={`flex items-center justify-center rounded-[16px] text-sm whitespace-nowrap transition-colors ${
-              !uploadSkillFile || actionTarget === 'import_local'
+              !uploadSkillFile || actionTarget === 'import_upload'
                 ? 'bg-bg-muted border border-text-divider text-text-disabled cursor-not-allowed'
                 : 'text-text-inverse bg-control-emphasis hover:opacity-80'
             }`}
