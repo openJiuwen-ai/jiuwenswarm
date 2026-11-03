@@ -33,19 +33,52 @@ def selected_model(params) -> dict[str, Any]:
     return model
 
 
+#: 等登录凭据续期的上限，和普通对话转发前续期同一个值。
+LOGIN_REFRESH_WAIT_S = 20.0
+
+
+def model_fields(target) -> dict[str, Any]:
+    """任务里记的所选模型（model_name / model_selection），续跑和作答时补回请求。"""
+    target = target or {}
+    return {key: target[key] for key in ("model_name", "model_selection") if target.get(key)}
+
+
 async def _login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
-    """登录模型的凭据：复用普通对话转发时的续期和挂凭据（Gateway 的同一套函数）。"""
+    """登录模型的凭据：复用普通对话的续期和挂凭据（common.auth.passthrough 公开入口）。
+
+    只有登录送的模型才会续期、挂凭据；自配模型原样返回 None。
+    凭据链路出错不让任务失败：告警写明原因，本次不带登录凭据，
+    模型真需要登录时由 AgentServer 给出“请登录”的提示。
+    """
     if not model_name or not auth_session:
         return None
-    from types import SimpleNamespace
+    from jiuwenswarm.common.auth.passthrough import expired_login_session, normalize_model_auth
     from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-    from jiuwenswarm.gateway.app_gateway import _normalize_model_auth, _refresh_expired_login_credential
 
-    msg = SimpleNamespace(id=model_name, params={"model_name": model_name},
-                          metadata={"auth_session": auth_session})
-    await _refresh_expired_login_credential(msg)
-    _normalize_model_auth(msg.params, msg)
-    return msg.params.get(E2A_MODEL_AUTH_PARAM_KEY)
+    params = {"model_name": model_name}
+    try:
+        session = expired_login_session(params, auth_session)
+        if session is not None:
+            from jiuwenswarm.common.auth.service import get_auth_service
+
+            await asyncio.wait_for(
+                asyncio.to_thread(get_auth_service().try_refresh, session),
+                timeout=LOGIN_REFRESH_WAIT_S,
+            )
+    except Exception as exc:  # noqa: BLE001 — 续期失败照旧用原凭据，和普通对话一致
+        logger.warning(
+            "[VideoDuplex] 模型 %s 的登录凭据续期失败，按原凭据继续: %s",
+            model_name, exc or type(exc).__name__,
+        )
+    try:
+        normalize_model_auth(params, auth_session)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[VideoDuplex] 模型 %s 挂登录凭据失败，本次不带凭据: %s",
+            model_name, exc or type(exc).__name__, exc_info=True,
+        )
+        return None
+    return params.get(E2A_MODEL_AUTH_PARAM_KEY)
 
 
 AGENT_QUERY_TIMEOUT = 20
@@ -288,6 +321,7 @@ class AgentTaskExecutor:
     async def answer(self, task):
         from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
 
         request = self.answer_input(task).to_agent_request()
         model_auth = await self._model_auth(task)
@@ -304,6 +338,12 @@ class AgentTaskExecutor:
                     **request.params,
                     "managed_task_request": task["request_id"],
                     "managed_task_binding": self.endpoint.binding(task),
+                    # 作答续跑被挂起的一轮时和普通对话一样带上所选模型
+                    **(
+                        model_fields((task.get("request") or {}).get("execution_target"))
+                        if request.req_method == ReqMethod.CHAT_SEND
+                        else {}
+                    ),
                     **({E2A_MODEL_AUTH_PARAM_KEY: model_auth} if model_auth else {}),
                 },
                 is_stream=False,
