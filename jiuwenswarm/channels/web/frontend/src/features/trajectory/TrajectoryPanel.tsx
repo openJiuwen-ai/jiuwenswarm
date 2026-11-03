@@ -15,6 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
+import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { TrajectoryExplorer, type TrajectoryViewState } from './client/TrajectoryExplorer';
 import { IconQuestionOutline14 } from './primitives/icons';
@@ -97,7 +98,10 @@ import {
   MAIN_TRAJECTORY_SUBJECT_ID,
   subjectAppearsOnTeamLanes,
 } from './trajectorySubjects';
-import { buildTeamControlModel } from './teamControlTimeline';
+import {
+  buildTeamControlModel,
+  shouldUseScheduledTeamControl,
+} from './teamControlTimeline';
 import {
   countTurns,
   unrecordedTurnRanges,
@@ -389,6 +393,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const sessionTeamMode = mode === 'team';
   const sessionTeamDispatchMode = useSessionStore(
     state => state.runtimes[sessionId]?.teamDispatchMode,
+  );
+  const sessionIsProcessing = useChatStore(
+    state => Boolean(state.runtimes[sessionId]?.isProcessing),
   );
   // The panel is not remounted when the session or its mode changes, so the
   // stable callbacks below read the mode through a ref instead of closing
@@ -1249,9 +1256,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const scheduledTeamControlModel = teamControlModel !== null && teamControlModel.tasks.length > 0
     ? teamControlModel
     : null;
-  const scheduledTeamMode = teamMode
-    && scheduledTeamControlModel !== null
-    && (sessionTeamDispatchMode === undefined || sessionTeamDispatchMode === 'scheduled');
+  const scheduledTeamMode = shouldUseScheduledTeamControl(
+    teamMode,
+    sessionTeamDispatchMode,
+    scheduledTeamControlModel,
+  );
   const reviewRunCount = subjectGroups.groups.filter(group => (
     group.subject.id.startsWith('team-reviewer:')
   )).length;
@@ -1861,6 +1870,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
               ...(timeAxis.mapSharedTime === undefined
                 ? {}
                 : { mapTime: timeAxis.mapSharedTime }),
+              live: active && replayArchive === null && sessionIsProcessing,
             },
           }
           : {})}
