@@ -2,6 +2,7 @@
 """Enterprise rule details use SDK evidence without changing approval behavior."""
 
 from copy import deepcopy
+import re
 
 import pytest
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
@@ -10,6 +11,25 @@ from openjiuwen.harness.rails.security.tool_security_rail import PermissionInter
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
 )
+
+# Keep in sync with interrupt_helpers._PERMANENT_REMEMBER_HINT_RE / enterprise option policy.
+_PERMANENT_REMEMBER_HINT_RE = re.compile(r"[；;]?\s*选择「永久记住」[^。\n]*。?")
+
+
+def _personal_payload_under_enterprise_policy(payload: dict) -> dict:
+    """Strip the personal-only always_allow affordance so edition policy is comparable."""
+    normalized = deepcopy(payload)
+    for question in normalized.get("questions") or []:
+        question["options"] = [
+            option
+            for option in question.get("options") or []
+            if option.get("value") != "always_allow"
+        ]
+        question["question"] = _PERMANENT_REMEMBER_HINT_RE.sub(
+            "",
+            question.get("question") or "",
+        ).strip()
+    return normalized
 
 
 def permission_interaction(metadata):
@@ -48,7 +68,9 @@ async def test_sdk_rule_reaches_enterprise_question_without_changing_approval(mo
 
     assert enterprise["source"] == "permission_interrupt"
     assert enterprise["questions"][0].pop("matched_rule") == expected
-    assert enterprise == personal
+    # matched_rule is enterprise-only display; approval options still follow edition
+    # policy (enterprise hides always_allow / 「永久记住」).
+    assert enterprise == _personal_payload_under_enterprise_policy(personal)
     assert interaction == original
     assert result.needs_approval and result.matched_rule == expected
 
