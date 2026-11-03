@@ -217,11 +217,12 @@ async def test_a_refused_second_answer_leaves_the_message_with_the_answer_that_r
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("again", ["results", "client_gone"])
 async def test_the_same_client_results_sent_again_leave_the_message_with_the_first_delivery(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, again,
 ) -> None:
     store, service = await _service(tmp_path)
-    queued, _ = _enqueue(store, key="client-twice")
+    queued, _ = _enqueue(store, key=f"client-twice-{again}")
     store.claim(queued.message_id, "execution-1", "run-1")
     store.mark_waiting(queued.message_id, interrupt_request_id="call-1", interrupt_source=CLIENT_TOOL_INTERRUPT_SOURCE)
     agent = _FollowUpAgent()
@@ -252,11 +253,17 @@ async def test_the_same_client_results_sent_again_leave_the_message_with_the_fir
     first = asyncio.create_task(server._handle_stream_impl(object(), results("results-1"), asyncio.Lock()))
     await asyncio.wait_for(agent.delivering.wait(), 2)
     with pytest.raises(ClientToolAnswerMismatch):
-        await asyncio.wait_for(server._handle_stream_impl(object(), results("results-2"), asyncio.Lock()), 2)
+        if again == "results":
+            await asyncio.wait_for(server._handle_stream_impl(object(), results("results-2"), asyncio.Lock()), 2)
+        else:  # no client stayed attached meanwhile: its call is answered as gone
+            call = {"event_type": "chat.client_tool_request", "request_id": "call-1", "interrupt_id": "interrupt-1",
+                    "source": CLIENT_TOOL_INTERRUPT_SOURCE, "tool_name": "read_page", "client_tool": {"input": {}}}
+            await server._answer_calls_no_client_runs("target-1", "web", "user-1", [call])
     agent.release.set()
     await asyncio.wait_for(first, 2)
 
     message = store.get(queued.message_id)
     assert (message.status, message.interrupt_request_id) == ("waiting_user", "question-3")
+    assert coordinator.has_control_target("target-1", "question-3")
     await service.stop()
     await runtime.close()
