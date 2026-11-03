@@ -67,3 +67,21 @@ def cron_permission_hold_by_session_rel(session_id: str) -> str:
     if not sid:
         raise ValueError("session_id is required")
     return f"gateway:cron_permission_hold_by_session:{sid}"
+
+
+def cron_active_session_rel(job_id: str) -> str:
+    """``gateway:cron_active_session:{job_id}`` String：该 job 正在执行的会话号。"""
+    jid = str(job_id or "").strip()
+    if not jid:
+        raise ValueError("job_id is required")
+    return f"gateway:cron_active_session:{jid}"
+
+
+def cron_active_session_scan_rel() -> str:
+    """``gateway:cron_active_session:*``，供 collect 扫描所有进行中会话。"""
+    return "gateway:cron_active_session:*"
+
+
+def cron_active_sessions_hash_rel() -> str:
+    """旧版整表 Hash（已废弃），保留名仅用于迁移清理。"""
+    return "gateway:cron_active_sessions"
