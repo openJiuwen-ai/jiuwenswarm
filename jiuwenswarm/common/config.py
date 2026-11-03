@@ -915,11 +915,14 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_team_rules_in_config(updates: dict[str, Any]) -> None:
-    """Merge ``updates`` into the ``team_rules`` section under the config write lock."""
+    """Write ``updates`` as the ``team_rules`` section under the config write lock.
+
+    The section only holds ``mode``; keys left by older versions are dropped.
+    """
     def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data.get("team_rules"), dict):
-            data["team_rules"] = {}
-        data["team_rules"].update(updates)
+        section = data.get("team_rules")
+        mode = section.get("mode") if isinstance(section, dict) else None
+        data["team_rules"] = {**({"mode": mode} if mode is not None else {}), **updates}
         return data
 
     update_config(_mutate)

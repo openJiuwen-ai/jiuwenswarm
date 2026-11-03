@@ -21,11 +21,7 @@ import yaml
 from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
-from jiuwenswarm.common.team_rules import (
-    TEAM_RULES_API_KEY_ENV,
-    TEAM_RULES_API_KEY_PARAM,
-    team_rules_panel_view,
-)
+from jiuwenswarm.common.team_rules import team_rules_panel_view
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -43,7 +39,6 @@ _CONFIG_SET_ENV_MAP = {
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
     "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
-    TEAM_RULES_API_KEY_PARAM: TEAM_RULES_API_KEY_ENV,
     "model_provider": "MODEL_PROVIDER",
     "model": "MODEL_NAME",
     "api_base": "API_BASE",
@@ -504,7 +499,7 @@ def get_panel() -> dict[str, Any]:
         payload["enable_free_models"] = _bool_text(
             models_cfg.get("enable_free_models", True), True
         )
-        payload.update(team_rules_panel_view(_resolve_env_vars(raw), environment))
+        payload.update(team_rules_panel_view(raw))
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
         payload.setdefault("context_engine_enabled", "false")
@@ -533,7 +528,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "true")
-        for key, value in team_rules_panel_view({}, environment).items():
+        for key, value in team_rules_panel_view({}).items():
             payload.setdefault(key, value)
     return payload
 

@@ -530,11 +530,11 @@
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
       "jevTab": "Decision models",
-      "jevTabHelp": "Optional. Enhances decision-making for browser subagents and multi-model collaboration in single-agent conversations.",
+      "jevTabHelp": "Optional. Enhances decision-making for browser subagents, multi-model collaboration in single-agent conversations, and Group team rules.",
       "jevModels": "Jev models",
       "jevDeleteFailed": "Failed to clear the Jev configuration. Please try again.",
       "jevEmpty": "No Jev model configured",
-      "jevEmptyDescription": "Add one Jev model to share between browser decisions and multi-model collaboration.",
+      "jevEmptyDescription": "Add one Jev model to share between browser decisions, multi-model collaboration and Group team rules.",
       "jevDisplayNamePlaceholder": "Enter a model display name",
       "jevApiBasePlaceholder": "e.g. https://jev.example.com/v1",
       "jevModelHint": "Enter a Jev model name supported by the provider, such as typesafe/jev-1.13 or jev-1.13.0.",
@@ -719,31 +719,9 @@
     "agent": {
       "teamRules": {
         "title": "Group team rules",
-        "description": "Off. When a busy agent gets a new message, the supervisor decides to interrupt, insert or queue it.",
-        "restartHint": "Restart the team after changes.",
-        "jevFallbackHint": "Optional. Leave empty to use the JEV URL and model from Browser settings",
-        "jevKeyHint": "Optional. Leave empty to use the key from Browser settings → JEV API key",
-        "formats": {
-          "openai": "OpenAI format",
-          "anthropic": "Anthropic format",
-          "jev": "JEV format"
-        },
-        "formatHints": {
-          "openai": "For DeepSeek, GLM, Kimi and OpenAI-format relays. The model must return logprobs.",
-          "anthropic": "For Anthropic-format relays. The model reports its own probability, which is not calibrated.",
-          "jev": "For JEV, MCL, Yale and similar. The server returns the choice and its probability."
-        },
-        "fields": {
-          "enabled": "Enable supervisor",
-          "format": "API format",
-          "api_base": "API Base URL",
-          "model": "Model",
-          "api_key": "API key"
-        },
-        "errors": {
-          "jevKey": "Enter an API key, or set the key in Browser settings → JEV API key",
-          "url": "Enter an http(s) URL"
-        }
+        "modeOff": "Off",
+        "modeLlm": "LLM only",
+        "modeJev": "Jev"
       },
       "skills": "Skills",
       "webSearch": "Web search",
@@ -954,6 +932,10 @@
       "task_asr_enabled": {
         "title": "Speech transcription",
         "description": "Enable microphone speech transcription in task conversations."
+      },
+      "team_rules_mode": {
+        "title": "Supervisor mode",
+        "description": "When a busy agent gets a new message, the supervisor decides to interrupt, insert or queue it. LLM only uses the team's main model; Jev mode uses the shared settings in Models > Decision models. Restart the team after changes."
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",

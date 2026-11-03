@@ -1,6 +1,5 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { TeamRulesSettings } from './TeamRulesSettings';
 import { AgentMediaSettings, AgentSearchSettings, VideoGenSettings, VisualGenSettings } from './AgentSettings';
 import { ExternalCliSettingsItem } from './ExternalCliAgentsSettings';
 
@@ -51,7 +50,18 @@ export const agentModule: SettingsModuleDefinition = {
     {
       id: 'team-rules',
       titleKey: 'settingsPanel.agent.teamRules.title',
-      items: [{ id: 'team-rules-settings', component: 'custom', render: TeamRulesSettings }],
+      items: [
+        {
+          id: 'team-rules-mode',
+          component: 'select',
+          key: 'team_rules_mode',
+          options: [
+            { value: 'off', labelKey: 'settingsPanel.agent.teamRules.modeOff' },
+            { value: 'llm', labelKey: 'settingsPanel.agent.teamRules.modeLlm' },
+            { value: 'jev', labelKey: 'settingsPanel.agent.teamRules.modeJev' },
+          ],
+        },
+      ],
     },
   ],
 };

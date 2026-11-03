@@ -603,11 +603,7 @@ team_observability:
 # Group 团队规则（监工）：成员忙时收到新消息，由监工决定打断重规划、插入、排队或只记录。
 # 投递策略和打断在 agent-core（TeamAgentSpec.team_rules）实现；修改后重启团队。
 team_rules:
-  enabled: false  # 总开关；关闭后完全是原有行为
-  format: openai  # openai（logprobs）/ anthropic（工具自报概率）/ jev（服务端返回概率）
-  api_base: ""  # openai/anthropic 必填；jev 留空用浏览器设置里的 Jev 地址
-  model: ""  # openai/anthropic 必填；jev 留空用浏览器设置里的 Jev 模型
-  api_key_env: ""  # 只记环境变量名：填了自己的密钥为 TEAM_RULES_API_KEY；jev 留空用浏览器 Jev 密钥
+  mode: "off"  # off：不判断，照原有方式投递 | llm：用团队主模型（地址、模型、密钥沿用主模型配置） | jev：用「模型 > 决策模型」中的共享 Jev
 
 # ============================================================
 # 单 Agent / Coding Agent 可观测性配置

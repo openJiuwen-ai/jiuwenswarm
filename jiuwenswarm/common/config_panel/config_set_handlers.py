@@ -111,8 +111,6 @@ from jiuwenswarm.common.config_panel.models_handlers import (
 )
 from jiuwenswarm.common.context_window import parse_positive_int
 from jiuwenswarm.common.team_rules import (
-    TEAM_RULES_API_KEY_ENV,
-    TEAM_RULES_API_KEY_PARAM,
     TEAM_RULES_PARAM_KEYS,
     TeamRulesSettingsError,
     build_team_rules_update,
@@ -369,7 +367,6 @@ CONFIG_SET_ENV_MAP = {
     "perplexity_api_key": "PERPLEXITY_API_KEY",
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
-    TEAM_RULES_API_KEY_PARAM: TEAM_RULES_API_KEY_ENV,
     "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
     "github_token": "GITHUB_TOKEN",
     "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
@@ -1938,7 +1935,7 @@ async def config_get_handler(
             proactive_cfg.get("max_rounds_per_tick", 20))
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
-        payload.update(team_rules_panel_view(resolve_env_vars(raw), _saved_environment()))
+        payload.update(team_rules_panel_view(raw))
     except Exception:  # noqa: BLE001
         for key, value in flatten_moa_for_config_panel({}).items():
             payload.setdefault(key, value)
@@ -1989,7 +1986,7 @@ async def config_get_handler(
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")
-        for key, value in team_rules_panel_view({}, _saved_environment()).items():
+        for key, value in team_rules_panel_view({}).items():
             payload.setdefault(key, value)
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 
