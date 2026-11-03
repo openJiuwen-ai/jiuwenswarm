@@ -77,6 +77,7 @@ from gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
     is_default_project_id,
+    resolve_default_project_id,
 )
 from gateway.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from gateway.dotenv_early import load_dotenv_runtime
@@ -5174,6 +5175,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     pass
             # A3g：项目绑定经目标 AgentServer 解析；选了具体项目时才核对，
             # 没选项目不问，空编号由控制器当成默认项目。
+            # 空编号不能原样落库：#5713 之后前端/侧栏按 project_id 精确分组，
+            # 依赖未选项目物化为 default/default_code（0722806d2 跳过解析后
+            # 这条链路回退成空串）。这里本地按 work_mode 物化，规则与 server 侧
+            # resolve_cron_project_binding 的空值分支一致；显式默认编号原样保留，
+            # 非法 work_mode 不物化、留给控制器按原有规则拒绝。
             if _cron_requests_real_project(params):
                 rejected = await _bind_cron_project_on_agent(
                     ws, params, user_id, session_id
@@ -5184,6 +5190,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         error=rejected["error"], code=rejected["code"],
                     )
                     return
+            elif not str(params.get("project_id") or "").strip():
+                from gateway.runtime.work_mode import resolve_request_work_mode
+
+                bind_work_mode, bind_mode_err = resolve_request_work_mode(params, "web")
+                if bind_mode_err is None:
+                    params["project_id"] = resolve_default_project_id(bind_work_mode)
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as e:  # noqa: BLE001
