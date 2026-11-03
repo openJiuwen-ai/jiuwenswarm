@@ -455,6 +455,9 @@ def get_panel() -> dict[str, Any]:
         payload["comfyui_workflow_enabled"] = _bool_text(
             experimental_cfg.get("comfyui_workflow_enabled"), False
         )
+        payload["task_full_duplex_enabled"] = _bool_text(
+            experimental_cfg.get("task_full_duplex_enabled"), False
+        )
         payload["progressive_tool_optimize"] = _bool_text(
             raw.get("progressive_tool_optimize"), False
         )
