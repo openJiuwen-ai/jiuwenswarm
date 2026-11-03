@@ -9,21 +9,21 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 9 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+按模块分组；跨模块文档在各相关分组展示。
 
 ## 模块导航
 
-| 模块 | 文档数 |
-|---|---|
-| [gateway/channel_manager/im_platforms/xiaoyi](#module-1) | 1 |
-| [gateway/channel_manager/web](#module-2) | 1 |
-| [gateway/message_handler](#module-3) | 1 |
-| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-4) | 1 |
-| [jiuwenswarm/agents/harness/common/tools/cron](#module-5) | 1 |
-| [jiuwenswarm/channels/web](#module-6) | 2 |
-| [tests/unit_tests/gateway](#module-7) | 1 |
-| [tests/unit_tests/personal_context](#module-8) | 1 |
-| [未分类](#module-9) | 3 |
+| 模块 |
+|---|
+| [gateway/channel_manager/im_platforms/xiaoyi](#module-1) |
+| [gateway/channel_manager/web](#module-2) |
+| [gateway/message_handler](#module-3) |
+| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-4) |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-5) |
+| [jiuwenswarm/channels/web](#module-6) |
+| [tests/unit_tests/gateway](#module-7) |
+| [tests/unit_tests/personal_context](#module-8) |
+| [未分类](#module-9) |
 
 <a id="module-1"></a>
 
