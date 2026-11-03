@@ -14,6 +14,7 @@ import { detailRecordIdentity, spansOf } from './trajectoryWindow';
 
 export type ScheduledTaskPhase =
   | 'pending'
+  | 'blocked'
   | 'running'
   | 'in_review'
   | 'rework'
@@ -46,6 +47,7 @@ export interface ScheduledControlEvent {
   eventId: string;
   recordId: string;
   kind: ScheduledControlEventKind;
+  phase?: ScheduledTaskPhase;
   spanName: string;
   timestampMs: number;
   taskId?: string;
@@ -102,6 +104,17 @@ export interface TeamControlModel {
   teamCompletedAtMs?: number;
 }
 
+export function shouldUseScheduledTeamControl(
+  teamMode: boolean,
+  dispatchMode: string | undefined,
+  model: TeamControlModel | null,
+): boolean {
+  return teamMode
+    && dispatchMode === 'scheduled'
+    && model !== null
+    && model.tasks.length > 0;
+}
+
 interface ParsedControlRecord {
   event: ScheduledControlEvent;
   status?: string;
@@ -114,6 +127,7 @@ interface MutableTask {
   createdAtMs?: number;
   updatedAtMs?: number;
   completedAtMs?: number;
+  reviewRoundCursor: number;
   events: ScheduledControlEvent[];
   reviews: Map<string, ScheduledReviewRun>;
 }
@@ -207,8 +221,9 @@ function normalizeDecision(value: unknown): ScheduledReviewDecision | undefined 
 function phaseFromStatus(status: string | undefined): ScheduledTaskPhase | undefined {
   switch (status) {
     case 'pending':
-    case 'blocked':
       return 'pending';
+    case 'blocked':
+      return 'blocked';
     case 'in_progress':
     case 'running':
       return 'running';
@@ -227,6 +242,10 @@ function phaseFromStatus(status: string | undefined): ScheduledTaskPhase | undef
     default:
       return undefined;
   }
+}
+
+function isTerminalPhase(phase: ScheduledTaskPhase): boolean {
+  return phase === 'completed' || phase === 'cancelled';
 }
 
 function recordTime(record: TrajectoryDetailRecord): number | undefined {
@@ -385,6 +404,7 @@ function applyRecord(
     task = {
       taskId: event.taskId,
       phase: 'unknown',
+      reviewRoundCursor: 1,
       events: [],
       reviews: new Map(),
     };
@@ -394,33 +414,52 @@ function applyRecord(
   task.updatedAtMs = Math.max(task.updatedAtMs ?? 0, event.timestampMs);
   task.assignee = event.memberName ?? task.assignee;
 
-  if (event.kind === 'created') {
-    task.createdAtMs = Math.min(task.createdAtMs ?? event.timestampMs, event.timestampMs);
-    task.phase = 'pending';
-  } else if (event.kind === 'started') {
-    task.phase = 'running';
-  } else if (event.kind === 'submitted') {
-    task.phase = 'in_review';
-  } else if (event.kind === 'revision') {
-    task.phase = 'rework';
-  } else if (event.kind === 'verified') {
-    task.phase = 'completed';
+  if (!isTerminalPhase(task.phase)) {
+    if (event.kind === 'created') {
+      task.createdAtMs = Math.min(task.createdAtMs ?? event.timestampMs, event.timestampMs);
+      task.phase = 'pending';
+    } else if (event.kind === 'started') {
+      task.phase = 'running';
+    } else if (event.kind === 'unblocked') {
+      task.phase = 'pending';
+    } else if (event.kind === 'submitted') {
+      task.phase = 'in_review';
+    } else if (event.kind === 'revision') {
+      task.phase = 'rework';
+    } else if (event.kind === 'verified') {
+      task.phase = 'completed';
+    } else if (event.kind === 'cancelled') {
+      task.phase = 'cancelled';
+    } else if (event.kind === 'escalated') {
+      task.phase = 'escalated';
+    }
+
+    const statusPhase = phaseFromStatus(status);
+    if (statusPhase !== undefined
+      && event.kind !== 'verified'
+      && event.kind !== 'cancelled'
+      && event.kind !== 'escalated') {
+      task.phase = statusPhase;
+    }
+  }
+
+  if (task.phase === 'completed' && task.completedAtMs === undefined) {
     task.completedAtMs = event.timestampMs;
-  } else if (event.kind === 'cancelled') {
-    task.phase = 'cancelled';
-  } else if (event.kind === 'escalated') {
-    task.phase = 'escalated';
   }
+  event.phase = task.phase;
 
-  const statusPhase = phaseFromStatus(status);
-  if (statusPhase !== undefined
-    && event.kind !== 'verified'
-    && event.kind !== 'cancelled'
-    && event.kind !== 'escalated') {
-    task.phase = statusPhase;
+  const reviewEvent = event.kind === 'submitted'
+    || event.kind === 'vote'
+    || event.kind === 'revision'
+    || event.kind === 'verified'
+    || event.kind === 'escalated';
+  const round = reviewEvent
+    ? event.reviewRound ?? task.reviewRoundCursor
+    : task.reviewRoundCursor;
+  if (reviewEvent) {
+    event.reviewRound = round;
+    task.reviewRoundCursor = Math.max(task.reviewRoundCursor, round);
   }
-
-  const round = event.reviewRound ?? 1;
   if (event.kind === 'submitted') {
     for (const reviewer of event.reviewers ?? []) {
       upsertReview(task, reviewer, round, { submittedAtMs: event.timestampMs });
@@ -434,6 +473,8 @@ function applyRecord(
       decision,
       ...(event.feedback === undefined ? {} : { feedback: event.feedback }),
     });
+  } else if (event.kind === 'revision') {
+    task.reviewRoundCursor = Math.max(task.reviewRoundCursor, round + 1);
   }
 }
 

@@ -224,9 +224,9 @@ import {
 } from './features/teamOrganization/processing';
 import {
   normalizeTeamBootstrapMode,
-  normalizeTeamDispatchMode,
   resolveNewSessionBootstrapMode,
   resolveNewSessionDispatchMode,
+  resolveRestoredTeamDispatchMode,
   setTeamScheduledDispatchEnabled,
 } from './features/teamDispatch/featureConfig';
 
@@ -2070,15 +2070,17 @@ function AppContent({
           }
         }
         // 恢复会话时同步团队调度模式：团队建好后不可再改，前端只读展示。
-        const restoredDispatchMode = normalizeTeamDispatchMode(
-          (session as unknown as Record<string, unknown> | null)?.session_team_dispatch_mode,
+        const sessionRecord = session as unknown as Record<string, unknown> | null;
+        const restoredBootstrapMode = normalizeTeamBootstrapMode(
+          sessionRecord?.session_team_bootstrap_mode,
+        );
+        const restoredDispatchMode = resolveRestoredTeamDispatchMode(
+          sessionRecord?.session_team_dispatch_mode,
+          restoredBootstrapMode,
         );
         if (restoredDispatchMode) {
           useSessionStore.getState().setTeamDispatchMode(targetSessionId, restoredDispatchMode);
         }
-        const restoredBootstrapMode = normalizeTeamBootstrapMode(
-          (session as unknown as Record<string, unknown> | null)?.session_team_bootstrap_mode,
-        );
         if (restoredBootstrapMode) {
           useSessionStore.getState().setTeamBootstrapMode(targetSessionId, restoredBootstrapMode);
         }
