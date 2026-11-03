@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import os
 import time
 
@@ -99,6 +98,10 @@ def _configure_openjiuwen_logging() -> None:
     unwritable path inside it) must not crash Front startup, so the workspace
     fallback config is tried next and only if that also fails does the function
     give up with a warning, leaving Front's default logging intact.
+
+    The fallback config keeps OpenJiuwen at ``INFO``; do not silence its
+    loggers here, or control-plane failures (``history.get`` included) would
+    disappear from Front's logs.
     """
     from jiuwenswarm.common.utils import get_root_dir
 
@@ -138,19 +141,6 @@ def _configure_openjiuwen_logging() -> None:
     except Exception:  # noqa: BLE001
         logger.warning(
             "[AgentServer] openjiuwen log config failed; Front keeps default logging",
-            exc_info=True,
-        )
-        return
-
-    try:
-        from openjiuwen.core.common.logging import LogManager
-
-        for _lg in LogManager.get_all_loggers().values():
-            _lg.set_level(logging.CRITICAL)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "[AgentServer] openjiuwen log level tuning failed; "
-            "Front keeps default levels",
             exc_info=True,
         )
 

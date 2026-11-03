@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -114,19 +113,6 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 ) -> None:
     """Default log path must resolve under $JIUWENSWARM_HOME/.jiuwenswarm/logs/."""
     captured: dict[str, Any] = {}
-    levels: list[tuple[str, int]] = []
-
-    class _FakeLogger:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def set_level(self, level: int) -> None:
-            levels.append((self.name, level))
-
-    class _FakeLogManager:
-        @staticmethod
-        def get_all_loggers() -> dict[str, _FakeLogger]:
-            return {"common": _FakeLogger("common")}
 
     def _fake_configure_log_config(config: dict[str, Any]) -> None:
         captured.update(config)
@@ -138,16 +124,14 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
         "openjiuwen.core.common.logging.log_config.configure_log_config",
         _fake_configure_log_config,
     )
-    monkeypatch.setattr(
-        "openjiuwen.core.common.logging.LogManager",
-        _FakeLogManager,
-    )
 
     app_agentserver._configure_openjiuwen_logging()
 
     assert captured["log_path"] == f"{home}/.jiuwenswarm/logs/"
     assert captured["log_file"] == "run/jiuwen.log"
-    assert levels == [("common", logging.CRITICAL)]
+    # Control-plane errors must stay visible: the fallback must not silence
+    # OpenJiuwen loggers after configuring them.
+    assert captured["level"] == "INFO"
 
 
 def test_configure_openjiuwen_logging_prefers_workspace_yaml(
@@ -208,15 +192,6 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     def _capture_configure_log_config(config: dict[str, Any]) -> None:
         captured.update(config)
 
-    class _FakeLogger:
-        def set_level(self, level: int) -> None:
-            _ = level
-
-    class _FakeLogManager:
-        @staticmethod
-        def get_all_loggers() -> dict[str, _FakeLogger]:
-            return {"common": _FakeLogger()}
-
     monkeypatch.setattr("jiuwenswarm.common.utils.get_root_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log",
@@ -226,38 +201,8 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
         "openjiuwen.core.common.logging.log_config.configure_log_config",
         _capture_configure_log_config,
     )
-    monkeypatch.setattr(
-        "openjiuwen.core.common.logging.LogManager",
-        _FakeLogManager,
-    )
 
     app_agentserver._configure_openjiuwen_logging()
 
     assert captured.get("log_file") == "run/jiuwen.log"
     assert captured.get("log_path", "").endswith("/.jiuwenswarm/logs/")
-
-
-def test_configure_openjiuwen_logging_survives_log_manager_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """LogManager.get_all_loggers() raising after config must not crash Front."""
-
-    def _fake_configure_log_config(config: dict[str, Any]) -> None:
-        _ = config
-
-    class _BrokenLogManager:
-        @staticmethod
-        def get_all_loggers() -> dict[str, Any]:
-            raise RuntimeError("LogManager not initialized")
-
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_root_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        "openjiuwen.core.common.logging.log_config.configure_log_config",
-        _fake_configure_log_config,
-    )
-    monkeypatch.setattr(
-        "openjiuwen.core.common.logging.LogManager",
-        _BrokenLogManager,
-    )
-
-    app_agentserver._configure_openjiuwen_logging()
