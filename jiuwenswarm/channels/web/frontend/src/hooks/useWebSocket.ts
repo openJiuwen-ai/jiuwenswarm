@@ -1591,8 +1591,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const finishContextCompressionTurn = useCallback((sessionId: string) => {
     clearPendingContextCompressionStart(sessionId);
+    // 本轮以暂停/取消收尾时不展示完成徽标：压缩运行行已经是中性中断文案
+    // （cancelled/paused 分支设置），"完成 N 次"会在其后把它覆盖，观感像
+    // 暂停没有生效。本轮内真实完成的压缩成果仍在上下文里，下一条消息的
+    // context.usage 会体现窗口变小，这里只是不庆祝。
+    const runtime = useChatStore.getState().getRuntime(sessionId)?.contextCompressionRuntime;
+    const interrupted = runtime?.status === 'cancelled' || runtime?.status === 'paused';
     const summary = contextCompressionSummaryRef.current.get(sessionId);
-    useChatStore.getState().setContextCompressionStatus(sessionId, undefined, summary && summary.count > 0 ? summary : undefined);
+    useChatStore.getState().setContextCompressionStatus(
+      sessionId,
+      undefined,
+      !interrupted && summary && summary.count > 0 ? summary : undefined,
+    );
   }, [clearPendingContextCompressionStart]);
 
   const buildContextCompressionRuntimeState = useCallback(
@@ -4967,6 +4977,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
           useChatStore.getState().stopStreaming(sessionId);
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
+          // 压缩提示收尾兜底：team pause 的流以 processing_status(false) 收尾
+          // 而不是 chat.final，这里对齐"任务真正结束"信号收掉压缩行/展示徽标
+          // （finish 内部对 cancelled/paused 运行态不展示完成徽标）。
+          finishContextCompressionTurn(sessionId);
 
           // §8 步骤5：Heartbeat 自动轮结束时，把对应 assistant 消息的 streaming 关掉
           // （chat.delta 可能因丢帧未收到 final；这里兜底收尾），并静默刷新 Heartbeat
