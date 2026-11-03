@@ -82,7 +82,7 @@ async def _history_page(request: Request, channel: Any, session_id: str, cursor:
         "session_id": session_id, "cursor": cursor, "limit": 50,
     }, True)
     records: list[dict[str, Any]] = []
-    parts: dict[str, dict[int, dict[str, Any]]] = {}
+    parts: dict[str, tuple[int, dict[int, dict[str, Any]]]] = {}
     try:
         async for frame in outbound.iter_sse_frames(rid, timeout=resolve_web_http_history_timeout()):
             _check_response(frame)
@@ -111,14 +111,16 @@ async def _history_page(request: Request, channel: Any, session_id: str, cursor:
                 raise HTTPException(502, "share_export_history_part_invalid")
             if not 0 <= index < total:
                 raise HTTPException(502, "share_export_history_part_invalid")
-            bucket = parts.setdefault(key, {})
+            expected_total, bucket = parts.setdefault(key, (total, {}))
+            if total != expected_total:
+                raise HTTPException(502, "share_export_history_part_invalid")
             bucket[index] = record
-            if len(bucket) == total:
-                if any(i not in bucket for i in range(total)):
-                    raise HTTPException(502, "share_export_history_part_invalid")
-                merged = dict(bucket[0])
+            if len(bucket) == expected_total:
+                # Bounded indexes and one fixed total guarantee all parts are present.
+                ordered = [item for _, item in sorted(bucket.items())]
+                merged = dict(ordered[0])
                 merged.pop("_part", None)
-                merged["content"] = "".join(str(bucket[i].get("content") or "") for i in range(total))
+                merged["content"] = "".join(str(item.get("content") or "") for item in ordered)
                 records.append(merged)
                 del parts[key]
         raise HTTPException(502, "share_export_history_incomplete")

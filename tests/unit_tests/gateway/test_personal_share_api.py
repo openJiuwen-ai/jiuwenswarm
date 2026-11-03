@@ -343,11 +343,15 @@ async def test_snapshot_title_skips_blank_user_messages(monkeypatch, texts, expe
 
 
 @pytest.mark.asyncio
-async def test_snapshot_rejects_inconsistent_part_totals(monkeypatch):
+@pytest.mark.parametrize('fragments', [
+    [(10, 11), (0, 2)],
+    [(0, 2), (1, 3), (2, 3)],
+])
+async def test_snapshot_rejects_inconsistent_part_totals(monkeypatch, fragments):
     channel = SimpleNamespace(unregister_request_outbound=AsyncMock())
 
     async def iterate(*args, **kwargs):
-        for index, total in [(10, 11), (0, 2)]:
+        for index, total in fragments:
             yield _event({'message': {
                 'content': 'fragment',
                 '_part': {'record_id': 'final', 'part_idx': index, 'total_parts': total},
