@@ -8,6 +8,7 @@ import * as esbuild from 'esbuild';
 import i18next from 'i18next';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,12 +43,55 @@ await esbuild.build({
 const { ColleagueCreatePage } = await import(
   '../node_modules/.cache/jiuwenmate-create-install-ui/ColleagueCreatePage.js'
 );
+
+function templateDetailMarkup(templateId, installedExperts = []) {
+  return renderToStaticMarkup(React.createElement(
+    I18nextProvider,
+    { i18n },
+    React.createElement(ColleagueCreatePage, {
+      detailTemplateId: templateId,
+      installedExperts,
+      customDialogOpen: false,
+      onOpenTemplateDetail() {},
+      onCloseTemplateDetail() {},
+      onChooseTemplate() {},
+      onOpenCustom() {},
+    }),
+  ));
+}
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const i18n = i18next.createInstance();
 await i18n.use(initReactI18next).init({
   lng: 'zh',
   resources: { zh: { translation: zh } },
   interpolation: { escapeValue: false },
+});
+
+test('curated employee details label role abilities separately from actual skills', () => {
+  const document = new JSDOM(templateDetailMarkup('personal-finance-expert')).window.document;
+  const detail = document.querySelector('[data-testid="jiuwenmate-template-detail"]');
+  const abilities = detail.querySelector('[data-testid="jiuwenmate-template-core-abilities"]');
+  assert.ok(abilities, 'Role descriptions should be shown under core abilities');
+  assert.match(abilities.textContent, /支出分析/);
+  const skills = detail.querySelector('[data-testid="jiuwenmate-template-resources"][data-variant="skills"]');
+  assert.ok(skills, 'The actual skill configuration should be explicit');
+  assert.match(skills.textContent, /暂无技能/);
+  assert.doesNotMatch(skills.textContent, /支出分析|方案比较|风险说明/);
+});
+
+test('installed expert details preserve real bundled skills', () => {
+  const document = new JSDOM(templateDetailMarkup('installed:expense-review', [{
+    id: 'installed:expense-review', name: '报销专家', description: '审核报销', persona: '审核报销',
+    category: 'custom', tags: [], installedPackageName: 'expense-review',
+    skills: [{ id: 'xlsx', name: 'Excel处理', description: '处理表格' }],
+    tools: [], rails: [], mcps: [],
+    capabilities: { model: '', skills: ['xlsx'], connectors: [], plugins: [], knowledge: [], starterPrompts: [] },
+  }])).window.document;
+  const detail = document.querySelector('[data-testid="jiuwenmate-template-detail"]');
+  const skills = detail.querySelector('[data-testid="jiuwenmate-template-resources"][data-variant="skills"]');
+  assert.ok(skills);
+  assert.match(skills.textContent, /Excel处理/);
+  assert.equal(detail.querySelector('[data-testid="jiuwenmate-template-core-abilities"]'), null);
 });
 
 test('template skill install errors use a dialog and the install action is visually secondary', async () => {
