@@ -43,7 +43,7 @@ def model_fields(target) -> dict[str, Any]:
     return {key: target[key] for key in ("model_name", "model_selection") if target.get(key)}
 
 
-async def _login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
+async def login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
     """登录模型的凭据：复用普通对话的续期和挂凭据（common.auth.passthrough 公开入口）。
 
     只有登录送的模型才会续期、挂凭据；自配模型原样返回 None。
@@ -386,7 +386,7 @@ class AgentTaskExecutor:
 
     async def _model_auth(self, task):
         target = (task.get("request") or {}).get("execution_target") or {}
-        return await _login_model_auth(
+        return await login_model_auth(
             str(target.get("model_name") or "").strip(),
             self.auth_sessions.get((task["owner"], task["session"])),
         )
