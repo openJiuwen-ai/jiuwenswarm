@@ -401,6 +401,12 @@ you run `docker run` manually.
 
 #### `cgroup`
 
+The `backend` selector defaults to `auto` (prefer v2 when the required controllers
+are available, otherwise use v1). Set it to `v1` or `v2` to require that backend;
+an unavailable explicit backend fails creation without fallback. Selection alone
+does not enable resource limits. Existing sandboxes retain their original
+cgroup handle for teardown.
+
 Optional per-sandbox cgroup resource limits. All three fields default to `null`
 (no limit). When every field is empty or the `cgroup` block is omitted,
 jiuwenbox skips cgroup setup so the default policy still runs on hosts without
@@ -412,8 +418,8 @@ a writable cgroup tree.
 | `cpu_max` | Fractional cores (e.g. `0.5`) or a `"quota_us period_us"` pair (e.g. `"50000 100000"`) | CPU quota. |
 | `pids_max` | Positive integer | Process/thread cap. |
 
-Cgroup v2 is preferred; v1 is used as a fallback. If at least one field is
-non-null and neither backend is writable, sandbox creation fails.
+In auto mode cgroup v2 is preferred; v1 is used as a fallback. If a limit
+is non-null and the selected backend cannot apply it, sandbox creation fails.
 
 #### `timeout`
 

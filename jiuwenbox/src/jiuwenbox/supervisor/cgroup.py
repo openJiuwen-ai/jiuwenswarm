@@ -406,7 +406,16 @@ def setup(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
             "cgroup.setup called with an empty policy; caller must "
             "check CgroupPolicy.is_empty() and skip cgroup entirely"
         )
-    backend = detect_backend()
+    if policy.backend == "auto":
+        backend = detect_backend()
+    else:
+        backend = CgroupBackend(policy.backend)
+        available = _v1_available() if backend is CgroupBackend.V1 else _v2_available()
+        if not available:
+            raise CgroupSetupError(
+                f"requested cgroup {policy.backend} backend is unavailable; "
+                "required controllers: memory/cpu/pids"
+            )
     if backend is None:
         raise CgroupSetupError(
             "no writable cgroup backend available: cgroup v2 "
