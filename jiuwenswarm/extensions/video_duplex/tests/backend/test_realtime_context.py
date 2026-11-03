@@ -33,6 +33,23 @@ def test_transcript_preserves_roles_and_does_not_promote_assistant_claims():
     assert context.validated_memory([{"source_id": turns[0]["source_id"], "text": "Task completed"}], turns) == []
 
 
+def test_metadata_alone_over_limit_has_explicit_error():
+    package = {"session_id": "x" * context.MAX_CONTEXT_CHARS, "memory": [],
+               "recent_turns": [], "tasks": {"jobs": [], "omitted_jobs": 0}}
+    with pytest.raises(ValueError, match="metadata exceeds the size limit"):
+        context.bound_context(package)
+
+
+def test_bound_context_can_remove_last_turn_without_popping_empty_list():
+    package = {"session_id": "chat-a", "memory": [], "context_incomplete": False,
+               "recent_turns": [{"text": "x" * context.MAX_CONTEXT_CHARS}],
+               "tasks": {"jobs": [], "omitted_jobs": 0}}
+    result = context.bound_context(package)
+    assert result["recent_turns"] == []
+    assert result["context_incomplete"]
+    assert len(json.dumps(result, ensure_ascii=False)) <= context.MAX_CONTEXT_CHARS
+
+
 async def test_short_history_needs_no_compressor_and_has_current_tasks(saved, monkeypatch):
     del saved[2:]
     compressor = AsyncMock()

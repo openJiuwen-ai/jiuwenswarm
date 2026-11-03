@@ -8,7 +8,7 @@ def safe_error_detail(value: object) -> str:
     """Retain the service detail without returning configured API credentials."""
     message = str(value).strip()
     for name, secret in os.environ.items():
-        if name.endswith("API_KEY") and secret:
+        if name.upper().endswith(("API_KEY", "TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY")) and secret:
             message = message.replace(secret, "******")
             if len(secret) >= 16:
                 # Providers may echo only the beginning/end of a rejected key.

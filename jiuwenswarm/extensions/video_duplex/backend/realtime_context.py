@@ -267,6 +267,8 @@ def bound_context(package):
         elif package["tasks"]["jobs"]:
             package["tasks"]["jobs"].pop()
             package["tasks"]["omitted_jobs"] += 1
-        else:
+        elif package["recent_turns"]:
             package["recent_turns"].pop(0)
+        else:
+            raise ValueError("Realtime context metadata exceeds the size limit")
     return package
