@@ -33,11 +33,13 @@ def test_a2ui_prompt_titles_input_components_with_text_caption():
 
     assert 'usageHint "caption"' in en
     assert '{"literalString": ""}' in en
+    assert "Wrap each Text title and its input component together in a Column" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert 'usageHint="caption"' in zh
     assert '{"literalString": ""}' in zh
+    assert "共同包在一个 Column 里" in zh
 
 
 def test_a2ui_prompt_wraps_outermost_ui_in_card():
