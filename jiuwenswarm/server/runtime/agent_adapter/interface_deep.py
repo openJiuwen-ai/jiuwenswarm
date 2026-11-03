@@ -7134,16 +7134,10 @@ class JiuWenSwarmDeepAdapter:
         return card
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
-        """Best-effort lookup of the user project directory for sandbox builds.
-
-        Prefers ``self._project_dir``,
-        then falls back to ``self._instance_overrides["project_dir"]`` which
-        :meth:`AgentManager.get_agent` populates from ``trusted_dirs[0]``.
-        Returning ``None`` lets :func:`build_filesystem_policy` use its own
-        fallback chain, but the agent-server cwd usually isn't what we want
-        so callers should treat ``None`` as "policy will mount cwd, which
-        may shadow secrets" and at minimum log it.
-        """
+        """Resolve the active task/project root without mounting the server cwd."""
+        task_root = getattr(self, "_sandbox_active_workspace_root", None)
+        if task_root:
+            return str(task_root)
         direct = getattr(self, "_project_dir", None)
         if direct:
             return str(direct)
@@ -7152,7 +7146,7 @@ class JiuWenSwarmDeepAdapter:
             value = overrides.get("project_dir")
             if value:
                 return str(value)
-        return None
+        return str(get_agent_root_dir())
 
 
 
@@ -12377,15 +12371,6 @@ class JiuWenSwarmDeepAdapter:
 
 
     @staticmethod
-    def _is_projectless_agent_mode(mode: str | None) -> bool:
-        return str(mode or "").strip().lower().split(".", 1)[0] in {
-            "agent",
-            "auto_harness",
-            "plan",
-            "fast",
-        }
-
-    @staticmethod
     def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
         """Read non-empty request.params.system_prompt."""
         if request is None or not isinstance(request.params, dict):
@@ -12551,6 +12536,12 @@ class JiuWenSwarmDeepAdapter:
         )
         task_workspace = str(runtime_paths.runtime_workspace_root)
         task_cwd = str(runtime_paths.cwd)
+        if task_workspace != getattr(self, "_sandbox_active_workspace_root", None):
+            self._sandbox_active_workspace_root = task_workspace
+            if get_sandbox_runtime().get("enabled"):
+                await self.apply_sandbox_runtime_patch(
+                    get_sandbox_runtime(), files_changed=True
+                )
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
         # Persist paths on StreamEventRail so the interaction round task can
         # rebind openjiuwen CwdState (request-task init_cwd does not propagate).
@@ -12639,7 +12630,10 @@ class JiuWenSwarmDeepAdapter:
         if permission_rail is not None and bind_request:
             try:
                 self._sync_permission_workspace(permission_rail)
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                trusted_dirs = list(runtime_config.trusted_dirs or ())
+                if runtime_paths.is_projectless:
+                    trusted_dirs.append(task_workspace)
+                permission_rail.set_trusted_dirs(trusted_dirs)
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] permission_rail.set_trusted_dirs failed",
@@ -18266,6 +18260,7 @@ class JiuWenSwarmDeepAdapter:
                         trusted_dirs=inputs.get("trusted_dirs"),
                         cwd=inputs.get("cwd"),
                         project_dir=inputs.get("project_dir"),
+                        task_name=self._resolve_request_task_name(request, inputs),
                         supports_user_interaction=inputs.get(
                             "supports_user_interaction", True
                         ),
@@ -18686,6 +18681,7 @@ class JiuWenSwarmDeepAdapter:
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
+                    task_name=self._resolve_request_task_name(request, inputs),
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),

@@ -49,6 +49,7 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 )
 
 from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.common.config import get_sandbox_runtime
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _AGENT_CARD_ID,
@@ -1479,6 +1480,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         project_workspace = str(runtime_paths.runtime_workspace_root)
         task_cwd = str(runtime_paths.cwd)
+        if project_workspace != getattr(self, "_sandbox_active_workspace_root", None):
+            self._sandbox_active_workspace_root = project_workspace
+            if get_sandbox_runtime().get("enabled"):
+                await self.apply_sandbox_runtime_patch(
+                    get_sandbox_runtime(), files_changed=True
+                )
         deep_config = getattr(self._instance, "deep_config", None)
         if deep_config is not None:
             deep_config.cwd = task_cwd
@@ -1561,7 +1568,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         permission_rail = getattr(self, "_permission_rail", None)
         if permission_rail is not None:
             try:
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                trusted_dirs = list(runtime_config.trusted_dirs or ())
+                if runtime_paths.is_projectless:
+                    trusted_dirs.append(project_workspace)
+                permission_rail.set_trusted_dirs(trusted_dirs)
             except Exception:
                 logger.debug(
                     "[JiuwenSwarmCodeAdapter] permission_rail.set_trusted_dirs failed",
@@ -1581,6 +1591,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # ProjectMemoryRail 语言同步 + trusted_dirs 注入
         if self._project_memory_rail is not None:
             self._project_memory_rail.set_language(resolved_language)
+            self._project_memory_rail.set_workspace_path(project_workspace)
             # trusted_dirs 来自 CLI 端的 trusted_dirs / workspace-dir，
             # 包含用户项目目录（即 /init 写 JIUWENSWARM.md 的目录）
             if runtime_config.trusted_dirs:

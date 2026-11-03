@@ -123,6 +123,7 @@ class RuntimePromptRail(DeepAgentRail):
             self.system_prompt_builder.remove_section("tui_current_project_policy")
             self.system_prompt_builder.remove_section("trusted_dirs_policy")
             self.system_prompt_builder.remove_section("request_system_prompt")
+            self.system_prompt_builder.remove_section("directory_boundaries")
         self._agent = None
         self.system_prompt_builder = None
         self.attachment_manager = None

@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as _datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -31,8 +32,6 @@ from pathlib import Path
 
 
 _TASKS_DIR_ENV = "JIUWENSWARM_TASKS_DIR"
-_TASK_REGISTRY_DIR_ENV = "JIUWENSWARM_TASK_REGISTRY_DIR"
-_REGISTRY_SUBDIR = ".projectless_tasks"
 _LEGACY_REGISTRY_DIR = ".jiuwenswarm"
 _CHAT_DIR_PREFIX = "chat"
 _METADATA_FILENAME = "metadata.json"
@@ -62,6 +61,7 @@ _WINDOWS_RESERVED_NAMES = {
     "NUL",
     "PRN",
 }
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,10 +195,10 @@ def _slugify(value: str | None, *, fallback: str) -> str:
 
 def _session_key(session_id: str | None, slug: str) -> str:
     """Keep exact short IDs stable while disambiguating lossy path names."""
-    if not session_id or session_id == slug:
+    if not session_id or (session_id == slug and slug == slug.casefold()):
         return slug
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
-    return f"{slug[:_MAX_TASK_NAME_LENGTH - 13]}-{digest}"
+    return f"{slug.casefold()[:_MAX_TASK_NAME_LENGTH - 13]}-{digest}"
 
 
 def _metadata_session_id(root: Path) -> str | None:
@@ -234,15 +234,9 @@ def _allocate_task_root(
 
 def _registry_root() -> Path:
     """Return the private registry directory for projectless task bindings."""
-    configured = os.environ.get(_TASK_REGISTRY_DIR_ENV, "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
+    from jiuwenswarm.common.utils import get_projectless_task_registry_dir
 
-    # Import lazily so the workspace module remains cheap and avoids coupling
-    # its import order to the broader JiuwenSwarm bootstrap sequence.
-    from jiuwenswarm.common.utils import get_agent_workspace_dir
-
-    return (get_agent_workspace_dir() / _REGISTRY_SUBDIR).resolve()
+    return get_projectless_task_registry_dir()
 
 
 def _registry_path(safe_session: str) -> Path:
@@ -262,14 +256,19 @@ def _read_registered_root(tasks_dir: Path, safe_session: str) -> Path | None:
             record = json.loads(path.read_text(encoding="utf-8"))
             raw_root = record.get("root_dir") if isinstance(record, dict) else None
             if not isinstance(raw_root, str) or not raw_root.strip():
+                logger.warning(
+                    "Ignoring projectless registry entry without root_dir: %s", path
+                )
                 continue
             root = Path(raw_root).expanduser().resolve()
             if not root.is_relative_to(tasks_dir.resolve()) or not root.is_dir():
+                logger.warning("Ignoring invalid projectless registry root: %s", path)
                 continue
             if path != primary_path:
                 _write_registered_root(tasks_dir, safe_session, root)
             return root
         except (OSError, ValueError, TypeError):
+            logger.warning("Ignoring unreadable projectless registry entry: %s", path)
             continue
     return None
 
