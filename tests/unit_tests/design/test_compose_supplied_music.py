@@ -243,14 +243,19 @@ async def test_failed_score_falls_back_to_the_clips_own_audio(
 
     def fake_concat(paths: list[Path], dest: Path) -> Path:
         joined.append(list(paths))
-        Path(dest).write_bytes(b"m" * 600)
+        Path(dest).write_bytes(f"join {len(joined)}".encode().ljust(600, b"m"))
         return Path(dest).resolve()
 
     monkeypatch.setattr(compose_mod, "concatenate_clip_videos", fake_concat)
     monkeypatch.setattr(compose_mod.handler_io, "canvas_output_dir", lambda graph: tmp_path)
-    monkeypatch.setattr(
-        compose_mod, "mix_compose_soundtrack", lambda video, dest, ctx=None, brief="": video
-    )
+
+    def fake_mix(video: Path, dest: Path, ctx: object = None, brief: str = "") -> Path:
+        if len(joined) == 1:
+            return video
+        Path(dest).write_bytes(b"scored " + Path(video).read_bytes())
+        return Path(dest).resolve()
+
+    monkeypatch.setattr(compose_mod, "mix_compose_soundtrack", fake_mix)
 
     result = await compose_mod.ComposeNodeHandler().execute(
         graph["nodes"][-1], _ctx(graph, clip1, clip2)
@@ -260,3 +265,4 @@ async def test_failed_score_falls_back_to_the_clips_own_audio(
     assert len(joined) == 2
     assert joined[0] != [clip1, clip2]
     assert joined[1] == [clip1, clip2]
+    assert (tmp_path / result.output_ref["label"]).read_bytes().startswith(b"scored join 2")
