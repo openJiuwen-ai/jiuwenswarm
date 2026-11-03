@@ -326,6 +326,8 @@ class WebChannel(BaseWsChannel):
 
         decoded, merged_content = parsed
         merged_count = 1
+        traced_operation = getattr(first_frame, "operation", None)
+        pending_count = getattr(first_frame, "pending_count", 0)
         trailing: list[Any] = []
 
         while merged_count < _STREAM_COALESCE_MAX_FRAMES:
@@ -339,17 +341,23 @@ class WebChannel(BaseWsChannel):
             candidate_parsed = self._coalescible_stream_frame(candidate)
             if (
                 candidate_parsed is None
+                or getattr(candidate, "operation", None) is not traced_operation
                 or not self._same_stream_identity(decoded, candidate_parsed[0])
             ):
                 trailing.append(candidate)
                 break
             merged_content += candidate_parsed[1]
+            pending_count += getattr(candidate, "pending_count", 0)
             merged_count += 1
 
         if merged_count == 1:
             return [first_frame, *trailing]
 
         merged_payload = {**decoded["payload"], "content": merged_content}
+        if traced_operation is not None:
+            first_frame["payload"] = merged_payload
+            first_frame.pending_count = pending_count
+            return [first_frame, *trailing]
         return [{**decoded, "payload": merged_payload}, *trailing]
 
     # ── 公共属性 ──────────────────────────────────────────
@@ -1183,6 +1191,30 @@ class WebChannel(BaseWsChannel):
         }, msg)
 
     async def send(
+        self,
+        msg: Message,
+        *,
+        routing_target: RoutingTarget | None = None,
+    ) -> None:
+        from gateway.telemetry import attach_message_trace, bind_message_trace, get_message_trace
+
+        operation = get_message_trace(msg) or attach_message_trace(msg)
+        if operation is None:
+            await self._send_message(msg, routing_target=routing_target)
+            return
+        before = operation.attempted_frames if operation is not None else 0
+        with bind_message_trace(msg):
+            try:
+                await self._send_message(msg, routing_target=routing_target)
+            except BaseException:
+                if operation is not None:
+                    operation.record_outcome("incomplete", reason="channel_send_failed")
+                raise
+            finally:
+                if operation is not None and not operation.finished and operation.attempted_frames == before:
+                    operation.record_outcome("incomplete", reason="client_route_miss")
+
+    async def _send_message(
         self,
         msg: Message,
         *,
@@ -2040,6 +2072,57 @@ class WebChannel(BaseWsChannel):
         if not isinstance(params, dict):
             params = {}
 
+        from gateway.telemetry import bind_request_trace, bind_request_trace_start, start_request_trace
+
+        operation = None
+        started = False
+        active = True
+
+        def start(request_id: str, channel: str):
+            nonlocal operation, started
+            if not active or (request_id, channel) != (req_id, self.channel_id):
+                return None
+            if not started:
+                started = True
+                explicit_session = params.get("session_id")
+                operation = start_request_trace(
+                    req_id, method, channel=self.channel_id, connection_id=str(id(ws)),
+                    user_id=self._connection_user_id(ws) or "",
+                    session_id=explicit_session if isinstance(explicit_session, str) else "",
+                    trace_context=data.get("trace_context"),
+                )
+                if operation is not None and not self._track_request_trace(ws, operation):
+                    operation.finish("incomplete", reason="capacity")
+                    operation = None
+            return operation if operation is not None and not operation.finished else None
+
+        # Preserve early preprocessing observations for the existing paths.
+        # Other user requests start when they actually enter E2A dispatch.
+        if method in {
+            "models.list", "chat.send", "history.get", "chat.interrupt",
+            "chat.resume", "chat.user_answer", "chat.swarmflow_reply",
+        }:
+            start(req_id, self.channel_id)
+        with bind_request_trace(operation), bind_request_trace_start(start):
+            try:
+                await self._handle_request_message(ws, data, query, req_id, method, params)
+            except BaseException:
+                if operation is not None:
+                    operation.finish("incomplete", reason="handler_exception")
+                    self._untrack_request_trace(ws, operation)
+                raise
+            finally:
+                active = False
+                if operation is not None:
+                    if not operation.finished and not operation.accepted:
+                        operation.complete("success" if operation.delivery_pending else "incomplete",
+                                           reason="" if operation.delivery_pending else "no_response")
+                    if operation.finished:
+                        self._untrack_request_trace(ws, operation)
+
+    async def _handle_request_message(
+        self, ws: Any, data: dict, query: dict[str, list[str]], req_id: str, method: str, params: dict,
+    ) -> None:
         # Issue #4876: non-string params.mode / params.agent_id (list / dict / ...)
         # used to flow into AgentRef -> RoutingKey and blow up on hash() inside
         # register_ws. The crash escaped the per-message task, so the client got
@@ -2103,15 +2186,17 @@ class WebChannel(BaseWsChannel):
 
         if method == "chat.send":
             from gateway.common.request_identity import apply_routing_metadata
+            from gateway.telemetry import trace_stage
 
             try:
-                params = await self._process_files(
-                    params,
-                    session_id=session_id,
-                    req_id=req_id if isinstance(req_id, str) else "",
-                    user_id=self._connection_user_id(ws),
-                    metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
-                )
+                with trace_stage("preprocess.attachments"):
+                    params = await self._process_files(
+                        params,
+                        session_id=session_id,
+                        req_id=req_id if isinstance(req_id, str) else "",
+                        user_id=self._connection_user_id(ws),
+                        metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
+                    )
             except ValueError as exc:
                 await self.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
                 return
@@ -2175,6 +2260,9 @@ class WebChannel(BaseWsChannel):
             user_id=req_user_id,
             metadata=_meta,
         )
+
+        from gateway.telemetry import attach_message_trace
+        attach_message_trace(user_message)
 
         # 发布到 route 或回调
         handler = self._method_handlers.get(method)

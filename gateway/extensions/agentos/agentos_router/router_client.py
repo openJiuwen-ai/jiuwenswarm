@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+from dataclasses import dataclass
 import logging
 import re
 import shlex
@@ -10,6 +12,7 @@ import stat
 import time
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Coroutine, Mapping
 
@@ -101,6 +104,11 @@ from gateway.extensions.yuanrong_frontend_client import (
     extract_trace_id,
 )
 from gateway.routing.agent_client import WebSocketAgentServerClient
+from gateway.telemetry import (
+    TraceOperation, bind_request_trace, current_request_trace, inject_request_headers,
+    start_gateway_trace, trace_operation, bind_cleanup_trace, current_cleanup_trace,
+    get_cleanup_result, record_cleanup_result,
+)
 from gateway.routing.container_files import (
     AgentOSFileTransferError,
     normalize_agent_file_download_path,
@@ -108,6 +116,61 @@ from gateway.routing.container_files import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ws_readiness_required: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agentos_ws_readiness_required", default=False,
+)
+
+
+_cleanup_trigger: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
+    "agentos_cleanup_trigger", default=("explicit", False),
+)
+
+_cleanup_nested_delete: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agentos_cleanup_nested_delete", default=False,
+)
+
+
+def _cleanup_step(step: str, outcome: str, reason: str = "") -> None:
+    stage = {
+        "ws": "ws.close", "frontend": "frontend.delete", "runtime": "runtime.remove",
+        "registry": "registry.unregister", "delete": "operation",
+    }[step]
+    if step == "runtime" and outcome == "skipped":
+        stage = "guard"
+    if outcome == "failed" and "timeout" in reason.lower():
+        outcome = "timeout"
+    record_cleanup_result(stage, outcome, reason=reason)
+
+
+def _trace_cleanup_skip(source: str, user_id: str, reason: str, instance_id: str = "") -> None:
+    with trace_operation(
+        "gw.agent.delete",
+        attributes={"source": source, "trigger": source, "user_id": user_id, "instance_id": instance_id},
+        root=True,
+    ) as operation:
+        with bind_cleanup_trace(operation):
+            record_cleanup_result("guard", "skipped", reason=reason)
+
+
+def _cleanup_identity(info: AgentInfo) -> None:
+    operation = current_cleanup_trace()
+    if operation is not None:
+        try:
+            operation.span.set_attribute("instance_id", str(info.sandbox_id or ""))
+            operation.span.set_attribute("session_id", str(info.metadata.get("session_id") or ""))
+        except Exception:
+            logger.debug("Unable to record cleanup identity", exc_info=True)
+
+
+@dataclass
+class _PreparationTrace:
+    operation: TraceOperation
+    ws_required: bool
+    owner_task: asyncio.Task[Any] | None = None
+    registered: bool = False
+    ready: bool = False
+
 
 _WORKSPACE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # Builtin jiuwenswarm create only: sandbox env so agentserver can locate
@@ -597,6 +660,8 @@ class AgentOSRouterClient(AgentServerClient):
         self._ws_clients_lock = asyncio.Lock()
         # instance_id → 正在进行的 connect Future（合并并发首连，避免多路同时打 502）
         self._ws_connecting: dict[str, asyncio.Future[WebSocketAgentServerClient]] = {}
+        self._ws_connect_traces: dict[str, TraceOperation] = {}
+        self._preparation_traces: dict[str, _PreparationTrace] = {}
         # sandbox_id 集合：已确认 web 南向 running。所有访问同一沙箱的请求
         # 共享就绪结果，热了直接跳过（避免每请求一次 GET）；沙箱删除时移除。
         self._web_ready_sandboxes: set[str] = set()
@@ -791,10 +856,11 @@ class AgentOSRouterClient(AgentServerClient):
             # 配置的超时清理时长为0或者负数时，不触发清理机制
             if count <= 0 and self._disconnect_cleanup_timeout_seconds > 0:
                 # 连接数为 0：超时后尝试删除 jiuwenswarm agent
-                task = asyncio.create_task(
-                    self._delayed_cleanup(user_id),
-                    name=f"agentos-delayed-cleanup-{user_id[:24]}",
-                )
+                with bind_request_trace(None):
+                    task = asyncio.create_task(
+                        self._delayed_cleanup(user_id),
+                        name=f"agentos-delayed-cleanup-{user_id[:24]}",
+                    )
                 self._pending_cleanups[user_id] = task
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
@@ -819,6 +885,7 @@ class AgentOSRouterClient(AgentServerClient):
         for attempt in range(1, _DISCONNECT_CLEANUP_MAX_ATTEMPTS + 1):
             # 二次检查：用户可能已重连（重连时上层也会 cancel 本任务）
             if self._agent_manager.get_user_connection_count(user_id) > 0:
+                _trace_cleanup_skip("disconnect_cleanup", user_id, "still_online")
                 return
             try:
                 runtimes = await self._agent_manager.list_user_agents(user_id)
@@ -830,6 +897,8 @@ class AgentOSRouterClient(AgentServerClient):
                 return
 
             pending = False
+            if not runtimes:
+                _trace_cleanup_skip("disconnect_cleanup", user_id, "no_runtime")
             for runtime in runtimes:
                 if runtime.info.agent_type != BUILTIN_AGENT_TYPE:
                     continue
@@ -840,6 +909,7 @@ class AgentOSRouterClient(AgentServerClient):
                     if session_id:
                         key_values = {"session_id": session_id}
                 if runtime.task_count > 0:
+                    _trace_cleanup_skip("disconnect_cleanup", user_id, "held", sandbox_id)
                     # in-flight 请求持有（chat.interrupt 延迟 cancel 等）：
                     # 等它 release 后再评估，本轮先标记继续重试。
                     pending = True
@@ -847,12 +917,16 @@ class AgentOSRouterClient(AgentServerClient):
                 try:
                     # pop_if_idle 做最终守卫：task_count>0 / 非 READY / 空闲
                     # 不满宽限时返回 False，不会误杀活动中的 agent。
-                    deleted = await self.delete_agent(
-                        user_id,
-                        runtime.info.agent_type,
-                        key_values=key_values,
-                        idle_timeout_seconds=_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS,
-                    )
+                    token = _cleanup_trigger.set(("disconnect_cleanup", True))
+                    try:
+                        deleted = await self.delete_agent(
+                            user_id,
+                            runtime.info.agent_type,
+                            key_values=key_values,
+                            idle_timeout_seconds=_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS,
+                        )
+                    finally:
+                        _cleanup_trigger.reset(token)
                 except Exception:
                     logger.exception(
                         "[AgentOSRouter] delayed cleanup delete failed: "
@@ -933,6 +1007,16 @@ class AgentOSRouterClient(AgentServerClient):
         task.add_done_callback(_on_done)
 
     async def _warmup_user_agent(self, user_id: str) -> None:
+        with trace_operation(
+            "gw.connect.warmup", root=True, attributes={"source": "connect.warmup", "user_id": user_id},
+        ):
+            token = _ws_readiness_required.set(True)
+            try:
+                await self._warmup_user_agent_impl(user_id)
+            finally:
+                _ws_readiness_required.reset(token)
+
+    async def _warmup_user_agent_impl(self, user_id: str) -> None:
         """Create the builtin jiuwenswarm sandbox and open instance WS.
 
         Must not raise: handshake / connection.ack already succeeded. Chat
@@ -968,13 +1052,21 @@ class AgentOSRouterClient(AgentServerClient):
                 acquire=True,
             )
             try:
-                await self._get_ws_client(runtime)
+                client = await self._get_ws_client(runtime)
+                if getattr(client, "server_ready", None) is False:
+                    operation = current_request_trace()
+                    if operation is not None and operation.method == "gw.connect.warmup":
+                        operation.record_outcome("incomplete", reason="ws_readiness_unconfirmed")
             finally:
                 # 预热终态（WS 就绪或失败）即释放：在途窗口 task_count>0
                 # 保护实例不被断开清理误删；释放后保护职责交还给
                 # “连接在线”语义（连接数>0 期间清理本就不触发）。
                 await self._agent_manager.release(runtime.key)
-        except Exception:
+        except Exception as exc:
+            operation = current_request_trace()
+            if operation is not None and operation.method == "gw.connect.warmup":
+                outcome = "timeout" if isinstance(exc, (TimeoutError, YuanrongAgentTimeoutError)) else "failed"
+                operation.record_outcome(outcome, reason=type(exc).__name__)
             logger.warning(
                 "[AgentOSRouter] connect warmup failed: user=%s agent_type=%s",
                 user_id,
@@ -1477,7 +1569,7 @@ class AgentOSRouterClient(AgentServerClient):
         deadline = asyncio.get_running_loop().time() + _WS_CONNECT_READY_TIMEOUT_SECONDS
         attempt = 0
         # One reconnect (including 502 retries) shares one southbound id.
-        ws_headers = apply_trace_header({})
+        ws_headers = inject_request_headers(apply_trace_header({}))
         ws_trace_id = extract_trace_id(ws_headers)
 
         while True:
@@ -1688,48 +1780,77 @@ class AgentOSRouterClient(AgentServerClient):
         async with self._ws_clients_lock:
             existing = self._ws_clients.get(instance_id)
             if existing is not None:
+                self._observe_ws_ready(instance_id, existing)
                 return existing
             inflight = self._ws_connecting.get(instance_id)
             if inflight is None:
                 inflight = asyncio.get_running_loop().create_future()
                 inflight.add_done_callback(_consume_inflight_exception)
                 self._ws_connecting[instance_id] = inflight
+                owner_trace = current_request_trace()
+                if owner_trace is not None:
+                    self._ws_connect_traces[instance_id] = owner_trace
                 is_leader = True
             else:
                 is_leader = False
+                owner_trace = self._ws_connect_traces.get(instance_id)
 
         if not is_leader:
-            return await asyncio.shield(inflight)
+            with trace_operation(
+                "gw.agent.ws.wait", attributes={"instance_id": instance_id},
+                links=[owner_trace] if owner_trace is not None else None,
+            ):
+                return await asyncio.shield(inflight)
 
         leader_started = time.monotonic()
         client = None
         try:
-            await self._wait_yuanrong_running(
-                instance_id,
-                user_id=str(info.user_id or ""),
-                session_id=str(info.metadata.get("session_id") or ""),
-                agent_type=str(info.agent_type or ""),
-            )
-            client = await self._connect_ws_until_ready(
-                instance_id=instance_id,
-                agent_port=agent_port,
-                user_id=str(info.user_id or ""),
-                session_id=str(info.metadata.get("session_id") or ""),
-                agent_type=str(info.agent_type or ""),
-            )
+            preparation = self._preparation_traces.get(instance_id)
+            current = current_request_trace()
+            owner = preparation.operation if preparation is not None else None
+            is_owner = preparation is not None and preparation.owner_task is asyncio.current_task()
+            if owner is not None and is_owner:
+                scope = bind_request_trace(owner)
+            elif owner is not None:
+                scope = trace_operation("gw.agent.ws.prepare", links=[owner])
+            else:
+                scope = bind_request_trace(current) if current is not None else nullcontext()
+            with scope:
+                await self._wait_yuanrong_running(
+                    instance_id,
+                    user_id=str(info.user_id or ""),
+                    session_id=str(info.metadata.get("session_id") or ""),
+                    agent_type=str(info.agent_type or ""),
+                )
+                client = await self._connect_ws_until_ready(
+                    instance_id=instance_id,
+                    agent_port=agent_port,
+                    user_id=str(info.user_id or ""),
+                    session_id=str(info.metadata.get("session_id") or ""),
+                    agent_type=str(info.agent_type or ""),
+                )
             async with self._ws_clients_lock:
                 self._ws_clients[instance_id] = client
                 self._ws_connecting.pop(instance_id, None)
+                self._ws_connect_traces.pop(instance_id, None)
                 if not inflight.done():
                     inflight.set_result(client)
+            self._observe_ws_ready(instance_id, client)
             return client
         except asyncio.CancelledError as exc:
+            preparation = self._preparation_traces.get(instance_id)
+            if preparation is not None and preparation.owner_task is asyncio.current_task():
+                preparation.operation.record_outcome("cancelled", reason="ws_cancelled")
+                self._preparation_ready(instance_id, confirmed=False)
+            self._ws_connect_traces.pop(instance_id, None)
             await self._abort_ws_connect(
                 instance_id=instance_id,
                 inflight=inflight,
                 exc=exc,
                 client=client,
             )
+            if preparation is not None and preparation.owner_task is not None and preparation.owner_task.done():
+                self._preparation_owner_done(instance_id, preparation, preparation.owner_task)
             log_agentos(
                 logger,
                 logging.WARNING,
@@ -1744,49 +1865,83 @@ class AgentOSRouterClient(AgentServerClient):
             )
             raise
         except Exception as exc:
+            outcome = "timeout" if isinstance(exc, (TimeoutError, YuanrongAgentTimeoutError)) else "failed"
+            preparation = self._preparation_traces.get(instance_id)
+            if preparation is not None and preparation.owner_task is asyncio.current_task():
+                preparation.operation.record_outcome(outcome, reason=type(exc).__name__)
+                self._preparation_ready(instance_id, confirmed=False)
+            self._ws_connect_traces.pop(instance_id, None)
             await self._abort_ws_connect(
                 instance_id=instance_id,
                 inflight=inflight,
                 exc=exc,
                 client=client,
             )
+            if preparation is not None and preparation.owner_task is not None and preparation.owner_task.done():
+                self._preparation_owner_done(instance_id, preparation, preparation.owner_task)
             raise
 
     async def _close_ws_client(self, instance_id: str | None) -> None:
         if not instance_id:
+            _cleanup_step("ws", "skipped", "no_instance")
             return
         key = str(instance_id)
         async with self._ws_clients_lock:
             client = self._ws_clients.pop(key, None)
             inflight = self._ws_connecting.pop(key, None)
+            self._ws_connect_traces.pop(key, None)
         if inflight is not None and not inflight.done():
             inflight.cancel()
         if client is None:
+            _cleanup_step("ws", "skipped", "no_client")
             return
-        try:
-            await client.disconnect()
-        except Exception:
-            logger.warning(
-                "[AgentOS] agent.ws.close.fail sandbox_id=%s",
-                instance_id,
-                extra={"sandbox_id": str(instance_id)},
-                exc_info=True,
-            )
+        with trace_operation("gw.agent.ws.close", attributes={"instance_id": key}) as operation:
+            try:
+                await client.disconnect()
+                _cleanup_step("ws", "success")
+            except Exception as exc:
+                if operation is not None:
+                    outcome = (
+                        "timeout" if isinstance(exc, TimeoutError)
+                        or "timeout" in type(exc).__name__.lower()
+                        else "failed"
+                    )
+                    operation.record_outcome(outcome, reason=type(exc).__name__)
+                _cleanup_step("ws", "failed", type(exc).__name__)
+                logger.warning(
+                    "[AgentOS] agent.ws.close.fail sandbox_id=%s",
+                    instance_id,
+                    extra={"sandbox_id": str(instance_id)},
+                    exc_info=True,
+                )
 
     async def _close_all_ws_clients(self) -> None:
         async with self._ws_clients_lock:
-            clients = list(self._ws_clients.values())
+            clients = list(self._ws_clients.items())
             self._ws_clients.clear()
             inflight = list(self._ws_connecting.values())
             self._ws_connecting.clear()
+            self._ws_connect_traces.clear()
         for fut in inflight:
             if not fut.done():
                 fut.cancel()
-        for client in clients:
-            try:
-                await client.disconnect()
-            except Exception:
-                logger.warning("[AgentOSRouter] close agent ws failed", exc_info=True)
+        for instance_id, client in clients:
+            with trace_operation(
+                "gw.agent.ws.close",
+                attributes={"instance_id": instance_id, "source": "shutdown"},
+                root=True,
+            ) as operation:
+                try:
+                    await client.disconnect()
+                except Exception as exc:
+                    if operation is not None:
+                        outcome = (
+                            "timeout" if isinstance(exc, TimeoutError)
+                            or "timeout" in type(exc).__name__.lower()
+                            else "failed"
+                        )
+                        operation.record_outcome(outcome, reason=type(exc).__name__)
+                    logger.warning("[AgentOSRouter] close agent ws failed", exc_info=True)
 
     def _register_ws_disconnect_handler(
         self,
@@ -1850,10 +2005,11 @@ class AgentOSRouterClient(AgentServerClient):
         log_agentos(logger, logging.INFO, "agent.ws.cleanup.scheduled", user_id=user_id, session_id=session_id,
                     sandbox_id=instance_id, agent_type=agent_type, instance=instance_id,
                     wait_s=f"{self._disconnect_cleanup_timeout_seconds:.0f}s")
-        task = asyncio.create_task(
-            self._delayed_cleanup(user_id),
-            name=f"agentos-ws-closed-cleanup-{user_id[:24]}",
-        )
+        with bind_request_trace(None):
+            task = asyncio.create_task(
+                self._delayed_cleanup(user_id),
+                name=f"agentos-ws-closed-cleanup-{user_id[:24]}",
+            )
         self._pending_cleanups[user_id] = task
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -1883,7 +2039,7 @@ class AgentOSRouterClient(AgentServerClient):
                 return self._cancel_noop_response(envelope)
         else:
             try:
-                runtime = await self._resolve_agent(envelope, acquire=True)
+                runtime = await self._resolve_agent(envelope, acquire=True, ws_ready=True)
             except (ValueError, AgentCreatingTimeout, AgentCreateFailed) as exc:
                 self._log_route("route.error", envelope, level=logging.WARNING, error=str(exc))
                 return self._routing_error_response(envelope, str(exc))
@@ -1950,7 +2106,7 @@ class AgentOSRouterClient(AgentServerClient):
     ) -> AsyncIterator[AgentResponseChunk]:
         await self._inject_external_cli_agents(envelope)
         try:
-            runtime = await self._resolve_agent(envelope, acquire=True)
+            runtime = await self._resolve_agent(envelope, acquire=True, ws_ready=True)
         except (ValueError, AgentCreatingTimeout, AgentCreateFailed) as exc:
             self._log_route("route.error", envelope, level=logging.WARNING, error=str(exc))
             yield self._routing_error_chunk(envelope, str(exc))
@@ -2542,30 +2698,35 @@ class AgentOSRouterClient(AgentServerClient):
         )
 
     async def _drain_background_tasks(self) -> None:
-        if not self._background_tasks:
-            return
         tasks = list(self._background_tasks)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
+        for instance_id in list(self._preparation_traces):
+            self._preparation_fail(instance_id, "incomplete", "router_shutdown")
 
     async def _resolve_agent(
         self,
         envelope: E2AEnvelope,
         *,
         acquire: bool = False,
+        ws_ready: bool = False,
     ) -> AgentRuntime:
         user_id = self._extract_user_id(envelope)
         agent_type = self._extract_agent_type(envelope)
-        return await self._agent_manager.get_or_create_agent(
-            user_id,
-            agent_type,
-            key_values={"session_id": envelope.session_id},
-            creator=self._create_agent,
-            metadata={"session_id": envelope.session_id},
-            acquire=acquire,
-        )
+        token = _ws_readiness_required.set(ws_ready and self._uses_direct_yuanrong(agent_type))
+        try:
+            return await self._agent_manager.get_or_create_agent(
+                user_id,
+                agent_type,
+                key_values={"session_id": envelope.session_id},
+                creator=self._create_agent,
+                metadata={"session_id": envelope.session_id},
+                acquire=acquire,
+            )
+        finally:
+            _ws_readiness_required.reset(token)
 
     # ---------- idle sandbox reclamation ----------
 
@@ -2729,10 +2890,11 @@ class AgentOSRouterClient(AgentServerClient):
             return
         if self._idle_reaper_task is not None and not self._idle_reaper_task.done():
             return
-        self._idle_reaper_task = asyncio.create_task(
-            self._idle_reaper_loop(),
-            name="agentos-sandbox-idle-reaper",
-        )
+        with bind_request_trace(None):
+            self._idle_reaper_task = asyncio.create_task(
+                self._idle_reaper_loop(),
+                name="agentos-sandbox-idle-reaper",
+            )
 
     async def _stop_idle_reaper_task(self) -> None:
         task = self._idle_reaper_task
@@ -2750,10 +2912,11 @@ class AgentOSRouterClient(AgentServerClient):
             return
         if self._stale_cleanup_task is not None and not self._stale_cleanup_task.done():
             return
-        self._stale_cleanup_task = asyncio.create_task(
-            self._startup_cleanup_sandboxes(),
-            name="agentos-startup-sandbox-cleanup",
-        )
+        with bind_request_trace(None):
+            self._stale_cleanup_task = asyncio.create_task(
+                self._startup_cleanup_sandboxes(),
+                name="agentos-startup-sandbox-cleanup",
+            )
 
     async def _stop_stale_cleanup_task(self) -> None:
         task = self._stale_cleanup_task
@@ -2804,12 +2967,16 @@ class AgentOSRouterClient(AgentServerClient):
             if not user_id or not agent_type:
                 continue
             try:
-                deleted = await self.delete_agent(
-                    user_id,
-                    agent_type,
-                    key_values=values or None,
-                    idle_timeout_seconds=self._sandbox_idle_timeout_seconds,
-                )
+                token = _cleanup_trigger.set(("idle_reaper", True))
+                try:
+                    deleted = await self.delete_agent(
+                        user_id,
+                        agent_type,
+                        key_values=values or None,
+                        idle_timeout_seconds=self._sandbox_idle_timeout_seconds,
+                    )
+                finally:
+                    _cleanup_trigger.reset(token)
             except Exception:  # noqa: BLE001 - keep reaping other agents
                 logger.exception(
                     "[AgentOS] sandbox.reclaim.fail user_id=%s agent_type=%s",
@@ -2822,6 +2989,27 @@ class AgentOSRouterClient(AgentServerClient):
         return reaped
 
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
+        operation = start_gateway_trace(
+            "gw.agent.create", attributes={"agent_type": agent_info.agent_type, "user_id": agent_info.user_id},
+        )
+        if operation is None:
+            return await self._create_agent_impl(agent_info, None)
+        try:
+            with bind_request_trace(operation):
+                return await self._create_agent_impl(agent_info, operation)
+        except asyncio.CancelledError:
+            if operation is not None:
+                operation.finish("cancelled", reason="create_cancelled")
+            raise
+        except BaseException as exc:
+            if operation is not None:
+                outcome = "timeout" if isinstance(exc, (TimeoutError, YuanrongAgentTimeoutError)) else "failed"
+                operation.finish(outcome, reason=type(exc).__name__)
+            raise
+
+    async def _create_agent_impl(
+        self, agent_info: AgentInfo, operation: TraceOperation | None,
+    ) -> AgentInfo:
         try:
             workspace = resolve_agent_workspace(
                 agent_info.user_id,
@@ -2933,6 +3121,8 @@ class AgentOSRouterClient(AgentServerClient):
         try:
             sandbox = await _create_sandbox_once()
         except YuanrongAgentTimeoutError:
+            if operation is not None:
+                operation.event("sandbox.create.retry", {"count": 2, "reason": "create_timeout"})
             # create 超时（请求可能已生效而响应丢失的半成功状态）：以相同参数
             # 重试一次做幂等回查。name 由 user_id+agent_type
             # 确定性派生，即实例标识——首次请求未达则正常新建；已创建则按
@@ -2978,8 +3168,17 @@ class AgentOSRouterClient(AgentServerClient):
             memory=runtime_spec.get("memory"),
         )
 
+        preparation = None
+        if operation is not None:
+            owner_task = asyncio.current_task()
+            preparation = _PreparationTrace(operation, _ws_readiness_required.get(), owner_task)
+            self._preparation_traces[instance_id] = preparation
+            if preparation.ws_required and owner_task is not None:
+                owner_task.add_done_callback(
+                    lambda done: self._preparation_owner_done(instance_id, preparation, done),
+                )
         task = asyncio.create_task(
-            self._register_agent(agent_info.copy()),
+            self._register_agent_traced(agent_info.copy(), preparation),
             name=f"agentos-register-{agent_info.agent_id[:12]}",
         )
         self._background_tasks.add(task)
@@ -2987,6 +3186,34 @@ class AgentOSRouterClient(AgentServerClient):
         return agent_info
 
     async def delete_agent(
+        self,
+        user_id: str,
+        agent_type: str,
+        *,
+        key_values: dict[str, Any] | None = None,
+        idle_timeout_seconds: float | None = None,
+    ) -> bool:
+        if _cleanup_nested_delete.get() and current_cleanup_trace() is not None:
+            return await self._delete_agent_impl(
+                user_id, agent_type, key_values=key_values, idle_timeout_seconds=idle_timeout_seconds,
+            )
+        trigger, root = _cleanup_trigger.get()
+        if trigger == "idle_reaper" and root and idle_timeout_seconds is not None:
+            return await self._delete_idle_agent(
+                user_id, agent_type, key_values=dict(key_values or {}),
+                idle_timeout_seconds=float(idle_timeout_seconds), trace_on_pop=True,
+            )
+        with trace_operation(
+            "gw.agent.delete",
+            attributes={"source": trigger, "trigger": trigger, "user_id": user_id, "agent_type": agent_type},
+            root=root,
+        ) as operation:
+            with bind_cleanup_trace(operation):
+                return await self._delete_agent_impl(
+                    user_id, agent_type, key_values=key_values, idle_timeout_seconds=idle_timeout_seconds,
+                )
+
+    async def _delete_agent_impl(
         self,
         user_id: str,
         agent_type: str,
@@ -3013,8 +3240,10 @@ class AgentOSRouterClient(AgentServerClient):
             user_id, agent_type, key_values=resolved_key_values or None
         )
         if runtime is None:
+            _cleanup_step("runtime", "skipped", "no_runtime")
             return False
         agent_info = runtime.info
+        _cleanup_identity(agent_info)
         if (
             "session_id" not in resolved_key_values
             and agent_info.metadata.get("session_id")
@@ -3027,7 +3256,10 @@ class AgentOSRouterClient(AgentServerClient):
         if agent_info.sandbox_id:
             try:
                 await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
-            except Exception:
+                if get_cleanup_result("frontend.delete") is None:
+                    _cleanup_step("frontend", "incomplete", "result_unconfirmed")
+            except Exception as exc:
+                _cleanup_step("frontend", "failed", type(exc).__name__)
                 # YuanRong 删除失败不阻断后续清理：继续移除
                 # 内存 runtime 并注销注册中心，避免残留僵尸 runtime / 注册条目；
                 # 孤儿沙箱按 best_effort 语义交由手工 / 后续对账兜底。
@@ -3046,11 +3278,14 @@ class AgentOSRouterClient(AgentServerClient):
                         sandbox_id=str(agent_info.sandbox_id or ""),
                     ),
                 )
+        else:
+            _cleanup_step("frontend", "skipped", "no_instance")
         await self._agent_manager.delete_agent(
             agent_info.user_id,
             agent_info.agent_type,
             key_values=resolved_key_values or None,
         )
+        _cleanup_step("runtime", "success", "removed")
         await self._unregister_agent(agent_info)
         return True
 
@@ -3061,6 +3296,7 @@ class AgentOSRouterClient(AgentServerClient):
         *,
         key_values: dict[str, Any],
         idle_timeout_seconds: float,
+        trace_on_pop: bool = False,
     ) -> bool:
         """Atomically pop an idle agent then run shared delete cleanup."""
         key = AgentRuntime.build_key(
@@ -3071,21 +3307,30 @@ class AgentOSRouterClient(AgentServerClient):
         )
         runtime = await self._agent_manager.pop_if_idle(key, idle_timeout_seconds)
         if runtime is None:
+            if not trace_on_pop:
+                _cleanup_step("runtime", "skipped", "not_idle")
             return False
         agent_info = runtime.info
-        log_agentos(
-            logger,
-            logging.INFO,
-            "sandbox.reclaim",
-            user_id=agent_info.user_id,
-            session_id=str(agent_info.metadata.get("session_id") or ""),
-            sandbox_id=str(agent_info.sandbox_id or ""),
-            agent_type=agent_info.agent_type,
-            instance=str(agent_info.sandbox_id or ""),
-            idle_timeout=f"{idle_timeout_seconds:.0f}s",
-        )
-        await self._release_agent_resources(agent_info, best_effort=True)
-        return True
+        scope = trace_operation("gw.agent.delete", root=True, attributes={
+            "source": "idle_reaper", "trigger": "idle_reaper",
+            "user_id": agent_info.user_id, "agent_type": agent_info.agent_type,
+        }) if trace_on_pop else nullcontext(current_cleanup_trace())
+        with scope as operation, bind_cleanup_trace(operation):
+            _cleanup_identity(agent_info)
+            _cleanup_step("runtime", "success", "popped")
+            log_agentos(
+                logger,
+                logging.INFO,
+                "sandbox.reclaim",
+                user_id=agent_info.user_id,
+                session_id=str(agent_info.metadata.get("session_id") or ""),
+                sandbox_id=str(agent_info.sandbox_id or ""),
+                agent_type=agent_info.agent_type,
+                instance=str(agent_info.sandbox_id or ""),
+                idle_timeout=f"{idle_timeout_seconds:.0f}s",
+            )
+            await self._release_agent_resources(agent_info, best_effort=True)
+            return True
 
     async def _cleanup_agent_on_network_failure(
         self,
@@ -3117,7 +3362,7 @@ class AgentOSRouterClient(AgentServerClient):
             reason,
         )
         task = asyncio.create_task(
-            self._run_network_failure_delete(runtime),
+            self._run_network_failure_delete(runtime, reason=reason),
             name=f"agentos-netfail-cleanup-{info.user_id[:24]}",
         )
         self._background_tasks.add(task)
@@ -3138,7 +3383,7 @@ class AgentOSRouterClient(AgentServerClient):
             )
             raise
 
-    async def _run_network_failure_delete(self, runtime: AgentRuntime) -> None:
+    async def _run_network_failure_delete(self, runtime: AgentRuntime, *, reason: str = "network_failure") -> None:
         """Force-delete the agent; isolated so relay cancel cannot abort it."""
         info = runtime.info
         session_id = str(info.metadata.get("session_id") or "")
@@ -3146,11 +3391,16 @@ class AgentOSRouterClient(AgentServerClient):
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
         try:
-            await self.delete_agent(
-                info.user_id,
-                info.agent_type,
-                key_values=key_values,
-            )
+            trigger = "instance_unavailable" if reason.startswith("instance_unavailable:") else "network_failure"
+            token = _cleanup_trigger.set((trigger, False))
+            try:
+                await self.delete_agent(
+                    info.user_id,
+                    info.agent_type,
+                    key_values=key_values,
+                )
+            finally:
+                _cleanup_trigger.reset(token)
         except Exception:  # noqa: BLE001 - cleanup must not mask the route error
             logger.exception(
                 "[AgentOSRouter] network-failure cleanup failed: "
@@ -3161,6 +3411,24 @@ class AgentOSRouterClient(AgentServerClient):
             )
 
     async def _cleanup_agent_after_create_not_running(
+        self,
+        agent_info: AgentInfo,
+        *,
+        exc: BaseException,
+    ) -> None:
+        with trace_operation(
+            "gw.agent.delete",
+            attributes={"source": "create_not_running", "trigger": "create_not_running", "user_id": agent_info.user_id,
+                        "agent_type": agent_info.agent_type, "instance_id": str(agent_info.sandbox_id or "")},
+        ) as operation:
+            with bind_cleanup_trace(operation):
+                token = _cleanup_nested_delete.set(True)
+                try:
+                    await self._cleanup_agent_after_create_not_running_impl(agent_info, exc=exc)
+                finally:
+                    _cleanup_nested_delete.reset(token)
+
+    async def _cleanup_agent_after_create_not_running_impl(
         self,
         agent_info: AgentInfo,
         *,
@@ -3195,7 +3463,8 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_info.agent_type,
                 key_values=key_values,
             )
-        except Exception:  # noqa: BLE001 - background register must not raise
+        except Exception as cleanup_exc:  # noqa: BLE001 - background register must not raise
+            _cleanup_step("delete", "failed", type(cleanup_exc).__name__)
             logger.exception(
                 "[AgentOSRouter] not-running cleanup failed: "
                 "user_id=%s agent_type=%s sandbox_id=%s",
@@ -3208,7 +3477,8 @@ class AgentOSRouterClient(AgentServerClient):
             return
         try:
             await self._unregister_agent(agent_info)
-        except Exception:  # noqa: BLE001
+        except Exception as cleanup_exc:  # noqa: BLE001
+            _cleanup_step("registry", "failed", type(cleanup_exc).__name__)
             logger.exception(
                 "[AgentOSRouter] unregister after not-running cleanup failed: "
                 "agent_id=%s",
@@ -3257,7 +3527,10 @@ class AgentOSRouterClient(AgentServerClient):
         if agent_info.sandbox_id:
             try:
                 await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
-            except Exception:
+                if get_cleanup_result("frontend.delete") is None:
+                    _cleanup_step("frontend", "incomplete", "result_unconfirmed")
+            except Exception as exc:
+                _cleanup_step("frontend", "failed", type(exc).__name__)
                 logger.exception(
                     format_agentos(
                         "sandbox.delete.fail",
@@ -3274,9 +3547,12 @@ class AgentOSRouterClient(AgentServerClient):
                 )
                 if not best_effort:
                     raise
+        else:
+            _cleanup_step("frontend", "skipped", "no_instance")
         try:
             await self._unregister_agent(agent_info)
-        except Exception:
+        except Exception as exc:
+            _cleanup_step("registry", "failed", type(exc).__name__)
             logger.exception(
                 "[AgentOSRouter] unregister agent failed: agent_id=%s",
                 agent_info.agent_id,
@@ -3290,6 +3566,8 @@ class AgentOSRouterClient(AgentServerClient):
             user_id=agent_info.user_id,
             agent_type=agent_info.agent_type,
         )
+        if get_cleanup_result("registry.unregister") is None:
+            _cleanup_step("registry", "incomplete", "result_unconfirmed")
 
     async def _call_registry_with_backoff(
         self,
@@ -3298,6 +3576,7 @@ class AgentOSRouterClient(AgentServerClient):
         *,
         agent_info: AgentInfo,
         ok_fields: dict[str, Any] | None = None,
+        observation: dict[str, bool] | None = None,
     ) -> bool:
         """注册中心写操作 + 指数退避重试。
 
@@ -3334,6 +3613,8 @@ class AgentOSRouterClient(AgentServerClient):
                 user_id, agent_type, key_values=key_values
             )
             if live is None:
+                if observation is not None:
+                    observation["skipped_deleted"] = True
                 log_agentos(logger, logging.INFO, f"{event}.skip_deleted", **fields)
                 return False
             attempt += 1
@@ -3410,16 +3691,86 @@ class AgentOSRouterClient(AgentServerClient):
             )
             return True
 
-    async def _register_agent(self, agent_info: AgentInfo) -> None:
+    def _preparation_fail(self, instance_id: str, outcome: str, reason: str) -> None:
+        preparation = self._preparation_traces.pop(instance_id, None)
+        if preparation is not None:
+            preparation.operation.finish(outcome, reason=reason)
+
+    def _preparation_owner_done(
+        self, instance_id: str, preparation: _PreparationTrace, task: asyncio.Task[Any],
+    ) -> None:
+        if (
+            self._preparation_traces.get(instance_id) is preparation
+            and not preparation.ready
+            and instance_id not in self._ws_connecting
+        ):
+            outcome = "cancelled" if task.cancelled() else "incomplete"
+            preparation.operation.record_outcome(outcome, reason="ws_readiness_unconfirmed")
+            self._preparation_ready(instance_id, confirmed=False)
+
+    def _observe_ws_ready(self, instance_id: str, client: WebSocketAgentServerClient) -> None:
+        confirmed = getattr(client, "server_ready", None) is not False
+        if not confirmed:
+            preparation = self._preparation_traces.get(instance_id)
+            if preparation is not None:
+                preparation.operation.record_outcome("incomplete", reason="ws_readiness_unconfirmed")
+        self._preparation_ready(instance_id, confirmed=confirmed)
+
+    def _preparation_ready(self, instance_id: str, *, confirmed: bool = True) -> None:
+        preparation = self._preparation_traces.get(instance_id)
+        if preparation is not None:
+            preparation.ready = True
+            if confirmed:
+                preparation.operation.event("agent.ready")
+            if preparation.registered:
+                self._preparation_fail(instance_id, "success", "")
+
+    async def _register_agent_traced(
+        self, agent_info: AgentInfo, preparation: _PreparationTrace | None,
+    ) -> None:
+        operation = preparation.operation if preparation is not None else None
+        if operation is None:
+            await self._register_agent(agent_info)
+            return
+        instance_id = str(agent_info.sandbox_id or "")
+        try:
+            with bind_request_trace(operation):
+                await self._register_agent(agent_info, operation)
+        except asyncio.CancelledError:
+            if operation is not None:
+                operation.record_outcome("cancelled", reason="registration_cancelled")
+            raise
+        except BaseException as exc:
+            if operation is not None:
+                operation.record_outcome("failed", reason=type(exc).__name__)
+            raise
+        finally:
+            if operation is not None and preparation is not None:
+                preparation.registered = True
+                if not preparation.ws_required:
+                    self._preparation_ready(instance_id, confirmed=operation.outcome == "success")
+                elif preparation.ready:
+                    self._preparation_fail(instance_id, "success", "")
+
+    async def _register_agent(
+        self, agent_info: AgentInfo, operation: TraceOperation | None = None,
+    ) -> None:
         # 网络失败清理（delete_agent 强制路径）可能先于本后台任务执行：注册前
         # 确认内存 runtime 仍存在（强制删除会 pop 掉 runtime），避免清理注销后
         # 又把僵尸 instance 条目写回注册中心。
         try:
+            observation: dict[str, bool] = {}
             if not await self._call_registry_with_backoff(
                 "registry.register",
                 lambda: self._registry.register_agent(agent_info),
                 agent_info=agent_info,
+                observation=observation,
             ):
+                if operation is not None:
+                    if observation.get("skipped_deleted"):
+                        operation.record_outcome("incomplete", reason="registry_skipped_deleted")
+                    else:
+                        operation.record_outcome("failed", reason="registry_post_failed")
                 return
 
             # create 返回时沙箱通常还在探针中：address 与 node 都留空。
@@ -3436,12 +3787,17 @@ class AgentOSRouterClient(AgentServerClient):
                     agent_type=str(agent_info.agent_type or ""),
                 )
             except YuanrongAgentApiError as exc:
+                if operation is not None:
+                    outcome = "timeout" if isinstance(exc, YuanrongAgentTimeoutError) else "failed"
+                    operation.record_outcome(outcome, reason=type(exc).__name__)
                 await self._cleanup_agent_after_create_not_running(
                     agent_info, exc=exc
                 )
                 return
             node_ip, sandbox_ip = _extract_placement_ips(instance_info)
             if not (node_ip or sandbox_ip):
+                if operation is not None:
+                    operation.record_outcome("incomplete", reason="placement_missing")
                 log_agentos(
                     logger,
                     logging.WARNING,
@@ -3456,7 +3812,8 @@ class AgentOSRouterClient(AgentServerClient):
             service_id = instance_service_id(
                 agent_info.user_id, agent_info.agent_type
             )
-            await self._call_registry_with_backoff(
+            observation.clear()
+            updated = await self._call_registry_with_backoff(
                 "registry.instance",
                 lambda: self._registry.update_instance(
                     service_id,
@@ -3465,6 +3822,7 @@ class AgentOSRouterClient(AgentServerClient):
                     instance_id=str(agent_info.sandbox_id or "").strip() or None,
                 ),
                 agent_info=agent_info,
+                observation=observation,
                 ok_fields={
                     "service_id": service_id,
                     "node": node_ip,
@@ -3472,7 +3830,14 @@ class AgentOSRouterClient(AgentServerClient):
                     "instance_id": str(agent_info.sandbox_id or ""),
                 },
             )
-        except Exception:
+            if not updated and operation is not None:
+                if observation.get("skipped_deleted"):
+                    operation.record_outcome("incomplete", reason="registry_skipped_deleted")
+                else:
+                    operation.record_outcome("failed", reason="registry_patch_failed")
+        except Exception as exc:
+            if operation is not None:
+                operation.record_outcome("failed", reason=type(exc).__name__)
             logger.exception(
                 format_agentos(
                     "registry.instance.fail",

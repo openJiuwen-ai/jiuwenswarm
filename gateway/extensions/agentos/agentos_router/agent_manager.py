@@ -16,6 +16,7 @@ from gateway.extensions.agentos.agentos_router.logutil import (
     log_agentos,
 )
 from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from gateway.telemetry import current_request_trace, trace_operation
 
 logger = logging.getLogger(__name__)
 
@@ -365,6 +366,9 @@ class AgentManager:
             async with self._runtimes_lock:
                 existing = self._runtimes.get(key)
                 if existing is not None and existing.is_ready():
+                    operation = current_request_trace()
+                    if operation is not None:
+                        operation.event("agent.reused", {"instance_id": str(existing.info.sandbox_id or "")})
                     if acquire:
                         self._acquire_locked(existing)
                     else:
@@ -381,6 +385,9 @@ class AgentManager:
                         metadata=metadata,
                     )
                     self._runtimes[key] = runtime
+                    operation = current_request_trace()
+                    if operation is not None:
+                        setattr(runtime, "_gateway_create_trace", operation)
                     owner = True
                 else:
                     runtime = existing
@@ -392,6 +399,9 @@ class AgentManager:
                             self._failed_message(runtime, key_desc)
                         )
                     if not wait:
+                        operation = current_request_trace()
+                        if operation is not None:
+                            operation.event("agent.create.shared", {"outcome": "creating"})
                         raise AgentCreating(f"AGENT_CREATING: {key_desc}")
                 creator_base = runtime.info.copy()
 
@@ -414,7 +424,16 @@ class AgentManager:
                 key=key_desc,
             )
             try:
-                await runtime.wait_until_settled(wait_timeout)
+                owner_trace = getattr(runtime, "_gateway_create_trace", None)
+                with trace_operation("gw.agent.create.wait", attributes={"agent_type": agent_type},
+                                     links=[owner_trace] if owner_trace is not None else None) as operation:
+                    await runtime.wait_until_settled(wait_timeout)
+                    if operation is not None and runtime.info.sandbox_id:
+                        operation.span.set_attribute("instance_id", runtime.info.sandbox_id)
+                    if operation is not None and runtime.is_failed():
+                        operation.record_outcome("failed", reason="creator_failed")
+                    elif operation is not None and runtime.is_deleted():
+                        operation.record_outcome("incomplete", reason="deleted")
             except asyncio.TimeoutError as exc:
                 log_agentos(
                     logger,
@@ -623,3 +642,6 @@ class AgentManager:
                 key, exc, owner_runtime=owner_runtime
             )
             raise
+        finally:
+            if hasattr(owner_runtime, "_gateway_create_trace"):
+                delattr(owner_runtime, "_gateway_create_trace")
