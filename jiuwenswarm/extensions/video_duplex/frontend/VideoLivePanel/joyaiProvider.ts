@@ -211,7 +211,7 @@ export class JoyAIProvider {
   /** A managed task's card (its job_id) or a typed-chat card (job_id ""); information forms stay on screen. */
   enqueueQuestion(jobId: string, interaction: ApprovalInteraction): void {
     if (interaction.state !== 'pending') {
-      this.closeApprovals(jobId);
+      this.closeApprovals(jobId, interaction.id || interaction.request_id);
       return;
     }
     if (!interaction.source || !APPROVAL_SOURCES.has(interaction.source)) return;
@@ -221,9 +221,13 @@ export class JoyAIProvider {
     this.callbacks.report('joyai_approval_card_pending', { job_id: jobId, pending: this.pendingApprovals.size });
   }
 
-  private closeApprovals(jobId: string): void {
-    const prefix = `question:${jobId}:`;
-    for (const key of [...this.pendingApprovals.keys()]) if (key.startsWith(prefix)) this.pendingApprovals.delete(key);
+  private closeApprovals(jobId: string, interactionId?: string): void {
+    // Chat cards share an empty job ID; only the named interaction may close.
+    for (const [key, card] of this.pendingApprovals) {
+      if (jobId ? card.job_id === jobId : Boolean(interactionId) && key === `question::${interactionId}`) {
+        this.pendingApprovals.delete(key);
+      }
+    }
   }
 
   handleCompletedSearch(payload: SearchJobPayload, brief: RealtimeBrief, existing?: SearchJobState): boolean {

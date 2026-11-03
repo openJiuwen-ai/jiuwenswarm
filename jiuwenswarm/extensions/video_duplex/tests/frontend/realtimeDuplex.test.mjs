@@ -279,6 +279,42 @@ test('a short spoken answer to the only card is submitted directly, and its rece
   assert.match(sent[0].item.content[0].text, /The user just said: "打开计算器。"/);
 });
 
+test('closing a typed-chat card retains other chat and managed cards in Qwen instructions and notices', () => {
+  const { session, sent } = createSession();
+  const card = id => ({ id, request_id: `request-${id}`, state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: id, options: [{ label: '执行' }, { label: '拒绝' }] }] });
+  // Hold outgoing notices so closing one card also exercises the queued questions.
+  session.handleEvent({ type: 'response.created', response: { id: 'busy' } });
+  session.enqueueQuestion('task', card('managed'));
+  session.enqueueQuestion('task:child', card('other-managed'));
+  session.enqueueQuestion('', card('chat-a'));
+  session.enqueueQuestion('', card('chat-b'));
+  session.enqueueQuestion('', { ...card('chat-a'), state: 'answered' });
+  session.enqueueQuestion('', { request_id: '', state: 'answered' });
+  const instructions = sent.filter(e => e.type === 'session.update').at(-1).session.instructions;
+  assert.doesNotMatch(instructions, /chat-a/);
+  for (const id of ['managed', 'other-managed', 'chat-b']) assert.match(instructions, new RegExp(id));
+  assert.deepEqual(session.pendingQuestions.map(item => item.interaction.id), ['managed', 'other-managed', 'chat-b']);
+  session.cancelToolTask('task', 'cancel-task');
+  const remaining = sent.filter(e => e.type === 'session.update').at(-1).session.instructions;
+  assert.match(remaining, /other-managed/);
+  assert.match(remaining, /chat-b/);
+  assert.equal(session.pendingApprovals.size, 2);
+});
+
+test('a typed-chat permission card only replaces its own voice confirmation', () => {
+  const { session, sent } = createSession();
+  const card = id => ({ id, request_id: id, state: 'pending', source: 'confirm_interrupt', questions: [] });
+  session.enqueueQuestion('task', card('managed'));
+  session.enqueueQuestion('', card('chat-a'));
+  session.enqueueQuestion('', card('chat-b'));
+  session.enqueueQuestion('', { ...card('chat-a'), source: 'permission_interrupt' });
+  const instructions = sent.filter(e => e.type === 'session.update').at(-1).session.instructions;
+  assert.doesNotMatch(instructions, /chat-a/);
+  assert.match(instructions, /chat-b/);
+  assert.match(instructions, /managed/);
+});
+
 test('closing the last card lets the provider answer speech by itself again', () => {
   const { session, sent } = createSession();
   openCard(session);

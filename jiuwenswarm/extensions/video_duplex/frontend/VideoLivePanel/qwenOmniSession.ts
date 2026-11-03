@@ -451,13 +451,15 @@ export class RealtimeDuplexSession {
       questions?: Array<{ header?: string; question?: string; options?: Array<{ label?: string }> }>;
     },
   ): void {
+    const interactionId = interaction.id || interaction.request_id;
     if (interaction.state !== 'pending') {
-      this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
-      this.closeApprovals(jobId);
+      this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId
+        || (!jobId && (item.interaction.id || item.interaction.request_id) !== interactionId));
+      this.closeApprovals(jobId, interactionId);
       return;
     }
-    if (interaction.source === 'permission_interrupt') this.closeApprovals(jobId);
-    const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
+    if (interaction.source === 'permission_interrupt') this.closeApprovals(jobId, interactionId);
+    const key = `question:${jobId}:${interactionId}`;
     if (interaction.source && APPROVAL_SOURCES.has(interaction.source) && !this.pendingApprovals.has(key)) {
       this.pendingApprovals.set(key, approvalCardHeader(jobId, interaction));
       this.syncApprovalInstructions();
@@ -469,9 +471,11 @@ export class RealtimeDuplexSession {
     this.dispatchQueuedToolResult();
   }
 
-  private closeApprovals(jobId: string): void {
-    const prefix = `question:${jobId}:`;
-    const keys = [...this.pendingApprovals.keys()].filter(key => key.startsWith(prefix));
+  private closeApprovals(jobId: string, interactionId?: string): void {
+    // Chat cards share an empty job ID; only the named interaction may close.
+    const keys = [...this.pendingApprovals].filter(([key, card]) => jobId
+      ? card.job_id === jobId
+      : Boolean(interactionId) && key === `question::${interactionId}`).map(([key]) => key);
     if (!keys.length) return;
     keys.forEach(key => this.pendingApprovals.delete(key));
     this.syncApprovalInstructions();

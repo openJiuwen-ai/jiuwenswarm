@@ -479,13 +479,29 @@ test('JoyAI reads managed and typed-chat approval cards last on every user turn,
   frame = '';
 
   // Typed card answered on screen, then the task finishes: the status is gone.
+  provider.enqueueQuestion('', { id: 'typed-second', request_id: 'typed-second', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '另一张确认卡', options: PERMISSION_OPTIONS }] });
+  provider.enqueueQuestion('cua:child', { id: 'child-card', request_id: 'child-card', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '另一个任务', options: PERMISSION_OPTIONS }] });
   provider.enqueueQuestion('', { request_id: 'typed-approval', state: 'answered' });
+  provider.enqueueQuestion('', { request_id: '', state: 'answered' });
   let pending = provider.submitUserInstruction('还有卡吗');
   tick();
   await pending;
   assert.doesNotMatch(requests.at(-1).approval_context, /typed-approval/);
+  assert.match(requests.at(-1).approval_context, /typed-second/);
+  assert.match(requests.at(-1).approval_context, /card-a/);
+  assert.match(requests.at(-1).approval_context, /child-card/);
   provider.handleCompletedSearch({ job_id: 'cua' }, { status: 'completed', summary: 'x' });
   pending = provider.submitUserInstruction('好了吗');
+  tick();
+  await pending;
+  assert.doesNotMatch(requests.at(-1).approval_context, /card-a/);
+  assert.match(requests.at(-1).approval_context, /typed-second/);
+  assert.match(requests.at(-1).approval_context, /child-card/);
+  provider.enqueueQuestion('', { request_id: 'typed-second', state: 'answered' });
+  provider.handleCompletedSearch({ job_id: 'cua:child' }, { status: 'completed', summary: 'x' });
+  pending = provider.submitUserInstruction('全部处理了吗');
   tick();
   await pending;
   assert.equal(requests.at(-1).approval_context, undefined);
