@@ -2301,6 +2301,9 @@ class TeamManager:
             ).strip()
             or None,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 
