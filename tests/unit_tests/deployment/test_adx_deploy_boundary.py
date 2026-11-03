@@ -54,7 +54,10 @@ def test_instance_initialization_uses_private_data_directory(settings, monkeypat
     monkeypatch.setattr(deploy.subprocess, 'run', init)
     envfile = deploy.configure(settings)
     assert envfile.stat().st_mode & 0o777 == 0o600
-    assert deploy.read_environment(envfile)['JIUWENSWARM_DATA_DIR'] == str(expected)
+    from dotenv import dotenv_values
+
+    assert envfile == expected / 'config/.env'
+    assert dotenv_values(envfile)['JIUWENSWARM_ADX_NODE_INGRESS_URL'] == settings['node_ingress_url']
     assert not (Path(settings['gateway']['home']) / '.jiuwenswarm').exists()
 
 

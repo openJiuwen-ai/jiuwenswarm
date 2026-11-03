@@ -77,8 +77,14 @@ StartLimitBurst=5
 
 [Service]
 ${exec_start_pre}
-EnvironmentFile=${DEPLOY_VARS["SERVICE_ENV_FILE"]}
-ExecStart=${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target}
+Environment=HOME=${DEPLOY_VARS["HOME"]:-/root}
+Environment=JIUWENSWARM_HOME=${DEPLOY_VARS["HOME"]:-/root}
+Environment=JIUWENSWARM_RUNTIME_PROFILE=${DEPLOY_VARS["RUNTIME_PROFILE"]:-standalone}
+Environment=GATEWAY_HOST=${DEPLOY_VARS["GATEWAY_HOST"]:-0.0.0.0}
+Environment=GATEWAY_PORT=${DEPLOY_VARS["GATEWAY_PORT"]:-19001}
+Environment=WEB_HOST=${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}
+Environment=WEB_PORT=${DEPLOY_VARS["WEB_PORT"]:-19000}
+ExecStart=${web_bin} --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\" --host ${web_host} --port ${web_port} --proxy-target ${proxy_target}
 Restart=on-failure
 RestartSec=3
 
@@ -165,7 +171,7 @@ web_start_nohup() {
     # 显式传 --host/--port/--proxy-target, 避开 app_web.py 的 FRONTEND_HOST/PORT 默认值。
     # JIUWENSWARM_DATA_DIR 等环境变量前缀只进子进程环境、不会出现在 /proc/PID/cmdline,
     # pkill -f 匹配不到, 故启动时把 PID 写入 pidfile, 停止时按 PID 精确结束。
-    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
+    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\" --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
 
     info "Starting jiuwenswarm-web on ${master_host} (nohup) -> http://${web_host}:${web_port} (proxy /ws -> ${proxy_target})..."
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"

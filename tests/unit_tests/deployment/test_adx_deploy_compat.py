@@ -106,7 +106,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(path.with_name(".env").stat().st_mode & 0o777, 0o600)
         self.assertEqual(sentinel.read_bytes(), b"retained-session-fixture")
         self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
-        self.assertIn('JIUWENSWARM_ADX_NODE_INGRESS_URL="https://node.example:8443"', environment.read_text())
+        self.assertIn("JIUWENSWARM_ADX_NODE_INGRESS_URL='https://node.example:8443'", environment.read_text())
 
     def test_missing_config_initialization_preserves_existing_workspace(self):
         sentinel = self.root / "home/.jiuwenswarm/history.db"
