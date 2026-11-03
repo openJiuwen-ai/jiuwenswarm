@@ -398,7 +398,7 @@ def _build_agentos_yuanrong_mounts() -> tuple[list[dict[str, Any]], str]:
 def _build_yuanrong_extra_params() -> dict[str, Any]:
     """Select AgentOS mounts explicitly; preserve develop's personal config."""
     endpoint = get_sandbox_endpoint()
-    executor = str(endpoint.get("executor") or "docker").strip().lower() or "docker"
+    executor = str(endpoint.get("executor") or "docker").strip().lower().strip("'\"") or "docker"
     agentos = is_agentos_runtime()
     if agentos:
         mounts, default_workdir = _build_agentos_yuanrong_mounts()
@@ -473,7 +473,7 @@ def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
     """Read-only yuanrong status for TUI ``/sandbox`` (enabled / executor / mounts)."""
     runtime = get_sandbox_runtime()
     endpoint = get_sandbox_endpoint()
-    executor = str(endpoint.get("executor") or "docker").strip().lower() or "docker"
+    executor = str(endpoint.get("executor") or "docker").strip().lower().strip("'\"") or "docker"
     try:
         mounts = list(_build_yuanrong_extra_params().get("mounts") or [])
     except Exception as exc:  # noqa: BLE001
