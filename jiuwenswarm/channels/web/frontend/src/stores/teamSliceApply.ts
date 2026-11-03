@@ -4,6 +4,7 @@
  * 输入形状与服务端 members/tasks/team_id 保持一致。
  */
 
+import { isEnterprise } from '../edition';
 import { useSessionStore } from './sessionStore';
 import { conversationKey } from './chatStore';
 import { useTeamSelectorStore } from './teamSelectorStore';
@@ -113,10 +114,42 @@ export function applyTeamSnapshotToSession(
       timestamp: normalizeTimestamp(task.updated_at, now),
     }));
 
-  // teamMembers / teamTasks 是当前所选 Team 的 session 级投影，因此快照必须完整
-  // 替换（包括空快照），不能与上一个 Team 的内容合并。
+  // teamMembers / teamTasks 是当前所选 Team 的 session 级投影。个人版快照完整替换。
+  // 企业版只在确认已经没有成员时清空任务；有成员时补上漏掉的任务，不盖掉已显示的字段。
   const currentStore = useSessionStore.getState();
   currentStore.setTeamMembers(sessionId, members);
   currentStore.setTeamDepartedMembers(sessionId, departedMembers);
-  currentStore.setTeamTasks(sessionId, tasks);
+  if (!isEnterprise()) {
+    currentStore.setTeamTasks(sessionId, tasks);
+    return;
+  }
+  if (members.length === 0) {
+    currentStore.setTeamTasks(sessionId, []);
+    return;
+  }
+  if (tasks.length === 0) {
+    return;
+  }
+  const currentTasks = currentStore.getRuntime(sessionId)?.teamTasks ?? [];
+  currentStore.setTeamTasks(sessionId, mergeEnterpriseTeamTasks(currentTasks, tasks));
+}
+
+export function mergeEnterpriseTeamTasks(current: TeamTask[], incoming: TeamTask[]): TeamTask[] {
+  const byId = new Map(current.map((task) => [task.task_id, { ...task }]));
+  for (const task of incoming) {
+    const prev = byId.get(task.task_id);
+    if (!prev) {
+      byId.set(task.task_id, { ...task });
+      continue;
+    }
+    const next = { ...prev };
+    (Object.keys(task) as (keyof TeamTask)[]).forEach((key) => {
+      const value = task[key];
+      if (value !== undefined && value !== null && value !== '') {
+        (next as Record<string, unknown>)[key] = value;
+      }
+    });
+    byId.set(task.task_id, next);
+  }
+  return Array.from(byId.values());
 }

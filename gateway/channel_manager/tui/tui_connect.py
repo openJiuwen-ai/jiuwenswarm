@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
 from gateway.common.config import (
     get_config,
 )
@@ -204,6 +205,13 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "team.binding.create",
         "team.binding.generate",
         "team.session.bind",
+        "team.create",
+        "team.get",
+        "team.stop",
+        "team.member.join",
+        "team.member.leave",
+        "team.members.list",
+        "team.quota.get",
         "team.mq.publish",
         "session.fork",
         # Agent configuration
@@ -337,6 +345,13 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "team.binding.create",
         "team.binding.generate",
         "team.session.bind",
+        "team.create",
+        "team.get",
+        "team.stop",
+        "team.member.join",
+        "team.member.leave",
+        "team.members.list",
+        "team.quota.get",
         "team.mq.publish",
         "session.fork",
         # Agent configuration
@@ -364,6 +379,22 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "issue.delete",
     }
 )
+
+_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
+})
+
+if not _is_enterprise_edition():
+    CLI_FORWARD_REQ_METHODS = CLI_FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = (
+        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    )
 
 
 @dataclass

@@ -45,6 +45,20 @@ def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) ->
     assert not any("/a2a/outbound" in r.path for r in enterprise)
     assert not any(r.path.startswith("/agent-templates") for r in personal)
     assert any(r.path == "/agent-templates" for r in enterprise)
+    control_methods = {
+        "team.create",
+        "team.get",
+        "team.stop",
+        "team.member.join",
+        "team.member.leave",
+        "team.members.list",
+        "team.quota.get",
+    }
+    assert mapped_mod._ENTERPRISE_TEAM_CONTROL_METHODS == frozenset(control_methods)
+    personal_methods = {route.rpc_method for route in personal}
+    enterprise_methods = {route.rpc_method for route in enterprise}
+    assert control_methods.isdisjoint(personal_methods)
+    assert control_methods <= enterprise_methods
 
 
 def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatch) -> None:
