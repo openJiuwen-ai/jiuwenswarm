@@ -1166,6 +1166,8 @@
     "team": {
       "memberLanes": "Member trajectory lanes",
       "members": "Members",
+      "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
+      "workflowGroupOperators": "{{count}} operators",
       "schedule": {
         "title": "Dispatch control",
         "collapse": "Collapse dispatch control",
@@ -5614,6 +5616,7 @@
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",
     "expertIdentity": "Expert: {{name}} ({{template}})",
+    "turnDetailHint": "Click to view this turn's input / output",
     "verifyFail": "✗ Fail",
     "verifyUndecided": "? Undecided",
     "verifyThreshold": "Threshold {{count}}",

@@ -1106,6 +1106,8 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员",
+      "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
+      "workflowGroupOperators": "{{count}} 个算子",
       "schedule": {
         "title": "调度控制",
         "collapse": "收起调度控制",
@@ -5551,6 +5553,7 @@
     "verifyReviewingShort": "评审中",
     "verifyPass": "✓ 通过",
     "expertIdentity": "专家：{{name}}（{{template}}）",
+    "turnDetailHint": "点击查看该轮输入 / 输出",
     "verifyFail": "✗ 不通过",
     "verifyUndecided": "? 未裁决",
     "verifyThreshold": "阈值 {{count}}",
