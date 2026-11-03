@@ -2,7 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,7 +26,6 @@ from jiuwenswarm.common.projectless_workspace import get_projectless_task_worksp
 from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.agent_ws_server import (
-    _uses_projectless_task_workspace,
     resolve_request_project_dir,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -34,6 +33,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
+)
+from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+    build_filesystem_policy,
 )
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -129,6 +131,19 @@ def test_projectless_task_workspace_keeps_long_session_ids_separate(
     assert first.root_dir != second.root_dir
     assert get_projectless_task_workspace(shared_prefix + "-a") == first
     assert get_projectless_task_workspace(shared_prefix + "-b") == second
+
+
+def test_projectless_task_workspace_keeps_case_variant_sessions_separate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "Documents"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(tmp_path / "registry"))
+
+    upper = get_projectless_task_workspace("Chat-A")
+    lower = get_projectless_task_workspace("chat-a")
+
+    assert upper.root_dir != lower.root_dir
+    assert get_projectless_task_workspace("Chat-A") == upper
 
 
 def test_projectless_task_workspace_reuses_legacy_long_session_binding(
@@ -535,6 +550,8 @@ async def test_code_round_does_not_overwrite_worktree_cwd_within_request(
 async def test_code_runtime_config_uses_projectless_task_workspace(
     tmp_path, monkeypatch
 ):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_code
+
     internal_dir = tmp_path / "internal"
     internal_dir.mkdir()
     monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "Documents"))
@@ -552,11 +569,14 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     adapter._workspace_dir = str(internal_dir)
     adapter._runtime_prompt_rail = runtime_rail
     adapter._subagent_rail = None
-    adapter._project_memory_rail = None
+    adapter._project_memory_rail = MagicMock()
     adapter._code_agent_rail = None
-    adapter._permission_rail = None
+    adapter._permission_rail = MagicMock()
     adapter._eternal_conversation_rail = None
     adapter._force_english_runtime_prompt = False
+    sandbox_patch = AsyncMock()
+    monkeypatch.setattr(interface_code, "get_sandbox_runtime", lambda: {"enabled": True})
+    monkeypatch.setattr(adapter, "apply_sandbox_runtime_patch", sandbox_patch)
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "en")
     monkeypatch.setattr(adapter, "_resolve_output_language", lambda: "en")
     monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda _sid: "web")
@@ -592,6 +612,10 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     assert runtime_rail.runtime_paths["task_outputs_dir"] == str(task_root / "outputs")
     assert deep_config.cwd == str(task_root / "work")
     assert deep_config.project_root == str(task_root)
+    adapter._permission_rail.set_trusted_dirs.assert_called_with([str(task_root)])
+    adapter._project_memory_rail.set_workspace_path.assert_called_with(str(task_root))
+    assert adapter._sandbox_active_workspace_root == str(task_root)
+    sandbox_patch.assert_awaited_with({"enabled": True}, files_changed=True)
 
     explicit_project = tmp_path / "explicit-project"
     explicit_project.mkdir()
@@ -614,6 +638,11 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     }
     assert deep_config.cwd == str(explicit_project)
     assert deep_config.project_root == str(explicit_project)
+    adapter._project_memory_rail.set_workspace_path.assert_called_with(
+        str(explicit_project)
+    )
+    assert adapter._sandbox_active_workspace_root == str(explicit_project)
+    assert sandbox_patch.await_count == 2
 
 
 def test_agent_projectless_resolution_does_not_promote_legacy_cwd(tmp_path):
@@ -631,18 +660,34 @@ def test_agent_projectless_resolution_does_not_promote_legacy_cwd(tmp_path):
     assert resolve_request_project_dir(request) == str(tmp_path / "caller-cwd")
 
 
-def test_projectless_task_workspace_detection_includes_agent_and_code_not_team():
-    assert _uses_projectless_task_workspace(
-        {"mode": "agent", "work_mode": "work"}, "tui"
+def test_projectless_sandbox_mounts_task_root_instead_of_server_cwd(
+    tmp_path, monkeypatch
+):
+    task_root = tmp_path / "task"
+    task_root.mkdir()
+    agent_root = tmp_path / "agent"
+    agent_root.mkdir()
+    server_cwd = tmp_path / "server"
+    server_cwd.mkdir()
+    monkeypatch.chdir(server_cwd)
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._sandbox_active_workspace_root = str(task_root)
+    adapter._project_dir = None
+    adapter._instance_overrides = {}
+
+    project_dir = adapter._resolve_project_dir_for_sandbox()
+    policy, _ = build_filesystem_policy(
+        {}, project_dir=project_dir, shared_dir=agent_root,
+        startup_mode="external",
     )
-    assert _uses_projectless_task_workspace(
-        {"mode": "agent", "work_mode": "code"}, "tui"
+    mounts = policy["filesystem_policy"]["bind_mounts"]
+    assert any(
+        mount["host_path"] == str(task_root)
+        and mount["sandbox_path"] == str(task_root)
+        and mount["mode"] == "rw"
+        for mount in mounts
     )
-    assert _uses_projectless_task_workspace({"mode": "code"}, "tui")
-    assert not _uses_projectless_task_workspace({"mode": "team"}, "tui")
-    assert JiuWenSwarmDeepAdapter._is_projectless_agent_mode("agent")
-    assert not JiuWenSwarmDeepAdapter._is_projectless_agent_mode("code")
-    assert not JiuWenSwarmDeepAdapter._is_projectless_agent_mode("team")
+    assert not any(mount["host_path"] == str(server_cwd) for mount in mounts)
 
 
 @pytest.mark.asyncio
