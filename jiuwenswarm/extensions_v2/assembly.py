@@ -13,7 +13,7 @@ from typing import Any
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2 import bootstrap
-from jiuwenswarm.extensions_v2.config import resolve_install_dir
+from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_store_dir
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
@@ -45,9 +45,19 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
             return _ASSEMBLY
         try:
             assembly = _build_assembly(server)
+
+            async def cleanup_package_views(package_id: str, generation: int, reason: str) -> None:
+                del generation
+                # Shutdown clears views in webui.shutdown(); do not fail package
+                # release because a single clear could not be delivered.
+                if reason == "shutdown":
+                    return
+                await assembly.webui.drop_package(package_id)
+
             await assembly.manager.init(
                 assembly.bus,
                 host_version=_host_version(),
+                cleanup_callbacks=(cleanup_package_views,),
                 host_event_types=lambda bus: bootstrap.register_event_types(bus, assembly.webui),
                 host_handlers=lambda bus: bootstrap.register_handlers(
                     bus,
@@ -108,11 +118,10 @@ def _wire_team_extension_bus(bus: ExtensionEventBus) -> None:
 
 def _build_assembly(server: Any) -> ExtensionAssembly:
     bus = ExtensionEventBus()
-    manager = ExtensionManager(resolve_install_dir())
+    manager = ExtensionManager(resolve_install_dir(), store_dir=resolve_store_dir())
     transport = RenderTransport(push=_push_from(server))
     catalog = WebUICatalogService(manager.active_packages)
     webui = WebUIRuntime(bus=bus, transport=transport, catalog=catalog)
-    manager.set_inactive_callback(webui.drop_package)
     return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport)
 
 
