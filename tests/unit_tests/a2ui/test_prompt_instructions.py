@@ -74,6 +74,20 @@ def test_a2ui_prompt_multiplechoice_single_select_max_one():
     assert "maxAllowedSelections 必须设为 1" in zh
 
 
+def test_a2ui_prompt_ok_cancel_button_row_right_aligned():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert 'distribution to "end"' in en
+    assert "Cancel (secondary) before OK (primary)" in en
+    assert "Place a Divider directly above the button row" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert 'distribution="end"' in zh
+    assert "取消（次要）在前、确定（主要）在后" in zh
+    assert "按钮行上方必须放一条 Divider 分割线" in zh
+
+
 def test_a2ui_prompt_defines_hotel_booking_actions():
     instruction = build_a2ui_browser_workflow_instruction()
 
