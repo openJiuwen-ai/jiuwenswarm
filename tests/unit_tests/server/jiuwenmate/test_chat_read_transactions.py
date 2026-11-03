@@ -121,7 +121,10 @@ async def test_history_worker_queue_work_is_bounded_as_message_count_grows(monke
     monkeypatch.setattr(asyncio, 'to_thread', recorded)
     budgets = []
     for count in (1, 25):
-        states[:] = [SimpleNamespace(record=SimpleNamespace(namespace_id='local', request_id=f'request-{i}')) for i in range(count)]
+        states[:] = [
+            SimpleNamespace(status='queued', record=SimpleNamespace(namespace_id='local', request_id=f'request-{i}'))
+            for i in range(count)
+        ]
         jobs.clear()
         views = await manager.conversation_requests('local', 'employee', ConversationRef.web('conversation'))
         assert [v.state.record.request_id for v in views] == [f'request-{i}' for i in range(count)]
