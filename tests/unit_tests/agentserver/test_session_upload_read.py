@@ -48,7 +48,7 @@ def test_upload_reader_rejects_paths_outside_exact_session(upload, tmp_path, cas
     candidates = {
         "other_session": upload.directory.parent.parent / "other" / "uploads" / upload.path.name,
         "other_tenant": tmp_path / "other-tenant" / upload.path.name,
-        "workspace": upload.root / "agent" / "jiuwenclaw_workspace" / upload.path.name,
+        "workspace": upload.root / "agent" / "workspace" / upload.path.name,
         "nested": upload.directory / "subdir" / upload.path.name,
         "relative": upload.path.name,
         "traversal": str(upload.directory) + "/../uploads/" + upload.path.name,

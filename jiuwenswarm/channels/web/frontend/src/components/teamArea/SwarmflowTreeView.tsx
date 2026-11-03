@@ -462,6 +462,9 @@ function AgentNode({
   const [expanded, setExpanded] = useState(agent.status === 'running');
   const [showDetail, setShowDetail] = useState(false);
   const [modalState, setModalState] = useState<AgentModalState | null>(null);
+  // 弹窗当前展示的 agent（行 agent 或某个轮次 member）：决定弹窗标题与调用记录的
+  // 过滤身份（member_id = run_id:agent_id）。null = 行 agent（详情 chip 入口）。
+  const [modalTarget, setModalTarget] = useState<{ id: string; label: string } | null>(null);
 
   // 汇总当前 agent 可用的详情 section（标签与弹窗共用同一数据源）
   const detailSections = useMemo(() => buildDetailSections(t, agent), [t, agent]);
@@ -538,21 +541,40 @@ function AgentNode({
 
   // detail_pending=true 表示该 agent 仅含摘要（get_phase 下发），prompt/outcome 等
   // 大文本字段尚未拉取——展开详情或弹窗时按需调 get_agent 补全完整体（通用，不限 human）。
-  const agentDetailPending = agent.detail_pending === true;
-  const ensureAgentDetail = useCallback(async () => {
-    if (!agentDetailPending) return;
+  // 按 agentId 参数化：行 agent 与 session 节点的各轮 member 共用同一条懒拉路径。
+  const ensureAgentDetailFor = useCallback(async (agentId: string) => {
     const store = useSessionStore.getState();
     const lookup = findWorkflowAgent(
       store.runtimes[sessionId]?.workflowRuns ?? [],
       runId,
-      agent.id,
+      agentId,
     );
-    if (lookup) {
-      await store
-        .loadAgentDetail(sessionId, runId, lookup.phase.id, agent.id)
-        .catch(() => undefined);
-    }
-  }, [agentDetailPending, agent.id, runId, sessionId]);
+    if (!lookup || lookup.agent.detail_pending !== true) return;
+    await store
+      .loadAgentDetail(sessionId, runId, lookup.phase.id, agentId)
+      .catch(() => undefined);
+  }, [runId, sessionId]);
+  const agentDetailPending = agent.detail_pending === true;
+  const ensureAgentDetail = useCallback(
+    () => ensureAgentDetailFor(agent.id),
+    [ensureAgentDetailFor, agent.id],
+  );
+
+  // 点开某一轮（agent_session / human_session / fork 的 Turn 行）：懒拉该轮完整体，
+  // 弹窗身份切到该轮 member——弹窗的 liveAgent 按 run_id:agent_id 从 store 实时重建
+  // sections，输入/输出/调用记录都按该轮过滤。
+  const openTurnDetail = useCallback(
+    (member: WorkflowAgent, turn: number | null) => {
+      void ensureAgentDetailFor(member.id);
+      setModalTarget({
+        id: member.id,
+        label: turn === null ? agent.name : `${agent.name} · Turn ${turn}`,
+      });
+      const sections = buildDetailSections(t, member);
+      setModalState({ sections, activeKey: sections[0]?.key ?? 'prompt' });
+    },
+    [agent.name, ensureAgentDetailFor, t],
+  );
 
   // 详情展开时懒拉完整 agent 主体（get_agent）。
   useEffect(() => {
@@ -766,6 +788,7 @@ function AgentNode({
                 data-variant={sec.key}
                 onClick={(e) => {
                   e.stopPropagation();
+                  setModalTarget(null);
                   setModalState({ sections: detailSections, activeKey: sec.key });
                 }}
                 className={`shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${accentChipClass[sec.accent]}`}
@@ -790,10 +813,13 @@ function AgentNode({
       {/* 内容弹窗：标题含 Agent 名 + Tab 切换不同 section（共享组件） */}
       <AgentDetailModal
         state={modalState}
-        agentName={agent.name}
-        onClose={() => setModalState(null)}
+        agentName={modalTarget?.label ?? agent.name}
+        onClose={() => {
+          setModalState(null);
+          setModalTarget(null);
+        }}
         onTabChange={(key) => setModalState((prev) => (prev ? { ...prev, activeKey: key } : prev))}
-        callRecordsSource={{ sessionId, memberId: `${runId}:${agent.id}` }}
+        callRecordsSource={{ sessionId, memberId: `${runId}:${modalTarget?.id ?? agent.id}` }}
       />
 
       {/* Outcome 副文本（详情展开时隐藏） */}
@@ -832,7 +858,14 @@ function AgentNode({
             return (
               <div key={member.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
-                <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50" data-testid="team-area-swarmflow-agent-turn" data-variant={member.id}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50 text-left"
+                  title={t('swarmflow.turnDetailHint')}
+                  data-testid="team-area-swarmflow-agent-turn"
+                  data-variant={member.id}
+                  onClick={() => openTurnDetail(member, turn)}
+                >
                   <StatusIcon status={member.status} className="w-3.5 h-3.5" />
                   <span className="text-xs text-text-muted">
                     Turn {turn ?? '?'}
@@ -842,7 +875,7 @@ function AgentNode({
                       {member.outcome ?? member.outcome_preview}
                     </span>
                   )}
-                </div>
+                </button>
               </div>
             );
           })}

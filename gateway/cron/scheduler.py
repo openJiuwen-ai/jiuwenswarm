@@ -119,6 +119,11 @@ _CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({
     "chat.final", "chat.error", CRON_RUN_UPDATED_EVENT,
 })
 
+# Web run-status notifications (cron.run.updated: task-list status line,
+# toasts, unread marks) are disabled; runs stay visible only through their
+# execution sessions. Flip to True to re-enable the pipeline.
+_WEB_RUN_NOTIFICATIONS_ENABLED = False
+
 
 def _is_cron_interrupt_event(event_type: str) -> bool:
     """Whether *event_type* parks the turn waiting for a human answer."""
@@ -1616,7 +1621,11 @@ class CronSchedulerService:
         self, job: CronJob, state: CronRunState, *, phase: str, notify: bool = False,
     ) -> None:
         """Publish an online hint without creating or replacing chat content."""
-        if not _is_web_cron_job(job):
+        # Run-status notifications (task-list status line, toasts, unread)
+        # are disabled: a run is visible only through its execution session,
+        # as before the session unification. Flip back to True to re-enable
+        # the cron.run.updated pipeline.
+        if not _is_web_cron_job(job) or not _WEB_RUN_NOTIFICATIONS_ENABLED:
             return
         state.notification_revision += 1
         payload = {

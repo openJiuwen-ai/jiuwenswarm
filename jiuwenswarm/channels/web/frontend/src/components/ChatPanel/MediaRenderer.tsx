@@ -1,3 +1,4 @@
+import { resolveApiUrl } from '../../utils/env';
 import { useEffect, useRef, useState } from 'react';
 import { MediaItem } from '../../types';
 import { FileIcon, getFileExtensionLabel } from '../FileIcon';
@@ -42,7 +43,7 @@ function mediaSrc(item: MediaItem): string | undefined {
   if (base64Data) {
     return `data:${mimeType};base64,${base64Data}`;
   }
-  if (item.url) return item.url;
+  if (item.url) return resolveApiUrl(item.url);
   // Persisted images may retain only a path; build its edition-specific read URL.
   if (item.path && isImageItem(item)) {
     return uploadFileUrl(item.path);

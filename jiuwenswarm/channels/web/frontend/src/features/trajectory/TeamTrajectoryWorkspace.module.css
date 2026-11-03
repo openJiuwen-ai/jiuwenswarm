@@ -202,6 +202,80 @@
   flex: 1 1 0;
 }
 
+.workflowGroup {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflowGroupSelected {
+  height: 100%;
+  min-height: 0;
+  flex: 0 0 100%;
+}
+
+.workflowGroupSelected .workflowGroupLanes {
+  min-height: 0;
+  flex: 1 1 0;
+}
+
+.workflowGroupHeader {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 6px;
+  box-shadow: 0 0 0 1px var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: var(--dsw-font-xxs-12);
+  text-align: left;
+}
+
+.workflowGroupHeader:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.workflowGroupHeader:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.workflowGroupName {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflowGroupShortId {
+  flex: none;
+  color: var(--dsw-alias-label-caption);
+}
+
+.workflowGroupCount {
+  flex: none;
+  margin-left: auto;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+
+.workflowGroupLanes {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+  padding-left: 12px;
+}
 .memberCluster {
   display: inline-flex;
   min-width: 0;
