@@ -386,7 +386,16 @@ def _commit_temp(temp_path: Path, target: Path, *, overwrite: bool) -> Path:
                 candidate = unique_upload_path(candidate)
                 continue
             try:
-                with os.fdopen(descriptor, "wb") as out, temp_path.open("rb") as src:
+                out = os.fdopen(descriptor, "wb")
+            except BaseException:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                candidate.unlink(missing_ok=True)
+                raise
+            try:
+                with out, temp_path.open("rb") as src:
                     shutil.copyfileobj(src, out)
             except BaseException:
                 candidate.unlink(missing_ok=True)
@@ -456,7 +465,15 @@ class _DeadlineGuard:
         except OSError:
             os.close(duplicate)
             return
-        _shutdown_socket(sock)
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 def _request_once(
@@ -497,7 +514,7 @@ def _request_once(
             guard.attach_response(response)
             success = True
             return connection, response, guard
-        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+        except (OSError, http.client.HTTPException) as exc:
             if guard.expired.is_set():
                 connection.close()
                 raise RuntimeError("download timed out") from exc
@@ -586,7 +603,7 @@ def download_url_to_workspace(
             committed = _commit_temp(temp_path, target, overwrite=overwrite)
             temp_path = None
             return committed
-        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+        except (OSError, http.client.HTTPException) as exc:
             if guard.expired.is_set():
                 raise RuntimeError("download timed out") from exc
             raise RuntimeError(f"download failed: {exc}") from exc
