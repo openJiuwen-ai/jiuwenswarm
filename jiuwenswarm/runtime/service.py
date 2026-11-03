@@ -1771,8 +1771,10 @@ class AgentRuntime:
             finally:
                 from jiuwenswarm.extensions.video_duplex.backend.session_receipts import finish_request
 
-                finish_request(request)
-                reset_runtime_context(token)
+                try:
+                    finish_request(request)
+                finally:
+                    reset_runtime_context(token)
 
     async def _invoke_started(
         self,

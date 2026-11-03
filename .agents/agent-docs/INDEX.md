@@ -9,34 +9,34 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 30 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+按模块分组；跨模块文档在各相关分组展示。
 
 ## 模块导航
 
-| 模块 | 文档数 |
-|---|---|
-| [agent_teams](#module-1) | 1 |
-| [agent_teams/workflow](#module-2) | 3 |
-| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
-| [gateway/channel_manager/web](#module-4) | 2 |
-| [gateway/extensions/video_duplex](#module-5) | 1 |
-| [gateway/message_handler](#module-6) | 1 |
-| [jiuwenswarm](#module-7) | 3 |
-| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-8) | 1 |
-| [jiuwenswarm/agents/harness/common/rails](#module-9) | 2 |
-| [jiuwenswarm/agents/harness/common/tools](#module-10) | 2 |
-| [jiuwenswarm/agents/harness/common/tools/cron](#module-11) | 1 |
-| [jiuwenswarm/channels/web](#module-12) | 2 |
-| [jiuwenswarm/channels/web/frontend](#module-13) | 3 |
-| [jiuwenswarm/extensions/video_duplex](#module-14) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-15) | 1 |
-| [jiuwenswarm/observability](#module-16) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-17) | 4 |
-| [jiuwenswarm/server/runtime/video_task](#module-18) | 1 |
-| [tests/unit_tests/gateway](#module-19) | 1 |
-| [tests/unit_tests/personal_context](#module-20) | 1 |
-| [未分类](#module-21) | 12 |
-按模块分组；跨模块文档在各相关分组展示。
+| 模块 |
+|---|
+| [agent_teams](#module-1) |
+| [agent_teams/workflow](#module-2) |
+| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) |
+| [gateway/channel_manager/web](#module-4) |
+| [gateway/extensions/video_duplex](#module-5) |
+| [gateway/message_handler](#module-6) |
+| [jiuwenswarm](#module-7) |
+| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-8) |
+| [jiuwenswarm/agents/harness/common/rails](#module-9) |
+| [jiuwenswarm/agents/harness/common/tools](#module-10) |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-11) |
+| [jiuwenswarm/channels/web](#module-12) |
+| [jiuwenswarm/channels/web/frontend](#module-13) |
+| [jiuwenswarm/extensions/video_duplex](#module-14) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-15) |
+| [jiuwenswarm/observability](#module-16) |
+| [jiuwenswarm/runtime](#module-17) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-18) |
+| [jiuwenswarm/server/runtime/video_task](#module-19) |
+| [tests/unit_tests/gateway](#module-20) |
+| [tests/unit_tests/personal_context](#module-21) |
+| [未分类](#module-22) |
 
 <a id="module-1"></a>
 
@@ -79,7 +79,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
+| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, jiuwenswarm/runtime, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/tasks/service.py, jiuwenswarm/extensions/video_duplex/backend/error_details.py, jiuwenswarm/runtime/service.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_unknown_task_settle.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_error_details.py, tests/unit_tests/runtime/test_runtime_service.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
 
 <a id="module-6"></a>
 
@@ -158,7 +158,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
+| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, jiuwenswarm/runtime, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/tasks/service.py, jiuwenswarm/extensions/video_duplex/backend/error_details.py, jiuwenswarm/runtime/service.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_unknown_task_settle.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_error_details.py, tests/unit_tests/runtime/test_runtime_service.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
 
 <a id="module-15"></a>
 
@@ -178,6 +178,14 @@ generated: true
 
 <a id="module-17"></a>
 
+## jiuwenswarm/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, jiuwenswarm/runtime, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/tasks/service.py, jiuwenswarm/extensions/video_duplex/backend/error_details.py, jiuwenswarm/runtime/service.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_unknown_task_settle.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_error_details.py, tests/unit_tests/runtime/test_runtime_service.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
+
+<a id="module-18"></a>
+
 ## jiuwenswarm/server/runtime/agent_adapter
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -187,15 +195,15 @@ generated: true
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-18"></a>
+<a id="module-19"></a>
 
 ## jiuwenswarm/server/runtime/video_task
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
+| [F_20261029_1014_duplex-develop-integration](features/F_20261029_1014_duplex-develop-integration.md) | F | 全双工修复移植到 develop | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, jiuwenswarm/runtime, gateway/extensions/video_duplex | jiuwenswarm/server/runtime/video_task/execution.py, jiuwenswarm/server/runtime/video_task/server_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/tasks/service.py, jiuwenswarm/extensions/video_duplex/backend/error_details.py, jiuwenswarm/runtime/service.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_unknown_task_settle.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_error_details.py, tests/unit_tests/runtime/test_runtime_service.py | 无独立 D：用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。 |
 
-<a id="module-19"></a>
+<a id="module-20"></a>
 
 ## tests/unit_tests/gateway
 
@@ -203,7 +211,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-20"></a>
+<a id="module-21"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -211,7 +219,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-21"></a>
+<a id="module-22"></a>
 
 ## 未分类
 

@@ -1198,6 +1198,50 @@ async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks
         await asyncio.gather(native, return_exceptions=True)
 
 
+@pytest.mark.parametrize("native_handle", [False, True])
+async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, monkeypatch, native_handle):
+    from jiuwenswarm.server.runtime.video_task import execution as module
+
+    monkeypatch.setattr(module, "CANCEL_SETTLEMENT_TIMEOUT", 0.02)
+    service, executor = tasks
+    task = submit(service, "settlement-timeout")
+    await until(lambda: executor.calls)
+    harness = SimpleNamespace(
+        _react_agent=object(), active_round=SimpleNamespace(task_id="round"),
+        loop_controller=SimpleNamespace(task_scheduler=SimpleNamespace(_running_tasks={})),
+    )
+    rail = SimpleNamespace(managed_tasks={})
+    adapter = TaskAdapter(_instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True)
+    request = SimpleNamespace(
+        channel_id="video_tool", session_id=task["core_session_id"], request_id=task["request_id"],
+    )
+    install_bridge(monkeypatch, service.store, request)
+    request.params["managed_task_request"] = task["request_id"]
+    release = asyncio.Event()
+    native = asyncio.create_task(release.wait()) if native_handle else None
+    try:
+        async with bind_task_execution(request, adapter, {}):
+            if native is not None:
+                rail.managed_tasks[request.session_id].native_executions.add(native)
+        assert request.request_id in module._reporting_requests
+        await until(lambda: request.request_id not in module._reporting_requests)
+        assert not service.store.read(task["id"])["execution_settled"]
+        assert not module.managed_request_detached(rail, request)
+        if native is not None:
+            assert not native.cancelled() and not native.cancelling()
+            release.set()
+            await native
+        harness.active_round = None
+        assert module.managed_request_detached(rail, request)
+        assert request.request_id not in module._unsettled_requests
+    finally:
+        release.set()
+        harness.active_round = None
+        if native is not None:
+            await asyncio.gather(native, return_exceptions=True)
+        module.managed_request_detached(rail, request)
+
+
 
 async def test_waiting_voice_cancel_does_not_create_a_followup(tasks):
     service, executor = tasks

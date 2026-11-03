@@ -14,6 +14,70 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.test_managed_tasks import
 SESSION = "task-duplex:s"
 
 
+async def test_reconcile_monitor_recovers_from_database_error_and_restarts(tmp_path, monkeypatch):
+    import sqlite3
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+
+    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
+    store, active, _ = await lost_task(tmp_path)
+    core = CoreSays(probe_settled=True)
+    core.server_ready = False
+    service = TaskService(store, Recording(core, store))
+    service.start()
+    original_rows = store.rows
+    scans = []
+
+    def rows(db):
+        if asyncio.current_task().get_name() == "managed-task-reconcile-monitor":
+            scans.append(True)
+            if len(scans) == 1:
+                raise sqlite3.OperationalError("database is locked")
+        return original_rows(db)
+
+    monkeypatch.setattr(store, "rows", rows)
+    try:
+        await until(lambda: len(scans) >= 2)
+        assert not service.reconcile_monitor.done()
+        previous = service.reconcile_monitor
+        previous.cancel()
+        await asyncio.gather(previous, return_exceptions=True)
+        service.kick()
+        assert service.reconcile_monitor is not previous
+        core.server_ready = True
+        await until(lambda: store.read(active)["status"] == "failed")
+        assert len(core.requests) == 1
+    finally:
+        await service.close()
+    assert service.reconcile_monitor.done()
+
+
+async def test_reconciliation_cache_released_only_after_terminal_state(tmp_path):
+    store, active, _ = await lost_task(tmp_path)
+    core = CoreSays(probe_settled=False)
+    executor = Recording(core, store)
+    service = TaskService(store, executor)
+    service.start()
+    request_id = store.read(active)["request_id"]
+    try:
+        await until(lambda: store.read(active)["status"] == "running")
+        for _ in range(3):
+            service.kick()
+            await service._reconcile(store.read(active))
+        assert len(core.requests) == 1
+        assert request_id in service.reconciled_requests
+        assert request_id in executor.reconciliation_outcomes
+        store.update(active, lambda t: t.update(status="completed", execution_settled=True))
+        service.kick()
+        assert request_id not in service.reconciled_requests
+        assert request_id not in executor.reconciliation_outcomes
+        await service._reconcile(store.read(active))
+        assert len(core.requests) == 1
+    finally:
+        await service.close()
+    assert not service.reconciled_requests
+    assert not executor.reconciliation_outcomes
+
+
 class CoreSays:
     """Fake Core: replies to cancel/probe with a settled fact."""
 

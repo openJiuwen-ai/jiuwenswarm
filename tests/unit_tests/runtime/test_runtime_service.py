@@ -3170,6 +3170,32 @@ async def test_runtime_context_is_inherited_by_child_tasks_and_isolated() -> Non
 
 
 @pytest.mark.asyncio
+async def test_unary_receipt_cleanup_failure_still_resets_runtime_context(monkeypatch) -> None:
+    from jiuwenswarm.extensions.video_duplex.backend import session_receipts
+
+    async def initialize() -> None:
+        return None
+
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(), initializer=initialize,
+        plan_controller=FakePlanController(),
+    )
+    monkeypatch.setattr(runtime, "_is_session_input_request", lambda _: False)
+    monkeypatch.setattr(runtime, "session_work_kind", lambda _: None)
+    monkeypatch.setattr(runtime, "_invoke_started", AsyncMock(return_value=[]))
+
+    def fail_cleanup(_):
+        assert get_current_runtime() is runtime
+        raise RuntimeError("receipt cleanup failed")
+
+    monkeypatch.setattr(session_receipts, "finish_request", fail_cleanup)
+    previous = get_runtime_context()
+    with pytest.raises(RuntimeError, match="receipt cleanup failed"):
+        await runtime.invoke(_chat_request("cleanup-failure"))
+    assert get_runtime_context() is previous
+
+
+@pytest.mark.asyncio
 async def test_runtime_context_is_available_during_early_stream_close() -> None:
     manager = FakeAgentManager()
     observed: list[tuple[object, object]] = []

@@ -127,8 +127,13 @@ class TaskService:
         """Wait for readiness, then observe local settlement without repeated queries."""
         while not self.closed:
             await asyncio.sleep(RECONCILE_INTERVAL)
-            with self.store.transaction() as db:
-                tasks = self.store.rows(db)
+            try:
+                with self.store.transaction() as db:
+                    tasks = self.store.rows(db)
+            except Exception:
+                logger.warning("Task reconciliation scan failed; retrying next sweep", exc_info=True)
+                continue
+            self._prune_reconciliation(tasks)
             for task in tasks:
                 if task["status"] in TERMINAL:
                     continue
@@ -137,6 +142,15 @@ class TaskService:
                     and task["id"] not in self.workers
                 ):
                     self._spawn_reconcile(task)
+
+    def _prune_reconciliation(self, tasks):
+        # Terminal records reject reconciliation before consulting this cache.
+        # Keep unresolved requests so a failed persistence write cannot query Core twice.
+        active = {t["request_id"] for t in tasks if t["status"] not in TERMINAL}
+        self.reconciled_requests.intersection_update(active)
+        prune = getattr(self.executor, "prune_reconciliation", None)
+        if prune is not None:
+            prune(active)
 
     async def _reconcile(self, task, *, stopped=False):
         """Query a ready Core once per execution, then only observe its settlement."""
@@ -220,7 +234,7 @@ class TaskService:
     def kick(self):
         if self.closed or not self.started:
             return
-        if self.reconcile_monitor is None:
+        if self.reconcile_monitor is None or self.reconcile_monitor.done():
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -231,6 +245,7 @@ class TaskService:
                 )
         with self.store.transaction() as db:
             tasks = self.store.rows(db)
+        self._prune_reconciliation(tasks)
         active = []
         for task in tasks:
             if task["status"] in {"running", "cancelling", "unknown", "waiting_user"} or task["id"] in self.workers:
@@ -1102,5 +1117,6 @@ class TaskService:
         if close_executor is not None:
             await close_executor()
         self.pending_notifications.clear()
+        self.reconciled_requests.clear()
         if self.started:
             self.lease.release()

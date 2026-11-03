@@ -132,6 +132,12 @@ class AgentTaskExecutor:
             self._readiness_check.cancel()
             await asyncio.gather(self._readiness_check, return_exceptions=True)
         self.endpoint.close()
+        self.reconciliation_outcomes.clear()
+
+    def prune_reconciliation(self, active_requests):
+        """Retain one-shot outcomes only while their execution is unresolved."""
+        for request_id in self.reconciliation_outcomes.keys() - active_requests:
+            del self.reconciliation_outcomes[request_id]
 
     async def run(self, task, progress):
         if "execution_target" not in task["request"]:

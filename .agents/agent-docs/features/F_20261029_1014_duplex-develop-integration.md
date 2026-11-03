@@ -7,6 +7,7 @@ author_email: yzdnh123@gmail.com
 modules:
   - jiuwenswarm/extensions/video_duplex
   - jiuwenswarm/server/runtime/video_task
+  - jiuwenswarm/runtime
   - gateway/extensions/video_duplex
 files:
   - jiuwenswarm/server/runtime/video_task/execution.py
@@ -14,6 +15,14 @@ files:
   - jiuwenswarm/extensions/video_duplex/backend/video_search.py
   - jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py
   - jiuwenswarm/extensions/video_duplex/tests/backend/test_task_delivery_failures.py
+  - jiuwenswarm/extensions/video_duplex/backend/task_adapter.py
+  - jiuwenswarm/extensions/video_duplex/backend/tasks/service.py
+  - jiuwenswarm/extensions/video_duplex/backend/error_details.py
+  - jiuwenswarm/runtime/service.py
+  - jiuwenswarm/extensions/video_duplex/tests/backend/test_unknown_task_settle.py
+  - jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py
+  - jiuwenswarm/extensions/video_duplex/tests/backend/test_error_details.py
+  - tests/unit_tests/runtime/test_runtime_service.py
 designs: []
 design_note: 用户明确要求将已有修复移植至官方 develop，本次没有新增独立设计。
 ---
@@ -99,3 +108,27 @@ flowchart LR
 Qwen 与 JoyAI 对聊天卡片按 `interaction.id || request_id` 精确清理，缺少标识时不清理其他卡片；非空任务通过保存的 job_id 精确匹配清理，避免任务 ID 的冒号前缀碰撞。Qwen 的权限卡替换与待播报问题队列使用相同聊天卡片边界。任务结束仍可清理该任务的全部确认卡，其他任务及聊天卡保留。权限申请只允许手动点击的规则不变。
 
 本轮回归通过：Qwen 138、JoyAI 27、全双工入口及生命周期 62，共 227 项。新增用例检查关闭一张聊天卡后，其他聊天卡及托管任务卡仍在下一轮模型提示中；检查 Qwen 排队问题、权限卡替换、未知关闭事件及含冒号的不同任务 ID。Vite 生产构建通过（1m13s，第三方注释和 chunk 体积提示）。本轮只改前端卡片生命周期，未重跑后端或真实供应商音视频联调。
+
+## 2026-11-03 GitCode !9191 新增检视意见修复
+
+候选基线为 `dcfc8aa96`。核对评论 197861437/197871090、197861438、197861439、197871062、197871076、197871105、197871127。
+
+- 核对结果及已核对请求集合仅保留非终态执行，在调度和后台扫描时清理，关闭时清空。不使用 LRU 淘汰未结束执行，避免旧请求再次查询 Core；终态记录在缓存检查前返回。
+- 后台核对扫描遇到数据库读取或事务异常时记录异常并在下一次扫描重试，不捕获 CancelledError。kick 可重新创建已经退出的监控任务。回归使用真实 SQLite，注入一次 database is locked，再验证监控继续、Core 只核对一次、关闭可停止监控。
+- 正常与取消结算报告统一使用 90 秒等待上限。超时不取消被 shield 的原生执行，不发送 settle；清理 reporter 集合，日志包含请求 ID 和异常类型。另保留尚在运行的原生句柄或未退出轮次证据，防止超时后探测错误宣称任务已结束；原生执行完成时释放证据，无句柄轮次在后续报告入场或该请求探测时清理。
+- 错误诊断除完整密钥外，也脱敏长密钥至少八字符的已知前缀/后缀及其所在截断 token。更短、无法可靠辨识的任意子串不做全局匹配，以免抹去普通诊断文本；不是对任意形式密钥片段的完全识别。
+- Runtime unary 请求即使 finish_request 异常也在独立 finally 中恢复 ContextVar，并继续暴露原异常。流式路径原有外层 finally 已覆盖，无需重复修改。
+- 评论 197871127 不成立：parseQwenOmniFunctionCall 在 try/catch 内解析并验证 JSON 对象，成功后才调用 onFunctionCall；语音答案路径使用 JSON.stringify。未添加重复解析保护或自动重放工具副作用。评论 197861440 的聊天卡清理问题已由 `dcfc8aa96` 修复，不重复变更。
+
+```mermaid
+flowchart TD
+    Wait[等待结算证据] --> Done{等待内已结束?}
+    Done -->|是| Settle[发送真实结算]
+    Done -->|超过90秒| Timeout[结束报告等待并记录错误]
+    Timeout --> Keep[保留仍在执行的证据]
+    Keep --> Probe{后续取消探测}
+    Probe -->|仍在执行| Cancel[继续真实取消路径]
+    Probe -->|证据已结束| Detached[释放证据并报告已脱离]
+```
+
+本轮定向回归 241 passed；最终在完整改动上运行全双工完整后端、Runtime 及租户作用域回归，共 816 passed（68.74 秒），Qwen 前端 138 passed，最终合计 954 项通过。不重复累计首轮定向测试。本轮未改前端代码，未重复生产构建；未执行真实供应商端到端或跨平台实机音视频测试。GitCode CLA 检查指出他人合并提交 `673e95d8` 邮箱未签署；代码修复不改写该提交或代签。

@@ -16,6 +16,7 @@ from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
 )
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
+from jiuwenswarm.extensions.video_duplex.backend.tasks.service import CANCEL_SETTLEMENT_TIMEOUT
 
 from .bridge import RemoteTaskEndpoint
 from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
@@ -23,7 +24,24 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_
 _settlements = set()
 # Requests whose settlement reporter is still waiting on native work.
 _reporting_requests = set()
+# A reporter can time out while native work still owns the request. Retain its
+# evidence so a later probe cannot claim that this execution has disappeared.
+_unsettled_requests = {}
 logger = logging.getLogger(__name__)
+
+
+def _execution_unsettled(request_id):
+    evidence = _unsettled_requests.get(request_id)
+    if evidence is None:
+        return False
+    checkpoint, pending = evidence
+    if (checkpoint.settlement_unobserved and
+            getattr(checkpoint.harness, "active_round", None) is checkpoint.unobserved_round):
+        return True
+    if any(not native.done() for native in pending):
+        return True
+    _unsettled_requests.pop(request_id, None)
+    return False
 
 
 class TaskExecutionBinding(TaskCheckpoint):
@@ -186,16 +204,29 @@ async def bind_task_execution(request, adapter, inputs):
         # Output cancellation alone does not prove that CUA cleanup has ended.
 
         def retain_reporter(reporter):
+            # Round-only evidence has no done callback. Sweep it on admission so
+            # completed rounds cannot accumulate in a long-lived process.
+            for request_id in list(_unsettled_requests):
+                _execution_unsettled(request_id)
             _settlements.add(reporter)
             _reporting_requests.add(request.request_id)
+            _unsettled_requests[request.request_id] = (checkpoint, pending_executions)
+            for native in pending_executions:
+                native.add_done_callback(lambda _: _execution_unsettled(request.request_id))
 
             def finished(done):
                 _settlements.discard(done)
                 _reporting_requests.discard(request.request_id)
+                _execution_unsettled(request.request_id)
                 if not done.cancelled() and done.exception() is not None:
-                    logger.warning("Task settlement acknowledgement failed: %s", done.exception())
+                    logger.warning("Task settlement acknowledgement failed for %s: %s: %s",
+                                   request.request_id, type(done.exception()).__name__, done.exception())
 
             reporter.add_done_callback(finished)
+
+        async def bounded_report(report):
+            async with asyncio.timeout(CANCEL_SETTLEMENT_TIMEOUT):
+                await report()
 
         if invocation_cancelled:
             async def report_cancelled():
@@ -205,7 +236,7 @@ async def bind_task_execution(request, adapter, inputs):
                 )
                 await endpoint.call("settle", cancelled=True)
 
-            reporter = asyncio.create_task(report_cancelled())
+            reporter = asyncio.create_task(bounded_report(report_cancelled))
             retain_reporter(reporter)
             if all(t.done() for t in pending_executions):
                 try:
@@ -234,7 +265,7 @@ async def bind_task_execution(request, adapter, inputs):
 
             # Cancellation can arrive after normal output ends, during close/settle.
             # Keep that acknowledgement alive just as for an already cancelled invocation.
-            reporter = asyncio.create_task(report_settlement())
+            reporter = asyncio.create_task(bounded_report(report_settlement))
             retain_reporter(reporter)
             if not checkpoint.settlement_unobserved and all(t.done() for t in pending_executions):
                 await asyncio.shield(reporter)
@@ -267,7 +298,7 @@ def capture_task_execution(rail, request, execution):
 def managed_request_detached(rail, request):
     """True when this Core holds nothing for the request, so cancelling the round would hit other work (#5486)."""
     expected = str((request.params or {}).get("managed_task_request") or "").strip()
-    if not expected or expected in _reporting_requests:
+    if not expected or expected in _reporting_requests or _execution_unsettled(expected):
         return False
     bindings = getattr(rail, "managed_tasks", None) or {}
     return all(getattr(b, "request_id", None) != expected for b in bindings.values())

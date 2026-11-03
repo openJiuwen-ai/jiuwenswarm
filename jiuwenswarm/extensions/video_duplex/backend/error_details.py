@@ -1,6 +1,7 @@
 """Bounded, credential-redacted diagnostics for duplex failures."""
 
 import os
+import re
 
 
 def safe_error_detail(value: object) -> str:
@@ -9,6 +10,14 @@ def safe_error_detail(value: object) -> str:
     for name, secret in os.environ.items():
         if name.endswith("API_KEY") and secret:
             message = message.replace(secret, "******")
+            if len(secret) >= 16:
+                # Providers may echo only the beginning/end of a rejected key.
+                # Require eight known characters; short fragments match ordinary text.
+                token_chars = r"[A-Za-z0-9_+/=.*\u2026-]*"
+                for fragment in (secret[:8], secret[-8:]):
+                    message = re.sub(
+                        token_chars + re.escape(fragment) + token_chars, "******", message,
+                    )
     return message[:1500]
 
 
