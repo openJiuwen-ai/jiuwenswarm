@@ -17,6 +17,7 @@ from jiuwenswarm.extensions_v2.event_types.session_start import (
     SESSION_START_EVENT,
     SessionStartInput,
     SessionStartOutput,
+    SessionStartEventBus,
     bind_start_invocation,
 )
 from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface, valid_surface
@@ -75,6 +76,8 @@ class SessionStartGate:
             raise ValueError("session.start requires its bound absolute cwd")
         if surface is not None and not valid_surface(surface):
             raise ValueError("session.start requires a declared rendering surface")
+        if not isinstance(self._bus, SessionStartEventBus):
+            raise RuntimeError("session.start requires package-scoped EventBus registration")
         parent = _STARTING.get()
         if parent is not None and parent.active and parent.gate is self:
             raise RuntimeError("session.start cannot re-enter its initialization gate")
@@ -107,8 +110,10 @@ class SessionStartGate:
                         value = SessionStartInput(cwd, surface, is_interactive)
                         self._runtime.begin_calls((record.package_id,))
                         try:
-                            with bind_start_invocation(value, session_id=context.session_id) as invocation:
-                                await self._bus.trigger(Event(SESSION_START_EVENT, value), context, handler_ids=ids)
+                            with bind_start_invocation(
+                                value, session_id=context.session_id, package_id=record.package_id,
+                            ) as invocation:
+                                await self._bus.trigger(Event(SESSION_START_EVENT, value), context)
                                 if invocation.receipt is None:
                                     raise RuntimeError("session.start returned without its CORE receipt")
                                 receipts.append(invocation.receipt)
