@@ -57,6 +57,8 @@ def _resolved_entry_for(raw: dict, *, api_key_plain: str, api_base: str) -> dict
     }
     if "custom_headers" in raw_mcc:
         resolved_mcc["custom_headers"] = raw_mcc["custom_headers"]
+    if "endpoint_profile" in raw_mcc:
+        resolved_mcc["endpoint_profile"] = raw_mcc["endpoint_profile"]
     return {
         "model_client_config": resolved_mcc,
         "model_config_obj": dict(raw["model_config_obj"]),
@@ -591,3 +593,94 @@ def test_clearing_existing_temperature_removes_persisted_key():
     merged = _merge_models_for_replace_all([item], [raw], [resolved], _StubCrypto())
 
     assert "temperature" not in merged[0]["model_config_obj"]
+
+
+def _parsed_item(**overrides) -> dict:
+    item = {
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "endpoint_profile": None,
+    }
+    item.update(overrides)
+    return item
+
+
+def test_missing_payload_endpoint_profile_preserves_persisted_value():
+    """Web 编辑表单不暴露 endpoint_profile；payload 缺失不是"清空"信号。
+
+    Regression: editing api_base of a hand-configured YAML entry (host not in
+    the endpoint-profile override table) used to wipe the persisted dialect.
+    """
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"]["endpoint_profile"] = "vllm"
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [_parsed_item(api_base="https://new-gateway.test/v1")]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    mcc = out[0]["model_client_config"]
+    assert mcc["api_base"] == "https://new-gateway.test/v1"
+    assert mcc["endpoint_profile"] == "vllm"
+
+
+def test_explicit_endpoint_profile_in_payload_overrides_persisted_value():
+    """显式值（如保存时 host 推断结果或前端厂商预设）始终覆盖持久化方言。"""
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"]["endpoint_profile"] = "vllm"
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [_parsed_item(endpoint_profile="dashscope")]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_client_config"]["endpoint_profile"] == "dashscope"
+
+
+def test_switching_vendor_preset_drops_persisted_endpoint_profile():
+    """换用其他供应商预设时旧方言属于旧选择，应随 vendor 一起丢弃。"""
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"].update({"vendor_key": "deepseek", "endpoint_profile": "deepseek"})
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [_parsed_item(vendor_key="openrouter")]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    mcc = out[0]["model_client_config"]
+    assert mcc["vendor_key"] == "openrouter"
+    assert "endpoint_profile" not in mcc
+
+
+def test_unchanged_vendor_preset_preserves_persisted_endpoint_profile():
+    """vendor 未变化(即使 payload 未带方言)时保留持久化值，仅 vendor 切换才丢弃。"""
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"].update({"vendor_key": "openrouter", "endpoint_profile": "openrouter"})
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [_parsed_item(vendor_key="openrouter")]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_client_config"]["endpoint_profile"] == "openrouter"
+
+
+def test_switching_to_anthropic_drops_persisted_endpoint_profile():
+    """Anthropic 协议不使用端点方言，前端切换协议时会显式删除，落库保持一致。"""
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"]["endpoint_profile"] = "vllm"
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [_parsed_item(model_provider="Anthropic")]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert "endpoint_profile" not in out[0]["model_client_config"]
