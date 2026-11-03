@@ -266,6 +266,46 @@ def data_directory(settings):
     return effective_home(settings) / ".jiuwenswarm"
 
 
+def load_identity(path, bindings=None):
+    """Resolve service identity without loading startup policy or credentials."""
+    from string import Template
+
+    if Path(path).is_file():
+        gateway = read_yaml(path).get("gateway") or {}
+    elif "SWARM_INSTANCE_NAME" in os.environ:
+        gateway = {}
+    else:
+        raise ValueError("Cannot determine service identity: settings file is missing")
+    identity = {
+        "home": os.environ.get("SWARM_HOME", gateway.get("home", str(Path.home()))),
+        "instance_name": os.environ.get("SWARM_INSTANCE_NAME", gateway.get("instance_name", "")),
+        "static_port": gateway.get("static_port", 5173),
+    }
+    variables = dict(os.environ)
+    variables.setdefault("HOME", str(Path.home()))
+    required = set()
+    for value in identity.values():
+        if isinstance(value, str):
+            required.update(Template(value).get_identifiers())
+    if required - variables.keys() and bindings and Path(bindings).is_file():
+        variables.update(read_environment(bindings))
+    try:
+        identity = expand_defaults(identity, variables)
+    except KeyError as exc:
+        raise ValueError("Cannot resolve service identity variable: " + str(exc)) from None
+    name = identity["instance_name"]
+    if not isinstance(name, str) or (name and not re.fullmatch(r"[a-zA-Z0-9_-]+", name)):
+        raise ValueError("invalid instance_name")
+    home = identity["home"]
+    if not isinstance(home, str) or not Path(home).is_absolute():
+        raise ValueError("service identity home must be an absolute path")
+    port = int(identity["static_port"])
+    if not 0 < port < 65536:
+        raise ValueError("invalid static_port")
+    identity["static_port"] = port
+    return {"gateway": identity}
+
+
 def load_settings(path, bindings=None):
     variables = dict(os.environ)
     if bindings:
@@ -298,7 +338,8 @@ def check_business(settings):
 
 def shell_identity(settings):
     options = settings["gateway"]
-    for key, value in {"HOME": str(effective_home(settings)), "JIUWENSWARM_INSTANCE_NAME": options.get("instance_name", "")}.items():
+    for key, value in {"HOME": str(effective_home(settings)), "JIUWENSWARM_INSTANCE_NAME": options.get("instance_name", ""),
+                       "WEB_STATIC_PORT": options.get("static_port", 5173)}.items():
         print("DEPLOY_VARS[" + shlex.quote(key) + "]=" + shlex.quote(str(value)))
 
 
@@ -311,13 +352,14 @@ def main():
     if args.action == "components":
         check_components()
         return
+    if args.action == "identity":
+        shell_identity(load_identity(args.settings, args.bindings))
+        return
     settings = load_settings(args.settings, args.bindings)
     if args.action == "configure":
         configure(settings)
     elif args.action == "variables":
         shell_gateway_variables(settings)
-    elif args.action == "identity":
-        shell_identity(settings)
     else:
         ready(settings)
 

@@ -63,3 +63,11 @@ bash deploy/adx/package.sh /absolute/output/deploy.tar.gz
 The archive contains `deploy/adx`. Enterprise extracts this directory into its
 release's `deploy/jiuwenswarm` while retaining its own `module.sh` and `.env.custom`.
 Old Swarm archives without `deploy/adx` fail packaging explicitly.
+
+`down`, `status` and `uninstall` resolve only service identity (home, instance name
+and static port). They do not load startup policy, CA, credentials or platform
+connection settings. Optional bindings are consulted only if identity itself uses
+an unresolved placeholder. A composer may explicitly provide `SWARM_HOME` and
+`SWARM_INSTANCE_NAME` (empty for the default services), allowing cleanup even when
+startup settings have not been prepared. An unresolved custom instance name fails
+explicitly instead of stopping the default instance.
