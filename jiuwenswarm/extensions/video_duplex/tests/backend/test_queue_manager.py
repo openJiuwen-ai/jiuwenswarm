@@ -88,7 +88,3 @@ async def test_failure_after_write_preserves_receipt_without_repeating(monkeypat
     assert result["state"] == "incomplete"
     assert result["receipts"][-1]["receipt"]["state"] == "cancelling"
     assert manager.operate.await_count == 2
-
-
-
-
