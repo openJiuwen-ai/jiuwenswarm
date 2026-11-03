@@ -12,8 +12,11 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 # 全部依赖显式声明，不依赖 workswarm（jiuwenswarm）的传递依赖。
-# gateway 对 jiuwenswarm 的运行时 import 已清零（拆仓解耦完成），独立
-# 安装即可运行；不声明 workswarm 以免形成包依赖环（jiuwenswarm -> gateway）。
+# gateway 对 jiuwenswarm 的运行时 import 已清零（拆仓解耦完成）；
+# 独立安装的剩余缺口见 link_mtls_config（仅内部 agent-runtime 源提供，
+# 待公开源同步，同步前 manager_config 路由组按 facade 降级跳过）。
+# foundation 与根 pyproject 同钉 @develop（构建期经 AGENT_RUNTIME_* 重装）。
+# 不声明 workswarm 以免形成包依赖环（jiuwenswarm -> gateway）。
 dependencies = [
     # 协议层 / Agent 内核 / 运行时基础（rev 与根 pyproject 保持一致，避免同环境双版本）
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@b2a0a248c554753ba31727415fe17a03eed60b46",
