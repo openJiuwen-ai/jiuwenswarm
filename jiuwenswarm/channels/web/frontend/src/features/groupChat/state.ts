@@ -2,6 +2,18 @@ import { resolveAgentGroupSelectionId } from '../agentManagement/port';
 import type { AgentCatalogItem, AgentGroupCatalogItem } from '../agentManagement/types';
 import type { GroupExecution, GroupMember, GroupMessage } from './client';
 
+// Keep pending-reply eligibility across workspace remounts, scoped to this page lifetime.
+const sessionSentIdsByGroup = new Map<string, Set<string>>();
+
+export function groupSessionSentIds(groupId: string): Set<string> {
+  let ids = sessionSentIdsByGroup.get(groupId);
+  if (!ids) {
+    ids = new Set<string>();
+    sessionSentIdsByGroup.set(groupId, ids);
+  }
+  return ids;
+}
+
 export function isBackgroundRefreshTimeout(error: unknown, hasSnapshot: boolean): boolean {
   return hasSnapshot && (error as { code?: string } | null)?.code === 'REQUEST_TIMEOUT';
 }
@@ -111,6 +123,54 @@ export function mentionExecutionPhase(execution: GroupExecution | undefined): Me
     return { key: 'executing', completed: progress.completed, total: progress.total };
   }
   return { key: 'processing' };
+}
+
+export const FINISHED_EXECUTIONS = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'timed_out', 'stopped']);
+
+/** 一条 @ 消息下尚未回音的成员，及其当前执行快照（尚未创建执行时为 undefined）。 */
+export interface PendingMentionReply {
+  memberName: string;
+  execution: GroupExecution | undefined;
+}
+
+/**
+ * 推导每条带 @ 的用户消息下应挂的「待回复」占位，键为 message_id。
+ *
+ * 本页面发出的消息（sentIds）一发出就占位，覆盖执行尚未创建的窗口；其余消息只在被 @ 成员
+ * 有未完成执行时占位，刷新/换设备后据服务端执行恢复。一个执行只归属创建前最近一条 @ 该成员
+ * 的消息，旧提问不会因后来的执行重复占位；早已无执行的旧提问不占位。
+ */
+export function pendingMentionReplies(
+  messages: GroupMessage[],
+  executions: GroupExecution[],
+  members: GroupMember[],
+  sentIds: Set<string>,
+): Map<string, PendingMentionReply[]> {
+  const asks = messages.filter((message) => message.sender === 'user' && !message.pending).map((message) => ({
+    message,
+    mentioned: message.mentions?.length
+      ? message.mentions
+      : selectedMentions(groupMessageContent(message), [], members),
+  }));
+  const pending = new Map<string, PendingMentionReply[]>();
+  for (const { message, mentioned } of asks) {
+    const sentHere = sentIds.has(message.client_message_id);
+    const waiting = mentioned.flatMap((memberName) => {
+      if (messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) return [];
+      // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
+      const execution = executions.filter((item) =>
+        (item.member_name === memberName || item.owner_member === memberName)
+        && item.created_at * 1000 >= message.timestamp).pop();
+      if (execution && FINISHED_EXECUTIONS.has(execution.status)) return [];
+      if (sentHere) return [{ memberName, execution }];
+      if (!execution) return [];
+      const owner = asks.filter((ask) => ask.mentioned.includes(memberName)
+        && ask.message.timestamp <= execution.created_at * 1000).pop();
+      return owner?.message.message_id === message.message_id ? [{ memberName, execution }] : [];
+    });
+    if (waiting.length) pending.set(message.message_id, waiting);
+  }
+  return pending;
 }
 
 export function safeAttachmentUrl(value: unknown): string | undefined {
