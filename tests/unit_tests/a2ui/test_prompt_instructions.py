@@ -42,6 +42,20 @@ def test_a2ui_prompt_titles_input_components_with_text_caption():
     assert "共同包在一个 Column 里" in zh
 
 
+def test_a2ui_prompt_heading_text_is_plain_text():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "MUST contain plain text only" in en
+    assert "do not use any Markdown syntax" in en
+    assert "parsed as a bullet list" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "必须是纯文本" in zh
+    assert "禁止任何 Markdown 语法" in zh
+    assert "会被解析成无序列表" in zh
+
+
 def test_a2ui_prompt_wraps_outermost_ui_in_card():
     en = build_a2ui_autonomy_instruction("en")
 
