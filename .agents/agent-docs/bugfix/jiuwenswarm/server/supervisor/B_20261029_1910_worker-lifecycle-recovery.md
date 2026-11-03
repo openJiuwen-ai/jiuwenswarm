@@ -62,14 +62,18 @@ design_note: 修复已确认的常驻与最终退出契约及回退前暴露的�
 
 ## 2026-11-03 develop 适配
 
-本次接入上游 `b8c8206c4ede7122f9ee3f81770b8f86dd5659ed`，续写同一修复，不替代原有最终退出、升级凭据和历史进程处置决策。
+本次从上游 `b8c8206c4ede7122f9ee3f81770b8f86dd5659ed` 开始适配，验证期间继续接入 `3926849e408020eed4b8d80c9eee7e01ff67a718`，续写同一修复，不替代原有最终退出、升级凭据和历史进程处置决策。
 
 - 保留主干 HarmonyOS `front_loopback` 的一次性鉴权、generation 校验、进程退出监听、连接断开清理及 PID 复用保护。resident 的选举、历史端点迁移和替换校验留在 resident 连接路径，附属模式不进入这些流程。
 - 两种模式共用完整关闭判定和有限重试后的自动恢复；附属模式 `stop()` 始终关闭自己的 Worker，桌面 resident 的普通 Front 重启继续保留 Worker。
 - 保留主干 `JIUWENSWARM_RUNTIME_INSTANCE` / `HOSTNAME` 的端点区分，并将实例纳入部署身份，避免共享数据目录中的其他 Pod 被误认为当前部署的历史进程。
 - Electron 装配同时包含主干新增的 `cdp_port.cjs` 和本修复的 `update_shutdown.cjs`；文档索引使用当前同步工具重建。
+- 故障注入夹具通过正式 `-m jiuwenswarm.server.worker.main` 入口装配诊断 Runtime，继续验证日志、心跳、背压、真实阻塞和恢复；不为独立测试脚本放宽进程归属校验。
+- 损坏的构建身份通过 `WorkerIdentityError` 标明永久错误，停止自动重试；修正后显式 reload 可恢复。两种 IPC 均覆盖该路径，临时启动失败仍使用自动冷却恢复。
 
 回归新增两个共享目录真实实例的独立启动/退出、附属 Worker 的 ACK 后线程残留，以及 resident / front_loopback 两条链路的启动故障自动恢复。原生 HarmonyOS、macOS DMG 与 Windows EXE 安装/升级仍需对应平台验收；Windows 源码下的 loopback 行为不代替原生验证。
+
+Windows 扩展回归初轮为 9948 passed、23 skipped、64 failed、6 errors。适配正式故障注入入口、补齐上游声明但冻结锁文件缺失的 minio / runtime-foundation 验证依赖，并限制测试进程的 OpenBLAS 线程后，逐项重验原失败/错误及新增主干路径断言：同条件未修改主干与候选均为 54 failed、6 passed，未增加失败；11 项真实进程故障用例已在生产入口复测通过。残留涉及 Windows 路径、符号链接权限、POSIX 文件描述符等已有行为，不能把这一扩展范围报告为全部通过。独立核心回归为 325 passed、1 skipped；故障撤除后默认冷却实测约 31.2 秒自动恢复，不需要 reload。当前 PR 描述记录后续提交的补充验证与成品验证。
 
 ## 遗留与重验条件
 

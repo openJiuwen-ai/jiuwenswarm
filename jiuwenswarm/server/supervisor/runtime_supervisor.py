@@ -40,6 +40,7 @@ from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
 from jiuwenswarm.server.supervisor.diagnostics import dump_runtime_state
+from jiuwenswarm.server.supervisor.identity import WorkerIdentityError
 from jiuwenswarm.server.supervisor.worker_process import (
     WorkerProcess,
     default_socket_path,
@@ -503,6 +504,12 @@ class RuntimeSupervisor:
             try:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, WorkerIdentityError):
+                    self._fatal = True
+                    self._retryable_failure = False
+                    self._fatal_reason = str(exc)
+                    self._readiness.mark_failed(self._fatal_reason)
+                    self._ipc_ready.set()
                 if self._ipc_mode == FRONT_LOOPBACK:
                     try:
                         conn, self._conn = self._conn, None

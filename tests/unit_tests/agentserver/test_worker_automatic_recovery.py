@@ -15,6 +15,36 @@ from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
+async def test_invalid_build_identity_requires_correction_and_explicit_recovery(monkeypatch, tmp_path, ipc_mode):
+    from jiuwenswarm.server.supervisor import identity
+
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)
+    original_path = identity._identity_path
+    invalid = tmp_path / "invalid-build.json"
+    invalid.write_text('{"schema": 2}', encoding="utf-8")
+    monkeypatch.setattr(identity, "_identity_path", lambda: invalid)
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, stub=True, max_restarts=1,
+        socket_path=str(tmp_path / "runtime.pipe"))
+    try:
+        with pytest.raises(identity.WorkerIdentityError, match="Invalid Worker build identity"):
+            identity.code_identity()
+        with pytest.raises(RuntimeError, match="Invalid Worker build identity"):
+            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        assert readiness.state is ReadinessState.FAILED
+        assert supervisor._restart_count == 0
+        assert supervisor._automatic_recovery_task is None
+        assert supervisor._process is None
+        monkeypatch.setattr(identity, "_identity_path", original_path)
+        assert await supervisor.recover_from_failed(timeout=20)
+        assert readiness.snapshot()["agent_ready"]
+    finally:
+        await supervisor.stop(terminate_worker=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
 async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypatch, tmp_path, ipc_mode):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)

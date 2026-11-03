@@ -11,6 +11,10 @@ import sys
 from pathlib import Path
 
 
+class WorkerIdentityError(RuntimeError):
+    """Deployment identity needs correction before an explicit recovery."""
+
+
 def _deployment_path() -> str:
     path = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
     return os.path.normcase(str(path))
@@ -153,6 +157,13 @@ def data_scope() -> str:
 
 
 def code_identity() -> str:
+    try:
+        return _code_identity()
+    except RuntimeError as exc:
+        raise WorkerIdentityError(str(exc)) from exc
+
+
+def _code_identity() -> str:
     override = os.environ.get("JIUWENSWARM_BUILD_ID", "").strip()
     bundled = _identity_path()
     if bundled.exists() or getattr(sys, "frozen", False):
