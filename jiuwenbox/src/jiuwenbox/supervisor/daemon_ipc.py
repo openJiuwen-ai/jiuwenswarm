@@ -63,7 +63,7 @@ def apply_sandbox_ip_env(
 
 # Daemon argv vector. ``-S`` shaves the ``import site`` cost so the daemon
 # starts faster; the daemon is stdlib-only so ``site`` is unnecessary.
-SANDBOX_DAEMON_COMMAND = ["python3", "-S", SANDBOX_DAEMON_SANDBOX_PATH]
+SANDBOX_DAEMON_COMMAND = ["python3", "-S", "-u", SANDBOX_DAEMON_SANDBOX_PATH]
 
 # Outgoing request types accepted by the daemon.
 REQUEST_TYPE_EXEC = "exec"

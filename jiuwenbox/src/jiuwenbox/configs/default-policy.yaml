@@ -305,15 +305,15 @@ network:
 # ---------------------------------------------------------------------------
 # Cgroup resource limits (optional)
 # ---------------------------------------------------------------------------
-# Per-sandbox cgroup limits. All three fields default to null which means
-# "no limit". Omitting the ``cgroup`` block entirely, or leaving every
-# field unset/null, causes jiuwenbox to *skip* cgroup setup completely so
-# this default policy still runs on hosts without a writable cgroup tree.
+# Per-sandbox cgroup limits. A field left null means "no limit". Omitting
+# the ``cgroup`` block entirely, or leaving every field unset/null, causes
+# jiuwenbox to skip cgroup setup completely.
+#
+# This default caps each sandbox at 512 MiB and one CPU. If at least one
+# field is set and neither cgroup v2 nor v1 is writable, sandbox creation
+# fails with a CgroupSetupError.
 #
 # Cgroup v2 is preferred. v1 is used as a fallback when v2 is unavailable.
-# If at least one field is non-null and neither backend is writable,
-# sandbox creation fails with a CgroupSetupError.
-#
 # Accepted formats:
 #   memory_max: integer bytes (e.g. 268435456) or string with binary unit
 #     suffix B/K/KB/KiB/M/MB/MiB/G/GB/GiB/T/TB/TiB (e.g. "256M", "1G").
@@ -322,7 +322,9 @@ network:
 #     means no limit.
 #   pids_max: positive integer cap on processes/threads (e.g. 256). "max"
 #     or null means no limit.
-cgroup: {}
+cgroup:
+  memory_max: "512M"
+  cpu_max: 1.0
 
 # Idle sandbox reaping (jiuwenbox 服务端行为, 不下传到 bwrap / landlock / cgroup).
 #
