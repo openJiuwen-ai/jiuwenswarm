@@ -5,6 +5,7 @@ import {
   getMultiModelCollaborationRevision,
   isMultiModelCollaborationEnabled,
 } from './features/multiModelCollaboration/featureConfig';
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
@@ -53,7 +54,7 @@ import {
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
 import { DesignerPage } from './features/designer/components/DesignerPage';
-import { submitDesignComposer } from './features/designer/designerEntry';
+import { createDesignerConversation, submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -3323,6 +3324,17 @@ function AppContent({
     const workContext = getWorkContextForSession(NEW_CONVERSATION_ID);
 
     try {
+      if (workContext.work_mode === 'design') {
+        const created = await createDesignerConversation(initialTitle);
+        pendingNewConversationRef.current = false;
+        newConversationProjectRef.current = null;
+        newConversationPreviousSessionRef.current = null;
+        sessionIdRef.current = created.sessionId;
+        setSessionId(created.sessionId);
+        useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        navigate({ kind: 'design-project', projectId: created.projectId, sessionId: created.sessionId });
+        return created.sessionId;
+      }
       const createParams: Record<string, unknown> = {
         create_token: generateUuidV4(),
         mode: resolvePlanWireMode(
@@ -4553,6 +4565,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-testid="app-shell"
       data-session-id={sessionId}
     >
+      <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
