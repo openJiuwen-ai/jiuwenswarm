@@ -262,17 +262,8 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
-lazy_runtime_submodules = []
-for lazy_package in (
-    "jiuwenswarm.agents.harness.common.auto_harness",
-    "jiuwenswarm.agents.harness.common.tools",
-    "jiuwenswarm.agents.harness.common.rails",
-    "jiuwenswarm.common.auth",
-    "jiuwenswarm.agents.swarm",
-):
-    lazy_runtime_submodules += collect_submodules(lazy_package)
-
-hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+hiddenimports = webview_hiddenimports + http2_submodules + [
+    "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
