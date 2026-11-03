@@ -65,7 +65,7 @@ test('enterprise original image URL follows context switches and excludes non-up
   assert.equal(result.searchParams.get('user_id'), 'other');
   assert.equal(result.searchParams.get('group_id'), 'other-g');
   assert.equal(result.searchParams.get('bot_id'), 'other-b');
-  for (const outside of ['/etc/passwd', '/tenant/agent/jiuwenclaw_workspace/photo.png',
+  for (const outside of ['/etc/passwd', '/tenant/agent/workspace/photo.png',
     '/tenant/agent/sessions/../uploads/photo.png']) assert.equal(uploadFileUrl(outside), undefined);
 });
 
