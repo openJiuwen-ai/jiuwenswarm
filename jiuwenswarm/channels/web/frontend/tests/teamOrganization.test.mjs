@@ -1209,16 +1209,21 @@ test('historical database names render in both the organization panel and select
   );
 });
 
-for (const catalogAvailable of [true, false]) {
-  test(`owner identity renders independently of the group catalog, available=${catalogAvailable}`, async () => {
+for (const { ownerIdentity, catalogAvailable } of [
+  ...groupIdentities,
+  { id: 'custom-asset', name: 'custom-package', displayName: 'Custom research team', avatarUrl: 'http://localhost/custom.png' },
+].flatMap((ownerIdentity) => [true, false].map((catalogAvailable) => ({ ownerIdentity, catalogAvailable })))) {
+  test(`owner identity renders independently of the group catalog, package=${ownerIdentity.name}, available=${catalogAvailable}`, async () => {
+    const identities = [ownerIdentity, ...groupIdentities.filter((group) => group.name !== ownerIdentity.name)];
     const teams = organizationTeams.teams.map((team, index) => ({
       ...team,
+      agent_group_name: identities[index].name,
       display_name: '团队领导',
       team_group_identity: {
-        id: groupIdentities[index].id,
-        name: groupIdentities[index].name,
-        display_name: groupIdentities[index].displayName,
-        avatar: groupIdentities[index].avatarUrl,
+        id: identities[index].id,
+        name: identities[index].name,
+        display_name: identities[index].displayName,
+        avatar: identities[index].avatarUrl,
       },
     }));
     await withOrganizationPanel(
@@ -1240,16 +1245,16 @@ for (const catalogAvailable of [true, false]) {
       async () => {
         assert.equal(
           document.querySelector('[data-testid="team-area-org-info-owner-team"]').lastElementChild.textContent,
-          '商业策划专家团',
+          ownerIdentity.displayName,
         );
         for (const [index, team] of teams.entries()) {
           assert.equal(
             document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent,
-            groupIdentities[index].displayName,
+            identities[index].displayName,
           );
           assert.equal(
             document.querySelector(`[data-testid="team-area-org-info-team-avatar"][data-variant="${team.team_id}"]`).getAttribute('src'),
-            groupIdentities[index].avatarUrl,
+            identities[index].avatarUrl,
           );
         }
       },
