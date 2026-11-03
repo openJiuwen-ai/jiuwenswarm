@@ -1936,6 +1936,97 @@ test('Owner store processing combines independent foreground and organization li
   clearOrganizationRequests('session');
 });
 
+// Execute the production event handlers through their activity recovery step;
+// subsequent message/tool rendering has its own tests and dependencies.
+function loadActivityHandler(eventName) {
+  const path = 'hooks/useWebSocket.ts';
+  const source = ts.createSourceFile(path, readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let body;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'webClient.on' &&
+      node.arguments[0]?.text === eventName) {
+      const statements = node.arguments[1].body.statements;
+      const boundary = statements.findIndex((statement) => ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations.some((declaration) =>
+          ['currentMode', 'agentTemplateName'].includes(declaration.name.getText(source))));
+      assert.ok(boundary > 0, `${eventName}: activity recovery precedes rendering`);
+      body = statements.slice(0, boundary).map((statement) => statement.getText(source)).join('\n');
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(body, `${eventName}: production handler exists`);
+  const bindings = {
+    useChatStore,
+    isTeamOrganizationUiEnabled,
+    isProactiveRecommendationPayload: (payload) => payload.source === 'proactive_recommendation',
+    shouldIgnoreSessionOutput: () => false,
+    handleTaskInputReceipt: () => false,
+    resolveEventSessionId: (payload) => payload.session_id,
+    shouldDropDuplicatedEvent: () => false,
+  };
+  bindings.restoreForegroundProcessing = loadCallback(path, 'restoreForegroundProcessing', bindings);
+  const { outputText } = ts.transpileModule(`const callback = ({ payload }) => { ${body} };`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  });
+  return new Function(...Object.keys(bindings), `${outputText}\nreturn callback;`)(...Object.values(bindings));
+}
+
+for (const eventName of ['chat.delta', 'chat.reasoning', 'chat.tool_call']) {
+  for (const source of ['org_root_background', 'org_root_delivery']) {
+    test(`${eventName}: ${source} activity cannot leave Owner foreground busy`, () => {
+      seed();
+      setTeamOrganizationUiEnabled(true);
+      const chat = useChatStore.getState();
+      chat.setProcessing('session', false);
+      const activity = loadActivityHandler(eventName);
+      const payload = { session_id: 'session', team_id: 'owner', request_id: 'background', source };
+      try {
+        // Activity can arrive before processing=true or after its terminal.
+        activity({ payload });
+        assert.equal(chat.getRuntime('session').foregroundIsProcessing, false);
+        startExpertRequest('session', 'background', source);
+        assert.equal(chat.getRuntime('session').isProcessing, true);
+        activity({ payload });
+        finishExpertRequest('session', 'background');
+        assert.equal(chat.getRuntime('session').isProcessing, false);
+        activity({ payload });
+        assert.equal(chat.getRuntime('session').isProcessing, false);
+        // An independent foreground input must survive this background ending.
+        chat.setProcessing('session', true);
+        startExpertRequest('session', 'background', source);
+        activity({ payload });
+        finishExpertRequest('session', 'background');
+        assert.equal(chat.getRuntime('session').foregroundIsProcessing, true);
+        assert.equal(chat.getRuntime('session').isProcessing, true);
+      } finally {
+        chat.setProcessing('session', false);
+        clearOrganizationRequests('session');
+        setTeamOrganizationUiEnabled(false);
+      }
+    });
+  }
+
+  for (const source of [undefined, 'org_expert_direct', 'org_root_delivery', 'proactive_recommendation']) {
+    test(`${eventName}: foreground recovery preserves existing source behavior: ${source}`, () => {
+      seed();
+      // With the feature disabled, organization-tagged legacy output keeps its behavior.
+      setTeamOrganizationUiEnabled(source !== 'org_root_delivery');
+      const chat = useChatStore.getState();
+      chat.setProcessing('session', false);
+      const activity = loadActivityHandler(eventName);
+      try {
+        activity({ payload: { session_id: 'session', team_id: 'owner', source } });
+        assert.equal(chat.getRuntime('session').foregroundIsProcessing, source !== 'proactive_recommendation');
+      } finally {
+        chat.setProcessing('session', false);
+        setTeamOrganizationUiEnabled(false);
+      }
+    });
+  }
+}
+
 for (const direct of [undefined, [], [{ team_id: 'expert', request_id: 'direct' }]]) {
   test(`mixed snapshots preserve direct requests according to their own snapshot: ${JSON.stringify(direct)}`, () => {
     seed();
