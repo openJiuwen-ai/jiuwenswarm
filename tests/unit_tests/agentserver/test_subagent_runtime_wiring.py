@@ -181,10 +181,13 @@ def test_optional_enable_subagent_runtime_omits_flag_on_legacy_config(
     from dataclasses import dataclass
 
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_mod
+    from jiuwenswarm.server.runtime.agent_adapter.deep import agent_config_helpers as cfg_mod
 
     @dataclass
     class _LegacyDeepAgentConfig:
         enable_task_loop: bool = False
 
+    # 定义在 agent_config_helpers；facade re-export 不会改函数体内名字查找。
+    monkeypatch.setattr(cfg_mod, "DeepAgentConfig", _LegacyDeepAgentConfig)
     monkeypatch.setattr(deep_mod, "DeepAgentConfig", _LegacyDeepAgentConfig)
     assert deep_mod._optional_enable_subagent_runtime(True) == {}

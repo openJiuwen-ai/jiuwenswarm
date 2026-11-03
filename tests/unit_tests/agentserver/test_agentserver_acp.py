@@ -3726,8 +3726,10 @@ async def test_wait_for_terminal_exit_completed_result_sets_should_retry_false(m
 
 
 def test_build_context_processor_rail_uses_summary_offloader_config(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextProcessorRail",
         FakeContextProcessorRail,
     )
@@ -3760,8 +3762,10 @@ def test_build_context_processor_rail_uses_summary_offloader_config(monkeypatch)
 
 
 def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextProcessorRail",
         FakeContextProcessorRail,
     )
@@ -3787,8 +3791,10 @@ def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypat
 
 
 def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextProcessorRail",
         FakeContextProcessorRail,
     )
@@ -3815,8 +3821,10 @@ def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
 
 
 def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
+
     monkeypatch.setattr(
-        interface_deep_module,
+        context_assembly,
         "ContextAssembleRail",
         FakeContextAssembleRail,
     )

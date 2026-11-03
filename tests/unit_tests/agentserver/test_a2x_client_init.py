@@ -198,8 +198,12 @@ async def test_create_instance_registers_blank_agent_for_teammate(monkeypatch: p
         endpoint="http://agent.example/ws",
     )
 
+    from jiuwenswarm.server.runtime.agent_adapter.deep import agent_config_helpers
+
     monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.a2x.client", fake_module)
     monkeypatch.setattr(interface_module, "get_config", lambda: config_base)
+    # create_instance 经 _resolve_instance_config_base 读 helpers 内的 get_config 绑定。
+    monkeypatch.setattr(agent_config_helpers, "get_config", lambda: config_base)
 
     with (
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "set_checkpoint", AsyncMock()),

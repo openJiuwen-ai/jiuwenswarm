@@ -148,7 +148,11 @@ async def test_ensure_instance_reuses_authoritative_config_snapshot() -> None:
 
 def test_instance_config_base_falls_back_to_native_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Deep and Code adapters share the native config.yaml fallback."""
+    from jiuwenswarm.server.runtime.agent_adapter.deep import agent_config_helpers
+
     disk_config = {"models": {"defaults": [{"model": "disk-model"}]}}
+    # 定义在 agent_config_helpers，必须 patch 定义模块的 get_config 绑定。
+    monkeypatch.setattr(agent_config_helpers, "get_config", lambda: disk_config)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: disk_config)
 
     resolved = interface_deep_module._resolve_instance_config_base(None)
