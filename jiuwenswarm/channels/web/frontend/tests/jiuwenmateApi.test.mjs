@@ -26,6 +26,19 @@ import {
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
+test('employee artifacts load independently of chat history and retain signed download links', async () => {
+  const calls = [];
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push({ method, params });
+    return { files: [{ output_id: 'workspace-report', name: 'report.md', path: 'sessions/old/output/report.md',
+      size: 20, download_url: '/file-api/download?token=signed' }] };
+  });
+  const files = await api.listArtifacts('employee-1');
+  assert.deepEqual(calls, [{ method: 'jiuwenmate.artifact.list', params: { agent_id: 'employee-1' } }]);
+  assert.equal(files[0].name, 'report.md');
+  assert.equal(files[0].downloadUrl, '/file-api/download?token=signed');
+});
+
 test('DingTalk authorization methods keep their RPC names, scope and response envelopes', async () => {
   const calls = [];
   const status = { status: 'connected', cli_version: '1.0.65', account: 'tester' };
