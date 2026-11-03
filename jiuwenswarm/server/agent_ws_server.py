@@ -1587,6 +1587,10 @@ class AgentWebSocketServer:
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
                 try:
+                    await self._jiuwenmate_web.start()
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] JiuwenMate Web runtime startup failed")
+                try:
                     await self._ensure_persistent_group_fanout()
                 except Exception:
                     # JM-08 is optional: a local JM binding must not prevent
