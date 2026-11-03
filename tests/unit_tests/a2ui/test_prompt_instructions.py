@@ -59,12 +59,14 @@ def test_a2ui_prompt_heading_text_is_plain_text():
 def test_a2ui_prompt_wraps_outermost_ui_in_card():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "outermost UI MUST be wrapped in a Card" in en
+    assert "outermost structured UI MUST be wrapped in a Card" in en
+    assert "single component id" in en
     assert "Column for vertical" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "最外层 UI 统一用 Card 承载" in zh
+    assert "最外层结构化 UI 统一用 Card 作为容器壳承载" in zh
+    assert "child 只收一个组件 id" in zh
     assert "纵向 Column、横向 Row、重复列表 List" in zh
 
 
