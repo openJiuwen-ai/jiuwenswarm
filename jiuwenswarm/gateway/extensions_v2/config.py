@@ -36,8 +36,10 @@ class HttpPolicy:
     def host_allowed(self, url: str) -> bool:
         """Return True when ``url`` matches one allowlist entry.
 
-        An entry is either ``host`` (any port) or ``host:port``. An empty
-        allowlist denies everything, which keeps the default deployment closed.
+        An entry is either ``host`` (any port) or ``host:port``. IPv6 literals
+        use brackets (``[::1]:8080``). ``host:port`` also matches a URL that
+        omits the default port for its scheme. An empty allowlist denies
+        everything, which keeps the default deployment closed.
         """
 
         parsed = urlsplit(url)
@@ -48,15 +50,31 @@ class HttpPolicy:
             port = parsed.port
         except ValueError:
             return False
+        if port is None:
+            port = 443 if parsed.scheme == "https" else 80
         for entry in self.allowed_hosts:
-            allowed_host, _, allowed_port = entry.strip().lower().rpartition(":")
-            if not allowed_host:
-                allowed_host, allowed_port = allowed_port, ""
-            if allowed_host.strip() != host:
+            allowed_host, allowed_port = _split_entry(entry)
+            if not allowed_host or allowed_host != host:
                 continue
             if not allowed_port or allowed_port == str(port):
                 return True
         return False
+
+
+def _split_entry(entry: str) -> tuple[str, str]:
+    """Split an allowlist entry into ``(host, port)``; empty port means any."""
+
+    text = entry.strip().lower()
+    if text.startswith("["):
+        end = text.find("]")
+        if end < 0:
+            return "", ""
+        rest = text[end + 1:]
+        return text[1:end], rest[1:] if rest.startswith(":") else ""
+    host, separator, port = text.rpartition(":")
+    if not separator:
+        return text, ""
+    return host, port
 
 
 @dataclass(frozen=True, slots=True)
