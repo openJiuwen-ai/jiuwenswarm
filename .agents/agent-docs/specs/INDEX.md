@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: xiajing
+author_email: xiajing22@huawei.com
 generated: true
 ---
 
