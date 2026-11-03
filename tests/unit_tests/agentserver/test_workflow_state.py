@@ -1612,6 +1612,27 @@ def test_agent_started_after_pause_does_not_resurrect_phase():
     assert q_phase.status == "paused"
 
 
+def test_child_phase_declared_after_pause_does_not_resurrect_child_card():
+    """A stale child phase declaration after the run was parked stays parked.
+
+    The child-declare path reuses and creates the same cards the agent-attach
+    path already guards with _phase_may_run; without the guard a re-declared
+    child flips back to running and the paused run shows a running phase.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(WorkflowProgress(kind="phase", phase="intro", phase_type="child", nested_phase="▸ intro #0"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert next(p for p in state.phases if p.phase_type == "child").status == "paused"
+    # stale re-declaration of the same child card must not reset it to running
+    state.apply(WorkflowProgress(kind="phase", phase="intro", phase_type="child", nested_phase="▸ intro #0"))
+    assert next(p for p in state.phases if p.phase_type == "child").status == "paused"
+    # a stale declaration of a new child creates that card parked, not running
+    state.apply(WorkflowProgress(kind="phase", phase="review", phase_type="child", nested_phase="▸ review #0"))
+    assert next(p for p in state.phases if p.name == "▸ review #0").status == "paused"
+
+
 def test_resume_started_then_agent_event_reactivates_phase():
     """A resume re-emits workflow_started first, so phases may run again.
 

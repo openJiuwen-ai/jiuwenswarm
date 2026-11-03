@@ -1278,7 +1278,8 @@ class WorkflowRunState(BaseModel):
         if parent is None and parent_name:
             logger.warning("[WF_DBG child] parent_phase=%s NOT FOUND in phases=%s",
                            parent_name, [p.name for p in self.phases])
-        if parent is not None and parent.status == "planned":
+        phase_may_run = self._phase_may_run()
+        if parent is not None and parent.status == "planned" and phase_may_run:
             parent.status = "running"
         # Resume replays the script's ``workflow()`` calls, re-emitting the same
         # child PHASE events. Reuse the existing child card (by name, which
@@ -1287,7 +1288,7 @@ class WorkflowRunState(BaseModel):
         # phase list by one card per child.
         existing = self._find_child_phase_by_name(progress.phase)
         if existing is not None:
-            if not self._is_terminal_status(existing.status):
+            if phase_may_run and not self._is_terminal_status(existing.status):
                 existing.status = "running"
             logger.info("[WF_DBG child] run=%s reuse card=%s parent=%s (resume re-declared)",
                         self.id, existing.name, parent_name)
@@ -1299,7 +1300,7 @@ class WorkflowRunState(BaseModel):
             name=progress.phase,
             phase_type="child",
             parent_phase=parent_name,
-            status="running",
+            status="running" if phase_may_run else "paused",
         )
         self.phases.append(phase)
         logger.info("[WF_DBG child] run=%s card=%s parent=%s parent_status=%s",
