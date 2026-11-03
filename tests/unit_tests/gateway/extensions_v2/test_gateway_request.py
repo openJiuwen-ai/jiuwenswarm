@@ -71,13 +71,8 @@ async def _runtime(tmp_path: Path, channel: FakeChannel | None = None) -> Gatewa
     return runtime
 
 
-def _authenticate(runtime: GatewayRuntime, connection_id: str = "ws-1") -> None:
-    runtime.store.set(
-        scope="connection",
-        scope_id=connection_id,
-        key="auth.session",
-        value={"user": "alice"},
-    )
+#: Header that keeps the login gate open; the gate only checks presence.
+AUTH_HEADERS = {"authorization": "Bearer tk_1"}
 
 
 async def test_no_user_handler_keeps_the_frame_untouched(tmp_path):
@@ -188,9 +183,8 @@ async def test_local_route_is_answered_by_the_builtin_router(tmp_path):
         return GatewayRequestOutput(handled=True, route="local")
 
     runtime.publish(_package(handler))
-    _authenticate(runtime)
 
-    visited, _ = await runtime.intercept(_ws(), "r3", "auth.status", {})
+    visited, _ = await runtime.intercept(_ws(), "r3", "auth.status", {}, AUTH_HEADERS)
 
     assert visited is True
     assert channel.responses == [
@@ -206,9 +200,8 @@ async def test_local_route_rejects_an_unknown_method(tmp_path):
         return GatewayRequestOutput(handled=True, route="local")
 
     runtime.publish(_package(handler))
-    _authenticate(runtime)
 
-    visited, _ = await runtime.intercept(_ws(), "r3", "chat.send", {})
+    visited, _ = await runtime.intercept(_ws(), "r3", "chat.send", {}, AUTH_HEADERS)
 
     assert visited is True
     assert channel.responses[0]["ok"] is False
@@ -223,7 +216,11 @@ async def test_ops_gateway_request_triggers_a_nested_event(tmp_path):
         if event.event_input.method == "inner":
             return await next_handler(event)
         nested = await ops.gateway.request(
-            GatewayRequestInput(method="inner", connection_id=event.event_input.connection_id)
+            GatewayRequestInput(
+                method="inner",
+                connection_id=event.event_input.connection_id,
+                headers=event.event_input.headers,
+            )
         )
         return GatewayRequestOutput(
             handled=True,
@@ -232,10 +229,9 @@ async def test_ops_gateway_request_triggers_a_nested_event(tmp_path):
         )
 
     runtime.publish(_package(handler))
-    _authenticate(runtime)
     channel = runtime.channel
 
-    visited, _ = await runtime.intercept(_ws(), "r4", "chat.send", {})
+    visited, _ = await runtime.intercept(_ws(), "r4", "chat.send", {}, AUTH_HEADERS)
 
     assert visited is True
     assert channel.responses[0]["payload"] == {"nested_route": "forward"}
