@@ -19,11 +19,14 @@ from openjiuwen.core.single_agent.rail.base import (
     InvokeInputs,
     ToolCallInputs,
 )
+from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.sys_operation import LocalWorkConfig, SysOperation, SysOperationCard
 from openjiuwen.harness.tools import create_todos_tool
 
 from jiuwenswarm.agents.harness.common.rails import todo_progress_snapshot as snapshot_mod
 from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
+from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import _HINTS
 from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import read_todo_snapshot
 
 SID = "desktop_test_session_0001"
@@ -48,16 +51,19 @@ def env(tmp_path):
         SysOperationCard(id="todo-progress-fs", work_config=LocalWorkConfig(sandbox_root=[str(tmp_path)]))
     )
     workspace = SimpleNamespace(get_node_path=lambda _node: tmp_path)
+    create, list_tool, get_tool, modify = create_todos_tool(operation, str(tmp_path), "cn", "main")
+    manager = AbilityManager()
+    manager.add([t.card for t in (create, list_tool, get_tool, modify)])
     agent = SimpleNamespace(
         deep_config=SimpleNamespace(sys_operation=operation, workspace=workspace, language="cn"),
         card=SimpleNamespace(id="main"),
+        ability_manager=manager,
     )
     rail = TodoProgressRail(mode="agent")
     rail.init(agent)
-    create, list_tool, _get, modify = create_todos_tool(operation, str(tmp_path), "cn", "main")
     session = SimpleNamespace(get_session_id=lambda: SID)
     return SimpleNamespace(
-        rail=rail, create=create, list_tool=list_tool, modify=modify,
+        rail=rail, create=create, list_tool=list_tool, modify=modify, manager=manager,
         session=session, todo_file=tmp_path / SID / "todo.json",
     )
 
@@ -96,8 +102,9 @@ async def _tool(env, ictx, tool, name: str, args: dict, call_id: str = "c1", *, 
         tctx.inputs.execution_started = True
         try:
             tctx.inputs.tool_result = await tool.invoke(args, session=env.session)
+            tctx.inputs.tool_msg = ToolMessage(content=str(tctx.inputs.tool_result), tool_call_id=call_id)
         except Exception:
-            tctx.inputs.tool_result = None  # 与 ability_manager 一致：工具抛错时 tool_result 为空
+            tctx.inputs.tool_result = None  # 与 ability_manager 一致：工具抛错时 tool_result/tool_msg 为空
     await env.rail.after_tool_call(tctx)
     return tctx
 
@@ -461,3 +468,236 @@ async def test_stats_counts_unknown_end_for_non_answer_runs(env, caplog, stats, 
     assert end["final"] == "unknown" and end["result_type"] == result_type
     s = stats.aggregate(stats.parse_lines(_rail_lines(caplog)))["unknown"]
     assert (s.end_unknown, s.end_unknown_answer, s.residual_den) == (1, 0, 0)
+
+
+# -- 串行执行 -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_before_invoke_serializes_todo_tools_idempotently(env):
+    from openjiuwen.core.foundation.tool import ToolCard
+
+    env.manager.add(ToolCard(id="biz", name="biz_tool"))
+    assert env.manager.get("todo_modify").parallel_safe is True
+    await _begin(env)
+    await _begin(env)
+    for name in ("todo_create", "todo_list", "todo_get", "todo_modify"):
+        assert env.manager.get(name).parallel_safe is False
+    assert env.manager.get("biz_tool").parallel_safe is True
+
+
+@pytest.mark.asyncio
+async def test_serialized_todo_writes_run_in_order_with_real_scheduler(env):
+    """真实调度器：同一批里两个业务工具照常并行；随后的 create + 两次 modify 逐个独占执行，
+    结果与发出顺序一致。"""
+    import asyncio
+
+    from openjiuwen.core.foundation.tool import ToolCard
+
+    env.manager.add(ToolCard(id="biz", name="biz_tool"))
+    await _begin(env)
+    events: list[str] = []
+
+    async def _run(label, factory):
+        events.append(f"start:{label}")
+        await asyncio.sleep(0)
+        result = await factory()
+        events.append(f"end:{label}")
+        return result
+
+    def _call(name):
+        return SimpleNamespace(name=name, arguments="{}")
+
+    calls = [_call("biz_tool"), _call("biz_tool"), _call("todo_create"), _call("todo_modify"), _call("todo_modify")]
+    tasks = [
+        _run("biz1", lambda: asyncio.sleep(0)),
+        _run("biz2", lambda: asyncio.sleep(0)),
+        _run("create", lambda: env.create.invoke({"tasks": _tasks("in_progress", "pending")}, session=env.session)),
+        _run("m1", lambda: env.modify.invoke(
+            {"action": "update", "todos": [{"id": "t1", "status": "completed"}]}, session=env.session)),
+        _run("m2", lambda: env.modify.invoke(
+            {"action": "update", "todos": [{"id": "t2", "status": "in_progress"}]}, session=env.session)),
+    ]
+    results = await AbilityManager._execute_parallel_tool_tasks(calls, tasks, tool_cards=env.manager._tools)
+    assert not any(isinstance(r, BaseException) for r in results), results
+    assert events[:2] == ["start:biz1", "start:biz2"]  # 业务工具仍并行：第二个在第一个结束前开始
+    assert sorted(events[2:4]) == ["end:biz1", "end:biz2"]
+    assert events[4:] == ["start:create", "end:create", "start:m1", "end:m1", "start:m2", "end:m2"]
+    final = {t.id: t.status.value for t in await read_todo_snapshot(env.rail._tool, SID)}
+    assert final == {"t1": "completed", "t2": "in_progress"}
+
+
+@pytest.mark.asyncio
+async def test_missing_todo_tools_logged_once_but_counted_every_run(env, caplog):
+    env.manager.remove(["todo_create", "todo_list", "todo_get", "todo_modify"])
+    for _ in range(2):
+        ictx = await _begin(env)
+        await _end(env, ictx)
+    errors = [e for e in _events(caplog, "rail_error") if e["category"] == "missing_todo_tools"]
+    assert len(errors) == 1 and errors[0]["session"]
+    assert [e["rail_errors"] for e in _events(caplog, "run_end")] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_serializes_even_when_rail_init_failed_or_no_session_id(env):
+    agent = SimpleNamespace(ability_manager=env.manager)  # 缺 deep_config：快照读取不可用
+    rail = TodoProgressRail()
+    rail.init(agent)
+    assert rail._tool is None
+    ctx = AgentCallbackContext(agent=object())
+    ctx.inputs = InvokeInputs(query="q", conversation_id=SID)
+    ctx.session = SimpleNamespace(get_session_id=lambda: "")
+    await rail.before_invoke(ctx)
+    assert env.manager.get("todo_modify").parallel_safe is False
+
+
+# -- 回执增强 -------------------------------------------------------------
+
+def _suffix(tctx) -> str:
+    original = str(tctx.inputs.tool_result)
+    content = tctx.inputs.tool_msg.content
+    assert content.startswith(original)  # 原回执保留在前
+    return content[len(original):]
+
+
+@pytest.mark.asyncio
+async def test_modify_receipt_appends_list_and_hint(env, caplog):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("in_progress", "pending")}, "c1")
+    tctx = await _tool(env, ictx, env.modify, "todo_modify",
+                       {"action": "update", "todos": [{"id": "t1", "status": "completed"}]}, "c2")
+    suffix = _suffix(tctx)
+    assert "当前 todo 列表：" in suffix
+    assert "- t1 [completed] task1" in suffix and "- t2 [pending] task2" in suffix
+    assert _HINTS["cn"]["start_next"] in suffix
+    assert tctx.inputs.tool_msg.tool_call_id == "c2"
+    assert isinstance(tctx.inputs.tool_result, dict)  # 界面卡片来源不变
+    await _end(env, ictx)
+    [end] = _events(caplog, "run_end")
+    assert end["receipts"] == 2 and end["receipt_chars_max"] >= len(suffix) and end["receipt_chars"] > 0
+
+
+@pytest.mark.asyncio
+async def test_create_receipt_appends_hint_only(env):
+    ictx = await _begin(env)
+    tctx = await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("in_progress", "pending")}, "c1")
+    suffix = _suffix(tctx)
+    assert "当前 todo 列表" not in suffix and _HINTS["cn"]["advance"] in suffix
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count, update, expected", [
+    # todo_create 固定把第一项设为 in_progress、其余为 pending，状态由随后的 modify 构造
+    (2, [{"id": "t1", "status": "completed"}], "start_next"),
+    (3, [{"id": "t1", "status": "completed"}, {"id": "t2", "status": "in_progress"}], "advance"),
+    (2, [{"id": "t1", "status": "completed"}, {"id": "t2", "status": "in_progress"}], "last_item"),
+    (2, [{"id": "t1", "status": "completed"}, {"id": "t2", "status": "completed"}], "all_done"),
+])
+async def test_receipt_hint_by_state(env, count, update, expected):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks(*["pending"] * count)}, "c1")
+    tctx = await _tool(env, ictx, env.modify, "todo_modify", {"action": "update", "todos": update}, "c2")
+    suffix = _suffix(tctx)
+    assert suffix.endswith(_HINTS["cn"][expected])
+
+
+def test_multiple_in_progress_is_not_last_item():
+    """todo 工具不允许多个 in_progress，但文件可能被直接改过：这时不提示"仅剩一项"。"""
+    from openjiuwen.harness.schema.task import TodoItem
+
+    from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import pick_hint
+
+    todos = [TodoItem(id=i, content=i, activeForm=i, description=i, status="in_progress") for i in ("a", "b")]
+    assert pick_hint(todos, noop=False) == "advance"
+
+
+@pytest.mark.asyncio
+async def test_receipt_hint_empty_list(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    tctx = await _tool(env, ictx, env.modify, "todo_modify", {"action": "delete", "ids": ["t1"]}, "c2")
+    assert _suffix(tctx).endswith(_HINTS["cn"]["empty"])
+
+
+@pytest.mark.asyncio
+async def test_receipt_noop_hint(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("in_progress")}, "c1")
+    tctx = await _tool(env, ictx, env.modify, "todo_modify", {"action": "delete", "ids": ["nope"]}, "c2")
+    assert _suffix(tctx).endswith(_HINTS["cn"]["noop"])
+
+
+@pytest.mark.asyncio
+async def test_failed_write_is_not_enhanced(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("in_progress")}, "c1")
+    tctx = _inner_ctx(env, ToolCallInputs(tool_call=SimpleNamespace(id="c2"), tool_name="todo_modify", tool_args={}))
+    await env.rail.before_tool_call(tctx)
+    tctx.inputs.execution_started = True
+    with pytest.raises(Exception):
+        await env.modify.invoke({"action": "update", "todos": [{"id": "nope", "status": "completed"}]},
+                                session=env.session)
+    # 工具失败：tool_result 不是成功形态，但给模型的错误回执仍在，只有成功判定能挡住增强
+    tctx.inputs.tool_result = None
+    error_msg = ToolMessage(content="Error: task not found", tool_call_id="c2")
+    tctx.inputs.tool_msg = error_msg
+    await env.rail.after_tool_call(tctx)
+    assert tctx.inputs.tool_msg is error_msg and _state(env).receipts == 1
+    assert _state(env).writes_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_change_gets_receipt_without_noop_hint(env):
+    env.todo_file.parent.mkdir(parents=True)
+    env.todo_file.write_text("{broken", encoding="utf-8")
+    ictx = await _begin(env)
+    tctx = await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("in_progress", "pending")}, "c1")
+    assert _state(env).change_unknown == 1
+    suffix = _suffix(tctx)
+    assert suffix.endswith(_HINTS["cn"]["advance"])
+
+
+@pytest.mark.asyncio
+async def test_post_write_snapshot_failure_keeps_original_receipt(env, monkeypatch):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("in_progress")}, "c1")
+    tctx = _inner_ctx(env, ToolCallInputs(tool_call=SimpleNamespace(id="c2"), tool_name="todo_modify", tool_args={}))
+    await env.rail.before_tool_call(tctx)
+    tctx.inputs.execution_started = True
+    tctx.inputs.tool_result = await env.modify.invoke(
+        {"action": "update", "todos": [{"id": "t1", "status": "completed"}]}, session=env.session)
+    original = ToolMessage(content=str(tctx.inputs.tool_result), tool_call_id="c2")
+    tctx.inputs.tool_msg = original
+
+    def _fail(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(snapshot_mod, "_read_text", _fail)
+    await env.rail.after_tool_call(tctx)
+    assert tctx.inputs.tool_msg is original and _state(env).receipts == 1
+
+
+@pytest.mark.parametrize("language, lang, header", [("cn", "cn", "当前 todo 列表："),
+                                                    ("en_US", "en", "Current todo list:")])
+def test_receipt_language_and_truncation(language, lang, header):
+    from openjiuwen.harness.schema.task import TodoItem
+
+    from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import receipt_suffix
+
+    def item(i, status, content="长" * 200):
+        return TodoItem(id=f"id{i:02d}", content=content, activeForm="x", description="x", status=status)
+
+    # 单条 content 超过 80 字截断
+    todos = [item(0, "completed"), item(1, "in_progress", "y")]
+    text = receipt_suffix("todo_modify", todos, noop=False, language=language)
+    assert header in text and "- id01 [in_progress] y" in text
+    assert "长" * 80 not in text and "长" * 79 + "…" in text
+    assert text.endswith(_HINTS[lang]["last_item"])
+    # 已结束的项省略后仍放得下：未完成项全部列出
+    todos = [item(i, "completed") for i in range(10)] + [item(10, "in_progress"), item(11, "pending")]
+    text = receipt_suffix("todo_modify", todos, noop=False, language=language)
+    assert len(text) <= 600 and "id10" in text and "id11" in text and "id00" not in text
+    # 未完成项也放不下：保留靠前的，末尾注明省略数
+    todos = [item(0, "in_progress")] + [item(i, "pending") for i in range(1, 20)]
+    text = receipt_suffix("todo_modify", todos, noop=False, language=language)
+    assert len(text) <= 600 and "id00" in text and "id19" not in text
+    assert text.endswith(_HINTS[lang]["advance"])

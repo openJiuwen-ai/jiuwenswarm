@@ -1,9 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Todo 进度度量 rail（只观测，不改变业务行为）。
+"""Todo 进度 rail：度量、todo 工具串行执行、写入回执增强。
 
-每次主 agent invoke 统计 todo 写入次数、写入前后列表是否变化、结束时各状态
-条目数，在 after_invoke 输出一条 ``[TodoProgress] run_end`` 结构化日志，用于
-计算"正常结束仍残留未完成项"的比例。
+- 度量：每次主 agent invoke 统计 todo 写入次数、写入前后列表是否变化、结束时
+  各状态条目数，在 after_invoke 输出一条 ``[TodoProgress] run_end`` 结构化日志，
+  用于计算"正常结束仍残留未完成项"的比例。
+- 串行：每次 invoke 开始时把主 agent 的 todo 工具设为不与其他工具并行
+  （todo_tool_serial），写入前后比较也不会被穿插。不依赖快照读取，rail 初始化
+  失败时照样执行。
+- 回执：todo 写入成功后，在给模型的工具消息末尾追加当前列表（todo_modify）和
+  一条下一步提示（todo_progress_receipt）；界面工具卡片取自 tool_result，不受影响。
 
 日志只记计数和结构信息，不记 todo 的 content/description/activeForm、
 用户正文或提示词。rail 自身出错时跳过当前步骤并记 ``[TodoProgress] rail_error``，
@@ -27,6 +32,7 @@ from openjiuwen.harness.schema.task import TodoItem
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import receipt_suffix
 from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import (
     TodoSnapshotError,
     error_fields,
@@ -34,12 +40,12 @@ from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import (
     snapshot_key,
     status_counts,
 )
+from jiuwenswarm.agents.harness.common.rails.todo_tool_serial import TODO_WRITE_TOOLS, serialize_todo_tools
 from jiuwenswarm.common.utils import logger
 
 _LOG_PREFIX = "[TodoProgress]"
 _SID_KEY = "__todo_progress_session_id__"
 _SESSION_PREFIX_LEN = 20
-_WRITE_TOOLS = frozenset({"todo_create", "todo_modify"})
 
 
 def _session_prefix(session_id: str) -> str:
@@ -79,6 +85,9 @@ class _RunState:
     changes: int = 0                  # 前后比较：有变化
     noops: int = 0                    # 前后比较：无变化
     change_unknown: int = 0           # 前后比较：任一侧快照不可用
+    receipts: int = 0                 # 增强过的回执条数
+    receipt_chars: int = 0            # 回执追加文本字符数累计
+    receipt_chars_max: int = 0        # 单条回执追加文本最大字符数
     had_todos: bool = False
     rail_errors: int = 0
 
@@ -91,15 +100,20 @@ class TodoProgressRail(DeepAgentRail):
     def __init__(self, *, mode: str = "agent") -> None:
         super().__init__()
         self._mode = mode
+        self._agent: Any = None
+        self._language = "cn"
         self._tool: Optional[TodoListTool] = None
         self._states: dict[str, _RunState] = {}
+        self._missing_tools_logged = False
 
     def init(self, agent: Any) -> None:
         # 与 stream_event_rail._get_todo_tool 同源：主 agent 的 todo 目录取自
         # deep_config.workspace，不取全局资源表（子 agent 会覆盖）。
+        self._agent = agent
         try:
             deep_config = agent.deep_config
             language = getattr(deep_config, "language", None) or "cn"
+            self._language = language
             self._tool = TodoListTool(
                 operation=deep_config.sys_operation,
                 workspace=str(deep_config.workspace.get_node_path(WorkspaceNode.TODO)),
@@ -137,16 +151,40 @@ class TodoProgressRail(DeepAgentRail):
     # -- 钩子 --------------------------------------------------------------
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
-        if self._tool is None or not isinstance(ctx.inputs, InvokeInputs) or ctx.session is None:
+        if not isinstance(ctx.inputs, InvokeInputs):
             return
+        state = self._begin_run(ctx)
+        try:
+            found = serialize_todo_tools(getattr(self._agent, "ability_manager", None))
+        except Exception as exc:
+            self._rail_error(state, "before_invoke", exc)
+            return
+        if found == 0:
+            self._report_missing_tools(state)
+
+    def _begin_run(self, ctx: AgentCallbackContext) -> Optional[_RunState]:
+        if self._tool is None or ctx.session is None:
+            return None
         try:
             sid = _session_id(ctx.session)
             if not sid:
-                return
-            self._states[sid] = _RunState(session_id=sid)
+                return None
+            state = _RunState(session_id=sid)
+            self._states[sid] = state
             ctx.extra[_SID_KEY] = sid
+            return state
         except Exception as exc:
             self._rail_error(None, "before_invoke", exc)
+            return None
+
+    def _report_missing_tools(self, state: Optional[_RunState]) -> None:
+        """每次执行都计入 rail_errors；日志只报一次，避免每轮刷屏。"""
+        if self._missing_tools_logged:
+            if state is not None:
+                state.rail_errors += 1
+            return
+        self._missing_tools_logged = True
+        self._rail_error(state, "before_invoke", TodoSnapshotError("missing_todo_tools"))
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
@@ -176,7 +214,7 @@ class TodoProgressRail(DeepAgentRail):
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
         inputs = ctx.inputs
-        if state is None or not isinstance(inputs, ToolCallInputs) or inputs.tool_name not in _WRITE_TOOLS:
+        if state is None or not isinstance(inputs, ToolCallInputs) or inputs.tool_name not in TODO_WRITE_TOOLS:
             return
         try:
             call_id = getattr(inputs.tool_call, "id", None) or ""
@@ -187,24 +225,27 @@ class TodoProgressRail(DeepAgentRail):
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
         inputs = ctx.inputs
-        if state is None or not isinstance(inputs, ToolCallInputs) or inputs.tool_name not in _WRITE_TOOLS:
+        if state is None or not isinstance(inputs, ToolCallInputs) or inputs.tool_name not in TODO_WRITE_TOOLS:
             return
         call_id = getattr(inputs.tool_call, "id", None) or ""
         try:
             if not inputs.execution_started:
                 return  # 被前置钩子拦下（如权限拒绝），工具没有执行，不算写入
             result = inputs.tool_result
-            if isinstance(result, dict) and isinstance(result.get("message"), str):
+            succeeded = isinstance(result, dict) and isinstance(result.get("message"), str)
+            if succeeded:
                 state.writes_ok += 1
             else:
                 state.writes_failed += 1
             try:
-                after = snapshot_key(await self._read(state))
+                todos = await self._read(state)
             except Exception as exc:
                 self._rail_error(state, "after_tool_call", exc)
                 state.change_unknown += 1
-                return
+                return  # 写入后快照不可用：保留工具原回执
+            after = snapshot_key(todos)
             before = state.pre_write.get(call_id)
+            noop = False
             if before is None:
                 state.change_unknown += 1  # 写入前快照不可用，不能拿空列表代替
             elif before != after:
@@ -212,10 +253,25 @@ class TodoProgressRail(DeepAgentRail):
                 state.changed_this_iter = True
             else:
                 state.noops += 1
+                noop = True
+            if succeeded:
+                self._enhance_receipt(inputs, state, todos, noop=noop)
         except Exception as exc:
             self._rail_error(state, "after_tool_call", exc)
         finally:
             state.pre_write.pop(call_id, None)
+
+    def _enhance_receipt(self, inputs: ToolCallInputs, state: _RunState, todos: list[TodoItem], *, noop: bool) -> None:
+        tool_msg = inputs.tool_msg
+        content = getattr(tool_msg, "content", None)
+        if tool_msg is None or not isinstance(content, str) or not hasattr(tool_msg, "model_copy"):
+            return
+        suffix = receipt_suffix(inputs.tool_name, todos, noop=noop, language=self._language)
+        # 只改给模型的工具消息（保留 tool_call_id）；界面卡片取自 tool_result，不受影响
+        inputs.tool_msg = tool_msg.model_copy(update={"content": content + suffix})
+        state.receipts += 1
+        state.receipt_chars += len(suffix)
+        state.receipt_chars_max = max(state.receipt_chars_max, len(suffix))
 
     async def after_react_iteration(self, ctx: AgentCallbackContext) -> None:
         state = self._state(ctx)
@@ -266,6 +322,9 @@ class TodoProgressRail(DeepAgentRail):
             "changes": state.changes,
             "noops": state.noops,
             "change_unknown": state.change_unknown,
+            "receipts": state.receipts,
+            "receipt_chars": state.receipt_chars,
+            "receipt_chars_max": state.receipt_chars_max,
             "iteration": state.iteration,
             "iters_since_change": state.iteration - state.last_change_iter,
             "rail_errors": state.rail_errors,

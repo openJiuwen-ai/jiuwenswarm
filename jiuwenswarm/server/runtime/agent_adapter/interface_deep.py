@@ -5093,7 +5093,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
     @staticmethod
     def _build_todo_progress_rail(mode: str = "agent") -> TodoProgressRail | None:
-        """Build TodoProgressRail（主 agent 的 todo 进度度量，只观测）。"""
+        """Build TodoProgressRail（主 agent 的 todo 进度度量、todo 工具串行与写入回执）。"""
         try:
             return TodoProgressRail(mode=mode)
         except Exception as exc:
