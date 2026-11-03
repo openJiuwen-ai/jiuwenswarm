@@ -402,8 +402,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
     // The selected member's group stays expanded so its lane never disappears
     // behind a collapse the toggle cannot undo.
-    const expanded = expandedGroups.has(group.runId)
-      || group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
+    const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
+    const expanded = expandedGroups.has(group.runId) || selected;
     const toggle = () => {
       setExpandedGroups((current) => {
         const next = new Set(current);
@@ -416,7 +416,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
       <div
         key={group.runId}
         role="listitem"
-        className={css.workflowGroup}
+        className={`${css.workflowGroup} ${selected ? css.workflowGroupSelected : ''}`}
         data-testid="team-trajectory-workflow-group"
         data-variant={group.runId}
         data-status={group.status}
