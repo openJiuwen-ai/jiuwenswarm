@@ -176,7 +176,7 @@ def configure(settings):
         environment["JIUWENSWARM_DATA_DIR"] = str(data)
     fresh = not config.exists()
     if fresh:
-        subprocess.run([str(Path(settings["python"]).parent / "jiuwenswarm-init")],
+        subprocess.run([settings["python"], "-m", "jiuwenswarm.init_workspace"],
                        env=environment, stdin=subprocess.DEVNULL, check=True)
         if options.get("base_config"):
             write_yaml(config, read_yaml(options["base_config"]))

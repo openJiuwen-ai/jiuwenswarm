@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -81,3 +82,42 @@ def test_explicit_platform_configuration(settings, monkeypatch):
     actual = deploy.read_yaml(config)['gateway']['agentos']
     assert actual['registry']['endpoint'] == 'http://registry'
     assert actual['auth_enabled'] is True
+
+
+@pytest.mark.parametrize('exit_code', [0, 17])
+def test_initialization_uses_configured_python_without_console_script(settings, tmp_path, monkeypatch, exit_code):
+    package = tmp_path / 'modules/jiuwenswarm'
+    package.mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    (package / 'init_workspace.py').write_text(
+        'import os, sys\nfrom pathlib import Path\n'
+        'home = Path(os.environ["JIUWENSWARM_HOME"])\n'
+        'with (home / "init-calls").open("a") as stream: stream.write("called\\n")\n'
+        f'if {exit_code}: sys.exit({exit_code})\n'
+        'config = home / ".jiuwenswarm/config/config.yaml"\n'
+        'config.parent.mkdir(parents=True, exist_ok=True)\n'
+        'config.write_text(\'{"models": [{"name": "retained-model"}]}\')\n'
+    )
+    # No console script exists beside this interpreter or on PATH.
+    interpreter = tmp_path / 'python-only/python'
+    interpreter.parent.mkdir()
+    interpreter.symlink_to(sys.executable)
+    settings['python'] = str(interpreter)
+    monkeypatch.setenv('PATH', str(interpreter.parent))
+    monkeypatch.setenv('PYTHONPATH', str(package.parent))
+    monkeypatch.delenv('JIUWENSWARM_DATA_DIR', raising=False)
+    monkeypatch.setattr(deploy, 'check_business', lambda settings: None)
+    sentinel = tmp_path / 'history.db'
+    sentinel.write_bytes(b'retained-history')
+    if exit_code:
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            deploy.configure(settings)
+        assert error.value.returncode == exit_code
+        assert not (deploy.data_directory(settings) / 'config/.env').exists()
+    else:
+        deploy.configure(settings)
+        deploy.configure(settings)
+        assert deploy.read_yaml(deploy.data_directory(settings) / 'config/config.yaml')['models'] == [
+            {'name': 'retained-model'}]
+    assert (tmp_path / 'init-calls').read_text() == 'called\n'
+    assert sentinel.read_bytes() == b'retained-history'
