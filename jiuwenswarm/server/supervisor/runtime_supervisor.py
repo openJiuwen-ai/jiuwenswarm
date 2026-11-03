@@ -1517,12 +1517,12 @@ class RuntimeSupervisor:
         import psutil
         worker_pid, worker_create_time = self._worker_pid, self._worker_create_time
         if worker_pid is None or worker_create_time is None:
-            return
+            return False
         try:
             process = psutil.Process(worker_pid)
             if process.create_time() != worker_create_time:
                 if self._ignore_reused_attached_pid():
-                    return
+                    return False
                 raise RuntimeError("Worker PID identity changed during final exit")
             if terminate:
                 process.terminate()
@@ -1532,7 +1532,7 @@ class RuntimeSupervisor:
             except psutil.TimeoutExpired as exc:
                 if process.create_time() != worker_create_time:
                     if self._ignore_reused_attached_pid():
-                        return
+                        return False
                     raise RuntimeError("Worker PID identity changed during final exit") from exc
                 logger.error("[Supervisor] Worker final exit timed out; forcing validated process termination")
                 process.kill()

@@ -112,8 +112,8 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
                 hello = await asyncio.wait_for(connection.recv(), max(.001, deadline - time.monotonic()))
                 if legacy_worker_pid is not None and hello.get("pid") != legacy_worker_pid:
                     continue
-                if (path != paths[0] and legacy_worker_pid is None and isinstance(hello, dict)
-                        and hello.get("deployment_scope") is not None):
+                historical_endpoint = path != paths[0] and legacy_worker_pid is None
+                if historical_endpoint and isinstance(hello, dict) and hello.get("deployment_scope") is not None:
                     from jiuwenswarm.server.supervisor.identity import deployment_scope
 
                     if hello["deployment_scope"] != deployment_scope():

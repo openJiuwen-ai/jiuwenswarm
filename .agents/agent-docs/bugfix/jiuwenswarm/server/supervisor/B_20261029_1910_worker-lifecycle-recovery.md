@@ -75,6 +75,23 @@ design_note: 修复已确认的常驻与最终退出契约及回退前暴露的�
 
 Windows 扩展回归初轮为 9948 passed、23 skipped、64 failed、6 errors。适配正式故障注入入口、补齐上游声明但冻结锁文件缺失的 minio / runtime-foundation 验证依赖，并限制测试进程的 OpenBLAS 线程后，逐项重验原失败/错误及新增主干路径断言：同条件未修改主干与候选均为 54 failed、6 passed，未增加失败；11 项真实进程故障用例已在生产入口复测通过。残留涉及 Windows 路径、符号链接权限、POSIX 文件描述符等已有行为，不能把这一扩展范围报告为全部通过。独立核心回归为 325 passed、1 skipped；故障撤除后默认冷却实测约 31.2 秒自动恢复，不需要 reload。当前 PR 描述记录后续提交的补充验证与成品验证。
 
+## 2026-11-03 CodeCheck 与问题覆盖复核
+
+按未解决项导出逐条修正四项：`identity.py` 与 `resident_lifecycle.py` 拆分超长行；`shutdown.py` 提取历史端点判断，保留原有归属条件；`_reap_validated_worker()` 的三个提前返回统一为 `False`，表示没有执行强制退出。没有改变终端退出策略。
+
+在 `e4441b4562ce36cbc2b992a5f155e61eb26e5f04` 加上述修正的 Windows 候选上执行相关回归，结果为 282 passed、8 skipped、2 failed。两项 `test_process_supervision.py` 的 POSIX 信号模拟失败，在同条件未修改主干 `dee257a66cba61c9d7b61236b2e6804aee9ee222` 均复现：Windows SIGABRT 编号不同及缺少 SIGKILL。首轮另一项历史 Worker HELLO 在 5 秒等待处超时，独立复测和后续整组均通过；首次 Worker stderr 未保留，不能确定该次超时根因。本地未运行静态检查工具，导出项修正与云端 CodeCheck 通过是不同结论。
+
+#5954 的独立真实进程对照使用原始协议 1 Worker、停止入口、隔离数据与 debug 状态目录，Agent Runtime 使用 stub：
+
+- 回退前基线 `3e97637a2ebc56d9bbcaff483d9a5193e3c911d4` 首次 stop 返回 1 却丢失状态，第二次返回 0 且 Worker 仍存活，新启动报 `legacy Worker migration failed`。
+- 当前候选两次拒绝自动处置无部署身份旧 Worker，均返回 1 且保留状态；新部署在独立端点达到 AGENT_READY。错误 PID 不获得清理权，指定实际历史 PID 后确认旧进程退出。普通 stop 随后关闭当前 Worker 并清除状态，再启动产生新 PID 且达到 AGENT_READY。所有探针进程结束后均确认退出。
+
+这验证了 #5954 已定位的迁移阻断和停止误报链路；没有将“新部署能启动”解释为“自动清除了无法确认归属的旧 Python 进程”。
+
+[#6063](https://gitcode.com/openJiuwen/jiuwenswarm/issues/6063) 声明环境为 openEuler / 0.2.8release，描述 Ctrl+C 后残留导致不能重启。附件只有 `runtime worker closed` UI 提示，缺少残留进程身份、启动命令及 Worker stderr；原现场首次触发原因尚未复现。按用户确认，先验证本机可执行的进程与退出链路：实际 AgentServer `_run()` 和 Supervisor/Worker 配合替代网络 Front，注入 Worker FAILED readiness，再调用应用注册的 SIGINT 回调。develop 当前候选及 0.2.8 修复候选 `eee69a64dd4ad7483583743462fc488549320edb` 均出现 Worker 保留、下次启动复用同一 PID 并保持 FAILED。最后经显式关闭入口清理，确认没有探针 Worker 残留。
+
+因此，本修复不能声明解决 #6063：AgentServer 收尾仍使用默认 detach；`start_services`、`app` 的终端收尾也未覆盖常驻 Worker 的最终退出。Windows 回调验证不等于原生 SIGINT，更不能代替 openEuler 验收。普通 Front 重启保持常驻仍是有效契约；终端最终退出需要另行区分，并覆盖多实例归属和重启行为后再验收。
+
 ## 遗留与重验条件
 
 原生 DMG/EXE 的真实打包退出及升级，需要对应平台使用该 PR 当前提交构建后复验。#5964 原机器的物理内存/SDK 初始化触发原因仍需要同进程时间线与系统事件证据；本修复覆盖已复现的日志 sink 阻塞风险和不可自行恢复的状态机。

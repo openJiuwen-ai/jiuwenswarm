@@ -1,12 +1,12 @@
 ---
 title: 设计文档索引
-author: 鍒樼憸
+author: 刘瑜
 author_email: liuyu524@huawei.com
 generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-03T18:01+08:00 -->
+<!-- generated-at: 2026-11-03T20:06+08:00 -->
 
 # 设计文档索引 (INDEX)
 

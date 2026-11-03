@@ -22,7 +22,11 @@ def _deployment_path() -> str:
 
 def deployment_scope() -> str:
     """A stable installation/environment owner, independent of its build ID."""
-    environment_path = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(sys.prefix).resolve()
+    environment_path = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(sys.prefix).resolve()
+    )
     environment = os.path.normcase(str(environment_path))
     owner = f"{_deployment_path()}\0{environment}\0{data_scope()}"
     instance = os.environ.get("JIUWENSWARM_RUNTIME_INSTANCE", "").strip() or os.environ.get("HOSTNAME", "").strip()

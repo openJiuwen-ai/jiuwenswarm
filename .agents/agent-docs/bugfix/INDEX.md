@@ -1,6 +1,6 @@
 ---
 title: 故障修复 B索引
-author: 鍒樼憸
+author: 刘瑜
 author_email: liuyu524@huawei.com
 generated: true
 ---

@@ -42,7 +42,13 @@ async def startup_lock(socket_path: str, deadline: float):
         lock.release()
 
 
-def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False, expected_pid: int | None = None) -> tuple[psutil.Process, float]:
+def worker_process(
+    hello: dict,
+    socket_path: str,
+    *,
+    allow_legacy: bool = False,
+    expected_pid: int | None = None,
+) -> tuple[psutil.Process, float]:
     """Establish ownership from the OS as well as the peer's HELLO fields."""
     if not isinstance(hello, dict) or hello.get("kind") != "hello" or hello.get("protocol") not in (1, 2):
         raise RuntimeError("Worker lifecycle refused an unknown IPC protocol")
