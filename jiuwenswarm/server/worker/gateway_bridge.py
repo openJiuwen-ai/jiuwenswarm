@@ -38,9 +38,9 @@ class ConnHolder:
         self.generation = 0
         self.last_readiness: dict[str, Any] | None = None
 
-    def open_session(self, conn: IpcConnection) -> int:
+    def open_session(self, conn: IpcConnection, *, generation: int | None = None) -> int:
         """Bind a new supervisor connection and return its generation."""
-        self.generation += 1
+        self.generation = self.generation + 1 if generation is None else generation
         self.conn = conn
         return self.generation
 

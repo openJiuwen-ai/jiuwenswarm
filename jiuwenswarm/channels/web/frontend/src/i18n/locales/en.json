@@ -1214,8 +1214,10 @@
         "collapse": "Collapse dispatch control",
         "expand": "Expand dispatch control",
         "summary": "{{tasks}} tasks · {{completed}} completed · {{reviews}} reviews · {{reworks}} reworks",
-        "controlRecords": "{{count}} main control records",
+        "controlRecords": "{{count}} control records",
         "anomalies": "{{count}} dispatch anomalies",
+        "blockedLegend": "Light gray: waiting on dependencies",
+        "blockedLegendHint": "A light gray segment means the task is waiting for prerequisite tasks and will continue when its dependencies clear.",
         "assignee": "Assignee",
         "unassigned": "Unassigned",
         "unknownMember": "Unknown member",
@@ -1225,6 +1227,7 @@
         "reviewCount_other": "{{count}} Reviews",
         "phase": {
           "pending": "Pending",
+          "blocked": "Waiting on dependencies",
           "running": "Running",
           "in_review": "In review",
           "rework": "Rework",
@@ -5480,6 +5483,7 @@
       "readonly": "Read-only"
     },
     "artifact": {
+      "noHarnessSnapshot": "No Harness package has been generated for this node yet",
       "empty": "No artifact files",
       "loadFailed": "Failed to load artifacts",
       "selectFile": "Select a file",

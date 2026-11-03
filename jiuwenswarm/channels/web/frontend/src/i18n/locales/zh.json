@@ -1154,8 +1154,10 @@
         "collapse": "收起调度控制",
         "expand": "展开调度控制",
         "summary": "{{tasks}} 个任务 · {{completed}} 个完成 · {{reviews}} 次 Review · {{reworks}} 次返工",
-        "controlRecords": "{{count}} 条 main 调度记录",
+        "controlRecords": "{{count}} 条调度记录",
         "anomalies": "{{count}} 个调度异常",
+        "blockedLegend": "浅灰段：等待依赖",
+        "blockedLegendHint": "浅灰时间轴表示任务正在等待前置任务完成，依赖解除后会继续执行。",
         "assignee": "承担者",
         "unassigned": "未指派",
         "unknownMember": "未知成员",
@@ -1165,6 +1167,7 @@
         "reviewCount_other": "{{count}} 次评审",
         "phase": {
           "pending": "待处理",
+          "blocked": "等待依赖",
           "running": "执行中",
           "in_review": "验收中",
           "rework": "返工中",
@@ -5418,6 +5421,7 @@
     },
     "artifact": {
       "empty": "暂无产物文件",
+      "noHarnessSnapshot": "该节点尚未生成 Harness 包",
       "loadFailed": "产物加载失败",
       "selectFile": "请选择文件",
       "copied": "已复制",
