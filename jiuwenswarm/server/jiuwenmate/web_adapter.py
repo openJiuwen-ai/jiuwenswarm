@@ -31,6 +31,7 @@ from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.model_refresh import ModelRefreshQueue
+from jiuwenswarm.server.jiuwenmate.output_files import WorkspaceOutputFiles
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
@@ -84,6 +85,7 @@ _RUNTIME_METHODS = frozenset(
     {
         ReqMethod.JIUWENMATE_CHAT_SEND.value,
         ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
+        ReqMethod.JIUWENMATE_ARTIFACT_LIST.value,
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
         ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
         ReqMethod.JIUWENMATE_PERMISSION_DECIDE.value,
@@ -557,6 +559,14 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             self._stream.watch(agent_id, request)
 
     async def _run(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        if method == ReqMethod.JIUWENMATE_ARTIFACT_LIST.value:
+            service = await asyncio.to_thread(self._colleagues)
+            agent_id = _text_param(params, "agent_id")
+            await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, agent_id)
+            files = await asyncio.to_thread(
+                WorkspaceOutputFiles(service.workspaces).list_artifacts, WEB_NAMESPACE, agent_id
+            )
+            return {"files": files}
         manager = await self._runtime()
         conversations = self._conversations
         if method.startswith("jiuwenmate.welink_office."):

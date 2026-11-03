@@ -69,6 +69,10 @@ async function renderWorkspace(overrides = {}, initialWebConversations = []) {
   let currentColleague = { ...colleague, ...overrides };
   const calls = [];
   const chat = {
+    listArtifacts: async (agentId) => {
+      calls.push(['artifacts', agentId]);
+      return state.artifacts?.[agentId] ?? [];
+    },
     listConversations: async (agentId) => {
       calls.push(['list', agentId]);
       if (state.listGate) await state.listGate;
@@ -282,6 +286,23 @@ test('unpublished persona or skills do not mark the unchanged model pending or r
   } finally {
     await page.close();
   }
+});
+
+test('artifact panel shows existing outputs from Web and IM sessions with empty chat history', async () => {
+  const page = await renderWorkspace();
+  try {
+    page.state.artifacts = {
+      'config-web': [{ outputId: 'existing-md', name: '已有知识摘要.md', path: 'sessions/old/output/已有知识摘要.md', size: 20 }],
+      'runtime-feishu': [{ outputId: 'existing-docx', name: '已有报告.docx', path: 'sessions/group/output/已有报告.docx', size: 40 }],
+    };
+    await act(async () => page.container.querySelector('[data-testid="jiuwenmate-open-artifacts-panel"]').click());
+    await page.flush();
+    const items = [...page.container.querySelectorAll('[data-testid="jiuwenmate-artifact-item"]')];
+    assert.equal(items.length, 2);
+    assert.ok(items.some((item) => item.textContent.includes('已有知识摘要.md')));
+    assert.ok(items.some((item) => item.textContent.includes('已有报告.docx')));
+    assert.equal(page.calls.filter(([kind]) => kind === 'artifacts').length, 3);
+  } finally { await page.close(); }
 });
 
 test('a Web result found while an IM workspace is chosen is offered, and messages still go to the IM agent', async () => {
