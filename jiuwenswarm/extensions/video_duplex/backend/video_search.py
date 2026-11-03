@@ -11,7 +11,7 @@ import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
 
-from .tasks.prompts import build_brief_prompt, build_execution_prompt
+from .tasks.prompts import brief_markers, brief_pattern, build_brief_prompt, build_execution_prompt, strip_brief
 
 logger = logging.getLogger(__name__)
 VIDEO_TOOL_CHANNEL_ID = "video_tool"
@@ -29,13 +29,6 @@ MAX_DELEGATION_RESULT_CHARS = 2_400
 MAX_REALTIME_BRIEF_CHARS = 180
 
 
-def _brief_markers(nonce: str) -> tuple[str, str]:
-    return (
-        f"[[JIUWEN_BRIEF_BEGIN:{nonce}]]",
-        f"[[JIUWEN_BRIEF_END:{nonce}]]",
-    )
-
-
 def full_answer_language_rule() -> str:
     """Language for the visible Core Agent answer; same source as the spoken receipt."""
     from jiuwenswarm.extensions.video_duplex.backend import settings
@@ -49,7 +42,7 @@ def full_answer_language_rule() -> str:
 
 def core_agent_brief_protocol(nonce: str) -> str:
     from . import settings, joyai_provider
-    begin, end = _brief_markers(nonce)
+    begin, end = brief_markers(nonce)
     language_rule = joyai_provider.response_language_instruction(settings.tool_language())
     return (
         f"\n\n{full_answer_language_rule()}\n{language_rule}"
@@ -124,15 +117,8 @@ def present_core_agent_result(
     tools_used: list[str] | None = None,
 ) -> dict[str, Any]:
     """Split Core Agent output into authoritative UI content and a safe spoken brief."""
-    begin, end = _brief_markers(nonce)
-    pattern = re.compile(
-        rf"(?:\r?\n)*{re.escape(begin)}\s*(.*?)\s*{re.escape(end)}(?:\r?\n)*",
-        re.DOTALL,
-    )
-    match = pattern.search(raw_answer)
-    display_result = pattern.sub("\n", raw_answer, count=1).strip()
-    if not display_result:
-        display_result = raw_answer.strip()
+    match = brief_pattern(nonce).search(raw_answer)
+    display_result = strip_brief(raw_answer, nonce).strip()
     kind = _result_kind(question, display_result, tools_used or [])
     model_brief = _safe_brief(match.group(1)) if match else ""
     if model_brief:
