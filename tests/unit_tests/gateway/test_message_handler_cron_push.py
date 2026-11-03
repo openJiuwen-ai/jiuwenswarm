@@ -15,19 +15,25 @@ class _CapturingCronController:
     def __init__(self) -> None:
         self.create_params: dict | None = None
         self.update_patch: dict | None = None
+        self.list_kwargs: dict | None = None
         self.user_id = ""
+        self.list_jobs_result: list[dict] = []
 
     async def create_job(self, params: dict) -> dict:
         self.create_params = dict(params)
         return {"id": "job-1"}
 
-    async def get_job(self, job_id: str) -> dict:
+    async def get_job(self, job_id: str, **_kwargs) -> dict:
         return {"id": job_id, "user_id": self.user_id}
 
-    async def update_job(self, job_id: str, patch: dict) -> dict:
+    async def update_job(self, job_id: str, patch: dict, **_kwargs) -> dict:
         _ = job_id
         self.update_patch = dict(patch)
         return {"id": "job-1"}
+
+    async def list_jobs(self, **kwargs) -> list[dict]:
+        self.list_kwargs = dict(kwargs)
+        return list(self.list_jobs_result)
 
 
 class _RunNowCronController:
@@ -35,12 +41,12 @@ class _RunNowCronController:
         self.run_calls = 0
         self.user_id = ""
 
-    async def run_now(self, job_id: str) -> str:
+    async def run_now(self, job_id: str, **_kwargs) -> str:
         _ = job_id
         self.run_calls += 1
         return "job-1:1710000000"
 
-    async def get_job(self, job_id: str) -> dict:
+    async def get_job(self, job_id: str, **_kwargs) -> dict:
         return {"id": job_id, "user_id": self.user_id}
 
 
@@ -124,6 +130,173 @@ async def test_agentos_cron_push_marks_remote_project_binding_verified() -> None
 
 
 @pytest.mark.asyncio
+async def test_cron_push_create_replaces_default_tenant_with_chat_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """对话工具把空身份 normalize 成 default 时，Gateway 用原始 chat routing 盖回。"""
+    controller = _CapturingCronController()
+    handler = _bare_handler(object(), controller)
+    handler._stream_metadata["req-1"] = {
+        "user_id": "u-1",
+        "routing": {
+            "group_id": "g-real",
+            "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
+        },
+    }
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+
+    await handler._handle_cron_push_payload(
+        payload={
+            "action": "create",
+            "data": {
+                "name": "job",
+                "group_id": "default",
+                "bot_id": "default",
+                "user_id": "forged-tool-user",
+            },
+        },
+        request_id="req-1",
+        channel_id="web",
+        session_id="sess-1",
+        metadata=None,
+        user_id="u-1",
+    )
+
+    assert controller.create_params is not None
+    assert controller.create_params["user_id"] == "u-1"
+    assert controller.create_params["group_id"] == "g-real"
+    assert (
+        controller.create_params["bot_id"]
+        == "06b75225-753d-40be-b23c-a13de9038734"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_push_create_overwrites_forged_tenant_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create 必须硬覆盖 LLM 幻觉的他人 group/bot，禁止跨租户落库。"""
+    controller = _CapturingCronController()
+    handler = _bare_handler(object(), controller)
+    handler._stream_metadata["req-1"] = {
+        "user_id": "u-1",
+        "routing": {
+            "group_id": "g-real",
+            "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
+        },
+    }
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+
+    await handler._handle_cron_push_payload(
+        payload={
+            "action": "create",
+            "data": {
+                "name": "job",
+                "group_id": "g-other-tenant",
+                "bot_id": "b-other-tenant",
+                "user_id": "forged-tool-user",
+            },
+        },
+        request_id="req-1",
+        channel_id="web",
+        session_id="sess-1",
+        metadata=None,
+        user_id="u-1",
+    )
+
+    assert controller.create_params is not None
+    assert controller.create_params["user_id"] == "u-1"
+    assert controller.create_params["group_id"] == "g-real"
+    assert (
+        controller.create_params["bot_id"]
+        == "06b75225-753d-40be-b23c-a13de9038734"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_push_list_fills_tenant_from_chat_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cron_list_jobs 工具参数为空时，须用 chat routing 的 group/bot 筛选企业任务。"""
+    controller = _CapturingCronController()
+    controller.list_jobs_result = [
+        {
+            "id": "job-舆情",
+            "user_id": "zxy",
+            "group_id": "255e57a7-8968-43d2-a9d0-b6b96394cfaf",
+            "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
+            "name": "市场舆情追踪",
+        }
+    ]
+    handler = _bare_handler(object(), controller)
+    handler._stream_metadata["req-list"] = {
+        "user_id": "zxy",
+        "routing": {
+            "group_id": "255e57a7-8968-43d2-a9d0-b6b96394cfaf",
+            "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
+        },
+    }
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    handler._push_cron_command_ack = AsyncMock()
+
+    await handler._handle_cron_push_payload(
+        payload={"action": "list", "data": {}, "command_id": "cmd-list-1"},
+        request_id="req-list",
+        channel_id="web",
+        session_id="web_sess_1",
+        metadata=None,
+        user_id="zxy",
+    )
+
+    assert controller.list_kwargs is not None
+    assert controller.list_kwargs["user_id"] == "zxy"
+    assert (
+        controller.list_kwargs["group_id"]
+        == "255e57a7-8968-43d2-a9d0-b6b96394cfaf"
+    )
+    assert (
+        controller.list_kwargs["bot_id"]
+        == "06b75225-753d-40be-b23c-a13de9038734"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_push_list_fills_tenant_from_wire_owner_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stream metadata 无 routing 时，用 Agent push 的 owner group/bot 筛企业任务。"""
+    controller = _CapturingCronController()
+    controller.list_jobs_result = [{"id": "job-1", "user_id": "zxy", "name": "x"}]
+    handler = _bare_handler(object(), controller)
+    handler._stream_user_ids["req-wire"] = "zxy"
+    handler._push_cron_command_ack = AsyncMock()
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+
+    wire = build_server_push_wire(
+        {
+            "request_id": "req-wire",
+            "channel_id": "web",
+            "session_id": "sess-1",
+            "response_kind": "cron",
+            "metadata": {
+                "_jiuwenswarm_cron_owner_user_id": "zxy",
+                "_jiuwenswarm_cron_owner_group_id": "g-from-wire",
+                "_jiuwenswarm_cron_owner_bot_id": "b-from-wire",
+            },
+            "body": {"action": "list", "status": "ok", "data": {}, "command_id": "c1"},
+        }
+    )
+    await handler._handle_agent_server_push(wire)
+
+    assert controller.list_kwargs is not None
+    assert controller.list_kwargs["group_id"] == "g-from-wire"
+    assert controller.list_kwargs["bot_id"] == "b-from-wire"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["create", "update"])
 @pytest.mark.parametrize("is_stream", [True, False])
 async def test_cron_push_uses_original_request_login_session(action, is_stream) -> None:
@@ -170,17 +343,18 @@ async def test_cron_push_without_request_login_rejects_supplied_session(action) 
 
 @pytest.mark.asyncio
 async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, monkeypatch) -> None:
-    from jiuwenswarm.common.auth.model_catalog import LoginModel
+    from gateway.auth import model_catalog as _model_catalog
+    from gateway.auth.model_catalog import LoginModel
     from gateway.cron.controller import CronController
     from gateway.cron.store import CronJobStore
 
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_config", lambda *a, **k: None)
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_config", lambda *a, **k: None)
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries", lambda: []
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *a, **k: [LoginModel(model_name="GLM-5.2", display_name="GLM-5.2")],
     )
 
@@ -194,9 +368,9 @@ async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, 
         assert user_id == "huawei-openid"
         return credential_ref
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.service.live_session", live_session)
+    monkeypatch.setattr("gateway.auth.service.live_session", live_session)
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.login_credentials.credential_ref_for_user",
+        "gateway.auth.login_credentials.credential_ref_for_user",
         credential_ref_for_user,
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
@@ -337,8 +511,8 @@ async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> Non
         "metadata": {"_jiuwenswarm_cron_owner_user_id": "user-a"},
         "body": {"command_id": "cmd-1", "action": "list", "status": "ok", "data": {}},
     })
-    async def _list_jobs(user_id=None) -> list[dict]:
-        assert user_id == "user-a"
+    async def _list_jobs(**kwargs) -> list[dict]:
+        assert kwargs.get("user_id") == "user-a"
         return []
 
     controller.list_jobs = _list_jobs

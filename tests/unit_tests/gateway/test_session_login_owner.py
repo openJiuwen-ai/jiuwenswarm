@@ -20,7 +20,7 @@ REF = "a" * 32
 
 @pytest.fixture(autouse=True)
 def _owners_in_tmp(monkeypatch, tmp_path):
-    monkeypatch.setattr("jiuwenswarm.common.auth.session_store.auth_dir", lambda: tmp_path)
+    monkeypatch.setattr("gateway.auth.session_store.auth_dir", lambda: tmp_path)
     session_owners.reset_for_test()
     yield
     session_owners.reset_for_test()
@@ -74,14 +74,14 @@ def test_feishu_reply_uses_the_session_owners_credentials(monkeypatch):
 
 
 def test_owner_auth_uses_the_existing_refresh_path(monkeypatch):
-    from jiuwenswarm.common.auth.model_catalog import LoginModel
+    from gateway.auth.model_catalog import LoginModel
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel("GLM-5.2", "GLM-5.2")],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.apig.resolve_apig_config",
+        "gateway.auth.apig.resolve_apig_config",
         lambda allow_refresh=True: SimpleNamespace(invoke_base_url="https://apig/v1"),
     )
     fresh = {"credential_ref": REF, "api_key": "id-new"}

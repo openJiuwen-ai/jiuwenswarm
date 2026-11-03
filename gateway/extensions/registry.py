@@ -7,19 +7,20 @@ from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 from gateway.extensions.callback_compat import unregister_callback_sync
 from gateway.extensions.sdk.crypto_utility import CryptoUtility
 from gateway.extensions.types import ExtensionConfig
-from jiuwenswarm.common.security import base_crypto
-from jiuwenswarm.common.security.base_crypto import CryptoProvider
+from gateway.extensions import base_crypto
+from gateway.extensions.base_crypto import CryptoProvider
 
 if TYPE_CHECKING:
+    from gateway.common.client.agent_client import AgentServerClient
+    from gateway.common.client.third_agent import ThirdAgent
     from gateway.extensions.sdk.agent_server_client import (
         AgentServerClientExtension,
     )
     from gateway.extensions.sdk.application_plugin import (
         ApplicationPluginExtension,
     )
+    from gateway.extensions.sdk.skill_source import SkillSourceExtension
     from gateway.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.common.client.agent_client import AgentServerClient
-    from jiuwenswarm.common.client.third_agent import ThirdAgent
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.
@@ -28,6 +29,8 @@ else:
     ThirdAgentExtension = Any
     AgentServerClient = Any
     ThirdAgent = Any
+    # Skill Source SPI 与上方扩展基类同属 gateway，运行期仍不导入扩展框架。
+    SkillSourceExtension = Any
 
 
 class _RegistryCryptoBridge:
@@ -95,6 +98,8 @@ class ExtensionRegistry:
         self._crypto_tool: CryptoUtility | None = None
         self._third_agent: ThirdAgentExtension | None = None
         self._application_plugins: dict[str, ApplicationPluginExtension] = {}
+        # provider_type → SkillSourceExtension factory (Skill Source SPI v2)
+        self._skill_source_extensions: dict[str, SkillSourceExtension] = {}
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -149,6 +154,33 @@ class ExtensionRegistry:
         if plugin_id in self._application_plugins:
             raise ValueError(f"application plugin already registered: {plugin_id}")
         self._application_plugins[plugin_id] = extension
+
+    def register_skill_source_extension(
+        self,
+        extension: SkillSourceExtension,
+    ) -> None:
+        """Register a Skill Source factory keyed by ``provider_type``."""
+        provider_type = str(getattr(extension, "provider_type", "") or "").strip()
+        if not provider_type:
+            raise ValueError("skill source provider_type must not be empty")
+        if provider_type in self._skill_source_extensions:
+            raise ValueError(
+                f"skill source provider_type already registered: {provider_type}"
+            )
+        self._skill_source_extensions[provider_type] = extension
+
+    def list_skill_source_extensions(self) -> list[SkillSourceExtension]:
+        """Return registered Skill Source factories (order is insertion order)."""
+        return list(self._skill_source_extensions.values())
+
+    def get_skill_source_extension(
+        self,
+        provider_type: str,
+    ) -> SkillSourceExtension | None:
+        key = str(provider_type or "").strip()
+        if not key:
+            return None
+        return self._skill_source_extensions.get(key)
 
     def get_application_plugins(self) -> tuple[ApplicationPluginExtension, ...]:
         return tuple(self._application_plugins.values())

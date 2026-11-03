@@ -408,3 +408,27 @@ Agent → 网关 → 客户端的**每一条**出站记录（含流式多帧）�
 
 - [返回文档首页](../README.md)
 - [返回项目首页](../../README_CN.md)
+
+## 管理端 Hub 专家目录查询
+
+该目录仅包含 Hub 专家模板包（`agent_template`）和专家团队包（`agent_group`），供管理员配置授权。
+不包含 plugin、MCP 或本地安装包，也不按用户白名单过滤。已有包目录/生命周期接口族
+（包含 `agent_groups.*`、`agent_templates.*` 和 plugin 包查询）继续负责用户侧包发现与操作，
+保留其本地状态及权限语义。两族接口按“管理端授权候选目录”与“用户侧包发现/生命周期”
+划分用途，不是按互不重叠的包类型划分。
+
+企业管理接口 `GET /api/v1/package-allowlists/catalog` 通过无会话 E2A 方法
+`hub.expert_packages.catalog` 查询 Server；对应 Server HTTP 路径为
+`GET /api/v1/hub/expert-packages/catalog`。请求参数为空，无需用户或会话，不进行 Runtime
+会话分配，也不初始化 Agent 执行。Server 复用现有 Hub 查询、分页、缓存和去重逻辑；
+Gateway 保留管理链路鉴权及固定隐藏包过滤，不再导入 Server 的查询实现。
+
+企业 runtime 客户端使用 `GATEWAY_RUNTIME_DEFAULT_HTTP_BASE` 指定默认 Server；
+未配置时按既有规则使用 `AGENT_SERVER_HOST`（默认 `127.0.0.1`）与
+`AGENT_HTTP_PORT`（默认 `8766`）。分机部署应设置可访问的 Server HTTP 地址；
+Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket 客户端使用已有连接。
+
+管理接口保持 `{code: 200, message: "success", data: {items: [...], error: ""}}`
+结构；Server 不可用、传输失败或 Hub 查询失败时，返回空 `items` 与错误说明。
+不回退到 Gateway 本地查询。缓存冷启动与后台刷新语义沿用 Server 现有实现。
+`hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-protocol` 正式定义，无需应用侧临时注册。

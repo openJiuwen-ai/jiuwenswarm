@@ -24,6 +24,7 @@ async def construct_runtime_server(
 ) -> Any:
     """Bind SDK registry ownership before concurrent Runtime construction."""
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.worker.callback_registry import bind_callback_registry_owner
 
     registry_owner = bind_callback_registry_owner(Runner.callback_framework)
@@ -60,8 +61,9 @@ async def _construct_runtime_server(
     its cleanup owner before a sibling preparation failure is propagated.
     """
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     extension_registry = ExtensionRegistry.create_instance(

@@ -13,9 +13,9 @@ from typing import Any, Awaitable, Callable
 
 import yaml
 
+from gateway.common.etcd.client import EtcdJsonClient, EtcdKv
 from gateway.extensions.agentos.config_updater import CONFIG_SYNC_KEY
 from gateway.extensions.agentos.config_updater.merge import extract_section
-from jiuwenswarm.common.etcd.client import EtcdJsonClient, EtcdKv
 
 logger = logging.getLogger(__name__)
 

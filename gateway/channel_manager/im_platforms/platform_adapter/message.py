@@ -1,9 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-import threading
 import json
-from typing import Any
+import threading
 from pathlib import Path
-from jiuwenswarm.common.utils import logger, get_agent_memory_dir
+from typing import Any
+
+from gateway.common.paths import get_agent_memory_dir, logger
 
 # lark_oapi (飞书 SDK) 体积巨大 (21175 文件 / 49MB), 启动期 import 耗时 ~5-8s/进程.
 # 历史在模块顶层 try-import, 导致只要 import MessageStore 就强制加载 lark_oapi

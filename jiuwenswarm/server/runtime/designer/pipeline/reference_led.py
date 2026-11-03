@@ -858,13 +858,28 @@ def build_reference_led_video_graph(
     for clip_id in clip_ids:
         add_edge(clip_id, "n_compose")
 
+    from jiuwenswarm.common.schema.designer_node_labels import (
+        derive_story_name,
+        usable_story_title,
+    )
+
+    story_name = derive_story_name(
+        analysis=analysis,
+        prompt=prompt_text,
+        graph_title=str(title or ""),
+    )
+    graph_title = (
+        usable_story_title(story_name, prompt_text)
+        or usable_story_title(title, prompt_text)
+        or "设计项目"
+    )
     now = utc_now_ms()
     total = sum(int(shot.get("duration_sec") or 0) for shot in shots)
     return {
         "schema_version": SCHEMA_VERSION,
         "graph_id": new_graph_id(),
         "project_id": project_id,
-        "title": (title or prompt_text[:80] or "Reference-led"),
+        "title": graph_title,
         "description": prompt_text,
         "source": GRAPH_SOURCE_PROMPT,
         "nodes": nodes,

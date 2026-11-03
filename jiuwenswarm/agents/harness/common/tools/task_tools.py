@@ -95,9 +95,9 @@ def _apply_ce_defaults() -> None:
 
 def _is_task_memory_enabled() -> bool:
     """Check if task memory is enabled via config or environment."""
-    from jiuwenswarm.common.config import get_config
-    cfg = get_config()
-    task_memory_cfg = cfg.get("task_memory", {})
+    from jiuwenswarm.agents.harness.common.memory.config import get_task_memory_config
+
+    task_memory_cfg = get_task_memory_config()
     return bool(task_memory_cfg.get("enabled", False))
 
 
@@ -113,9 +113,11 @@ def _get_service():
 
     _apply_ce_defaults()
 
+    from jiuwenswarm.agents.harness.common.memory.config import get_task_memory_config
     from jiuwenswarm.common.config import get_config
+
     cfg = get_config()
-    task_memory_cfg = cfg.get("task_memory", {})
+    task_memory_cfg = get_task_memory_config()
     embed_cfg = cfg.get("embed", {})
 
     llm_model = (

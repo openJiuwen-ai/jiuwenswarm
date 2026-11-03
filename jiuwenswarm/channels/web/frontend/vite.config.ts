@@ -1815,10 +1815,10 @@ const webTarget = `http://127.0.0.1:${webPort}`
 // a second in-memory handoff implementation.
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
-const isElectronBuild = process.env.ELECTRON === 'true'
-
 export default defineConfig({
-  base: isElectronBuild ? './' : '/',
+  // Keep assets relative for the Manager /chat/ mount. On nested SPA routes,
+  // app_web.py and nginx map prefixed assets URLs back to the dist assets directory.
+  base: './',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   build: {
     rollupOptions: {
@@ -1836,6 +1836,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'virtual:login-auth-simulate-provider': path.resolve(__dirname, './src/auth/simulate/available.ts'),
       'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
       react: path.resolve(__dirname, './node_modules/react'),
       'react-dom': path.resolve(__dirname, './node_modules/react-dom'),

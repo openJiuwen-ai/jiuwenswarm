@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jiuwenswarm.common import external_providers
+from gateway.common import external_providers
 from gateway.channel_manager.web import mcp_oauth_http
 from jiuwenswarm.server.runtime.mcp import oauth_flow, registry
 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
@@ -65,6 +65,7 @@ def oauth_callback(tmp_path, monkeypatch):
     started = agent.start("canva", "http://127.0.0.1:19000/")
     authorize_query = parse_qs(urlsplit(started["auth_url"]).query)
     monkeypatch.setattr(oauth_flow, "_manager", gateway)
+    # McpOAuthError 由 openjiuwen_protocol.mcp_oauth 统一提供，两侧异常类型同一
     monkeypatch.setitem(external_providers._providers, "mcp_registry", registry)
     app = FastAPI()
     mcp_oauth_http.attach_mcp_oauth_routes(app)
@@ -166,21 +167,18 @@ def test_callback_unexpected_failure_does_not_expose_exception_details(monkeypat
     assert "mock-private-access-token" not in caplog.text
 
 
-@pytest.mark.parametrize("setup", ["gateway", "front"])
-def test_callback_uses_providers_registered_by_real_process_setup(tmp_path, setup):
+def test_callback_uses_providers_registered_by_real_process_setup(tmp_path):
+    # external_providers 已拆为 gateway 侧副本：回调路由只认 gateway 进程自己的
+    # 注册表，因此只覆盖 gateway 真实装配（AgentServer 侧 install_front 注册进
+    # 母仓注册表，与 gateway 进程的回调路由无关）。
     code = (
         "import sys\n"
         "from fastapi import FastAPI\n"
         "from fastapi.testclient import TestClient\n"
-        "from jiuwenswarm.common.external_providers import registered_domains\n"
+        "from gateway.common.external_providers import registered_domains\n"
         "from gateway.channel_manager.web.mcp_oauth_http import attach_mcp_oauth_routes\n"
         "assert 'jiuwenswarm.server.runtime.mcp.oauth_flow' not in sys.modules\n"
-        f"if {setup!r} == 'gateway':\n"
-        "    # bridge 已退役：gateway 形态 = mcp_registry 远端壳；无 WS 客户端\n"
-        "    # 时 fetch 直接失败（McpOAuthError → 400 落地），同样覆盖断言。\n"
-        "    from gateway.routing.mcp_remote import install\n"
-        "else:\n"
-        "    from jiuwenswarm.server.runtime.provider_setup import install_front as install\n"
+        "from gateway.routing.mcp_remote import install\n"
         "install()\n"
         "assert 'mcp_registry' in registered_domains()\n"
         "app = FastAPI()\n"
@@ -188,11 +186,7 @@ def test_callback_uses_providers_registered_by_real_process_setup(tmp_path, setu
         "with TestClient(app) as client:\n"
         "    response = client.get('/mcp/oauth/callback', params={'code':'mock-code','state':'unknown-state'})\n"
         "assert response.status_code == 400, response.text\n"
-        f"if {setup!r} == 'gateway':\n"
-        "    # 远端壳无客户端：降级文案（McpOAuthError 透传 transport 失败）\n"
-        "    assert 'unavailable' in response.text or '授权未完成' in response.text\n"
-        "else:\n"
-        "    assert 'OAuth flow is unknown or expired' in response.text\n"
+        "assert 'unavailable' in response.text or '授权未完成' in response.text\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],

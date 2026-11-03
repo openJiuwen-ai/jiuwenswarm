@@ -116,6 +116,54 @@ async def test_snapshot_drops_running_records_and_reports_them() -> None:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_omits_the_team_session_root() -> None:
+    running_child = make_span(2, 3, 4, name="team.child")
+    running_child["parentSpanId"] = span_id(9)
+    finished_child = make_span(3, 5, 6, name="llm")
+    finished_child["parentSpanId"] = span_id(8)
+    reader = FakeReader(
+        {
+            "main": [
+                make_row([make_span(1, 1, 2)]),
+                make_row([make_span(9, 1, 1, name="team.jiuwen_team_demo")], lifecycle="running"),
+                make_row([make_span(8, 1, 20, name="team.jiuwen_team_closed")]),
+                make_row([running_child], lifecycle="running"),
+                make_row([finished_child]),
+            ],
+        },
+    )
+
+    snapshot, excluded = await load_trajectory_snapshot(reader, SESSION_ID)
+
+    assert [record.span_id for record in snapshot.subjects[0].records] == [span_id(1), span_id(3)]
+    assert [ref.span_id for ref in excluded] == [span_id(2)]
+
+
+@pytest.mark.asyncio
+async def test_team_snapshot_counts_only_leader_and_member_lanes() -> None:
+    reader = FakeReader(
+        {
+            "main": [
+                make_row([make_span(1, 1, 2, name="team.demo")]),
+                make_row([make_span(2, 3, 4, name="member.monitor")], lifecycle="running"),
+            ],
+            "leader": [make_row([make_span(3, 5, 6)])],
+            "planner": [make_row([make_span(4, 7, 8)])],
+        },
+        kinds={"main": "main_agent", "leader": "team_leader", "planner": "team_member"},
+    )
+
+    snapshot, excluded = await load_trajectory_snapshot(reader, SESSION_ID)
+
+    assert [subject.subject_id for subject in snapshot.subjects] == ["leader", "planner"]
+    assert [record.span_id for subject in snapshot.subjects for record in subject.records] == [
+        span_id(3),
+        span_id(4),
+    ]
+    assert excluded == []
+
+
+@pytest.mark.asyncio
 async def test_snapshot_keeps_latest_record_of_a_span() -> None:
     reader = FakeReader(
         {

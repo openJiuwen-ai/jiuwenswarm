@@ -16,7 +16,6 @@ export const KNOWN_TARGET_KEYS: readonly string[] = [
 // 不在下拉里出现，但已有数据仍按上面 KNOWN_TARGET_KEYS 正常展示
 export const SELECTABLE_TARGET_KEYS: readonly string[] = [
   'web',
-  'xiaoyi',
   'feishu',
   'dingtalk',
   'whatsapp',
@@ -25,6 +24,7 @@ export const SELECTABLE_TARGET_KEYS: readonly string[] = [
 // 沿用旧 CronPanel/index.tsx 的时区选项列表
 export const TIMEZONE_OPTIONS = [
   'Asia/Shanghai',
+  'UTC',
   'Asia/Bangkok',
   'Asia/Tokyo',
   'Asia/Seoul',

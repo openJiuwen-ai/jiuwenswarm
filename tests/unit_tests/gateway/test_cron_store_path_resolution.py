@@ -14,13 +14,14 @@ import logging
 
 import pytest
 
-from jiuwenswarm.common.utils import get_cron_jobs_path, prepare_workspace
+from gateway.common.paths import get_cron_jobs_path
+from jiuwenswarm.common.utils import prepare_workspace
 
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
+        "gateway.common.paths.get_user_workspace_dir", lambda: tmp_path
     )
     return tmp_path
 

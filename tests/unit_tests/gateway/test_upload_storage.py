@@ -37,6 +37,7 @@ def test_safe_upload_filename_keeps_readable_names(filename: str):
     ("filename", "expected"),
     [
         ("../../etc/passwd", "passwd"),
+        ("a\\b.txt", "a_b.txt"),
         ("..\\..\\evil.md", ".._.._evil.md"),
         ("file:with|bad*chars?.md", "file_with_bad_chars_.md"),
         ("tab\there.md", "tab_here.md"),

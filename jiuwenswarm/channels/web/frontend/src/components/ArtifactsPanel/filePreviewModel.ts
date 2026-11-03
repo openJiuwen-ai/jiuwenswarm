@@ -90,6 +90,66 @@ export function artifactTextPreviewUrl(resource: PreviewResource, origin: string
   return resource.path ? `/file-api/file-content?path=${encodeURIComponent(resource.path)}&encoding=auto` : null;
 }
 
+type DecoderOptions = { fatal?: boolean };
+
+const textDecoders = new Map<string, TextDecoder | null>();
+
+/**
+ * Build (and cache) a TextDecoder without ever throwing at module scope.
+ *
+ * `gbk` / `utf-16be` require full ICU support. Runtimes built with small-icu
+ * reject the label with a RangeError, and a module-scope constructor would then
+ * break evaluation of this whole module — taking docx/pdf/image previews down
+ * with it. Returning `null` keeps the caller in control of the degradation.
+ */
+function createTextDecoder(label: string, options?: DecoderOptions): TextDecoder | null {
+  const cacheKey = options?.fatal ? `${label}|fatal` : label;
+  if (!textDecoders.has(cacheKey)) {
+    try {
+      textDecoders.set(cacheKey, new TextDecoder(label, options));
+    } catch {
+      textDecoders.set(cacheKey, null);
+    }
+  }
+  return textDecoders.get(cacheKey) ?? null;
+}
+
+/**
+ * Decode artifact text: UTF-16 BOM, else strict UTF-8, else GBK.
+ *
+ * The inline download URL declares no charset, so `response.text()` would turn
+ * legacy GBK artifacts into U+FFFD; GBK is a never-throwing last resort.
+ *
+ * Decoders are resolved lazily per call so an unsupported label degrades to the
+ * next candidate instead of failing the import. Final fallback is a lenient
+ * UTF-8 decode, which mirrors the pre-existing `response.text()` behaviour.
+ */
+export function decodeTextBytes(bytes: ArrayBuffer | Uint8Array): string {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (view.length >= 2) {
+    if (view[0] === 0xff && view[1] === 0xfe) {
+      const utf16le = createTextDecoder('utf-16le');
+      if (utf16le) return utf16le.decode(view);
+    }
+    if (view[0] === 0xfe && view[1] === 0xff) {
+      const utf16be = createTextDecoder('utf-16be');
+      if (utf16be) return utf16be.decode(view);
+    }
+  }
+  const strictUtf8 = createTextDecoder('utf-8', { fatal: true });
+  if (strictUtf8) {
+    try {
+      return strictUtf8.decode(view);
+    } catch {
+      // not valid UTF-8: fall through to the legacy decoders below
+    }
+  }
+  const gbk = createTextDecoder('gbk');
+  if (gbk) return gbk.decode(view);
+  const lenientUtf8 = createTextDecoder('utf-8');
+  return lenientUtf8 ? lenientUtf8.decode(view) : '';
+}
+
 export function previewKind(file: PreviewFile): PreviewKind {
   const mime = (file.mimeType ?? '').toLowerCase();
   const ext = fileExtension(file.name);
@@ -120,4 +180,40 @@ export function previewKind(file: PreviewFile): PreviewKind {
   }
   if (mime.startsWith('text/') || TEXT_EXTENSIONS.has(ext)) return 'text';
   return 'unsupported';
+}
+
+/**
+ * Pretty-printed JSON / JSONL as shown in the artifact preview pane.
+ * Returns null when the source is not valid JSON (the preview shows an error).
+ */
+export function formatArtifactPreviewText(kind: PreviewKind, content: string): string | null {
+  try {
+    if (kind === 'json') {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    }
+    if (kind === 'jsonl') {
+      const value = content
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      return JSON.stringify(value, null, 2);
+    }
+  } catch {
+    return null;
+  }
+  if (kind === 'markdown' || kind === 'text' || kind === 'code') return content;
+  return null;
+}
+
+/**
+ * Clipboard text for the artifact-dialog Copy button.
+ * JSON / JSONL copy the pretty-printed preview; invalid JSON keeps the source.
+ * Non-text files copy the path (same as today).
+ */
+export function getArtifactCopyText(kind: PreviewKind, content: string, fallbackPath: string): string {
+  if (kind === 'json' || kind === 'jsonl') {
+    return formatArtifactPreviewText(kind, content) ?? content;
+  }
+  if (kind === 'markdown' || kind === 'text' || kind === 'code') return content;
+  return fallbackPath;
 }

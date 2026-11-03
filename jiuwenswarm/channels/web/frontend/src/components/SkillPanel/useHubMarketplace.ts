@@ -61,6 +61,7 @@ function mapRecommendSkill(s: HubRecommendSkill): MarketplacePluginItem {
   };
 }
 
+/** Shared by SkillPanel hooks that still bind chat session (install / files / evolution). */
 export type WithSessionFn = <T extends Record<string, unknown> = Record<string, unknown>>(
   params?: T,
 ) => T & { session_id: string };
@@ -74,7 +75,8 @@ interface UseHubMarketplaceParams {
   marketplaceCategory: string;
   marketplaceSubView: MarketplaceSubView;
   setMarketplaceSubView: (view: MarketplaceSubView) => void;
-  withSession: WithSessionFn;
+  /** 企业版广场改挂企业技能源，跳过 Hub 拉取 */
+  skipHubFetch?: boolean;
 }
 
 export function useHubMarketplace({
@@ -83,7 +85,7 @@ export function useHubMarketplace({
   marketplaceCategory,
   marketplaceSubView,
   setMarketplaceSubView,
-  withSession,
+  skipHubFetch = false,
 }: UseHubMarketplaceParams) {
   /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);
@@ -140,12 +142,14 @@ export function useHubMarketplace({
       options?: { preferCache?: boolean },
     ) => {
       const preferCache = options?.preferCache !== false;
-      const params = withSession({
+      // 广场推荐是 workspace 级无状态读：不绑当前聊天 session_id，
+      // 避免会话已永久删除时 lifecycle.guard 把整页拦掉（#5886）。
+      const params = {
         top_k: topK,
         ...(preferCache ? { cache_mode: 'prefer_cache' as const } : {}),
         plugin_type: pluginType,
         ...(category !== 'all' ? { category_id: category } : {}),
-      });
+      };
       const data = await webRequest<{
         success: boolean;
         skills?: HubRecommendSkill[];
@@ -155,7 +159,7 @@ export function useHubMarketplace({
       if (!data.success) throw new Error(data.detail || 'Recommend failed');
       return withCatalogCache((data.skills || []).map(mapRecommendSkill), data.cache);
     },
-    [withSession],
+    [],
   );
 
   const fetchHubHomeSkills = useCallback(
@@ -404,13 +408,13 @@ export function useHubMarketplace({
           detail?: string;
         }>(
           'skills.online_search.search',
-          withSession({
+          {
             q: query,
             // 搜索词每次不同，prefer_cache 几乎必 miss（空返回 + 后台刷新 + 轮询），
             // 比直连 Hub 更慢；广场搜索不走缓存，一次 RPC 等结果即可。
             // 首页 recommend / 其他页面的 prefer_cache 不受影响。
             limit: 50,
-          }),
+          },
           { timeoutMs: 45000 },
         );
 
@@ -470,11 +474,11 @@ export function useHubMarketplace({
         }
       }
     },
-    [withSession],
+    [],
   );
 
   useEffect(() => {
-    if (activeTab !== 'marketplace') return;
+    if (skipHubFetch || activeTab !== 'marketplace') return;
 
     if (!searchKeyword) {
       void fetchHubHomeSkills(marketplaceCategory);
@@ -486,7 +490,7 @@ export function useHubMarketplace({
     }, 500);
 
     return () => window.clearTimeout(timer);
-  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch]);
+  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch, skipHubFetch]);
 
   // 分组：skillpack → 精选技能包，swarmskill → 精选团队技能，其余 → 精选技能
   // （搜索时取搜索结果；无搜索词时取首页两路推荐结果合并，保持互斥分桶；
@@ -534,9 +538,7 @@ export function useHubMarketplace({
 
         const data = await webRequest<HubSkillDetail>(
           'skills.swarmskillshub.detail',
-          withSession({
-            asset_id: skill.asset_id,
-          }),
+          { asset_id: skill.asset_id },
           { timeoutMs: 30000 },
         );
         setHubDetail(data);
@@ -546,7 +548,7 @@ export function useHubMarketplace({
         setHubDetailState('error');
       }
     },
-    [withSession, setMarketplaceSubView],
+    [setMarketplaceSubView],
   );
 
   /** 分类切换 / 关键词变化：作废在途请求并置为加载中 */

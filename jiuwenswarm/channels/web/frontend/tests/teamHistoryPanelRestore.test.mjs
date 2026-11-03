@@ -96,7 +96,21 @@ test('a shut_down retirement removes the member', () => {
     const state = parseTeamHistoryPanelRecords(retireRecords('temp-1', shutdownFields, 'shut_down'), 'session-1');
 
     assert.deepEqual(state.members.map((member) => member.member_id), []);
+    // 离开名册但保留身份，任务卡片还要按 member_id 查名字。
+    assert.deepEqual(
+      state.departedMembers.map((member) => [member.member_id, member.name, member.status]),
+      [['temp-1', 'Writer temp-1', 'shut_down']],
+    );
   }
+});
+
+test('a dormant retirement is not listed as departed', () => {
+  const state = parseTeamHistoryPanelRecords(
+    retireRecords('r2-writer-4', { target_status: 'dormant' }, 'dormant'),
+    'session-1',
+  );
+
+  assert.deepEqual(state.departedMembers, []);
 });
 
 test('a woken dormant member returns to ready', () => {

@@ -1,4 +1,5 @@
-import {
+
+import { isEnterprise } from '../../edition';import {
   useState,
   useRef,
   useCallback,
@@ -36,12 +37,14 @@ import { useMultiModelCollaborationEnabled } from '../../features/multiModelColl
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
+import { isReachableTeamMemberStatus } from '../../features/teamMemberDeparture';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
 import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
+import { attachmentDraftsBySession, useAttachmentDraftClearNonce } from '../../features/sessionAssets/attachmentDraftRegistry';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
@@ -52,7 +55,12 @@ import ChatModelSelector from './ChatModelSelector';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
-import { selectSessionAssets, useSessionAssetsStore } from '../../features/sessionAssets/sessionAssets';
+import {
+  markUploadDispatched,
+  unmarkUploadDispatched,
+  selectSessionAssets,
+  useSessionAssetsStore,
+} from '../../features/sessionAssets/sessionAssets';
 import {
   assetKindFromMime,
   findReferencedAssets,
@@ -71,7 +79,12 @@ import {
   type SlashCommand,
   type SlashCommandContext,
 } from './slashCommands/registry';
-import { splitComposerSlashChip } from './composerDraftHydrate';
+import {
+  createComposerSkillRange,
+  readComposerSkillPositions,
+  readComposerText,
+  splitComposerSlashChip,
+} from './composerDraftHydrate';
 import {
   canUseSlashCommand,
   getWebSlashCommandsForMode,
@@ -256,6 +269,9 @@ type InputAreaTeamMember = {
   name?: string;
   status?: string;
 };
+
+const EMPTY_SKILLS: string[] = [];
+const EMPTY_TEAM_MEMBERS: InputAreaTeamMember[] = [];
 
 type ComposerSuggestionKind = 'member' | 'role' | 'slash' | 'skill';
 type WorkIconName = 'add' | 'arrow' | 'check' | 'close' | 'collapse' | 'expand' | 'folder' | 'search';
@@ -522,7 +538,30 @@ interface AttachmentDraft {
 // unsent attachment drafts at module scope so that navigation does not discard
 // a session's composer state. The persisted image itself already lives under
 // that session's uploads directory; this map preserves only the pending UI draft.
-const attachmentDraftsBySession = new Map<string, AttachmentDraft[]>();
+// Lives in a shared module (not declared here) so multi-session/state/newConversationLifecycle.ts
+// can clear the 'new' entry when a genuinely fresh new conversation starts, without
+// an import cycle (that module is itself imported below for NEW_CONVERSATION_ID).
+
+// Session-asset registration bookkeeping for composer attachment drafts and agent-
+// generated artifacts. Module scope, NOT useRef: InputArea unmounts and remounts
+// across the same surfaces that make attachmentDraftsBySession module-level (see
+// above) -- a useRef would reset to empty on every remount, while a restored draft
+// keeps its id (attachmentDraftsBySession) and a restored artifact keeps its path
+// (useSessionArtifacts), so the registration effect below would read them as "never
+// attempted" and register a duplicate session asset every time. Backend registration
+// is deliberately not idempotent per path (session_assets.py), so there is no safety
+// net underneath this -- these four structures are it. They live for the page's whole
+// lifetime, independent of which component instance or session is currently mounted.
+const attemptedAssetPaths = new Set<string>();
+const attemptedDraftIds = new Set<string>();
+// draftId -> the asset_id the registration effect recorded for it; releaseUnsentUploads
+// (cancel) looks this up by draft id to delete exactly that draft's own asset, never by
+// path (the same path can legitimately back more than one asset).
+const draftAssetIdByDraftId = new Map<string, string>();
+// draftIds canceled while their registration request was still in flight: when the
+// response lands, the asset it created is deleted immediately instead of being kept
+// as an orphan.
+const canceledDraftIds = new Set<string>();
 
 interface AttachmentAlert {
   id: string;
@@ -567,6 +606,8 @@ function attachmentToMediaItem(attachment: AttachmentDraft): MediaItem {
     // 卡片上重命名过的话，历史消息里的这张卡片也要显示新名字，而不是落盘时用的存储文件名
     // （大图走 HTTP bridge 落盘后，文件名是服务端生成的随机 id，和用户看到的完全对不上）。
     ...(attachment.assetName ? { displayName: attachment.assetName } : {}),
+    // session.assets.register 的 client_id：见 types/message.ts 的字段注释。
+    clientId: attachment.id,
     ...(path ? { path } : { base64Data: attachment.base64Data }),
     sizeBytes,
     size_bytes: sizeBytes,
@@ -787,8 +828,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>(() =>
-    activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : [],
+    activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
   );
+  // 当前 `attachments` state 实际对应的 session（和 activeSessionId 分开追踪）：切换会话时
+  // activeSessionId 在本次渲染就已经更新，但 attachments 还要等切换 session 的 effect 跑完
+  // 才会重置成目标会话的草稿。切会话瞬间两者短暂不一致，谁依赖 attachments 做跨会话操作
+  // （比如把它们注册成任务素材）都要先核对这个 ref，否则会把上一个会话的草稿误登记到新会话。
+  const attachmentSessionIdRef = useRef(activeSessionId);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -830,6 +876,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     () => useAgentCatalogStore.getState().catalog ?? [],
   );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [agentPodNotice, setAgentPodNotice] = useState<'starting' | 'timeout' | null>(null);
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
   const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>(
     () => [getSelectedAgentGroup()].filter((group): group is AgentGroupCatalogItem => group !== null),
@@ -1038,8 +1085,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
+    setAgentPodNotice(null);
     void agentManagementClient
-      .listCatalog({ filter: 'mine' })
+      .listCatalog({
+        filter: 'mine',
+        onPodStarting: () => {
+          if (!cancelled) setAgentPodNotice('starting');
+        },
+      })
       .then((items) => {
         if (cancelled) return;
         const selectedItem = selectedAgentId ? items.find((item) => isSameAgentOption(item, selectedAgentId)) : null;
@@ -1055,10 +1108,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         setAgentOptions(items);
         seedAgentCatalog(items);
+        setAgentPodNotice(null);
         setAgentOptionsStatus('success');
       })
-      .catch(() => {
-        if (!cancelled) setAgentOptionsStatus('error');
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+        setAgentPodNotice(code === 'pod_start_timeout' ? 'timeout' : null);
+        setAgentOptionsStatus('error');
       });
     return () => {
       cancelled = true;
@@ -1103,9 +1160,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
-  const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
+  const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? EMPTY_SKILLS);
   const teamMembers = useSessionStore(
-    (s) => s.runtimes[conversationId]?.teamMembers ?? [],
+    (s) => s.runtimes[conversationId]?.teamMembers ?? EMPTY_TEAM_MEMBERS,
   ) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
@@ -1137,6 +1194,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isInterruptible = isProcessing || isPaused || isGoalActive;
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
+  const enterprise = isEnterprise();
+  const modeLocked = enterprise || hasHistory || isProcessing;
+
+  useEffect(() => {
+    if (enterprise && activeSessionId === NEW_CONVERSATION_ID && mode !== 'agent') {
+      onSwitchMode('agent');
+    }
+  }, [enterprise, activeSessionId, mode, onSwitchMode]);
   const isAutoHarnessMode = mode === 'auto_harness';
   const existingTeamGroupSelectionDisabled = Boolean(
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
@@ -1155,9 +1220,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [isAgentMode, isTeamMode]);
 
   const isWorkContextLocked = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
-  const showWorkContextRow = activeSessionId === NEW_CONVERSATION_ID;
+  const showWorkContextRow = !enterprise && activeSessionId === NEW_CONVERSATION_ID;
   /** Goal 入口是否适用于当前上下文（agent 模式 + 已接入 onSetGoal，如欢迎页新会话就不适用） */
-  const canUseGoalMenu = isAgentMode && Boolean(onSetGoal);
+  const canUseGoalMenu = !enterprise && isAgentMode && Boolean(onSetGoal);
   // bugfix 2026092201 bug001 第2轮修订：原来只跟 armed 挂钩（发送后 armed 变 false 就消失，
   // 理由是"目标是否存在"已由 GoalBar 覆盖，工具栏不需要重复常驻）。但这样一来目标在真正执行
   // 期间（armed 已经变 false、hasUnfinishedGoal 才是 true）这个 tag 会凭空消失，跟 Plan 的
@@ -1228,7 +1293,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return teamMembers
       .filter((member) => {
         const id = member.member_id?.trim();
-        return id && id !== 'user';
+        // 离队 / 退役中的成员接不到消息，@ 出去也没人接。
+        return id && id !== 'user' && isReachableTeamMemberStatus(member.status);
       })
       .map((member) => ({
         id: member.member_id,
@@ -1324,12 +1390,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     [assetSuggestionItems, mentionableMembers, pendingAssetSuggestionItems],
   );
 
-  // 任务素材同步：进入会话时拉取；上传完成的附件、agent 产出的文件按路径登记（后端按路径去重，
-  // 没有文件的路径会被忽略，所以用 attemptedAssetPaths 避免对同一路径反复请求）。
+  // 任务素材同步：进入会话时拉取；agent 产出的文件按路径登记去重（没有"重新附上"这个概念，
+  // sessionArtifacts 每次渲染都会把同一批路径再报一遍，所以用 attemptedAssetPaths 按路径
+  // 避免重复请求）。附件草稿则按草稿 id 去重——不按路径：故意再次附上同一个文件，必须和
+  // 重新附上一张图片一样各自拿到自己的素材条目，不能被当成对同一条路径的重复请求吞掉。
+  //
+  // attemptedAssetPaths / attemptedDraftIds / draftAssetIdByDraftId / canceledDraftIds 都是
+  // 模块级状态（见文件顶部），不是 useRef：既不按会话切换重置，也不随这个组件卸载/重新挂载
+  // 重置——ChatPanel/index.tsx 有两处 <InputArea>（欢迎页 / 正常会话），在它们之间切换会
+  // 卸载再挂载出一个全新的组件实例，useRef 会被清空，而草稿（attachmentDraftsBySession）和
+  // 产出文件路径（useSessionArtifacts）都不会跟着清空，这里就会把它们当成"没登记过"再注册
+  // 一遍；后端现在不会再按路径去重吞掉这种重复注册（故意的，见 session_assets.py），于是
+  // 每次卸载重挂载都会多出一条重复素材。
   const sessionArtifacts = useSessionArtifacts();
-  const attemptedAssetPaths = useRef<Set<string>>(new Set());
   useEffect(() => {
-    attemptedAssetPaths.current = new Set();
     if (!canPersistAttachments || !activeSessionId) return;
     void useSessionAssetsStore
       .getState()
@@ -1338,24 +1412,83 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [activeSessionId, canPersistAttachments]);
   useEffect(() => {
     if (!canPersistAttachments || !activeSessionId) return;
-    const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string }> = [];
-    const consider = (path: string | undefined, source: 'upload' | 'generated', name?: string) => {
-      const value = path?.trim();
-      if (!value || attemptedAssetPaths.current.has(value)) return;
-      attemptedAssetPaths.current.add(value);
-      pending.push({ path: value, source, ...(name ? { name } : {}) });
-    };
+    // 切换会话那一次渲染里，activeSessionId 已经是新会话，但 attachments 还是上一个会话的草稿
+    // （要等下面"切会话"那个 effect 跑完才会重置）。这一轮先跳过，避免把上一个会话还没发送的
+    // 附件误登记成这个新会话的素材；下一轮渲染 attachments 跟 activeSessionId 对齐后会重新触发。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
+    const sessionId = activeSessionId;
+    const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string; client_id?: string }> = [];
+    // 和 pending 严格同序：第 i 个待注册项若来自某个附件草稿，这里记它的草稿 id；
+    // 来自 agent 产出文件（没有草稿）的记 null。响应里 created[i] 对应 pending[i]，
+    // 靠这个数组把 asset_id 精确地分还给对应的草稿。
+    const pendingDraftIds: Array<string | null> = [];
     attachments.forEach((attachment) => {
-      if (attachment.status === 'ready') {
-        consider(pickString(attachment.persistedMediaItem?.path), 'upload', attachment.assetName);
-      }
+      if (attachment.status !== 'ready' || attemptedDraftIds.has(attachment.id)) return;
+      const path = pickString(attachment.persistedMediaItem?.path);
+      if (!path) return;
+      attemptedDraftIds.add(attachment.id);
+      markUploadDispatched(sessionId, path);
+      pending.push({
+        path,
+        source: 'upload',
+        ...(attachment.assetName ? { name: attachment.assetName } : {}),
+        client_id: attachment.id,
+      });
+      pendingDraftIds.push(attachment.id);
     });
-    sessionArtifacts.forEach((artifact) => consider(artifact.path, 'generated'));
+    sessionArtifacts.forEach((artifact) => {
+      const value = artifact.path?.trim();
+      if (!value || attemptedAssetPaths.has(value)) return;
+      attemptedAssetPaths.add(value);
+      pending.push({ path: value, source: 'generated' });
+      pendingDraftIds.push(null);
+    });
     if (pending.length === 0) return;
+    // 乐观标记（attemptedDraftIds / attemptedAssetPaths / markUploadDispatched）发生在
+    // 请求发出之前——如果这条请求本身失败（网络抖动 / RPC 报错），或者单个 item 虽然请求
+    // 成功但没真的建出素材（created[i] 为空），这些标记必须撤回：否则这条路径/草稿会被
+    // 永久当成"已经登记过"，既不会被这个 effect 重试，也会让发送时 registerUploads 那个
+    // 兜底（见 useWebSocket.ts）误以为已经登记过而跳过，素材就再也建不出来了。
+    const rollbackPendingItem = (index: number) => {
+      const draftId = pendingDraftIds[index];
+      if (draftId) {
+        attemptedDraftIds.delete(draftId);
+        canceledDraftIds.delete(draftId);
+      }
+      const item = pending[index];
+      if (item.source === 'upload') unmarkUploadDispatched(sessionId, item.path);
+      else attemptedAssetPaths.delete(item.path);
+    };
     void useSessionAssetsStore
       .getState()
-      .register(activeSessionId, pending)
-      .catch((error) => console.error('Failed to register session assets:', error));
+      .register(sessionId, pending)
+      .then((response) => {
+        const created = response.created ?? [];
+        pending.forEach((_item, index) => {
+          const asset = created[index];
+          const draftId = pendingDraftIds[index];
+          if (!asset) {
+            rollbackPendingItem(index);
+            return;
+          }
+          if (!draftId) return;
+          if (canceledDraftIds.has(draftId)) {
+            // 响应回来之前这个草稿已经被取消/清空了——没人会再去删它，现在直接删，
+            // 不留孤儿素材。
+            canceledDraftIds.delete(draftId);
+            void useSessionAssetsStore
+              .getState()
+              .remove(sessionId, asset.asset_id)
+              .catch((error) => console.error('Failed to remove orphaned session asset:', error));
+            return;
+          }
+          draftAssetIdByDraftId.set(draftId, asset.asset_id);
+        });
+      })
+      .catch((error) => {
+        console.error('Failed to register session assets:', error);
+        pending.forEach((_, index) => rollbackPendingItem(index));
+      });
   }, [activeSessionId, attachments, canPersistAttachments, sessionArtifacts]);
 
   const composerSuggestionItems = useMemo(() => {
@@ -1654,6 +1787,49 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     for (const path of plan.paths) {
       requestImageDiscard(sessionId, path);
     }
+    // A removed chip that had already been auto-registered as a session material
+    // (session.assets.register fires as soon as the upload completes, well before
+    // send) must drop that material too. Each draft owns exactly the asset_id the
+    // registration effect recorded for it (draftAssetIdByDraftId) -- never matched by
+    // path, since the same path can now legitimately back more than one asset
+    // (a deliberate re-attach of an already-registered file gets its own new
+    // entry, the same as re-attaching an image always did). Agent-generated
+    // ('generated') materials are not tied to any composer draft and are never
+    // touched here.
+    for (const draft of drafts) {
+      const assetId = draftAssetIdByDraftId.get(draft.id);
+      // Only worth remembering as "canceled" when a registration request for this
+      // draft is genuinely in flight (attempted, response not back yet): that is the
+      // one case where the response handler still needs to find this id later to
+      // delete the orphaned asset. A draft that was never attempted at all (removed
+      // before reaching 'ready', or never had a path) has no pending response ever
+      // coming for it -- adding it here would leave a permanent, unconsumed entry.
+      if (!assetId && attemptedDraftIds.has(draft.id)) canceledDraftIds.add(draft.id);
+      if (!assetId) continue;
+      draftAssetIdByDraftId.delete(draft.id);
+      canceledDraftIds.delete(draft.id);
+      // This draft's path was marked dispatched (sessionAssets.ts) so send-time
+      // registerUploads would not double-register it -- now that the draft and its
+      // asset are both gone, clear that mark too, or a fresh re-attach of the same
+      // path could send before the live registration effect dispatches it and have
+      // registerUploads silently skip it as "already handled". Only clear it when no
+      // OTHER still-attached draft shares this exact path: that one may already rely
+      // on the mark to avoid being registered a second time by registerUploads.
+      const draftPath = pickString(draft.persistedMediaItem?.path);
+      if (draftPath) {
+        const normalizedDraftPath = normalizePath(draftPath);
+        const stillShared = remaining.some((other) => {
+          const otherPath = pickString(other.persistedMediaItem?.path);
+          return Boolean(otherPath) && normalizePath(otherPath!) === normalizedDraftPath;
+        });
+        if (!stillShared && sessionId) unmarkUploadDispatched(sessionId, draftPath);
+      }
+      if (!sessionId || sessionId === NEW_CONVERSATION_ID) continue;
+      void useSessionAssetsStore
+        .getState()
+        .remove(sessionId, assetId)
+        .catch((error) => console.error('Failed to remove session asset:', error));
+    }
   }, [activeSessionId, requestImageDiscard]);
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
@@ -1704,12 +1880,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const previous = attachment.assetName ?? attachment.filename;
       if (checked.name === previous) return;
       updateAttachment(attachment.id, { assetName: checked.name });
-      useSessionAssetsStore.getState().setPendingName(attachment.filename, checked.name);
       const path = pickString(attachment.persistedMediaItem?.path);
-      const registered = path ? sessionAssetsRef.current.find((asset) => samePath(asset.path, path)) : undefined;
-      if (!registered || !activeSessionId) return;
+      if (path) useSessionAssetsStore.getState().setPendingName(path, checked.name);
+      // Prefer the asset the registration effect recorded for THIS draft (draftAssetIdByDraftId)
+      // over a path lookup: the same path can now legitimately back more than one asset (a
+      // deliberate re-attach, or a desktop local-path video/audio/document draft, none of which
+      // get a unique path on disk) -- sessionAssetsRef.current.find(samePath) would silently
+      // grab whichever asset happens to match first, renaming a DIFFERENT card's material. Only
+      // fall back to the path lookup when this draft hasn't been registered yet (no entry to find).
+      const draftAssetId = draftAssetIdByDraftId.get(attachment.id);
+      const registeredAssetId =
+        draftAssetId ?? (path ? sessionAssetsRef.current.find((asset) => samePath(asset.path, path))?.asset_id : undefined);
+      if (!registeredAssetId || !activeSessionId) return;
       try {
-        await useSessionAssetsStore.getState().rename(activeSessionId, registered.asset_id, checked.name);
+        await useSessionAssetsStore.getState().rename(activeSessionId, registeredAssetId, checked.name);
       } catch (error) {
         updateAttachment(attachment.id, { assetName: attachment.assetName });
         pushAttachmentAlert(error instanceof Error ? error.message : String(error));
@@ -1726,18 +1910,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
   }, [releaseUnsentUploads]);
 
-  const attachmentSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
     const sessionId = attachmentSessionIdRef.current;
     if (sessionId) attachmentDraftsBySession.set(sessionId, attachments);
   }, [attachments]);
+
+  // 外部清空（目前只有 App.tsx enterNewConversation 对 'new' 调用 clearAttachmentDrafts）
+  // 只改了 Map，不会让 activeSessionId 变化——如果这时候本来就停留在被清的那个会话上
+  // （典型：已经在 'new' 欢迎页带着未发送附件，又点了一次"新建对话"），下面"切换会话"
+  // 那个 effect 不会跑，本地 attachments state 就不会跟着清空，残留的附件之后一发送
+  // 还是会被注册成新会话自己的素材——清空形同虚设。这个 effect 专门补上这种"没有发生
+  // 会话切换"的清空场景。
+  const attachmentDraftClearNonce = useAttachmentDraftClearNonce(activeSessionId);
+  const attachmentDraftClearNonceRef = useRef(attachmentDraftClearNonce);
+  useEffect(() => {
+    if (attachmentDraftClearNonce === attachmentDraftClearNonceRef.current) return;
+    attachmentDraftClearNonceRef.current = attachmentDraftClearNonce;
+    // ref 还没等于 activeSessionId 说明一次真正的会话切换正在进行中，下面那个 effect
+    // 本来就会用（已经清空的）Map 内容重新同步本地 state，这里不用重复处理。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
+    releaseUnsentUploads(attachmentsRef.current);
+    setAttachments([]);
+    setAttachmentAlerts([]);
+    setAttachmentMenuId(null);
+    clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
+  }, [attachmentDraftClearNonce, activeSessionId, releaseUnsentUploads]);
 
   useEffect(() => {
     if (attachmentSessionIdRef.current === activeSessionId) return;
     const previousSessionId = attachmentSessionIdRef.current;
     if (previousSessionId) attachmentDraftsBySession.set(previousSessionId, attachments);
     attachmentSessionIdRef.current = activeSessionId;
-    setAttachments(activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : []);
+    setAttachments(
+      activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
+    );
     setAttachmentAlerts([]);
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
@@ -2384,27 +2590,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   /** 从 contenteditable 提取纯文本（技能 chip 不进入纯文本，其它 token 展开为可提交文本） */
   const extractPlainText = useCallback((): string => {
     const el = inputRef.current;
-    if (!el) return '';
-    let text = '';
-    el.childNodes.forEach((node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent || '';
-      } else if (node.nodeType === Node.ELEMENT_NODE) {
-        const elem = node as HTMLElement;
-        if (elem.getAttribute('contenteditable') === 'false' && elem.dataset.slashCommand) {
-          text += `/${elem.dataset.slashCommand}`;
-        } else if (elem.getAttribute('contenteditable') === 'false' && elem.dataset.composerToken) {
-          const prefix = elem.dataset.composerToken === 'role' ? '$' : '@';
-          text += `${prefix}${elem.dataset.value || elem.textContent || ''}`;
-        } else if (elem.getAttribute('contenteditable') === 'false') {
-          // 跳过技能 chip
-        } else {
-          text += elem.textContent || '';
-        }
-      }
-    });
-    return text.replace(/\u200B/g, '');
+    return el ? readComposerText(el) : '';
   }, []);
+
+  // Capture before the next session's passive hydration replaces the editor DOM.
+  useLayoutEffect(() => {
+    const editor = inputRef.current;
+    const sid = activeSessionId;
+    if (!editor || !sid) return;
+    return () => {
+      const runtime = useChatStore.getState().runtimes[sid];
+      const text = readComposerText(editor);
+      // Sending or an external edit may already have replaced the stored draft.
+      if (runtime && runtime.inputValue === text) {
+        useChatStore.getState().setInputValue(sid, text, readComposerSkillPositions(editor));
+      }
+    };
+  }, [activeSessionId]);
 
   // 切会话时用 inputValue 填充 contenteditable。技能 chip 由 selectedSkills 同步效果重建；
   // 有参斜杠 chip（如 /persist）写在纯文本里，这里还原成蓝色标签，避免切回后"标签消失"（#5771）。
@@ -3186,7 +3388,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           e.preventDefault();
           if (e.key === 'Enter' && composerSuggestion.kind === 'slash') {
             // 完整受限命令优先走提交守卫，避免过滤后误选名称/描述匹配的技能。
-            const { name, args } = parseSlashLine(extractRichContent());
+            const content = extractRichContent();
+            const { name, args } = parseSlashLine(content);
             const command = findSlashCommand(name);
             const slashSid = useChatStore.getState().activeSessionId;
             const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
@@ -3195,6 +3398,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               shouldExecuteRegisteredSlashCommand(name, args, slashMode) &&
               (!item || !canUseSlashCommand(command, Boolean(slashSid && slashSid !== NEW_CONVERSATION_ID)))
             ) {
+              handleSubmit();
+              return;
+            }
+            if (!item && !content.trimStart().startsWith('/')) {
               handleSubmit();
               return;
             }
@@ -3438,7 +3645,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   /** 在光标处插入技能 chip（不可编辑原子节点） */
   const insertSkillChip = useCallback(
-    (skillName: string) => {
+    (skillName: string, textOffset?: number) => {
       const el = inputRef.current;
       if (!el) return;
       // 输入法合成中不插入
@@ -3450,11 +3657,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       // 恢复保存的光标，否则用当前光标
       let range: Range;
-      if (savedRangeRef.current && el.contains(savedRangeRef.current.commonAncestorContainer)) {
+      if (textOffset !== undefined) {
+        range = createComposerSkillRange(el, textOffset);
+      } else if (savedRangeRef.current && el.contains(savedRangeRef.current.commonAncestorContainer)) {
         range = savedRangeRef.current;
         sel.removeAllRanges();
         sel.addRange(range);
-      } else if (sel.rangeCount > 0) {
+      } else if (sel.rangeCount > 0 && el.contains(sel.getRangeAt(0).commonAncestorContainer)) {
         range = sel.getRangeAt(0);
       } else {
         // 无光标，追加到末尾
@@ -3551,66 +3760,77 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   // 监听从 SkillPanel 发来的"跳转到聊天并插入技能"事件
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as {
-        skillName: string;
-        prefixText?: string;
-        suffixText?: string;
-        secondSkillName?: string;
-      };
-      const sid = useChatStore.getState().activeSessionId;
-      if (!sid || !inputRef.current) return;
-      const runtime = useSessionStore.getState().getRuntime(sid);
-      if (
-        isAgentGroupSelected(
-          runtime?.mode,
-          runtime?.agentGroupSelectionIntent,
-          runtime?.agentGroupBinding,
-          runtime?.agentGroupBindingPending,
-        )
-      ) return;
-
-      // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
-      inputRef.current.textContent = detail.prefixText || '';
-      inputRef.current.focus();
-
-      // 将光标移到末尾，确保技能 chip 插入在前缀文本之后
-      const range = document.createRange();
-      range.selectNodeContents(inputRef.current);
-      range.collapse(false);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-
-      // 先更新 store 中的 selectedSkills，再插入 chip DOM
-      useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
-      insertSkillChip(detail.skillName);
-
-      // 如果有后缀文本（如"帮我修改这个技能"），追加到 chip 之后
-      if (detail.suffixText) {
-        inputRef.current.appendChild(document.createTextNode(detail.suffixText));
-        // 光标移到末尾
-        const r = document.createRange();
-        r.selectNodeContents(inputRef.current);
-        r.collapse(false);
-        const s = window.getSelection();
-        s?.removeAllRanges();
-        s?.addRange(r);
-      }
-
-      // 如果有第二个技能（如被编辑的技能），追加 chip
-      if (detail.secondSkillName) {
-        useSessionStore.getState().addSelectedSkill(sid, detail.secondSkillName);
-        insertSkillChip(detail.secondSkillName);
-      }
-
-      // 同步纯文本到 store（chip 不进入纯文本，前缀/后缀文本会保留）
-      useChatStore.getState().setInputValue(sid, extractPlainText());
+  const handleInsertSkillFromPage = useCallback((e: Event) => {
+    const detail = (e as CustomEvent).detail as {
+      skillName: string;
+      prefixText?: string;
+      suffixText?: string;
+      secondSkillName?: string;
+      preserveDraft?: boolean;
     };
-    window.addEventListener('chat-input-insert-skill', handler);
-    return () => window.removeEventListener('chat-input-insert-skill', handler);
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid || !inputRef.current) return;
+    const runtime = useSessionStore.getState().getRuntime(sid);
+    if (
+      isAgentGroupSelected(
+        runtime?.mode,
+        runtime?.agentGroupSelectionIntent,
+        runtime?.agentGroupBinding,
+        runtime?.agentGroupBindingPending,
+      )
+    ) return;
+
+    if (detail.preserveDraft) {
+      const editor = inputRef.current;
+      const alreadyInserted = Array.from(editor.querySelectorAll<HTMLElement>('[data-skill]'))
+        .some((chip) => chip.dataset.skill === detail.skillName);
+      useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
+      // A saved selection from before navigation must not replace draft text.
+      if (!alreadyInserted) insertSkillChip(detail.skillName, readComposerText(editor).length);
+      return;
+    }
+
+    // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
+    inputRef.current.textContent = detail.prefixText || '';
+    inputRef.current.focus();
+
+    // 将光标移到末尾，确保技能 chip 插入在前缀文本之后
+    const range = document.createRange();
+    range.selectNodeContents(inputRef.current);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+
+    // 先更新 store 中的 selectedSkills，再插入 chip DOM
+    useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
+    insertSkillChip(detail.skillName);
+
+    // 如果有后缀文本（如"帮我修改这个技能"），追加到 chip 之后
+    if (detail.suffixText) {
+      inputRef.current.appendChild(document.createTextNode(detail.suffixText));
+      // 光标移到末尾
+      const r = document.createRange();
+      r.selectNodeContents(inputRef.current);
+      r.collapse(false);
+      const s = window.getSelection();
+      s?.removeAllRanges();
+      s?.addRange(r);
+    }
+
+    // 如果有第二个技能（如被编辑的技能），追加 chip
+    if (detail.secondSkillName) {
+      useSessionStore.getState().addSelectedSkill(sid, detail.secondSkillName);
+      insertSkillChip(detail.secondSkillName);
+    }
+
+    // 同步纯文本到 store（chip 不进入纯文本，前缀/后缀文本会保留）
+    useChatStore.getState().setInputValue(sid, extractPlainText());
   }, [extractPlainText, insertSkillChip]);
+  useEffect(() => {
+    window.addEventListener('chat-input-insert-skill', handleInsertSkillFromPage);
+    return () => window.removeEventListener('chat-input-insert-skill', handleInsertSkillFromPage);
+  }, [handleInsertSkillFromPage]);
   // 外部进入新会话时可以预选技能。把 canonical session state 同步成输入框
   // 中的 chip，避免用户开始编辑后被 handleEditorInput 误判为手动移除。
   useEffect(() => {
@@ -3621,6 +3841,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         .map((node) => node.getAttribute('data-skill'))
         .filter((name): name is string => Boolean(name)),
     );
+    const positions = useChatStore.getState().runtimes[activeSessionId]?.inputSkillPositions ?? [];
+    // Restore in DOM order, including multiple skills at the same text offset.
+    for (const { name, offset } of positions) {
+      if (selectedSkills.includes(name) && !existing.has(name)) {
+        insertSkillChip(name, offset);
+        existing.add(name);
+      }
+    }
     selectedSkills.forEach((skill) => {
       if (!existing.has(skill)) insertSkillChip(skill);
     });
@@ -3680,7 +3908,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleModeSwitch = useCallback(
     async (targetMode: AgentMode) => {
-      if (isProcessing || hasHistory || mode === targetMode) return;
+      if (modeLocked || mode === targetMode) return;
       // Draft-session in-place mode switch: skills picked for the previous
       // mode no longer apply, so drop them from the store and remove their
       // inline chips from the editor. (Switching from a real session enters a
@@ -3847,6 +4075,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         <div
           className={cx(
             'chat-input-container',
+            enterprise && 'chat-input-container--enterprise',
             showWorkContextRow && 'chat-input-container--work-home',
             (isModeMenuOpen || workMenuOpen) && 'chat-input-container--menu-open',
             composerSuggestion && !showSlashSuggestionBelow && 'chat-input-container--suggestion-open',
@@ -4325,7 +4554,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       data-testid="chat-panel-agent-picker-state"
                                       data-variant="loading"
                                     >
-                                      {t('common.loading')}
+                                      {agentPodNotice === 'starting' ? t('experts.podStarting') : t('common.loading')}
                                     </div>
                                   ) : pickerTab === 'agent' && agentOptionsStatus === 'error' ? (
                                 <div
@@ -4333,7 +4562,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   data-testid="chat-panel-agent-picker-state"
                                   data-variant="error"
                                 >
-                                  {t('agentManagement.states.loadError')}
+                                  {agentPodNotice === 'timeout' ? t('experts.podStartTimeout') : t('agentManagement.states.loadError')}
                                 </div>
                               ) : pickerTab === 'agent' && filteredAgentOptions.length === 0 ? (
                                 <div
@@ -4583,7 +4812,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!isTeamMode && (
+                        {!enterprise && !isTeamMode && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"
@@ -4726,7 +4955,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           </div>
                         )}
-                        {isTeamMode &&
+                        {!enterprise &&
+                          isTeamMode &&
                           (() => {
                             const toggleSwarmflow = (next: boolean) => {
                               if (!activeSessionId || swarmflowToggleDisabled) return;
@@ -4853,7 +5083,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
-                        {personalContextMasterEnabled && (
+                          {!enterprise && personalContextMasterEnabled && (
                           <div
                             className="chat-mode-select__option"
                             role="menuitem"
@@ -4906,7 +5136,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     data-testid="chat-panel-mode-select-trigger"
                     data-variant={currentMode.value}
                     onClick={() => {
-                      if (hasHistory || isProcessing) return;
+                      if (modeLocked) return;
                       if (!isModeMenuOpen && modeMenuRef.current) {
                         const rect = modeMenuRef.current.getBoundingClientRect();
                         setMenuDirection(resolveMenuDirection(rect.bottom, 160));
@@ -4914,9 +5144,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       }
                       setIsModeMenuOpen((open) => !open);
                     }}
-                    aria-haspopup="menu"
-                    aria-expanded={isModeMenuOpen}
-                    style={hasHistory || isProcessing ? { cursor: 'default' } : undefined}
+                    disabled={enterprise}
+                    aria-haspopup={enterprise ? undefined : 'menu'}
+                    aria-expanded={enterprise ? undefined : isModeMenuOpen}
+                    style={modeLocked ? { cursor: 'default' } : undefined}
                   >
                     <span className="chat-mode-select__value" data-testid="chat-panel-mode-select-value">
                       <span className="chat-mode-select__icon" aria-hidden="true">
@@ -4924,7 +5155,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </span>
                       <span className="chat-mode-select__label">{t(currentMode.i18nKey)}</span>
                     </span>
-                    {!hasHistory && !isProcessing && (
+                    {!modeLocked && (
                       <svg
                         className="chat-mode-select__chevron"
                         viewBox="0 0 20 20"
@@ -4938,7 +5169,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                   </button>
 
-                  {isModeMenuOpen &&
+                  {!enterprise &&
+                    isModeMenuOpen &&
                     modeMenuAnchor &&
                     createPortal(
                       <div
@@ -5008,7 +5240,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </div>,
                       document.body,
                     )}
-                  {isModeMenuOpen &&
+                  {!enterprise &&
+                    isModeMenuOpen &&
                     hoveredOptionDesc &&
                     hoveredOptionRect &&
                     createPortal(
@@ -5027,7 +5260,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       document.body,
                     )}
                 </div>
-                {!isTeamMode && (
+                {!enterprise && !isTeamMode && (
                   <PermissionSelector
                     mode={mode}
                     permissionProfile={permissionProfile}
@@ -5285,6 +5518,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   disabled={
                     isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
+                  allowModelGroups={!isDesignLanding}
                 />}
 
                 {taskAsrEnabled && <button

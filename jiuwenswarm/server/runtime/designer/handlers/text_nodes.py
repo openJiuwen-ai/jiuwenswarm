@@ -137,6 +137,21 @@ def _table_cell(value: Any) -> str:
     return " ".join(str(value or "").replace("|", "/").split())
 
 
+def _table_header() -> list[str]:
+    return [
+        "| " + " | ".join(header for _, header in STORYBOARD_COLUMNS) + " |",
+        "| " + " | ".join("---" for _ in STORYBOARD_COLUMNS) + " |",
+    ]
+
+
+def render_storyboard_shots(shots: list[StoryboardShot]) -> str:
+    """Render parsed storyboard rows back into the canonical table."""
+    lines = _table_header()
+    for shot in shots:
+        lines.append("| " + " | ".join(_table_cell(shot[field]) for field, _ in STORYBOARD_COLUMNS) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def _cast_names(ids: Any, id_to_name: dict[str, str]) -> list[str]:
     if not isinstance(ids, list):
         return []
@@ -161,10 +176,7 @@ def render_storyboard_table(
         for c in characters
         if isinstance(c, dict) and c.get("id")
     }
-    lines = [
-        "| " + " | ".join(header for _, header in STORYBOARD_COLUMNS) + " |",
-        "| " + " | ".join("---" for _ in STORYBOARD_COLUMNS) + " |",
-    ]
+    lines = _table_header()
     for position, shot in enumerate((s for s in shots if isinstance(s, dict)), start=1):
         on_screen = _cast_names(
             shot.get("on_screen") or shot.get("visible_cast_ids") or shot.get("character_ids"),
@@ -328,6 +340,12 @@ class BriefNodeHandler:
         meta = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
         approved = str(meta.get("approved_brief") or "").strip()
         if approved:
+            edit = str(cfg.get("user_edit_prompt") or "").strip()
+            if edit:
+                from jiuwenswarm.server.runtime.designer.story_edit import apply_story_edit
+
+                await apply_story_edit(ctx.graph, edit, delegate=str(cfg.get("delegate") or ""))
+                approved = str(ctx.graph["metadata"].get("approved_brief") or "").strip()
             _sync_style_authority(approved, ctx)
             text = _stamp_bible_on_text(approved, ctx)
             path = write_workspace_text(f"designer_brief_{ctx.run_id}_{ctx.node_id}", text)
@@ -362,10 +380,20 @@ class StoryboardNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         meta = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
         text = str(meta.get("approved_storyboard") or "").strip()
+        cfg = node_config(node)
+        edit = str(cfg.get("user_edit_prompt") or "").strip()
+        if text and edit:
+            from jiuwenswarm.server.runtime.designer.story_edit import apply_storyboard_edit
+
+            await apply_storyboard_edit(ctx.graph, edit, delegate=str(cfg.get("delegate") or ""))
+            text = str(ctx.graph["metadata"].get("approved_storyboard") or "").strip()
         if not text:
             planned = node_config(node).get("planned_shots")
             if not isinstance(planned, list) or not planned:
-                raise RuntimeError("Storyboard has no planned shots to tabulate.")
+                raise RuntimeError(
+                    "Storyboard has no planned shots because this graph was not built "
+                    "by the Director chain; rebuild the graph."
+                )
             analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
             characters = [c for c in (analysis.get("characters") or []) if isinstance(c, dict)]
             from jiuwenswarm.server.runtime.designer.pipeline.content_language import (

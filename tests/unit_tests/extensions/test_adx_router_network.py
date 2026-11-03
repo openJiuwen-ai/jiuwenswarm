@@ -7,26 +7,29 @@ import asyncio
 import json
 import ssl
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from test_adx_router import EnvironmentAPI, _config
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 from websockets.legacy.server import serve
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire, encode_agent_response_for_wire
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-import httpx
-from test_adx_router import _config, EnvironmentAPI
 from gateway.extensions.adx.control_client import AdxControlClient
 from gateway.extensions.adx.router_client import AdxRouterClient
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.e2a.wire_codec import (
+    encode_agent_chunk_for_wire,
+    encode_agent_response_for_wire,
+)
+from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
 
 def _certificate(tmp_path):
@@ -53,7 +56,7 @@ def _certificate(tmp_path):
 @asynccontextmanager
 async def _network(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        'jiuwenswarm.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
+        'gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
     )
     tls, ca_path = _certificate(tmp_path)
     monkeypatch.setenv("SSL_CERT_FILE", ca_path)
@@ -184,7 +187,7 @@ async def test_tls_or_ingress_auth_failure_never_sends_business_requests(tmp_pat
         if failure == "untrusted_ca":
             monkeypatch.delenv("SSL_CERT_FILE")
             monkeypatch.setattr(
-                'jiuwenswarm.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 0.1,
+                'gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 0.1,
             )
         config = router._config if failure == "untrusted_ca" else replace(router._config, token="wrong-key")
         api = EnvironmentAPI(config.tenant)

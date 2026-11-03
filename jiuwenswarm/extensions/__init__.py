@@ -6,9 +6,9 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "ExtensionLoader": ("jiuwenswarm.extensions.loader", "ExtensionLoader"),
-    "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
-    "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
+    "ExtensionLoader": ("gateway.extensions.loader", "ExtensionLoader"),
+    "ExtensionManager": ("gateway.extensions.manager", "ExtensionManager"),
+    "ExtensionRegistry": ("gateway.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
         "gateway.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",

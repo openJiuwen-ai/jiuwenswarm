@@ -111,11 +111,83 @@ export function otlpValue(value: OtlpAnyValue): unknown {
   return undefined
 }
 
+/**
+ * A last-value-wins attribute map that converts a value when it is read.
+ *
+ * An attribute restating a model call's history assembles its text on every
+ * read, and the lookups on this map name one key at a time: converting every
+ * entry up front would assemble each history to answer a question about
+ * another attribute.
+ */
+class ConvertedAttributeMap implements ReadonlyMap<string, unknown> {
+  readonly #values: ReadonlyMap<string, OtlpAnyValue>
+
+  constructor(values: ReadonlyMap<string, OtlpAnyValue>) {
+    this.#values = values
+  }
+
+  get size(): number {
+    return this.#values.size
+  }
+
+  get(key: string): unknown {
+    const value = this.#values.get(key)
+    return value === undefined ? undefined : otlpValue(value)
+  }
+
+  has(key: string): boolean {
+    return this.#values.has(key)
+  }
+
+  forEach(
+    callback: (value: unknown, key: string, map: ReadonlyMap<string, unknown>) => void,
+    thisArg?: unknown,
+  ): void {
+    this.#converted().forEach((value, key) => callback.call(thisArg, value, key, this))
+  }
+
+  entries(): MapIterator<[string, unknown]> {
+    return this.#converted().entries()
+  }
+
+  keys(): MapIterator<string> {
+    return this.#values.keys()
+  }
+
+  values(): MapIterator<unknown> {
+    return this.#converted().values()
+  }
+
+  [Symbol.iterator](): MapIterator<[string, unknown]> {
+    return this.entries()
+  }
+
+  // Walking the whole map is what reads every value, so only it converts all.
+  #converted(): Map<string, unknown> {
+    const converted = new Map<string, unknown>()
+    for (const [key, value] of this.#values) converted.set(key, otlpValue(value))
+    return converted
+  }
+}
+
 /** Build a last-value-wins attribute map from OTLP key/value entries. */
 export function attributeMap(attributes: readonly OtlpKeyValue[] | undefined): ReadonlyMap<string, unknown> {
-  const result = new Map<string, unknown>()
-  for (const attribute of attributes ?? []) result.set(attribute.key, otlpValue(attribute.value))
-  return result
+  const values = new Map<string, OtlpAnyValue>()
+  for (const attribute of attributes ?? []) values.set(attribute.key, attribute.value)
+  return new ConvertedAttributeMap(values)
+}
+
+/** The value the last entry for `key` states, read without touching the others. */
+function lastAttributeValue(
+  attributes: readonly OtlpKeyValue[] | undefined,
+  key: string,
+): unknown {
+  if (attributes === undefined) return undefined
+  for (let index = attributes.length - 1; index >= 0; index -= 1) {
+    const attribute = attributes[index]
+    if (attribute?.key === key) return otlpValue(attribute.value)
+  }
+  return undefined
 }
 
 /** Read a string attribute without coercing another OTLP value type. */
@@ -123,7 +195,7 @@ export function stringAttribute(
   attributes: readonly OtlpKeyValue[] | undefined,
   key: string,
 ): string | undefined {
-  const value = attributeMap(attributes).get(key)
+  const value = lastAttributeValue(attributes, key)
   return typeof value === 'string' ? value : undefined
 }
 
@@ -132,7 +204,7 @@ export function numberAttribute(
   attributes: readonly OtlpKeyValue[] | undefined,
   key: string,
 ): number | undefined {
-  const value = attributeMap(attributes).get(key)
+  const value = lastAttributeValue(attributes, key)
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value !== 'string' || value.trim() === '') return undefined
   const parsed = Number(value)

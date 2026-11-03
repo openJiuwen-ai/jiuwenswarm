@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_interactions_dir
+from gateway.common.paths import get_interactions_dir
 
 logger = logging.getLogger(__name__)
 

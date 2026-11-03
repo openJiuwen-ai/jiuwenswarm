@@ -164,9 +164,12 @@ class ExecutionAdmission:
     ) -> None:
         """Cancel queued work immediately; forward to Runtime when attached."""
         session_id = str(request.session_id or "").strip()
-        cancelled = await self._registry.cancel_session(session_id, owner=request) if session_id else []
         params = request.params if isinstance(request.params, dict) else {}
-        target_id = str(params.get("request_id") or "").strip()
+        target_id = str(params.get("target_request_id") or params.get("request_id") or "").strip()
+        cancelled = (
+            await self._registry.cancel_session(session_id, owner=request)
+            if session_id and not target_id else []
+        )
         if target_id:
             tracked = await self._registry.cancel(target_id, owner=request)
             if tracked is not None and tracked not in cancelled:

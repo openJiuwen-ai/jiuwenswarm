@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-from jiuwenswarm.common.config import get_config
+from gateway.common.config import get_config
 
 
 def response_language_line() -> str:

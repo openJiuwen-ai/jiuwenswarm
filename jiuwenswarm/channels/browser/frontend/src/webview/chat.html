@@ -3087,6 +3087,7 @@ function renderAskUserQuestion(rid, payload) {
     (payload.source === 'confirm_interrupt' ? 'Exit Plan and Execute' : 'Question');
   const question = payload.question || q.question || q.message || '';
   const source = payload.source || q.source || 'confirm_interrupt';
+  const interruptId = typeof payload.interrupt_id === 'string' ? payload.interrupt_id : '';
 
   // Waiting for the user — stop the typing animation
   if (pt.typingEl) {
@@ -3117,7 +3118,7 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
-      sendAnswerForInterrupt(pt, rid, source, btn.dataset.value);
+      sendAnswerForInterrupt(pt, rid, source, btn.dataset.value, interruptId);
     });
   });
 
@@ -3126,7 +3127,7 @@ function renderAskUserQuestion(rid, payload) {
   scrollToBottom();
 }
 
-function sendAnswerForInterrupt(pt, rid, source, optionValue) {
+function sendAnswerForInterrupt(pt, rid, source, optionValue, interruptId) {
   pt.questionAnswered = true;
   const statusEl = pt.pendingQuestion ? pt.pendingQuestion.querySelector('.question-status') : null;
   if (statusEl) statusEl.textContent = 'Answer sent — waiting for the agent to continue…';
@@ -3135,6 +3136,7 @@ function sendAnswerForInterrupt(pt, rid, source, optionValue) {
     mode: state.mode,
     requestId: rid,
     source: source,
+    interruptId: interruptId,
     answers: [{ selected_options: [optionValue], custom_input: '' }],
   });
 }

@@ -86,6 +86,7 @@ function getGroupMemberIds(members: TeamMember[]): string[] {
 }
 
 function isGroupMessageItem(item: { message: Message; event: ParsedTeamEvent | null }): item is GroupMessageItem {
+  // P2P-to-user stays visible here. Plain Leader output is shown in this Team's chat instead.
   return item.event !== null && !item.event.isLeaderToUser;
 }
 

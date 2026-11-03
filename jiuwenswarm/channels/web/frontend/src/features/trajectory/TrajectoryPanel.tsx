@@ -53,6 +53,7 @@ import {
   rebuildRecord,
   unresolvedAttributesByRecordId,
   unresolvedHeadsOf,
+  withSequenceText,
 } from './trajectorySequences';
 import {
   exitTrajectoryReplay,
@@ -109,6 +110,7 @@ import {
   laneRangeOf,
   selectOnAxis,
   selectOnLane,
+  shouldShowIncludeToggle,
   toggleAgent,
   toggleSelectAllOnLane,
   unionWallRange,
@@ -1440,9 +1442,15 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     () => displayedRawRecords.find(record => detailRecordIdentity(record) === rawSelection),
     [displayedRawRecords, rawSelection],
   );
+  // The tree reads every value on each render, and a value stated by
+  // reference assembles its text on each read: show one copy with the text.
+  const rawRecordData = useMemo(
+    () => (rawRecord?.otlp == null ? undefined : withSequenceText(rawRecord.otlp)),
+    [rawRecord],
+  );
   const rawData = replayView === null
-    ? rawRecord?.otlp ?? (fetchedRaw?.identity === rawSelection ? fetchedRaw.data : undefined)
-    : rawRecord?.otlp ?? replayView.rawDataByRecordId.get(rawSelection);
+    ? rawRecordData ?? (fetchedRaw?.identity === rawSelection ? fetchedRaw.data : undefined)
+    : rawRecordData ?? replayView.rawDataByRecordId.get(rawSelection);
 
   const loadSelectedRaw = useCallback(async () => {
     if (replayArchive !== null) return;
@@ -1821,6 +1829,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   isIncluded: (subjectId: string) => (
                     fullScopeSelection || isAgentIncluded(selection.state, subjectId)
                   ),
+                  // Show while a shared brush is active, or this lane already
+                  // has a window (uncheck clears it). Hidden for full-trajectory
+                  // picks and when nothing is selected.
+                  showIncludeToggle: (subjectId) => (
+                    shouldShowIncludeToggle(selection.state, fullScopeSelection, subjectId)
+                  ),
                   onToggle: (subjectId: string) => {
                     if (fullScopeSelection) {
                       leaveFullScope();
@@ -1840,12 +1854,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     )) !== null
                   ),
                   isSelectAllActive: (subjectId: string) => {
+                    // Full-trajectory pick does not flip lane "select all" to
+                    // "clear" — those buttons stay available to narrow the pick
+                    // to one agent's whole span.
+                    if (fullScopeSelection) return false;
                     const intervals = rawOtelSpanIntervals(
                       subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
                     );
-                    return fullScopeSelection
-                      ? unionWallRange(intervals) !== null
-                      : isAgentFullySelected(selection.state, subjectId, intervals);
+                    return isAgentFullySelected(selection.state, subjectId, intervals);
                   },
                   onSelectAll: (subjectId: string) => {
                     const intervals = rawOtelSpanIntervals(
@@ -1853,13 +1869,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     );
                     if (fullScopeSelection) {
                       leaveFullScope();
-                      const full = fullWallRange();
-                      if (full === null) {
-                        selection.onChange(() => EMPTY_DIAGNOSIS_SELECTION);
-                        return;
-                      }
-                      // Cancel full-scope for this agent only; keep the rest selected.
-                      selection.onChange(() => toggleAgent(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, full), subjectId));
+                      // Replace the whole-trajectory pick with this lane only.
+                      selection.onChange(() => (
+                        toggleSelectAllOnLane(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals)
+                      ));
                       return;
                     }
                     selection.onChange(current => toggleSelectAllOnLane(current, subjectId, intervals));
@@ -1927,7 +1940,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                       ? (range: TrajectoryTimeRange | null) => selectOnLaneRange(subjectId, range)
                       : ignoreTimelineRange,
                     spanSelectsRange: selecting,
-                    lockTimelineViewport: true,
+                    // Pan with a grab cursor after zoom, like the duration overview.
+                    // Selection mode locks the viewport so a left-drag paints the brush.
+                    lockTimelineViewport: selecting,
                     sharedViewport: timeAxis.viewport,
                     onSharedViewportChange: timeAxis.updateViewport,
                     sharedViewportRef: timeAxis.viewportRef,

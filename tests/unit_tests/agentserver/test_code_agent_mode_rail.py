@@ -14,6 +14,47 @@ from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import CodeAgent
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+async def test_plan_mode_keeps_pcs_search_and_still_rejects_unrelated_tools(profile) -> None:
+    from jiuwenswarm.agents.harness.work.rails.work_agent_mode_rail import WorkAgentModeRail
+    with patch("jiuwenswarm.common.config._read_with_retry", return_value={}):
+        from jiuwenswarm.server.runtime.agent_adapter.interface_code import _CODE_PLAN_ALLOWED_TOOLS
+
+    rail = WorkAgentModeRail(language="en") if profile == "work" else CodeAgentModeRail(
+        allowed_tools=list(_CODE_PLAN_ALLOWED_TOOLS), plan_mode_system_note="Read-only planning",
+    )
+    agent = MagicMock()
+    agent.load_state.return_value = SimpleNamespace(plan_mode=SimpleNamespace(mode="plan", plan_slug="pcs"))
+    agent.deep_config = SimpleNamespace(subagents=[])
+    rail._agent = agent
+    rail.system_prompt_builder = MagicMock(language="en")
+    rail.attachment_manager = None
+    ctx = SimpleNamespace(
+        session=SimpleNamespace(session_id="pcs-plan-test"),
+        inputs=SimpleNamespace(
+            tool_name="pcs_search", tool_args={"query": "project notes"},
+            tool_call=SimpleNamespace(id="pcs-plan-call"),
+            tools=[SimpleNamespace(name="pcs_search"), SimpleNamespace(name="send_file_to_user")],
+        ),
+        extra={},
+    )
+    await rail.before_model_call(ctx)
+    assert [tool.name for tool in ctx.inputs.tools] == ["pcs_search"]
+    await rail.before_tool_call(ctx)
+    assert not ctx.extra.get("_skip_tool", False)
+
+    forbidden_ctx = SimpleNamespace(
+        session=ctx.session,
+        inputs=SimpleNamespace(
+            tool_name="send_file_to_user", tool_args={}, tool_call=SimpleNamespace(id="blocked-call"),
+        ),
+        extra={},
+    )
+    await rail.before_tool_call(forbidden_ctx)
+    assert forbidden_ctx.extra.get("_skip_tool") is True
+
+
+@pytest.mark.asyncio
 async def test_before_tool_call_blocks_switch_mode_exit_in_plan_mode() -> None:
     rail = CodeAgentModeRail(allowed_tools=["switch_mode"])
     agent = MagicMock()

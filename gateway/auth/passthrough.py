@@ -59,9 +59,9 @@ def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any]
     ``credential_ref`` 是这个登录账号的句柄：AgentServer 把 id_token 按它登记，模型配置里
     只放句柄，发请求时再换成真 token（见 ``login_credentials``）。
     """
-    from jiuwenswarm.common.auth.apig import resolve_apig_config
-    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
-    from jiuwenswarm.common.auth.service import ModelAuthRequired, live_session
+    from gateway.auth.apig import resolve_apig_config
+    from gateway.auth.login_credentials import credential_ref_for_user
+    from gateway.auth.service import ModelAuthRequired, live_session
 
     if not session_id:
         return None
@@ -96,13 +96,13 @@ def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
 
     这是同步 HTTP（续期），调用方要放到线程里跑。句柄格式不对返回 ``None``。
     """
-    from jiuwenswarm.common.auth.login_credentials import (
+    from gateway.auth.login_credentials import (
         REFRESH_AHEAD_S,
         credential_ref_for_user,
         is_credential_ref,
     )
-    from jiuwenswarm.common.auth.service import get_auth_service
-    from jiuwenswarm.common.auth.session_store import get_session_store
+    from gateway.auth.service import get_auth_service
+    from gateway.auth.session_store import get_session_store
 
     if not is_credential_ref(credential_ref):
         return None
@@ -123,8 +123,8 @@ def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
 
 def _is_login_model(model_name: str, session_id: str | None) -> bool:
     """请求的模型是不是登录来源。名字带 #index 后缀时取前半段（通道侧的全局序号）。"""
-    from jiuwenswarm.common.auth.login_credentials import bare_model_name
-    from jiuwenswarm.common.auth.model_catalog import get_models
+    from gateway.auth.login_credentials import bare_model_name
+    from gateway.auth.model_catalog import get_models
 
     try:
         # allow_refresh=False：这里在 Gateway 的转发热路径上，不能为了刷模型目录
@@ -144,7 +144,7 @@ def expired_login_session(params: dict[str, Any], session_id: str | None):
     小时后发的第一条消息会被当成"未登录"。调用方拿到会话后应先续期（放线程里）再转发。
     只看内存 / 本地缓存，不发网络请求，可以直接在事件循环上调。
     """
-    from jiuwenswarm.common.auth.service import get_auth_service
+    from gateway.auth.service import get_auth_service
 
     model_name = str(params.get("model_name") or "").strip()
     # 先判模型：自配模型的请求不碰会话存储，开销和改动前一样

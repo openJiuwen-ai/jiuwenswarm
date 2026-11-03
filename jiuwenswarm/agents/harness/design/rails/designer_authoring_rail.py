@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__)
 
 TOOL_NAME = "designer_graph_autorun"
 SECTION_NAME = "designer_authoring"
+AUTORUN_FAILURE_HINT = (
+    "建图失败：不要用 designer_graph_patch 手动拼图，"
+    "把上面的错误原因转告用户，等用户调整需求或要求重试。"
+)
 
 _PROMPT_CN = """# 画布建图（designer_graph_autorun）
 
@@ -174,7 +178,7 @@ class DesignerAuthoringRail(DeepAgentRail):
             try:
                 require_llm()
             except DesignerLlmError as exc:
-                return f"error: {exc.user_message}"
+                return f"error: {exc.user_message}\n{AUTORUN_FAILURE_HINT}"
             preferred_model = str(
                 (graph.get("metadata") or {}).get("model_name") or ""
             ).strip()
@@ -186,7 +190,7 @@ class DesignerAuthoringRail(DeepAgentRail):
                         on_stage=_stage_emitter(channel_id, self._session_id),
                     )
             except DirectorChainError as exc:
-                return f"error: {exc.user_message}"
+                return f"error: {exc.user_message}\n{AUTORUN_FAILURE_HINT}"
             saved = store.save_graph(composed)
             _retitle_session(self._session_id, saved, prompt)
             # The chat surface is async (accept-and-trigger): nothing else

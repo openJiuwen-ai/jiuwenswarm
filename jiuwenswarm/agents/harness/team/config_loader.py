@@ -15,7 +15,7 @@ from openjiuwen.agent_teams.paths import get_agent_teams_home
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
-from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.config import coerce_subtask_depth, get_config, get_default_models
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_free_model_entries
 
@@ -613,6 +613,8 @@ def load_team_spec_dict(
     spec_dict["bootstrap_mode"] = team_raw.get("bootstrap_mode", "leader")
     spec_dict["enable_task_verification"] = team_raw.get("enable_task_verification", False)
     spec_dict["enable_member_messaging"] = team_raw.get("enable_member_messaging", False)
+    # Scheduled members split their task into subtasks (core F_128); 0 = off.
+    spec_dict["max_subtask_depth"] = coerce_subtask_depth(team_raw.get("max_subtask_depth", 0))
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
     # Experimental switch drives both frontend UI and backend org tools.

@@ -130,9 +130,20 @@ async def test_group_request_routes_without_prompt_and_finishes_public_ack(monke
     monkeypatch.setattr(team_helpers, "update_session_metadata", Mock())
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", Mock())
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
-    request = _runtime_followup_request(
-        "session-group", "req-group",
-        params={"type": "group_chat", "mentions": mentions},
+    # AgentRequest (not SimpleNamespace): stream path uses dataclasses.replace().
+    # Active follow-ups need TeamExecutionContext + waiter_kind=NONE so the
+    # interact path does not attach an undrainable persistent waiter.
+    group_params = {"type": "group_chat", "mentions": mentions}
+    request = (
+        _runtime_followup_request("session-group", "req-group", group_params)
+        if active
+        else AgentRequest(
+            request_id="req-group",
+            channel_id="web",
+            session_id="session-group",
+            metadata={},
+            params={"mode": "team", **group_params},
+        )
     )
     chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
         request, {"query": "讨论"}, object(),
@@ -852,6 +863,24 @@ class _CronFakeManager(_InactiveTeamRuntimeManagerMixin):
     @classmethod
     def get_cron_completion(cls, session_id: str) -> dict | None:
         return cls._completion.get(session_id)
+
+    @classmethod
+    def cron_completion_owner(cls, session_id: str, request_id: str) -> dict:
+        return {"request_id": request_id, "stream_task": cls._stream_tasks.get(session_id)}
+
+    @classmethod
+    async def finish_cron_stream(cls, session_id: str, completion: dict, round_id) -> None:
+        task = cls.pop_stream_task(session_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await team_helpers._broadcast_event("tui", session_id, {
+            "event_type": "chat.processing_status", "is_processing": False, "rid": round_id,
+        })
+        cls.pop_cron_completion(session_id)
 
     @classmethod
     def pop_stream_task(cls, session_id: str, *, generation: int | None = None) -> asyncio.Task | None:
@@ -4704,7 +4733,14 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch):
+async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    ledger = SessionTokenUsageLedger(tmp_path / "sess-leader-only", "sess-leader-only")
+    ledger.record("call-leader", "main", 100, 20)
+    ledger.record("call-member", "others", 50, 10)
     broadcasted: list[dict] = []
     ready_calls: list[tuple[str, str]] = []
 
@@ -4811,6 +4847,10 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     )
 
     assert ready_calls == [("sess-leader-only", "demo-team")]
+    for event in broadcasted:
+        if event["event_type"] == "chat.final":
+            assert event["session_usage"]["main"]["input_tokens"] == 100
+            assert event["session_usage"]["others"]["output_tokens"] == 10
     # Leader finals are content events, not Team round terminals.  The runtime
     # may emit several of them before team.completed; only the framework
     # terminal or a terminal-less stream close produces
@@ -6201,6 +6241,65 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
     assert ask_events[0]["request_id"] == "tool-ask-1"
 
 
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_forwards_the_leader_pause_with_its_interrupt_id(monkeypatch):
+    from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
+
+    broadcasted: list[dict] = []
+    request = ToolCallInterruptRequest(
+        tool_call_id="tool-ask-1",
+        tool_name="ask_user",
+        tool_args='{"query": "Which colour?"}',
+        interrupt_id="intr_ask_1",
+        interrupt_kind="ask_user",
+    )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="__interaction__",
+            payload=SimpleNamespace(id="tool-ask-1", value=request),
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-ask-pause",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    ask_events = [
+        event
+        for event in broadcasted
+        if event.get("event_type") == "chat.ask_user_question"
+    ]
+    assert [(event["request_id"], event["interrupt_id"], event["kind"]) for event in ask_events] == [
+        ("tool-ask-1", "intr_ask_1", "ask_user"),
+    ]
+    assert ask_events[0]["questions"][0]["question"] == "Which colour?"
+
 def test_extract_query_directives_ignores_non_prefix():
     cleaned, hide_dm, debug = _TeamHelpersTestApi.extract_query_directives(
         "/hide_dmsomething else"
@@ -7339,8 +7438,12 @@ async def test_broadcast_team_state_snapshot_replays_mirrored_workflow_members(m
 
 
 @pytest.mark.anyio
-async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch):
-    """A DB member already covering a run member id is not emitted twice."""
+@pytest.mark.parametrize("colliding_field", ["members", "departed_members"])
+async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch, colliding_field):
+    """A DB member already covering a run member id is not emitted twice.
+
+    A departed DB member still owns its id, so it blocks the replay too.
+    """
     broadcast_events: list[dict] = []
     run = WorkflowRunState(
         id="run-1",
@@ -7368,14 +7471,14 @@ async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(
     class _FakeMonitorHandler:
         @staticmethod
         async def get_team_snapshot():
-            return {
+            snapshot = {
                 "team_id": "team-snapshot-test",
-                "members": [
-                    {"member_id": "agent1", "status": "ready"},
-                    {"member_id": "run-1:a-claude", "status": "busy"},
-                ],
+                "members": [{"member_id": "agent1", "status": "ready"}],
+                "departed_members": [],
                 "tasks": [],
             }
+            snapshot[colliding_field].append({"member_id": "run-1:a-claude", "status": "busy"})
+            return snapshot
 
     class _FakeManager:
         @staticmethod

@@ -24,6 +24,8 @@ def _log_preparation_stage(stage: str, began: float) -> None:
 
 def _configure_openjiuwen_logging() -> None:
     """Install OpenJiuwen logging after the Worker IPC socket is listening."""
+    from openjiuwen.core.common.logging import LogManager
+
     from jiuwenswarm.common.media_capability_config import (
         migrate_media_capability_switches,
     )
@@ -32,7 +34,6 @@ def _configure_openjiuwen_logging() -> None:
         get_env_file,
         get_root_dir,
     )
-    from openjiuwen.core.common.logging import LogManager
 
     migrate_media_capability_switches(get_env_file())
     apply_free_search_runtime_defaults()
@@ -130,11 +131,13 @@ def _configure_openjiuwen_logging() -> None:
 
 
 def _apply_runtime_entry_patches() -> None:
-    from jiuwenswarm.common.native_tokenizer_cache import install_native_tokenizer_cache
     from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
         install_shell_tool_safety_hooks,
     )
-    from jiuwenswarm.common.llm_provider_compat_patch import apply_provider_compat_patches
+    from jiuwenswarm.common.llm_provider_compat_patch import (
+        apply_provider_compat_patches,
+    )
+    from jiuwenswarm.common.native_tokenizer_cache import install_native_tokenizer_cache
     from jiuwenswarm.common.team_workspace_read_guard import (
         install_team_workspace_read_guard,
         preload_bundled_team_descriptions,
@@ -153,7 +156,9 @@ def _apply_runtime_entry_patches() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("[TeamWorkspace] optional bundled description preload failed", exc_info=True)
     try:
-        from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
+        from jiuwenswarm.common.auth.login_credentials import (
+            apply_login_credential_patch,
+        )
 
         apply_login_credential_patch()
     except Exception:  # noqa: BLE001 — 补丁装不上不该拖垮启动
@@ -214,9 +219,9 @@ def _preload_sdk_execution_modules() -> None:
     """Import required SDK code only; do not construct clients or read Swarm config."""
     began = time.monotonic()
     from openjiuwen.core.runner import Runner  # noqa: F401
-    from openjiuwen.harness.tools.shell import BashTool, PowerShellTool  # noqa: F401
     from openjiuwen.harness import DeepAgent  # noqa: F401
     from openjiuwen.harness.factory import create_deep_agent  # noqa: F401
+    from openjiuwen.harness.tools.shell import BashTool, PowerShellTool  # noqa: F401
 
     _log_preparation_stage("sdk_execution_imports", began)
 
@@ -265,7 +270,10 @@ def preload_runtime_backend() -> None:
     _log_preparation_stage("required_parallel_join", began)
     began = time.monotonic()
     _configure_openjiuwen_logging()
-    from jiuwenswarm.common.background_logging import install_core_logging_queue, wrap_log_handlers
+    from jiuwenswarm.common.background_logging import (
+        install_core_logging_queue,
+        wrap_log_handlers,
+    )
 
     install_core_logging_queue()
     wrap_log_handlers()
@@ -277,8 +285,8 @@ def preload_runtime_backend() -> None:
     import openjiuwen.core.runner  # noqa: F401
     _log_preparation_stage("runner_import", began)
     began = time.monotonic()
-    import jiuwenswarm.extensions.manager  # noqa: F401
-    import jiuwenswarm.extensions.registry  # noqa: F401
+    import gateway.extensions.manager  # noqa: F401
+    import gateway.extensions.registry  # noqa: F401
     _log_preparation_stage("extension_imports", began)
     began = time.monotonic()
     import jiuwenswarm.server.agent_ws_server  # noqa: F401

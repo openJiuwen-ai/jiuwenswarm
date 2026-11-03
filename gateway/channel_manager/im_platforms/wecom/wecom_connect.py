@@ -28,9 +28,9 @@ from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
 from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.common.paths import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -911,7 +911,7 @@ class WecomChannel(BaseChannel):
         # 写入 last_chat_id 和 last_user_id 供 cron/心跳推送使用
         if chatid and not self._looks_like_msgid(chatid):
             try:
-                from jiuwenswarm.common.config import update_channel_in_config
+                from gateway.common.config import update_channel_in_config
 
                 update_data: dict[str, str] = {"last_chat_id": chatid or ""}
                 if sender_user_id:
@@ -1047,7 +1047,7 @@ class WecomChannel(BaseChannel):
                 logger.info("[WecomChannel] _extract_chatid: 返回session_id=%s", sid_str)
                 return sid_str
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
             ch_cfg = (get_config().get("channels") or {}).get("wecom") or {}
             # last_chat_id：用户聊天时自动写入；default_chat_id：可手动配置，用于心跳/定时推送
             last = str(ch_cfg.get("last_chat_id") or ch_cfg.get("default_chat_id") or "").strip()

@@ -6,15 +6,15 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
-
-from jiuwenswarm.common.schema import Message
 from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
+
+from jiuwenswarm.common.schema import Message
 from gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from gateway.routing.session_sharing import SubRole
 
@@ -103,6 +103,143 @@ class _TestMessageHandler(MessageHandler):
 
     async def cancel_agent_work_for_session(self, msg: Message, session_id: str) -> None:
         await getattr(self, "_cancel_agent_work_for_session")(msg, session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("session_id", "outcome"), [
+    ("__cron___old", "completed"), ("web_new", "completed"),
+    ("web_new", "paused"), ("web_new", "failed"),
+])
+async def test_permission_resume_releases_hold_independently_of_session_prefix(monkeypatch, session_id, outcome):
+    from gateway.cron.scheduler import CronSchedulerService
+
+    class ResumeClient(_FakeAgentClient):
+        @staticmethod
+        async def send_request_stream(env):
+            if outcome == "failed":
+                raise RuntimeError("resume failed")
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.ask_user_question"} if outcome == "paused" else {
+                    "event_type": "chat.processing_status", "is_processing": False,
+                },
+            )
+
+    handler = _TestMessageHandler.create_with_client(ResumeClient())
+    scheduler = object.__new__(CronSchedulerService)
+    state = SimpleNamespace(exec_session_id=session_id, job_id="job", status="awaiting_approval")
+    scheduler._runs = {"run": state}
+    scheduler._jobs = {}
+    scheduler._permission_hold = {"job": (float("inf"), session_id)}
+    scheduler._schedule_hold_redis_clear = Mock()
+    scheduler._now_fn = lambda: 123.0
+    monkeypatch.setattr("gateway.cron.live_bus.cron_live_bus.clear_session", Mock())
+    mark = Mock(wraps=scheduler.mark_permission_resume_succeeded)
+    handler.set_cron_controller(SimpleNamespace(mark_permission_resume_succeeded=mark))
+    monkeypatch.setattr(handler, "_sync_agentos_cron_jobs", AsyncMock())
+    monkeypatch.setattr(handler, "_apply_session_login_owner", AsyncMock())
+    monkeypatch.setattr(handler, "publish_stream_chunk", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "_publish_stream_error", AsyncMock())
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "_notify_chat_completed", Mock())
+    envelope = e2a_from_agent_fields(
+        request_id="approval-reply", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        params={"source": "permission_interrupt", "request_id": "approval", "answers": ["allow"]},
+    )
+    await handler.process_stream(envelope, session_id, None)
+    if outcome == "completed":
+        mark.assert_called_once_with(session_id)
+        assert scheduler._permission_hold == {}
+        assert state.status == "succeeded"
+    else:
+        mark.assert_not_called()
+        assert "job" in scheduler._permission_hold
+        assert state.status == "awaiting_approval"
+
+
+@pytest.mark.asyncio
+async def test_background_cron_cleanup_preserves_newer_stream_processing(monkeypatch):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, metadata={"app_id": "default"}, is_stream=True,
+    )
+    await handler.register_background_stream(envelope, "session")
+    newer = _seed_stream_task(handler, rid="next", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["next"] = True
+    try:
+        await handler.finish_background_stream(envelope, "session")
+        assert "cron-first" not in handler._stream_tasks
+        assert handler._stream_tasks["next"] is newer
+        assert not newer.done()
+        assert handler._send_processing_status.await_count == 1
+        assert handler._send_processing_status.call_args.kwargs["is_processing"] is True
+    finally:
+        newer.cancel()
+        await asyncio.gather(newer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_received", [False, True])
+async def test_background_cron_sends_only_one_processing_terminal(monkeypatch, terminal_received):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "_handle_evolution_chunk", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "publish_robot_messages", AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, metadata={"app_id": "default", "source": "cron", "cron": {"job_id": "job"}},
+        is_stream=True,
+    )
+    await handler.register_background_stream(envelope, "session")
+    if terminal_received:
+        assert await handler.publish_stream_chunk(AgentResponseChunk(
+            request_id="cron-first", channel_id="web", is_complete=False,
+            payload={"event_type": "chat.processing_status", "is_processing": False, "is_complete": True},
+        ), session_id="session", request_metadata={"cron_session_stream": True})
+        published = handler.publish_robot_messages.await_args.args[0]
+        assert published.metadata["source"] == "cron"
+        assert published.metadata["cron"] == {"job_id": "job"}
+    await handler.finish_background_stream(envelope, "session")
+    assert handler._send_processing_status.await_count == (1 if terminal_received else 2)
+    assert "cron-first" not in handler._stream_processing_finished
+    assert "cron-first" not in handler._stream_sessions
+
+
+@pytest.mark.asyncio
+async def test_new_chat_is_registered_before_processing_true_is_published(monkeypatch):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "process_stream", AsyncMock())
+    first = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, is_stream=True,
+    )
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    await handler.register_background_stream(first, "session")
+    statuses = []
+
+    async def publish_status(rid, session_id, channel_id, *, is_processing, **kwargs):
+        statuses.append((rid, is_processing))
+        if rid == "next" and is_processing:
+            await handler.finish_background_stream(first, "session")
+
+    monkeypatch.setattr(handler, "_send_processing_status", publish_status)
+    msg = _chat_send_message(channel_id="web", session_id="session")
+    msg.id = "next"
+    envelope = e2a_from_agent_fields(
+        request_id="next", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, is_stream=True,
+    )
+    await handler._start_stream_task(msg, envelope, "next")
+    await handler._stream_tasks["next"]
+    assert statuses == [("next", True)]
+    handler._pop_stream_tracking("next")
 
 
 def _chat_send_message(
@@ -397,20 +534,24 @@ async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
-async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent):
+@pytest.mark.parametrize("owner_flag", [None, "organization_owner_stop", "organization_stop"])
+async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent, owner_flag):
     handler = _TestMessageHandler.create()
 
     async def _metadata(*args, **kwargs):
         return {"team_name": "owner"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.external_providers.provider",
+        "gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
     msg.req_method = ReqMethod.CHAT_CANCEL
     msg.is_stream = False
-    msg.params.update({"target_team_id": "expert", "intent": intent})
+    target = "owner" if owner_flag else "expert"
+    msg.params.update({"target_team_id": target, "intent": intent})
+    if owner_flag:
+        msg.params[owner_flag] = True
     session_cancel = AsyncMock()
     monkeypatch.setattr(handler, "_cancel_agent_work_for_session", session_cancel)
     owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
@@ -421,7 +562,9 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
             while not _FakeAgentClient.sent_requests:
                 await asyncio.sleep(0)
         env = _FakeAgentClient.sent_requests[0]
-        assert env.params["target_team_id"] == "expert"
+        assert env.params["target_team_id"] == target
+        if owner_flag:
+            assert env.params[owner_flag] is True
         assert env.params["intent"] == intent
         assert not owner.done()
         session_cancel.assert_not_awaited()
@@ -468,7 +611,7 @@ async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_kno
         return {"team_name": owner}
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.external_providers.provider",
+        "gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
@@ -487,7 +630,7 @@ async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypa
         raise SessionMetadataRemoteUnavailable("session metadata read failed")
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.external_providers.provider",
+        "gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
@@ -1321,3 +1464,55 @@ def test_is_team_chat_send_recognizes_all_team_modes(mode: str, expected: bool) 
     _is_team_chat_send = getattr(MessageHandler, "_is_team_chat_send")
     msg = _chat_send_message(channel_id="web", session_id="sess", mode=mode)
     assert _is_team_chat_send(msg) is expected
+
+
+@pytest.mark.asyncio
+async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-replica gateway delete must interrupt AgentServer by session.
+
+    Local stream task cancel alone leaves AgentServer running until
+    output_detached; stop_forwarding must CHAT_CANCEL first (hard stop, not
+    client_disconnect pause).
+    """
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+    handler = _TestMessageHandler.create()
+    task_a = _seed_stream_task(
+        handler, rid="rid-a", channel_id="web", session_id="sess_a",
+    )
+    task_b = _seed_stream_task(
+        handler, rid="rid-b", channel_id="web", session_id="sess_b",
+    )
+    # Same session twice → one interrupt only.
+    _seed_stream_task(
+        handler, rid="rid-a2", channel_id="web", session_id="sess_a",
+    )
+
+    await handler.stop_forwarding()
+
+    assert len(_FakeAgentClient.sent_requests) == 2
+    session_ids = {
+        str(getattr(env, "session_id", "") or "").strip()
+        for env in _FakeAgentClient.sent_requests
+    }
+    assert session_ids == {"sess_a", "sess_b"}
+    for env in _FakeAgentClient.sent_requests:
+        assert getattr(env, "method", None) == "chat.interrupt"
+        params = getattr(env, "params", None) or {}
+        assert params.get("intent") == "cancel"
+        ctx = getattr(env, "channel_context", None) or {}
+        assert ctx.get("_jiuwenswarm_cancel_source") != "client_disconnect"
+    assert task_a.done()
+    assert task_b.done()
+    assert not handler._stream_tasks
+
+
+@pytest.mark.asyncio
+async def test_stop_forwarding_with_no_in_flight_skips_interrupt() -> None:
+    handler = _TestMessageHandler.create()
+    await handler.stop_forwarding()
+    assert _FakeAgentClient.sent_requests == []

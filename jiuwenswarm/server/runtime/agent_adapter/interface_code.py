@@ -68,6 +68,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_context_engine_config_for_model,
     _deep_agent_kv_cache_affinity_config,
     parse_int,
+    resolve_cron_execution_flag,
+)
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    apply_discovery_metadata,
 )
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
@@ -509,6 +513,7 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "subagent_close",
     "subagent_resume",
     "read_file",
+    "pcs_search",
     "grep",
     "list_files",
     "glob",
@@ -860,13 +865,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Collect tools materialized by either Code or standard providers."""
         context = self._code_build_context
         if isinstance(context, code_agent_spec.CodeBuildContext):
-            return [
+            cards = [
                 tool.card
                 for tool in context.artifacts.tools
                 if getattr(tool, "card", None) is not None
             ]
-        deep_config = getattr(self._instance, "deep_config", None)
-        return list(getattr(deep_config, "tools", None) or [])
+        else:
+            deep_config = getattr(self._instance, "deep_config", None)
+            cards = list(getattr(deep_config, "tools", None) or [])
+        return [apply_discovery_metadata(card) for card in cards]
 
     def _build_code_spec_snapshot(
         self,
@@ -1008,7 +1015,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             or ""
         ).strip() or getattr(self, "_channel_id", "")
 
-        self._is_cron_execution = self._channel_id == "__cron__"
+        self._is_cron_execution = resolve_cron_execution_flag(
+            channel_id=self._channel_id,
+            is_session_scoped=self._is_session_scoped_adapter,
+            config=config,
+        )
 
         await self.set_checkpoint()
 
@@ -2356,7 +2367,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             rail_pkg_dir = Path(_dr_pkg.__file__).resolve().parent
             rail = _DesignRail(
                 rail_pkg_dir=rail_pkg_dir,
-                project_dir=self._project_dir or os.getcwd(),
+                project_dir=self._project_dir or self._workspace_dir,
             )
             logger.info("[JiuwenSwarmCodeAdapter] DesignRail create success")
             return rail

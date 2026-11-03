@@ -484,6 +484,23 @@ def project_id_for(
     )
 
 
+def project_admission_snapshot(project_id: str) -> dict:
+    """定时任务准入要的项目快照：还在不在、有没有被隐藏、现在能不能跑。
+
+    读的是当前租户工作区里的项目名单和生命周期文件。调用方要先绑好租户。
+    """
+    project_id = validate_id(project_id)
+    value = state("project", project_id)
+    from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+
+    project = get_project_by_id(project_id, cache_bust=True)
+    payload = projection("project", project_id, value=value)
+    payload["exists"] = project is not None
+    payload["hidden"] = bool(project is not None and project.hidden)
+    payload["operation"] = value.get("operation")
+    return payload
+
+
 def projection(
     kind: str,
     resource_id: str,
@@ -674,11 +691,30 @@ def parse_ids(params: dict, *, delete: bool = False) -> list[str]:
     return result
 
 
+def _as_page_int(value: object, *, default: int) -> int | None:
+    """HTTP GET 查询串常把数字变成字符串；WS/JSON 则已是 int。"""
+    if value is None:
+        return default
+    if type(value) is int and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            try:
+                return int(text)
+            except ValueError:
+                return None
+    return None
+
+
 def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
-    limit, offset = params.get("limit", 20), params.get("offset", 0)
-    if type(limit) is not int or not 1 <= limit <= maximum:
+    limit = _as_page_int(params.get("limit", 20), default=20)
+    offset = _as_page_int(params.get("offset", 0), default=0)
+    if limit is None or not 1 <= limit <= maximum:
         raise LifecycleError("BAD_REQUEST", "invalid pagination")
-    if type(offset) is not int or offset < 0:
+    if offset is None or offset < 0:
         raise LifecycleError("BAD_REQUEST", "invalid pagination")
     work_mode, keyword = params.get("work_mode"), params.get("keyword", "")
     if (

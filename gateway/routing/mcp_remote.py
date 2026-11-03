@@ -24,11 +24,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.external_providers import register
-from jiuwenswarm.common.mcp_oauth import McpOAuthError
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 
+from gateway.common.external_providers import register
 from gateway.routing.e2a_proxy import fetch_agent_unary
+from gateway.common.mcp_oauth import McpOAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -93,5 +93,7 @@ class McpRegistryRemoteProvider:
 
 def install() -> None:
     """把 WS 远端实现注册进 ``common.external_providers`` 的 mcp_registry 域。"""
-    register("mcp_registry", McpRegistryRemoteProvider())
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_MCP_REGISTRY
+
+    register(PROVIDER_DOMAIN_MCP_REGISTRY, McpRegistryRemoteProvider())
     logger.info("[mcp-registry-remote] registered mcp_registry provider (WS)")

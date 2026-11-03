@@ -1,11 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""RC-3 回归：孤儿请求事件不得改投 session 桶（跨请求串扰）。
+"""断开重连后，原连接已不在的在途事件投给同 session 的新连接。
 
-场景：客户端断开重连后，旧连接在途流的迟到事件（metadata.ws_id 指向已
-unregister 的物理连接）不能落入 session 桶投给新连接——否则新请求会消费到
-旧请求的 chat.final。原事件仍丢弃，终态只向同一身份和应用的会话观察者
-发送历史失效通知，由前端在空闲时通过 history 补齐。
+发起连接仍在时仍只投给该物理连接。A4P 改绑优先于 session 桶。
+原连接已断开且没有改绑时，按 session_id 落入仍打开的连接。
 """
 
 from __future__ import annotations
@@ -27,12 +25,65 @@ class _FakeWs:
 
 def _make_channel() -> WebChannel:
     channel = object.__new__(WebChannel)
+    from gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+
+    channel.delivery = WebDeliveryRegistry()
+    channel._expert_processing_requests = {}
     channel._session_busy = {}
     channel._clients_by_key = {}
     channel._ws_by_id = {}
     channel._send_queues = {}
     channel._a4p_rebound_ws = {}
     return channel
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_name", ["cron.run.updated", "chat.delta"])
+async def test_web_cron_events_preserve_owner_and_app_isolation(event_name):
+    channel = _make_channel()
+    owner = _FakeWs("owner")
+    other_user = _FakeWs("other-user")
+    other_app = _FakeWs("other-app")
+    other_group = _FakeWs("other-group")
+    other_bot = _FakeWs("other-bot")
+    channel.connection_user_id = lambda ws: "other" if ws is other_user else "owner"
+    for client, user_id, app_id in (
+        (owner, "owner", "default"), (other_user, "other", "default"), (other_app, "owner", "another-app"),
+        (other_group, "owner", "default"), (other_bot, "owner", "default"),
+    ):
+        client._web_routing = {
+            "group_id": "other" if client is other_group else "group",
+            "bot_id": "other" if client is other_bot else "bot",
+        }
+        channel._clients_by_key.setdefault(RoutingKey(
+            user_id=user_id, channel_id="web", app_id=app_id,
+            agent_ref=AgentRef(mode="agent", id="default"), session_id="same-known-session",
+        ), []).append(client)
+    sent = []
+    channel._enqueue_send = lambda ws, frame: sent.append((ws, frame))
+    broadcasts = await _capture_broadcast(channel)
+    payload = {
+        "event_type": event_name, "user_id": "owner", "job_id": "job",
+        "run_id": "run", "revision": 1, "notify": False,
+    }
+    if event_name == "chat.delta":
+        payload.update({"content": "private output", "cron_session_stream": True})
+    await channel.send(Message(
+        id="event", type="event", channel_id="web", app_id="default",
+        session_id=None if event_name == "cron.run.updated" else "same-known-session",
+        params={}, timestamp=1.0, ok=True, payload=payload, event_type=None,
+        metadata={"user_id": "owner", "cron_session_stream": True, "routing": {"group_id": "group", "bot_id": "bot"}},
+    ))
+    if event_name == "cron.run.updated":
+        assert [ws for ws, _ in sent] == [owner]
+        assert sent[0][1]["event"] == event_name
+        assert sent[0][1]["payload"]["run_id"] == "run"
+    else:
+        assert broadcasts[0][1] == {owner}
+        assert broadcasts[0][0]["payload"]["content"] == "private output"
+        # The public cron stream keeps its marker on the reduced payload so the
+        # frontend does not mistake it for a legacy cron result broadcast.
+        assert broadcasts[0][0]["payload"]["cron_session_stream"] is True
 
 
 def _chat_final_msg(ws_id: str | None, session_id: str = "sess-1") -> Message:
@@ -61,8 +112,8 @@ async def _capture_broadcast(channel: WebChannel):
     return calls
 
 
-async def test_orphan_stream_event_dropped_not_rerouted_to_new_ws() -> None:
-    """旧连接已断开：迟到 chat.final 不投给同 session 桶里的新连接。"""
+async def test_orphan_stream_event_delivered_to_new_ws() -> None:
+    """旧连接已断开：迟到 chat.final 投给同 session 桶里的新连接。"""
     channel = _make_channel()
     new_ws = _FakeWs("ws-new")
     rk = RoutingKey(
@@ -75,11 +126,15 @@ async def test_orphan_stream_event_dropped_not_rerouted_to_new_ws() -> None:
 
     await channel.send(_chat_final_msg(ws_id="ws-old"))
 
-    assert calls == [], "孤儿流事件必须丢弃，不得经 session 桶投给新连接"
+    assert len(calls) == 1
+    frame, clients = calls[0]
+    assert clients == {new_ws}
+    assert frame["event"] == "chat.final"
+    assert frame["payload"]["content"] == "旧请求的回复"
 
 
-async def test_orphan_res_dropped_not_rerouted_to_new_ws() -> None:
-    """res 帧与发起请求一一对应：发起连接断开时同样丢弃。"""
+async def test_orphan_res_delivered_to_new_ws() -> None:
+    """发起连接断开后，res 同样落到同 session 的新连接。"""
     channel = _make_channel()
     new_ws = _FakeWs("ws-new")
     rk = RoutingKey(
@@ -102,52 +157,46 @@ async def test_orphan_res_dropped_not_rerouted_to_new_ws() -> None:
     )
     await channel.send(msg)
 
-    assert calls == [], "孤儿 res 必须丢弃，不得改投 session 桶"
+    assert len(calls) == 1
+    frame, clients = calls[0]
+    assert clients == {new_ws}
+    assert frame["type"] == "res"
+    assert frame["payload"] == {"data": 1}
 
 
 @pytest.mark.parametrize("event_type", [EventType.CHAT_FINAL, EventType.CHAT_ERROR])
-@pytest.mark.parametrize("owner", [None, "u1"])
-async def test_orphan_terminal_invalidates_only_authorized_session_history(
-    event_type: EventType,
-    owner: str | None,
-) -> None:
+async def test_orphan_terminal_delivered_to_live_session_sockets(event_type: EventType) -> None:
+    """原连接已断开的终态按 session_id 投给仍打开的连接，不投给已关闭连接和其他会话。"""
     channel = _make_channel()
     expected = _FakeWs("ws-new")
-    expected._web_connection_user_id = owner
     other_user = _FakeWs("ws-other-user")
-    other_user._web_connection_user_id = "someone-else"
     closed = _FakeWs("ws-closed", closed=True)
-    closed._web_connection_user_id = owner
     other_app = _FakeWs("ws-other-app")
-    other_app._web_connection_user_id = owner
     other_session = _FakeWs("ws-other-session")
-    other_session._web_connection_user_id = owner
     for app, session, sockets in [
         ("default", "sess-1", [expected, other_user, closed]),
         ("other", "sess-1", [other_app]),
         ("default", "sess-2", [other_session]),
     ]:
         route = RoutingKey(
-            user_id=owner or "local", channel_id="web", app_id=app,
+            user_id="u1", channel_id="web", app_id=app,
             agent_ref=AgentRef(mode="agent", id="default"), session_id=session,
         )
         channel._clients_by_key[route] = sockets
     calls = await _capture_broadcast(channel)
     msg = _chat_final_msg("ws-old")
     msg.event_type = event_type
-    msg.metadata["user_id"] = owner
-    msg.app_id = "default"
 
     await channel.send(msg)
 
-    assert calls == [({
-        "type": "event",
-        "event": "runtime.history_required",
-        "payload": {"session_id": "sess-1"},
-    }, {expected})]
+    assert len(calls) == 1
+    frame, clients = calls[0]
+    assert frame["event"] == event_type.value
+    assert clients == {expected, other_user, other_app}
 
 
-async def test_orphan_delta_does_not_trigger_history_read_per_token() -> None:
+async def test_orphan_delta_delivered_to_new_ws() -> None:
+    """思考/正文增量在原连接断开后继续投给新连接，而不是按 token 触发历史重拉。"""
     channel = _make_channel()
     socket = _FakeWs("ws-new")
     route = RoutingKey(
@@ -163,7 +212,11 @@ async def test_orphan_delta_does_not_trigger_history_read_per_token() -> None:
 
     await channel.send(msg)
 
-    assert calls == []
+    assert len(calls) == 1
+    frame, clients = calls[0]
+    assert clients == {socket}
+    assert frame["event"] == "chat.delta"
+    assert "runtime.history_required" not in str(frame)
 
 
 async def test_live_request_ws_still_receives() -> None:
@@ -255,7 +308,7 @@ async def test_orphan_event_rebound_to_authorizing_ws() -> None:
 
 
 async def test_orphan_rebound_cleared_after_terminal() -> None:
-    """恢复 turn 终态送达后解除绑定：后续迟到事件不再改投（回归孤儿丢弃）。"""
+    """恢复 turn 终态送达后解除绑定。该连接不在 session 桶里时，后续事件不再改投。"""
     channel = _make_channel()
     rebound_ws = _FakeWs("ws-new")
     channel._ws_by_id["ws-new"] = rebound_ws
@@ -269,7 +322,7 @@ async def test_orphan_rebound_cleared_after_terminal() -> None:
     delta.event_type = EventType.CHAT_DELTA
     await channel.send(delta)
 
-    assert len(calls) == 1, "绑定应已解除，后续迟到事件不得再改投"
+    assert len(calls) == 1, "绑定应已解除，且该连接不在 session 桶里，后续事件不再改投"
 
 
 def _payload_only_terminal_msg(event_name: str) -> Message:
@@ -288,8 +341,8 @@ def _payload_only_terminal_msg(event_name: str) -> Message:
     )
 
 
-async def test_orphan_terminal_payload_event_type_only_invalidates_history() -> None:
-    """payload 携带终态 event_type 而 event_type 字段为 None 时仍触发 history 失效。"""
+async def test_orphan_terminal_payload_event_type_only_delivered_to_new_ws() -> None:
+    """终态只带 payload event_type 时，原连接断开后仍投给同 session 的新连接。"""
     channel = _make_channel()
     expected = _FakeWs("ws-new")
     expected._web_connection_user_id = None
@@ -306,11 +359,10 @@ async def test_orphan_terminal_payload_event_type_only_invalidates_history() -> 
 
     await channel.send(msg)
 
-    assert calls == [({
-        "type": "event",
-        "event": "runtime.history_required",
-        "payload": {"session_id": "sess-1"},
-    }, {expected})]
+    assert len(calls) == 1
+    frame, clients = calls[0]
+    assert clients == {expected}
+    assert frame["event"] == "chat.final"
 
 
 async def test_orphan_rebound_cleared_on_payload_event_type_only_terminal() -> None:
@@ -328,35 +380,4 @@ async def test_orphan_rebound_cleared_on_payload_event_type_only_terminal() -> N
     delta.event_type = EventType.CHAT_DELTA
     await channel.send(delta)
 
-    assert len(calls) == 1, "绑定应已解除，后续迟到事件不得再改投"
-
-
-@pytest.mark.parametrize(
-    "event_name,expected_method",
-    [("chat.final", "info"), ("chat.error", "info"), ("chat.delta", "debug")],
-)
-def test_orphan_drop_log_level(event_name: str, expected_method: str) -> None:
-    """终态事件（final/error）INFO 便于现场定位，其余 DEBUG 防刷屏。"""
-    from unittest.mock import patch
-
-    from gateway.channel_manager.web import web_connect
-
-    event_type = EventType(event_name)
-    msg = Message(
-        id="req-old",
-        type="event",
-        channel_id="web",
-        session_id="sess-1",
-        params={},
-        timestamp=time.time(),
-        ok=True,
-        payload={"event_type": event_name, "content": "x"},
-        event_type=event_type,
-        metadata={"ws_id": "ws-old"},
-    )
-    with patch.object(web_connect, "logger") as mock_logger:
-        web_connect.WebChannel._log_orphan_request_drop(msg, "ws-old")
-    getattr(mock_logger, expected_method).assert_called_once()
-    for other in ("info", "debug"):
-        if other != expected_method:
-            getattr(mock_logger, other).assert_not_called()
+    assert len(calls) == 1, "绑定应已解除，且该连接不在 session 桶里，后续事件不再改投"

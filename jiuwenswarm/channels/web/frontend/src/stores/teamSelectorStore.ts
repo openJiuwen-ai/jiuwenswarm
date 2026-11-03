@@ -31,9 +31,12 @@ export interface RuntimeTeamInfo {
   is_owner?: boolean;
   capabilities?: string[];
   source?: string;
+  execution_model_name?: string;
+  execution_model_selection?: { type: 'model'; id: string };
 }
 
 interface TeamListResponse {
+  organization_owner_stopped?: boolean;
   organization_requests?: OrganizationRequest[];
   expert_requests?: ExpertRequest[];
   session_id: string;
@@ -62,7 +65,10 @@ export interface TeamSnapshotTask {
 }
 
 export interface TeamSnapshotPayload {
+  /** 在册成员（新后端已排除 shut_down；旧后端可能混有离队成员）。 */
   members?: TeamSnapshotMember[];
+  /** 已离队成员，只用于按 member_id 查名字 / 头像，不进名册。 */
+  departed_members?: TeamSnapshotMember[];
   tasks?: TeamSnapshotTask[];
   team_id?: string | null;
 }
@@ -198,6 +204,7 @@ export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
         reconcileOrganizationRequests(
           sessionId, teams.find((team) => team.is_owner)?.team_id || ownerTeamId(sessionId),
           response.organization_requests, processingRevision, response.expert_requests,
+          response.organization_owner_stopped,
         );
       }
 

@@ -258,7 +258,9 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
       if (result !== undefined) {
         setNotice({
           kind: result.result === 'failed' ? 'error' : 'info',
-          text: t(`trajectory.diagnosis.ttseResult.${result.result}`),
+          text: result.result === 'failed'
+            ? t('trajectory.diagnosis.ttseResult.failed')
+            : t('trajectory.diagnosis.ttseTriggeredNotice'),
         });
       }
     } catch (error) {

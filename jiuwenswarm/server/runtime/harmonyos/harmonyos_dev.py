@@ -824,7 +824,7 @@ def _find_skill_files(skills_dir: Path) -> set[str]:
     if not skills_dir.is_dir():
         return set()
     return {
-        str(path.relative_to(skills_dir))
+        path.relative_to(skills_dir).as_posix()
         for path in skills_dir.rglob("SKILL.md")
         if path.is_file()
     }

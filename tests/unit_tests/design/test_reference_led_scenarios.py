@@ -229,6 +229,20 @@ async def test_director_does_not_rebuild_a_reference_led_graph() -> None:
     assert _clips(graph)
 
 
+def test_reference_led_canvas_is_titled_by_the_story_not_the_prompt() -> None:
+    prompt = "生成一段15秒的奶娃舞蹈动画。要求：可爱的小奶娃在明亮的舞台上跳舞，动作活泼有节奏感"
+
+    def build(story_name: str) -> dict:
+        analysis = _base_analysis([_slot([ROLE_PRODUCT], binding="verbatim")], characters=[], scenes=[])
+        analysis["story_name"] = story_name
+        return build_smart_video_graph(project_id="proj_title", prompt=prompt, analysis=analysis)
+
+    graph = build("奶娃律动秀")
+    assert graph["metadata"]["bootstrap"] == "designer.graph.reference_led.v1"
+    assert graph["title"] == "奶娃律动秀"
+    assert build(prompt)["title"] == "设计项目"
+
+
 
 
 # --- Fix 1: character verbatim skips the character specs ---------------------

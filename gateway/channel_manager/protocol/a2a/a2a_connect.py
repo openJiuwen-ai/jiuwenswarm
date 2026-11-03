@@ -27,8 +27,12 @@ except ImportError:
 A2A_THOUGHT_METADATA_KEY = "jiuwen_thought"
 
 
+class A2ADependencyMissingError(RuntimeError):
+    """Raised when the optional A2A SDK extra is unavailable."""
+
+
 def _raise_missing_a2a_sdk(exc: ImportError) -> None:
-    raise RuntimeError(
+    raise A2ADependencyMissingError(
         "A2A server is enabled but optional dependency `a2a-sdk[http-server]>=1.0.0` "
         "is not installed. Install with `pip install -e \".[a2a]\"` or `uv sync --extra a2a`."
     ) from exc
