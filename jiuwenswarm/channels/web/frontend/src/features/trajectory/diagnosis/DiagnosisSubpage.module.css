@@ -632,12 +632,6 @@
   gap: 0.5rem;
 }
 
-.causeHeadTop {
-  align-items: center;
-  /* Meta only (kind / score / chips / highlight); topic sits on the next row. */
-  flex-wrap: wrap;
-}
-
 .causeAt {
   flex: 0 1 auto;
   max-width: min(24rem, 100%);

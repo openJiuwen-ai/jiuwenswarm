@@ -177,8 +177,8 @@ type PrepTimedSpan = TrajectoryTimelineSpan & {
  * into the open interval after earlier on-time prep (USER/SYSTEM) and before
  * the model reply, matching ledger phase order without rewriting cell.startedAt.
  *
- * Only mutate display coordinates. Callers that feed shared-axis `toWall` brush
- * selection must keep absolute wall-clock spans (see deriveTimedTimeline /
+ * Only mutate display coordinates. Shared-axis brushes sample the aligned
+ * display model and map ends back with `toWall` (see deriveTimedTimeline /
  * alignPrepSpansBeforeModel).
  */
 function placePrepSpansBeforeModel(spans: PrepTimedSpan[]): void {

@@ -874,8 +874,9 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     }
     // Diagnosis region brushes must keep the exact drag (same as SharedTimeAxis).
     // Focus mode still pads short drags so a click-sized brush can frame a span.
+    // Region browse (clickSelectsOwnRecord) still falls through to nearest-record.
     const exactRegionBrush = rangeAppearance === 'region' || spanSelectsRange
-    if (exactRegionBrush && Math.abs(event.clientX - drag.anchorClientX) < clickSlop) {
+    if (exactRegionBrush && click && !clickSelectsOwnRecord) {
       return
     }
     const committedRange = !exactRegionBrush

@@ -116,12 +116,13 @@ export function SignalTags({ signal }: { signal: SignalRef | null | undefined })
   const { t } = useTranslation();
   if (signal === null || signal === undefined) return null;
   const tier = signalTier(signal);
+  const sourceLabel = t('trajectory.diagnosis.signalSourceLabel', {
+    source: t(`trajectory.diagnosis.signalSource.${signal.source}`, { defaultValue: signal.source }),
+  });
   return (
     <>
-      <span className={css.chip}>
-        {t('trajectory.diagnosis.signalSourceLabel', {
-          source: t(`trajectory.diagnosis.signalSource.${signal.source}`, { defaultValue: signal.source }),
-        })}
+      <span className={css.chip} title={sourceLabel}>
+        {sourceLabel}
       </span>
       {tier === null ? null : (
         <span className={`${css.tag} ${css[`tier_${tier}`]}`} data-testid="trajectory-diagnosis-finding-tag">
@@ -129,7 +130,13 @@ export function SignalTags({ signal }: { signal: SignalRef | null | undefined })
         </span>
       )}
       {signal.category === undefined || signal.category === null || signal.category === '' ? null : (
-        <span className={css.badge} data-testid="trajectory-diagnosis-signal-category">{signal.category}</span>
+        <span
+          className={css.badge}
+          title={signal.category}
+          data-testid="trajectory-diagnosis-signal-category"
+        >
+          {signal.category}
+        </span>
       )}
       {typeof signal.score === 'number' ? (
         <span className={css.hint}>{t('trajectory.diagnosis.signalScore', { score: signal.score })}</span>
@@ -228,7 +235,7 @@ function CauseCard({ causes, subjectLabels, focusedFindingId, onFocusFinding }: 
   const hasBody = comment !== '' || reasons.length > 0;
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
-      <div className={`${css.causeHead} ${css.causeHeadTop}`}>
+      <div className={css.causeHead}>
         <KindBadge kind="artifact" />
         {typeof score === 'number' ? (
           <span className={css.hint}>{t('trajectory.diagnosis.signalScore', { score })}</span>
@@ -295,7 +302,7 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
   const nodes = evidenceNodeLabel(judge);
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
-      <div className={`${css.causeHead} ${css.causeHeadTop}`}>
+      <div className={css.causeHead}>
         <KindBadge kind={judge.category} />
         {skill ? (
           <span className={css.tag} data-testid="trajectory-diagnosis-evolution-score">
@@ -333,14 +340,16 @@ function LegacyCauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
 }) {
   const { t } = useTranslation();
   const nodes = causeNodeLabel(cause);
+  const categoryLabel = t(`trajectory.diagnosis.category.${cause.category}`, { defaultValue: cause.category });
+  const agentLabel = subjectLabels.get(cause.subject_id) ?? cause.subject_id;
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
       <div className={css.causeHead}>
-        <span className={css.badge}>{t(`trajectory.diagnosis.category.${cause.category}`, { defaultValue: cause.category })}</span>
+        <span className={css.badge} title={categoryLabel}>{categoryLabel}</span>
         <SignalTags signal={cause.signal} />
         {subjectLabels.size > 1 ? (
-          <span className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
-            {subjectLabels.get(cause.subject_id) ?? cause.subject_id}
+          <span className={css.chip} title={agentLabel} data-testid="trajectory-diagnosis-cause-agent">
+            {agentLabel}
           </span>
         ) : null}
         {nodes === '' ? null : (
