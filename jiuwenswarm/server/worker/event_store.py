@@ -275,51 +275,11 @@ class WorkerEventStore:
             record.is_processing = False
 
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
+        # Admission is decided by the dispatcher's recoverable-control filter,
+        # which reads the live execution state. A dispatch record's pending
+        # interactions cannot tell a finished question from the continuation
+        # the same round is currently waiting on, so filtering here would drop
+        # the live one.
         scope = request_scope(request)
-        frames: list[dict[str, Any]] = []
-        for owner, frame, _ in self._frames:
-            if owner != scope or frame["sequence"] <= after:
-                continue
-            if not self.frame_interaction_pending(frame):
-                continue
-            frames.append(copy.deepcopy(frame))
-        return frames
-
-    def record_for_frame(self, frame: dict[str, Any]) -> DispatchRecord | None:
-        """The dispatch record that owns a replayed frame, if any."""
-        return self.records.get(str(frame.get("dispatch_id") or ""))
-
-    @staticmethod
-    def frame_interaction_id(frame: dict[str, Any]) -> str:
-        """A replayed frame's interaction id, mirroring the append() key logic."""
-        wire = frame.get("payload") or {}
-        body = wire.get("body") or wire.get("payload") or {}
-        if not isinstance(body, dict):
-            return ""
-        nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
-        if isinstance(nested, dict):
-            body = {**body, **nested}
-        event = str(body.get("event_type") or wire.get("response_kind") or "")
-        if not any(kind in event for kind in ("ask_user", "permission", "approval", "interrupted")):
-            return ""
-        return str(body.get("interaction_id") or body.get("control_id")
-                   or (body.get("request_id") if "ask_user" in event else "") or "")
-
-    def frame_interaction_pending(self, frame: dict[str, Any]) -> bool:
-        """Whether the interaction a replayed frame represents is still answerable.
-
-        True when the owning record still carries it as a pending interaction
-        (the round is live and waiting for input). The record is absent only
-        after the LRU sweep deleted a drained record — its interactions were
-        cleared first (interrupt/terminal), so a missing owner means the
-        question is no longer answerable. Replaying such a frame would
-        resurrect a question the user already handled or that the session
-        pause retired.
-        """
-        interaction = self.frame_interaction_id(frame)
-        if not interaction:
-            return True
-        record = self.record_for_frame(frame)
-        if record is None:
-            return False
-        return interaction in record.interactions
+        return [copy.deepcopy(frame) for owner, frame, _ in self._frames
+                if owner == scope and frame["sequence"] > after]
