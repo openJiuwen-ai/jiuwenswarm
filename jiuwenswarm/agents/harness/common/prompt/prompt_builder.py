@@ -90,6 +90,9 @@ def _task_execution_prompt(language: str) -> PromptSection:
 
 
 def _input_prompt(language: str) -> PromptSection:
+    # Normalize before the "cn" branch: raw settings such as "zh"/"EN" would
+    # otherwise fall through to the English text.
+    language = resolve_language(language)
     if language == "cn":
         content = """# 输入说明
 
@@ -160,6 +163,8 @@ def _output_prompt(
     *,
     send_file_enabled: bool = True,
 ) -> PromptSection:
+    # See _input_prompt: normalize before branching on "cn".
+    language = resolve_language(language)
     if language == "cn":
         if send_file_enabled:
             file_delivery_rule = (
