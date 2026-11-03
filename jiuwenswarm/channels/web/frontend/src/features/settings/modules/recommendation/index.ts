@@ -1,0 +1,1 @@
+export { recommendationModule } from './definition';

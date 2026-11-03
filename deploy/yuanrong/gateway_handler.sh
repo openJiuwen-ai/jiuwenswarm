@@ -177,6 +177,8 @@ Environment=GATEWAY_HOST=${gw_host}
 Environment=GATEWAY_PORT=${gw_port}
 Environment=WEB_PORT=${web_port}
 Environment=AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir}"
+    dropin_content="${dropin_content}
+Environment=JIUWENSWARM_RUNTIME_PROFILE=agentos"
     if [ "${force_root_home}" = "1" ]; then
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_HOME=/root"
@@ -251,7 +253,7 @@ gateway_start_nohup() {
     # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
-    local log_dir_prefix="AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
+    local log_dir_prefix="JIUWENSWARM_RUNTIME_PROFILE=agentos AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
 
     local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then

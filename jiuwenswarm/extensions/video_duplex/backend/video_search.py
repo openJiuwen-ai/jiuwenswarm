@@ -36,11 +36,25 @@ def _brief_markers(nonce: str) -> tuple[str, str]:
     )
 
 
+def full_answer_language_rule() -> str:
+    """Language for the visible Core Agent answer; same source as the spoken receipt."""
+    from jiuwenswarm.extensions.video_duplex.backend import settings
+    if settings.tool_language() == "en":
+        return (
+            "The complete answer before the markers must be written in English. "
+            "Do not write that answer in Chinese. "
+        )
+    return "标记之前的完整答案必须使用简体中文。"
+
+
 def core_agent_brief_protocol(nonce: str) -> str:
     from . import settings, joyai_provider
     begin, end = _brief_markers(nonce)
-    language_rule = joyai_provider.response_language_instruction(settings.reply_language())
-    return f"\n\n{language_rule}" + build_brief_prompt(begin, end, language_rule)
+    language_rule = joyai_provider.response_language_instruction(settings.tool_language())
+    return (
+        f"\n\n{full_answer_language_rule()}\n{language_rule}"
+        + build_brief_prompt(begin, end, language_rule)
+    )
 
 
 def _result_kind(question: str, answer: str, tools_used: list[str]) -> str:
@@ -82,6 +96,9 @@ def _fallback_realtime_brief(
     display_result: str,
     result_kind: str,
 ) -> tuple[str, str]:
+    from . import settings
+    if settings.tool_language() == "en":
+        return "The task has finished. The full result is available in the interface.", "fallback"
     derived = _safe_brief(display_result)
     if derived and len(derived) <= 100:
         return derived, "derived"
@@ -358,7 +375,7 @@ async def execute_core_agent(
     user_id: str | None = None,
     delegation_context: list[dict[str, Any]] | None = None,
     frame_data_url: str = "",
-    normalize_media_attachments: Callable[[dict[str, Any], str | None], None]
+    normalize_media_attachments: Callable[[dict[str, Any], str | None], Awaitable[None]]
     | None = None,
     on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     interaction_answer: Any = None,
@@ -401,7 +418,7 @@ async def execute_core_agent(
         params["media_items"] = [media_item]
         if normalize_media_attachments is None:
             raise RuntimeError("Core media attachment service is unavailable")
-        normalize_media_attachments(params, core_session_id)
+        await normalize_media_attachments(params, core_session_id)
     if interaction_answer is not None:
         answer_request = interaction_answer.to_agent_request()
         params = {**answer_request.params, "log_as_user": False}

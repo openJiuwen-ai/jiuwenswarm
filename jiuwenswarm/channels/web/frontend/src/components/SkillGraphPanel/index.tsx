@@ -27,6 +27,7 @@ import {
   seedPositions,
   stepSkillGraphLayout,
 } from './skillGraphLayout';
+import { shouldPollSkillGraph } from './skillGraphPolling';
 import './SkillGraphPanel.css';
 
 type RawRecord = Record<string, unknown>;
@@ -124,10 +125,10 @@ export type SkillGraphPanelHandle = {
 };
 
 type SkillGraphPanelProps = {
+  /** 页面是否处于激活状态；为 false 时停止后端轮询。 */
+  isActive?: boolean;
   onReadingChange?: (reading: boolean) => void;
   onBuildAccepted?: (mode: SymphonyBuildMode) => void;
-  externalError?: string | null;
-  onExternalErrorClear?: () => void;
 };
 
 type GraphNode = {
@@ -745,7 +746,7 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
 }
 
 export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanelProps>(function SkillGraphPanel(
-  { onReadingChange, onBuildAccepted, externalError, onExternalErrorClear },
+  { isActive = true, onReadingChange, onBuildAccepted },
   ref,
 ) {
   const { t } = useTranslation();
@@ -1032,10 +1033,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     };
   }, [autoFitRequest, fitView, visible.nodes.length, visible.edges.length]);
 
-  const loadGraph = useCallback(async (clearExternalError = false) => {
-    if (clearExternalError) {
-      onExternalErrorClear?.();
-    }
+  const loadGraph = useCallback(async () => {
     setLoading(true);
     let keepLoading = false;
     try {
@@ -1088,7 +1086,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         setLoading(false);
       }
     }
-  }, [applyBuildLog, onExternalErrorClear, requestAutoFit, t]);
+  }, [applyBuildLog, requestAutoFit, t]);
 
   const restoreBuildStatus = useCallback(async (): Promise<boolean> => {
     const data = await webRequest<SkillGraphStatus>(
@@ -1115,7 +1113,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     setBuildMode(mode);
     setShowBuildLogPanel(true);
     setError(null);
-    onExternalErrorClear?.();
     setTokenUsage(null);
     setBuildProgress({
       stage: 'update.start',
@@ -1152,13 +1149,12 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       }));
       throw error;
     }
-  }, [applyBuildLog, onBuildAccepted, onExternalErrorClear, t]);
+  }, [applyBuildLog, onBuildAccepted, t]);
 
   const cancelBuild = useCallback(async () => {
     setCancellingBuild(true);
     setShowBuildLogPanel(true);
     setError(null);
-    onExternalErrorClear?.();
     try {
       const data = await webRequest<SkillGraphUpdate>(
         'skills.graph.cancel',
@@ -1177,7 +1173,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     } finally {
       setCancellingBuild(false);
     }
-  }, [applyBuildLog, onExternalErrorClear, resetBuildUiOnTerminalStatus, t]);
+  }, [applyBuildLog, resetBuildUiOnTerminalStatus, t]);
 
   const cancelActiveBuild = useCallback(async () => {
     setCancellingBuild(true);
@@ -1229,7 +1225,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   }, [loadGraph, restoreBuildStatus]);
 
   useEffect(() => {
-    if (!updating) return undefined;
+    if (!shouldPollSkillGraph({ isActive, updating, whenUpdating: true })) return undefined;
 
     let stopped = false;
     let timer: number | null = null;
@@ -1268,10 +1264,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, isActive, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
-    if (updating) return undefined;
+    if (!shouldPollSkillGraph({ isActive, updating, whenUpdating: false })) return undefined;
 
     let stopped = false;
     let timer: number | null = null;
@@ -1323,7 +1319,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, isActive, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1662,7 +1658,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const buildMetricsText = [tokenUsageText, elapsedText].filter(Boolean).join(' · ');
 
   const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks, t('skills.graph.required')) : [];
-  const visibleError = externalError || error;
+  const visibleError = error;
   const graphIsEmpty = graph.nodes.length === 0;
   const filteredGraphIsEmpty = graph.nodes.length > 0 && visible.nodes.length === 0;
   const showCanvasEmptyState = !isBusy && !visibleError;
@@ -1680,7 +1676,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       if (isBusy) {
         return false;
       }
-      void loadGraph(true);
+      void loadGraph();
       return true;
     },
     startIncrementalBuild: () => rebuildGraph('incremental'),

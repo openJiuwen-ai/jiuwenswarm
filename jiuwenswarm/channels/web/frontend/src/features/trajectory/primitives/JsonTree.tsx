@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 import clsx from 'clsx'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type {

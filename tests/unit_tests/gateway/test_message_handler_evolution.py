@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.message import EventType, ReqMethod
+from gateway.message_handler.message_handler import MessageHandler
 
 
 _APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
@@ -264,7 +264,7 @@ def _set_evolution_auto_save(
     enabled: bool,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         lambda _config=None: enabled,
     )
     original_init = MessageHandler.__init__
@@ -397,7 +397,7 @@ async def test_regular_stream_chunks_do_not_read_evolution_auto_save_config(
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         count_auto_save_reads,
     )
     handler = _TestMessageHandler.create()
@@ -460,7 +460,7 @@ async def test_interrupt_evolution_approval_does_not_read_auto_save_config(
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         count_auto_save_reads,
     )
     handler = _TestMessageHandler.create()
@@ -492,6 +492,93 @@ def test_processing_status_is_only_emitted_for_chat_streams() -> None:
     assert handler.should_emit_processing_status_for_stream(
         _message(ReqMethod.HISTORY_GET)
     ) is False
+
+
+def test_attach_only_stream_does_not_emit_processing_status() -> None:
+    """An attach subscription must not raise or own the processing state."""
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    handler = _TestMessageHandler.create()
+    attach_message = _message(ReqMethod.CHAT_SEND)
+    attach_message.params = {TEAM_ATTACH_ONLY_PARAM: True}
+
+    assert handler.should_emit_processing_status_for_stream(attach_message) is False
+
+
+def test_steer_stream_does_not_emit_processing_status() -> None:
+    """STEER is a receipt-only inject; session busy stays owned by the parent turn."""
+    handler = _TestMessageHandler.create()
+    steer_message = _message(ReqMethod.CHAT_SEND)
+    steer_message.params = {
+        "query": "111",
+        "input_mode": "steer",
+        "expected_execution_id": "exec-1",
+    }
+    follow_up = _message(ReqMethod.CHAT_SEND)
+    follow_up.params = {"query": "next", "input_mode": "follow_up"}
+    ordinary = _message(ReqMethod.CHAT_SEND)
+    ordinary.params = {"query": "hello"}
+
+    assert handler.should_emit_processing_status_for_stream(steer_message) is False
+    # follow_up may become an owning turn; keep emitting unless product says otherwise.
+    assert handler.should_emit_processing_status_for_stream(follow_up) is True
+    assert handler.should_emit_processing_status_for_stream(ordinary) is True
+
+
+def test_steer_stream_does_not_block_processing_false() -> None:
+    """A live STEER receipt stream must not strand parent is_processing=false."""
+    handler = _TestMessageHandler.create()
+    handler._stream_sessions["steer-1"] = "sess-1"
+    handler._stream_emits_processing_status["steer-1"] = False
+    handler._stream_methods["steer-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_sessions["parent-1"] = "sess-1"
+    handler._stream_emits_processing_status["parent-1"] = True
+    handler._stream_methods["parent-1"] = ReqMethod.CHAT_SEND.value
+
+    assert handler._session_has_streams_blocking_processing_false(
+        "sess-1", exclude_rid="parent-1"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_attach_only_stream_does_not_block_processing_false() -> None:
+    """A terminal is_processing=false must pass while an attach stream is live."""
+    handler = _TestMessageHandler.create()
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.delta", "request_id": "turn-1", "content": "hi"},
+        {
+            "event_type": "chat.processing_status",
+            "request_id": "turn-1",
+            "session_id": "sess-attach",
+            "is_processing": False,
+            "is_complete": True,
+        },
+    ]
+    # Seed an in-flight attach stream on the same session (emit=False).
+    getattr(handler, "_stream_emits_processing_status")["attach-1"] = False
+    getattr(handler, "_stream_methods")["attach-1"] = ReqMethod.CHAT_SEND.value
+    getattr(handler, "_stream_sessions")["attach-1"] = "sess-attach"
+    getattr(handler, "_stream_modes")["attach-1"] = "team.work.normal"
+    getattr(handler, "_stream_channels")["attach-1"] = "web"
+
+    await handler.process_stream(
+        SimpleNamespace(
+            request_id="turn-1",
+            channel="web",
+            method=ReqMethod.CHAT_SEND.value,
+            params={"query": "hi", "mode": "team.work.normal"},
+        ),
+        "sess-attach",
+        None,
+        emit_processing_status=True,
+    )
+
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    ), "attach stream must not block the terminal processing_status=false"
 
 
 
@@ -1058,10 +1145,10 @@ async def test_fire_and_forget_cancel_forwards_cancelled_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_forward_loop_cancel_intent_uses_fire_and_forget(
+async def test_forward_loop_cancel_intent_awaits_agent_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CHAT_CANCEL intent=cancel 必须 fire_and_forget，避免堵 _forward_loop。"""
+    """CHAT_CANCEL intent=cancel 必须 await AS，避免先推假成功、亲和漂走时 killed=0。"""
     handler = _TestMessageHandler.create()
     notify_modes: list[str] = []
 
@@ -1072,7 +1159,7 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
     await handler.start_forwarding()
     try:
         cancel_msg = Message(
-            id="cancel-fire-and-forget",
+            id="cancel-await-interrupt",
             type="req",
             channel_id="web",
             session_id="sess-1",
@@ -1081,12 +1168,13 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
             ok=True,
             req_method=ReqMethod.CHAT_CANCEL,
             is_stream=False,
+            metadata={"ws_id": "ws-stop-1"},
         )
         await handler.publish_user_messages(cancel_msg)
         deadline = asyncio.get_running_loop().time() + 2.0
         while not notify_modes and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
-        assert notify_modes == ["fire_and_forget"]
+        assert notify_modes == ["await"]
     finally:
         await handler.stop_forwarding()
 
@@ -1221,11 +1309,11 @@ def test_error_protocols_are_mapped_to_terminal_chat_error_for_stream_and_unary(
             "is_complete": True,
         }
 
-    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+    from gateway.channel_manager.protocol.a2a.a2a_connect import (
         A2AChannel,
     )
-    from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.tui.tui_channel import TuiChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     web_channel = WebChannel.__new__(WebChannel)
     web_frame = web_channel._serialize_frame(stream_message)
@@ -1343,7 +1431,7 @@ async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
         }
     else:
         assert out.payload == {"error": "boom", "code": "BAD_REQUEST"}
-        from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
+        from gateway.channel_manager.tui.tui_channel import TuiChannel
 
         assert json.loads(TuiChannel._serialize_frame(object(), out)) == {
             "type": "res",
@@ -1366,7 +1454,7 @@ def test_message_handler_builds_explicit_gateway_cron_scheduler(
             captured.update(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.scheduler.CronSchedulerService",
+        "gateway.cron.scheduler.CronSchedulerService",
         _Scheduler,
     )
     store = object()

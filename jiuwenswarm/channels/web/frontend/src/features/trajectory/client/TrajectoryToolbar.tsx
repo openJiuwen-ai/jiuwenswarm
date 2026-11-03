@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Trajectory toolbar: timeline and ledger fold controls.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/TrajectoryToolbar.tsx`
@@ -14,6 +12,8 @@ import css from './TrajectoryToolbar.module.css'
 export interface TrajectoryToolbarProps {
   /** Whether duration, token, turn, and call controls are visible. */
   showViewControls?: boolean
+  /** Whether the duration and token scale switches are visible. */
+  showScaleControls?: boolean
   /** Whether the record search field is visible. */
   showSearch?: boolean
   /** Whether timeline blocks use recorded durations instead of equal widths. */
@@ -53,6 +53,7 @@ export interface TrajectoryToolbarProps {
  */
 export function TrajectoryToolbar({
   showViewControls = true,
+  showScaleControls = true,
   showSearch = true,
   actualDuration,
   onActualDurationChange,
@@ -74,6 +75,7 @@ export function TrajectoryToolbar({
       <div className={css.inner}>
         <div className={css.actions}>
           {showViewControls ? <>
+          {showScaleControls ? <>
           <button
             type="button"
             className={css.toggle}
@@ -124,6 +126,7 @@ export function TrajectoryToolbar({
               <span className={css.controlThumb} />
             </span>
           </button>
+          </> : null}
           <button
             type="button"
             className={css.action}

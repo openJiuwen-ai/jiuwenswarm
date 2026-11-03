@@ -198,9 +198,9 @@ def test_posix_kill_pid_parsing(command: str, expected: set[int]) -> None:
 
 
 def test_backend_cmdline_detection() -> None:
-    assert _is_backend_cmdline(["python", "-m", "jiuwenswarm.gateway.app_gateway"])
+    assert _is_backend_cmdline(["python", "-m", "gateway.app_gateway"])
     assert _is_backend_cmdline(["C:\\env\\python.exe", "C:\\env\\Scripts\\jiuwenswarm-start.exe", "all"])
-    assert _is_backend_cmdline(["/usr/bin/python3", "/site-packages/jiuwenswarm/gateway/app_gateway.py"])
+    assert _is_backend_cmdline(["/usr/bin/python3", "/site-packages/gateway/app_gateway.py"])
     assert _is_backend_cmdline(["/usr/bin/python3", "-u", "/site-packages/jiuwenswarm/app.py"])
     assert _is_backend_cmdline(["JiuwenSwarm.exe", "--desktop-run-agent"])
     # Skill scripts live under ~/.jiuwenswarm but are the agent's own work, not the backend.
@@ -212,7 +212,7 @@ def test_backend_cmdline_detection() -> None:
 def test_backend_cmdline_ignores_paths_that_are_merely_mentioned() -> None:
     # Commands that only reference backend files as data must not classify the
     # agent's own shell as backend — that made those shells unkillable by PID.
-    assert not _is_backend_cmdline(["bash", "-c", "git diff HEAD -- jiuwenswarm/gateway/app_gateway.py"])
+    assert not _is_backend_cmdline(["bash", "-c", "git diff HEAD -- gateway/app_gateway.py"])
     assert not _is_backend_cmdline(["bash", "-lc", "grep -n TODO jiuwenswarm/app.py"])
     assert not _is_backend_cmdline(["git", "log", "--oneline", "--", "jiuwenswarm/channels/web/app_web.py"])
     assert not _is_backend_cmdline(["cmd", "/c", "type jiuwenswarm\\gateway\\app_gateway.py"])

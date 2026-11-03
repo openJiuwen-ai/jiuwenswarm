@@ -243,7 +243,7 @@ _BACKEND_MODULES = (
     "jiuwenswarm.app",
     "jiuwenswarm.start_services",
     "jiuwenswarm.server.app_agentserver",
-    "jiuwenswarm.gateway.app_gateway",
+    "gateway.app_gateway",
     "jiuwenswarm.channels.web.app_web",
 )
 _BACKEND_SCRIPT_SUFFIXES = tuple(module.replace(".", "/") + ".py" for module in _BACKEND_MODULES)
@@ -970,6 +970,8 @@ def _run_command_background(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         **popen_kw,
     )
     try:

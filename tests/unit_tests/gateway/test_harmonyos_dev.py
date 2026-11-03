@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.harmonyos import harmonyos_dev
-from jiuwenswarm.server.runtime.harmonyos.harmonyos_dev import (
+from gateway.channel_manager.tui.harmonyos import harmonyos_dev
+from gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
     CommandResult,
     _parse_node_major,
     detect_executable,
@@ -80,7 +80,7 @@ async def test_project_init_returns_tui_context_without_shared_mcp_config(
 
     monkeypatch.setattr(harmonyos_dev, "detect_executable", fake_detect)
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.harmonyos.harmonyos_project.get_user_workspace_dir",
+        "gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
         lambda: state_root,
     )
 
@@ -108,7 +108,7 @@ async def test_project_init_succeeds_when_devecocli_is_unavailable(
 
     monkeypatch.setattr(harmonyos_dev, "detect_executable", fake_detect)
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.harmonyos.harmonyos_project.get_user_workspace_dir",
+        "gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
         lambda: tmp_path / "state",
     )
 
@@ -178,8 +178,11 @@ async def test_dev_init_installs_when_devecocli_missing_and_verifies_skills(
     assert not (tmp_path / "ignored").exists()
     assert result["skillVerification"]["baseSkillFound"] is True
     assert result["skillVerification"]["suiteSkillFound"] is True
-    assert "deveco-cli/SKILL.md" in result["skillVerification"]["skillFiles"]
-    assert "harmonyos-dev-suite/SKILL.md" in result["skillVerification"]["skillFiles"]
+    skill_files = [
+        Path(p).as_posix() for p in result["skillVerification"]["skillFiles"]
+    ]
+    assert "deveco-cli/SKILL.md" in skill_files
+    assert "harmonyos-dev-suite/SKILL.md" in skill_files
     assert result["knowledgeMcp"] == {
         "status": "available",
         "config": {

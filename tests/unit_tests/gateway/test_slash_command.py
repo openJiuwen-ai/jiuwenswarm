@@ -1,17 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""jiuwenswarm.gateway.slash_command 单元测试."""
+"""gateway.slash_command 单元测试."""
 
 import importlib.util
 from pathlib import Path
 import sys
 import pytest
 
-# 避免 `import jiuwenswarm.gateway.slash_command` 触发 `jiuwenswarm.gateway.__init__`
+# 避免 `import gateway.slash_command` 触发 `gateway.__init__`
 # 进而级联导入 channel/wecom/lark_oapi，在开启 warning->error 的 CI 中导致 collection 失败。
 _MODULE_PATH = (
         Path(__file__).resolve().parents[
-            3] / "jiuwenswarm" / "gateway" / "message_handler" / "command_parser" / "slash_command.py"
+            3] / "gateway" / "message_handler" / "command_parser" / "slash_command.py"
 )
 _SPEC = importlib.util.spec_from_file_location("ut_gateway_slash_command", _MODULE_PATH)
 assert _SPEC and _SPEC.loader
@@ -330,7 +330,7 @@ def test_truncate_desc_by_bytes_byte_budget_and_word_boundary() -> None:
     字符≈200 字节一句话没说完就被切在单词中间(如 immediatel…)。现按 600 字节
     预算截断，且英文截断点落在词界(空格)。
     """
-    from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
+    from gateway.message_handler.command_parser.slash_command import (
         _truncate_desc_by_bytes,
     )
     # 短描述原样返回

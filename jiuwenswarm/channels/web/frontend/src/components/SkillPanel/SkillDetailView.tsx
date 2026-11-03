@@ -29,6 +29,13 @@ import {
 } from '../ui';
 import { Switch } from '../Switch';
 import { resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
+import { isEnterprise } from '../../edition';
+import {
+  formatSkillVersionLabel,
+  isAdminManagedSkill,
+  shouldShowEnableSwitch,
+  shouldShowSkillPublish,
+} from './skillPanelUtils';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -46,20 +53,25 @@ import type {
  * 将技能文件预览数据映射为共享 FilePreviewContent 所需结构。
  * 以当前选中路径为准：加载中/失败时 content 为空，但 header 与错误态仍正常显示
  * （对齐 agent 侧 file.loading/file.error 行为）；图片回退 raw-file 地址。
+ * 例外：切换文件的 loading 期间沿用上一次的预览数据（含其自身 path），
+ * 让内容区继续渲染旧文件，避免预览面板高度塌缩引起页面跳动。
  */
 function buildSkillPreviewFile(
   filePreview: SkillFilePreview | null,
   selectedPath: string,
+  filePreviewStatus: LoadState,
   skillFilePath: string,
 ): FilePreviewContentFile {
-  const matched = filePreview && filePreview.path === selectedPath ? filePreview : null;
+  const matched =
+    filePreview && (filePreview.path === selectedPath || filePreviewStatus === 'loading') ? filePreview : null;
+  const sourcePath = matched?.path ?? selectedPath;
   const skillDir = (skillFilePath || '').replace(/[\\/][^\\/]+$/, '');
   const downloadUrl =
     matched?.download_url ||
-    (isPreviewableImagePath(selectedPath)
-      ? `/file-api/raw-file?path=${encodeURIComponent(`${skillDir}/${selectedPath}`)}`
+    (isPreviewableImagePath(sourcePath)
+      ? `/file-api/raw-file?path=${encodeURIComponent(`${skillDir}/${sourcePath}`)}`
       : null);
-  return { path: selectedPath, content: matched?.content ?? null, downloadUrl };
+  return { path: sourcePath, content: matched?.content ?? null, downloadUrl };
 }
 
 /** 技能包成员阻塞原因 → i18n key（用于"包含技能"页签成员卡片状态徽标） */
@@ -383,6 +395,14 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     Boolean(packPlugin && packPlugin.plugin_name === selectedSkill.name && packPlugin.skills.length > 1);
   // 技能包含有已卸载成员时整包被禁用，且不允许直接启用（需重新下载完整技能包）
   const isPackBlocked = (selectedSkill.blocked_members?.length ?? 0) > 0;
+  const enterpriseEdition = isEnterprise();
+  const adminManaged = isAdminManagedSkill(selectedSkill, enterpriseEdition);
+  const showEnableSwitch = shouldShowEnableSwitch(selectedSkill, enterpriseEdition);
+  const showPublish = shouldShowSkillPublish(selectedSkill, enterpriseEdition);
+  const enterpriseVersionLabel = formatSkillVersionLabel(selectedSkill, {
+    allowVersionId: true,
+  });
+  const currentVersionLabel = formatSkillVersionLabel(selectedSkill);
   return renderShell(
     {
       avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
@@ -423,105 +443,119 @@ export function SkillDetailView(props: SkillDetailViewProps) {
               ? [t('skills.skillTypes.skillpack')]
               : undefined,
     },
-    /* 右侧操作按钮 */
+    /* 右侧：编辑/卸载见 adminManaged；启停见 showEnableSwitch；发布见 showPublish */
     <div className="flex items-center flex-shrink-0">
-      {/* ... 菜单：编辑/卸载 */}
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setDetailMenuOpen(!detailMenuOpen)}
-          className={`w-7 h-7 flex items-center justify-center rounded-md text-text hover:text-text hover:bg-secondary ${
-            detailMenuOpen ? 'bg-secondary' : ''
-          }`}
-          aria-expanded={detailMenuOpen}
-          data-testid="skill-panel-my-detail-menu"
+      {!adminManaged ? (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setDetailMenuOpen(!detailMenuOpen)}
+            className={`w-7 h-7 flex items-center justify-center rounded-md text-text hover:text-text hover:bg-secondary ${
+              detailMenuOpen ? 'bg-secondary' : ''
+            }`}
+            aria-expanded={detailMenuOpen}
+            data-testid="skill-panel-my-detail-menu"
+          >
+            <MoreIcon aria-hidden />
+          </button>
+          {detailMenuOpen ? (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setDetailMenuOpen(false)} />
+              <div className="dropdown-menu">
+                <button
+                  onClick={
+                    selectedSkill.enabled !== false
+                      ? () => {
+                          setDetailMenuOpen(false);
+                          onEditSkill(selectedSkill.name, selectedSkill.skill_type);
+                        }
+                      : undefined
+                  }
+                  disabled={selectedSkill.enabled === false}
+                  className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                  data-testid="skill-panel-my-detail-menu-edit"
+                >
+                  {t('skills.actions.edit')}
+                </button>
+                <button
+                  onClick={
+                    uninstalling
+                      ? undefined
+                      : () => {
+                          setDetailMenuOpen(false);
+                          onUninstall(uninstallPluginName);
+                        }
+                  }
+                  disabled={uninstalling}
+                  className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                  data-testid="skill-panel-my-detail-menu-uninstall"
+                >
+                  {t(uninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
+                </button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+      {showEnableSwitch ? (
+        <div
+          className="ml-5 flex items-center gap-2"
+          title={isPackBlocked ? t('skills.packBlockedHint') : undefined}
         >
-          <MoreIcon aria-hidden />
-        </button>
-        {detailMenuOpen ? (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setDetailMenuOpen(false)} />
-            <div className="dropdown-menu">
-              <button
-                onClick={
-                  selectedSkill.enabled !== false
-                    ? () => {
-                        setDetailMenuOpen(false);
-                        onEditSkill(selectedSkill.name, selectedSkill.skill_type);
-                      }
-                    : undefined
-                }
-                disabled={selectedSkill.enabled === false}
-                className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                data-testid="skill-panel-my-detail-menu-edit"
-              >
-                {t('skills.actions.edit')}
-              </button>
-              <button
-                onClick={
-                  uninstalling
-                    ? undefined
-                    : () => {
-                        setDetailMenuOpen(false);
-                        onUninstall(uninstallPluginName);
-                      }
-                }
-                disabled={uninstalling}
-                className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                data-testid="skill-panel-my-detail-menu-uninstall"
-              >
-                {t(uninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
-              </button>
-            </div>
-          </>
-        ) : null}
-      </div>
-      {/* 启用开关 + 文字（技能包被成员缺失阻塞时禁用开关） */}
-      <div
-        className="ml-5 flex items-center gap-2"
-        title={isPackBlocked ? t('skills.packBlockedHint') : undefined}
-      >
-        <Switch
-          checked={selectedSkill.enabled !== false}
-          onChange={() => onToggleSkillDisabled(selectedSkill.name)}
-          disabled={actionTarget === `toggle:${selectedSkill.name}` || isPackBlocked}
-        />
-        <span
-          className="text-sm text-text whitespace-nowrap"
-          data-testid="skill-panel-my-detail-enable-label"
-          data-variant={selectedSkill.enabled !== false ? 'enabled' : 'disabled'}
-        >
-          {selectedSkill.enabled !== false ? t('skills.enable') : t('skills.disable')}
-        </span>
-      </div>
+          <Switch
+            checked={selectedSkill.enabled !== false}
+            onChange={() => onToggleSkillDisabled(selectedSkill.name)}
+            disabled={actionTarget === `toggle:${selectedSkill.name}` || isPackBlocked}
+          />
+          <span
+            className="text-sm text-text whitespace-nowrap"
+            data-testid="skill-panel-my-detail-enable-label"
+            data-variant={selectedSkill.enabled !== false ? 'enabled' : 'disabled'}
+          >
+            {selectedSkill.enabled !== false ? t('skills.enable') : t('skills.disable')}
+          </span>
+        </div>
+      ) : null}
       {/* 去试试 */}
       <button
         onClick={
           selectedSkill.enabled !== false ? () => onGoToChat(selectedSkill.name, selectedSkill.skill_type) : undefined
         }
         disabled={selectedSkill.enabled === false}
-        className="ml-6 flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+        className={`${showEnableSwitch || !adminManaged ? 'ml-6' : 'ml-0'} flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed`}
         style={{ width: '96px', height: '32px' }}
         data-testid={`${tid}-go-try-btn`}
       >
         {t('skills.actions.goTry')}
       </button>
-      {/* 发布 */}
-      <button
-        type="button"
-        className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"
-        style={{ width: '96px', height: '32px' }}
-        data-testid="skill-panel-my-detail-publish-btn"
-        onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
-      >
-        {t('skills.actions.publish')}
-      </button>
+      {showPublish ? (
+        <button
+          type="button"
+          className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"
+          style={{ width: '96px', height: '32px' }}
+          data-testid="skill-panel-my-detail-publish-btn"
+          onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
+        >
+          {t('skills.actions.publish')}
+        </button>
+      ) : null}
     </div>,
     selectedSkill.description || t('skills.noDescription'),
     <>
-      {/* 版本管理 */}
-      <DetailSection testId={`${tid}-versions-section`} title={t('skills.detail.versionManage')}>
-        {versionsLoadState === 'loading' ? (
+      {/* 企业版：只展示当前版本；社区版保留版本管理（可切换历史副本） */}
+      <DetailSection
+        testId={`${tid}-versions-section`}
+        title={t(enterpriseEdition ? 'skills.detail.version' : 'skills.detail.versionManage')}
+      >
+        {enterpriseEdition ? (
+          <div
+            data-testid="skill-panel-my-detail-versions-state"
+            className="text-sm text-text-muted"
+            data-variant={enterpriseVersionLabel ? 'current' : 'empty'}
+          >
+            {enterpriseVersionLabel || t('skills.detail.noVersions')}
+          </div>
+        ) : versionsLoadState === 'loading' ? (
           <div
             data-testid="skill-panel-my-detail-versions-state"
             className="text-sm text-text-muted"
@@ -543,7 +577,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             className="text-sm text-text-muted"
             data-variant="empty"
           >
-            {selectedSkill.version ? `v${selectedSkill.version}` : t('skills.detail.noVersions')}
+            {currentVersionLabel || t('skills.detail.noVersions')}
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
@@ -679,7 +713,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 selected={Boolean(filePreviewPath)}
                 selectedPreviewable={Boolean(filePreviewPath)}
                 file={
-                  filePreviewPath ? buildSkillPreviewFile(filePreview, filePreviewPath, selectedSkill.file_path) : null
+                  filePreviewPath
+                    ? buildSkillPreviewFile(filePreview, filePreviewPath, filePreviewStatus, selectedSkill.file_path)
+                    : null
                 }
                 status={filePreviewStatus}
                 labels={{

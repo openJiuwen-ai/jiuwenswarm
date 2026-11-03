@@ -45,10 +45,13 @@ from openjiuwen.agent_teams.rails.subagent_elements import (
 from openjiuwen.agent_teams.schema.build_context import register_build_context_factory
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.agents.swarm import group_chat as _group_chat  # noqa: F401 -- registers tool providers
 from jiuwenswarm.agents.swarm.providers import (
     builtin_rails as _builtin_rails,
     code_rails as _code_rails,
     code_subagents as _code_subagents,
+    design_rails as _design_rails,
+    designer_tools as _designer_tools,
     evolution_rails as _evolution_rails,
     member_rails as _member_rails,
     runtime_tools as _runtime_tools,
@@ -68,8 +71,16 @@ VIDEO_GEN = _tools.VIDEO_GEN
 VISUAL_GEN = _tools.VISUAL_GEN
 XIAOYI_PHONE = _tools.XIAOYI_PHONE
 SYMPHONY_TOOLKIT = _tools.SYMPHONY_TOOLKIT
+A4P_INTENT_AUTHORIZATION = _tools.A4P_INTENT_AUTHORIZATION
+DESIGNER_GRAPH_TOOLS = "swarm.designer_graph_tools"
+DESIGNER_AUTHORING = _design_rails.DESIGNER_AUTHORING
+DESIGNER_EXECUTION = _design_rails.DESIGNER_EXECUTION
+DESIGNER_SURFACE_SANITIZER = _design_rails.DESIGNER_SURFACE_SANITIZER
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
 SEND_FILE = _runtime_tools.SEND_FILE
+SESSION_MESSAGING_TOOLS = _runtime_tools.SESSION_MESSAGING_TOOLS
+ORGANIZATION_MODEL_TOOLS = _runtime_tools.ORGANIZATION_MODEL_TOOLS
+ORGANIZATION_OWNER_INBOX_TOOLS = _runtime_tools.ORGANIZATION_OWNER_INBOX_TOOLS
 MEMBER_SKILL_TOOLKIT = _skills.MEMBER_SKILL_TOOLKIT
 # Generic tools provided + registered by openjiuwen (referenced by bare name).
 WEB_SEARCH = _OJ_WEB_SEARCH
@@ -82,6 +93,9 @@ RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
 TEAM_WORKSPACE_REPORT_PATH = _member_rails.TEAM_WORKSPACE_REPORT_PATH
+ORGANIZATION_AVAILABILITY = _member_rails.ORGANIZATION_AVAILABILITY
+ORGANIZATION_MODEL = _member_rails.ORGANIZATION_MODEL
+ORGANIZATION_OWNER_INBOX = _member_rails.ORGANIZATION_OWNER_INBOX
 CONTEXT_PROCESSOR = _member_rails.CONTEXT_PROCESSOR
 MODEL_ANOMALY_DETECTION = _member_rails.MODEL_ANOMALY_DETECTION
 PLUGIN_RAILS = _member_rails.PLUGIN_RAILS
@@ -99,6 +113,7 @@ SYMPHONY_GRAPH_EVOLUTION = _evolution_rails.SYMPHONY_GRAPH_EVOLUTION
 CODE_EXTRA_TOOLS = _tools.CODE_EXTRA_TOOLS
 CODE_RUNTIME_PROMPT = _code_rails.CODE_RUNTIME_PROMPT
 CODE_PROJECT_MEMORY = _code_rails.CODE_PROJECT_MEMORY
+CODE_AGENT_MD = _code_rails.CODE_AGENT_MD
 PERMISSION_INTERRUPT = _code_rails.PERMISSION_INTERRUPT
 CODE_CODING_MEMORY = _code_rails.CODE_CODING_MEMORY
 CODE_AGENT_MODE = _code_rails.CODE_AGENT_MODE
@@ -120,6 +135,7 @@ DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS = (
 )
 STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 SWARM_BROWSER_AGENT = _code_subagents.SWARM_BROWSER_AGENT
+SWARM_CUA_AGENT = _code_subagents.SWARM_CUA_AGENT
 
 # Swarm-owned no-parameter class rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
@@ -133,6 +149,7 @@ TASK_PLANNING = _OJ_TASK_PLANNING
 SUBAGENT = _OJ_SUBAGENT
 SECURITY = _OJ_SECURITY
 HEARTBEAT = _member_rails.HEARTBEAT
+SESSION_MESSAGING_ROUTE = _member_rails.SESSION_MESSAGING_ROUTE
 CODE_LSP = _OJ_LSP
 CODE_CONFIRM_INTERRUPT = _OJ_CONFIRM_INTERRUPT
 CODE_WORKTREE = _OJ_WORKTREE
@@ -202,6 +219,11 @@ __all__ = [
     "AUDIO",
     "CRON_TOOLS",
     "SEND_FILE",
+    "SESSION_MESSAGING_TOOLS",
+    "ORGANIZATION_MODEL_TOOLS",
+    "ORGANIZATION_OWNER_INBOX_TOOLS",
+    "ORGANIZATION_OWNER_INBOX",
+    "ORGANIZATION_MODEL",
     "MEMBER_SKILL_TOOLKIT",
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",
@@ -224,11 +246,13 @@ __all__ = [
     "TASK_PLANNING",
     "SECURITY",
     "HEARTBEAT",
+    "SESSION_MESSAGING_ROUTE",
     "AVATAR_PROMPT",
     "CODE_EXTRA_TOOLS",
     "CODE_RUNTIME_PROMPT",
     "CODE_LSP",
     "CODE_PROJECT_MEMORY",
+    "CODE_AGENT_MD",
     "PERMISSION_INTERRUPT",
     "CODE_CODING_MEMORY",
     "CODE_AGENT_MODE",
@@ -245,5 +269,6 @@ __all__ = [
     "DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS",
     "STATUSLINE_SETUP_AGENT",
     "SWARM_BROWSER_AGENT",
+    "SWARM_CUA_AGENT",
     "BROWSER_AGENT",
 ]

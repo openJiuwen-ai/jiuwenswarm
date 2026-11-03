@@ -14,13 +14,14 @@ import logging
 
 import pytest
 
-from jiuwenswarm.common.utils import get_cron_jobs_path, prepare_workspace
+from gateway.common.paths import get_cron_jobs_path
+from jiuwenswarm.common.utils import prepare_workspace
 
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
+        "gateway.common.paths.get_user_workspace_dir", lambda: tmp_path
     )
     return tmp_path
 
@@ -67,7 +68,7 @@ def _scheduler_logs(level=logging.INFO):
     records only reach the root on pytest 9.1+, which also attaches to
     non-propagating loggers. Attaching here holds on every version.
     """
-    logger = logging.getLogger("jiuwenswarm.gateway.cron.scheduler")
+    logger = logging.getLogger("gateway.cron.scheduler")
     records: list[logging.LogRecord] = []
 
     class _Collect(logging.Handler):
@@ -88,7 +89,7 @@ def _scheduler_logs(level=logging.INFO):
 def _scheduler(store):
     """Minimal scheduler for the logging paths: reload() touches only the store
     and its own bookkeeping, so the client and handler are never called."""
-    from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
+    from gateway.cron.scheduler import CronSchedulerService
 
     return CronSchedulerService(store=store, agent_client=None, message_handler=None)
 
@@ -97,7 +98,7 @@ def _scheduler(store):
 async def test_reload_reports_how_many_jobs_it_loaded(workspace):
     """Say what was loaded and from where: "scheduler started" alone reads the
     same with one job or none."""
-    from jiuwenswarm.gateway.cron.store import CronJobStore
+    from gateway.cron.store import CronJobStore
 
     path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
     with _scheduler_logs() as records:
@@ -110,7 +111,7 @@ async def test_reload_reports_how_many_jobs_it_loaded(workspace):
 @pytest.mark.asyncio
 async def test_reload_warns_when_it_loads_nothing(workspace):
     """Zero jobs is a warning, not silence: it is the symptom of the bug."""
-    from jiuwenswarm.gateway.cron.store import CronJobStore
+    from gateway.cron.store import CronJobStore
 
     missing = workspace / "agent" / "home" / "cron_jobs.json"
     with _scheduler_logs(logging.DEBUG) as records:
@@ -124,7 +125,7 @@ async def test_reload_warns_when_it_loads_nothing(workspace):
 async def test_a_store_vanishing_under_us_warns_by_name(workspace):
     """Losing a populated store is not routine housekeeping: the old INFO line
     read the same whether the file was edited or had vanished with the schedules."""
-    from jiuwenswarm.gateway.cron.store import CronJobStore
+    from gateway.cron.store import CronJobStore
 
     path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
     scheduler = _scheduler(CronJobStore(path=path))

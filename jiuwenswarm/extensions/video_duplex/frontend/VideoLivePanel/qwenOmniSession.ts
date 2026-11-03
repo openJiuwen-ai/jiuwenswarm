@@ -119,6 +119,9 @@ export class RealtimeDuplexSession {
   private playbackContext: AudioContext | null = null;
   private captureNode: AudioWorkletNode | null = null;
   private playbackNode: AudioWorkletNode | null = null;
+  private playbackGain: GainNode | null = null;
+  private microphoneMuted = false;
+  private speakerMuted = false;
   private pending: Int16Array[] = [];
   private pendingSamples = 0;
   private sendTimer: number | null = null;
@@ -224,7 +227,9 @@ export class RealtimeDuplexSession {
       this.assistantPlaying = false;
       if (!this.responseActive) this.callbacks.onState('listening');
     };
-    this.playbackNode.connect(this.playbackContext.destination);
+    this.playbackGain = this.playbackContext.createGain();
+    this.playbackGain.gain.value = this.speakerMuted ? 0 : 1;
+    this.playbackNode.connect(this.playbackGain).connect(this.playbackContext.destination);
     await this.playbackContext.resume();
     if (lifecycle !== this.lifecycle) return;
 
@@ -249,7 +254,9 @@ export class RealtimeDuplexSession {
     const source = this.captureContext.createMediaStreamSource(this.microphone);
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
-      const pcm = resample(new Int16Array(data), this.captureContext?.sampleRate || INPUT_RATE, INPUT_RATE);
+      const input = new Int16Array(data);
+      if (this.microphoneMuted) input.fill(0);
+      const pcm = resample(input, this.captureContext?.sampleRate || INPUT_RATE, INPUT_RATE);
       this.pending.push(pcm);
       this.pendingSamples += pcm.length;
       const maxPending = INPUT_RATE * 2;
@@ -271,6 +278,17 @@ export class RealtimeDuplexSession {
     await this.openSocket();
     if (lifecycle !== this.lifecycle) return;
     this.sendTimer = window.setInterval(() => this.flush(), SEND_INTERVAL_MS);
+  }
+
+  setMicrophoneMuted(muted: boolean): void {
+    this.microphoneMuted = muted;
+    this.microphone?.getAudioTracks().forEach((track) => { track.enabled = !muted; });
+    if (muted) this.pending.forEach((chunk) => chunk.fill(0));
+  }
+
+  setSpeakerMuted(muted: boolean): void {
+    this.speakerMuted = muted;
+    if (this.playbackGain) this.playbackGain.gain.value = muted ? 0 : 1;
   }
 
   stop(): void {

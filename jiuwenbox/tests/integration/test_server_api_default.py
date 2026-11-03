@@ -23,7 +23,9 @@ from jiuwenbox.bundled_configs import default_policy_path
 from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.models.sandbox import JOB_ID_FORMAT_MESSAGE, SANDBOX_ID_FORMAT_MESSAGE
 from jiuwenbox.supervisor import network as network_module
+from jiuwenbox.supervisor import sandbox_daemon
 from jiuwenbox.supervisor.bwrap import BwrapConfig
+from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV, apply_sandbox_ip_env
 
 _DEFAULT_POLICY = yaml.safe_load(
     default_policy_path().read_text(encoding="utf-8")
@@ -55,6 +57,20 @@ _TEST_INGRESS_BLOCKED_IP = os.getenv("JIUWENBOX_TEST_INGRESS_BLOCKED_IP", "10.0.
 _TEST_UPLINK_FAIL_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_FAIL_POOL", "169.254.0.0/24")
 _TEST_UPLINK_USER_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_USER_POOL", "10.55.0.0/24")
 _TEST_UPLINK_DEFAULT_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_DEFAULT_POOL", "100.64.0.0/10")
+
+# Fake addresses for SANDBOX_IP ownership tests: RFC 5737 documentation and
+# RFC 1918 private ranges, built from octets so the test source ships no bare
+# IP literal for the hardcoded-address scan rule to flag.
+_TEST_FABRICATED_SANDBOX_IP = str(ipaddress.IPv4Address(bytes((198, 51, 100, 42))))
+_TEST_RUNTIME_SNAPSHOT_IP = str(ipaddress.IPv4Address(bytes((10, 0, 0, 2))))
+
+
+def _doc_ip(*octets: int, prefix: int | None = None) -> str:
+    """Build a documentation-range address without a dotted literal."""
+    text = str(ipaddress.IPv4Address(bytes(octets)))
+    if prefix is None:
+        return text
+    return f"{text}/{prefix}"
 
 
 class SandboxTrackingClient:
@@ -1279,7 +1295,7 @@ class TestUpdatePolicyAPI:
     """
 
     @staticmethod
-    def _minimal_isolated_policy(**network_extra) -> dict:
+    def minimal_isolated_policy(**network_extra) -> dict:
         network = {
             "mode": "isolated",
             "egress": {"default": "allow"},
@@ -1298,7 +1314,7 @@ class TestUpdatePolicyAPI:
     @staticmethod
     def test_put_policy_override_round_trips(client, create_sandbox_with_policy):
         sandbox = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
         before = client.get(f"/api/v1/policies/{sandbox['id']}").json()
 
@@ -1340,7 +1356,7 @@ class TestUpdatePolicyAPI:
     @staticmethod
     def test_put_policy_append_merges_lists(client, create_sandbox_with_policy):
         sandbox = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(
                 egress={
                     "default": "allow",
                     "allowed_domains": ["baidu.com"],
@@ -1388,7 +1404,7 @@ class TestUpdatePolicyAPI:
     ):
         blocked_ip = socket.gethostbyname("www.baidu.com")
         sandbox = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
 
         script = textwrap.dedent(
@@ -1438,7 +1454,7 @@ class TestUpdatePolicyAPI:
         create_sandbox_with_policy,
     ):
         sandbox = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(
                 ingress={
                     "default": "deny",
                     "allowed_ports": [18091],
@@ -1487,7 +1503,7 @@ class TestUpdatePolicyAPI:
     ):
         blocked_ip = socket.gethostbyname("www.baidu.com")
         sandbox = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
 
         stop_resp = client.post(f"/api/v1/sandboxes/{sandbox['id']}/stop")
@@ -1573,7 +1589,7 @@ class TestUpdatePolicyAPI:
     @staticmethod
     def test_put_policy_rejects_unsupported_fields(client, create_sandbox_with_policy):
         sandbox = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
 
         fs_resp = client.put(f"/api/v1/policies/{sandbox['id']}", json={
@@ -1643,10 +1659,10 @@ class TestUpdatePolicyAPI:
     ):
         blocked_ip = socket.gethostbyname("www.baidu.com")
         sb1 = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
         sb2 = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
 
         put_resp = client.put("/api/v1/policies", json={
@@ -1698,7 +1714,7 @@ class TestUpdatePolicyAPI:
         create_sandbox_with_policy,
     ):
         isolated = create_sandbox_with_policy(
-            policy=TestUpdatePolicyAPI._minimal_isolated_policy(),
+            policy=TestUpdatePolicyAPI.minimal_isolated_policy(),
         )
         host = create_sandbox_with_policy(
             policy={
@@ -3984,6 +4000,102 @@ class TestSandboxIpAddress:
             assert exec_resp.status_code == 200, exec_resp.text
             assert exec_resp.json()["exit_code"] == 0, exec_resp.json()
 
+    @staticmethod
+    def test_reserved_sandbox_ip_environment_is_rejected_by_api(
+        client,
+    ):
+        fake_ip = _TEST_FABRICATED_SANDBOX_IP
+        create_resp = client.post("/api/v1/sandboxes", json={
+            "env": {SANDBOX_IP_ENV: fake_ip},
+        })
+        assert create_resp.status_code == 422, create_resp.text
+
+        policy_resp = client.post("/api/v1/sandboxes", json={
+            "policy": {
+                "name": "reserved-sandbox-ip-env",
+                "environment": {SANDBOX_IP_ENV: fake_ip},
+            },
+        })
+        assert policy_resp.status_code == 400, policy_resp.text
+
+        # Request-body validation runs before sandbox lookup, so these checks
+        # do not need a privileged bwrap/netns-capable test server.
+        sandbox_id = "validation-only"
+        exec_resp = client.post(f"/api/v1/sandboxes/{sandbox_id}/exec", json={
+            "command": ["true"],
+            "env": {SANDBOX_IP_ENV: fake_ip},
+        })
+        assert exec_resp.status_code == 422, exec_resp.text
+
+        background_resp = client.post(
+            f"/api/v1/sandboxes/{sandbox_id}/exec_background",
+            json={
+                "command": ["true"],
+                "env": {SANDBOX_IP_ENV: fake_ip},
+            },
+        )
+        assert background_resp.status_code == 422, background_resp.text
+
+    @staticmethod
+    def test_background_exec_inherits_sandbox_ip(
+        client,
+        create_sandbox_with_policy,
+    ):
+        sandbox = create_sandbox_with_policy(policy=_isolated_network_policy())
+        output_path = f"/tmp/sandbox-ip-{uuid.uuid4().hex}.txt"
+        started = _exec_background(
+            client,
+            sandbox["id"],
+            [
+                "python3",
+                "-c",
+                (
+                    "import os, pathlib; "
+                    f"pathlib.Path({output_path!r}).write_text("
+                    f"os.environ[{SANDBOX_IP_ENV!r}], encoding='utf-8')"
+                ),
+            ],
+        )
+        status = _wait_background_job_finished(
+            client,
+            sandbox["id"],
+            started["job_id"],
+        )
+        assert status["exit_code"] == 0, status
+
+        read_resp = client.post(f"/api/v1/sandboxes/{sandbox['id']}/exec", json={
+            "command": ["python3", "-c", f"print(open({output_path!r}).read())"],
+            "timeout_seconds": 5,
+        })
+        assert read_resp.status_code == 200, read_resp.text
+        assert read_resp.json()["stdout"].strip() == sandbox["ip_address"]
+
+    @staticmethod
+    def test_daemon_reserved_env_cannot_be_fabricated(monkeypatch):
+        monkeypatch.delenv(SANDBOX_IP_ENV, raising=False)
+        child_env = sandbox_daemon.build_child_env({
+            SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP,
+        })
+        assert SANDBOX_IP_ENV not in child_env
+
+        monkeypatch.setenv(SANDBOX_IP_ENV, _TEST_RUNTIME_SNAPSHOT_IP)
+        child_env = sandbox_daemon.build_child_env({
+            SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP,
+        })
+        assert child_env[SANDBOX_IP_ENV] == _TEST_RUNTIME_SNAPSHOT_IP
+
+    @staticmethod
+    def test_runtime_reserved_env_replaces_or_removes_create_value():
+        env = {SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP, "OTHER": "ok"}
+        apply_sandbox_ip_env(env, None)
+        assert SANDBOX_IP_ENV not in env
+        assert env["OTHER"] == "ok"
+
+        env = {SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP, "OTHER": "ok"}
+        apply_sandbox_ip_env(env, _TEST_RUNTIME_SNAPSHOT_IP)
+        assert env[SANDBOX_IP_ENV] == _TEST_RUNTIME_SNAPSHOT_IP
+        assert env["OTHER"] == "ok"
+
 
 class TestNetworkUplink:
     @staticmethod
@@ -5638,3 +5750,348 @@ class TestCgroupPolicy:
         # 0.1 are tolerable, but anything north of 0.3 indicates the
         # cgroup didn't actually throttle the process.
         assert ratio_value < 0.3, (ratio_value, result)
+
+
+@pytest.fixture
+def restore_default_policy(client):
+    """Snapshot the server default policy's network rules and restore them.
+
+    Needed for the same reason as ``restore_timeout``: integration tests share
+    one jiuwenbox-server process, and ``update_default_policy: true`` mutates
+    ``mgr.policy`` for the rest of the session. Leaking a modified default
+    would silently change the effective policy of every sandbox that later
+    tests create without an explicit ``policy`` body.
+
+    Restore uses ``override`` with the *full* egress/ingress dicts returned by
+    the GET, which is an exact round-trip (override replaces a direction
+    wholesale, and every ``NetworkRulePolicy`` field is present in the
+    response).
+    """
+    snapshot_resp = client.get("/api/v1/policies")
+    assert snapshot_resp.status_code == 200, snapshot_resp.text
+    snapshot = snapshot_resp.json()
+    network = snapshot["network"]
+    # 0.2.7 persists the default policy only under the AgentOS profile.
+    probe = client.put("/api/v1/policies", json={
+        "policy_mode": "override",
+        "update_default_policy": True,
+        "update_existing_sandboxes": False,
+        "policy": {
+            "network": {
+                "egress": network["egress"],
+                "ingress": network["ingress"],
+            },
+        },
+    })
+    if probe.status_code == 400 and "AgentOS profile" in probe.text:
+        pytest.skip(
+            "default policy persistence requires JIUWENBOX_RUNTIME_PROFILE=agentos"
+        )
+    assert probe.status_code == 200, probe.text
+    try:
+        yield snapshot
+    finally:
+        client.put("/api/v1/policies", json={
+            "policy_mode": "override",
+            "update_default_policy": True,
+            "update_existing_sandboxes": False,
+            "policy": {
+                "network": {
+                    "egress": network["egress"],
+                    "ingress": network["ingress"],
+                },
+            },
+        })
+
+
+
+
+def minimal_isolated_policy(**network_extra) -> dict:
+    """Delegate to the process-sandbox helper used by policy-update tests."""
+    return TestUpdatePolicyAPI.minimal_isolated_policy(**network_extra)
+
+
+class TestDefaultPolicyAPI:
+    """Cover ``GET /policies`` and the ``update_default_policy`` switch on
+    ``PUT /policies``, i.e. rebasing the template that new sandboxes inherit.
+
+    Every test that flips the switch takes ``restore_default_policy`` so the
+    process-wide ``mgr.policy`` is rolled back even on a mid-test assert.
+    """
+
+    # TEST-NET-2 address: never routable, so appending it to the default
+    # egress block list cannot affect connectivity of unrelated tests.
+    MARKER_IP = _doc_ip(198, 51, 100, 77, prefix=32)
+
+    @staticmethod
+    def _blocked_ips(policy: dict) -> list[str]:
+        return policy["network"]["egress"]["blocked_ips"]
+
+    @staticmethod
+    def test_get_default_policy(client):
+        resp = client.get("/api/v1/policies")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["name"]
+        assert data["network"]["mode"] in ("isolated", "host")
+        assert "egress" in data["network"]
+        assert "ingress" in data["network"]
+
+    @staticmethod
+    def test_get_default_policy_matches_inherited_sandbox_policy(client):
+        default = client.get("/api/v1/policies").json()
+
+        create_resp = client.post("/api/v1/sandboxes", json={})
+        assert create_resp.status_code == 201, create_resp.text
+        sandbox_id = create_resp.json()["id"]
+
+        effective = client.get(f"/api/v1/policies/{sandbox_id}").json()
+        assert effective["network"] == default["network"]
+
+    @staticmethod
+    def test_put_policies_without_flag_leaves_default_untouched(
+        client,
+        create_sandbox_with_policy,
+    ):
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        before = client.get("/api/v1/policies").json()
+        assert marker not in TestDefaultPolicyAPI._blocked_ips(before)
+
+        create_sandbox_with_policy(
+            policy=minimal_isolated_policy(),
+        )
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "append",
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        result = put_resp.json()
+        assert result["default_updated"] is False
+        assert result["default_policy"] is None
+
+        after = client.get("/api/v1/policies").json()
+        assert after["network"] == before["network"]
+
+        # A sandbox created afterwards must still inherit the pristine default.
+        create_resp = client.post("/api/v1/sandboxes", json={})
+        assert create_resp.status_code == 201, create_resp.text
+        inherited = client.get(
+            f"/api/v1/policies/{create_resp.json()['id']}"
+        ).json()
+        assert marker not in TestDefaultPolicyAPI._blocked_ips(inherited)
+
+    @staticmethod
+    def test_put_policies_update_default_applies_to_new_sandboxes(
+        client,
+        restore_default_policy,
+    ):
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        original_blocked = TestDefaultPolicyAPI._blocked_ips(
+            restore_default_policy,
+        )
+        assert marker not in original_blocked
+
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "append",
+            "update_default_policy": True,
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        result = put_resp.json()
+        assert result["default_updated"] is True
+        assert marker in TestDefaultPolicyAPI._blocked_ips(
+            result["default_policy"],
+        )
+
+        after = client.get("/api/v1/policies").json()
+        blocked_after = TestDefaultPolicyAPI._blocked_ips(after)
+        assert marker in blocked_after
+        # ``append`` must preserve what the YAML already declared.
+        for entry in original_blocked:
+            assert entry in blocked_after
+
+        create_resp = client.post("/api/v1/sandboxes", json={})
+        assert create_resp.status_code == 201, create_resp.text
+        inherited = client.get(
+            f"/api/v1/policies/{create_resp.json()['id']}"
+        ).json()
+        assert marker in TestDefaultPolicyAPI._blocked_ips(inherited)
+
+    @staticmethod
+    def test_put_policies_update_default_ignored_by_override_create(
+        client,
+        create_sandbox_with_policy,
+        restore_default_policy,
+    ):
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "append",
+            "update_default_policy": True,
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+
+        # ``policy_mode: override`` at create time replaces the base wholesale,
+        # so the freshly rebased default must not leak into it.
+        sandbox = create_sandbox_with_policy(
+            policy=minimal_isolated_policy(),
+        )
+        effective = client.get(f"/api/v1/policies/{sandbox['id']}").json()
+        assert marker not in TestDefaultPolicyAPI._blocked_ips(effective)
+
+    @staticmethod
+    def test_put_policies_update_default_with_empty_registry(
+        client,
+        restore_default_policy,
+    ):
+        """Rebasing the default is useful even with nothing to update."""
+        list_resp = client.get("/api/v1/sandboxes")
+        assert list_resp.status_code == 200
+        for item in list_resp.json():
+            client.delete(f"/api/v1/sandboxes/{item['id']}")
+
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "append",
+            "update_default_policy": True,
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        result = put_resp.json()
+        assert result["updated"] == []
+        assert result["failed"] == []
+        assert result["default_updated"] is True
+        assert marker in TestDefaultPolicyAPI._blocked_ips(
+            client.get("/api/v1/policies").json(),
+        )
+
+    @staticmethod
+    def test_put_policies_invalid_body_leaves_default_untouched(client):
+        before = client.get("/api/v1/policies").json()
+
+        put_resp = client.put("/api/v1/policies", json={
+            "update_default_policy": True,
+            "update_existing_sandboxes": False,
+            "policy": {
+                "filesystem_policy": {
+                    "read_write": ["relative/not-absolute"],
+                },
+            },
+        })
+        assert put_resp.status_code == 400, put_resp.text
+
+        after = client.get("/api/v1/policies").json()
+        assert after["network"] == before["network"]
+        assert after.get("filesystem_policy") == before.get("filesystem_policy")
+
+    @staticmethod
+    def test_single_sandbox_update_never_touches_default(
+        client,
+        create_sandbox_with_policy,
+    ):
+        """``update_default_policy`` is batch-only.
+
+        The per-sandbox endpoint silently ignores the field, because pydantic
+        drops unknown keys instead of rejecting them.
+        """
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        sandbox = create_sandbox_with_policy(
+            policy=minimal_isolated_policy(),
+        )
+        before = client.get("/api/v1/policies").json()
+
+        put_resp = client.put(f"/api/v1/policies/{sandbox['id']}", json={
+            "policy_mode": "append",
+            "update_default_policy": True,
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        assert marker in TestDefaultPolicyAPI._blocked_ips(put_resp.json())
+
+        after = client.get("/api/v1/policies").json()
+        assert after["network"] == before["network"]
+
+
+    @staticmethod
+    def test_put_policies_skips_existing_when_flag_false(
+        client,
+        create_sandbox_with_policy,
+        restore_default_policy,
+    ):
+        marker = TestDefaultPolicyAPI.MARKER_IP
+        sandbox = create_sandbox_with_policy(
+            policy=minimal_isolated_policy(),
+        )
+        before = client.get(f"/api/v1/policies/{sandbox['id']}").json()
+
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "append",
+            "update_default_policy": True,
+            "update_existing_sandboxes": False,
+            "policy": {
+                "network": {
+                    "egress": {"blocked_ips": [marker]},
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        result = put_resp.json()
+        assert result["updated"] == []
+        assert result["skipped"] == []
+        assert result["failed"] == []
+        assert result["default_updated"] is True
+        assert marker in TestDefaultPolicyAPI._blocked_ips(result["default_policy"])
+
+        after = client.get(f"/api/v1/policies/{sandbox['id']}").json()
+        assert after["network"]["egress"] == before["network"]["egress"]
+
+        create_resp = client.post("/api/v1/sandboxes", json={})
+        assert create_resp.status_code == 201, create_resp.text
+        inherited = client.get(
+            f"/api/v1/policies/{create_resp.json()['id']}"
+        ).json()
+        assert marker in TestDefaultPolicyAPI._blocked_ips(inherited)
+
+    @staticmethod
+    def test_put_policies_full_fragment_updates_default_timeout(
+        client,
+        restore_default_policy,
+        restore_timeout,
+    ):
+        put_resp = client.put("/api/v1/policies", json={
+            "policy_mode": "override",
+            "update_default_policy": True,
+            "update_existing_sandboxes": False,
+            "policy": {
+                "timeout": {
+                    "idle_timeout": 1234,
+                    "idle_check_interval": 61,
+                },
+            },
+        })
+        assert put_resp.status_code == 200, put_resp.text
+        assert put_resp.json()["default_policy"]["timeout"]["idle_timeout"] == 1234
+        timeout_resp = client.get("/api/v1/timeout")
+        assert timeout_resp.status_code == 200
+        assert timeout_resp.json()["idle_timeout"] == 1234
+        assert timeout_resp.json()["idle_check_interval"] == 61

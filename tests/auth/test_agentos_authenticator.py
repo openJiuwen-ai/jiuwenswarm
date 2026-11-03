@@ -1,11 +1,12 @@
 """测试 agentos_authenticator.py"""
-import pytest
 import httpx
+import pytest
+
 # 然后再导入测试目标
-from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import (
+from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+from gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,

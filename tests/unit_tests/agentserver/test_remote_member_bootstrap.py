@@ -824,6 +824,53 @@ async def test_bootstrap_control_plane_forwards_explicit_agent_manager(
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_control_plane_forwards_cron_marker(monkeypatch) -> None:
+    """Team cron runs forward the cron marker to the kickoff loop (issue #5116).
+
+    The remote teammate rebuilds its spec from the kickoff kwargs; without the
+    cron marker the rebuilt members re-expose cron tools inside a cron
+    execution session and can create nested cron jobs.
+    """
+    status = AsyncMock(return_value=None)
+    replace = AsyncMock(return_value=True)
+    kickoff = AsyncMock(return_value=(True, True))
+    monkeypatch.setattr(_mod, "_member_status_for_session", status)
+    monkeypatch.setattr(
+        _mod,
+        "_replace_teammate_card_after_direct_bootstrap",
+        replace,
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_ensure_dynamic_member_execution_loop",
+        kickoff,
+    )
+    kickoff_tasks: set[asyncio.Task[Any]] = set()
+    cron_meta = {"job_id": "job-1", "run_id": "job-1:1900"}
+
+    await apply_bootstrap_envelope_from_control_plane(
+        processed_ids=set(),
+        loop_kicked_members=set(),
+        kickoff_tasks=kickoff_tasks,
+        adopted_member="blank",
+        envelope={
+            "bootstrap_id": "bootstrap-cron",
+            "team_name": "team-1",
+            "session_id": "__cron___19abc_rand12",
+            "member_name": "calculator",
+            "mode": "team",
+            "cron": cron_meta,
+        },
+        source_id="source-1",
+    )
+    await asyncio.gather(*kickoff_tasks)
+
+    kickoff_kwargs = kickoff.await_args.kwargs
+    assert kickoff_kwargs["assembly_cron_meta"] == cron_meta
+    assert kickoff_kwargs["assembly_mode"] == "team"
+
+
+@pytest.mark.asyncio
 async def test_replace_teammate_card_after_direct_bootstrap_uses_local_a2x_state(monkeypatch):
     replace_calls = []
     client = SimpleNamespace()

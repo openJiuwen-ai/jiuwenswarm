@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="28" viewBox="0 0 24 28" fill="none">
+  <title>Mist glass agent pointer</title>
+  <desc>Rounded pointer with a soft ice-blue to periwinkle gradient, translucent body, defined blue outline and a fine inner glass rim.</desc>
+  <defs>
+    <!-- The shape and nominal size match the current production cursor. -->
+    <path id="shape" d="M 3.47 2.05
+      L 21.23 14.50
+      C 22.37 15.30 22.09 17.10 20.71 17.43
+      L 14.21 18.97
+      C 12.77 19.31 11.49 20.14 10.60 21.32
+      L 7.49 25.45
+      C 6.60 26.63 4.73 26.16 4.52 24.69
+      L 1.70 3.10
+      C 1.56 2.10 2.65 1.46 3.47 2.05 Z"/>
+    <clipPath id="inside"><use href="#shape"/></clipPath>
+    <linearGradient id="glass" gradientUnits="userSpaceOnUse" x1="4" y1="3" x2="18" y2="25">
+      <stop stop-color="#EDF9FF" stop-opacity=".97"/>
+      <stop offset=".38" stop-color="#C8E8FF" stop-opacity=".92"/>
+      <stop offset=".73" stop-color="#A9C6F6" stop-opacity=".94"/>
+      <stop offset="1" stop-color="#D0CEF5" stop-opacity=".96"/>
+    </linearGradient>
+    <radialGradient id="soft-light" gradientUnits="userSpaceOnUse" cx="5" cy="5" r="18">
+      <stop stop-color="#FFFFFF" stop-opacity=".72"/>
+      <stop offset=".55" stop-color="#FFFFFF" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" gradientUnits="userSpaceOnUse" x1="3" y1="3" x2="17" y2="24">
+      <stop stop-color="#FFFFFF" stop-opacity=".98"/>
+      <stop offset=".43" stop-color="#F3FAFF" stop-opacity=".85"/>
+      <stop offset=".7" stop-color="#D9E6FF" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#F2EEFF" stop-opacity=".8"/>
+    </linearGradient>
+    <linearGradient id="glint" gradientUnits="userSpaceOnUse" x1="4" y1="3" x2="16" y2="13">
+      <stop stop-color="#FFFFFF" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-30%" width="180%" height="175%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy=".75" stdDeviation=".85" flood-color="#233653" flood-opacity=".2"/>
+    </filter>
+  </defs>
+  <use id="body" href="#shape" fill="url(#glass)" filter="url(#shadow)"/>
+  <use href="#shape" fill="url(#soft-light)"/>
+  <!-- A defined outer edge pairs with the inner highlight on light and dark UI. -->
+  <use href="#shape" stroke="#314D74" stroke-opacity=".95" stroke-width="1.5" stroke-linejoin="round"/>
+  <g clip-path="url(#inside)">
+    <use href="#shape" stroke="url(#rim)" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M 3.12 3.7 L 4.13 12.13 C 4.56 15.1 5.27 16.36 6.06 17.38"
+      stroke="url(#glint)" stroke-width=".65" stroke-linecap="round"/>
+  </g>
+</svg>

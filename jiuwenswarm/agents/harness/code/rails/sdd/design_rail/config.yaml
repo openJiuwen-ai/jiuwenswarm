@@ -5,9 +5,11 @@
 # mounted) with `stage=<target>` to advance. The tool validates the target
 # is a legal forward `next` from the current stage + checks artifacts.
 #
-# NOTE: ``next`` declares only the *forward* next stage. Rework
+# NOTE: ``next`` declares the *forward* target stages. Rework
 # (analysis_review -> analysis, design_review -> design) is driven by the
 # StructuredAskUserTool "reject" answer in DesignRail.after_tool_call.
+# A production stage lists TWO forward targets: the review stage and the
+# stage reached by skipping the review (the user declined the review).
 #
 # Field ownership:
 #   stages.<name>.{skill,artifacts,next}  -> validated by config_loader
@@ -19,7 +21,12 @@ stages:
   analysis:
     skill: aet-req-analysis
     artifacts: [requirements-analysis.md]
-    next: [analysis_review]
+    # next 列出两个合法去向：
+    #   analysis_review —— 进入复审阶段（执行 R1~R4 门禁流水线）
+    #   design          —— 用户拒绝复审时直跳下一生产阶段（跳过复审）
+    # review 阶段没有"进入即跳过复审"的入口（其用户闸门在 R3，R1/R2 会先执行），
+    # 因此"跳过复审"必须由生产阶段直跳表达，否则用户点"跳过"会被强制拉进门禁。
+    next: [analysis_review, design]
   analysis_review:
     skill: aet-req-review
     # review 阶段不产出文件——review 结果通过 ask_user 交互式确认（approve/reject），
@@ -28,7 +35,8 @@ stages:
   design:
     skill: aet-req-design
     artifacts: [requirements-design.md]
-    next: [design_review]
+    # 同 analysis：design_review = 执行复审；done = 用户拒绝复审后直接收尾。
+    next: [design_review, done]
   design_review:
     skill: aet-req-review
     # review 阶段不产出文件——同 analysis_review

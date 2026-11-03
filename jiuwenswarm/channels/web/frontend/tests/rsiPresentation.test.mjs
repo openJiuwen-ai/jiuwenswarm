@@ -4,10 +4,13 @@ import {
   formatArtifactScore,
   nodeChangeDisplayLabel,
   nodeScoreLines,
+  nodeMetrics,
+  nodeHeight,
   nodeStageLabel,
   nodeStageLocalizedLabel,
   nodeStageSpec,
   presentRsiNode,
+  visibleRsiTree,
   progressPercent,
   scoreScale,
   actionsForStatus,
@@ -222,6 +225,30 @@ test('parallel program candidates get attempt numbering without exposing provide
   assert.equal(nodeChangeDisplayLabel({ group: 'program', operation: 'modify' }), '程序逻辑 · 调整');
 });
 
+test('a program candidate adopted before parallel peers finish is only the current leader', () => {
+  const node = {
+    node_id: 'artifact:task:attempt:2',
+    iteration: 2,
+    parent_id: 'ROOT',
+    type: 'ADOPTED',
+    adopted: true,
+    score: 0.8,
+    changes: [],
+    extra: { program: { logical_kind: 'adopted' } },
+  };
+
+  const running = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [node], true));
+  assert.equal(running.title, '程序版本 2 · 当前领先');
+  assert.equal(running.runtimeLabel, '当前领先');
+
+  const completed = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [node], false));
+  assert.equal(completed.title, '程序版本 2 · 当前最优');
+  assert.equal(completed.runtimeLabel, '当前最优');
+
+  const paper = presentRsiNode(node, context('ARTIFACT', 'PAPER', [node], true));
+  assert.equal(paper.title, '论文版本 2 · 当前最优');
+});
+
 test('runtime failures are separated from score-based rejection', () => {
   const failed = {
     node_id: 'paper-failed',
@@ -261,6 +288,27 @@ test('pruned paper nodes expose a concise user-facing reason', () => {
   assert.equal(presentation.lifecycle, 'pruned');
   assert.equal(presentation.reasonLabel, '资料获取质量不佳，已剪枝。');
   assert.equal(presentation.reasonDetail, null);
+});
+
+test('program candidates stopped after another candidate solves are hidden', () => {
+  const stopped = {
+    node_id: 'artifact:task:attempt:3',
+    iteration: 3,
+    parent_id: 'ROOT',
+    type: 'PRUNED',
+    adopted: false,
+    score: null,
+    description: '已达标，停止此候选',
+    failure_reason: '其他候选已达到目标分数',
+    failure_class: null,
+    changes: [],
+    extra: { threshold_stop_cancelled: true, program: { logical_kind: 'pruned' } },
+  };
+  const root = { node_id: 'ROOT', type: 'ROOT', extra: {} };
+  const realFailure = { node_id: 'failed-before-solve', type: 'REJECTED', extra: {} };
+  const tree = { nodes: [root, realFailure, stopped], depth: 1, iteration: 3 };
+  assert.deepEqual(visibleRsiTree(tree, 'PROGRAM').nodes, [root, realFailure]);
+  assert.equal(visibleRsiTree(tree, 'PAPER'), tree);
 });
 
 test('structured harness stage payloads localize by status instead of using the provider name', () => {
@@ -361,4 +409,86 @@ test('program scores are shown out of 100; other scenarios are unchanged', () =>
   assert.equal(formatArtifactScore(null, 'PROGRAM'), '--');
   assert.equal(scoreScale('PROGRAM'), 100);
   assert.equal(scoreScale('PAPER'), 1);
+});
+
+test('Harness cards show only the node score and reserve no space for reference scores', () => {
+  const node = {
+    node_id: 'H-01',
+    iteration: 1,
+    parent_id: 'ROOT',
+    type: 'REJECTED',
+    adopted: false,
+    score: 0.7,
+    changes: [],
+    extra: { best_reference_score: 0.9, latest_evaluated_score: 0.7, potential_score: 0.8 },
+  };
+  const withoutReferences = { ...node, extra: {} };
+
+  assert.deepEqual(nodeScoreLines(node, null, 'HARNESS'), [{ value: '0.700', label: '分数' }]);
+  assert.deepEqual(nodeScoreLines({ ...node, score: null }, null, 'HARNESS'), []);
+  for (const kind of ['best-path', 'evaluated']) {
+    for (const expanded of [false, true]) {
+      assert.deepEqual(
+        nodeMetrics(node, kind, expanded, 'HARNESS'),
+        nodeMetrics(withoutReferences, kind, false, 'HARNESS'),
+      );
+    }
+  }
+  assert.equal(nodeScoreLines(node, 'PROGRAM', 'ARTIFACT').length, 4);
+});
+
+test('only Harness scores keep three decimal places across score displays', () => {
+  const cases = [
+    { score: 0.73456, artifactType: null, scenario: 'HARNESS', expected: '0.735' },
+    { score: 0.73444, artifactType: null, scenario: 'HARNESS', expected: '0.734' },
+    { score: 0, artifactType: null, scenario: 'HARNESS', expected: '0.000' },
+    { score: 1, artifactType: null, scenario: 'HARNESS', expected: '1.000' },
+    { score: null, artifactType: null, scenario: 'HARNESS', expected: '--' },
+    { score: 0.73456, artifactType: 'PAPER', scenario: 'ARTIFACT', expected: '0.7' },
+    { score: 0.73456, artifactType: 'PROGRAM', scenario: 'ARTIFACT', expected: '73.5' },
+    { score: 0.73456, artifactType: null, scenario: undefined, expected: '0.7' },
+  ];
+  for (const { score, artifactType, scenario, expected } of cases) {
+    assert.equal(formatArtifactScore(score, artifactType, scenario), expected);
+  }
+  const node = { score: 0.73456, extra: {} };
+  assert.deepEqual(nodeScoreLines(node, null, 'HARNESS'), [{ value: '0.735', label: '分数' }]);
+  assert.deepEqual(nodeScoreLines(node, 'PAPER', 'ARTIFACT'), [{ value: '0.7', label: '分数' }]);
+  assert.deepEqual(nodeScoreLines(node, 'PROGRAM', 'ARTIFACT'), [{ value: '73.5', label: '分数' }]);
+});
+
+test('nodeHeight uses the scenario when measuring Harness score rows', () => {
+  const node = { score: 0.7, extra: { potential_score: 0.8, best_reference_score: 0.9 } };
+  for (const kind of ['best-path', 'evaluated']) {
+    for (const expanded of [false, true]) {
+      const metrics = nodeMetrics(node, kind, expanded, 'HARNESS');
+      assert.equal(nodeHeight(node, kind, expanded, 'HARNESS'), metrics.barH + metrics.bodyH);
+      assert(nodeHeight(node, kind, expanded) > nodeHeight(node, kind, expanded, 'HARNESS'));
+    }
+  }
+});
+
+test('program candidates skipped after a sibling reached the target render as neutral skips', () => {
+  const root = { node_id: 'n0', type: 'ROOT', iteration: 0, parent_id: null, adopted: true, score: 0.067, changes: [], extra: {} };
+  const variants = [
+    { failure_class: 'SKIPPED_TARGET_REACHED', failure_reason: '其他候选已达到目标分数', extra: {} },
+    // Legacy projections: runtime-failure markers but the skip reason or flag.
+    { failure_class: 'candidate-failed', failure_reason: '其他候选已达到目标分数', extra: { program: { error: 'empty_reply' } } },
+    { failure_class: 'empty_reply', failure_reason: 'empty', extra: { threshold_stop_cancelled: true } },
+  ];
+  for (const [index, variant] of variants.entries()) {
+    for (const type of ['REJECTED', 'PRUNED']) {
+      const node = { node_id: `n${index + 1}`, type, iteration: 2, parent_id: 'n0', adopted: false, score: null, changes: [], ...variant };
+      const p = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [root, node]));
+      assert.equal(p.lifecycle, 'skipped');
+      assert.equal(p.runtimeKind, 'pruned');
+      assert.equal(p.statusKind, 'pruned');
+      assert.equal(p.runtimeLabel, '已跳过');
+      assert.equal(p.reasonLabel, '其他候选已达到目标分数');
+      assert.equal(p.reasonDetail, null);
+      assert.doesNotMatch(`${p.title}${p.runtimeLabel}${p.reasonLabel}`, /失败/);
+    }
+  }
+  const failed = { node_id: 'n9', type: 'REJECTED', iteration: 2, parent_id: 'n0', adopted: false, score: null, changes: [], failure_class: 'generation_failed', failure_reason: 'generation failed', extra: {} };
+  assert.equal(presentRsiNode(failed, context('ARTIFACT', 'PROGRAM', [root, failed])).lifecycle, 'failed');
 });

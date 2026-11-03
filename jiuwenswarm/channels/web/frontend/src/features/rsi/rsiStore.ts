@@ -40,6 +40,8 @@ interface RsiState {
   list: RsiTaskListItem[];
   listLoading: boolean;
   listError: string | null;
+  // 本会话内列表是否成功加载过：peek 预载与页面挂载共享一次请求，避免重复拉取
+  listLoadedOnce: boolean;
 
   selectedTaskId: string | null;
   detail: Record<string, RsiDetailState>;
@@ -90,6 +92,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
   list: [],
   listLoading: false,
   listError: null,
+  listLoadedOnce: false,
   selectedTaskId: null,
   detail: {},
   detailLoading: false,
@@ -100,7 +103,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
     try {
       const { rsiTaskList } = await import('./rsiApi');
       const list = await rsiTaskList();
-      set({ list, listLoading: false });
+      set({ list, listLoading: false, listLoadedOnce: true });
     } catch (e) {
       set({
         listLoading: false,
@@ -289,6 +292,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
       list: [],
       listLoading: false,
       listError: null,
+      listLoadedOnce: false,
       selectedTaskId: null,
       detail: {},
       detailLoading: false,

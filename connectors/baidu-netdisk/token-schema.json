@@ -1,0 +1,24 @@
+{
+  "title": "百度网盘授权",
+  "title_en": "Baidu Netdisk Authorization",
+  "description": "输入百度网盘 Access Token：打开官方授权链接，登录并完成授权后，从浏览器地址栏 access_token= 后复制。Token 仅保存在本机，不会上传。有效期 30 天，过期后需重新授权并更新。",
+  "description_en": "Enter your Baidu Netdisk Access Token: open the official authorization link, sign in and authorize, then copy the access_token from the address bar. Stored locally only. Valid for 30 days; re-authorize after expiry.",
+  "docUrl": "https://pan.baidu.com/union/doc/mcp-server/%E6%93%8D%E4%BD%9C%E6%8C%87%E5%8D%97/%E5%9C%A8-agent-%E4%B8%AD%E8%87%AA%E5%AE%9A%E4%B9%89%E4%BD%BF%E7%94%A8/",
+  "docLabel": "去获取 Access Token",
+  "docLabel_en": "Get Access Token",
+  "oauthDocUrl": "https://pan.baidu.com/union/doc/mcp-server/%E6%93%8D%E4%BD%9C%E6%8C%87%E5%8D%97/%E5%9C%A8-agent-%E4%B8%AD%E8%87%AA%E5%AE%9A%E4%B9%89%E4%BD%BF%E7%94%A8/",
+  "oauthSuccessPrefix": "https://openapi.baidu.com/oauth/2.0/login_success",
+  "fields": [
+    {
+      "key": "BAIDU_NETDISK_ACCESS_TOKEN",
+      "label": "Access Token",
+      "label_en": "Access Token",
+      "type": "password",
+      "required": true,
+      "placeholder": "从授权成功页地址栏 access_token= 后复制",
+      "placeholder_en": "Copy from access_token= in the success page URL",
+      "description": "打开官方授权链接并授权后，从跳转页地址栏复制 access_token（有效期 30 天，过期后需重新授权更新）",
+      "description_en": "Open the official authorization link, authorize, then copy access_token from the redirected URL (valid for 30 days)"
+    }
+  ]
+}

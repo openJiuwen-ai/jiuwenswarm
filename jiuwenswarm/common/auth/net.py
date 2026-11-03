@@ -1,28 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""登录链路的出网请求。"""
+"""转发别名（auth 拆分过渡）：auth 域共享 HTTP 工具真源已迁 ``gateway.auth.net``。
 
-from __future__ import annotations
+server/agents 侧消费方经本路径取用（拍板 #10 方向：母仓反向依赖
+gateway 仓）；B3 拆仓时随 shim 收敛退役。
+"""
 
-import os
-from typing import Any
-
-import requests
-
-
-def ssl_verify_enabled() -> bool:
-    """``JIUWENSWARM_SSL_VERIFY``，默认开。"""
-    return (os.environ.get("JIUWENSWARM_SSL_VERIFY") or "").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
-
-
-def requests_request(method: str, url: str, **kwargs: Any) -> requests.Response:
-    """发一次请求；代理本身连不上时退回直连重试一次。"""
-    kwargs.setdefault("verify", ssl_verify_enabled())
-    try:
-        return requests.request(method.upper(), url, **kwargs)
-    except requests.exceptions.ProxyError:
-        with requests.Session() as session:
-            session.trust_env = False
-            return session.request(method.upper(), url, **kwargs)
+from gateway.auth.net import *  # noqa: F401,F403
+from gateway.auth.net import (  # noqa: F401
+    Any,
+    annotations,
+    os,
+    requests,
+    requests_request,
+    ssl_verify_enabled,
+)

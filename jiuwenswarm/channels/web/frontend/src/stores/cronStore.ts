@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
+import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
 import type { Session } from '../types';
+import type { CronRunUpdate } from '../types/cron';
 
 export interface SidebarCronJob {
   id: string;
@@ -25,6 +27,9 @@ export function isWebChannelJob(targets?: string): boolean {
 }
 
 interface CronState {
+  runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
+  clearUnconfirmedRuns: () => void;
+  applyRunUpdate: (payload: Record<string, unknown>) => CronRunUpdate | null;
   jobs: SidebarCronJob[];
   isLoading: boolean;
   expandedCronGroups: Record<string, boolean>;
@@ -39,7 +44,8 @@ interface CronState {
   unreadCronJobs: Record<string, boolean>;
   markCronJobUnread: (jobId: string) => void;
   clearCronJobUnread: (jobId: string) => void;
-  loadJobs: () => Promise<void>;
+  /** @returns 是否拉取成功；失败时保留已有列表，方便调用方重试。 */
+  loadJobs: () => Promise<boolean>;
   reload: () => Promise<void>;
   toggleCronGroup: (groupId: string) => void;
   loadCronSessions: (projectId: string, cronId: string) => Promise<void>;
@@ -55,6 +61,40 @@ function persistCronUnread(state: Record<string, boolean>) {
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
+  runUpdates: {},
+  clearUnconfirmedRuns: () => set((state) => ({
+    runUpdates: Object.fromEntries(Object.entries(state.runUpdates).filter(([, run]) =>
+      run.status === 'succeeded' || run.status === 'failed')),
+  })),
+  applyRunUpdate: (payload) => {
+    if (
+      typeof payload.run_id !== 'string' || !payload.run_id ||
+      typeof payload.job_id !== 'string' || !payload.job_id ||
+      typeof payload.event_id !== 'string' ||
+      typeof payload.revision !== 'number' || !Number.isSafeInteger(payload.revision) || payload.revision < 1 ||
+      typeof payload.timestamp !== 'number' || !Number.isFinite(payload.timestamp) ||
+      typeof payload.notify !== 'boolean' ||
+      (payload.session_id != null && typeof payload.session_id !== 'string') ||
+      typeof payload.project_id !== 'string' ||
+      typeof payload.mode !== 'string' ||
+      (payload.job_name != null && typeof payload.job_name !== 'string') ||
+      (payload.error != null && typeof payload.error !== 'string') ||
+      !['pending', 'running', 'awaiting_approval', 'succeeded', 'failed'].includes(String(payload.status)) ||
+      !['started', 'paused', 'finished', 'reminder'].includes(String(payload.phase))
+    ) return null;
+    const previous = get().runUpdates[payload.run_id];
+    if (previous && (
+      previous.revision >= payload.revision ||
+      (['succeeded', 'failed'].includes(previous.status) && ['pending', 'running', 'awaiting_approval'].includes(String(payload.status)))
+    )) return null;
+    const update = payload as unknown as CronRunUpdate;
+    const runUpdate = { ...update, firstSeenAt: previous?.firstSeenAt ?? update.timestamp };
+    set((state) => {
+      const entries = Object.entries(state.runUpdates).filter(([key]) => key !== update.run_id).slice(-255);
+      return { runUpdates: { ...Object.fromEntries(entries), [update.run_id]: runUpdate } };
+    });
+    return update;
+  },
   jobs: [],
   isLoading: false,
   expandedCronGroups: {},
@@ -96,8 +136,12 @@ export const useCronStore = create<CronState>((set, get) => ({
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
+      return true;
     } catch {
-      set({ jobs: [], isLoading: false });
+      // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，
+      // 否则首屏失败后要等手动刷新才会再出现定时任务。
+      set({ isLoading: false });
+      return false;
     }
   },
 
@@ -140,23 +184,17 @@ export const useCronStore = create<CronState>((set, get) => ({
 
 }));
 
-const DEFAULT_PROJECT_ID = 'default';
-
 // 系统自动维护的 cron job id（与后端 proactive_cron_sync.PROACTIVE_JOB_ID、
 // CronPanel/index.tsx 的 PROACTIVE_AUTO_JOB_ID 一致）。这类 job 由配置开关自动创建/删除，
 // 不创建会话、不给推送的会话打 cron_id——所以"触发的会话"列表恒空，在会话侧栏是个空壳。
 // 从会话侧栏隐藏它（Cron 面板里仍可见可编辑 cron 表达式/时区），避免空壳 item 碍眼。
 const SYSTEM_AUTO_JOB_IDS = new Set(['proactive-tick-auto']);
 
-export function isDefaultProjectId(projectId: string): boolean {
-  return !projectId || projectId === DEFAULT_PROJECT_ID;
-}
-
-/** 按项目过滤定时任务（默认项目返回 project_id 为空的）；系统自动维护 job 不进会话侧栏。 */
+/** 按项目过滤定时任务；系统自动维护 job 不进会话侧栏。 */
 export function filterJobsForProject(jobs: SidebarCronJob[], projectId: string): SidebarCronJob[] {
-  const filtered = isDefaultProjectId(projectId)
-    ? jobs.filter((job) => isDefaultProjectId(job.project_id) && !SYSTEM_AUTO_JOB_IDS.has(job.id))
-    : jobs.filter((job) => job.project_id === projectId && !SYSTEM_AUTO_JOB_IDS.has(job.id));
+  const filtered = jobs.filter(
+    (job) => jobBelongsToProject(job.project_id, projectId) && !SYSTEM_AUTO_JOB_IDS.has(job.id),
+  );
   return filtered.sort((a, b) => {
     const au = typeof a.updated_at === 'number' ? a.updated_at : 0;
     const bu = typeof b.updated_at === 'number' ? b.updated_at : 0;

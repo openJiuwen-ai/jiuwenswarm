@@ -1,14 +1,34 @@
-import { useCallback, useEffect } from 'react';
-import { AudioWaveform, LoaderCircle, Square } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Camera,
+  Monitor,
+  LoaderCircle,
+  Mic,
+  MicOff,
+  MonitorOff,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { FormDialog } from '../../../channels/web/frontend/src/components/form';
+import { isTaskDuplexScreenSharingEnabled } from '../../../channels/web/frontend/src/features/taskFullDuplex/mediaPreferences';
+import { useTranslation } from 'react-i18next';
 
 import type { ApplicationPluginTaskInputActionProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
-import { useTaskFullDuplexEnabled, setTaskFullDuplexEnabled } from '../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag';
+import {
+  useTaskFullDuplexEnabled,
+  setTaskFullDuplexEnabled,
+} from '../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag';
 import { setTaskAsrEnabled } from '../../../channels/web/frontend/src/features/taskAsr/featureFlag';
 import { webRequest } from '../../../channels/web/frontend/src/services/webClient';
 import {
   startTaskFullDuplex,
   stopTaskFullDuplex,
   useTaskFullDuplexRuntime,
+  toggleTaskDuplexMicrophone,
+  toggleTaskDuplexSpeaker,
+  stopTaskDuplexScreenSharing,
 } from './taskFullDuplexRuntimeStore';
 import './TaskFullDuplexAction.css';
 
@@ -22,9 +42,17 @@ export function TaskFullDuplexAction({
   sessionId,
   ensureSession,
   labels,
+  hasTextDraft = false,
 }: ApplicationPluginTaskInputActionProps) {
+  const { t } = useTranslation();
+  const [orbHost, setOrbHost] = useState<Element | null>(null);
+  const [shareDialog, setShareDialog] = useState(false);
+  const [shareSource, setShareSource] = useState<'screen' | 'camera'>('screen');
+  const bindAnchor = useCallback((node: HTMLSpanElement | null) => {
+    setOrbHost(node?.closest('.chat-input-frame') || null);
+  }, []);
   const enabled = useTaskFullDuplexEnabled();
-  const { state, error } = useTaskFullDuplexRuntime();
+  const { state, error, microphoneMuted, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
 
   useEffect(() => {
     let cancelled = false;
@@ -34,10 +62,7 @@ export function TaskFullDuplexAction({
         .then((config) => {
           if (!cancelled) {
             setTaskFullDuplexEnabled(parseEnabled(config.task_full_duplex_enabled));
-            setTaskAsrEnabled(
-              config.task_asr_enabled !== undefined &&
-                parseEnabled(config.task_asr_enabled),
-            );
+            setTaskAsrEnabled(config.task_asr_enabled !== undefined && parseEnabled(config.task_asr_enabled));
           }
         })
         .catch(() => {
@@ -51,27 +76,144 @@ export function TaskFullDuplexAction({
     };
   }, []);
 
+  const beginSession = useCallback(
+    async (visualSource?: 'screen' | 'camera') => {
+      setShareDialog(false);
+      const readySessionId = await ensureSession('');
+      if (readySessionId) await startTaskFullDuplex(readySessionId, visualSource);
+    },
+    [ensureSession],
+  );
+
   const handleClick = useCallback(async () => {
     if (state !== 'idle') {
       stopTaskFullDuplex();
       return;
     }
-    // Leave the title empty so Jiuwen can name it from the first real user turn.
-    const readySessionId = await ensureSession('');
-    if (!readySessionId) return;
-    await startTaskFullDuplex(readySessionId);
-  }, [ensureSession, state]);
+    if (isTaskDuplexScreenSharingEnabled()) {
+      setShareDialog(true);
+      return;
+    }
+    await beginSession();
+  }, [beginSession, state]);
 
   const showAction = enabled && eligible;
-  const title = error || (state === 'starting'
-    ? labels.starting
-    : state === 'active'
-      ? labels.stop
-      : labels.start);
+  const running = enabled && state !== 'idle';
+  const title = error || (state === 'starting' ? labels.starting : state === 'active' ? labels.stop : labels.start);
 
   return (
     <>
-      {showAction ? (
+      {shareDialog ? (
+        <FormDialog
+          open
+          title={t('chat.duplexControls.chooseSource')}
+          description={t('chat.duplexControls.chooseSourceDescription')}
+          confirmLabel={t('common.confirm')}
+          cancelLabel={t('common.cancel')}
+          onConfirm={() => void beginSession(shareSource)}
+          onCancel={() => setShareDialog(false)}
+          testIdPrefix="chat-panel-duplex-share-dialog"
+        >
+          <div
+            className="task-full-duplex-sources"
+            role="radiogroup"
+            aria-label={t('chat.duplexControls.chooseSource')}
+          >
+            {(['screen', 'camera'] as const).map((source) => (
+              <button
+                key={source}
+                type="button"
+                role="radio"
+                aria-checked={shareSource === source}
+                onClick={() => setShareSource(source)}
+                data-testid="chat-panel-duplex-source"
+                data-variant={source}
+              >
+                {source === 'screen' ? <Monitor aria-hidden /> : <Camera aria-hidden />}
+                {t(source === 'screen' ? 'chat.duplexControls.screenOrWindow' : 'videoLive.sources.camera')}
+              </button>
+            ))}
+          </div>
+        </FormDialog>
+      ) : null}
+      {running && screenSharing
+        ? createPortal(
+            <div className="task-full-duplex-sharing" role="status" data-testid="chat-panel-duplex-sharing-indicator">
+              <span className="task-full-duplex-sharing__dot" aria-hidden="true" />
+              <span>{t('chat.duplexControls.sharingVideo')}</span>
+              <button type="button" onClick={stopTaskDuplexScreenSharing} data-testid="chat-panel-duplex-close-sharing">
+                {t('common.close')}
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+      <span
+        ref={bindAnchor}
+        className="task-full-duplex-anchor"
+        aria-hidden="true"
+        data-testid="chat-panel-duplex-anchor"
+      />
+      {running && orbHost
+        ? createPortal(
+            <div className="task-full-duplex-orb" data-testid="chat-panel-duplex-controls" data-variant={state}>
+              <div
+                className="task-full-duplex-orb__sphere"
+                role="status"
+                aria-label={t(
+                  state === 'starting' ? 'chat.duplexControls.connecting' : 'chat.duplexControls.listening',
+                )}
+                data-testid="chat-panel-duplex-orb"
+              />
+              <div className="task-full-duplex-orb__controls">
+                <button
+                  type="button"
+                  onClick={toggleTaskDuplexMicrophone}
+                  disabled={state !== 'active'}
+                  aria-pressed={microphoneMuted}
+                  aria-label={t(microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
+                  title={t(microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
+                  data-testid="chat-panel-duplex-microphone"
+                >
+                  {microphoneMuted ? <MicOff aria-hidden /> : <Mic aria-hidden />}
+                </button>
+                <button
+                  type="button"
+                  onClick={stopTaskFullDuplex}
+                  aria-label={t('chat.duplexControls.exit')}
+                  title={t('chat.duplexControls.exit')}
+                  data-testid="chat-panel-duplex-exit"
+                >
+                  <X aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleTaskDuplexSpeaker}
+                  disabled={state !== 'active'}
+                  aria-pressed={speakerMuted}
+                  aria-label={t(speakerMuted ? 'chat.duplexControls.unmuteSpeaker' : 'chat.duplexControls.muteSpeaker')}
+                  title={t(speakerMuted ? 'chat.duplexControls.unmuteSpeaker' : 'chat.duplexControls.muteSpeaker')}
+                  data-testid="chat-panel-duplex-speaker"
+                >
+                  {speakerMuted ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}
+                </button>
+                {screenSharing ? (
+                  <button
+                    type="button"
+                    onClick={stopTaskDuplexScreenSharing}
+                    aria-label={t('chat.duplexControls.stopSharing')}
+                    title={t('chat.duplexControls.stopSharing')}
+                    data-testid="chat-panel-duplex-stop-sharing"
+                  >
+                    <MonitorOff aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+            </div>,
+            orbHost,
+          )
+        : null}
+      {showAction && !hasTextDraft ? (
         <button
           type="button"
           onClick={() => void handleClick()}
@@ -83,14 +225,23 @@ export function TaskFullDuplexAction({
           data-testid="chat-panel-input-full-duplex"
         >
           {state === 'starting' ? (
-            <LoaderCircle className="chat-input-btn-icon task-full-duplex-action__spinner" aria-hidden="true" />
+            <LoaderCircle className="chat-input-btn-icon task-full-duplex-action__spinner" aria-hidden />
           ) : state === 'active' ? (
-            <Square className="chat-input-btn-icon" fill="currentColor" strokeWidth={1.8} aria-hidden="true" />
+            <X className="chat-input-btn-icon" aria-hidden />
           ) : (
-            <AudioWaveform className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
+            <svg className="chat-input-btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path
+                d="M10 2.5v15M13.75 6.25v7.5M6.25 6.25v7.5M17.5 8.75v2.5M2.5 8.75v2.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           )}
         </button>
-      ) : fallback}
+      ) : (
+        fallback
+      )}
     </>
   );
 }

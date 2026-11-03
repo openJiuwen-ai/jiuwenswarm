@@ -80,6 +80,18 @@ class DropOldestQueue(asyncio.Queue):
         self.put_nowait(item)
 
 
+def monitor_team_agent(monitor: Any) -> Any:
+    """Return the leader TeamAgent a TeamMonitor listens on, or None if unknown.
+
+    Prefers the public ``TeamMonitor.team_agent`` accessor; agent-core builds
+    that predate it only keep the reference as ``_team_agent``.
+    """
+    team_agent = getattr(monitor, "team_agent", None)
+    if team_agent is None:
+        team_agent = getattr(monitor, "_team_agent", None)
+    return team_agent
+
+
 class BaseMonitorHandler:
     """Shared lifecycle for handlers that wrap a TeamMonitor.
 
@@ -131,6 +143,11 @@ class BaseMonitorHandler:
     def is_running(self) -> bool:
         return self._running
 
+    @property
+    def bound_team_agent(self) -> Any:
+        """Leader TeamAgent the wrapped monitor listens on, or None if unknown."""
+        return monitor_team_agent(self._monitor)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -164,6 +181,21 @@ class BaseMonitorHandler:
         await self._monitor.start()
         self._running = True
         self._collect_task = asyncio.create_task(self._collect_events())
+        self._collect_task.add_done_callback(self._on_collect_done)
+
+    def _on_collect_done(self, task: asyncio.Task) -> None:
+        """Mark the handler stopped once its monitor stream ends on its own.
+
+        Otherwise ``is_running`` stays True after the stream is gone and the
+        runtime-ready path never attaches a replacement handler.
+        """
+        if task is not self._collect_task or not self._running:
+            return
+        self._running = False
+        logger.info(
+            "[BaseMonitorHandler] monitor stream ended: session_id=%s",
+            self._session_id,
+        )
 
     async def stop(self) -> None:
         """Stop monitoring: stop the underlying monitor and wait for the collect task to drain."""

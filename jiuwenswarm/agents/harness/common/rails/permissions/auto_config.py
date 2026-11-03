@@ -10,7 +10,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import supports_single_agent_permission_profile
+from jiuwenswarm.common.permission_mode import (
+    AUTO_PERMISSION_MODE,
+    MANUAL_PERMISSION_MODE,  # noqa: F401
+    is_auto_permission_enabled,  # noqa: F401
+    is_auto_permission_mode,
+    is_permission_boundary_enabled,  # noqa: F401
+    resolve_permission_runtime_mode,  # noqa: F401
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.protected_paths import (
     JIUWENCLAW_PROTECTED_WRITE_PATHS,
     merge_protected_write_paths,
@@ -25,13 +33,10 @@ from jiuwenswarm.common.permission_tools import (
 
 logger = logging.getLogger(__name__)
 
-MANUAL_PERMISSION_MODE = "manual"
-AUTO_PERMISSION_MODE = "auto"
-_VALID_RUNTIME_MODES = {MANUAL_PERMISSION_MODE}
 _STRUCTURED_PERMISSION_RULE_MAP_KEYS = frozenset({"paths", "commands", "patterns"})
 AUTO_PERMISSION_DEFAULT_OPTIONS = {
     "reviewer_timeout_ms": 60000,
-    "reviewer_min_confidence": 0.7,
+    "reviewer_output_format": "json_object",
     "persistent_audit_enabled": False,
     "bounded_write_max_files": 3,
     "bounded_write_excluded_paths": JIUWENCLAW_PROTECTED_WRITE_PATHS,
@@ -62,44 +67,12 @@ def resolve_declared_auto_workspace(
 
 
 def supports_phase_auto_root(params: Mapping[str, Any]) -> bool:
-    """Return whether the request belongs to the supported independent Deep root."""
-
-    runtime_mode = str(params.get("mode") or "agent").strip().lower()
-    work_mode = str(params.get("work_mode") or "").strip().lower()
+    """Return whether the request belongs to a supported independent root."""
     return bool(
         not params.get("team")
-        and not is_team_mode(runtime_mode)
-        and runtime_mode != "auto_harness"
-        and runtime_mode.split(".", 1)[0] == "agent"
-        and work_mode in {"", "work"}
-    )
-
-
-def resolve_permission_runtime_mode(permission_config: Mapping[str, Any]) -> str:
-    """Return the task permission runtime mode."""
-    raw_mode = (
-        str(permission_config.get("mode") or MANUAL_PERMISSION_MODE).strip().lower()
-    )
-    if raw_mode in _VALID_RUNTIME_MODES:
-        return raw_mode
-    logger.warning("Unknown permissions.mode %r; falling back to manual", raw_mode)
-    return MANUAL_PERMISSION_MODE
-
-
-def is_auto_permission_mode(permission_config: Mapping[str, Any]) -> bool:
-    """Return whether task-level auto permission mode is selected."""
-    return resolve_permission_runtime_mode(permission_config) == AUTO_PERMISSION_MODE
-
-
-def is_permission_boundary_enabled(permission_config: Mapping[str, Any]) -> bool:
-    """Return whether the permission boundary is explicitly enabled."""
-    return permission_config.get("enabled") is True
-
-
-def is_auto_permission_enabled(permission_config: Mapping[str, Any]) -> bool:
-    """Return whether task-level auto permission is eligible to activate."""
-    return is_permission_boundary_enabled(permission_config) and is_auto_permission_mode(
-        permission_config
+        and supports_single_agent_permission_profile(
+            params.get("mode") or "agent", work_mode=params.get("work_mode"),
+        )
     )
 
 
@@ -141,8 +114,8 @@ def normalize_auto_permission_options(raw_options: Any) -> dict[str, Any]:
             normalized[key] = bool(raw_value)
         elif isinstance(default_value, int) and not isinstance(default_value, bool):
             normalized[key] = _positive_int(raw_value, default_value)
-        elif isinstance(default_value, float):
-            normalized[key] = _bounded_float(raw_value, default_value)
+        elif key == "reviewer_output_format":
+            normalized[key] = normalize_reviewer_output_format(raw_value)
         elif key == "bounded_write_excluded_paths":
             normalized[key] = merge_protected_write_paths(
                 default_value,
@@ -151,6 +124,11 @@ def normalize_auto_permission_options(raw_options: Any) -> dict[str, Any]:
         else:
             normalized[key] = raw_value
     return normalized
+
+
+def normalize_reviewer_output_format(value: Any) -> str:
+    """Normalize the isolated reviewer's optional Chat JSON-mode setting."""
+    return value if isinstance(value, str) and value in {"json_object", "prompt"} else "json_object"
 
 
 def _normalize_tools_for_auto_mode(tools: Mapping[str, Any]) -> dict[str, Any]:
@@ -317,16 +295,6 @@ def _positive_int(value: Any, default_value: int) -> int:
     except (TypeError, ValueError):
         return default_value
     return parsed if parsed > 0 else default_value
-
-
-def _bounded_float(value: Any, default_value: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default_value
-    if 0.0 <= parsed <= 1.0:
-        return parsed
-    return default_value
 
 
 def _normalize_string_tuple(

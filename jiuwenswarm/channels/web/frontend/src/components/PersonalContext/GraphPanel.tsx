@@ -36,6 +36,9 @@ import {
   pcApi,
 } from '../../services/personalContextApi';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+import { FilePreviewIcon } from '../ui/FilePreviewPanel/FilePreviewIcon';
+import FolderAssetIcon from '../../assets/work-mode/folder.svg?react';
+import FolderFoldAssetIcon from '../../assets/work-mode/folder-fold.svg?react';
 import './GraphPanel.css';
 
 interface PersonalContextGraphPanelProps {
@@ -1455,7 +1458,7 @@ export function PersonalContextGraphPanel({
             )}
             <div className="pc-graph__detail-divider" />
             {detailLoading ? (
-              <Loader2 className="spin" size={16} />
+              <Loader2 className="spin pc-graph__detail-loading" size={16} />
             ) : nodeDetail ? (
               <div className="pc-graph__detail-content">
                 <div
@@ -1564,7 +1567,7 @@ function FileTreeInner({
   depth?: number;
 }) {
   return (
-    <ul className="pc-graph__tree-list" style={{ paddingLeft: depth > 0 ? 12 : 0 }}>
+    <ul className="pc-graph__tree-list" style={{ paddingLeft: depth > 0 ? 24 : 0 }}>
       {nodes.map((n) => {
         const nodeId = n.node?.id;
         const isHit = nodeId ? (hits.size > 0 && hits.has(nodeId)) : false;
@@ -1579,7 +1582,7 @@ function FileTreeInner({
                 onClick={() => nodeId && onSelect(nodeId)}
               >
                 <span className="pc-graph__tree-icon">
-                  <FileIcon />
+                  <FilePreviewIcon fileName={n.name} size={12} />
                 </span>
                 <span className="pc-graph__tree-name">{n.name}</span>
               </button>
@@ -1623,7 +1626,7 @@ function FolderRowInner({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="pc-graph__tree-icon">
-          <FolderIcon open={isOpen} />
+          {isOpen ? <FolderFoldAssetIcon width={12} height={12} /> : <FolderAssetIcon width={12} height={12} />}
         </span>
         <span className="pc-graph__tree-name">{name}</span>
         <span className="pc-graph__tree-toggle">
@@ -1637,30 +1640,9 @@ function FolderRowInner({
 
 const FolderRow = memo(FolderRowInner);
 
-function FolderIcon({ open }: { open: boolean }) {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-      {open ? (
-        <path d="M1 3.5C1 2.67 1.67 2 2.5 2h2.6l1 1.2H9.5c.83 0 1.5.67 1.5 1.5v.8H1V3.5z M1 5.5h10v3c0 .83-.67 1.5-1.5 1.5h-7C1.67 10 1 9.33 1 8.5v-3z" fill="#33bcf2" />
-      ) : (
-        <path d="M1 3.5C1 2.67 1.67 2 2.5 2h2.6l1 1.2H9.5c.83 0 1.5.67 1.5 1.5v4c0 .83-.67 1.5-1.5 1.5h-7C1.67 10 1 9.33 1 8.5v-5z" fill="#33bcf2" />
-      )}
-    </svg>
-  );
-}
-
-function FileIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M3 1.5h3.5L9 4v6.5a.5.5 0 0 1-.5.5h-5a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" fill="#fff" stroke="#bdbdbd" strokeWidth="0.8" />
-      <path d="M6 1.5V4h2.5" fill="none" stroke="#bdbdbd" strokeWidth="0.8" />
-    </svg>
-  );
-}
-
 function CollapseIcon({ open }: { open: boolean }) {
   return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }}>
+    <svg width="16" height="16" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }}>
       <path d="M3 4.5L6 7.5L9 4.5" stroke="#808080" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

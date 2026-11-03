@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import account_kit, service as service_mod
-from jiuwenswarm.common.auth import session_store as store_mod
-from jiuwenswarm.common.auth.account_kit import AccountKitFlow, OAuthConfig, claim_fingerprint
-from jiuwenswarm.common.auth.service import AuthService
+from gateway.auth import account_kit, service as service_mod
+from gateway.auth import session_store as store_mod
+from gateway.auth.account_kit import AccountKitFlow, OAuthConfig, claim_fingerprint
+from gateway.auth.service import AuthService
 
 CALLBACK_URL = "https://aigw.example.com/account-kit/callback"
 CLAIM_URL = "https://aigw.example.com/account-kit/claim"

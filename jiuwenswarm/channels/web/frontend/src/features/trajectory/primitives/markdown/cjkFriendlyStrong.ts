@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Let asterisk strong emphasis close after punctuation when CJK prose continues without whitespace. */
 
 import { attention } from 'micromark-core-commonmark'

@@ -14,6 +14,16 @@ import type {
 // 节点类型 → 展示用状态色类名（对应 rsi.css 的 bar--* 与图例 dot）
 export type NodeStatusKind = 'best-path' | 'evaluated' | 'pending' | 'failed' | 'pruned';
 
+/** Hide candidates abandoned after a program reaches its target score. */
+export function visibleRsiTree(
+  tree: RsiTreeGetResult | null,
+  artifactType: RsiArtifactType | null,
+): RsiTreeGetResult | null {
+  if (!tree || artifactType !== 'PROGRAM') return tree;
+  const nodes = tree.nodes.filter((node) => node.extra?.threshold_stop_cancelled !== true);
+  return nodes.length === tree.nodes.length ? tree : { ...tree, nodes };
+}
+
 // 节点 type → 状态色映射（对齐样式概要：最优路径/已评测/待评测/已剪枝）
 // adopted/root → best-path；rejected → evaluated；provisional → pending；pruned → pruned
 export function nodeTypeToStatusKind(type: RsiNodeType): NodeStatusKind {
@@ -158,10 +168,7 @@ export function nodeStageLabel(node: RsiTreeNode): string | null {
     return clampText(namedStage, 40);
   }
   const raw =
-    namedStage ??
-    asText(node.extra?.stage) ??
-    id ??
-    (isStageDescription(node.description) ? node.description : null);
+    namedStage ?? asText(node.extra?.stage) ?? id ?? (isStageDescription(node.description) ? node.description : null);
   if (!raw) return null;
   if (id) {
     const normalizedId = id.replace(/_/g, '');
@@ -200,16 +207,10 @@ function isStageDescription(value: string | null): boolean {
   );
 }
 
-export type RsiI18nFunction = (
-  key: string,
-  options?: Record<string, unknown>,
-) => string | null;
+export type RsiI18nFunction = (key: string, options?: Record<string, unknown>) => string | null;
 
 /** Localized stage label based on structured provider fields. */
-export function nodeStageLocalizedLabel(
-  node: RsiTreeNode,
-  t: RsiI18nFunction | null | undefined,
-): string | null {
+export function nodeStageLocalizedLabel(node: RsiTreeNode, t: RsiI18nFunction | null | undefined): string | null {
   const spec = nodeStageSpec(node);
   if (!spec) return null;
   if (spec.id.startsWith('evaluate.case.')) {
@@ -229,10 +230,11 @@ export function nodeStageLocalizedLabel(
     const label = t?.(`rsi.stage.${key}`, { ...params, defaultValue: spec.name ?? '' });
     if (!label) return spec.name ?? nodeStageLabel(node);
     if (spec.score != null && (spec.status === 'passed' || spec.status === 'failed')) {
-      const suffix = t?.('rsi.stage.scoreSuffix', {
-        score: spec.score.toFixed(2),
-        defaultValue: ` · 得分 ${spec.score.toFixed(2)}`,
-      }) ?? ` · 得分 ${spec.score.toFixed(2)}`;
+      const suffix =
+        t?.('rsi.stage.scoreSuffix', {
+          score: spec.score.toFixed(2),
+          defaultValue: ` · 得分 ${spec.score.toFixed(2)}`,
+        }) ?? ` · 得分 ${spec.score.toFixed(2)}`;
       return `${label}${suffix}`;
     }
     return label;
@@ -386,7 +388,7 @@ function attemptInfo(
 }
 
 export type RsiNodeLifecycle =
-  'baseline' | 'generating' | 'evaluating' | 'pending' | 'adopted' | 'rejected' | 'failed' | 'pruned';
+  'baseline' | 'generating' | 'evaluating' | 'pending' | 'adopted' | 'rejected' | 'failed' | 'pruned' | 'skipped';
 
 export interface RsiNodePresentationContext {
   scenario: RsiScenario;
@@ -422,8 +424,23 @@ function artifactObjectLabel(scenario: RsiScenario, artifactType: RsiArtifactTyp
   return artifactType === 'PROGRAM' ? '程序' : '论文';
 }
 
+export const SKIPPED_TARGET_REACHED = 'SKIPPED_TARGET_REACHED';
+export const SKIPPED_TARGET_REACHED_REASON = '其他候选已达到目标分数';
+
+/**
+ * A program candidate abandoned because another candidate already reached the
+ * target score was skipped, not failed. Never present it as a failure.
+ */
+export function isSkippedForTargetReached(node: RsiTreeNode): boolean {
+  if (node.type === 'ROOT' || node.type === 'ADOPTED' || node.adopted) return false;
+  if ((node.failure_class ?? '').toUpperCase() === SKIPPED_TARGET_REACHED) return true;
+  if (node.extra?.threshold_stop_cancelled === true) return true;
+  return asText(node.failure_reason)?.trim() === SKIPPED_TARGET_REACHED_REASON;
+}
+
 function lifecycleForNode(node: RsiTreeNode, taskRunning: boolean): RsiNodeLifecycle {
   if (node.type === 'ROOT') return 'baseline';
+  if (isSkippedForTargetReached(node)) return 'skipped';
   if (node.type === 'PRUNED') return 'pruned';
   if (node.type === 'PROVISIONAL') {
     if (!taskRunning) return 'pending';
@@ -462,6 +479,7 @@ function failureLabel(
     return '未达到采纳条件';
   }
   if (lifecycle === 'pruned') return asText(node.failure_reason) || '搜索空间已剪枝';
+  if (lifecycle === 'skipped') return SKIPPED_TARGET_REACHED_REASON;
   return null;
 }
 
@@ -477,6 +495,7 @@ function lifecycleStatusKind(lifecycle: RsiNodeLifecycle): NodeStatusKind {
     case 'failed':
       return 'failed';
     case 'pruned':
+    case 'skipped':
       return 'pruned';
     case 'rejected':
       return 'evaluated';
@@ -499,6 +518,7 @@ function lifecycleRuntimeKind(lifecycle: RsiNodeLifecycle): NodeRuntimeKind {
     case 'rejected':
       return 'evaluated';
     case 'pruned':
+    case 'skipped':
       return 'pruned';
   }
 }
@@ -526,6 +546,8 @@ function lifecycleRuntimeLabel(lifecycle: RsiNodeLifecycle): string {
       return '失败';
     case 'pruned':
       return '已剪枝';
+    case 'skipped':
+      return '已跳过';
   }
 }
 
@@ -537,7 +559,10 @@ function titleForNode(
 ): string {
   const objectLabel = artifactObjectLabel(context.scenario, context.artifactType);
   if (lifecycle === 'baseline') return `基线${objectLabel}`;
-  if (lifecycle === 'adopted') return `${objectLabel}版本 ${round} · 当前最优`;
+  if (lifecycle === 'adopted') {
+    const runningProgram = context.artifactType === 'PROGRAM' && context.taskRunning;
+    return `${objectLabel}版本 ${round} · ${runningProgram ? '当前领先' : '当前最优'}`;
+  }
   const suffix = lifecycle === 'failed' ? '尝试' : lifecycle === 'pruned' ? '候选' : '候选';
   const attemptLabel = attempt ? ` ${attempt.index}/${attempt.total}` : '';
   return `第 ${round} 轮 · ${objectLabel}${suffix}${attemptLabel}`;
@@ -554,6 +579,8 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
   const changeItems = (node.changes ?? []).map(nodeChangeDisplayLabel).filter(Boolean);
   const summary = changeItems[0] ?? nodeDescriptionSummary(node);
   const reasonLabel = failureLabel(node, lifecycle, score, parentScore);
+  // Other program candidates can still overtake an adopted node while the task runs.
+  const runningProgramLeader = lifecycle === 'adopted' && context.artifactType === 'PROGRAM' && taskRunning;
   return {
     title: titleForNode(context, lifecycle, round, attempt),
     subtitle:
@@ -565,13 +592,13 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     lifecycle,
     statusKind: lifecycleStatusKind(lifecycle),
     runtimeKind: lifecycleRuntimeKind(lifecycle),
-    runtimeLabel: lifecycleRuntimeLabel(lifecycle),
+    runtimeLabel: runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
     runtimeIcon: runtimeIconKind(lifecycleRuntimeKind(lifecycle)),
     stageLabel: nodeStageLabel(node),
     summary,
     changeItems,
     reasonLabel,
-    reasonDetail: lifecycle === 'pruned' ? null : clampText(asText(node.failure_reason), 500),
+    reasonDetail: lifecycle === 'pruned' || lifecycle === 'skipped' ? null : clampText(asText(node.failure_reason), 500),
     parentTitle: parent ? presentRsiNode(parent, { ...context, allNodes }).title : null,
     iteration: round,
     attempt,
@@ -663,9 +690,9 @@ export function formatScore(score: number | null, digits = 1): string {
 // 程序演进的分数按百分制显示：×100 后保留 1 位小数（0.5524531 → 55.2）。
 // 引擎给的是归一化到 [0,1] 的分数，常在 0.5 附近以千分位变化
 // （relative_to_baseline 下 2x 的改进也只到 0.667），百分制正好把那一档变化摆到小数点前。
-// 其余场景（论文 / Harness）保持原值。位数两边都是 1 位。
-export function scoreDigits(_artifactType?: RsiArtifactType | null): number {
-  return 1;
+// Harness keeps three decimal places; paper and program retain one decimal place.
+export function scoreDigits(_artifactType?: RsiArtifactType | null, scenario?: RsiScenario): number {
+  return scenario === 'HARNESS' ? 3 : 1;
 }
 
 export function scoreScale(artifactType?: RsiArtifactType | null): number {
@@ -673,9 +700,13 @@ export function scoreScale(artifactType?: RsiArtifactType | null): number {
 }
 
 // 展示用：按产物类型换算并格式化。两件事绑在一起，避免某个展示位只做了其中一件。
-export function formatArtifactScore(score: number | null, artifactType?: RsiArtifactType | null): string {
+export function formatArtifactScore(
+  score: number | null,
+  artifactType?: RsiArtifactType | null,
+  scenario?: RsiScenario,
+): string {
   if (score == null || Number.isNaN(score)) return '--';
-  return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType));
+  return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType, scenario));
 }
 
 // 提升百分比：↑ 5.2% / ↓ 2.1%，null 显示空串
@@ -694,12 +725,23 @@ export function formatTokens(tokens: { input: number; output: number; cache_hit:
   return `${total}tokens`;
 }
 
-// token 用量格式化（K 单位）：示例 123K tokens（对齐样式概要）
-export function formatTokensK(tokens: { input: number; output: number; cache_hit: number }): string {
+// token 用量格式化（K/M 单位）：数值与单位分离返回，供摘要条「数值大字 + 单位小字」排版。K/M 归入数值（不用小字），数值与单位间的空隙由 unit 前导空格自带。示例 { value: '123K', unit: ' tokens' }
+// K 档数值超过 4 位（含取整进位，如 9999.6K）时换用 M（1000K=1M）并保留两位小数，避免大数值拉宽摘要条：
+// 1230K → '1230K'，9999K → '9999K'，9999.6K → '10.00M'，12345678 → '12.35M'
+export function formatTokensK(tokens: { input: number; output: number; cache_hit: number }): {
+  value: string;
+  unit: string;
+} {
   // cache_hit 是 input 的子集，不应重复计入总量。
   const total = tokens.input + tokens.output;
-  if (total >= 1000) return Math.round(total / 1000) + 'K tokens';
-  return total + ' tokens';
+  const kValue = total / 1000;
+  if (kValue >= 1) {
+    // 先取整再判档：进位跨入 M 档（如 9999.6K → 10000K）同样按 M 输出，保证 K 档最多 4 位
+    const roundedK = Math.round(kValue);
+    if (roundedK >= 10000) return { value: `${(kValue / 1000).toFixed(2)}M`, unit: ' tokens' };
+    return { value: `${roundedK}K`, unit: ' tokens' };
+  }
+  return { value: String(total), unit: ' tokens' };
 }
 
 // 费用格式化：元
@@ -863,21 +905,26 @@ export function nodeRuntimeLabel(kind: NodeRuntimeKind): string {
   }
 }
 
-// 节点下层分数行：score(分数) + extra.potential_score(潜力分) + extra.other_score(其他分) + 其余 *_score
-// 数据驱动：当前仅有 score 时只显示 1 行；后端在 extra 补充分数后自动多行并触发展开。
+// Harness cards show only the node score; artifact cards may include additional metrics.
 export interface NodeScoreLine {
   value: string;
   label: string;
 }
 
-export function nodeScoreLines(node: RsiTreeNode, artifactType?: RsiArtifactType | null): NodeScoreLine[] {
+export function nodeScoreLines(
+  node: RsiTreeNode,
+  artifactType?: RsiArtifactType | null,
+  scenario?: RsiScenario,
+): NodeScoreLine[] {
   const lines: NodeScoreLine[] = [];
   const score = scoreForNode(node);
-  if (score != null) lines.push({ value: formatArtifactScore(score, artifactType), label: '分数' });
+  if (score != null) lines.push({ value: formatArtifactScore(score, artifactType, scenario), label: '分数' });
+  if (scenario === 'HARNESS') return lines;
   const extra = node.extra;
   if (extra && typeof extra === 'object') {
     const potential = extra['potential_score'];
-    if (typeof potential === 'number') lines.push({ value: formatArtifactScore(potential, artifactType), label: '潜力分' });
+    if (typeof potential === 'number')
+      lines.push({ value: formatArtifactScore(potential, artifactType), label: '潜力分' });
     const other = extra['other_score'];
     if (typeof other === 'number') lines.push({ value: formatArtifactScore(other, artifactType), label: '其他分' });
     for (const [k, v] of Object.entries(extra)) {
@@ -933,7 +980,12 @@ function summaryRows(text: string, width: number): number {
 }
 
 // 节点宽高估算：barH(32) + bodyH(随内容)；评测中宽度自适应(<=280)。
-export function nodeMetrics(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpanded: boolean): NodeMetrics {
+export function nodeMetrics(
+  node: RsiTreeNode,
+  kind: NodeRuntimeKind,
+  scoreExpanded: boolean,
+  scenario?: RsiScenario,
+): NodeMetrics {
   const barH = RSI_NODE_BAR_H;
   let width = RSI_NODE_MIN_W;
   let bodyH = RSI_BODY_PAD;
@@ -949,7 +1001,7 @@ export function nodeMetrics(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpan
       RSI_BODY_PAD + evalTextRows(text, width) * RSI_EVAL_LINE_H + (secondary ? RSI_SUMMARY_LINE_H : 0),
     );
   } else if (kind === 'best-path' || kind === 'evaluated') {
-    const linesArr = nodeScoreLines(node);
+    const linesArr = nodeScoreLines(node, undefined, scenario);
     const shown = scoreExpanded ? Math.min(linesArr.length, 5) : Math.min(linesArr.length, 3);
     const summaryH = summary ? summaryRows(summary, RSI_NODE_MIN_W) * RSI_SUMMARY_LINE_H : 0;
     const stageH = rootStageRunning ? RSI_STAGE_LINE_H : 0;
@@ -969,7 +1021,12 @@ export function nodeMetrics(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpan
 }
 
 // 节点总高度
-export function nodeHeight(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpanded: boolean): number {
-  const m = nodeMetrics(node, kind, scoreExpanded);
+export function nodeHeight(
+  node: RsiTreeNode,
+  kind: NodeRuntimeKind,
+  scoreExpanded: boolean,
+  scenario?: RsiScenario,
+): number {
+  const m = nodeMetrics(node, kind, scoreExpanded, scenario);
   return m.barH + m.bodyH;
 }

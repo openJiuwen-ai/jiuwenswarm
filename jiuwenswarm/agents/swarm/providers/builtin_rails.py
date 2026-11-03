@@ -68,12 +68,27 @@ def _build_response_prompt_rail(
     return rail
 
 
-harness_element(
+class StreamEventInput(ConstructionInput):
+    """Construction inputs for the stream-event rail."""
+
+    role: str = context_field(
+        attr="role",
+        default="",
+        description="Member role ('leader'/'teammate'); empty outside a team.",
+    )
+
+
+@harness_element(
     kind=ElementKind.RAIL,
     name=STREAM_EVENT,
     description="Emits JiuSwarm streaming events across the member's lifecycle.",
-    builder=JiuSwarmStreamEventRail,
 )
+def _build_stream_event_rail(
+    params: dict[str, Any],
+    context: Any,
+) -> JiuSwarmStreamEventRail:
+    inp = StreamEventInput.resolve(params, context)
+    return JiuSwarmStreamEventRail(role=inp.role)
 harness_element(
     kind=ElementKind.RAIL,
     name=AVATAR_PROMPT,

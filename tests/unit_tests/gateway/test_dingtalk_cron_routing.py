@@ -11,16 +11,16 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     _CronToolsCronBackend,
     _extract_legacy_params,
 )
-from jiuwenswarm.gateway.cron.dingtalk_routing import (
+from gateway.cron.dingtalk_routing import (
     build_dingtalk_cron_session_id_from_context,
     encode_dingtalk_cron_session_id,
     is_usable_dingtalk_staff_id,
     parse_dingtalk_cron_session_id,
     resolve_dingtalk_push_metadata,
 )
-from jiuwenswarm.gateway.cron.models import CronRunState
-from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.models import CronRunState
+from gateway.cron.scheduler import CronSchedulerService
+from gateway.cron.store import CronJobStore
 
 
 def test_encode_parse_roundtrip_private() -> None:
@@ -172,7 +172,7 @@ async def test_push_prefers_bound_dingtalk_session_over_last_star(tmp_path) -> N
             }
         }
     }
-    with patch("jiuwenswarm.common.config.get_config_raw", return_value=fake_cfg):
+    with patch("gateway.common.config.get_config_raw", return_value=fake_cfg):
         await svc._push_to_targets(job, state, text="hello from T1", is_placeholder=False)
 
     assert len(handler.published) == 1
@@ -219,7 +219,7 @@ async def test_push_internal_session_id_falls_back_to_last_star(tmp_path) -> Non
             }
         }
     }
-    with patch("jiuwenswarm.common.config.get_config_raw", return_value=fake_cfg):
+    with patch("gateway.common.config.get_config_raw", return_value=fake_cfg):
         await svc._push_to_targets(job, state, text="hello", is_placeholder=False)
 
     msg = handler.published[0]

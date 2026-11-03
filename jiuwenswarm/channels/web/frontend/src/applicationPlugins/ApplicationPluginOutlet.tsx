@@ -9,6 +9,7 @@ import type {
 import './applicationPlugins.css';
 
 type BundledPluginModule = {
+  applicationPluginBeforeChatSend?: (sessionId: string) => Promise<void>;
   applicationPluginId?: string;
   applicationPluginSettings?: ComponentType<ApplicationPluginSettingsProps>;
   applicationPluginTaskInputAction?: ComponentType<ApplicationPluginTaskInputActionProps>;
@@ -17,6 +18,12 @@ type BundledPluginModule = {
 };
 
 const bundledModules = import.meta.glob<BundledPluginModule>('../../../../../extensions/*/frontend/index.tsx', { eager: true });
+
+export async function flushApplicationConversationHistory(sessionId: string): Promise<void> {
+  await Promise.all(Object.values(bundledModules).map((module) =>
+    module.applicationPluginBeforeChatSend?.(sessionId),
+  ));
+}
 
 const bundledComponents = new Map<string, ComponentType>();
 const bundledSettingsComponents = new Map<string, ComponentType<ApplicationPluginSettingsProps>>();

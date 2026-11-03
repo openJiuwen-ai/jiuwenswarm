@@ -9,8 +9,26 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.web.trajectory_http import TrajectoryHttpService
+async def _usage_metadata_loader(
+    _session_id: str,
+    _user_id: str | None = None,
+) -> dict[str, str]:
+    return {
+        "mode": "agent.work.normal",
+        "team_name": "",
+    }
+
+
+from gateway.channel_manager.web.trajectory_http import TrajectoryHttpService as _GatewayTrajectoryHttpService
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
+from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+
+def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
+    """Exercise the gateway usage route through the in-process trajectory host."""
+    if fetch is None:
+        fetch = TrajectoryHost(settings=settings, reader=reader).call
+    return _GatewayTrajectoryHttpService(metadata_loader=metadata_loader, fetch=fetch)
 
 
 class _UsageReader:
@@ -38,10 +56,7 @@ async def test_http_exposes_session_scoped_request_usage(tmp_path: Path) -> None
     service = TrajectoryHttpService(
         settings,
         reader=_UsageReader(),
-        metadata_loader=lambda _session_id: {
-            "mode": "agent.work.normal",
-            "team_name": "",
-        },
+        metadata_loader=_usage_metadata_loader,
     )
 
     response = await service.get_session_usage("session-1")

@@ -665,15 +665,24 @@ class TestResolveCronProjectBinding:
     """Issue #2653：手动空串 vs 对话默认 ID 的共享绑定语义。"""
 
     @staticmethod
-    def test_empty_project_id_and_dir_resolves_to_empty(project_store_dir):
+    @pytest.mark.parametrize(
+        "work_mode, expected_pid, expected_wm",
+        [
+            ("work", "default", "work"),
+            ("code", "default_code", "code"),
+        ],
+    )
+    def test_empty_project_id_and_dir_resolves_to_mode_default(
+        project_store_dir, work_mode, expected_pid, expected_wm
+    ):
         from jiuwenswarm.server.runtime.session.project_store import (
             resolve_cron_project_binding,
         )
 
-        binding = resolve_cron_project_binding("", "", "work")
+        binding = resolve_cron_project_binding("", "", work_mode)
         assert binding.error is None
-        assert binding.project_id == ""
-        assert binding.work_mode == "work"
+        assert binding.project_id == expected_pid
+        assert binding.work_mode == expected_wm
 
     @staticmethod
     @pytest.mark.parametrize(
@@ -717,3 +726,31 @@ class TestResolveCronProjectBinding:
         binding = resolve_cron_project_binding("proj_missing", "", "work")
         assert binding.error is not None
         assert "project not found" in binding.error
+
+    @staticmethod
+    def test_design_mode_is_not_cron_eligible(project_store_dir):
+        from jiuwenswarm.server.runtime.session.project_store import (
+            resolve_cron_project_binding,
+        )
+
+        binding = resolve_cron_project_binding("", "", "design")
+        assert binding.code == "BAD_REQUEST"
+        assert binding.error == "cron is not supported for work_mode: 'design'"
+
+    @staticmethod
+    def test_design_project_is_not_cron_eligible(project_store_dir, tmp_path):
+        from jiuwenswarm.server.runtime.session.project_store import (
+            create_project_checked,
+            resolve_cron_project_binding,
+        )
+
+        project_dir = tmp_path / "design-project"
+        project_dir.mkdir()
+        project, _ = create_project_checked(
+            "Design",
+            str(project_dir),
+            work_mode="design",
+        )
+        binding = resolve_cron_project_binding(project.project_id, "", "work")
+        assert binding.code == "BAD_REQUEST"
+        assert binding.error == "cron is not supported for work_mode: 'design'"

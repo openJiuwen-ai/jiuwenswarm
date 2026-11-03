@@ -29,6 +29,7 @@ export function mapLocalPackageImportError(
     readme: string;
     manifest: string;
     persona?: string;
+    skillPathNotRelative?: string;
   },
 ): string {
   const text = message.trim();
@@ -41,6 +42,12 @@ export function mapLocalPackageImportError(
   }
   if (keys.persona && /persona/i.test(text)) {
     return translate(keys.persona);
+  }
+  if (
+    keys.skillPathNotRelative
+    && /(?:agent_template|agent_group|plugin) skill dir must be package-relative/i.test(text)
+  ) {
+    return translate(keys.skillPathNotRelative);
   }
   return message;
 }

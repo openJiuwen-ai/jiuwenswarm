@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )

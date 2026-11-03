@@ -28,6 +28,11 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 def _isolate_persistent_session_guard(monkeypatch):
     """Fake Runtime Sessions have no on-disk directory; guard has separate tests."""
 
+    async def no_session_writes() -> None:
+        pass
+
+    monkeypatch.setattr(machine, "_flush_session_writes", no_session_writes)
+
     class _Lease:
         def __init__(self, session_id):
             self.session_id = session_id
@@ -135,6 +140,14 @@ class FakeClient:
         self.raise_at("validate_agent")
         self.validated_definition = (definition, mode)
 
+    def resolve_model_capability(self, requested):
+        self.calls.append(f"model:{requested}")
+        return SimpleNamespace(selection_key=f"{requested}#0")
+
+    def validate_mcp_references(self, references):
+        self.calls.append(f"mcp:{','.join(references)}")
+        return SimpleNamespace(valid="missing" not in references)
+
     async def create_or_resume_session(self, *, channel_id, session_id):
         self.calls.append(f"session:{channel_id}:{session_id or ''}")
         await self.checkpoint("session")
@@ -179,6 +192,90 @@ async def _run(client, run_input=None, *, writer=None):
         writer,
         client_factory=lambda: client,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("max_turns", "expected_code"),
+    [
+        (1, "TURN_LIMIT_EXCEEDED"),
+        (2, "MAX_ITERATIONS_REACHED"),
+        (None, "MAX_ITERATIONS_REACHED"),
+    ],
+)
+@pytest.mark.parametrize(
+    "message", ["Iteration budget exhausted.", "已达到迭代次数上限。"]
+)
+async def test_iteration_stop_reports_scoped_turn_limit_only_when_reached(
+    max_turns, expected_code, message
+) -> None:
+    class LimitClient(FakeClient):
+        def stream(self, request, *, on_agent_ready=None):
+            return super().stream(request)
+
+    usage = _event(
+        "chat.usage_metadata", metadata={"usage_metadata": {"total_cost": 0.01}}
+    )
+    client = LimitClient(events=[
+        usage,
+        _event("chat.error", code="MAX_ITERATIONS_REACHED", error=message),
+    ])
+    result = await _run(client, OneShotRunInput(input="use a tool", max_turns=max_turns))
+    assert result.error.code == expected_code
+    assert result.usage.get("model_calls") == (1 if max_turns else None)
+
+
+@pytest.mark.asyncio
+async def test_run_awaits_ready_configuration_before_consuming_runtime_events() -> None:
+    configured = []
+
+    class ReadyAgent:
+        async def configure_process_cli_run(self, *, max_turns, host_tools):
+            await asyncio.sleep(0)
+            configured.append((max_turns, host_tools))
+
+    class ReadyClient(FakeClient):
+        def stream(self, request, *, on_agent_ready=None):
+            original = super().stream(request)
+
+            async def events():
+                await on_agent_ready(ReadyAgent())
+                assert configured == [(1, ())]
+                async for event in original:
+                    yield event
+
+            return events()
+
+    client = ReadyClient(events=[
+        _event("chat.usage_metadata", metadata={"usage_metadata": {"total_cost": 0.01}}),
+        _event("chat.final", content="completed on the last turn"),
+    ])
+
+    result = await _run(client, OneShotRunInput(input="answer directly", max_turns=1))
+
+    assert result.status == "completed"
+    assert result.error is None
+    assert result.usage["model_calls"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["RUNTIME_ERROR", "MODEL_FAILED", "TOOL_FAILED"])
+async def test_last_turn_failure_does_not_infer_iteration_limit_from_message(code) -> None:
+    class LimitClient(FakeClient):
+        def stream(self, request, *, on_agent_ready=None):
+            return super().stream(request)
+
+    message = "Max iterations reached without completion"
+    client = LimitClient(events=[
+        _event("chat.usage_metadata", metadata={"usage_metadata": {"total_cost": 0.01}}),
+        _event("chat.error", code=code, error=message),
+    ])
+
+    result = await _run(client, OneShotRunInput(input="use a tool", max_turns=1))
+
+    assert result.error.code == code
+    assert result.error.message == message
+    assert result.usage["model_calls"] == 1
 
 
 @pytest.mark.asyncio
@@ -256,6 +353,32 @@ async def test_one_command_owns_one_runtime_and_returns_result_after_close() -> 
     assert {record["request_id"] for record in records} == {"external-run"}
     assert writer.final_written is False
     assert client.agent_definition is None
+
+
+@pytest.mark.asyncio
+async def test_run_capabilities_reach_runtime_without_persisting_configuration() -> None:
+    client = FakeClient()
+    run = OneShotRunInput(
+        input="hello", model="example", skills=("review",), mcp=("local",),
+        permissions={"tools": {"write_file": "deny", "exec_command": "ask"}},
+    )
+    result = await _run(client, run)
+    assert result.status == "completed"
+    assert client.request.params["model_name"] == "example#0"
+    assert client.request.params["skills"] == ["review"]
+    assert client.request.params["mcp"] == ["local"]
+    assert client.request.params["run_permissions"] == {
+        "tools": {"write_file": "deny", "mcp_exec_command": "ask"}
+    }
+    assert client.calls.index("mcp:local") < client.calls.index("session:process_cli:")
+
+
+@pytest.mark.asyncio
+async def test_unready_mcp_fails_before_session_creation() -> None:
+    client = FakeClient()
+    result = await _run(client, OneShotRunInput(input="hello", mcp=("missing",)))
+    assert result.error.code == "MCP_NOT_READY"
+    assert not any(call.startswith("session:") for call in client.calls)
 
 
 @pytest.mark.asyncio
@@ -613,6 +736,20 @@ async def test_false_session_cleanup_is_a_successful_idempotent_noop() -> None:
     assert result.exit_code == 0
     assert result.error is None
     assert client.calls[-1] == "close"
+
+
+@pytest.mark.asyncio
+async def test_pending_session_write_failure_is_not_reported_as_success(monkeypatch) -> None:
+    async def fail_flush() -> None:
+        raise RuntimeError("session metadata was not persisted")
+
+    monkeypatch.setattr(machine, "_flush_session_writes", fail_flush)
+
+    result = await _run(FakeClient())
+
+    assert result.status == "failed"
+    assert result.error.code == "SHUTDOWN_FAILED"
+    assert result.error.details["cleanup_errors"] == ("session_writes",)
 
 
 @pytest.mark.asyncio

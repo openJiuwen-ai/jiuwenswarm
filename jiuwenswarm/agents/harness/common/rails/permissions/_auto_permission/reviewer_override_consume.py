@@ -1,4 +1,4 @@
-"""Consume one exact RootPermissionQueue Auto manual approval."""
+"""Retain the existing eligibility of legacy Core session confirmations."""
 
 from __future__ import annotations
 
@@ -10,9 +10,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     PermissionHandlingResult,
     ToolInvocation,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_audit import (
-    _parse_confirmation_payload,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     DecisionRoute,
     ToolDecisionFacts,
@@ -23,45 +20,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions.execution_provider_cont
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     current_root_decision_context,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
-    root_permission_resume_from_context,
-)
 
 
 class AutoPermissionReviewerOverrideConsumeMixin:
-    """Consume only an Auto-owned pending card already admitted by the queue."""
-
-    async def _consume_reviewer_override(
-        self,
-        facts: ToolDecisionFacts,
-        *,
-        invocation: ToolInvocation,
-        user_input: Any,
-        domain_route: DecisionRoute | None,
-    ) -> PermissionHandlingResult:
-        payload = _parse_confirmation_payload(user_input)
-        if not payload or payload.get("approved") is not True:
-            return PermissionHandlingResult(False, None, "")
-        resume = root_permission_resume_from_context(invocation.ctx)
-        if resume is None or not resume.card.auto_manual:
-            return PermissionHandlingResult(False, None, "")
-        if payload.get("auto_confirm") is True and self._session_auto_confirm_eligible(
-            facts,
-            invocation=invocation,
-            domain_route=domain_route,
-        ):
-            key = self._runtime_auto_confirm_key(invocation)
-            store = getattr(self.base_rail, "_store_auto_confirm", None)
-            if key and callable(store):
-                store(invocation.ctx, key)
-        self._emit_audit(
-            facts,
-            decision="allow",
-            reason="root_permission_card_approved",
-            degraded=False,
-            extra={"decision_source": "manual_approval"},
-        )
-        return PermissionHandlingResult(True, None, "manual_approval")
+    """Consume legacy Core markers without expanding their eligibility."""
 
     def _consume_session_auto_confirm(
         self,

@@ -16,10 +16,12 @@ import type {
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
+import { describeDuplexError } from "./duplexErrorMessage";
 import {
   registerTaskFullDuplexController,
   setTaskFullDuplexRuntimeError,
   setTaskFullDuplexRuntimeState,
+  setTaskDuplexScreenSharing,
   stopTaskFullDuplex,
 } from "./taskFullDuplexRuntimeStore";
 
@@ -36,6 +38,12 @@ type PersistedTimelineEvent = Record<string, unknown> & {
 };
 
 const historyQueues = new Map<string, Promise<void>>();
+
+export async function flushConversationHistory(sessionId: string): Promise<void> {
+  while (historyQueues.has(sessionId)) {
+    await historyQueues.get(sessionId);
+  }
+}
 
 function timelineEventId(): string {
   return (
@@ -269,7 +277,9 @@ export function TaskFullDuplexRuntime({
         sequence: payload.sequence ?? latest?.sequence ?? 0,
         detail:
           (status === "waiting_user" ? "等待回答：" + (payload.interaction?.questions.map(q => q.question).join("；") || "") : "") ||
-          WAIT_REASON_LABELS[payload.wait_reason || ""] || payload.error || payload.display_result || payload.result ||
+          WAIT_REASON_LABELS[payload.wait_reason || ""] ||
+          (payload.error ? describeDuplexError(payload.error, "task") : "") ||
+          payload.display_result || payload.result ||
           [latest?.title, latest?.detail].filter(Boolean).join("\n"),
         createdAt: (entries[0]?.timestamp || Date.now() / 1000) * 1000,
         steps: plan,
@@ -592,6 +602,7 @@ export function TaskFullDuplexRuntime({
         if (state === "idle") runtimeSessionIdRef.current = null;
         setTaskFullDuplexRuntimeState(state);
       }}
+      onScreenSharingChange={setTaskDuplexScreenSharing}
       onError={setTaskFullDuplexRuntimeError}
       onCoreAgentProgress={handleCoreAgentProgress}
     />

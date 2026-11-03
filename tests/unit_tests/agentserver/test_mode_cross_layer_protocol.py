@@ -10,13 +10,14 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from openjiuwen_protocol.message import EventType
 
+from gateway.channel_manager.tui.tui_channel import TuiChannel
+from gateway.channel_manager.web.web_connect import WebChannel
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
-from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.server import agent_ws_server
@@ -186,7 +187,14 @@ async def test_mode_event_and_terminal_sentinel_cross_runtime_server_gateway_cha
     assert len(runtime_events) == 2
     runtime_event, terminal_event = runtime_events
     assert runtime_event.session_id == session_id
-    assert runtime_event.payload == payload
+    # The Runtime stamps the owning execution id onto events of work kinds
+    # it tracks (Team modes here); untracked producers (auto_harness) keep
+    # the payload untouched.
+    expected_payload = dict(payload)
+    execution_id = runtime_event.payload.get("execution_id")
+    if execution_id is not None:
+        expected_payload["execution_id"] = execution_id
+    assert runtime_event.payload == expected_payload
     assert runtime_event.agent_ref == agent_ref
     assert runtime_event.metadata == runtime_metadata
     assert terminal_event.session_id == session_id
@@ -226,7 +234,7 @@ async def test_mode_event_and_terminal_sentinel_cross_runtime_server_gateway_cha
     decoded_event = parse_agent_server_wire_chunk(event_wire)
     assert decoded_event.request_id == request_id
     assert decoded_event.channel_id == channel_id
-    assert decoded_event.payload == payload
+    assert decoded_event.payload == expected_payload
     assert decoded_event.is_complete is False
     assert decoded_event.agent_ref == agent_ref
     assert decoded_event.metadata == runtime_metadata
@@ -241,7 +249,7 @@ async def test_mode_event_and_terminal_sentinel_cross_runtime_server_gateway_cha
     assert message.type == "event"
     assert message.channel_id == channel_id
     assert message.session_id == session_id
-    assert message.payload == payload
+    assert message.payload == expected_payload
     assert message.event_type == expected_event_type
     assert message.agent_ref == agent_ref
     assert message.metadata == {**request_metadata, **runtime_metadata}
@@ -253,7 +261,7 @@ async def test_mode_event_and_terminal_sentinel_cross_runtime_server_gateway_cha
         channel_frame = channel._serialize_frame(message)
     assert channel_frame["type"] == "event"
     assert channel_frame["event"] == payload["event_type"]
-    expected_channel_payload = dict(payload)
+    expected_channel_payload = dict(expected_payload)
     expected_channel_payload.setdefault("session_id", session_id)
     expected_channel_payload["agent_ref"] = agent_ref
     assert channel_frame["payload"] == expected_channel_payload

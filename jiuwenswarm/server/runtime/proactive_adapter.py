@@ -211,7 +211,7 @@ async def trigger_main_agent(
     )
 
     # fire-and-forget：主 agent 跑一轮 + 流式推前端这一段可能很慢（LLM + 工具调用 +
-    # post_run 持久化），如果串行 await 会把调用方（_handle_proactive_tick → cron）一起拖到
+    # post_run 持久化），如果串行 await 会把调用方（handle_proactive_tick → cron）一起拖到
     # 600 秒超时。这里把它丢后台 task，立即返回 True（表示"已触发"），让 cron 秒回。
     # 推荐内容本来就走 server.send_push 独立流式推前端，不依赖 cron 的请求-响应通道。
     inflight_key = f"{cid}:{session_id}"
@@ -403,8 +403,7 @@ async def init_proactive_engine(server, config: dict[str, Any] | None = None) ->
 
         # 专用 agent：只做决策（无 tools、无 task_loop、单轮、输出 JSON），
         # 替代 proactive_actions._analyze_and_decide 里的裸 model.invoke。
-        proactive_agent = build_proactive_agent()
-        proactive_engine.set_proactive_agent(proactive_agent)
+        proactive_engine.set_proactive_agent_builder(build_proactive_agent)
 
         # 检查 agent 是否活跃——在调 LLM 之前检查，避免 agent 被 evict 后白调 LLM。
         def _check_agent_cb(channel_id):

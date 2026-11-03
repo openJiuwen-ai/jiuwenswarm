@@ -40,11 +40,18 @@ from openjiuwen.agent_teams.harness.manifest import (
 from openjiuwen.harness.schema.build_context import parent_sys_operation
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
+from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.swarm.browser_runtime import apply_swarm_browser_settings
+from jiuwenswarm.agents.harness.common.cua_defaults import (
+    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+    DEFAULT_CUA_SNAPSHOT_KEEP_LAST_K,
+    build_cua_agent_card,
+    cua_model_rejects_images,
+)
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
@@ -59,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 CODE_AGENT = "swarm.code_agent"
 SWARM_BROWSER_AGENT = "swarm.browser_agent"
+SWARM_CUA_AGENT = "swarm.cua_agent"
 STATUSLINE_SETUP_AGENT = "swarm.statusline_setup_agent"
 
 # Key under ``ctx.extras`` where ``DeepAgentSpec.build`` publishes the resolved
@@ -233,6 +241,9 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     # per-key BrowserInstanceConfig) into spec.factory_kwargs; preserve it and
     # only add the workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
+    from jiuwenswarm.common.browser_config import apply_browser_decision_config
+
+    apply_browser_decision_config(spec, ctx.config)
     # Explicit Chrome settings opt Swarm into managed browsers; single-agent
     # adapters retain their independent Electron page bindings.
     if (spec.factory_kwargs or {}).get("settings") is not None:
@@ -247,9 +258,73 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     return spec
 
 
+class CuaAgentInput(ConstructionInput):
+    """Construction inputs for the swarm cua (desktop) sub-agent."""
+
+    max_iterations: int = param_field(
+        default=DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+        description="Maximum task-loop iterations for the sub-agent.",
+    )
+    snapshot_keep_last_k: int = param_field(
+        default=DEFAULT_CUA_SNAPSHOT_KEEP_LAST_K,
+        description="Window screenshots kept in full in the sub-agent context (1 for single-window tasks).",
+    )
+    pause_on_user_input: bool = param_field(
+        default=False,
+        description="Hold desktop actions while the user is using the machine; release once it is idle again.",
+    )
+    workspace_root: str | None = context_field(
+        resolver=_workspace_root,
+        description="Member workspace root (defaults to ./ when absent).",
+    )
+    language: str = context_field(
+        resolver=code_runtime_language,
+        default="en",
+        description="Code runtime language for the sub-agent.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.SUBAGENT,
+    name=SWARM_CUA_AGENT,
+    description="Desktop (computer-use) sub-agent driving host application windows through "
+    "screenshots and real mouse/keyboard input; skipped when no parent model is available.",
+    input_model=CuaAgentInput,
+)
+def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> Any:
+    """Build the cua desktop sub-agent config for a team member.
+
+    Members share the one host desktop, so no per-member instance key is
+    derived (unlike ``browser_key``).
+    """
+    inp = CuaAgentInput.resolve(factory_kwargs, ctx)
+    model = ctx.extras.get(_PARENT_MODEL_EXTRAS_KEY)
+    if model is None:
+        logger.warning("[swarm.cua_agent] skipped: no parent model on build context")
+        return None
+    if cua_model_rejects_images(model):
+        logger.warning("[swarm.cua_agent] skipped: the parent model rejects image input")
+        return None
+    spec = build_cua_agent_config(
+        model,
+        card=build_cua_agent_card(inp.language),
+        workspace=str(inp.workspace_root or "./"),
+        sys_operation=parent_sys_operation(ctx),
+        language=inp.language,
+        max_iterations=inp.max_iterations,
+        cua_snapshot_keep_last_k=inp.snapshot_keep_last_k,
+        cua_pause_on_user_input=inp.pause_on_user_input,
+    )
+    # Preserve the cua_* factory kwargs baked in by agent-core; only add the
+    # workspace flag.
+    spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
+    return spec
+
+
 __all__ = [
     "CODE_AGENT",
     "DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS",
     "STATUSLINE_SETUP_AGENT",
     "SWARM_BROWSER_AGENT",
+    "SWARM_CUA_AGENT",
 ]

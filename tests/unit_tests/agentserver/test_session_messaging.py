@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRouteRail,
@@ -35,6 +34,7 @@ from jiuwenswarm.server.runtime.session.session_message_service import (
 )
 from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageIdempotencyConflict,
+    SessionMessageRecord,
     SessionMessageStore,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
@@ -56,16 +56,32 @@ from jiuwenswarm.server.agent_ws_server import (
     AgentWebSocketServer,
     _strip_untrusted_session_message_context,
 )
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream, handle_unary
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
-from jiuwenswarm.common.session_message import (
+from gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_INTERNAL_KEY,
 )
+
+
+def _stub_ws() -> SimpleNamespace:
+    """Minimal WebSocket stand-in for build_ws_request_context / WSSink."""
+
+    return SimpleNamespace(send=AsyncMock())
+
+
+async def _send_runtime_event_ok(*_args: object, **_kwargs: object) -> bool:
+    return True
+
+
+async def _send_runtime_event_fail(*_args: object, **_kwargs: object) -> bool:
+    return False
 
 
 @pytest.mark.asyncio
@@ -103,7 +119,7 @@ async def test_cross_session_question_can_be_answered(
 
     agent = _Agent()
     manager = SimpleNamespace(
-        get_agent_for_session_nowait=Mock(return_value=agent),
+        borrow_agent_nowait=lambda candidate: candidate,
         cleanup=AsyncMock(),
         cancel_all_inflight_work=AsyncMock(),
         cleanup_session_runtime=AsyncMock(return_value=True),
@@ -158,7 +174,7 @@ async def test_cross_session_question_can_be_answered(
         execution = coordinator.snapshot_session("target-1").executions[-1]
         assert execution.work_kind is SessionWorkKind.SESSION_MESSAGE
         assert execution.state is SessionExecutionState.WAITING_FOR_CONTROL
-        assert execution.waiting_control_id == "permission-1"
+        assert execution.waiting_control_ids == {"permission-1"}
 
         answer = AgentRequest(
             request_id="answer-1",
@@ -206,20 +222,24 @@ async def test_plain_user_turn_releases_superseded_session_question(
         await coordinator.run_unary(
             "target-1", "session-message-1", SessionWorkKind.SESSION_MESSAGE,
             lambda: asyncio.sleep(0),
-            suspension_key=lambda _: "permission-1",
+            interaction_ids=lambda _: frozenset({"permission-1"}),
         )
         waiting = coordinator.snapshot_session("target-1").executions[-1]
         assert waiting.state is SessionExecutionState.WAITING_FOR_CONTROL
         await admission.mark_interaction_pending("target-1", "permission-1")
         if follow_up:
             await coordinator.deliver_control(
-                "target-1", "permission-1",
+                "target-1", ("permission-1",),
                 lambda: asyncio.sleep(0),
-                suspension_key=lambda _: "permission-2",
+                interaction_ids=lambda _: frozenset({"permission-2"}),
             )
             await admission.clear_interaction_pending("target-1", "permission-1")
             await admission.mark_interaction_pending("target-1", "permission-2")
-            waiting = coordinator.snapshot_session("target-1").executions[-1]
+            waiting = next(
+                execution
+                for execution in coordinator.snapshot_session("target-1").executions
+                if execution.state is SessionExecutionState.WAITING_FOR_CONTROL
+            )
             assert waiting.state is SessionExecutionState.WAITING_FOR_CONTROL
             if history_evicted:
                 assert coordinator.get_execution(waiting.parent_execution_id) is None
@@ -342,7 +362,18 @@ async def _wait_for_status(
     await asyncio.wait_for(_check(), timeout=timeout)
 
 
-def _enqueue(store: SessionMessageStore, *, key: str, content: str = "check"):
+def _answered_only(request: AgentRequest) -> frozenset[str]:
+    """A Runtime with no paused execution: an answer resumes only the question it names."""
+    return frozenset({request.params["request_id"]})
+
+
+def _enqueue(
+    store: SessionMessageStore,
+    *,
+    key: str,
+    content: str = "check",
+    input_mode: str = "",
+):
     return store.enqueue(
         owner_scope_id="user-1",
         source_session_id="source-1",
@@ -353,6 +384,7 @@ def _enqueue(store: SessionMessageStore, *, key: str, content: str = "check"):
         target_session_id="target-1",
         content=content,
         hop_count=1,
+        input_mode=input_mode,
     )
 
 
@@ -755,21 +787,29 @@ async def test_restart_keeps_queued_message_idle_until_user_continues(
         assert service.store.get(queued.message_id).status == "queued"
         snapshot = await service.queued_for_target("target-1", "user-1")
         assert [item["message_id"] for item in snapshot] == [queued.message_id]
+        queue_state = await service.queue_state_for_target("target-1", "user-1")
+        assert queue_state["can_continue_queued"] is True
+
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_message_continue_queued
 
         server = AgentWebSocketServer.__new__(AgentWebSocketServer)
         server._session_message_service = service
         ws = SimpleNamespace(send=AsyncMock())
-        await server._handle_session_message_continue_queued(
-            ws,
-            AgentRequest(
-                request_id="continue-1",
-                channel_id="web",
-                session_id="target-1",
-                req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
-                params={"session_id": "target-1"},
-                user_id="user-1",
-            ),
-            asyncio.Lock(),
+        await handle_session_message_continue_queued(
+            build_ws_request_context(
+                server,
+                ws,
+                AgentRequest(
+                    request_id="continue-1",
+                    channel_id="web",
+                    session_id="target-1",
+                    req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+                    params={"session_id": "target-1"},
+                    user_id="user-1",
+                ),
+                asyncio.Lock(),
+            )
         )
         response = json.loads(ws.send.await_args.args[0])
         assert response["body"]["result"]["accepted"] is True
@@ -1075,6 +1115,9 @@ async def test_agentserver_pauses_mailbox_around_online_delete(
     ordering = []
 
     class _Service:
+        def block_target_delete(self, session_id):
+            ordering.append(("block", session_id))
+
         async def begin_target_delete(self, session_id):
             ordering.append(("pause", session_id))
 
@@ -1131,25 +1174,46 @@ async def test_agentserver_pauses_mailbox_around_online_delete(
         )
         service = SessionArchiveService(_Runtime())
 
-        if delete_ok:
-            await service.session("target-1", "delete", "web")
-        else:
-            with pytest.raises(lc.LifecycleError):
-                await service.session("target-1", "delete", "web")
+        async def _drain_finalizers() -> None:
+            for _ in range(50):
+                tasks = [
+                    task
+                    for task in service._finalizing.values()
+                    if task is not None and not task.done()
+                ]
+                if not tasks:
+                    return
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.sleep(0)
 
-        expected_resolution = "commit" if delete_ok else "abort"
-        assert ordering[0:3] == [
-            ("pause", "target-1"),
-            ("delete", "target-1"),
-            (expected_resolution, "target-1"),
-        ]
+        result = await service.session("target-1", "delete", "web")
+        assert result["ok"] is True
+        assert result["finalizing"] is True
+        await _drain_finalizers()
+
+        if delete_ok:
+            assert ordering[0:4] == [
+                ("block", "target-1"),
+                ("pause", "target-1"),
+                ("delete", "target-1"),
+                ("commit", "target-1"),
+            ]
+        else:
+            # A failed background delete keeps the mailbox barrier for the
+            # retry instead of aborting it and letting new work start.
+            assert ordering[0:3] == [
+                ("block", "target-1"),
+                ("pause", "target-1"),
+                ("delete", "target-1"),
+            ]
+            assert lc.state("session", "target-1")["operation"]["status"] == "failed"
     finally:
         project_store.invalidate_cache()
         sm._METADATA_CACHE.clear()
 
 
 @pytest.mark.asyncio
-async def test_service_hides_cross_user_and_unsupported_targets(
+async def test_service_hides_cross_user_and_lists_supported_team_targets(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rows = [
@@ -1179,7 +1243,10 @@ async def test_service_hides_cross_user_and_unsupported_targets(
     )
 
     listed = await service.list_targets(_source("list"))
-    assert [item["session_id"] for item in listed["sessions"]] == ["target-1"]
+    assert [item["session_id"] for item in listed["sessions"]] == [
+        "target-1",
+        "team-target",
+    ]
     assert listed["sessions"][0]["runtime_state"] == "unknown"
     assert listed["sessions"][0]["last_message_at"] == "1970-01-01T00:00:00.000Z"
 
@@ -1191,6 +1258,129 @@ async def test_service_hides_cross_user_and_unsupported_targets(
         )
     assert exc_info.value.code == "NOT_FOUND_OR_FORBIDDEN"
     await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_team_target_steer_bypasses_running_task(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    task_started = asyncio.Event()
+    steer_started = asyncio.Event()
+    release_task = asyncio.Event()
+    executed: list[str] = []
+
+    async def execute(record: SessionMessageRecord) -> SessionMessageExecutionResult:
+        executed.append(record.message_id)
+        if record.input_mode == "":
+            task_started.set()
+            await release_task.wait()
+        else:
+            steer_started.set()
+        return SessionMessageExecutionResult(status="delivered")
+
+    service = SessionMessageService(
+        store=store,
+        admission=_RecordingAdmission(),
+        execute=execute,
+    )
+
+    def metadata(session_id: str) -> dict:
+        result = _metadata(session_id)
+        if session_id == "team-target":
+            result["mode"] = "team.work.normal"
+        return result
+
+    monkeypatch.setattr(service, "_session_metadata", metadata)
+    try:
+        task = await service.send_message(
+            _source("team-task"),
+            target_session_id="team-target",
+            message="first",
+            input_mode="follow_up",
+        )
+        await asyncio.wait_for(task_started.wait(), 2)
+        steer = await service.send_message(
+            _source("team-steer"),
+            target_session_id="team-target",
+            message="second",
+            input_mode="steer",
+        )
+
+        await asyncio.wait_for(steer_started.wait(), 2)
+        await _wait_for_status(store, steer["message_id"], "delivered")
+        assert executed == [task["message_id"], steer["message_id"]]
+        assert store.get(task["message_id"]).status == "running"
+        assert store.get(steer["message_id"]).input_mode == "steer"
+
+        release_task.set()
+        await _wait_for_status(store, task["message_id"], "delivered")
+    finally:
+        release_task.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_team_target_uncertain_steer_does_not_block_task_lane(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    uncertain, _ = store.enqueue(
+        owner_scope_id="user-1",
+        source_session_id="source-1",
+        source_title_snapshot="Source",
+        source_request_id="request-1",
+        source_tool_call_id="legacy-steer",
+        idempotency_key="legacy-steer",
+        target_session_id="team-target",
+        content="first",
+        input_mode="steer",
+    )
+    store.claim(
+        uncertain.message_id,
+        "legacy-execution",
+        "legacy-run",
+        expected_input_mode="steer",
+    )
+    queued, _ = store.enqueue(
+        owner_scope_id="user-1",
+        source_session_id="source-1",
+        source_title_snapshot="Source",
+        source_request_id="request-2",
+        source_tool_call_id="task",
+        idempotency_key="task",
+        target_session_id="team-target",
+        content="second",
+    )
+    execute = AsyncMock(return_value=SessionMessageExecutionResult(status="delivered"))
+    service = SessionMessageService(
+        store=store,
+        admission=_RecordingAdmission(),
+        execute=execute,
+        available=False,
+    )
+
+    def metadata(session_id: str) -> dict:
+        return {
+            **_metadata(session_id),
+            "mode": "team.work.normal" if session_id == "team-target" else "agent.code.normal",
+        }
+
+    monkeypatch.setattr(service, "_session_metadata", metadata)
+    try:
+        await service.set_available(True)
+        await service.continue_queued_for_target("team-target", "user-1")
+
+        recovered = store.get(uncertain.message_id)
+        assert recovered.status == "unknown"
+        assert recovered.input_mode == "steer"
+        await _wait_for_status(store, queued.message_id, "delivered")
+        execute.assert_awaited_once()
+        assert execute.await_args.args[0].message_id == queued.message_id
+    finally:
+        await service.stop()
 
 
 @pytest.mark.asyncio
@@ -1373,12 +1563,10 @@ async def test_resumed_target_answer_unblocks_next_mailbox_item(tmp_path) -> Non
     _enqueue(store, key="queued", content="next")
 
     assert store.next_queued("target-1") is None
-    completed = await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-1",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=False,
-        failed=False,
+    completed = await service.finalize_waiting_message(
+        message_id=waiting.message_id,
+        target_session_id="target-1",
+        status="succeeded",
     )
 
     assert completed is True
@@ -1405,23 +1593,14 @@ async def test_repeated_user_question_replaces_resume_correlation(tmp_path) -> N
         interrupt_source="ask_user_interrupt",
     )
 
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-first",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=True,
-        failed=False,
-        next_interrupt_request_id="tool-call-second",
-        next_interrupt_source="permission_interrupt",
+    assert await service.rebind_waiting_question(
+        waiting.message_id,
+        interrupt_request_id="tool-call-second",
+        interrupt_source="permission_interrupt",
     ) is True
-    assert store.waiting_for_resume(
-        "target-1", "tool-call-first", "ask_user_interrupt"
-    ) is None
-    rebound = store.waiting_for_resume(
-        "target-1", "tool-call-second", "permission_interrupt"
-    )
-    assert rebound is not None
-    assert rebound.message_id == waiting.message_id
+    rebound = store.get(waiting.message_id)
+    assert rebound.status == "waiting_user"
+    assert (rebound.interrupt_request_id, rebound.interrupt_source) == ("tool-call-second", "permission_interrupt")
     await service.stop()
 
 
@@ -1445,13 +1624,7 @@ async def test_unrelated_interrupt_answer_does_not_resolve_waiting_message(
         interrupt_source="permission_interrupt",
     )
 
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-stale",
-        interrupt_source="permission_interrupt",
-        waiting_user=False,
-        failed=False,
-    ) is False
+    assert await service.find_waiting_for_pause("target-1", frozenset({"tool-call-stale"})) is None
     assert store.get(waiting.message_id).status == "waiting_user"
     await service.stop()
 
@@ -1486,12 +1659,10 @@ async def test_resume_completion_wins_race_with_original_waiting_result(
     )
     await asyncio.wait_for(waiting_persisted.wait(), timeout=1)
 
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-1",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=False,
-        failed=False,
+    assert await service.finalize_waiting_message(
+        message_id=sent["message_id"],
+        target_session_id="target-1",
+        status="succeeded",
     ) is True
     allow_original_return.set()
     await _wait_for_status(store, sent["message_id"], "succeeded")
@@ -2009,6 +2180,7 @@ async def test_agentserver_persists_question_correlation_before_push(
     ordering = []
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2087,6 +2259,7 @@ async def test_failed_session_question_releases_runtime_wait(
     record = store.claim(queued.message_id, "execution-1", "run-1")
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         agent_manager = object()
         release_session_message_interactions = AsyncMock()
 
@@ -2153,57 +2326,60 @@ async def test_failed_session_question_releases_runtime_wait(
 async def test_agentserver_failure_after_repeated_question_closes_message(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = SessionMessageStore(tmp_path / "messages.sqlite3")
-    service = SessionMessageService(
-        store=store,
-        admission=_RecordingAdmission(),
-        execute=lambda record: asyncio.sleep(0),
-        available=False,
-    )
-    await service.start()
-    waiting, _ = _enqueue(store, key="repeated-question-failure")
-    store.claim(waiting.message_id, "execution-1", "run-1")
-    store.mark_waiting(
-        waiting.message_id,
-        interrupt_request_id="tool-call-first",
-        interrupt_source="ask_user_interrupt",
-    )
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-first",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=True,
-        failed=False,
-        next_interrupt_request_id="tool-call-second",
-        next_interrupt_source="permission_interrupt",
+    store, service, waiting = await _waiting_mailbox(
+        tmp_path, key="repeated-question-failure"
     )
     request = AgentRequest(
         request_id="answer-1",
+        channel_id="web",
         session_id="target-1",
         req_method=ReqMethod.CHAT_ANSWER,
+        is_stream=True,
         params={
             "request_id": "tool-call-first",
             "source": "ask_user_interrupt",
             "answers": [{"answer": "yes"}],
         },
     )
+
+    class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "tool-call-second",
+                        "source": "permission_interrupt",
+                    },
+                )
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={"event_type": "chat.error", "error": "failed after repeated question"},
+                    is_complete=True,
+                )
+
+            return events()
+
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
+    server._session_stream_tasks = {}
+    server._execution_runtime = lambda: _Runtime()
+    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
+        0, result=True
+    )
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *a, **k: None,
     )
 
-    await server._complete_waiting_session_message_after_external_turn(
-        request,
-        waiting_user=True,
-        waiting_correlation_persisted=True,
-        failed=True,
-        error="failed after repeated question",
-        next_interrupt_request_id="tool-call-second",
-        next_interrupt_source="permission_interrupt",
-    )
+    await server._handle_stream_impl(object(), request, asyncio.Lock())
 
     failed = store.get(waiting.message_id)
     assert failed.status == "failed"
@@ -2232,6 +2408,7 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2262,23 +2439,96 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
+
+    rebound = store.get(waiting.message_id)
+    assert rebound.status == "waiting_user"
+    assert rebound.interrupt_request_id == "tool-call-third"
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_question_is_correlated_by_its_request_id_alone(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, service, waiting = await _waiting_mailbox(tmp_path, key="question-without-source")
+    request = AgentRequest(
+        request_id="answer-1", channel_id="web", session_id="target-1", req_method=ReqMethod.CHAT_ANSWER,
+        is_stream=True,
+        params={"request_id": "tool-call-first", "source": "ask_user_interrupt", "answers": [{"answer": "yes"}]},
+    )
+
+    class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                                   session_id=request.session_id, is_complete=True,
+                                   payload={"event_type": "chat.ask_user_question", "request_id": "tool-call-second"})
+
+            return events()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._session_message_service = service
+    server._session_stream_tasks = {}
+    server._execution_runtime = lambda: _Runtime()
+    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(0, result=True)
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
     await server._handle_stream_impl(object(), request, asyncio.Lock())
 
-    rebound = store.waiting_for_resume(
-        "target-1", "tool-call-third", "ask_user_interrupt"
-    )
-    assert rebound is not None
-    assert rebound.message_id == waiting.message_id
+    rebound = store.get(waiting.message_id)
+    assert (rebound.status, rebound.interrupt_request_id) == ("waiting_user", "tool-call-second")
     await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_first_turn_question_is_correlated_by_its_request_id_alone(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="first-question-without-source")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+    marked = []
+
+    class _Runtime:
+        agent_manager = object()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                                   session_id=request.session_id, is_complete=True,
+                                   payload={"event_type": "chat.ask_user_question", "request_id": "q-1"})
+
+            return events()
+
+    class _Service:
+        async def mark_waiting(self, message_id, **kwargs):
+            marked.append(kwargs["interrupt_request_id"])
+            return True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server._session_message_service = _Service()
+
+    async def send_push(message):
+        return True
+
+    server.send_push = send_push
+    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    result = await server.execute_internal_session_message(record)
+
+    assert (result.status, marked) == ("waiting_user", ["q-1"])
 
 
 @pytest.mark.asyncio
@@ -2302,6 +2552,7 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2318,16 +2569,14 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=False
-    )
+    server.send_runtime_event = _send_runtime_event_fail
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    await server._handle_stream_impl(object(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2355,6 +2604,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         async def answer_interaction(self, request, **kwargs):
             return [
                 RuntimeEvent(
@@ -2366,13 +2616,13 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
                 )
             ]
 
-    async def disconnect(*args, **kwargs):
+    async def disconnect(*args: object, **kwargs: object) -> bool:
         raise agent_ws_server_module.WebSocketConnectionClosed(None, None)
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = disconnect
+    server.send_runtime_event = disconnect
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2380,7 +2630,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     )
 
     with pytest.raises(agent_ws_server_module.WebSocketConnectionClosed):
-        await server._handle_unary_impl(object(), request, asyncio.Lock())
+        await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2409,6 +2659,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2425,9 +2676,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2435,7 +2684,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     with pytest.raises(RuntimeError, match="uncorrelated follow-up question"):
-        await server._handle_stream_impl(object(), request, asyncio.Lock())
+        await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_persistence = store.get(waiting.message_id)
     assert failed_persistence.status == "unknown"
@@ -2463,7 +2712,9 @@ async def test_history_barrier_timeout_marks_resumed_message_unknown(
     )
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
-    runtime = SimpleNamespace(release_session_message_interactions=AsyncMock())
+    runtime = SimpleNamespace(
+        release_session_message_interactions=AsyncMock(), resumed_interactions=_answered_only
+    )
     server._execution_runtime = lambda: runtime
     state = await server._open_session_message_resume(request)
     assert state is not None
@@ -2636,6 +2887,93 @@ async def test_agentserver_acceptance_followed_by_final_is_success(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_mode", "event_type"),
+    [
+        ("", "team.input.accepted"),
+        ("steer", "team.input.accepted"),
+        ("steer", "chat.processing_status_deferred"),
+    ],
+)
+async def test_team_input_acceptance_delivers_without_closing_team_processing(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    input_mode: str,
+    event_type: str,
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(
+        store,
+        key=f"execute-team-accepted-{input_mode}-{event_type}",
+        input_mode=input_mode,
+    )
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+
+    class _Runtime:
+        agent_manager = object()
+        start = AsyncMock()
+        create_or_resume_session = AsyncMock(return_value="target-1")
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={"event_type": event_type},
+                )
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload=None,
+                    is_complete=True,
+                )
+
+            return events()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server.send_push = AsyncMock(return_value=True)
+    completion = Mock(return_value=None)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_session_metadata",
+        lambda *args, **kwargs: {
+            **_metadata("target-1"),
+            "mode": "team.work.normal",
+        },
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "build_server_push_message",
+        lambda **kwargs: dict(kwargs),
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "enqueue_history_request_completion",
+        completion,
+    )
+
+    result = await server.execute_internal_session_message(record)
+
+    assert result.status == "delivered"
+    completion.assert_not_called()
+    processing_states = [
+        call.args[0]["payload"]["is_processing"]
+        for call in server.send_push.call_args_list
+        if call.args[0]["payload"].get("event_type") == "chat.processing_status"
+    ]
+    # A team receipt publishes the processing frame in every mode and on both
+    # receipt shapes: the task lane unconditionally, the steer lane on
+    # team.input.accepted (idle first-request) and on the deferred marker
+    # (follow-up injected into a running stream) — the input turn must render
+    # without a history reload either way.
+    assert processing_states == [True]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_resumed_runtime_accepted_without_final_is_unknown(
     tmp_path,
@@ -2667,6 +3005,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         async def answer_interaction(self, request, **kwargs):
             return [accepted]
 
@@ -2680,9 +3019,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2690,9 +3027,9 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
     try:
         if streaming:
-            await server._handle_stream_impl(object(), request, asyncio.Lock())
+            await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
         else:
-            await server._handle_unary_impl(object(), request, asyncio.Lock())
+            await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
         record = store.get(waiting.message_id)
         assert record is not None
@@ -2839,6 +3176,84 @@ async def test_rearmed_mailbox_worker_waits_for_active_user(tmp_path) -> None:
     finally:
         if admission.is_user_active("target-1"):
             await admission.end_user("target-1")
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_team_mailbox_turn_completes_through_mailbox_admission_lane(
+    tmp_path,
+) -> None:
+    """A team-target mailbox turn must not wait for the interactive slot.
+
+    The delivery worker holds ``session_message_run_id`` while it executes
+    the turn; the team stream's round admission must take the mailbox lane
+    instead of ``begin_team_user``, which waits for that very marker to clear
+    (a self-deadlock that only the execution watchdog can break).
+    """
+    store = SessionMessageStore(tmp_path / "team-mailbox-lane.sqlite3")
+    admission = SessionRunAdmission()
+    executed = asyncio.Event()
+
+    async def execute(record):
+        # Mirrors _begin_team_round's mailbox lane: the team stream running
+        # inside the worker's own session-message admission.
+        await admission.begin_team_session_message(record.target_session_id)
+        executed.set()
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(
+        store=store,
+        admission=admission,
+        execute=execute,
+        available=True,
+    )
+    await service.start()
+    queued, _ = _enqueue(store, key="team-mailbox-lane")
+    service._ensure_worker("target-1")
+    try:
+        await asyncio.wait_for(executed.wait(), timeout=5.0)
+        await _wait_for_status(store, queued.message_id, "succeeded")
+        # The mailbox turn released its admission; the interactive slot opens.
+        await asyncio.wait_for(admission.begin_team_user("target-1"), timeout=1.0)
+        await admission.complete_team_user_submission("target-1", accepted=False)
+        await admission.end_team_user("target-1")
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_team_mailbox_turn_waiting_on_interactive_slot_hits_watchdog(
+    tmp_path,
+) -> None:
+    """The pre-fix shape: claiming the interactive slot inside a mailbox turn
+    waits for the turn's own marker, so only the watchdog can end it."""
+    store = SessionMessageStore(tmp_path / "team-mailbox-watchdog.sqlite3")
+    admission = SessionRunAdmission()
+
+    async def execute(record):
+        await admission.begin_team_user(record.target_session_id)
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(
+        store=store,
+        admission=admission,
+        execute=execute,
+        available=True,
+        execution_watchdog_timeout=0.2,
+    )
+    await service.start()
+    queued, _ = _enqueue(store, key="team-mailbox-watchdog")
+    service._ensure_worker("target-1")
+    try:
+        await _wait_for_status(store, queued.message_id, "unknown")
+        record = store.get(queued.message_id)
+        assert record is not None
+        assert record.last_error_code == "EXECUTION_WATCHDOG_TIMEOUT"
+        # The watchdog released the mailbox marker; the slot opens again.
+        await asyncio.wait_for(admission.begin_team_user("target-1"), timeout=1.0)
+        await admission.complete_team_user_submission("target-1", accepted=False)
+        await admission.end_team_user("target-1")
+    finally:
         await service.stop()
 
 
@@ -3703,4 +4118,149 @@ async def test_steer_idle_fallback_remains_owned_during_shutdown(tmp_path, monke
         assert not service._running_fallbacks
         assert not service._executing_workers
     finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_delete_waits_for_inflight_enqueue(tmp_path):
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    service = SessionMessageService(
+        store=store,
+        admission=_RecordingAdmission(),
+        execute=lambda record: asyncio.sleep(0),
+        available=False,
+    )
+    await service.start()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_enqueue_critical_section():
+        # send_message holds this lock across its durable enqueue.
+        async with service._target_state_lock:
+            entered.set()
+            await release.wait()
+
+    holder = asyncio.create_task(hold_enqueue_critical_section())
+    await entered.wait()
+    drain = asyncio.create_task(service.begin_target_delete("target-1"))
+    await asyncio.sleep(0)
+
+    # The synchronous barrier is visible immediately so new sends are rejected,
+    # but worker cancellation waits for the in-flight enqueue to finish.
+    assert "target-1" in service._blocked_targets
+    assert drain.done() is False
+
+    release.set()
+    await holder
+    await drain
+    assert "target-1" in service._blocked_targets
+
+
+@pytest.mark.asyncio
+async def test_aborted_delete_restarts_consumer_after_slow_cancellation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as module
+
+    monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    service = SessionMessageService(
+        store=store, admission=_RecordingAdmission(), execute=AsyncMock(
+            return_value=SessionMessageExecutionResult(status="succeeded"),
+        ), available=False,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    consume = service._consume_target
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_first_consumer(target_session_id: str, input_mode: str) -> None:
+        if input_mode == "" and not started.is_set():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await release.wait()
+        else:
+            await consume(target_session_id, input_mode)
+
+    monkeypatch.setattr(service, "_consume_target", slow_first_consumer)
+    try:
+        sent = await service.send_message(
+            _source("slow-delete-abort"), input_mode="follow_up", target_session_id="target-1", message="queued",
+        )
+        await asyncio.wait_for(started.wait(), 1)
+        worker = service._workers[("target-1", "")]
+        with pytest.raises(SessionMessagingError) as error:
+            await service.begin_target_delete("target-1")
+        assert error.value.code == "STOP_TIMEOUT"
+        assert service._workers[("target-1", "")] is worker
+
+        await service.abort_target_delete("target-1")
+        await service.set_available(True)
+        assert service._workers[("target-1", "")] is worker
+        release.set()
+        await asyncio.gather(worker, return_exceptions=True)
+        await _wait_for_status(store, sent["message_id"], "succeeded")
+        service._execute.assert_awaited_once()
+    finally:
+        release.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_target_deleted_cleanup_retries_after_enqueue_lock_timeout(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as module
+
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    service = SessionMessageService(
+        store=store, admission=_RecordingAdmission(), execute=AsyncMock(), available=False,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    try:
+        sent = await service.send_message(
+            _source("commit-retry"), input_mode="follow_up", target_session_id="target-1", message="queued",
+        )
+        await service.begin_target_delete("target-1")
+        monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+        async with service._target_state_lock:
+            with pytest.raises(SessionMessagingError) as error:
+                await service.on_target_deleted("target-1")
+        assert error.value.code == "STOP_TIMEOUT"
+        assert store.get(sent["message_id"]).status == "queued"
+        assert "target-1" in service._blocked_targets
+
+        monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 1)
+        assert await service.on_target_deleted("target-1") == 1
+        assert store.get(sent["message_id"]).status == "cancelled"
+        assert store.get(sent["message_id"]).content == ""
+        assert "target-1" not in service._blocked_targets
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["begin_target_delete", "abort_target_delete"])
+async def test_target_delete_lock_wait_is_bounded(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, action: str,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as module
+
+    monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+    service = SessionMessageService(
+        store=SessionMessageStore(tmp_path / "messages.sqlite3"),
+        admission=_RecordingAdmission(),
+        execute=AsyncMock(),
+    )
+    service.block_target_delete("target-1")
+    await service._target_state_lock.acquire()
+    try:
+        with pytest.raises(SessionMessagingError) as error:
+            await asyncio.wait_for(getattr(service, action)("target-1"), 1)
+        assert error.value.code == "STOP_TIMEOUT"
+        assert "target-1" in service._blocked_targets
+    finally:
+        service._target_state_lock.release()
         await service.stop()

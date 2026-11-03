@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Same-origin HTTP client for the JiuwenSwarm trajectory read API. */
 
 import { getApiBase } from '../../utils/env';
@@ -147,11 +145,11 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function trajectoryUrl(path: string): string {
+export function trajectoryUrl(path: string): string {
   return `${getApiBase()}${path}`;
 }
 
-async function readResponse(response: Response): Promise<unknown> {
+export async function readResponse(response: Response): Promise<unknown> {
   let payload: unknown;
   try {
     payload = await response.json();

@@ -9,7 +9,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
     e2a_response_to_agent_chunk,
 )
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+from gateway.channel_manager.web.web_connect import WebChannel
 
 
 def test_web_single_agent_identity_is_added_to_live_and_history_payloads() -> None:

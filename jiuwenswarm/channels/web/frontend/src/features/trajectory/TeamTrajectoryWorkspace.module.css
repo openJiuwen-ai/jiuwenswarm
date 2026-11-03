@@ -1,5 +1,3 @@
-/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
-
 .root {
   display: flex;
   min-height: 0;
@@ -8,15 +6,144 @@
   overflow: hidden;
 }
 
+/* Keep the shared axis and lane plots on the same horizontal origin. */
+.axisHost {
+  flex: none;
+  padding: 0 8px;
+}
+
+.controlTimeline {
+  position: relative;
+  z-index: 10;
+  flex: none;
+  padding: 8px 0 0;
+}
+
 .lanes {
+  position: relative;
+  z-index: 0;
   display: flex;
   min-height: 0;
   flex: 1 1 0;
   flex-direction: column;
+  gap: 16px;
+  padding: 8px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+
+.root[data-scheduled-control='true'] .lanes {
+  gap: 8px;
+}
+
+.laneSection,
+.roundSection {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.laneSection {
+  position: relative;
+  padding-left: 8px;
+  border-left: 2px solid var(--dsw-alias-border-l2);
+}
+
+.roundSection {
+  padding-left: 8px;
+  border-left: 1px solid var(--dsw-alias-border-l1);
+}
+
+.memberSectionHeader,
+.sectionHeader,
+.roundHeader {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12);
+}
+
+.memberSectionHeader {
+  padding: 0 8px;
+}
+
+.memberSectionHeader strong {
+  color: var(--dsw-alias-label-primary);
+}
+
+.sectionHeader {
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sectionHeader:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.sectionHeader:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.sectionChevron {
+  display: inline-block;
+  color: var(--dsw-alias-label-secondary);
+  transform-origin: center;
+  transition: transform 0.12s ease;
+}
+
+.sectionChevronOpen {
+  transform: rotate(90deg);
+}
+
+.sectionTitle {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.taskIndex {
+  flex: none;
+  color: var(--dsw-alias-state-business-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.taskName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sectionMeta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roundHeader {
+  padding: 0 8px;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
 }
 
 .laneRow {
@@ -25,13 +152,66 @@
   flex: 0 0 auto;
   flex-direction: column;
   overflow: hidden;
+  /* box-shadow border so the 1px frame does not shift the plot vs the axis. */
+  border: 0;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
+}
+
+.laneRow :global([aria-label='Trajectory timeline']) {
+  border-bottom: 0;
 }
 
 .laneRowExpanded {
   height: 100%;
   min-height: 0;
   flex: 0 0 100%;
+  /*
+   * Keep this agent's swimlane (toolbar + timeline) fixed while the ledger /
+   * raw inspector scroll inside the row. Overflow must stay clipped so the
+   * outer lanes scroller does not drag the overview away with the detail.
+   */
+  overflow: hidden;
+}
+
+.root[data-scheduled-control='true'] .laneRowExpanded {
+  height: clamp(360px, 52vh, 420px);
+  flex: 0 0 clamp(360px, 52vh, 420px);
+}
+
+.laneSection:has(.laneRowExpanded) {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.roundSection:has(.laneRowExpanded) {
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.roundSection:has(> .laneRowExpanded) > .laneRowExpanded {
+  flex: 0 0 clamp(360px, 52vh, 420px);
+}
+
+.laneRowExpanded :global([data-display-mode='full']) {
+  overflow: hidden;
+  min-height: 0;
+  flex: 1 1 0;
+}
+
+.memberCluster {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.memberCheck {
+  flex: none;
+  margin: 0;
 }
 
 .memberControl {
@@ -92,8 +272,79 @@
   white-space: nowrap;
 }
 
+.reviewDecision {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.reviewDecision::before {
+  margin-right: 4px;
+  color: var(--dsw-alias-label-caption);
+  content: '·';
+}
+
+.reviewDecision[data-decision='pass'] {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.reviewDecision[data-decision='fail'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.reviewDecision[data-decision='score'] {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.reviewDecision[data-decision='pending'] {
+  color: var(--dsw-alias-label-caption);
+}
+
+.selectAll {
+  flex: none;
+  height: 20px;
+  border: 0;
+  border-radius: 3px;
+  padding: 0 5px;
+  background: transparent;
+  color: var(--dsw-alias-state-business-primary);
+  cursor: pointer;
+  font: var(--dsw-font-xxs-12);
+  white-space: nowrap;
+}
+
+.selectAllActive {
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-weight: 600;
+}
+
+.selectAll:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.selectAll:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.selectAll:disabled {
+  color: var(--dsw-alias-label-caption);
+  cursor: not-allowed;
+}
+
 .chevron {
+  display: inline-block;
+  flex: none;
   color: var(--dsw-alias-label-secondary);
   font-size: 0.75rem;
+  font-weight: 500;
   line-height: 1;
+  transform-origin: center;
+  transition: transform 0.12s ease;
+}
+
+.chevronExpanded {
+  transform: rotate(90deg);
 }

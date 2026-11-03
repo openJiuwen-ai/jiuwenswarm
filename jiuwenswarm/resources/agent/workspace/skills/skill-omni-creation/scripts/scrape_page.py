@@ -124,6 +124,9 @@ def fetch_video_title(url: str, fallback: str) -> str:
 
     # 1. yt-dlp — try browser cookies first, then no-cookie fallback
     _ytdlp_base = [sys.executable, "-m", "yt_dlp", "--js-runtimes", "node", "--no-playlist", "--print", "title"]
+    # yt-dlp runs as a child of this interpreter and prints the title: pin its
+    # stream encoding so the UTF-8 decode below cannot disagree with it.
+    _ytdlp_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     _browsers = ["chrome", "firefox", "edge"]
     for _browser in _browsers:
         try:
@@ -133,6 +136,7 @@ def fetch_video_title(url: str, fallback: str) -> str:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=_ytdlp_env,
                 timeout=common.OPERATION_TIMEOUT_SECONDS,
             )
             title = result.stdout.strip().splitlines()[0] if result.returncode == 0 else ""
@@ -146,7 +150,10 @@ def fetch_video_title(url: str, fallback: str) -> str:
     try:
         result = subprocess.run(
             _ytdlp_base + [url],
-            capture_output=True, text=True, timeout=common.OPERATION_TIMEOUT_SECONDS,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            env=_ytdlp_env,
+            timeout=common.OPERATION_TIMEOUT_SECONDS,
         )
         title = result.stdout.strip().splitlines()[0] if result.returncode == 0 else ""
         if title:

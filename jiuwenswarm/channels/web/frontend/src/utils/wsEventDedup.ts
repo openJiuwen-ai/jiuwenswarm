@@ -62,5 +62,26 @@ export function makeEventDedupKey(eventName: string, payload: Record<string, unk
     eventName === 'chat.processing_status'
       ? `::proc:${payload.is_processing === true ? '1' : '0'}`
       : '';
-  return `${eventName}::${payloadSessionId}::${payloadEventType}::${contentKey}${processingFlag}`;
+  // A retry notice updates one status message throughout the request. Do not
+  // mistake a new attempt or another member's retry for a duplicate delivery.
+  const modelRetryKey =
+    eventName === 'chat.notice' && payload.notice_type === 'model_retry'
+      ? `::retry:${stringifyPayloadForDedup({
+        attempt: payload.attempt,
+        max_attempts: payload.max_attempts,
+        member_name: payload.member_name,
+        content: payload.content,
+      })}`
+      : '';
+  // chat.error 同一 request_id 可能先后到达两条不同来源的错误：流失败时
+  // gateway 即时补发一帧（_finish_failed_stream），cron 失败后调度器还会
+  // 补一条失败记录推送（scheduler 的 cron-failure 帧）。二者 request_id 相同
+  // 但文案不同，只认 rid 会把第二条当重复投递吞掉——失败记录常在会话历史
+  // 加载重建之后才到达，被吞后用户在整个执行期间看不到任何报错。错误文案
+  // 进键：真重复投递（同 request_id 同文案）仍去重，不同错误各自成帧。
+  const chatErrorKey =
+    eventName === 'chat.error' && typeof payload.error === 'string'
+      ? `::err:${payload.error}`
+      : '';
+  return `${eventName}::${payloadSessionId}::${payloadEventType}::${contentKey}${processingFlag}${modelRetryKey}${chatErrorKey}`;
 }

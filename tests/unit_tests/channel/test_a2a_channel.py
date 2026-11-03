@@ -1,14 +1,14 @@
 import time
 
 import pytest
+from openjiuwen_protocol.message import EventType, Message
 
-from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+from gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2A_THOUGHT_METADATA_KEY,
     A2AChannel,
     A2AChannelConfig,
     _A2AAgentExecutor,
 )
-from jiuwenswarm.common.schema.message import EventType, Message
 
 
 class DummyBus:
@@ -250,7 +250,8 @@ async def test_dispatch_a2a_request_defaults_metadata_to_empty_dict():
 async def test_executor_empty_query_emits_failed_task_lifecycle():
     pytest.importorskip("a2a.types")
     from a2a.types import Message, Part, Role, Task, TaskState, TaskStatusUpdateEvent
-    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import _A2AAgentExecutor
+
+    from gateway.channel_manager.protocol.a2a.a2a_connect import _A2AAgentExecutor
 
     class MockEventQueue:
         def __init__(self) -> None:
@@ -368,7 +369,8 @@ class _FakeEventQueue:
 
 class _FakeContext:
     def __init__(self, query: str = "hello"):
-        from a2a.types import Message as A2AMessage, Part, Role
+        from a2a.types import Message as A2AMessage
+        from a2a.types import Part, Role
 
         self.task_id = "task-1"
         self.context_id = "ctx-1"

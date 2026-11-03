@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Transactional browser window helpers for trajectory list and detail polling. */
 
 import type {

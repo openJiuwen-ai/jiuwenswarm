@@ -73,7 +73,7 @@ from openjiuwen.extensions.observability.content_addressing import (
     parse_sequence_reference,
 )
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.observability.otlp_payload import (
     MAX_SAFE_INTEGER,
     int64_attribute_value,

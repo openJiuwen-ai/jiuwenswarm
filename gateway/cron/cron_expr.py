@@ -1,0 +1,7 @@
+"""Compatibility alias for cron expressions now owned by Agent Runtime."""
+
+import sys
+
+from gateway.runtime.cron import cron_expr as _implementation
+
+sys.modules[__name__] = _implementation

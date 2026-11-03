@@ -15,7 +15,11 @@ from jiuwenswarm.common.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseChunk,
+)
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
@@ -144,8 +148,9 @@ async def _ensure_server_initialized_async() -> None:
 
     # ---------- 扩展系统初始化（必须先执行）----------
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
 
     callback_framework = Runner.callback_framework
     extension_registry = ExtensionRegistry.create_instance(
@@ -165,7 +170,9 @@ async def _ensure_server_initialized_async() -> None:
 
     server = AgentWebSocketServer.get_instance()
     # 复刻 start() 中除 legacy.serve 外的初始化
-    from jiuwenswarm.agents.harness.common.auto_harness import reset_harness_packages_state
+    from jiuwenswarm.agents.harness.common.auto_harness import (
+        reset_harness_packages_state,
+    )
     reset_harness_packages_state()
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         ensure_persistent_checkpointer,
@@ -174,8 +181,8 @@ async def _ensure_server_initialized_async() -> None:
 
     # ---------- ProactiveEngine 初始化 ----------
     try:
-        from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
         from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
         full_cfg = get_config()
         proactive_config = (
             full_cfg.get("proactive_recommendation", {})

@@ -4,8 +4,11 @@ import { A2UIProvider } from '@a2ui/react';
 import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
+import { EnterpriseEntry } from './EnterpriseEntry.tsx'
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
+import { enterpriseSettingsPageDefinition } from './features/settings/registry/enterpriseDefinition';
+import { isEnterprise } from './edition';
 import type { SettingsRequest } from './features/settings/services/settingsContract'
 import { dispatchA2UIAction } from './features/a2ui/actionBridge';
 import { installDesktopLocalFilesBridge } from './features/workspace/localFilePicker';
@@ -45,19 +48,31 @@ function resolveOpenSourceSettingsRequest(request: SettingsRequest): SettingsReq
   return request
 }
 
+const runnerQuery = new URLSearchParams(window.location.search)
+const browserRunner = window.location.pathname === '/share-export-runner' && runnerQuery.get('client') === '1'
+const runnerSessionId = window.location.pathname === '/share-export-runner'
+  ? runnerQuery.get('session_id')?.trim() || null
+  : null
 const runnerJobId = window.location.pathname === '/share-export-runner'
-  ? new URLSearchParams(window.location.search).get('job_id')?.trim() || null
+  ? runnerQuery.get('job_id')?.trim() || null
   : null
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <A2UIProvider onAction={handleA2UIAction}>
-    {runnerJobId ? (
-      <ShareImageExportRunner jobId={runnerJobId} />
-    ) : (
-      <App
-        settingsPageDefinition={openSourceSettingsPageDefinition}
-        resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+    {browserRunner || runnerJobId || runnerSessionId ? (
+      <ShareImageExportRunner
+        jobId={runnerJobId}
+        sessionId={runnerSessionId}
+        locale={runnerQuery.get('locale')}
+        client={browserRunner}
       />
+    ) : (
+      <EnterpriseEntry>
+        <App
+          settingsPageDefinition={isEnterprise() ? enterpriseSettingsPageDefinition : openSourceSettingsPageDefinition}
+          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+        />
+      </EnterpriseEntry>
     )}
   </A2UIProvider>,
 )

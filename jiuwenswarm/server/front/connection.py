@@ -5,27 +5,33 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Any
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from jiuwenswarm.common.ws_diagnostics import (
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.front.admission import ExecutionAdmission
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
-from jiuwenswarm.server.front.protocol import connection_ack_frame, parse_raw_message
+from jiuwenswarm.server.front.protocol import (
+    CONNECTION_ROLE_HEADER,
+    CONNECTION_ROLE_RPC,
+    connection_ack_frame,
+    parse_raw_message,
+)
 from jiuwenswarm.server.front.router import MethodRouter
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.ws_send import send_wire_payload
@@ -50,7 +56,26 @@ async def process_handshake(*args: Any) -> Any:
     return forbidden_origin_response(args)
 
 
+def connection_role(ws: Any) -> str:
+    """Return the role a client declared in its handshake, or ``""``."""
+    headers = getattr(ws, "request_headers", None)
+    if headers is None:
+        request = getattr(ws, "request", None)
+        headers = getattr(request, "headers", None)
+    value = get_header_value(headers, CONNECTION_ROLE_HEADER)
+    return (value or "").strip().lower()
+
+
 class ConnectionHandler:
+    """Accept Gateway connections and own the server-push slot.
+
+    Every connection that may receive server push is kept in arrival order;
+    the newest one owns the push slot. When it closes, the slot moves to the
+    newest connection still open. Runtime disconnect cleanup runs only once
+    no push-capable connection is left. Connections that declare the ``rpc``
+    role never touch the slot.
+    """
+
     def __init__(
         self,
         readiness: Readiness,
@@ -63,20 +88,70 @@ class ConnectionHandler:
         self._router = router
         self._admission = admission
         self._forwarder = forwarder
-        self.current_ws: Any = None
-        self.current_send_lock: asyncio.Lock | None = None
+        self._push_conns: list[tuple[Any, asyncio.Lock]] = []
 
-    async def __call__(self, ws: Any) -> None:
-        remote = ws.remote_address
-        logger.info("[Front] 新连接: %s", remote)
-        send_lock = asyncio.Lock()
-        self.current_ws = ws
-        self.current_send_lock = send_lock
+    @property
+    def current_ws(self) -> Any:
+        return self._push_conns[-1][0] if self._push_conns else None
+
+    @property
+    def current_send_lock(self) -> asyncio.Lock | None:
+        return self._push_conns[-1][1] if self._push_conns else None
+
+    async def _publish_push_target(self, ws: Any, send_lock: asyncio.Lock) -> None:
         if self._forwarder is not None:
             self._forwarder.attach(ws, send_lock)
         backend = self._admission.backend
+        if backend is None:
+            return
+        result = backend.attach_gateway_connection(ws, send_lock)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _release_push_target(self, ws: Any, remote: Any) -> None:
+        index = next(
+            (i for i, (conn, _) in enumerate(self._push_conns) if conn is ws),
+            None,
+        )
+        if index is None:
+            return
+        was_current = index == len(self._push_conns) - 1
+        del self._push_conns[index]
+        if not was_current:
+            return
+        if self._push_conns:
+            next_ws, next_lock = self._push_conns[-1]
+            logger.info(
+                "[Front] push 通道切换到仍存活的连接: closed=%s promoted=%s",
+                remote,
+                getattr(next_ws, "remote_address", None),
+            )
+            try:
+                await self._publish_push_target(next_ws, next_lock)
+            except Exception:
+                logger.exception("[Front] push 通道切换失败")
+            return
+        if self._forwarder is not None:
+            self._forwarder.detach(ws)
+        backend = self._admission.backend
         if backend is not None:
-            backend.attach_gateway_connection(ws, send_lock)
+            try:
+                await backend.on_gateway_disconnect(ws, remote)
+            except Exception:
+                logger.exception("[Front] runtime disconnect cleanup failed")
+
+    async def __call__(self, ws: Any) -> None:
+        remote = ws.remote_address
+        role = connection_role(ws)
+        is_rpc = role == CONNECTION_ROLE_RPC
+        logger.info("[Front] 新连接: %s role=%s", remote, role or "gateway")
+        send_lock = asyncio.Lock()
+        if not is_rpc:
+            self._push_conns.append((ws, send_lock))
+            try:
+                await self._publish_push_target(ws, send_lock)
+            except Exception:
+                logger.exception("[Front] push 通道登记失败 (%s)", remote)
         try:
             ack = connection_ack_frame(
                 readiness_state=self._readiness.state.value,
@@ -106,22 +181,11 @@ class ConnectionHandler:
         except Exception:
             logger.exception("[Front] 连接处理异常 (%s)", remote)
         finally:
-            was_current = self.current_ws is ws
-            if was_current:
-                self.current_ws = None
-                self.current_send_lock = None
-                if self._forwarder is not None:
-                    self._forwarder.detach(ws)
             for task in list(tasks):
                 if not task.done():
                     task.cancel()
-            if was_current:
-                backend = self._admission.backend
-                if backend is not None:
-                    try:
-                        await backend.on_gateway_disconnect(ws, remote)
-                    except Exception:
-                        logger.exception("[Front] runtime disconnect cleanup failed")
+            if not is_rpc:
+                await self._release_push_target(ws, remote)
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -1,5 +1,6 @@
-import { ChevronRight, Circle } from 'lucide-react';
-import CheckIcon from '../../assets/work-mode/check.svg?react';
+import { ChevronRight } from 'lucide-react';
+import { conversationKey } from '../../stores/chatStore';
+import { selectedExpertTeamId } from '../../features/teamOrganization/conversation';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
@@ -7,6 +8,11 @@ import type { ReactNode } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { TeamTask as SessionTeamTask, TeamMemberExecutionEvent, TeamTaskStatus } from '../../stores/sessionStore';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
+import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
+import WarningCircleIcon from '../../assets/work-mode/warning-circle.svg?react';
+import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -18,6 +24,16 @@ export interface TeamMember {
   name?: string;
   execution_status?: string | null;
   mode?: string;
+  /** TeamRole 值：leader / teammate / human_agent / bridge_agent / worker */
+  role?: string;
+  /** 外部 CLI 后端名（claude / codex / ...），普通成员为空 */
+  cli_agent?: string | null;
+  /** 镜像的 swarmflow worker 带 run id；真实队友无此字段。 */
+  workflow_run_id?: string;
+  /** 专家节点引用的专家团成员名；普通 worker 与真实队友为空 */
+  agent_template?: string | null;
+  /** 专家的展示名（manifest i18n）；与 agent_template 一起作名册辅助行 */
+  display_name?: string | null;
 }
 
 export interface TeamTaskEvent {
@@ -97,7 +113,7 @@ export type TeamAreaProps = BaseTeamAreaProps &
     }
   );
 
-export type TabType = 'planning' | 'team' | 'artifacts' | 'review' | 'browser';
+export type TabType = 'planning' | 'team' | 'organization' | 'artifacts' | 'review' | 'browser';
 export type TeamDetailTab = 'members' | 'group';
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'error';
 export type TaskColumnKey = 'waiting' | 'running' | 'completed' | 'cancelled';
@@ -180,15 +196,67 @@ export const getMemberPlainName = (member: TeamMember | string): string => {
   return displayName || memberId;
 };
 
+/**
+ * 成员头像 key：镜像的 swarmflow worker 按 agent.name 哈希（与树视图同源），
+ * 真实队友（无 workflow_run_id）保持 member_id，与旧行为一致。
+ */
+export const getMemberAvatarKey = (member: TeamMember): string => {
+  return member.workflow_run_id ? member.name || member.member_id : member.member_id;
+};
+
+/**
+ * 成员头像身份：镜像 worker 的 avatarKey 是名字而非 member_id，组件内的
+ * 名册查找必然落空——CLI 身份（品牌头像）与人类身份必须在这里显式给出，
+ * 否则树视图（传 identity）显示品牌脸、成员列表显示哈希插画，两边对不上。
+ */
+export const getMemberAvatarIdentity = (
+  member: TeamMember,
+): { cliAgent?: string; role?: string; mode?: string; agentTemplate?: string } => {
+  if (member.cli_agent) return { cliAgent: member.cli_agent };
+  if (member.role === 'human_agent' || member.mode === 'human') return { role: 'human_agent' };
+  if (member.agent_template) return { agentTemplate: member.agent_template };
+  return {};
+};
+
+/** 名册辅助行：专家显示"展示名（成员名）"；普通成员无。 */
+export const getMemberExpertHint = (member: TeamMember): string | null => {
+  if (!member.agent_template) return null;
+  const display = member.display_name?.trim();
+  return display && display !== member.agent_template
+    ? `${display}（${member.agent_template}）`
+    : member.agent_template;
+};
+
 const resolveMemberIdentity = (member: TeamMember | string): { memberId: string; displayName: string } => {
   const memberId = (typeof member === 'string' ? member : member.member_id).trim();
-  const known = typeof member === 'string' ? getSessionTeamRoster().find(item => item.member_id === memberId) : member;
+  const known = typeof member === 'string' ? findSessionTeamMember(memberId) : member;
   return { memberId, displayName: known?.name?.trim() ?? '' };
 };
 
-const getSessionTeamRoster = (): TeamMember[] => {
+const getSessionTeamRuntime = () => {
   const activeSessionId = useChatStore.getState().activeSessionId ?? '';
-  return useSessionStore.getState().runtimes[activeSessionId]?.teamMembers ?? [];
+  const key = conversationKey(activeSessionId, selectedExpertTeamId(activeSessionId));
+  return useSessionStore.getState().runtimes[key];
+};
+
+const getSessionTeamRoster = (): TeamMember[] => getSessionTeamRuntime()?.teamMembers ?? [];
+
+/** 按 member_id 查成员身份：先查名册，查不到再查离队目录（离队成员做过的任务还在）。 */
+const findSessionTeamMember = (memberId: string): TeamMember | undefined => {
+  const runtime = getSessionTeamRuntime();
+  return (
+    runtime?.teamMembers.find(item => item.member_id === memberId) ??
+    runtime?.teamDepartedMembers?.find(item => item.member_id === memberId)
+  );
+};
+
+/**
+ * 任务负责人是否是已知成员（在册或已离队）。离队成员的任务卡片仍显示其头像，
+ * 不能退化成"未分配"。
+ */
+export const isKnownTaskAssignee = (assignee: string | undefined, members: TeamMember[]): boolean => {
+  if (!assignee) return false;
+  return members.some(member => member.member_id === assignee) || Boolean(findSessionTeamMember(assignee));
 };
 
 // 名册引用没变就复用上次的统计结果：本函数在成员列表里逐行调用，每次重扫是 O(N²)。
@@ -277,6 +345,8 @@ export const getMemberStatusKey = (member: TeamMember): string => {
   if (status.includes('execut') || status.includes('running') || status.includes('busy') || status.includes('working')) return 'running';
   if (status.includes('ready') || status.includes('idle')) return 'idle';
   if (status.includes('restart')) return 'restarting';
+  // 休眠成员已退场但仍在名册上，被点名即可唤醒，不能归到 shutdown。
+  if (status.includes('dormant')) return 'dormant';
   if (status.includes('shutdown') || status.includes('down')) return 'shutdown';
   if (status.includes('error') || status.includes('fail')) return 'error';
   if (status.includes('unstarted')) return 'unstarted';
@@ -290,27 +360,12 @@ export const getMemberStatusDotClass = (member: TeamMember): string => {
   if (key === 'error') return 'bg-red-500';
   if (key === 'restarting') return 'bg-amber-500';
   if (key === 'shutdown') return 'bg-gray-400';
+  if (key === 'dormant') return 'bg-indigo-300';
   return 'bg-slate-300';
 };
 
 export const getTaskStatusLabel = (status: TaskStatus): string => {
   return i18n.t(`team.taskStatus.${status}`);
-};
-
-const getTaskStatusIconClass = (status: TaskStatus): string => {
-  switch (status) {
-    case 'completed':
-      return 'bg-emerald-500 text-text-inverse';
-    case 'in_progress':
-      return 'bg-blue-500 text-text-inverse';
-    case 'cancelled':
-      return 'bg-slate-300 text-text-inverse';
-    case 'error':
-      return 'bg-red-500 text-text-inverse';
-    case 'pending':
-    default:
-      return 'bg-card text-slate-400 ring-1 ring-slate-300';
-  }
 };
 
 const getTaskEventTitle = (event: TeamTaskEvent): string => {
@@ -338,6 +393,24 @@ const truncate = (text: string, max = 72): string => {
   return `${normalized.slice(0, max)}...`;
 };
 
+/** 工具调用摘要优先取参数里的 description（如 bash 的意图说明），完整参数仍在展开详情里。 */
+const getToolCallSummary = (content: string): string => {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{')) return content;
+  try {
+    const args: unknown = JSON.parse(trimmed);
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      const description = (args as Record<string, unknown>).description;
+      if (typeof description === 'string' && description.trim()) {
+        return description;
+      }
+    }
+  } catch {
+    // 非 JSON（formatted_args 等展示串）原样返回
+  }
+  return content;
+};
+
 const isGenericTaskTitle = (title: string): boolean => {
   return GENERIC_TASK_TITLES.has(title.trim().toLowerCase());
 };
@@ -349,23 +422,26 @@ const buildTaskDetail = ({ title, content, fallback }: { title: string; content?
   return i18n.t('team.taskDetail.noDetail');
 };
 
+/** 与 CompactTaskList / SubagentStatusIcon 共用同一套状态图标（frame-time / spinner / success / warning-circle）。 */
 export function StatusIcon({ status }: { status: TaskStatus }) {
-  const completed = status === 'completed';
-  const inProgress = status === 'in_progress';
-
-  if (completed) {
-    return <CheckIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]" />;
+  if (status === 'completed') {
+    return <StatusSuccessIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed-icon)]" />;
   }
-
-  return (
-    <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${getTaskStatusIconClass(status)}`}>
-      {inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
-    </span>
-  );
+  if (status === 'in_progress') {
+    return <LoadingSpinner />;
+  }
+  if (status === 'cancelled') {
+    // 不传颜色，继承上下文文字色（设计稿 cancel_ignore 为中性色，不作状态着色）
+    return <CancelledIcon className="h-4 w-4 shrink-0" />;
+  }
+  if (status === 'error') {
+    return <WarningCircleIcon className="h-4 w-4 shrink-0 text-danger" />;
+  }
+  return <FrameTimeIcon className="h-4 w-4 shrink-0 text-text-meta" />;
 }
 
 export function Chevron({ expanded }: { expanded?: boolean }) {
-  return <ChevronRight size={16} className={` ${expanded ? 'rotate-90' : ''}`} />;
+  return <ChevronRight size={16} className={expanded ? 'rotate-90' : ''} />;
 }
 
 export function buildTaskMap(
@@ -519,7 +595,7 @@ export function buildProcessItems(
           type: 'execution',
           timestamp: event.timestamp,
           title: getExecutionEventTitle(event, t),
-          subtitle: truncate(event.content || ''),
+          subtitle: truncate(getToolCallSummary(event.content || '')),
           status: 'execution',
           kind: event.kind,
           execution: event,
@@ -562,22 +638,7 @@ function getExecutionEventTitle(event: TeamMemberExecutionEvent, t: Translate): 
   return event.title || t('team.process.execution.event');
 }
 
-export function mergeUniqueMessages(messages: Message[]): Message[] {
-  const seen = new Set<string>();
-  const merged: Message[] = [];
-  for (const message of messages) {
-    const event = parseTeamEventMessage(message);
-    const key = event
-      ? ['team', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
-      : `${message.id}:${message.content}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    merged.push(message);
-  }
-  return merged;
-}
+export { mergeUniqueMessages } from '../ChatPanel/teamEventUtils';
 
 export function latestUserPrompt(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {

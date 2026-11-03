@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.auth import account_kit, remote_config
+from gateway.auth import account_kit, remote_config
 
 
 @pytest.fixture

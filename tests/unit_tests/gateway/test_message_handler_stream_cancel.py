@@ -6,17 +6,17 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
+from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import ReqMethod
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import ChannelMode, MessageHandler
-from jiuwenswarm.gateway.routing.session_sharing import SubRole
+from gateway.message_handler.message_handler import ChannelMode, MessageHandler
+from gateway.routing.session_sharing import SubRole
 
 
 class _FakeAgentClient:
@@ -105,6 +105,143 @@ class _TestMessageHandler(MessageHandler):
         await getattr(self, "_cancel_agent_work_for_session")(msg, session_id)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("session_id", "outcome"), [
+    ("__cron___old", "completed"), ("web_new", "completed"),
+    ("web_new", "paused"), ("web_new", "failed"),
+])
+async def test_permission_resume_releases_hold_independently_of_session_prefix(monkeypatch, session_id, outcome):
+    from gateway.cron.scheduler import CronSchedulerService
+
+    class ResumeClient(_FakeAgentClient):
+        @staticmethod
+        async def send_request_stream(env):
+            if outcome == "failed":
+                raise RuntimeError("resume failed")
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.ask_user_question"} if outcome == "paused" else {
+                    "event_type": "chat.processing_status", "is_processing": False,
+                },
+            )
+
+    handler = _TestMessageHandler.create_with_client(ResumeClient())
+    scheduler = object.__new__(CronSchedulerService)
+    state = SimpleNamespace(exec_session_id=session_id, job_id="job", status="awaiting_approval")
+    scheduler._runs = {"run": state}
+    scheduler._jobs = {}
+    scheduler._permission_hold = {"job": (float("inf"), session_id)}
+    scheduler._schedule_hold_redis_clear = Mock()
+    scheduler._now_fn = lambda: 123.0
+    monkeypatch.setattr("gateway.cron.live_bus.cron_live_bus.clear_session", Mock())
+    mark = Mock(wraps=scheduler.mark_permission_resume_succeeded)
+    handler.set_cron_controller(SimpleNamespace(mark_permission_resume_succeeded=mark))
+    monkeypatch.setattr(handler, "_sync_agentos_cron_jobs", AsyncMock())
+    monkeypatch.setattr(handler, "_apply_session_login_owner", AsyncMock())
+    monkeypatch.setattr(handler, "publish_stream_chunk", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "_publish_stream_error", AsyncMock())
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "_notify_chat_completed", Mock())
+    envelope = e2a_from_agent_fields(
+        request_id="approval-reply", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        params={"source": "permission_interrupt", "request_id": "approval", "answers": ["allow"]},
+    )
+    await handler.process_stream(envelope, session_id, None)
+    if outcome == "completed":
+        mark.assert_called_once_with(session_id)
+        assert scheduler._permission_hold == {}
+        assert state.status == "succeeded"
+    else:
+        mark.assert_not_called()
+        assert "job" in scheduler._permission_hold
+        assert state.status == "awaiting_approval"
+
+
+@pytest.mark.asyncio
+async def test_background_cron_cleanup_preserves_newer_stream_processing(monkeypatch):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, metadata={"app_id": "default"}, is_stream=True,
+    )
+    await handler.register_background_stream(envelope, "session")
+    newer = _seed_stream_task(handler, rid="next", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["next"] = True
+    try:
+        await handler.finish_background_stream(envelope, "session")
+        assert "cron-first" not in handler._stream_tasks
+        assert handler._stream_tasks["next"] is newer
+        assert not newer.done()
+        assert handler._send_processing_status.await_count == 1
+        assert handler._send_processing_status.call_args.kwargs["is_processing"] is True
+    finally:
+        newer.cancel()
+        await asyncio.gather(newer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_received", [False, True])
+async def test_background_cron_sends_only_one_processing_terminal(monkeypatch, terminal_received):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "_handle_evolution_chunk", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "publish_robot_messages", AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, metadata={"app_id": "default", "source": "cron", "cron": {"job_id": "job"}},
+        is_stream=True,
+    )
+    await handler.register_background_stream(envelope, "session")
+    if terminal_received:
+        assert await handler.publish_stream_chunk(AgentResponseChunk(
+            request_id="cron-first", channel_id="web", is_complete=False,
+            payload={"event_type": "chat.processing_status", "is_processing": False, "is_complete": True},
+        ), session_id="session", request_metadata={"cron_session_stream": True})
+        published = handler.publish_robot_messages.await_args.args[0]
+        assert published.metadata["source"] == "cron"
+        assert published.metadata["cron"] == {"job_id": "job"}
+    await handler.finish_background_stream(envelope, "session")
+    assert handler._send_processing_status.await_count == (1 if terminal_received else 2)
+    assert "cron-first" not in handler._stream_processing_finished
+    assert "cron-first" not in handler._stream_sessions
+
+
+@pytest.mark.asyncio
+async def test_new_chat_is_registered_before_processing_true_is_published(monkeypatch):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "process_stream", AsyncMock())
+    first = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, is_stream=True,
+    )
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    await handler.register_background_stream(first, "session")
+    statuses = []
+
+    async def publish_status(rid, session_id, channel_id, *, is_processing, **kwargs):
+        statuses.append((rid, is_processing))
+        if rid == "next" and is_processing:
+            await handler.finish_background_stream(first, "session")
+
+    monkeypatch.setattr(handler, "_send_processing_status", publish_status)
+    msg = _chat_send_message(channel_id="web", session_id="session")
+    msg.id = "next"
+    envelope = e2a_from_agent_fields(
+        request_id="next", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, is_stream=True,
+    )
+    await handler._start_stream_task(msg, envelope, "next")
+    await handler._stream_tasks["next"]
+    assert statuses == [("next", True)]
+    handler._pop_stream_tracking("next")
+
+
 def _chat_send_message(
     *,
     channel_id: str = "tui",
@@ -181,7 +318,7 @@ async def _wait_for_sent_request_count(count: int, timeout: float = 0.2) -> None
 async def test_tui_non_stream_request_times_out_before_frontend_request(monkeypatch) -> None:
     handler = _TestMessageHandler.create_with_client(_HangingAgentClient())
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
+        "gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
         0.01,
         raising=False,
     )
@@ -274,6 +411,235 @@ async def test_process_stream_publishes_error_and_stops_processing_on_connection
         for payload in payloads
         if isinstance(payload, dict)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["success", "missing_terminal", "error", "cancel", "other_team"])
+async def test_expert_stream_lifecycle_preserves_request_and_team_route(ending):
+    started = asyncio.Event()
+
+    class Client:
+        async def send_request_stream(self, env):
+            started.set()
+            if ending == "error":
+                raise RuntimeError("expert disconnected")
+            if ending == "cancel":
+                await asyncio.Event().wait()
+            if ending in ("success", "other_team"):
+                yield AgentResponseChunk(
+                    request_id=env.request_id, channel_id="web",
+                    payload={
+                        "event_type": "chat.processing_status", "is_processing": False,
+                        **({"team_id": "other", "source": "org_expert_direct"} if ending == "other_team" else {}),
+                    },
+                )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["owner"] = True
+    other = _seed_stream_task(handler, rid="other", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["other"] = True
+    handler._stream_team_ids["other"] = "other"
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.params["target_team_id"] = "expert"
+    env = e2a_from_agent_fields(
+        request_id=msg.id, channel_id="web", session_id="session",
+        req_method=ReqMethod.CHAT_SEND, params=msg.params, is_stream=True, timestamp=0.0,
+    )
+    try:
+        await handler._start_stream_task(msg, env, msg.id)
+        task = handler._stream_tasks[msg.id]
+        await started.wait()
+        if ending == "cancel":
+            task.cancel()
+        await asyncio.wait_for(task, timeout=1)
+        outputs = await _drain_robot_messages(handler)
+        statuses = [message.payload for message in outputs if (
+            message.payload.get("event_type") == "chat.processing_status"
+            and message.payload.get("team_id") == "expert"
+        )]
+        assert [payload["is_processing"] for payload in statuses] == [True, False]
+        assert all(payload["request_id"] == msg.id for payload in statuses)
+        assert all(payload["source"] == "org_expert_direct" for payload in statuses)
+        assert not owner.done() and not other.done()
+        assert msg.id not in handler._stream_team_ids
+        if ending == "error":
+            error = next(message.payload for message in outputs if message.payload.get("event_type") == "chat.error")
+            assert error["team_id"] == "expert"
+            assert error["source"] == "org_expert_direct"
+            assert error["request_id"] == msg.id
+    finally:
+        owner.cancel()
+        other.cancel()
+        await asyncio.gather(owner, other, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_expert_terminal_cannot_swallow_owner_cleanup_or_block_it():
+    class Client:
+        async def send_request_stream(self, env):
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.processing_status", "is_processing": False,
+                         "team_id": "expert", "source": "org_expert_direct"},
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    expert = _seed_stream_task(handler, rid="expert", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["expert"] = True
+    handler._stream_team_ids["expert"] = "expert"
+    try:
+        await handler.process_stream(
+            SimpleNamespace(request_id="owner", channel="web", params={"mode": "team"}),
+            "session", None,
+        )
+        statuses = [message.payload for message in await _drain_robot_messages(handler)
+                    if message.payload.get("event_type") == "chat.processing_status"]
+        assert len(statuses) == 2
+        assert statuses[0]["team_id"] == "expert"
+        assert statuses[1]["is_processing"] is False
+        assert "team_id" not in statuses[1]
+        assert not expert.done()
+    finally:
+        expert.cancel()
+        await asyncio.gather(expert, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["", "org_root_background", "org_root_delivery"])
+async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(source):
+    class Client:
+        async def send_request_stream(self, env):
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.processing_status", "is_processing": False,
+                         "team_name": "owner", "source": source},
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    owner = _seed_stream_task(handler, rid="owner-long", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["owner-long"] = True
+    try:
+        await handler.process_stream(
+            SimpleNamespace(request_id="owner-short", channel="web", params={"mode": "team"}),
+            "session", None,
+        )
+        outputs = await _drain_robot_messages(handler)
+        assert not any(message.payload.get("event_type") == "chat.processing_status" for message in outputs)
+        assert not owner.done()
+    finally:
+        owner.cancel()
+        await asyncio.gather(owner, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
+@pytest.mark.parametrize("owner_flag", [None, "organization_owner_stop", "organization_stop"])
+async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent, owner_flag):
+    handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": "owner"}
+
+    monkeypatch.setattr(
+        "gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.is_stream = False
+    target = "owner" if owner_flag else "expert"
+    msg.params.update({"target_team_id": target, "intent": intent})
+    if owner_flag:
+        msg.params[owner_flag] = True
+    session_cancel = AsyncMock()
+    monkeypatch.setattr(handler, "_cancel_agent_work_for_session", session_cancel)
+    owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
+    await handler.start_forwarding()
+    try:
+        await handler.publish_user_messages(msg)
+        async with asyncio.timeout(2):
+            while not _FakeAgentClient.sent_requests:
+                await asyncio.sleep(0)
+        env = _FakeAgentClient.sent_requests[0]
+        assert env.params["target_team_id"] == target
+        if owner_flag:
+            assert env.params[owner_flag] is True
+        assert env.params["intent"] == intent
+        assert not owner.done()
+        session_cancel.assert_not_awaited()
+    finally:
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_root_background", "org_root_delivery"])
+async def test_org_root_terminal_is_the_stream_terminal(source):
+    class Client:
+        async def send_request_stream(self, env):
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.processing_status", "is_processing": False,
+                         "team_id": "owner", "source": source},
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    await handler.process_stream(
+        SimpleNamespace(request_id="owner", channel="web", params={"mode": "team"}),
+        "session", None,
+    )
+    statuses = [message for message in await _drain_robot_messages(handler)
+                if message.payload.get("event_type") == "chat.processing_status"]
+    assert len(statuses) == 1
+    assert statuses[0].payload["source"] == source
+
+
+@pytest.mark.parametrize("mode,target,owner,expected", [
+    # owner 未知（metadata 里没有 team_name）时保守判为「定向」：替代路径是会话级中断，
+    # 会把 owner 团队正在跑的 turn 一起取消。交 AgentServer 裁决，由它明确报错。
+    ("agent", "expert", "owner", False), ("team", "owner", "owner", False),
+    ("team", "expert", "", True), ("team", "", "owner", False),
+    ("team", "expert", "owner", True),
+])
+@pytest.mark.asyncio
+async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_known_owner(
+    monkeypatch, mode, target, owner, expected
+):
+    handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": owner}
+
+    monkeypatch.setattr(
+        "gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
+    msg.params["target_team_id"] = target
+    assert await handler._is_targeted_expert_cancel(msg) is expected
+
+
+@pytest.mark.asyncio
+async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypatch):
+    """元数据传输失败（非"读为空"）时，定向取消不被放大成会话级取消。"""
+    from gateway.routing.session_metadata_remote import SessionMetadataRemoteUnavailable
+
+    handler = _TestMessageHandler.create()
+
+    async def _unavailable(*args, **kwargs):
+        raise SessionMetadataRemoteUnavailable("session metadata read failed")
+
+    monkeypatch.setattr(
+        "gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.is_stream = False
+    msg.params.update({"target_team_id": "expert", "intent": "cancel"})
+
+    # owner 未知 → 照常按定向取消转发（成员校验由 AgentServer 权威执行）
+    assert await handler._is_targeted_expert_cancel(msg) is True
 
 
 @pytest.mark.asyncio
@@ -1098,3 +1464,55 @@ def test_is_team_chat_send_recognizes_all_team_modes(mode: str, expected: bool) 
     _is_team_chat_send = getattr(MessageHandler, "_is_team_chat_send")
     msg = _chat_send_message(channel_id="web", session_id="sess", mode=mode)
     assert _is_team_chat_send(msg) is expected
+
+
+@pytest.mark.asyncio
+async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-replica gateway delete must interrupt AgentServer by session.
+
+    Local stream task cancel alone leaves AgentServer running until
+    output_detached; stop_forwarding must CHAT_CANCEL first (hard stop, not
+    client_disconnect pause).
+    """
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+    handler = _TestMessageHandler.create()
+    task_a = _seed_stream_task(
+        handler, rid="rid-a", channel_id="web", session_id="sess_a",
+    )
+    task_b = _seed_stream_task(
+        handler, rid="rid-b", channel_id="web", session_id="sess_b",
+    )
+    # Same session twice → one interrupt only.
+    _seed_stream_task(
+        handler, rid="rid-a2", channel_id="web", session_id="sess_a",
+    )
+
+    await handler.stop_forwarding()
+
+    assert len(_FakeAgentClient.sent_requests) == 2
+    session_ids = {
+        str(getattr(env, "session_id", "") or "").strip()
+        for env in _FakeAgentClient.sent_requests
+    }
+    assert session_ids == {"sess_a", "sess_b"}
+    for env in _FakeAgentClient.sent_requests:
+        assert getattr(env, "method", None) == "chat.interrupt"
+        params = getattr(env, "params", None) or {}
+        assert params.get("intent") == "cancel"
+        ctx = getattr(env, "channel_context", None) or {}
+        assert ctx.get("_jiuwenswarm_cancel_source") != "client_disconnect"
+    assert task_a.done()
+    assert task_b.done()
+    assert not handler._stream_tasks
+
+
+@pytest.mark.asyncio
+async def test_stop_forwarding_with_no_in_flight_skips_interrupt() -> None:
+    handler = _TestMessageHandler.create()
+    await handler.stop_forwarding()
+    assert _FakeAgentClient.sent_requests == []

@@ -9,9 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.extensions import yuanrong_frontend_client as yuanrong_mod
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from gateway.extensions import yuanrong_frontend_client as yuanrong_mod
+from gateway.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     TRACE_ID_HEADER,
@@ -23,12 +22,13 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     _is_agent_running,
     _merge_agent_instance_payload,
     apply_trace_header,
-    extract_trace_id,
-    normalize_trace_id,
     bind_southbound_trace_id,
     clear_southbound_trace_id,
     current_southbound_trace_id,
+    extract_trace_id,
+    normalize_trace_id,
 )
+from jiuwenswarm.common.e2a.models import E2AEnvelope
 
 
 def _header(captured: dict[str, str], name: str) -> str:
@@ -671,7 +671,7 @@ async def test_wait_until_running_logs_trace_id_on_first_attempt(
             captured.append(record.getMessage())
 
     handler = _Mem()
-    yr_logger = logging.getLogger("jiuwenswarm.extensions.yuanrong_frontend_client")
+    yr_logger = logging.getLogger("gateway.extensions.yuanrong_frontend_client")
     yr_logger.addHandler(handler)
     yr_logger.setLevel(logging.INFO)
     get_bodies = [
@@ -1100,7 +1100,7 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
             logs.append(record.getMessage())
 
     handler = _Mem()
-    yr_logger = logging.getLogger("jiuwenswarm.extensions.yuanrong_frontend_client")
+    yr_logger = logging.getLogger("gateway.extensions.yuanrong_frontend_client")
     yr_logger.addHandler(handler)
     yr_logger.setLevel(logging.INFO)
 

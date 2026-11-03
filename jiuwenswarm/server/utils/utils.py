@@ -5,7 +5,7 @@
 from typing import Any, Mapping
 
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 
 
 def get_chat_id(request: AgentRequest) -> str | None:

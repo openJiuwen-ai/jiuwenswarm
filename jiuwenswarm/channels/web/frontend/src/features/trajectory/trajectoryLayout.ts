@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Deterministic sizing rules for the raw OTel inspector. */
 
 export const RAW_INSPECTOR_DEFAULT_HEIGHT = 220;
@@ -20,7 +18,7 @@ export function shouldInsetTrajectoryForFloatingTasks(
   taskPanelExpanded: boolean,
 ): boolean {
   return (mode === 'agent' || mode === 'team')
-    && activeView === 'trajectory'
+    && (activeView === 'trajectory' || activeView === 'diagnosis')
     && taskPanelAvailable
     && !taskPanelHidden
     && !taskPanelExpanded;
@@ -38,6 +36,24 @@ export function shouldInsetTrajectoryForFloatingTasks(
  * @param measuredHeight - Composer height in pixels, as laid out.
  * @returns Non-negative whole-pixel clearance.
  */
+export type TrajectoryComposerPolicy = 'available' | 'locked' | 'hidden';
+
+/**
+ * Whether the docked composer may stay open on the trajectory analysis page.
+ *
+ * Choosing a range ("诊断轨迹") closes it and keeps the toggle inert. The
+ * diagnosis sub-page does not show it at all. Browsing the trajectory leaves
+ * the toggle usable.
+ */
+export function trajectoryComposerPolicy(
+  subpage: 'trajectory' | 'diagnosis',
+  selecting: boolean,
+): TrajectoryComposerPolicy {
+  if (subpage === 'diagnosis') return 'hidden';
+  if (selecting) return 'locked';
+  return 'available';
+}
+
 export function trajectoryComposerClearance(
   docked: boolean,
   collapsed: boolean,

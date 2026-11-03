@@ -230,6 +230,25 @@ def test_unsafe_error_payload_never_persists(tmp_path, store, prepared, payload)
     )
 
 
+def test_hub_guidance_is_persisted_with_the_failure(store, prepared):
+    draft = save(store, prepared)
+    op, _ = store.commit_draft("alice", draft, "one", now=101)
+    store.start("alice", op)
+    store.finish(
+        "alice",
+        op,
+        execution_status="failed",
+        error={
+            "code": "hub_request_failed",
+            "http_status": 409,
+            "message": "发布新版本时不能修改 Skill 可见性，请沿用现有设置",
+        },
+    )
+    error = store.status("alice", op)["error"]
+    assert error["code"] == "hub_request_failed"
+    assert error["message"] == "发布新版本时不能修改 Skill 可见性，请沿用现有设置"
+
+
 def test_extra_request_attributes_are_not_serialized(tmp_path, store, prepared):
     class ExtendedRequest(PublishRequest):
         access_token = "TOP-SECRET"

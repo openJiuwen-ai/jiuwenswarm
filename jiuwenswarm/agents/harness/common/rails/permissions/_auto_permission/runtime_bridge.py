@@ -259,7 +259,7 @@ class AutoPermissionRuntimeBridgeMixin:
         )
         if auto_manual:
             request_metadata["auto_permission_manual"] = True
-        return PermissionInterruptRequest(
+        request = PermissionInterruptRequest(
             message=_permission_interrupt_message(result),
             payload_schema=ConfirmPayload.to_schema(),
             auto_confirm_key=(
@@ -268,6 +268,11 @@ class AutoPermissionRuntimeBridgeMixin:
             metadata=request_metadata,
             **extra_fields,
         )
+
+        bind_request = getattr(self.base_rail, "bind_approval_request", None)
+        if callable(bind_request):
+            bind_request(request, invocation.tool_call)
+        return request
 
     def _runtime_auto_confirm_key(self, invocation: ToolInvocation) -> str:
         if invocation.tool_call is None:

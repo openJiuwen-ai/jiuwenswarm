@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.auth import session_store as store_mod
+from gateway.auth import session_store as store_mod
 
 
 @pytest.fixture(autouse=True)

@@ -15,6 +15,10 @@ so openjiuwen builds the member from the merged spec. Two profiles are supported
 * ``team`` — the chat team profile (common rails + base tools).
 * ``code.team`` / ``team.plan.code`` — the code profile (``swarm.code_*`` rails, code
     sub-agents, code system prompt), all still purely declarative.
+
+``build_reviewer_deep_agent_spec`` narrows the assembled teammate spec into the
+base spec of the one-shot reviewers that scheduled dispatch spawns per review
+round (``TeamAgentSpec.reviewer_agent``).
 """
 
 from __future__ import annotations
@@ -28,9 +32,11 @@ from typing import (
 from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
+    ProgressiveToolSpec,
     RailSpec,
     SubAgentSpec,
 )
+from openjiuwen.agent_teams.agent.scheduling.reviewer_spec import build_reviewer_agent_spec
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
 from openjiuwen.core.kv_cache import KVCacheAffinityConfig
@@ -42,16 +48,20 @@ from openjiuwen.harness.rails import SkillUseRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.cua_defaults import (
+    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+    resolve_cua_factory_options,
+)
 from jiuwenswarm.common.config import (
-    get_default_model_provider,
     get_evolution_auto_save_enabled,
+    get_progressive_tool_enabled,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
-    get_default_model_client_config,
+    get_kv_cache_control_model_client_config,
+    get_kv_cache_control_model_provider,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -59,9 +69,10 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_CODE_NORMAL,
     NEW_TEAM_CODE_PLAN,
+    NEW_TEAM_DESIGN,
     TEAM_PLAN_CODE_MODE,
     is_team_plan_mode,
 )
@@ -80,14 +91,15 @@ _CODE_MODES: frozenset[str] = frozenset(
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
     return build_kv_cache_affinity_config(
         config,
-        provider=get_default_model_provider(config),
-        model_client_config=get_default_model_client_config(config),
+        provider=get_kv_cache_control_model_provider(config),
+        model_client_config=get_kv_cache_control_model_client_config(config),
     )
 
 
 # Rails common to both roles, in mount order. Each entry is a ``swarm.*``
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
+    registry.USER_HOOKS,
     registry.RUNTIME_PROMPT,
     registry.TEAM_SKILL_STORAGE_POLICY,
     # Reloads the member's Skill view after a write into the single library.
@@ -126,7 +138,6 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registrar.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -150,6 +161,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.HEARTBEAT,
     registry.CODE_LSP,
     registry.CODE_PROJECT_MEMORY,
+    registry.CODE_AGENT_MD,
     registry.PERMISSION_INTERRUPT,
     registry.SYS_OPERATION,
     registry.CODE_CODING_MEMORY,
@@ -183,7 +195,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -194,12 +205,152 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.SEND_FILE,
 )
 
+# Rails a scheduled-dispatch reviewer keeps from the teammate's set, per profile.
+# A reviewer only inspects a deliverable and votes: it keeps prompt framing,
+# read-only file and shell access (SYS_OPERATION is switched to read-only by
+# ``build_reviewer_agent_spec``), event streaming, safety and context handling.
+# Planning, scheduling, Skill management / evolution, permission and plugin
+# rails are left out.
+_REVIEWER_TEAM_RAIL_NAMES: tuple[str, ...] = (
+    registry.RUNTIME_PROMPT,
+    registry.RESPONSE_PROMPT,
+    registry.SYS_OPERATION,
+    registry.STREAM_EVENT,
+    registry.SECURITY,
+    registry.MODEL_ANOMALY_DETECTION,
+    registry.MULTIMODAL_IMAGE,
+    registry.CONTEXT_PROCESSOR,
+)
+_REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
+    registry.CODE_RUNTIME_PROMPT,
+    registry.RESPONSE_PROMPT,
+    registry.SYS_OPERATION,
+    registry.STREAM_EVENT,
+    registry.SECURITY,
+    registry.MODEL_ANOMALY_DETECTION,
+    registry.MULTIMODAL_IMAGE,
+    registry.CONTEXT_PROCESSOR,
+    registry.CODE_LSP,
+    registry.CODE_AGENT_MD,
+)
+# The Skill rail stays so a reviewer can use installed Skills (e.g. to read a
+# PDF deliverable); installing / removing Skills is a separate rail left out.
+_REVIEWER_SKILL_RAIL_TYPES: frozenset[str] = frozenset({CORE_SKILL_USE, TEAM_SKILL_USE})
+# Tools a reviewer keeps: web lookup for fact / originality checks and
+# perception tools for media deliverables.
+_REVIEWER_TOOL_NAMES: tuple[str, ...] = (
+    registry.WEB_SEARCH,
+    registry.WEB_FETCH,
+    registry.WEB_PAID_SEARCH,
+    registry.VISION,
+    registry.AUDIO,
+    registry.VIDEO,
+)
+
 # code_agent sub-agents are always-on (explore / plan) or config-gated.
 
 
 def _is_code_mode(mode: str) -> bool:
     """Return whether *mode* routes to the code member profile."""
     return mode in _CODE_MODES
+
+
+# Design profile (team.design) capability set. The design leader is a
+# conversation surface over the design canvas and the workers are per-node
+# executors: skill/symphony/task-planning rails and the generic web/media
+# tools are out (the designer graph tools arrive via the agent_group leader
+# template, not the profile). Everything else — runtime/response prompts,
+# streaming, security, anomaly detection, heartbeat, context — stays because
+# the team runtime's session mechanics depend on them.
+_DESIGN_RAIL_NAMES: tuple[str, ...] = (
+    registry.RUNTIME_PROMPT,
+    registry.RESPONSE_PROMPT,
+    registry.STREAM_EVENT,
+    registry.SECURITY,
+    registry.MODEL_ANOMALY_DETECTION,
+    registry.MULTIMODAL_IMAGE,
+    registry.TEAM_WORKSPACE_REPORT_PATH,
+    registry.CONTEXT_PROCESSOR,
+)
+
+_DESIGN_TOOL_NAMES: tuple[str, ...] = (
+    registry.VISION,
+    registry.AUDIO,
+)
+
+_DESIGN_LEADER_TOOL_NAMES: tuple[str, ...] = (
+    registry.WEB_SEARCH,
+    registry.WEB_FETCH,
+    registry.WEB_PAID_SEARCH,
+)
+
+
+def _is_design_mode(mode: str) -> bool:
+    """Return whether *mode* routes to the design member profile."""
+    return mode == NEW_TEAM_DESIGN
+
+
+def _build_design_capability_specs(
+    config: dict[str, Any],
+    mode: str,
+    role: str,
+    *,
+    enable_permissions: bool = False,
+) -> tuple[list[RailSpec], list[BuiltinToolSpec]]:
+    """Build the design profile (team.design) specs for a member."""
+    rail_names = _DESIGN_RAIL_NAMES
+    if role != "leader":
+        rail_names = (*rail_names, registry.SYS_OPERATION)
+    rails_specs: list[RailSpec] = [
+        RailSpec(type=name, params=_rail_params(name, config))
+        for name in rail_names
+    ]
+    if role == "leader":
+        rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
+        # Leader authoring rail: the designer_graph_autorun tool — a fresh
+        # creative request runs the service-side Director chain that composes
+        # the execution graph (analyze → brief → review → storyboard →
+        # review → graph → validate).
+        rails_specs.append(RailSpec(type=registry.DESIGNER_AUTHORING))
+        # Leader execution rail: the swarmflow tool (canvas
+        # compilation/trigger from the conversation, single-node rerun,
+        # cascade rerun) + its prompt section. Graph editing
+        # (designer_graph_tools) and execution stay two tools on two rails.
+        rails_specs.append(RailSpec(type=registry.DESIGNER_EXECUTION))
+        # Surface sanitizer: subtract the capability surfaces agent-core
+        # mounts unconditionally (workspace_meta, org_* control tools,
+        # group chat) — single-repo removal instead of patching agent-core.
+        # Low rail priority => initializes after the mounting rails and
+        # sees the fully assembled surface.
+        rails_specs.append(RailSpec(type=registry.DESIGNER_SURFACE_SANITIZER))
+        if enable_permissions:
+            rails_specs.append(
+                RailSpec(
+                    type=registry.TEAM_PERMISSION_POLICY,
+                    params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
+                ),
+            )
+    if enable_permissions and role == "teammate":
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_PERMISSION,
+                params=_rail_params(registry.TEAM_PERMISSION, config),
+            ),
+        )
+
+    tool_names = _DESIGN_TOOL_NAMES
+    if role == "leader":
+        # The canvas tools (graph_get / graph_patch / node_run / read_upstream /
+        # model calls — the picked designer toolset) mount via the registered
+        # provider, which resolves the session's graph binding. No send_file:
+        # node outputs reach the frontend through the canvas node contract
+        # (DESIGNER_RUN_UPDATED / graph output_refs), not chat file delivery.
+        tool_names = (*tool_names, *_DESIGN_LEADER_TOOL_NAMES, registry.DESIGNER_GRAPH_TOOLS)
+    tool_specs: list[BuiltinToolSpec] = [
+        BuiltinToolSpec(type=name, params=_tool_params(name, config))
+        for name in tool_names
+    ]
+    return rails_specs, tool_specs
 
 
 def _resolve_member_skills(config: dict[str, Any], role: str) -> list[str]:
@@ -558,6 +709,7 @@ def _build_team_capability_specs(
     ]
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
+        rails_specs.append(RailSpec(type=registry.SESSION_MESSAGING_ROUTE))
         if is_team_plan_mode(mode):
             rails_specs.extend(
                 [
@@ -591,6 +743,9 @@ def _build_team_capability_specs(
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in _COMMON_TOOL_NAMES
     ]
+    if role == "leader":
+        tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
+        tool_specs.append(BuiltinToolSpec(type=registry.SESSION_MESSAGING_TOOLS))
     return rails_specs, tool_specs
 
 
@@ -621,6 +776,9 @@ def _build_code_capability_specs(
 
     if is_team_plan_leader:
         rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))
+
+    if role == "leader":
+        rails_specs.append(RailSpec(type=registry.SESSION_MESSAGING_ROUTE))
 
     if enable_permissions and role == "teammate":
         rails_specs.append(
@@ -659,6 +817,9 @@ def _build_code_capability_specs(
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in _CODE_TOOL_NAMES
     ]
+    if role == "leader":
+        tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
+        tool_specs.append(BuiltinToolSpec(type=registry.SESSION_MESSAGING_TOOLS))
     return rails_specs, tool_specs
 
 
@@ -685,13 +846,31 @@ def build_member_capability_specs(
     Returns:
         A ``(rails_specs, tool_specs)`` tuple of openjiuwen specs.
     """
+    if role == "leader" and (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        availability = RailSpec(type=registry.ORGANIZATION_AVAILABILITY)
+    else:
+        availability = None
     if _is_code_mode(mode):
-        return _build_code_capability_specs(
+        rails, tools = _build_code_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    return _build_team_capability_specs(
-        config, mode, role, enable_permissions=enable_permissions
-    )
+    elif _is_design_mode(mode):
+        rails, tools = _build_design_capability_specs(
+            config, mode, role, enable_permissions=enable_permissions
+        )
+    else:
+        rails, tools = _build_team_capability_specs(
+            config, mode, role, enable_permissions=enable_permissions
+        )
+    if availability is not None:
+        rails.append(availability)
+    if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        rails.append(RailSpec(type=registry.ORGANIZATION_MODEL))
+        if role == "leader":
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_MODEL_TOOLS))
+            rails.append(RailSpec(type=registry.ORGANIZATION_OWNER_INBOX))
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_OWNER_INBOX_TOOLS))
+    return rails, tools
 
 
 def _is_subagent_enabled(sub_cfg: Any) -> bool:
@@ -734,6 +913,8 @@ def _code_subagent_spec(
     sub_cfg = subagents_cfg.get(name) if isinstance(subagents_cfg, dict) else None
     if name == "browser_agent":
         max_iterations = DEFAULT_BROWSER_AGENT_MAX_ITERATIONS
+    elif name == "cua_agent":
+        max_iterations = DEFAULT_CUA_AGENT_MAX_ITERATIONS
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
@@ -745,14 +926,19 @@ def _code_subagent_spec(
     card_kwargs: dict[str, Any] = {"name": name}
     if name == "statusline-setup":
         card_kwargs["id"] = "jiuwenswarm.statusline-setup"
+    factory_kwargs: dict[str, Any] = {
+        "max_iterations": max_iterations,
+        "language": language,
+    }
+    if name == "cua_agent":
+        # Provider param names (see CuaAgentInput) drop the agent-core prefix.
+        for key, value in resolve_cua_factory_options(sub_cfg).items():
+            factory_kwargs[key.removeprefix("cua_")] = value
     return SubAgentSpec(
         agent_card=AgentCard(**card_kwargs),
         system_prompt="",
         factory_name=factory_name,
-        factory_kwargs={
-            "max_iterations": max_iterations,
-            "language": language,
-        },
+        factory_kwargs=factory_kwargs,
     )
 
 
@@ -788,7 +974,8 @@ def build_member_subagent_specs(
     Code modes additionally include explore / plan. Every sub-agent is gated by
     ``react.subagents.<name>.enabled``; status-line setup, explore and plan
     default to on (only an explicit ``false`` drops them), while code / browser
-    require an explicit ``true``.
+    require an explicit ``true``. The cua (desktop) sub-agent is mode-agnostic
+    and likewise requires an explicit ``true``.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -819,10 +1006,19 @@ def build_member_subagent_specs(
             )
         )
 
+    # cua_agent drives the host desktop, which is not a code-profile concern,
+    # so it is offered in every mode when the operator opts in explicitly.
+    if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
+        subagents_cfg.get("cua_agent")
+    ):
+        specs.append(
+            _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)
+        )
+
     if not _is_code_mode(mode):
         return specs
 
-# Explore / plan are the code profile's core sub-agents and stay mounted
+    # Explore / plan are the code profile's core sub-agents and stay mounted
     # unless a config entry turns them off explicitly, so an absent entry keeps
     # the long-standing behaviour.
     for name, factory_name in (
@@ -859,7 +1055,10 @@ def build_member_deep_agent_spec(
 
     Appends the rails/tools (and, for code modes, sub-agents + the code system
     prompt) after the base spec's existing entries and returns a new
-    ``DeepAgentSpec`` (the input is left unmodified).
+    ``DeepAgentSpec`` (the input is left unmodified). Leaders never carry
+    sub-agents: their spec's subagent list is pinned empty so agent-core
+    mounts no SubagentRail and the leader has no ``task_tool`` surface —
+    delegation goes through the team-native runner tools instead.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -896,15 +1095,34 @@ def build_member_deep_agent_spec(
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
     }
+    if get_progressive_tool_enabled(config):
+        # Same top-level ``progressive_tool_enabled`` switch the single-agent
+        # adapters read: the member mounts the harness ProgressiveToolRail
+        # (``tool_search`` + deferred tools) exactly like a single agent does.
+        # Team coordination tools stay DIRECT — ``TeamToolRail`` declares
+        # their exposure — so only the long tail is discovered on demand.
+        # Written only when enabled so a disabled switch keeps the base spec
+        # byte-identical (a YAML base spec may carry its own value).
+        update["progressive_tool"] = ProgressiveToolSpec(enabled=True)
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
         # Force off agent-core's enable_task_planning auto-inject path so a YAML
         # base spec cannot re-mount harness todo rails via resolve_deep_agent_parts.
         update["enable_task_planning"] = False
+        # Leaders dispatch through the team-native runner tools (build_team /
+        # spawn_teammate) and carry no sub-agents: agent-core mounts SubagentRail
+        # — and with it the task_tool surface — only for a non-empty subagent
+        # list, so pinning the list empty keeps task_tool off the leader even
+        # when a YAML base spec configures one.
+        update["subagents"] = []
     if not _is_code_mode(mode):
         update["enable_skill_discovery"] = not retrieval_enabled
 
-    subagent_specs = build_member_subagent_specs(config, mode, role)
+    # Teammates build their member sub-agent set here; the leader branch above
+    # already pinned subagents empty, so the leader skips the build entirely.
+    subagent_specs: list[SubAgentSpec] = []
+    if role != "leader":
+        subagent_specs = build_member_subagent_specs(config, mode, role)
 
     # In team mode, base_spec includes a browser_agent with hardcoded
     # server_id="playwright_official_stdio". All members share that single
@@ -914,7 +1132,7 @@ def build_member_deep_agent_spec(
     # In code mode build_member_subagent_specs already returns SWARM_BROWSER_AGENT,
     # so this branch only runs for non-code modes.
     team_browser_spec: SubAgentSpec | None = None
-    if not _is_code_mode(mode):
+    if role != "leader" and not _is_code_mode(mode):
         react_cfg = (config or {}).get("react", {})
         react_cfg = react_cfg if isinstance(react_cfg, dict) else {}
         subagents_cfg = (
@@ -962,6 +1180,29 @@ def build_member_deep_agent_spec(
         update["system_prompt"] = build_code_system_prompt()
 
     return base_spec.model_copy(update=update)
+
+
+def build_reviewer_deep_agent_spec(mode: str, teammate_spec: DeepAgentSpec) -> DeepAgentSpec:
+    """Narrow the assembled teammate spec into the scheduled-dispatch reviewer spec.
+
+    Starts from the fully assembled teammate spec so rail params, the project
+    cwd and MCP servers carry over, then keeps only the reviewer allow-lists on
+    top of the framework trimming (read-only file tools, no todo planning, no
+    sub-agents).
+
+    Args:
+        mode: The canonical team request mode; selects the chat or code profile.
+        teammate_spec: The teammate spec after capability assembly.
+
+    Returns:
+        A new ``DeepAgentSpec`` for ``TeamAgentSpec.reviewer_agent``.
+    """
+    rail_names = _REVIEWER_CODE_RAIL_NAMES if _is_code_mode(mode) else _REVIEWER_TEAM_RAIL_NAMES
+    return build_reviewer_agent_spec(
+        teammate_spec,
+        rail_types={*rail_names, *_REVIEWER_SKILL_RAIL_TYPES},
+        tool_types=_REVIEWER_TOOL_NAMES,
+    )
 
 
 def _merge_mcp_configs(

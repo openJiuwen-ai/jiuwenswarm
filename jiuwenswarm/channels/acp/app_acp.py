@@ -94,7 +94,7 @@ def run_acp(args: argparse.Namespace) -> int:
     env.request_id = request_id
     env.is_stream = True
 
-    cmd = [sys.executable, "-m", "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect"]
+    cmd = [sys.executable, "-m", "gateway.channel_manager.protocol.acp.acp_connect"]
     gateway_url = getattr(args, "gateway_url", None) or getattr(args, "agent_server_url", None)
     if gateway_url:
         cmd.extend(["--gateway-url", str(gateway_url)])

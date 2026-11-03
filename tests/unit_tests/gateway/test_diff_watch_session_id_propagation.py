@@ -129,7 +129,7 @@ class FakeRegistry:
 
 
 def _make_handler(channel, registry):
-    from jiuwenswarm.gateway.channel_manager.web.git_ws_handler import (
+    from gateway.channel_manager.web.git_ws_handler import (
         GitDiffWebSocketHandler,
     )
     return GitDiffWebSocketHandler(channel=channel, registry=registry)
@@ -177,7 +177,7 @@ def _make_fake_fetcher(fail_when_session_id=False):
 def _patch_fetcher(fake_fetch):
     """patch handler 的 _fetch_diff_status_via_e2a。"""
     return patch(
-        "jiuwenswarm.gateway.channel_manager.web.git_ws_handler."
+        "gateway.channel_manager.web.git_ws_handler."
         "GitDiffWebSocketHandler._fetch_diff_status_via_e2a",
         fake_fetch,
     )

@@ -97,25 +97,7 @@ export function MemberTaskListPanel({
             data-testid="team-area-member-detail-task-list-item"
             data-variant={task.id}
           >
-            {task.status === 'completed' ? (
-              <svg
-                viewBox="0 0 16 16"
-                fill="none"
-                className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]"
-                aria-hidden="true"
-              >
-                <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="0.981849" />
-                <path
-                  d="M4.86328 7.72751L7.20336 10.1821L11.3517 5.81836"
-                  stroke="currentColor"
-                  strokeWidth="0.981849"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            ) : (
-              <StatusIcon status={task.status as TaskStatus} />
-            )}
+            <StatusIcon status={task.status as TaskStatus} />
             <span
               className="min-w-0 flex-1 truncate text-sm text-text-meta leading-[22px]"
               data-testid="team-area-member-detail-task-list-item-title"

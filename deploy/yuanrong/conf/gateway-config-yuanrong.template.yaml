@@ -291,7 +291,7 @@ agents:
   agent_leader:
     workspace:
       stable_base: true
-    max_iterations: 200000
+    # Leader 不受 max_iterations 限制，配置了也会被忽略，保证长程任务持续执行
     completion_timeout: 600.0
 
   agent_teammate:
@@ -695,7 +695,7 @@ channels:
     # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
     # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
     # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
-    # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
+    # 启用前请安装可选依赖: pip install "workswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
     enabled: true
@@ -713,6 +713,18 @@ channels:
       ephemeral_key_type: "ssh-ed25519"
       # 过期清理间隔（秒）
       cleanup_interval_sec: 60
+
+  web_proxy:
+    # 3rd-agent Web UI。端口由注册中心决定（写入 etcd），Gateway 只读并监听。
+    # Gateway watch {A2X_REGISTRY_ETCD_NAMESPACE}/images/（默认 a2x-registry，无前导斜杠），
+    # 取每条 data.access_mode 里 name=web_svc_port 的 port 监听；浏览器访问
+    # http://<advertise_host>:<port>/?user_id=<uid>&token=<iam>（南向仍用 name=web 的口）。
+    enabled: true
+    auth_enabled: true
+    listen_host: <<INGRESS_VIP>>
+    advertise_host: <<INGRESS_VIP>>
+    # 会话 Cookie 的 Max-Age（秒）；端口空闲回收已取消。
+    idle_timeout_sec: 900
 
 # ========== 细粒度权限管控（tiered_policy）==========
 #
@@ -1195,8 +1207,26 @@ modes:
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
 
+code_graph:
+  # AgentOS 部署可选能力；个人版配置与默认值不变。
+  profile: "<<AGENTOS_CODE_GRAPH_PROFILE>>"
+  agent: root
+  max_files: 50000
+  max_source_bytes: 40MB
+  max_build_rss_mb: 2048
+  max_cache_size_mb: 2048
+
 sandbox:
   type: <<TOOL_SANDBOX_TYPE>>
   enabled: <<TOOL_SANDBOX_ENABLE>>
+  startup_mode: internal
   executor: <<TOOL_SANDBOX_EXECUTOR>>
   image: <<TOOL_SANDBOX_IMAGE>>
+  # CPU 限制，单位：毫核（1000 = 1 核）
+  cpu: <<TOOL_SANDBOX_CPU>>
+  # 内存限制，单位：MB
+  memory: <<TOOL_SANDBOX_MEMORY>>
+  user: <<TOOL_SANDBOX_USER>>
+  group: <<TOOL_SANDBOX_GROUP>>
+  template_name: "<<CONCH_TEMPLATE_NAME>>"
+  conch_sdk_config: "<<CONCH_SDK_CONFIG>>"

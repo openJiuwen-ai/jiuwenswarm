@@ -68,7 +68,7 @@ class FakeRegistry:
 
 
 def _make_handler():
-    from jiuwenswarm.gateway.channel_manager.web.git_ws_handler import GitDiffWebSocketHandler
+    from gateway.channel_manager.web.git_ws_handler import GitDiffWebSocketHandler
     return GitDiffWebSocketHandler(channel=FakeWebChannel(), registry=FakeRegistry())
 
 

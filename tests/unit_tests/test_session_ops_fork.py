@@ -6,6 +6,25 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
+def test_fork_history_drops_parent_cumulative_usage_but_keeps_turn_usage():
+    from jiuwenswarm.agents.harness.common.session_ops_service import _copy_fork_history_value
+
+    source = {
+        "event_type": "chat.usage_summary",
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+        "session_usage": {"session_id": "source", "revision": 9},
+    }
+    copied = _copy_fork_history_value(
+        source,
+        source_session_id="source",
+        target_session_id="fork",
+    )
+
+    assert "session_usage" not in copied
+    assert copied["usage"] == {"input_tokens": 10, "output_tokens": 2}
+    assert source["session_usage"]["session_id"] == "source"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -79,6 +98,8 @@ class TestForkSessionChannelMetadata:
             "title": "My Test Session",
             "message_count": 5,
             "mode": "code.normal",
+            "moa_enabled": True,
+            "model_selection": {"type": "model_group", "id": "ordinary-pool", "route_id": "primary"},
             "channel_metadata": {
                 "project_dir": "/Users/test/my-project",
                 "cwd": "/Users/test/my-project",
@@ -108,6 +129,8 @@ class TestForkSessionChannelMetadata:
         assert result["source_session_id"] == source_id
 
         target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["moa_enabled"] is True
+        assert target_meta["model_selection"] == source_meta["model_selection"]
         assert "channel_metadata" in target_meta, (
             "fork_session should copy channel_metadata from source"
         )

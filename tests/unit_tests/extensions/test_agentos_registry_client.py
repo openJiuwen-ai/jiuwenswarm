@@ -8,9 +8,8 @@ from typing import Any
 import httpx
 import pytest
 
-from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
-    PENDING_INSTANCE_ADDRESS,
+from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from gateway.extensions.agentos.agentos_router.registry_client import (
     ImageEntry,
     RegistryClient,
     RegistryConfig,
@@ -18,6 +17,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryNotFoundError,
     cmd_for_access_mode,
     compute_backoff_delay,
+    http_web_port_from_access_mode,
     instance_service_id,
     parse_access_mode,
     resolve_instance_kind,
@@ -78,6 +78,23 @@ def test_parse_access_mode_and_tui_cmd() -> None:
     assert cmd_for_access_mode(modes, "") == ""
     assert cmd_for_access_mode(None, "tui") == ""
     assert parse_access_mode(None) == []
+    assert http_web_port_from_access_mode(modes) == 8080
+    assert http_web_port_from_access_mode(
+        [{"name": "web", "port": "18789", "protocol": "http"}]
+    ) == 18789
+    assert (
+        http_web_port_from_access_mode(
+            [{"name": "web", "port": "9000", "protocol": "ws"}]
+        )
+        is None
+    )
+    assert http_web_port_from_access_mode([{"name": "tui", "port": "2222"}]) is None
+    assert http_web_port_from_access_mode(
+        [{"name": "web", "port": "18979", "cmd": "openclaw gateway"}]
+    ) == 18979
+    assert http_web_port_from_access_mode(None) is None
+    assert http_web_port_from_access_mode([{"name": "web", "port": "0"}]) is None
+    assert http_web_port_from_access_mode([{"name": "web", "port": "bad"}]) is None
 
     entry = ImageEntry.from_dict(
         {
@@ -400,7 +417,7 @@ async def test_http_register_agent_maps_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_register_agent_pending_address_and_empty_node() -> None:
+async def test_http_register_agent_empty_address_and_node() -> None:
     transport = _FakeRegistryTransport()
     client = RegistryClient(
         RegistryConfig(endpoint="http://registry.test", node="192.168.0.12")
@@ -413,14 +430,14 @@ async def test_http_register_agent_pending_address_and_empty_node() -> None:
     agent = AgentInfo(
         user_id="user-02",
         agent_type="jiuwenswarm",
-        sandbox_id="sbx-pending-ip",
+        sandbox_id="sbx-empty-placement",
         status=AgentStatus.READY,
     )
     await client.register_agent(agent)
     post = next(call for call in transport.calls if call[0] == "POST")
     assert post[2] is not None
-    assert post[2]["instance_id"] == "sbx-pending-ip"
-    assert post[2]["address"] == PENDING_INSTANCE_ADDRESS
+    assert post[2]["instance_id"] == "sbx-empty-placement"
+    assert post[2]["address"] == ""
     assert post[2]["node"] == ""
     await client.close()
 

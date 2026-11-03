@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Pure projection from trajectory records to measurable virtual ledger rows.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/trajectory-virtual-rows.ts`

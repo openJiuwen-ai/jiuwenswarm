@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Product-level Session lifecycle and execution coordinator."""
 
 from __future__ import annotations
@@ -11,8 +13,10 @@ from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
 from jiuwenswarm.runtime.session.execution_registry import SessionExecutionRegistry
 from jiuwenswarm.runtime.session.model import (
+    AnswerInFlightError,
     CancelExecutionResult,
     CloseSessionResult,
+    NoControlTargetError,
     RuntimeSessionSnapshot,
     RuntimeSessionState,
     SessionCloseTimeoutError,
@@ -20,13 +24,29 @@ from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
     SessionExecutionSnapshot,
     SessionExecutionState,
+    SessionLifecycleContext,
     SessionPersistencePolicy,
     SessionWorkKind,
+    TeamExecutionContext,
+    TeamExecutionDetails,
+    TeamWaiterKind,
 )
 from jiuwenswarm.runtime.session.work_scheduler import SessionWorkScheduler
 from jiuwenswarm.runtime.session_input import SessionInputRejectedError, SessionInputTargetError
 
 T = TypeVar("T")
+
+_TEAM_WORK_KINDS = {
+    SessionWorkKind.TEAM_REQUEST,
+    SessionWorkKind.TEAM_CONTROL,
+    SessionWorkKind.TEAM_BACKGROUND,
+}
+
+
+@dataclass(slots=True)
+class _Delivery:
+    answered: frozenset[str]
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(slots=True)
@@ -37,7 +57,7 @@ class _SessionRecord:
     generation: int
     state: RuntimeSessionState = RuntimeSessionState.READY
     control_ready: asyncio.Event = field(default_factory=asyncio.Event)
-    stream_control_claims: set[str] = field(default_factory=set)
+    deliveries: dict[str, _Delivery] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.control_ready.set()
@@ -67,7 +87,6 @@ class RuntimeSessionCoordinator:
         self._stream_buffer_size = max(1, stream_buffer_size)
         self._sessions: dict[str, _SessionRecord] = {}
         self._generations: dict[str, int] = {}
-        self._control_claims: set[tuple[str, int, str, str]] = set()
         self._accepting = True
         self._lock = asyncio.Lock()
 
@@ -106,23 +125,33 @@ class RuntimeSessionCoordinator:
         work_kind: SessionWorkKind,
         operation: Callable[[], Awaitable[T]],
         *,
-        suspension_key: Callable[[T], str | None] | None = None,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
         wait_for_terminal: bool = False,
         timeout_scope: asyncio.Timeout | None = None,
         timeout_error: str = "execution deadline exceeded",
+        team: TeamExecutionDetails | None = None,
     ) -> T:
         record = self._require_open_session(session_id)
-        handle = self._new_execution(record, request_id, work_kind)
+        team_target = None
+        if work_kind is SessionWorkKind.TEAM_CONTROL and team is not None and team.control_id:
+            team_target = self._control_target(record, (team.control_id,))
+        handle = self._new_execution(record, request_id, work_kind, team=team)
         handle.retain_owner_task = wait_for_terminal
-        return await self._run_unary(
+        value = await self._run_unary(
             record,
             handle,
             operation,
-            suspension_key,
+            interaction_ids,
             wait_for_terminal=wait_for_terminal,
             timeout_scope=timeout_scope,
             timeout_error=timeout_error,
         )
+        if team_target is not None:
+            parent, control_id = team_target
+            if parent.team is not None:
+                self._answered(parent, frozenset({control_id}), was_waiting=False)
+                self._refresh_session_state(record)
+        return value
 
     def submit_unary(
         self,
@@ -131,7 +160,7 @@ class RuntimeSessionCoordinator:
         work_kind: SessionWorkKind,
         operation: Callable[[], Awaitable[T]],
         *,
-        suspension_key: Callable[[T], str | None] | None = None,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
     ) -> SessionExecutionSnapshot:
         """Queue owned work and return before the operation completes."""
         record = self._require_open_session(session_id)
@@ -151,7 +180,7 @@ class RuntimeSessionCoordinator:
         async def submitted() -> None:
             if work_kind is SessionWorkKind.SESSION_MESSAGE:
                 await record.control_ready.wait()
-            await self._run_unary(record, handle, operation, suspension_key)
+            await self._run_unary(record, handle, operation, interaction_ids)
 
         task = asyncio.create_task(submitted())
         handle.task = task
@@ -163,7 +192,7 @@ class RuntimeSessionCoordinator:
         record: _SessionRecord,
         handle: SessionExecutionHandle,
         operation: Callable[[], Awaitable[T]],
-        suspension_key: Callable[[T], str | None] | None,
+        interaction_ids: Callable[[T], frozenset[str]] | None,
         *,
         wait_for_terminal: bool = False,
         timeout_scope: asyncio.Timeout | None = None,
@@ -199,12 +228,9 @@ class RuntimeSessionCoordinator:
                         error=timeout_error,
                     )
                     raise TimeoutError(timeout_error)
-                control_id = (
-                    suspension_key(value) if suspension_key is not None else None
-                )
-                if control_id:
-                    self._registry.mark_awaiting_control(handle, control_id)
-                if handle.waiting_control_id:
+                if interaction_ids is not None:
+                    self._registry.mark_awaiting_control(handle, interaction_ids(value))
+                if handle.waiting_control_ids:
                     self._registry.mark_waiting(handle)
                 else:
                     self._registry.mark_terminal(
@@ -263,7 +289,8 @@ class RuntimeSessionCoordinator:
                 handle.task = None
 
     def record_interaction(
-        self, session_id: str, request_id: str, control_id: str
+        self, session_id: str, request_id: str, control_ids: frozenset[str],
+        *, on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> bool:
         """Associate an interaction emitted inside an owned callback execution."""
         record = self._sessions.get(session_id)
@@ -276,32 +303,46 @@ class RuntimeSessionCoordinator:
             active_only=True,
         ):
             if handle.state is SessionExecutionState.RUNNING:
-                self._registry.mark_awaiting_control(handle, control_id)
+                self._registry.mark_awaiting_control(handle, control_ids)
                 self._refresh_control_gate(record)
+                if on_execution is not None:
+                    on_execution(handle.snapshot())
                 return True
         return False
+
+    def bind_agent(self, session_id: str, request_id: str, agent: Any) -> None:
+        record = self._sessions.get(session_id)
+        if record is None:
+            return
+        for handle in self._registry.select(
+            session_id=session_id,
+            request_id=request_id,
+            generation=record.generation,
+            active_only=True,
+        ):
+            handle.agent = agent
+
+    def control_target_agent(self, session_id: str, answered: tuple[str, ...]) -> Any:
+        record = self._sessions.get(session_id)
+        if record is None or record.state is RuntimeSessionState.CLOSED:
+            return None
+        target = self._control_target(record, answered)
+        return target[0].agent if target is not None else None
 
     async def deliver_control(
         self,
         session_id: str,
-        request_id: str,
+        answered: tuple[str, ...],
         operation: Callable[[], Awaitable[T]],
         *,
-        suspension_key: Callable[[T], str | None] | None = None,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> T:
         """Deliver input to the running Session work without joining its lane."""
-        record = self._require_open_session(session_id)
-        if self._is_control_claimed(record, request_id):
-            raise RuntimeError("control input is already being delivered")
-        parent = self._control_parent(record, request_id)
-        if parent is None:
-            raise RuntimeError(f"session has no active execution: {session_id}")
-        claim = (session_id, record.generation, parent.execution_id, request_id)
-        self._control_claims.add(claim)
-        # Everything below belongs to the finally: _new_execution can still
-        # fail, and a leaked claim would make every later answer for this
-        # request_id look already-in-flight. Resuming the parent is deferred
-        # until the child exists, so a failure leaves the parent resumable.
+        record, parent, request_id = await self._claim_control_parent(
+            session_id, answered, duplicate="control input is already being delivered"
+        )
+        claimed = parent.waiting_control_ids
         try:
             handle = self._new_execution(
                 record,
@@ -317,13 +358,14 @@ class RuntimeSessionCoordinator:
             handle.task = asyncio.current_task()
             self._registry.mark_running(handle)
             try:
+                if on_execution is not None:
+                    on_execution(handle.snapshot())
                 value = await operation()
             except asyncio.CancelledError as exc:
                 self._registry.mark_terminal(
                     handle, SessionExecutionState.CANCELLED, error=exc
                 )
                 if parent_was_waiting and not parent.state.terminal:
-                    self._registry.mark_awaiting_control(parent, request_id)
                     self._registry.mark_waiting(parent)
                 raise
             except BaseException as exc:
@@ -331,7 +373,6 @@ class RuntimeSessionCoordinator:
                     handle, SessionExecutionState.FAILED, error=exc
                 )
                 if parent_was_waiting and not parent.state.terminal:
-                    self._registry.mark_awaiting_control(parent, request_id)
                     self._registry.mark_waiting(parent)
                 raise
 
@@ -351,33 +392,25 @@ class RuntimeSessionCoordinator:
                     f"session={session_id} request={request_id}"
                 )
 
-            control_id = suspension_key(value) if suspension_key is not None else None
+            control_ids = interaction_ids(value) if interaction_ids is not None else frozenset()
             heartbeat_root = self._heartbeat_root(parent)
-            if control_id and heartbeat_root is not None:
-                self._registry.mark_awaiting_control(heartbeat_root, control_id)
+            if control_ids and heartbeat_root is not None:
+                parent.waiting_control_ids -= claimed
+                self._registry.mark_awaiting_control(heartbeat_root, control_ids)
                 self._registry.mark_waiting(heartbeat_root)
                 self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
             else:
-                parent_finished_while_delivering = (
-                    parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-                    and parent.waiting_control_id == request_id
-                )
-                if parent_was_waiting or parent_finished_while_delivering:
-                    self._registry.mark_terminal(
-                        parent, SessionExecutionState.SUCCEEDED
-                    )
-                elif parent.waiting_control_id == request_id:
-                    parent.waiting_control_id = None
-            if control_id and heartbeat_root is None:
-                self._registry.mark_awaiting_control(handle, control_id)
+                self._answered(parent, claimed, was_waiting=parent_was_waiting)
+            if control_ids and heartbeat_root is None:
+                self._registry.mark_awaiting_control(handle, control_ids)
                 self._registry.mark_waiting(handle)
-            elif not control_id:
+            elif not control_ids:
                 self._registry.mark_terminal(
                     handle, SessionExecutionState.SUCCEEDED
                 )
             return value
         finally:
-            self._control_claims.discard(claim)
+            self._release_control_parent(record, parent)
             self._refresh_session_state(record)
 
     def has_control_target(self, session_id: str, request_id: str) -> bool:
@@ -388,6 +421,42 @@ class RuntimeSessionCoordinator:
         return self._is_control_claimed(
             record, request_id
         ) or self._control_parent(record, request_id) is not None
+
+    def recoverable_control(
+        self, session_id: str, request_id: str, execution_id: str,
+    ) -> SessionExecutionSnapshot | None:
+        """Resolve an unclaimed control only within its proven execution lineage."""
+        record = self._sessions.get(session_id)
+        if record is None or record.state in {RuntimeSessionState.CLOSED, RuntimeSessionState.QUIESCING}:
+            return None
+        if self._is_control_claimed(record, request_id):
+            return None
+        owner = self._control_parent(record, request_id)
+        if owner is None or owner.execution_id in record.deliveries:
+            return None
+        ancestor = owner
+        while ancestor is not None and ancestor.session_id == session_id and ancestor.generation == record.generation:
+            if ancestor.execution_id == execution_id:
+                return owner.snapshot()
+            ancestor = self._registry.get(ancestor.parent_execution_id) if ancestor.parent_execution_id else None
+        return None
+
+    def waiting_interactions(self, session_id: str, request_id: str) -> frozenset[str]:
+        """Every interaction the execution an answer to ``request_id`` resumes waits on."""
+        record = self._sessions.get(session_id)
+        if record is None or record.state is RuntimeSessionState.CLOSED:
+            return frozenset()
+        parent = self._control_parent(record, request_id)
+        return parent.waiting_control_ids if parent is not None else frozenset()
+
+    def unanswered_interactions(self, session_id: str) -> frozenset[str]:
+        """What the Session's executions wait on, less what an answer being delivered names."""
+        record = self._sessions.get(session_id)
+        if record is None or record.state is RuntimeSessionState.CLOSED:
+            return frozenset()
+        handles = self._registry.select(session_id=session_id, generation=record.generation, active_only=True)
+        waiting = frozenset().union(*(handle.waiting_control_ids for handle in handles))
+        return waiting.difference(*(delivery.answered for delivery in record.deliveries.values()))
 
     def control_target_work_kind(
         self, session_id: str, request_id: str
@@ -404,10 +473,11 @@ class RuntimeSessionCoordinator:
     async def deliver_control_stream(
         self,
         session_id: str,
-        request_id: str,
+        answered: tuple[str, ...],
         operation: Callable[[], AsyncIterator[T] | Awaitable[AsyncIterator[T]]],
         *,
-        suspension_key: Callable[[T], str | None] | None = None,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> AsyncIterator[T]:
         """Stream a matching control operation without joining the work lane.
 
@@ -415,84 +485,93 @@ class RuntimeSessionCoordinator:
         before the operation ends, including a second question awaiting input.
         The output consumer owns this generator and must close it on exit.
         """
-        record = self._require_open_session(session_id)
-        parent = self._stream_control_parent(record, request_id)
-        parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-        record.stream_control_claims.add(request_id)
-        if parent_was_waiting:
-            self._registry.resume_waiting(parent)
-        handle = self._new_execution(
-            record,
-            request_id,
-            SessionWorkKind.CONTROL_INPUT,
-            parent_execution_id=parent.execution_id,
+        record, parent, request_id = await self._claim_control_parent(
+            session_id, answered, duplicate="interaction answer is already in progress"
         )
-        handle.task = asyncio.current_task()
-        self._registry.mark_running(handle)
+        claimed = parent.waiting_control_ids
+        parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
         try:
-            candidate = operation()
-            stream = await candidate if inspect.isawaitable(candidate) else candidate
+            handle = self._new_execution(
+                record,
+                request_id,
+                SessionWorkKind.CONTROL_INPUT,
+                parent_execution_id=parent.execution_id,
+            )
+            if parent_was_waiting:
+                self._registry.resume_waiting(parent)
+            handle.task = asyncio.current_task()
+            self._registry.mark_running(handle)
             try:
-                async for item in stream:
-                    control_id = suspension_key(item) if suspension_key else None
-                    if control_id:
-                        self._registry.mark_awaiting_control(handle, control_id)
-                        self._refresh_control_gate(record)
-                    yield item
-            finally:
-                close = getattr(stream, "aclose", None)
-                if callable(close):
-                    await close()
-        except (asyncio.CancelledError, GeneratorExit) as exc:
-            self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED, error=exc)
-            if parent_was_waiting:
-                self._registry.mark_waiting(parent)
-            raise
-        except BaseException as exc:
-            self._registry.mark_terminal(handle, SessionExecutionState.FAILED, error=exc)
-            if parent_was_waiting:
-                self._registry.mark_waiting(parent)
-            raise
-        else:
-            if parent_was_waiting:
-                self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
-            elif parent.waiting_control_id == request_id:
-                # The original producer may already have published another
-                # question. Do not erase that newer control locator.
-                parent.waiting_control_id = None
-            if handle.waiting_control_id:
-                self._registry.mark_waiting(handle)
+                if on_execution is not None:
+                    on_execution(handle.snapshot())
+                candidate = operation()
+                stream = await candidate if inspect.isawaitable(candidate) else candidate
+                try:
+                    async for item in stream:
+                        control_ids = interaction_ids(item) if interaction_ids else frozenset()
+                        if control_ids:
+                            self._registry.mark_awaiting_control(handle, control_ids)
+                            self._refresh_control_gate(record)
+                        yield item
+                finally:
+                    close = getattr(stream, "aclose", None)
+                    if callable(close):
+                        await close()
+            except (asyncio.CancelledError, GeneratorExit) as exc:
+                self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED, error=exc)
+                if parent_was_waiting:
+                    self._registry.mark_waiting(parent)
+                raise
+            except BaseException as exc:
+                self._registry.mark_terminal(handle, SessionExecutionState.FAILED, error=exc)
+                if parent_was_waiting:
+                    self._registry.mark_waiting(parent)
+                raise
             else:
-                self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
+                self._answered(parent, claimed, was_waiting=parent_was_waiting)
+                if handle.waiting_control_ids:
+                    self._registry.mark_waiting(handle)
+                else:
+                    self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
+            finally:
+                if handle.task is asyncio.current_task():
+                    handle.task = None
         finally:
-            record.stream_control_claims.discard(request_id)
-            if handle.task is asyncio.current_task():
-                handle.task = None
+            self._release_control_parent(record, parent)
             self._refresh_session_state(record)
 
-    def _stream_control_parent(
-        self, record: _SessionRecord, request_id: str
-    ) -> SessionExecutionHandle:
-        """Claim only an existing matching interaction, never a fresh turn."""
-        if request_id in record.stream_control_claims:
-            raise RuntimeError("interaction answer is already in progress")
-        parents: list[SessionExecutionHandle] = []
-        active = self._registry.select(
-            session_id=record.session_id,
-            generation=record.generation,
-            active_only=True,
-        )
-        for handle in active:
-            if handle.waiting_control_id != request_id:
-                continue
-            if handle.state in {
-                SessionExecutionState.RUNNING,
-                SessionExecutionState.WAITING_FOR_CONTROL,
-            }:
-                parents.append(handle)
-        if not parents:
-            raise RuntimeError(f"session has no active execution: {record.session_id}")
-        return max(parents, key=lambda handle: handle.started_at or handle.created_at)
+    async def _claim_control_parent(
+        self, session_id: str, answered: tuple[str, ...], *, duplicate: str
+    ) -> tuple[_SessionRecord, SessionExecutionHandle, str]:
+        """Claim the execution ``answered`` names once a delivery to it in flight settles, however long that takes."""
+        names = frozenset(answered)
+        while True:
+            record = self._require_open_session(session_id)
+            if any(names <= delivery.answered for delivery in record.deliveries.values()):
+                raise AnswerInFlightError(duplicate)
+            target = self._control_target(record, answered)
+            if target is None:
+                raise NoControlTargetError(f"session has no active execution: {session_id}")
+            parent, request_id = target
+            delivery = record.deliveries.get(parent.execution_id)
+            if delivery is None:
+                record.deliveries[parent.execution_id] = _Delivery(names)
+                return record, parent, request_id
+            await delivery.settled.wait()
+
+    @staticmethod
+    def _release_control_parent(record: _SessionRecord, parent: SessionExecutionHandle) -> None:
+        record.deliveries.pop(parent.execution_id).settled.set()
+
+    def _answered(
+        self, parent: SessionExecutionHandle, claimed: frozenset[str], *, was_waiting: bool
+    ) -> None:
+        parent.waiting_control_ids -= claimed
+        if was_waiting or (
+            parent.state is SessionExecutionState.WAITING_FOR_CONTROL
+            and not parent.waiting_control_ids
+        ):
+            self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
 
     async def stream_session_input(
         self,
@@ -501,7 +580,7 @@ class RuntimeSessionCoordinator:
         operation: Callable[[str], AsyncIterator[T]],
         idle_operation: Callable[[], AsyncIterator[T]],
         *,
-        suspension_key: Callable[[T], str | None] | None = None,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
         expected_execution_id: str | None = None,
     ) -> AsyncIterator[T]:
         """Track an input without acquiring the active task's scheduling lane.
@@ -514,7 +593,7 @@ class RuntimeSessionCoordinator:
         active = self._registry.select(
             session_id=session_id, generation=record.generation, active_only=True,
         )
-        if any(handle.waiting_control_id for handle in active):
+        if any(handle.waiting_control_ids for handle in active):
             raise SessionInputRejectedError(
                 "session is waiting for an interaction answer; supplemental input was not sent"
             )
@@ -541,7 +620,7 @@ class RuntimeSessionCoordinator:
             session_id, request_id,
             SessionWorkKind.SESSION_INPUT if parent else SessionWorkKind.CHAT_STREAM,
             (lambda: operation(record.channel_id)) if parent else idle_operation,
-            suspension_key=suspension_key,
+            interaction_ids=interaction_ids,
             parent_execution_id=parent.execution_id if parent else None,
         )
         async with aclosing(stream):
@@ -555,12 +634,100 @@ class RuntimeSessionCoordinator:
         work_kind: SessionWorkKind,
         operation: Callable[[], AsyncIterator[T] | Awaitable[AsyncIterator[T]]],
         *,
-        suspension_key: Callable[[T], str | None] | None = None,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
         parent_execution_id: str | None = None,
+        channel_id: str = "default",
     ) -> AsyncIterator[T]:
+        """Run a transport-neutral stream with a parameterless operation."""
+        if work_kind in _TEAM_WORK_KINDS:
+            raise ValueError("Team work must use run_team_stream")
+        stream = self._run_stream(
+            session_id,
+            request_id,
+            work_kind,
+            lambda _handle: operation(),
+            interaction_ids=interaction_ids,
+            parent_execution_id=parent_execution_id,
+            channel_id=channel_id,
+        )
+        async with aclosing(stream):
+            async for item in stream:
+                yield item
+
+    async def run_team_stream(
+        self,
+        session_id: str,
+        request_id: str,
+        work_kind: SessionWorkKind,
+        operation: Callable[
+            [TeamExecutionContext],
+            AsyncIterator[T] | Awaitable[AsyncIterator[T]],
+        ],
+        *,
+        details: TeamExecutionDetails,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        channel_id: str = "default",
+    ) -> AsyncIterator[T]:
+        """Run a Team stream with explicit Team execution ownership."""
+        if work_kind not in _TEAM_WORK_KINDS:
+            raise ValueError("non-Team work must use run_stream")
+
+        def contextual_operation(
+            handle: SessionExecutionHandle,
+        ) -> AsyncIterator[T] | Awaitable[AsyncIterator[T]]:
+            context = TeamExecutionContext(
+                session=SessionLifecycleContext(
+                    session_id=handle.session_id,
+                    generation=handle.generation,
+                ),
+                execution_id=handle.execution_id,
+                request_id=handle.request_id,
+                work_kind=handle.work_kind,
+                channel_id=handle.channel_id,
+                details=details,
+            )
+            return operation(context)
+
+        stream = self._run_stream(
+            session_id,
+            request_id,
+            work_kind,
+            contextual_operation,
+            interaction_ids=interaction_ids,
+            channel_id=channel_id,
+            team=details,
+        )
+        async with aclosing(stream):
+            async for item in stream:
+                yield item
+
+    async def _run_stream(
+        self,
+        session_id: str,
+        request_id: str,
+        work_kind: SessionWorkKind,
+        operation: Callable[
+            [SessionExecutionHandle],
+            AsyncIterator[T] | Awaitable[AsyncIterator[T]],
+        ],
+        *,
+        interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        parent_execution_id: str | None = None,
+        channel_id: str = "default",
+        team: TeamExecutionDetails | None = None,
+    ) -> AsyncIterator[T]:
+        """Run the shared stream lifecycle for generic and Team entry points."""
         record = self._require_open_session(session_id)
+        team_target = None
+        if work_kind is SessionWorkKind.TEAM_CONTROL and team is not None and team.control_id:
+            team_target = self._control_target(record, (team.control_id,))
         handle = self._new_execution(
-            record, request_id, work_kind, parent_execution_id=parent_execution_id,
+            record,
+            request_id,
+            work_kind,
+            parent_execution_id=parent_execution_id,
+            channel_id=channel_id,
+            team=team,
         )
         queue: asyncio.Queue[_StreamItem] = asyncio.Queue(self._stream_buffer_size)
 
@@ -570,14 +737,14 @@ class RuntimeSessionCoordinator:
             stream: AsyncIterator[T] | None = None
             terminal_item: _StreamItem | None = None
             try:
-                candidate = operation()
+                candidate = operation(handle)
                 stream = await candidate if inspect.isawaitable(candidate) else candidate
                 async for item in stream:
-                    control_id = (
-                        suspension_key(item) if suspension_key is not None else None
+                    control_ids = (
+                        interaction_ids(item) if interaction_ids is not None else frozenset()
                     )
-                    if control_id:
-                        self._registry.mark_awaiting_control(handle, control_id)
+                    if control_ids:
+                        self._registry.mark_awaiting_control(handle, control_ids)
                         self._refresh_control_gate(record)
                     await queue.put(_StreamItem(value=item))
             except asyncio.CancelledError as exc:
@@ -592,7 +759,11 @@ class RuntimeSessionCoordinator:
                 )
                 terminal_item = _StreamItem(error=exc, done=True)
             else:
-                if handle.waiting_control_id:
+                if team_target is not None:
+                    parent, control_id = team_target
+                    if parent.team is not None:
+                        self._answered(parent, frozenset({control_id}), was_waiting=False)
+                if handle.waiting_control_ids:
                     self._registry.mark_waiting(handle)
                 else:
                     self._registry.mark_terminal(
@@ -653,7 +824,9 @@ class RuntimeSessionCoordinator:
         execution_id: str | None = None,
         generation: int | None = None,
         wait_timeout: float | None = None,
+        excluded_execution_ids: tuple[str, ...] = (),
     ) -> CancelExecutionResult:
+        """Cancel matching executions and descendants except explicitly retained owners."""
         handles = self._registry.select(
             session_id=session_id,
             request_id=request_id,
@@ -662,6 +835,8 @@ class RuntimeSessionCoordinator:
             active_only=True,
         )
         handles = self._with_descendants(handles)
+        excluded_ids = set(excluded_execution_ids)
+        handles = [handle for handle in handles if handle.execution_id not in excluded_ids]
         direct = [handle for handle in handles if self._requires_direct_cancel(handle)]
         work = [handle for handle in handles if handle.work_kind.scheduled]
         direct_ids = {handle.execution_id for handle in direct}
@@ -752,6 +927,71 @@ class RuntimeSessionCoordinator:
             record.state = RuntimeSessionState.CLOSED
         return CloseSessionResult(session_id, target_generation, True)
 
+    async def quiesce_session(
+        self,
+        session_id: str,
+        *,
+        generation: int | None = None,
+    ) -> SessionLifecycleContext | None:
+        """Fence one Session generation without cancelling its executions."""
+        record = self._sessions.get(session_id)
+        if record is None or (generation is not None and record.generation != generation):
+            return None
+        if record.state is RuntimeSessionState.CLOSED:
+            return None
+        record.state = RuntimeSessionState.QUIESCING
+        return SessionLifecycleContext(
+            session_id=record.session_id,
+            generation=record.generation,
+        )
+
+    def mark_waiting_for_input(self, execution_id: str) -> bool:
+        """Park a persistent Team response owner between active rounds."""
+        handle = self._registry.get(execution_id)
+        if handle is None or handle.state.terminal:
+            return False
+        if handle.team is None or handle.team.waiter_kind is not TeamWaiterKind.PERSISTENT:
+            return False
+        handle.state = SessionExecutionState.WAITING_FOR_INPUT
+        record = self._sessions.get(handle.session_id)
+        if record is not None and record.generation == handle.generation:
+            self._refresh_session_state(record)
+        return True
+
+    def mark_session_waiting_for_input(
+        self,
+        session_id: str,
+        generation: int,
+    ) -> None:
+        """Park every persistent response owner for one idle Team generation."""
+        for handle in self._registry.select(
+            session_id=session_id,
+            generation=generation,
+            active_only=True,
+        ):
+            if (
+                handle.team is not None
+                and handle.team.waiter_kind is TeamWaiterKind.PERSISTENT
+                and handle.state is SessionExecutionState.RUNNING
+            ):
+                handle.state = SessionExecutionState.WAITING_FOR_INPUT
+        record = self._sessions.get(session_id)
+        if record is not None and record.generation == generation:
+            self._refresh_session_state(record)
+
+    def resume_waiting_for_input(self, session_id: str, generation: int) -> None:
+        """Mark persistent Team response owners running for a new input."""
+        for handle in self._registry.select(
+            session_id=session_id,
+            generation=generation,
+            active_only=True,
+        ):
+            if handle.state is SessionExecutionState.WAITING_FOR_INPUT:
+                handle.state = SessionExecutionState.RUNNING
+        record = self._sessions.get(session_id)
+        if record is not None and record.generation == generation:
+            self._refresh_session_state(record)
+
     def get_execution(self, execution_id: str) -> SessionExecutionSnapshot | None:
         handle = self._registry.get(execution_id)
         return None if handle is None else handle.snapshot()
@@ -759,6 +999,10 @@ class RuntimeSessionCoordinator:
     def snapshot_session(self, session_id: str) -> RuntimeSessionSnapshot | None:
         record = self._sessions.get(session_id)
         return None if record is None else self._snapshot(record)
+
+    def snapshot_sessions(self) -> tuple[RuntimeSessionSnapshot, ...]:
+        """Return all Session generations currently known to this coordinator."""
+        return tuple(self._snapshot(record) for record in self._sessions.values())
 
     async def close(self) -> None:
         async with self._lock:
@@ -807,7 +1051,12 @@ class RuntimeSessionCoordinator:
         work_kind: SessionWorkKind,
         *,
         parent_execution_id: str | None = None,
+        channel_id: str = "default",
+        team: TeamExecutionDetails | None = None,
     ) -> SessionExecutionHandle:
+        is_team_work = work_kind in _TEAM_WORK_KINDS
+        if is_team_work != (team is not None):
+            raise ValueError("Team execution details must match the work kind")
         superseded_kinds: set[SessionWorkKind] = set()
         if work_kind in {SessionWorkKind.CHAT_UNARY, SessionWorkKind.CHAT_STREAM}:
             superseded_kinds = {
@@ -841,9 +1090,12 @@ class RuntimeSessionCoordinator:
             request_id=str(request_id or ""),
             generation=record.generation,
             work_kind=work_kind,
+            channel_id=channel_id,
+            team=team,
             parent_execution_id=parent_execution_id,
             root_work_kind=(parent.root_work_kind or parent.work_kind) if parent else None,
             root_request_id=(parent.root_request_id or parent.request_id) if parent else None,
+            agent=parent.agent if parent else None,
         )
         self._registry.register(handle)
         record.state = RuntimeSessionState.ACTIVE
@@ -891,7 +1143,7 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             active_only=True,
         ):
-            if handle.waiting_control_id != request_id:
+            if request_id not in handle.waiting_control_ids:
                 continue
             if handle.state not in deliverable:
                 continue
@@ -900,23 +1152,28 @@ class RuntimeSessionCoordinator:
             return None
         return max(parents, key=lambda handle: handle.started_at or handle.created_at)
 
+    def _control_target(
+        self, record: _SessionRecord, answered: tuple[str, ...]
+    ) -> tuple[SessionExecutionHandle, str] | None:
+        for request_id in answered:
+            parent = self._control_parent(record, request_id)
+            if parent is not None:
+                return parent, request_id
+        return None
+
+    @staticmethod
     def _claimed_execution_id(
-        self, record: _SessionRecord, request_id: str
+        record: _SessionRecord, request_id: str
     ) -> str | None:
         """Return the execution owning an in-flight control delivery, if any."""
-        for (
-            claimed_session,
-            claimed_generation,
-            claimed_execution,
-            claimed_request,
-        ) in self._control_claims:
-            if (
-                claimed_session == record.session_id
-                and claimed_generation == record.generation
-                and claimed_request == request_id
-            ):
-                return claimed_execution
-        return None
+        return next(
+            (
+                execution_id
+                for execution_id, delivery in record.deliveries.items()
+                if request_id in delivery.answered
+            ),
+            None,
+        )
 
     def _is_control_claimed(
         self, record: _SessionRecord, request_id: str
@@ -1080,7 +1337,7 @@ class RuntimeSessionCoordinator:
                 generation=record.generation,
                 active_only=True,
             )
-        if any(handle.waiting_control_id for handle in active):
+        if any(handle.waiting_control_ids for handle in active):
             record.control_ready.clear()
         else:
             record.control_ready.set()

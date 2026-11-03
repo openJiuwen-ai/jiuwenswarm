@@ -69,6 +69,43 @@ def test_text_aliases_and_latest_nonempty_final() -> None:
     assert summary.output == "hello everyone"
 
 
+def test_structured_answer_excludes_preamble_before_the_last_tool_call() -> None:
+    from jiuwenswarm.channels.process_cli.machine_policy import parse_structured_output
+
+    summary = RunSummary()
+    summary.observe(_event("chat.delta", content="Reading the invoices."))
+    summary.observe(_event("chat.tool_call", tool_call={"name": "read_file"}))
+    summary.observe(_event("chat.delta", content="Checking the customer."))
+    summary.observe(_event("chat.tool_call", tool_call={"name": "host_lookup"}))
+    summary.observe(_event("chat.tool_result", content='{"untrusted": 99}'))
+    summary.observe(_event("chat.delta", content='{"paid_total_usd":'))
+    summary.observe(_event("chat.final", content="350}", final_mode="patch_segment"))
+
+    assert (
+        summary.output
+        == 'Reading the invoices.Checking the customer.{"paid_total_usd":350}'
+    )
+    assert parse_structured_output(summary.final_answer, {"type": "object"}) == {
+        "paid_total_usd": 350
+    }
+
+
+def test_structured_answer_does_not_extract_json_from_final_segment_prose() -> None:
+    from jiuwenswarm.channels.process_cli.machine_policy import parse_structured_output
+
+    summary = RunSummary()
+    summary.observe(_event("chat.tool_call", tool_call={"name": "read_file"}))
+    summary.observe(
+        _event("chat.delta", content='The answer is {"paid_total_usd":350}')
+    )
+    summary.observe(
+        _event("chat.final", content='The answer is {"paid_total_usd":350}')
+    )
+
+    with pytest.raises(ValueError, match="not a JSON object"):
+        parse_structured_output(summary.final_answer, {"type": "object"})
+
+
 def test_incremental_usage_is_fixed_size_and_ignores_invalid_counters() -> None:
     summary = RunSummary()
     for usage in (

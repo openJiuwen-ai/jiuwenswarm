@@ -88,6 +88,23 @@ def provider_artifact_to_dict(artifact: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+SKIPPED_TARGET_REACHED = "SKIPPED_TARGET_REACHED"
+SKIPPED_TARGET_REACHED_REASON = "其他候选已达到目标分数"
+
+
+def _is_skipped_for_target_reached(raw: dict[str, Any], normalized_type: str, reason: Any) -> bool:
+    """Whether a node was stopped because a sibling reached the target score."""
+
+    if normalized_type in {"ROOT", "ADOPTED"} or raw.get("adopted"):
+        return False
+    if str(raw.get("failure_class") or "").upper() == SKIPPED_TARGET_REACHED:
+        return True
+    extra = raw.get("extra")
+    if isinstance(extra, dict) and extra.get("threshold_stop_cancelled") is True:
+        return True
+    return isinstance(reason, str) and reason.strip() == SKIPPED_TARGET_REACHED_REASON
+
+
 def provider_node_to_dict(node: Any) -> dict[str, Any]:
     """Project a Provider node to the Web-facing common node shape."""
 
@@ -137,6 +154,13 @@ def provider_node_to_dict(node: Any) -> dict[str, Any]:
     extra = raw.get("extra")
     summary = raw.get("summary") if raw.get("summary") is not None else raw.get("description")
     reason = raw.get("reason") if raw.get("reason") is not None else raw.get("failure_reason")
+    failure_class = raw.get("failure_class")
+    if _is_skipped_for_target_reached(raw, normalized_type, reason):
+        # Abandoned because another candidate already reached the target
+        # score: a neutral skip, never a runtime failure.
+        normalized_type = "PRUNED"
+        failure_class = SKIPPED_TARGET_REACHED
+        reason = SKIPPED_TARGET_REACHED_REASON
     return {
         "node_id": str(raw.get("node_id") or ""),
         "iteration": _safe_int(raw.get("iteration")),
@@ -149,7 +173,7 @@ def provider_node_to_dict(node: Any) -> dict[str, Any]:
         "snapshot_artifact_id": raw.get("snapshot_artifact_id"),
         "reason": reason,
         "failure_reason": reason,
-        "failure_class": raw.get("failure_class"),
+        "failure_class": failure_class,
         "changes": changes,
         "extra": dict(extra) if isinstance(extra, dict) else {},
     }

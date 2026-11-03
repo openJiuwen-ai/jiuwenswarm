@@ -5,6 +5,8 @@ version: 1
 name: "server-default"
 
 # Environment variables injected into every process running inside the sandbox.
+# SANDBOX_IP is reserved: the process runtime injects the lifecycle
+# IPv4 snapshot and rejects user-configured values for this key.
 environment: {}
 
 # Filesystem access rules. Paths are sandbox-visible absolute paths.
@@ -342,3 +344,35 @@ cgroup: {}
 #     idle_timeout: 1800       # 30 分钟无活动即淘汰
 #     idle_check_interval: 60  # 每分钟扫一次
 timeout: {}
+
+# ---------------------------------------------------------------------------
+# Conch backend policy (only used when sandbox_runtime=conch)
+# ---------------------------------------------------------------------------
+# bwrap / ProcessRuntime ignores this block. When creating a Conch sandbox:
+#   - template_name may also come from JIUWENBOX_CONCH_TEMPLATE_NAME or conchd default
+#   - vcpu_num / vcpu_max / ram_mb: optional VM sizing; omit or null → SDK/sdk-config defaults
+#   - env: Conch guest env vars (NOT top-level `environment`, which is bwrap-only)
+#   - run_as_user / run_as_group: optional pair; host resolves names/digits to uid:gid
+#     at create (not process.run_as_*). Omit both → conch-agent identity. Unknown
+#     names fail create with 400 (no nobody fallback). Guest ops use setuid/setgid.
+#   - bind_mounts map to Conch volume_mounts (host_path/source, sandbox_path/path)
+#   - network uses default/allowed_ips/blocked_ips (IPv4 only); domains/ports forbidden
+conch:
+  template_name: ""
+  # vcpu_num: null
+  # vcpu_max: null
+  # ram_mb: null
+  # run_as_user: sandbox
+  # run_as_group: sandbox
+  env: {}
+  filesystem_policy:
+    bind_mounts: []
+  network:
+    egress:
+      default: allow
+      allowed_ips: []
+      blocked_ips: []
+    ingress:
+      default: allow
+      allowed_ips: []
+      blocked_ips: []

@@ -5,6 +5,7 @@ import type { WebConnectionState } from '../../../types';
 import type { SettingsRequest } from './settingsContract';
 import type {
   ExternalCliAgentKind,
+  ExternalCliDependencyInstallStatus,
   ExternalCliDetectResult,
   ExternalCliPendingChoice,
 } from '../../../components/ExternalCliAgentsSection';
@@ -13,17 +14,25 @@ import { SettingsSaveQueue } from './SettingsSaveQueue';
 import { SettingsUnsavedChangesRegistry } from './SettingsUnsavedChangesRegistry';
 
 export type SettingsServices = {
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
   saveQueue: SettingsSaveQueue;
   unsavedChanges: SettingsUnsavedChangesRegistry;
-  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string) => Promise<ExternalCliDetectResult>;
+  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  /** Checks which CLI paths exist on disk; keys are the requested paths. */
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  /** Server-side prune of one kind's persisted history: only the
+   * intersection with the on-disk history is dropped. Returns survivors. */
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
-  externalCliInstallBusy?: boolean;
-  onOpenExternalCliInstallDialog?: () => void;
+  onGetExternalCliInstallStatus?: (
+    agent: ExternalCliAgentKind,
+  ) => Promise<ExternalCliDependencyInstallStatus>;
+  onExternalCliInstallStatusChange?: (agent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => void;
   externalCliPendingChoices?: Partial<Record<ExternalCliAgentKind, ExternalCliPendingChoice>>;
   onExternalCliPendingChoicesChange?: (
     next:
@@ -34,8 +43,15 @@ export type SettingsServices = {
   ) => void;
   externalCliDetectResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
   onExternalCliDetectResultsChange?: (
-    next: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>,
+    next:
+      | Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>
+      | ((current: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>) => Partial<
+          Record<ExternalCliAgentKind, ExternalCliDetectResult>
+        >),
   ) => void;
+  recommendationFocus?: number | null;
+  onCorrectRecommendation?: (text: string) => void;
+  onRecommendationEnabledChange?: (enabled: boolean) => void;
 };
 
 const SettingsServicesContext = createContext<SettingsServices | null>(null);
@@ -54,18 +70,24 @@ export function SettingsServicesProvider({
   const value = useMemo(
     () => ({ ...services, saveQueue: saveQueueRef.current!, unsavedChanges: changesRef.current! }),
     [
+      services.appVersion,
       services.connectionState,
       services.externalCliDetectResults,
-      services.externalCliInstallBusy,
       services.externalCliInstallStatuses,
       services.externalCliPendingChoices,
       services.isConnected,
       services.onDetectExternalCli,
       services.onExternalCliDetectResultsChange,
+      services.onExternalCliInstallStatusChange,
       services.onExternalCliPendingChoicesChange,
-      services.onOpenExternalCliInstallDialog,
+      services.onGetExternalCliInstallStatus,
       services.onSelectExternalCliPath,
       services.onTrackExternalCliDependencyInstalls,
+      services.onValidateExternalCliPaths,
+      services.onPruneExternalCliPathHistories,
+      services.recommendationFocus,
+      services.onCorrectRecommendation,
+      services.onRecommendationEnabledChange,
       services.request,
     ],
   );

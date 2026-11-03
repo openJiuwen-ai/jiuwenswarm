@@ -4,6 +4,7 @@
  * 从 index.tsx 抽取，逻辑保持不变。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { toast } from '../ui/Toast/toastStore';
 
 export type SkillToastType = 'success' | 'error' | 'loading';
 
@@ -27,19 +28,24 @@ export function useSkillToasts() {
       window.clearTimeout(messageTimerRef.current);
       messageTimerRef.current = null;
     }
+    if (type === 'error') {
+      setMessage(null);
+      setMessageType(null);
+      toast.open({ id: 'skill-panel-action-error', content: text, variant: 'error', duration: 8 });
+      return;
+    }
     const displayText = type === 'success' ? `√ ${text}` : text;
     setMessage(displayText);
     setMessageType(type);
-    // loading 持续到下一次消息；错误信息显示时间更长（8秒）
+    // loading 持续到下一次消息；success 3 秒自动消失（error 已改走全局 toast）
     if (type === 'loading') {
       return;
     }
-    const duration = type === 'error' ? 8000 : 3000;
     messageTimerRef.current = window.setTimeout(() => {
       setMessage(null);
       setMessageType(null);
       messageTimerRef.current = null;
-    }, duration);
+    }, 3000);
   }, []);
 
   const cleanMessage = message?.replace('√', '') || '';

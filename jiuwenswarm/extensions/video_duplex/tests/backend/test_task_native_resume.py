@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
@@ -20,8 +22,8 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import VoiceAgentTaskRail
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import install_bridge
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
@@ -39,7 +41,8 @@ async def wait_for(predicate):
             await asyncio.sleep(0.005)
 
 
-async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("scope", ["voice", "task-duplex:web-native"])
+async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_path, monkeypatch, scope):
     from jiuwenswarm.server.runtime.agent_adapter import interface
 
     store = TaskStore(tmp_path / "native.sqlite")
@@ -116,14 +119,14 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
     executor = AgentTaskExecutor(LocalAgentTransport(), store, None)
     service = TaskService(store, executor, concurrency=1)
     try:
-        task = service.submit("user", "voice", "create", "请先问预算", {"independent": True})
+        task = service.submit("user", scope, "create", "请先问预算", {"independent": True})
         await wait_for(lambda: store.read(task["id"])["output_closed"])
         waiting = store.read(task["id"])
         assert waiting["status"] == "waiting_user", waiting["error"]
         assert waiting["execution_settled"]
         await service.answer(
             "user",
-            "voice",
+            scope,
             task["id"],
             "answer",
             waiting["interaction"]["id"],
@@ -136,9 +139,9 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
         assert len(calls) == len(model_inputs) == 2
         assert calls[0].session_id == calls[1].session_id == task["core_session_id"]
         assert calls[0].request_id != calls[1].request_id
-        assert len(service.snapshot("user", "voice")[0]) == 1
+        assert len(service.snapshot("user", scope)[0]) == 1
         revision = service.modify(
-            "user", "voice", task["id"], "revise", TaskModification(final["revision"], "改为66元")
+            "user", scope, task["id"], "revise", TaskModification(final["revision"], "改为66元")
         )
         child_id = revision["successor_id"]
         await wait_for(lambda: store.read(child_id)["status"] == "completed")
@@ -146,7 +149,16 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
         assert child["parent_id"] == task["id"]
         assert child["result"]["answer"] == "预算66元"
         assert store.read(task["id"])["result"] == final["result"]
-        assert calls[-1].session_id != task["core_session_id"]
+        assert (calls[-1].session_id == task["core_session_id"]) == scope.startswith("task-duplex:")
+        if scope.startswith("task-duplex:"):
+            assert calls[-1].session_id == "web-native"
+            assert "5000" in str(model_inputs[-1])
+            # Switch to an ordinary text turn on the same Core Agent/session.
+            result = await agent.invoke(
+                {"query": "刚才任务确定的预算是多少？"}, session=sessions["web-native"],
+            )
+            assert "改为66元" in str(model_inputs[-1])
+            assert result["output"] == "预算66元"
     finally:
         await service.close()
         await Runner.stop()
