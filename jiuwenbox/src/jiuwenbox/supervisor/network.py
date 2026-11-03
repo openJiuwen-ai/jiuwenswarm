@@ -514,13 +514,13 @@ def rename_named_namespace(old: str, new: str) -> None:
     os.close(descriptor)
     try:
         subprocess.run(
-            ["mount", "--bind", old_path, new_path],
+            ["/bin/mount", "--bind", old_path, new_path],
             check=True,
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["umount", old_path],
+            ["/bin/umount", old_path],
             check=True,
             capture_output=True,
             text=True,

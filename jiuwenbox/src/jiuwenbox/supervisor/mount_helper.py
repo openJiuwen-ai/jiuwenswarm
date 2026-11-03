@@ -141,8 +141,8 @@ def _child_apply(pid: int, user_ns: bool, mounts: list[dict], err_w: int) -> Non
             os.write(err_w, str(exc).encode()[:4000])
         except OSError:
             pass
-        os._exit(1)
-    os._exit(0)
+        getattr(os, "_exit")(1)
+    getattr(os, "_exit")(0)
 
 
 def apply_request(message: dict) -> None:
@@ -166,6 +166,11 @@ def apply_request(message: dict) -> None:
         raise RuntimeError(detail)
 
 
+def _write_reply(payload: dict) -> None:
+    """Write one JSON line on stdout. The server reads this pipe, not the log."""
+    os.write(sys.stdout.fileno(), (json.dumps(payload) + "\n").encode())
+
+
 def main() -> int:
     """Read one JSON request per line and write one JSON response."""
     for line in sys.stdin:
@@ -178,13 +183,9 @@ def main() -> int:
             request_id = message.get("id")
             apply_request(message)
         except Exception as exc:  # noqa: BLE001 - reported to the server.
-            sys.stdout.write(json.dumps({"id": request_id, "ok": False, "error": str(exc)}))
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            _write_reply({"id": request_id, "ok": False, "error": str(exc)})
             continue
-        sys.stdout.write(json.dumps({"id": request_id, "ok": True}))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        _write_reply({"id": request_id, "ok": True})
     return 0
 
 

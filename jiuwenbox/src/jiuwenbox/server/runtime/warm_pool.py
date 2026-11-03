@@ -136,7 +136,7 @@ class _MountClient:
 
     def apply(self, pid: int, user_ns: bool, mounts: list[dict]) -> None:
         proc = self._proc
-        if proc is None or proc.poll() is not None or proc.stdin is None or proc.stdout is None:
+        if not self._helper_ready(proc):
             raise RuntimeError("mount helper is not running")
         with self._lock:
             self._next_id += 1
@@ -155,6 +155,12 @@ class _MountClient:
         reply = json.loads(line)
         if not reply.get("ok"):
             raise RuntimeError(str(reply.get("error") or "mount helper failed"))
+
+    @staticmethod
+    def _helper_ready(proc: subprocess.Popen[str] | None) -> bool:
+        if proc is None or proc.poll() is not None:
+            return False
+        return proc.stdin is not None and proc.stdout is not None
 
 
 class WarmPool:
@@ -215,6 +221,11 @@ class WarmPool:
                 self._runtime.destroy_warm_slot(slot_id)
             except Exception:
                 logger.exception("Failed to discard warm slot %s", slot_id)
+
+    def stage_slot(self, slot_id: str) -> None:
+        """Queue a slot id. Tests use this instead of the internal queue."""
+        with self._state_lock:
+            self._slots.put(slot_id)
 
     def acquire(self, policy: SecurityPolicy) -> tuple[bool, str | None]:
         """Claim a parked sandbox when ``policy`` matches the current template.

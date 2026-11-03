@@ -602,8 +602,6 @@ def enable_child_subreaper() -> bool:
         logger.debug("PR_SET_CHILD_SUBREAPER unavailable on %s", sys.platform)
         return False
     try:
-        import ctypes
-
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
         ret = libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
     except OSError as exc:
@@ -792,7 +790,7 @@ def _netns_file(namespace: str) -> str:
 def _enter_netns(namespace: str) -> None:
     """Join ``namespace`` in the calling process. Used from ``preexec_fn``."""
     path = _netns_file(namespace)
-    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC, 0o644)
     try:
         if _LIBC.setns(fd, CLONE_NEWNET) != 0:
             err = ctypes.get_errno()

@@ -29,6 +29,11 @@ from pathlib import Path
 _AUDIT_OUTPUT_LIMIT = 4096
 
 
+def _local_now() -> datetime:
+    """Current local time. UTC is converted so the zone argument stays explicit."""
+    return datetime.now(timezone.utc).astimezone()
+
+
 def _truncate_for_audit(text: str | None, *, limit: int = _AUDIT_OUTPUT_LIMIT) -> str:
     """Return ``text`` clipped to ``limit`` chars with a visible marker.
 
@@ -579,7 +584,7 @@ class SandboxManager:
         block, so the timestamp is established before the IO call leaves the
         lock and races with the idle reaper).
         """
-        ref.last_active_at = datetime.now()
+        ref.last_active_at = _local_now()
 
     async def create_sandbox(
         self,
@@ -665,7 +670,7 @@ class SandboxManager:
                         ref.phase = SandboxPhase.READY
                         ref.pid = pid
                         ref.ip_address = ip_address
-                        now = datetime.now()
+                        now = _local_now()
                         ref.started_at = now
                         # 沙箱刚创建即视为最近一次活跃, 避免在第一次 exec 到来之前就被
                         # reaper 当成 idle 误杀 (理论上不会, 但显式初始化更直白)。
@@ -741,7 +746,7 @@ class SandboxManager:
             ref.phase = SandboxPhase.READY
             ref.pid = pid
             ref.ip_address = ip_address
-            now = datetime.now()
+            now = _local_now()
             ref.started_at = now
             ref.last_active_at = now
             ref.error_message = None
@@ -818,7 +823,7 @@ class SandboxManager:
                 current.phase = SandboxPhase.READY
                 current.pid = pid
                 current.ip_address = ip_address
-                now = datetime.now()
+                now = _local_now()
                 current.started_at = now
                 current.last_active_at = now
                 current.error_message = None
