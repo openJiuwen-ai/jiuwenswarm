@@ -1,4 +1,4 @@
-import { CircleAlert, ShieldAlert } from 'lucide-react';
+import { CircleAlert } from 'lucide-react';
 import type { AgentMode, Permission } from '../types';
 
 export interface ChatOptionDef<T extends string> {
@@ -20,16 +20,12 @@ function SingleAgentModeIcon({ className }: { className?: string }) {
 
 // ── 权限图标 ────────────────────────────────────────────────────
 
-function AutoPermissionIcon({ className }: { className?: string }) {
+function DefaultPermissionIcon({ className }: { className?: string }) {
   return <span className={`chat-config-icon chat-config-icon--permission ${className ?? ''}`} aria-hidden="true" />;
 }
 
-function FullAccessPermissionIcon({ className }: { className?: string }) {
+function SafeAccessPermissionIcon({ className }: { className?: string }) {
   return <CircleAlert className={className} aria-hidden="true" />;
-}
-
-function StrictPermissionIcon({ className }: { className?: string }) {
-  return <ShieldAlert className={className} aria-hidden="true" />;
 }
 
 // ── 工作模式选项 ────────────────────────────────────────────────
@@ -49,25 +45,19 @@ export const AGENT_MODE_OPTIONS: ChatOptionDef<AgentMode>[] = [
   },
 ];
 
-// ── 权限选项（产品三态）────────────────────────────────────────
+// ── 权限选项 ────────────────────────────────────────────────────
 
 export const PERMISSION_OPTIONS: ChatOptionDef<Permission>[] = [
   {
-    value: 'auto',
-    i18nKey: 'chat.config.permission.auto',
-    descriptionI18nKey: 'chat.config.permission.autoDesc',
-    icon: AutoPermissionIcon,
+    value: 'default',
+    i18nKey: 'chat.config.permission.default',
+    descriptionI18nKey: 'chat.config.permission.defaultDesc',
+    icon: DefaultPermissionIcon,
   },
   {
     value: 'full_access',
     i18nKey: 'chat.config.permission.fullAccess',
     descriptionI18nKey: 'chat.config.permission.fullAccessDesc',
-    icon: FullAccessPermissionIcon,
-  },
-  {
-    value: 'strict',
-    i18nKey: 'chat.config.permission.strict',
-    descriptionI18nKey: 'chat.config.permission.strictDesc',
-    icon: StrictPermissionIcon,
+    icon: SafeAccessPermissionIcon,
   },
 ];
