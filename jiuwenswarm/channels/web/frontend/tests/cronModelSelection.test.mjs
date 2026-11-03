@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   cronModelPayloadFields,
   modelNameForSelection,
+  resolveCronDefaultModel,
 } from '../node_modules/.cache/cron-model-selection/cronModelSelection.mjs';
 
 // 复刻真实故障场景：目录里两条 model_name 相同（不同 api_key）的配置。
@@ -45,4 +46,53 @@ test('cronModelPayloadFields: 仅名称选择（登录免费模型等无 model_i
 
 test('cronModelPayloadFields: 未选模型时不携带任何模型字段', () => {
   assert.deepEqual(cronModelPayloadFields({ modelName: null, modelSelection: null }), {});
+});
+
+const emptyModelForm = { modelName: null, modelSelection: null };
+
+test('resolveCronDefaultModel: 新建/模板模式预填默认模型，并带上稳定 model_id', () => {
+  for (const mode of ['create', 'template']) {
+    assert.deepEqual(
+      resolveCronDefaultModel(mode, emptyModelForm, duplicateNamedModels, 'GLM-5.3'),
+      {
+        modelName: 'GLM-5.3',
+        modelSelection: { type: 'model', id: 'mdl-glm' },
+      },
+    );
+  }
+});
+
+test('resolveCronDefaultModel: 默认模型名失配时回退首个可选模型', () => {
+  assert.deepEqual(
+    resolveCronDefaultModel('create', emptyModelForm, duplicateNamedModels, 'renamed-model'),
+    {
+      modelName: 'deepseek-flash',
+      modelSelection: { type: 'model', id: 'mdl-first' },
+    },
+  );
+});
+
+test('resolveCronDefaultModel: 无 model_id 的免费模型只预填 modelName', () => {
+  const freeModels = [
+    { model_name: 'free-model', api_base: 'https://free', api_key: '', model_provider: 'OpenAI' },
+  ];
+  assert.deepEqual(
+    resolveCronDefaultModel('create', emptyModelForm, freeModels, 'free-model'),
+    { modelName: 'free-model', modelSelection: null },
+  );
+});
+
+test('resolveCronDefaultModel: 编辑模式或已有选择时不做预填', () => {
+  assert.equal(
+    resolveCronDefaultModel('edit', emptyModelForm, duplicateNamedModels, 'GLM-5.3'),
+    null,
+  );
+  const selected = { modelName: 'GLM-5.3', modelSelection: { type: 'model', id: 'mdl-glm' } };
+  assert.equal(resolveCronDefaultModel('create', selected, duplicateNamedModels, 'deepseek-flash'), null);
+  const namedOnly = { modelName: 'free-model', modelSelection: null };
+  assert.equal(resolveCronDefaultModel('create', namedOnly, duplicateNamedModels, 'GLM-5.3'), null);
+});
+
+test('resolveCronDefaultModel: 模型清单未加载时不预填', () => {
+  assert.equal(resolveCronDefaultModel('create', emptyModelForm, [], 'GLM-5.3'), null);
 });

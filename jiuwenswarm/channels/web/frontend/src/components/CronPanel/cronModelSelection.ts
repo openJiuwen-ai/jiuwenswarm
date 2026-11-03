@@ -1,4 +1,5 @@
 import type { ModelEntry, ModelSelection } from '../../types';
+import { resolveEffectiveModel } from '../../stores/sessionStore';
 
 /**
  * 反查稳定选择对应条目的展示名。
@@ -19,6 +20,29 @@ export function modelNameForSelection(
 export interface CronModelFormValue {
   modelName: string | null;
   modelSelection: ModelSelection | null;
+}
+
+/**
+ * 新建/模板创建抽屉打开时的默认模型预填。
+ *
+ * 复用会话侧同一套解析（alias 优先、失配兜底到首个可选模型），并把
+ * model_id 一并写入稳定的 modelSelection；免费模型等无 model_id 的条目
+ * 只预填 modelName。编辑已有任务或用户已选模型时返回 null，不覆盖现值。
+ */
+export function resolveCronDefaultModel(
+  mode: 'create' | 'edit' | 'template',
+  current: CronModelFormValue,
+  chatAvailableModels: ModelEntry[],
+  defaultModelName: string | null,
+): CronModelFormValue | null {
+  if (mode === 'edit') return null;
+  if (current.modelName || current.modelSelection) return null;
+  const resolved = resolveEffectiveModel(chatAvailableModels, null, defaultModelName);
+  if (!resolved) return null;
+  return {
+    modelName: resolved.model_name,
+    modelSelection: resolved.model_id ? { type: 'model', id: resolved.model_id } : null,
+  };
 }
 
 /**

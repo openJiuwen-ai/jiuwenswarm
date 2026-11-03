@@ -1,4 +1,4 @@
-import { useState, useRef, ReactNode } from 'react';
+import { useEffect, useRef, useState, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -12,7 +12,7 @@ import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
-import { modelNameForSelection } from './cronModelSelection';
+import { modelNameForSelection, resolveCronDefaultModel } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
@@ -202,6 +202,18 @@ export default function CronTaskDrawer({
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
+  const defaultModelName = useSessionStore((state) => state.defaultModelName);
+  // 新建/模板创建时预填后端默认模型（与会话输入框同源 defaultModelName）；
+  // 编辑已有任务时保留任务自己存的模型，不预填。
+  useEffect(() => {
+    const prefilled = resolveCronDefaultModel(mode, form, models, defaultModelName);
+    if (!prefilled) return;
+    setForm((prev) => (
+      prev.modelName || prev.modelSelection ? prev : { ...prev, ...prefilled }
+    ));
+    // 只在抽屉打开/模型清单就绪时预填一次；手动清空或切换后不再覆盖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, models, defaultModelName]);
   // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
   const modelUnavailable = modelsLoaded && (form.modelSelection
     ? !models.some((model) => model.model_id === form.modelSelection?.id)
