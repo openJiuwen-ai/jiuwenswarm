@@ -134,3 +134,27 @@ def test_receipt_copy_does_not_claim_completion_or_replay_as_new_submission():
     assert "尚未确认" in helper.submission_response({"status": "queued"}, "zh-CN", "闹钟")
     assert "pending" in helper.submission_response({"status": "running"}, "en", "alarm")
     assert "已有任务记录" in helper.submission_response({"status": "completed", "reused": True}, "zh-CN", "闹钟")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [None, "", "[]", "not JSON"])
+async def test_invalid_helper_json_is_a_validation_error(monkeypatch, raw):
+    monkeypatch.setattr(helper, "request_review", AsyncMock(return_value=raw))
+    with pytest.raises(ValueError):
+        await helper.review_action(
+            instruction="hello", result={"response": "hello"}, context="",
+            current_tasks=[], reply_language="en", command_id="helper-invalid",
+        )
+
+
+@pytest.mark.asyncio
+async def test_fenced_helper_json_preserves_valid_response(monkeypatch):
+    monkeypatch.setattr(helper, "request_review", AsyncMock(return_value=
+        '```json\n{"decision":"keep","response":"hello","tool":null}\n```',
+    ))
+    original = {"response": "hello"}
+    result = await helper.review_action(
+        instruction="hello", result=original, context="", current_tasks=[],
+        reply_language="en", command_id="helper-fenced",
+    )
+    assert result is original

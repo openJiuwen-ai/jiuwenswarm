@@ -154,6 +154,32 @@ async def test_reorder_and_cancel_waiter(queue):
     assert q.record(b)["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("stale_version", [False, True])
+async def test_voice_reorder_accepts_missing_version_and_rejects_stale_version(queue, stale_version):
+    from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
+
+    q = queue
+    await q.start("A")
+    await until(lambda: q.executed == ["A"])
+    b, c = await q.start("B"), await q.start("C")
+    args = {"job_id": c, "action": "next"}
+    if stale_version:
+        args["queue_version"] = q.manager.snapshot("alice", "scope")["queue_version"] - 1
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "voice-reorder", "arguments": args,
+    })
+    result = await q.manager.operate("alice", "scope", call)
+    if stale_version:
+        assert result["operation"]["code"] == "QUEUE_VERSION_CONFLICT"
+    else:
+        assert result["operation"]["state"] == "reordered"
+    queued = sorted(
+        (job for job in q.manager.snapshot("alice", "scope")["jobs"] if job["status"] == "queued"),
+        key=lambda job: job["queue_position"],
+    )
+    assert [job["id"] for job in queued] == ([b, c] if stale_version else [c, b])
+
+
 async def test_preempt_stays_pending_until_exact_stop_ack(queue):
     q = queue
     a = await q.start("A")

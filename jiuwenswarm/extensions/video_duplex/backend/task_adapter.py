@@ -659,8 +659,11 @@ class VideoSearchManager:
             if args["action"] == "before" and not args.get("before_job_id"):
                 raise ValueError("before requires before_job_id")
             try:
+                queue_version = args.get("queue_version")
+                if queue_version is None:
+                    queue_version = self.snapshot(owner, scope)["queue_version"]
                 receipt = self.service.reorder(
-                    owner, scope, args["job_id"], args["queue_version"],
+                    owner, scope, args["job_id"], queue_version,
                     args.get("before_job_id"), command_id=call.call_id,
                 )
             except QueueVersionConflict as exc:

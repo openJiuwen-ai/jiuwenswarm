@@ -116,7 +116,9 @@ async def review_action(
         "allowed_tools": [tool for tool in qwen_omni_tools()
                           if tool["function"]["name"] == "jiuwen_delegate"],
     })
-    proposal = json.loads(text)
+    from .queue_manager import parse_manager_json
+
+    proposal = parse_manager_json(text)
     if not isinstance(proposal, dict) or set(proposal) != {"decision", "response", "tool"}:
         raise ValueError("Invalid JoyAI action helper response")
     decision, response, tool = proposal["decision"], proposal["response"], proposal["tool"]
