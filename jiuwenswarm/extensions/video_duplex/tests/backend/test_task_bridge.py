@@ -65,7 +65,7 @@ def routed_task_fixture(tmp_path, monkeypatch):
     server_root = tmp_path / "agent-server"
     server_root.mkdir()
     from jiuwenswarm.common import utils
-    monkeypatch.setattr(utils, "get_agent_root_dir", lambda: server_root)
+    monkeypatch.setattr(utils, "get_agent_root_dir", lambda tenant_key=None: server_root)
     yield SimpleNamespace(
         store=store, task=task, endpoint=endpoint, request=request, frames=frames,
         acks=acks, handler=handler, push=push, server_root=server_root,

@@ -93,6 +93,11 @@ def test_runtime_policy_survives_native_answer_without_overwriting_answer(mode):
     builder.add_section.assert_not_called()
 
 
+def test_runtime_policy_allows_attachment_only_agents():
+    activate()
+    receipts.apply_summary_policy(None, "chat")
+
+
 @pytest.mark.parametrize("mode", ["agent.work.normal", "agent.code.normal", "team.design"])
 def test_active_session_uses_model_policy_without_rewriting_user_or_tool_input(mode):
     activate()

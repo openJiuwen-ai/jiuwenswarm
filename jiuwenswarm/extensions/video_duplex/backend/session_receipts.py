@@ -83,6 +83,8 @@ def prepare_request(request):
 
 def apply_summary_policy(builder, session_id, ctx=None):
     """Refresh the root model's policy even on native interaction resumes."""
+    if builder is None:
+        return
     name = "video_duplex.voice_receipt"
     builder.remove_section(name)
     if not session_id:

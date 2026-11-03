@@ -17,14 +17,17 @@ generated: true
 |---|
 | [gateway/channel_manager/im_platforms/xiaoyi](#module-1) |
 | [gateway/channel_manager/web](#module-2) |
-| [gateway/message_handler](#module-3) |
-| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-4) |
-| [jiuwenswarm/agents/harness/common/tools/cron](#module-5) |
-| [jiuwenswarm/channels/web](#module-6) |
-| [jiuwenswarm/channels/web/frontend](#module-7) |
-| [tests/unit_tests/gateway](#module-8) |
-| [tests/unit_tests/personal_context](#module-9) |
-| [未分类](#module-10) |
+| [gateway/extensions/video_duplex](#module-3) |
+| [gateway/message_handler](#module-4) |
+| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-5) |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-6) |
+| [jiuwenswarm/channels/web](#module-7) |
+| [jiuwenswarm/channels/web/frontend](#module-8) |
+| [jiuwenswarm/extensions/video_duplex](#module-9) |
+| [jiuwenswarm/server/runtime/video_task](#module-10) |
+| [tests/unit_tests/gateway](#module-11) |
+| [tests/unit_tests/personal_context](#module-12) |
+| [未分类](#module-13) |
 
 <a id="module-1"></a>
 
@@ -44,13 +47,21 @@ generated: true
 
 <a id="module-3"></a>
 
+## gateway/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261104_0027_split-pr-ci-regressions](jiuwenswarm/extensions/video_duplex/B_20261104_0027_split-pr-ci-regressions.md) | B | 全双工拆分 PR 的构建与测试回归 | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/video_duplex/backend/session_receipts.py, jiuwenswarm/server/runtime/video_task/bridge.py, gateway/extensions/video_duplex/backend/tasks/bridge.py, jiuwenswarm/channels/web/frontend/src/App.tsx | 无独立 D：根据拆分 PR 的实际流水线失败修复，无独立设计。 |
+
+<a id="module-4"></a>
+
 ## gateway/message_handler
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261028_1445_xiaoyi-team-join-delivery](gateway/channel_manager/im_platforms/xiaoyi/B_20261028_1445_xiaoyi-team-join-delivery.md) | B | 小艺成员加入团队后仅在通知栏收到 Team Leader 消息 | zhongxiaotian | gateway/channel_manager/im_platforms/xiaoyi, gateway/message_handler | gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py, gateway/message_handler/join_exit_handlers.py, tests/unit_tests/gateway/test_xiaoyi_team_delivery.py | 无独立 D：当前团队席位和 fan-out 契约未变化，本次仅修复小艺平台任务生命周期。 |
 
-<a id="module-4"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/agents/harness/code/rails/heartbeat
 
@@ -58,7 +69,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | jiuwenswarm/agents/harness/common/tools/cron, jiuwenswarm/agents/harness/code/rails/heartbeat | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm/agents/harness/common/tools/cron
 
@@ -66,7 +77,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | jiuwenswarm/agents/harness/common/tools/cron, jiuwenswarm/agents/harness/code/rails/heartbeat | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
 
-<a id="module-6"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/channels/web
 
@@ -76,15 +87,32 @@ generated: true
 | [B_20261102_1104_cron-stable-model-selection](jiuwenswarm/channels/web/B_20261102_1104_cron-stable-model-selection.md) | B | 定时任务模型选择丢失稳定 ID 与执行失败报错不可见修复 | kdgmpw | jiuwenswarm/channels/web | jiuwenswarm/channels/web/frontend/src/types/cron.ts, jiuwenswarm/channels/web/frontend/src/components/CronPanel/CronTaskDrawer.tsx, jiuwenswarm/channels/web/frontend/src/components/CronPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/CronPanel/cronModelSelection.ts, jiuwenswarm/channels/web/frontend/src/utils/wsEventDedup.ts, jiuwenswarm/channels/web/frontend/src/features/free-models/chatError.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/package.json, jiuwenswarm/channels/web/frontend/tests/cronModelSelection.test.mjs, jiuwenswarm/channels/web/frontend/tests/modelPicker.test.mjs, jiuwenswarm/channels/web/frontend/tests/wsEventDedup.test.mjs, jiuwenswarm/channels/web/frontend/tests/chatError.test.mjs | 无独立 D：稳定选择契约（ModelPicker selection/onSelectionChange、CronJob.model_selection、 chat.error 去重窗口）均为既有实现，本次是 cron 抽屉这一旧契约调用方的迁移补接与 去重键缺维修复，无独立设计。 |
 | [B_20261103_1112_raw-file-range-seek](jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | jiuwenswarm/channels/web, jiuwenswarm/channels/web/frontend | jiuwenswarm/channels/web/app_web.py, jiuwenswarm/channels/web/frontend/vite.config.ts, tests/unit_tests/test_app_web_raw_file.py | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 
-<a id="module-7"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261103_1112_raw-file-range-seek](jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | jiuwenswarm/channels/web, jiuwenswarm/channels/web/frontend | jiuwenswarm/channels/web/app_web.py, jiuwenswarm/channels/web/frontend/vite.config.ts, tests/unit_tests/test_app_web_raw_file.py | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
+| [B_20261104_0027_split-pr-ci-regressions](jiuwenswarm/extensions/video_duplex/B_20261104_0027_split-pr-ci-regressions.md) | B | 全双工拆分 PR 的构建与测试回归 | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/video_duplex/backend/session_receipts.py, jiuwenswarm/server/runtime/video_task/bridge.py, gateway/extensions/video_duplex/backend/tasks/bridge.py, jiuwenswarm/channels/web/frontend/src/App.tsx | 无独立 D：根据拆分 PR 的实际流水线失败修复，无独立设计。 |
 
-<a id="module-8"></a>
+<a id="module-9"></a>
+
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261104_0027_split-pr-ci-regressions](jiuwenswarm/extensions/video_duplex/B_20261104_0027_split-pr-ci-regressions.md) | B | 全双工拆分 PR 的构建与测试回归 | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/video_duplex/backend/session_receipts.py, jiuwenswarm/server/runtime/video_task/bridge.py, gateway/extensions/video_duplex/backend/tasks/bridge.py, jiuwenswarm/channels/web/frontend/src/App.tsx | 无独立 D：根据拆分 PR 的实际流水线失败修复，无独立设计。 |
+
+<a id="module-10"></a>
+
+## jiuwenswarm/server/runtime/video_task
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261104_0027_split-pr-ci-regressions](jiuwenswarm/extensions/video_duplex/B_20261104_0027_split-pr-ci-regressions.md) | B | 全双工拆分 PR 的构建与测试回归 | yzdnh123 | jiuwenswarm/extensions/video_duplex, jiuwenswarm/server/runtime/video_task, gateway/extensions/video_duplex, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/video_duplex/backend/session_receipts.py, jiuwenswarm/server/runtime/video_task/bridge.py, gateway/extensions/video_duplex/backend/tasks/bridge.py, jiuwenswarm/channels/web/frontend/src/App.tsx | 无独立 D：根据拆分 PR 的实际流水线失败修复，无独立设计。 |
+
+<a id="module-11"></a>
 
 ## tests/unit_tests/gateway
 
@@ -92,7 +120,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-9"></a>
+<a id="module-12"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -100,7 +128,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-10"></a>
+<a id="module-13"></a>
 
 ## 未分类
 
