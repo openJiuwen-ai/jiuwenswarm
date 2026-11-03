@@ -245,8 +245,8 @@ test('a permission save without error details shows a fallback, rolls back and c
 test('the employee mail page gives a short connection note', () => {
   const markup = renderProfile({ initialSection: 'mail' });
   assert.match(markup, /data-variant="mail"/);
-  assert.match(markup, /腾讯 Agent Mail/);
-  assert.match(markup, /为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。/);
+  assert.match(markup, /Agent Mail/);
+  assert.match(markup, /为该员工单独连接邮箱，授权后即可在新对话中使用。/);
   assert.doesNotMatch(markup, /OAuth/);
   assert.doesNotMatch(markup, /无需安装 Docker/);
   assert.doesNotMatch(markup, /运行镜像/);
@@ -841,7 +841,7 @@ test('closing the pending Agent Mail tab before the URL arrives never opens the 
       container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]').click();
       await Promise.resolve();
     });
-    assert.match(popup.document.body.textContent, /正在准备腾讯邮箱授权/);
+    assert.match(popup.document.body.textContent, /正在准备邮箱授权/);
     popup.closed = true;
 
     await act(async () => {
