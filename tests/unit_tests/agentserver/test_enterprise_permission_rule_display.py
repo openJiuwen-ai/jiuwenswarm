@@ -48,7 +48,22 @@ async def test_sdk_rule_reaches_enterprise_question_without_changing_approval(mo
 
     assert enterprise["source"] == "permission_interrupt"
     assert enterprise["questions"][0].pop("matched_rule") == expected
-    assert enterprise == personal
+
+    # 2f5f0691f 起企业版安全护栏会隐藏「永久记住」选项并去掉对应提示文案，
+    # 两侧 payload 因此不再逐字相同。本用例只要求该护栏差异之外不改变审批语义。
+    personal_question = personal["questions"][0]
+    enterprise_question = enterprise["questions"][0]
+    assert "matched_rule" not in personal_question
+    assert [option["value"] for option in personal_question["options"]].count("always_allow") == 1
+    assert enterprise_question["options"] == [
+        option for option in personal_question["options"] if option["value"] != "always_allow"
+    ]
+    assert personal_question["question"].startswith(enterprise_question["question"])
+    assert "永久记住" in personal_question["question"][len(enterprise_question["question"]):]
+    assert {key: value for key, value in enterprise_question.items() if key not in {"options", "question"}} == {
+        key: value for key, value in personal_question.items() if key not in {"options", "question"}
+    }
+    assert enterprise["event_type"] == personal["event_type"]
     assert interaction == original
     assert result.needs_approval and result.matched_rule == expected
 
