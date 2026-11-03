@@ -21,6 +21,12 @@ export interface FileTreeSelection {
   expandedKeys: string[];
 }
 
+/** Local presentation retained by the adapter across directory data frames. */
+export interface FileTreeViewport {
+  scrollTop: number;
+  width: number;
+}
+
 interface FileTreeEventResult {
   status: string;
   receipt?: { accepted: boolean } | null;
@@ -29,6 +35,7 @@ interface FileTreeEventResult {
 export interface FileTreeProps {
   treeData: FileTreeNode[];
   selection: WebUIComponentState<FileTreeSelection>;
+  viewport?: FileTreeViewport;
   selectedKey?: string | null;
   expandedKeys?: string[];
   status?: 'ready' | 'unavailable' | 'unsupported' | 'error';
@@ -50,9 +57,18 @@ interface DisplayNode extends Omit<TreeDataNode, 'key' | 'children'> {
   children?: DisplayNode[];
 }
 
-export function FileTree({ treeData, selection, selectedKey, expandedKeys, status = 'ready', truncated, readFailed,
+export function FileTree({ treeData, selection, viewport, selectedKey, expandedKeys, status = 'ready', truncated, readFailed,
   disabled, ariaLabel, emptyText, message, className, style, onSelect, onExpand }: FileTreeProps) {
   const { t } = useTranslation();
+  const localViewport = useRef<FileTreeViewport>({ scrollTop: 0, width: 240 });
+  const view = viewport ?? localViewport.current;
+  const containerRef = useRef<HTMLElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ pointerId: number; x: number; width: number } | null>(null);
+  const [width, setWidth] = useState(view.width);
+  useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = view.scrollTop;
+  }, [view]);
   const value = useSyncExternalStore(selection.subscribe, selection.getSnapshot, selection.getSnapshot);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<'error' | 'limit' | null>(null);
@@ -154,13 +170,25 @@ export function FileTree({ treeData, selection, selectedKey, expandedKeys, statu
 
   const warning = error ? t(`webuiFiles.tree.${error}`) : readFailed ? t('webuiFiles.tree.readFailed')
     : truncated ? t('webuiFiles.tree.truncated') : message;
+
+  function resize(next: number): void {
+    const available = containerRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
+    if (available <= 0) return;
+    const minimum = Math.min(140, available / 2);
+    const maximum = Math.max(minimum, available - 160);
+    view.width = Math.min(maximum, Math.max(minimum, next));
+    setWidth(view.width);
+  }
+
   return (
-    <section className={`webui-file-tree${className ? ` ${className}` : ''}`} style={style}
+    <section ref={containerRef} className={`webui-file-tree${className ? ` ${className}` : ''}`}
+      style={{ flexBasis: width, ...style }}
       data-testid="webui-file-tree" aria-label={ariaLabel ?? t('webuiFiles.treeLabel')}>
       <header className="webui-file-tree__header" data-testid="webui-file-tree-title">{t('webuiFiles.treeTitle')}</header>
       {warning ? <div className="webui-file-tree__notice" role="status"
         data-testid="webui-file-tree-message">{warning}</div> : null}
-      <div className="webui-file-tree__body" data-testid="webui-file-tree-body">
+      <div ref={bodyRef} className="webui-file-tree__body" data-testid="webui-file-tree-body"
+        onScroll={(event) => { view.scrollTop = event.currentTarget.scrollTop; }}>
         {status !== 'ready' ? <div className="webui-file-tree__notice" data-testid="webui-file-tree-state"
           data-variant={status}>{t(`webuiFiles.tree.${status}`)}</div> : displayNodes.length === 0 ? (
           <div className="webui-file-tree__notice" data-testid="webui-file-tree-state" data-variant="empty">
@@ -189,6 +217,35 @@ export function FileTree({ treeData, selection, selectedKey, expandedKeys, statu
             onExpand={(_, info) => toggleDirectory(info.node.key, info.expanded)} />
         )}
       </div>
+      <div className="webui-file-tree__resize" role="separator" tabIndex={0} aria-orientation="vertical"
+        aria-label={t('webuiFiles.resizeTree')} aria-valuenow={Math.round(width)}
+        data-testid="webui-file-tree-resize"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          drag.current = {
+            pointerId: event.pointerId, x: event.clientX,
+            width: containerRef.current?.getBoundingClientRect().width ?? width,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          event.currentTarget.focus({ preventScroll: true });
+        }}
+        onPointerMove={(event) => {
+          if (drag.current?.pointerId === event.pointerId) resize(drag.current.width + event.clientX - drag.current.x);
+        }}
+        onPointerUp={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          drag.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onLostPointerCapture={() => { drag.current = null; }}
+        onPointerCancel={() => { drag.current = null; }}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          resize((containerRef.current?.getBoundingClientRect().width ?? width)
+            + (event.key === 'ArrowRight' ? 24 : -24));
+        }} />
     </section>
   );
 }

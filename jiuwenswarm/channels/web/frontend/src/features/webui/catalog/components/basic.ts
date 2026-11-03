@@ -48,8 +48,12 @@ export const basicComponentRules: readonly WebUIComponentRule[] = [
       variant: token(['default', 'primary', 'secondary', 'danger', 'ghost']),
       size: token(['sm', 'md', 'lg']),
       disabled: { kind: 'boolean' },
+      icon: token(['ellipsis']),
+      iconOnly: { kind: 'boolean' },
     },
     allowChildren: false,
     events: { 'ui.click': noData },
+    validate: (props) => props.iconOnly === true && (!props.icon || !String(props.label ?? '').trim())
+      ? 'icon-only buttons require an icon and a non-empty label' : null,
   },
 ];

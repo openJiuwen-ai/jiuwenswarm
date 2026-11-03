@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { Dropdown, type MenuProps } from 'antd';
+import { useEffect, useState } from 'react';
+import { Button, Dropdown, type MenuProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
+import { buttonIcon } from '../webuiButton/buttonIcon.tsx';
 import './WebUIDropdown.css';
 
 interface DropdownItem {
@@ -10,7 +11,7 @@ interface DropdownItem {
   danger?: boolean;
 }
 
-/** Menu shell around the host-supplied trigger children; item clicks go through ui.select. */
+/** Menu with an optional built-in icon trigger; item clicks go through ui.select. */
 export function WebUIDropdown({ node, context, children, emit, appearance }: WebUIAdapterProps) {
   const p = node.props as {
     items: DropdownItem[];
@@ -18,9 +19,14 @@ export function WebUIDropdown({ node, context, children, emit, appearance }: Web
     placement?: 'bottomLeft' | 'bottomRight' | 'topLeft' | 'topRight';
     disabled?: boolean;
     ariaLabel?: string;
+    icon?: 'ellipsis';
   };
   const [open, setOpen] = useState(false);
   const disabled = Boolean(p.disabled) || !context.connected;
+  const expanded = open && !disabled;
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  const className = ['webui-dropdown__trigger', p.icon ? 'webui-dropdown__trigger--icon' : undefined,
+    appearance?.className].filter(Boolean).join(' ');
   const items: MenuProps['items'] = p.items.map((item) => ({
     key: item.key,
     danger: item.danger,
@@ -28,8 +34,9 @@ export function WebUIDropdown({ node, context, children, emit, appearance }: Web
     label: <span data-testid="webui-dropdown-item" data-variant={item.key}>{item.label}</span>,
   }));
   const onMenuClick: MenuProps['onClick'] = ({ key }) => {
-    if (disabled || !node.events['ui.select']) return;
-    void emit('ui.select', { key });
+    if (disabled || !p.items.some((item) => item.key === key && !item.disabled)) return;
+    setOpen(false);
+    if (node.events['ui.select']) void emit('ui.select', { key });
   };
   return (
     <Dropdown
@@ -37,18 +44,32 @@ export function WebUIDropdown({ node, context, children, emit, appearance }: Web
       trigger={[p.trigger ?? 'click']}
       placement={p.placement ?? 'topLeft'}
       disabled={disabled}
-      open={open}
-      onOpenChange={setOpen}
+      open={expanded}
+      onOpenChange={(value) => setOpen(!disabled && value)}
     >
-      <span
+      {p.icon ? <Button
+        type="text"
+        icon={buttonIcon(p.icon)}
+        disabled={disabled}
+        title={p.ariaLabel}
+        aria-label={p.ariaLabel}
+        aria-haspopup="menu"
+        aria-expanded={expanded}
+        data-testid="webui-dropdown-trigger"
+        className={className}
+        style={appearance?.style}
+        onKeyDown={(event) => {
+          if (!disabled && event.key === 'Escape') { event.preventDefault(); setOpen(false); }
+        }}
+      /> : <span
         data-testid="webui-dropdown-trigger"
         role="button"
         tabIndex={disabled ? -1 : 0}
         aria-label={p.ariaLabel}
         aria-haspopup="menu"
-        aria-expanded={open}
+        aria-expanded={expanded}
         aria-disabled={disabled}
-        className={['webui-dropdown__trigger', appearance?.className].filter(Boolean).join(' ')}
+        className={className}
         style={appearance?.style}
         onKeyDown={(event) => {
           if (disabled) return;
@@ -56,10 +77,11 @@ export function WebUIDropdown({ node, context, children, emit, appearance }: Web
             event.preventDefault();
             setOpen((value) => !value);
           }
+          if (event.key === 'Escape') setOpen(false);
         }}
       >
         {children}
-      </span>
+      </span>}
     </Dropdown>
   );
 }

@@ -211,7 +211,9 @@ class SessionFileService(Protocol):
 
     async def files(self, session_id: str, expanded_paths: list[str], channel_id: str) -> dict[str, Any]: ...
 
-    async def read_file(self, session_id: str, path: str, channel_id: str) -> dict[str, Any]: ...
+    async def read_file(
+        self, session_id: str, path: str, channel_id: str, *, user_id: str = "",
+    ) -> dict[str, Any]: ...
 
 
 def register_session_ops(
@@ -239,6 +241,7 @@ def register_session_ops(
             context.session_id,
             path,
             str(context.metadata.get("channel_id") or "web"),
+            user_id=str(context.metadata.get("user_id") or ""),
         )
 
     async def build(

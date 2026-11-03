@@ -5338,6 +5338,7 @@
   "webuiFiles": {
     "treeLabel": "工作区文件",
     "treeTitle": "文件",
+    "resizeTree": "调整文件树宽度",
     "emptyTree": "目录中没有文件",
     "tree": {
       "unavailable": "当前会话尚无可用工作目录",
@@ -5353,7 +5354,7 @@
       "loading": "正在读取文件…",
       "missing": "文件已不存在",
       "unsupported": "暂不支持预览此文件格式",
-      "too_large": "文件超过预览大小限制（文本 1 MiB，图片 4 MiB）",
+      "too_large": "文件超过文本预览大小限制（1 MiB）",
       "forbidden": "无法访问此会话目录范围以外的文件",
       "unavailable": "当前会话的文件预览暂不可用",
       "error": "文件读取失败，请重新选择文件"

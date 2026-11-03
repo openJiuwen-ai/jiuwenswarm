@@ -6,6 +6,7 @@
 
 import { Button as AntButton } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
+import { buttonIcon } from './buttonIcon.tsx';
 
 type ButtonType = 'default' | 'primary' | 'dashed' | 'link' | 'text';
 type ButtonSize = 'small' | 'middle' | 'large';
@@ -37,11 +38,13 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
   const { type, danger } = resolveButton(node.props);
   const onClick = node.events?.['ui.click'] ? () => void emit('ui.click', {}) : undefined;
   const className = [appearance?.className, context.selected ? appearance?.activeClassName : undefined].filter(Boolean).join(' ');
-  const icon = appearance?.icon && <span className={appearance.iconClassName} aria-hidden="true">{appearance.icon}</span>;
+  const artwork = appearance?.icon ?? buttonIcon(node.props.icon);
+  const icon = artwork && <span className={appearance?.iconClassName} aria-hidden="true">{artwork}</span>;
+  const hideLabel = appearance?.hideLabel ?? node.props.iconOnly === true;
   const content = (
     <>
       {icon}
-      {!appearance?.hideLabel && <span className={appearance?.labelClassName} data-testid="webui-button-label">{label}</span>}
+      {!hideLabel && <span className={appearance?.labelClassName} data-testid="webui-button-label">{label}</span>}
     </>
   );
   if (appearance?.unstyled) {
@@ -70,15 +73,15 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
       className={className || undefined}
       style={appearance?.style}
       icon={icon}
-      title={appearance ? label : undefined}
-      aria-label={appearance?.hideLabel ? label : undefined}
+      title={appearance || hideLabel ? label : undefined}
+      aria-label={hideLabel ? label : undefined}
       aria-pressed={appearance?.activeClassName ? !!context.selected : undefined}
       onClick={onClick}
       // schema 文本来自插件数据，必须逐字渲染；关闭 antd 对两个中文字的自动空格。
       autoInsertSpace={false}
       data-testid="webui-button"
     >
-      {appearance?.hideLabel ? null : appearance?.labelClassName
+      {hideLabel ? null : appearance?.labelClassName
         ? <span className={appearance.labelClassName} data-testid="webui-button-label">{label}</span> : label}
     </AntButton>
   );

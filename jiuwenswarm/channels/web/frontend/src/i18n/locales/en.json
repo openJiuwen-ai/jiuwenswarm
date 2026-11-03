@@ -5366,6 +5366,7 @@
   "webuiFiles": {
     "treeLabel": "Workspace files",
     "treeTitle": "Files",
+    "resizeTree": "Resize file tree",
     "emptyTree": "This directory is empty",
     "tree": {
       "unavailable": "This session has no available working directory",
@@ -5381,7 +5382,7 @@
       "loading": "Reading file…",
       "missing": "This file no longer exists",
       "unsupported": "Preview is not supported for this file format",
-      "too_large": "File exceeds the preview limit (text: 1 MiB, images: 4 MiB)",
+      "too_large": "File exceeds the text preview limit (1 MiB)",
       "forbidden": "Files outside this session directory cannot be accessed",
       "unavailable": "File preview is unavailable for this session",
       "error": "Unable to read this file. Select it again to retry."

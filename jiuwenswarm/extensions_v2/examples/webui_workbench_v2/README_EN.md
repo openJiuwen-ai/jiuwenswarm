@@ -32,11 +32,16 @@ After installation, open an existing real conversation and refresh or re-enter i
 | `conversation.input.below` | Compact operation count |
 | `conversation.panel.right` | "Workspace files" (`Panel` root, instance `workbench`) and "Web preview" (`Iframe` root, instance `iframe-preview`) tabs, mutually exclusive with native content |
 | `conversation.session.content.after` | State snapshot for a completed assistant round |
-| `conversation.turn.footer.actions` | "Refresh round" and "Round details" buttons |
+| `conversation.turn.footer.actions` | A `👍` symbol button beside an icon-only `…` dropdown containing "Refresh round" and "Round details" |
 | `conversation.header.title.after` | Workbench status Tag |
 | `conversation.header.actions` | Button that refreshes the current conversation's workbench state |
 
 Turn slots use the actual `requestId` as `instance_key`. The first mount stores that round's snapshot; later ready events restore it. Changes in other rounds or sessions do not overwrite it; clicking "Refresh round" copies the current filter summary into that round.
+
+The round menu uses `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")` and keeps its muted background while open.
+A plugin-rendered `Button(label="👍", variant="ghost")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.
+Opening the menu sends no business event. Selecting an item sends `ui.select` with action `workbench.turn.select` and data.key `refresh` or `details`.
+Standalone Button nodes also support `icon="ellipsis", iconOnly=true, variant="ghost"`; label remains the accessible name and hover hint.
 
 The above-input view displays fixed demo values: `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06`, followed by secondary text `上下文充裕`. These values do not represent live usage. This view belongs to Workbench and does not require the separate `token_weather` plugin. Hiding details keeps the `Token 天气` label and a show button. Visibility is scoped to the conversation, survives subsequent ready events, and resets when the plugin is activated again. The plugin uses `Box`, `Text`, and `Button` without a `Card`; the host slot supplies the background, border radius, and padding.
 
@@ -52,11 +57,12 @@ The file tab uses `Panel(title, children)` and places `FileTree` and `FilePrevie
 
 Single-agent chat and code sessions can browse files. Project sessions use their bound project root; projectless sessions use their bound runtime workspace. Automatically allocated task workspaces include `work/` and `outputs/`; a Code profile default session workspace retains its actual directory layout. Team mode returns an unsupported status, and missing bindings return an unavailable status.
 
-When the file instance receives `ui.ready`, it calls `ops.session.files` to read the root directory and clears the preview. Expanding a directory sends `expandedKeys` via `ui.change`; the plugin maps keys to paths in the current snapshot and calls `ops.session.files` again (up to 100 entries per directory, 512 entries total, 8 levels, and 96 KiB). Selecting a file calls `ops.session.read_file` to read UTF-8 text up to 16 KiB and passes the result to `FilePreview`; binary files, images, and oversized files display their corresponding status notices.
+When the file instance receives `ui.ready`, it calls `ops.session.files` to read the root directory and clears the preview. Expanding a directory sends `expandedKeys` via `ui.change`; the plugin maps keys to paths in the current snapshot and calls `ops.session.files` again (up to 100 entries per directory, 512 entries total, 8 levels, and 96 KiB). Selecting a file calls `ops.session.read_file` and passes the result to `FilePreview`. UTF-8 text up to 16 KiB still uses content; larger text (up to 1 MiB), images, and PDFs use downloadUrl, handled inside FilePreview. Each URL serves a file snapshot valid for 10 minutes; select the file again to refresh an expired URL. PDFs use a native iframe after checking the same-origin download response type and PDF signature; display depends on the browser's built-in PDF viewer. Other binary files and oversized text display the corresponding status notices.
+
+Drag the file tree's right divider to resize it, or focus the divider and use the left/right arrow keys. Directory and preview updates retain the scroll position and width. Clearing the instance or disconnecting resets them; they are not persisted to storage.
 
 The webpage instance uses an `Iframe` root, which is only permitted at the root of slots that declare it (`conversation.panel.right`, `application.menu.main`, `task.function.main`). It cannot be nested inside `Panel`, `Box`, or other components, and accepts no children, events, or srcdoc. The host pins `sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`.
-The right-side Web preview loads `https://www.baidu.com/` for manual checks of loading, input and link clicks. Availability also depends on Baidu's own embedding and request policies.
-In the built-in browser check on 2026-11-02, the homepage rendered and accepted text, but clicking Search did not navigate. Baidu scripts were denied cookie/localStorage access by the sandbox; this example does not demonstrate full search compatibility.
+The right-side Web preview loads `https://httpbin.org/forms/post` for manual checks of loading, text input, options and form submission. Its response declares neither `X-Frame-Options` nor a restrictive `frame-ancestors`, making it suitable for iframe integration checks; network availability still depends on the target site.
 Ordinary clicks, input and navigation inside the iframe do not require same-origin access. The loading notice does not intercept pointer events. Relative pages also receive an opaque origin, so pages depending on storage or same-origin requests may be incompatible; do not add `allow-same-origin` as a workaround. See [F_08](../../docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互) for the security decision.
 
 ## Reload and uninstall
