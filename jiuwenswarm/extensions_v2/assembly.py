@@ -14,6 +14,7 @@ from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2 import bootstrap
 from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_store_dir
+from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartEventBus
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
@@ -117,7 +118,7 @@ def _wire_team_extension_bus(bus: ExtensionEventBus) -> None:
 
 
 def _build_assembly(server: Any) -> ExtensionAssembly:
-    bus = ExtensionEventBus()
+    bus = SessionStartEventBus()
     manager = ExtensionManager(resolve_install_dir(), store_dir=resolve_store_dir())
     transport = RenderTransport(push=_push_from(server))
     catalog = WebUICatalogService(manager.active_packages)

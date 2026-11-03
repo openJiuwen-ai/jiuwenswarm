@@ -3,12 +3,12 @@
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_12 / session-start |
-| 最近修订日期 | 2026-11-02 |
+| 最近修订日期 | 2026-11-03 |
 | 特性与验收 | [F_22](../features/F_22_session-start.md) |
 
 ## 1. 范围与公共契约
 
-本项保留每个 Worker 包激活实例在首次受支持原生输入前至多尝试一次初始化通知的粒度。本次仅收敛公开观察字段和默认回执；包身份、真实激活记录、generation、发布的 Handler IDs 和请求路由仍由平台门持有，不放进公开 Event。配套 Core !110 提供既有 handler_ids 筛选，本次不新增 Core API，也不改 session.append。
+本项保留每个 Worker 包激活实例在首次受支持原生输入前至多尝试一次初始化通知的粒度。公开输入仍只有 cwd、surface、isInteractive；包身份、真实激活记录、generation、发布的 Handler IDs 和请求路由仍由平台持有。宿主在发布 `session.start` Handler 时用其已核实的 PackageMetadata 绑定私有包匹配条件；Gate 在本次调用中绑定目标包，使用 Core 原有 matcher 派发，不依赖 Core 调用级 `handler_ids` 接口，也不改 session.append。
 
 公开类型使用 Claude Mods 字段大小写；不把下表解释为用户可填写的任意字典。输入/输出是 frozen dataclass，通知由平台拥有可信调用作用域；USER 原样 next 并返回真实 CORE 回执。完整使用示例及差异说明见关联 feature。
 
@@ -37,7 +37,7 @@ SS-01：仅由 Worker 持同一 EventBus，真实原生 chat.send 的 unary/stre
 
 SS-02：每个 Worker 的包激活实例最多一次通知尝试。平台保留公开 ActivePackageRecord 对象引用（含 generation）及公开发布 ID，不只比较代次数值；可区分卸载重装后 generation=1 且发布列表为空的新实例。不按每个会话重新触发；成功重载/重新安装的新实例在下一次受支持输入前通知，失败重载保留旧实例状态。
 
-SS-03：Core trigger 的 handler_ids 为该包公开发布 ID，仍按原 matcher/层级/顺序执行，其他包的空 matcher 也不被误调用。默认 CORE 保留真实回执；无新增用户 Ops。
+SS-03：宿主 EventBus 在发布 `session.start` Handler 时从真实 PackageMetadata 注入私有包匹配键；扩展不能自填该键。Gate 的可信调用作用域持有目标包 ID，事件 matcher 先比较包目标，再按用户声明的公开字段 pattern 匹配。用户传 `{}` 仍只进入本包 Handler；默认 CORE 对每次合法调用保留真实回执。公开 Event 不含包 ID，无新增用户 Ops。
 
 SS-04：并发输入串行等待初始化门；回调期间不持管理操作锁或文件锁。Runtime.begin_calls/end_calls 成对保护卸载，退出/异常/取消均释放计数。重载沿 Core 热切换，门重新检查当前实例。
 
@@ -58,7 +58,7 @@ await manager.ensure_session_started(
 
 context 是 Adapter 已收集的可信资料；request_id/channel_id 仍为原路由观察值，不参与公开 Event 字段。surface 是宿主声明，默认 None；is_interactive 是平台方法的 Python 参数，对应公开字段 isInteractive。方法返回本次新尝试实例的 SessionStartOutput 元组；没有新实例返回空元组。
 
-初始化门为 [management/session_start.py](../../management/session_start.py)，真实 Adapter 接线为 [interface_deep.py](../../../server/runtime/agent_adapter/interface_deep.py)。默认 CORE 核对私有调用作用域里的 session_id，并核对绑定 cwd 与公开 cwd 一致，生成一次真实 cwd 回执。原激活记录和发布 ID 的去重逻辑保持；不把可观察包代次误作用户可改的输入。
+初始化门为 [management/session_start.py](../../management/session_start.py)，注册期包匹配和事件 matcher 为 [event_types/session_start.py](../../event_types/session_start.py)，真实 Adapter 接线为 [interface_deep.py](../../../server/runtime/agent_adapter/interface_deep.py)。默认 CORE 核对私有调用作用域里的 session_id，并核对绑定 cwd 与公开 cwd 一致，生成一次真实 cwd 回执。原激活记录和发布 ID 的去重逻辑保持；这些 ID 不再传给 Core `trigger()`。
 
 USER 普通异常沿 Core 隔离；框架错误和原输入取消传播，不自动重放已经开始的初始化尝试。调用开始即标记已尝试，外部副作用不自动回滚。门拒绝重入，重载仍沿 Core 热切换并重新核对真实实例；在途计数成对保护卸载。
 
