@@ -186,7 +186,7 @@ class CronController:
         cron_expr: str,
         timezone: str,
     ) -> int:
-        """企业版创建：提前量不能超过离下次触发还剩的秒数。"""
+        """任务创建和更新时：提前量wake_offset_seconds不能超过离下次触发还剩的秒数。"""
         try:
             tz = ZoneInfo(timezone)
             now = datetime.now(tz=tz)
@@ -387,11 +387,24 @@ class CronController:
             *(self._gate_allowed(pid, uid, group_id, bot_id) for pid, uid, group_id, bot_id in keys)
         )
         allowed = dict(zip(keys, verdicts))
-        return [
-            job.to_dict()
-            for job in jobs
-            if allowed[(job.project_id, job.user_id, job.group_id, job.bot_id)]
-        ]
+        # 仅企业版：HTTP 无常驻 WS，list 挂 active_session_id 供前端订 live。
+        # 个人版仍走 WebSocket 推送，不挂这个字段。
+        active: dict[str, str] = {}
+        if is_enterprise():
+            try:
+                active = await self._scheduler.collect_active_exec_sessions()
+            except Exception:  # noqa: BLE001
+                active = {}
+        out: list[dict] = []
+        for job in jobs:
+            if not allowed[(job.project_id, job.user_id, job.group_id, job.bot_id)]:
+                continue
+            item = job.to_dict()
+            sid = str(active.get(job.id) or "").strip()
+            if sid:
+                item["active_session_id"] = sid
+            out.append(item)
+        return out
 
     @_serialize_mutation
     async def hide_project_jobs(self, project_id: str, *, commit=None) -> dict:
@@ -576,12 +589,11 @@ class CronController:
 
         self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
         description = self._normalize_description(description, name)
-        if enterprise:
-            wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
-                wake_offset_seconds,
-                cron_expr=cron_expr,
-                timezone=timezone,
-            )
+        wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
+            wake_offset_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
 
         routing_sid = self._routing_session_id(targets, params.get("session_id"))
         chat_type = params.get("chat_type")
@@ -739,7 +751,7 @@ class CronController:
             cron_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
             timezone = str(patch.get("timezone") or existing.timezone).strip()
             self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
-        if enterprise and any(
+        if any(
             key in patch for key in ("wake_offset_seconds", "cron_expr", "timezone")
         ):
             upcoming_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()

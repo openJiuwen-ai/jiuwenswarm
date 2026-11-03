@@ -791,6 +791,7 @@ export function AgentActivityCard({
 }
 
 function getActiveTeamMessages(historyMessages: Message[], messages: Message[]): Message[] {
+  // Activity-card input only; the chat timeline reads the selected conversation's messages.
   const seen = new Set<string>();
   return [...historyMessages, ...messages].filter(isTeamActivityMessage).filter((message) => {
     const key = getTeamMessageIdentity(message);
@@ -809,6 +810,7 @@ function getTeamMessageIdentity(message: Message): string {
   }
   return [
     'team',
+    message.sourceTeamId || '',
     event.type,
     event.messageId,
     event.fromMember,
@@ -2684,6 +2686,8 @@ export const ChatPanel = React.memo(function ChatPanel({
               type="button"
               className={`chat-header-icon-btn ${teamAreaExpanded === false && !heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
               data-testid="chat-panel-header-chat-toggle"
+              title={t('chatUi.toggleOverview')}
+              aria-label={t('chatUi.toggleOverview')}
               data-variant="collapse"
               data-team-area-toggle="true"
               onClick={() => onToggleTeamArea?.(teamAreaExpanded === false ? null : false)}
@@ -2695,6 +2699,8 @@ export const ChatPanel = React.memo(function ChatPanel({
                 type="button"
                 className="chat-header-icon-btn"
                 data-testid="chat-panel-header-expand-toggle"
+                title={t('chatUi.expandDetails')}
+                aria-label={t('chatUi.expandDetails')}
                 data-variant="expand"
                 data-team-area-toggle="true"
                 onClick={() => onToggleTeamArea?.(true)}

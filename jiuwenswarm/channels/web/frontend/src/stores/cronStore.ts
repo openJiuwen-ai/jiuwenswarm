@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
+import { adoptActiveCronSessions } from '../features/cron/cronActiveSessionDiscovery';
 import type { Session } from '../types';
 import type { CronRunUpdate } from '../types/cron';
 
@@ -13,6 +14,13 @@ export interface SidebarCronJob {
   cron_expr: string;
   project_id: string;
   session_id?: string;
+  /** 最近一次成功执行的会话 */
+  last_session_id?: string;
+  /**
+   * 正在执行的会话号（企业 list 挂载）。
+   * 前端发现后写入 lastRunSessionId 并后台订 live；不在此字段上直接标未读。
+   */
+  active_session_id?: string;
   // 推送频道 ID,字符串或逗号分隔的多个(对齐后端 CronJob.to_dict().targets);空串按后端默认 web
   targets?: string;
   created_at: number | string | null;
@@ -26,6 +34,8 @@ export function isWebChannelJob(targets?: string): boolean {
   return s.split(',').some((p) => p.trim().toLowerCase() === 'web');
 }
 
+const CRON_UNREAD_KEY = 'jiuwenswarm_cron_unread';
+
 interface CronState {
   runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
   clearUnconfirmedRuns: () => void;
@@ -37,10 +47,10 @@ interface CronState {
   cronSessions: Record<string, Session[]>;
   // cron_id → 加载中状态
   cronSessionsLoading: Record<string, boolean>;
-  // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由
+  // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由 / 后台 live
   lastRunSessionId: Record<string, string>;
   setLastRunSessionId: (jobId: string, sessionId: string) => void;
-  // 定时任务未读状态（is_placeholder=false 的广播到达时标记，点击后清除）
+  // 定时任务未读状态（整趟收尾时标记，点击后清除）
   unreadCronJobs: Record<string, boolean>;
   markCronJobUnread: (jobId: string) => void;
   clearCronJobUnread: (jobId: string) => void;
@@ -56,8 +66,22 @@ interface CronState {
 // 避免阻塞 WebSocket 消息处理；try/catch 防止配额满/隐私模式导致异常影响 store 状态
 function persistCronUnread(state: Record<string, boolean>) {
   queueMicrotask(() => {
-    try { localStorage.setItem('jiuwenswarm_cron_unread', JSON.stringify(state)); } catch { /* ignore */ }
+    try { localStorage.setItem(CRON_UNREAD_KEY, JSON.stringify(state)); } catch { /* ignore */ }
   });
+}
+
+function readUnreadCronJobs(): Record<string, boolean> {
+  try {
+    const value = JSON.parse(localStorage.getItem(CRON_UNREAD_KEY) || '{}');
+    if (typeof value !== 'object' || value === null) return {};
+    const out: Record<string, boolean> = {};
+    for (const [jobId, flag] of Object.entries(value as Record<string, unknown>)) {
+      if (flag === true) out[jobId] = true;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
@@ -103,14 +127,7 @@ export const useCronStore = create<CronState>((set, get) => ({
   lastRunSessionId: {},
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
-  unreadCronJobs: (() => {
-    try {
-      const value = JSON.parse(localStorage.getItem('jiuwenswarm_cron_unread') || '{}');
-      return typeof value === 'object' && value !== null ? value as Record<string, boolean> : {};
-    } catch {
-      return {};
-    }
-  })(),
+  unreadCronJobs: readUnreadCronJobs(),
   markCronJobUnread: (jobId) => {
     set((s) => {
       if (s.unreadCronJobs[jobId]) return s;
@@ -136,6 +153,12 @@ export const useCronStore = create<CronState>((set, get) => ({
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
+      // 到点触发：list 带上 active_session_id → 记入 lastRunSessionId → App 后台 live
+      adoptActiveCronSessions(
+        webJobs,
+        get().setLastRunSessionId,
+        () => get().lastRunSessionId,
+      );
       return true;
     } catch {
       // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，

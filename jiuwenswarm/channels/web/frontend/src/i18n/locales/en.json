@@ -1197,7 +1197,53 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members"
+      "members": "Members",
+      "schedule": {
+        "title": "Dispatch control",
+        "collapse": "Collapse dispatch control",
+        "expand": "Expand dispatch control",
+        "summary": "{{tasks}} tasks · {{completed}} completed · {{reviews}} reviews · {{reworks}} reworks",
+        "controlRecords": "{{count}} main control records",
+        "anomalies": "{{count}} dispatch anomalies",
+        "assignee": "Assignee",
+        "unassigned": "Unassigned",
+        "unknownMember": "Unknown member",
+        "closeTask": "Close task details",
+        "noReviews": "No reviews yet",
+        "reviewCount_one": "{{count}} Review",
+        "reviewCount_other": "{{count}} Reviews",
+        "phase": {
+          "pending": "Pending",
+          "running": "Running",
+          "in_review": "In review",
+          "rework": "Rework",
+          "completed": "Completed",
+          "escalated": "Escalated",
+          "cancelled": "Cancelled",
+          "unknown": "Unknown"
+        },
+        "decision": {
+          "pass": "Pass",
+          "fail": "Fail",
+          "score": "Score {{value}}",
+          "pending": "Pending",
+          "pendingScore": "Pending score"
+        },
+        "event": {
+          "created": "Task created",
+          "updated": "Task updated",
+          "unblocked": "Dependencies unblocked",
+          "started": "Task started",
+          "submitted": "Submitted for review",
+          "vote": "Review vote",
+          "revision": "Rework requested",
+          "verified": "Review passed",
+          "cancelled": "Task cancelled",
+          "escalated": "Review escalated",
+          "anomaly": "Dispatch anomaly",
+          "team_completed": "Team completed"
+        }
+      }
     },
     "analysis": {
       "back": "Back to chat",
@@ -1221,6 +1267,7 @@
         "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
       "summary": "{{agents}} Agents · {{spans}} OTel spans",
+      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1604,13 +1651,52 @@
     },
     "org": {
       "tab": "Organization",
-      "title": "Task Pool & Organization",
+      "title": "Organization",
+      "details": "Details",
+      "taskTree": "Organization tasks",
+      "treeProgress": "Completed {{completed}} / {{total}}",
+      "descriptionExcerpt": "Task description (excerpt)",
+      "requiredCapabilities": "Required capabilities",
+      "capabilities": "Team capabilities",
+      "assignedBy": "Assigned by",
+      "updatedAt": "Last updated",
+      "aggregationMode": "Aggregation",
+      "executionModel": "Execution model",
+      "failureReason": "Failure reason",
+      "rootTask": "Root task",
+      "recreatedFrom": "Recreated from",
+      "requiredChanges": "Required changes",
+      "aggregation": {
+        "HIERARCHICAL": "Hierarchical",
+        "SUMMARY_TEAM": "Summary Team"
+      },
+      "failure": {
+        "EXECUTION_FAILED": "Execution failed",
+        "SOURCE_FAILED": "Source task failed",
+        "SUMMARY_PROVISION_FAILED": "Summary Team provisioning failed",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired"
+      },
+      "ownerLabel": "Owner",
+      "stateRunning": "Running",
+      "stateIdle": "Standby",
+      "status": {
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired",
+        "OPEN": "Unclaimed",
+        "DELEGATED": "Delegated",
+        "WAITING_SOURCES": "Awaiting results",
+        "CLAIMED": "Claimed",
+        "IN_PROGRESS": "In progress",
+        "COMPLETED": "Completed",
+        "FAILED": "Failed"
+      },
       "refresh": "Refresh",
       "loading": "Loading…",
-      "empty": "This Team is not bound to an organization",
+      "empty": "No organization yet",
       "noOrganization": "No organization bound",
       "noTeam": "No Team is available in this session",
-      "loadFailed": "Failed to load organization information",
+      "loadFailed": "Failed to load organization",
       "organizationId": "Organization ID",
       "displayName": "Name",
       "description": "Description",
@@ -1619,7 +1705,7 @@
       "leadTeam": "Team",
       "leadMember": "Leader",
       "metadata": "Metadata",
-      "taskPool": "Task Pool",
+      "taskPool": "Tasks",
       "taskPoolEmpty": "Task pool is empty",
       "taskId": "Task ID",
       "taskTitle": "Title",
@@ -1958,6 +2044,11 @@
       "dialogue": "Compacting earlier rounds…",
       "currentRound": "Compacting current round…",
       "roundLevel": "Full compaction…"
+    },
+    "contextCompressionElapsed": {
+      "seconds": "{{seconds}}s elapsed",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
+      "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
     },
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
@@ -3908,8 +3999,7 @@
       "Communication": "Communication",
       "Engineering": "Engineering",
       "Life": "Life",
-      "Custom": "Custom",
-      "Other": "Other"
+      "Custom": "Custom"
     },
     "actions": {
       "working": "Working",
@@ -4214,6 +4304,8 @@
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
   },
   "chatUi": {
+    "toggleOverview": "Overview",
+    "expandDetails": "Details panel",
     "copyMessage": "Copy message",
     "copied": "Copied",
     "usageInput": "Input",
@@ -4839,6 +4931,7 @@
   },
   "authPrompt": {
     "title": "Authorization",
+    "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",

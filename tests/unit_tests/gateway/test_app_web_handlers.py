@@ -591,6 +591,11 @@ class _CapturingCronController:
         return {"id": "cron-1"}
 
 
+async def _fail_if_asked_agent_binding(**_kwargs):
+    """默认项目不需要问 Agent：被调用即说明空编号走了 AgentServer 解析。"""
+    raise AssertionError("must not ask the Agent to resolve the default project binding")
+
+
 class _OwnedCronController:
     def __init__(self) -> None:
         self.job = SimpleNamespace(id="cron-owner", user_id="user-owner")
@@ -1079,6 +1084,70 @@ async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkey
     assert "_agentos_project_binding_verified" not in cron.params
     assert "project_dir" not in cron.params
     assert cron.params.get("app_id") == ("browser-app" if targets == "web" else None)
+    # 未选项目按 web 通道默认 work 模式本地物化 default（#5713，不落空串）。
+    assert cron.params["project_id"] == "default"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "work_mode, expected_project_id",
+    [
+        ("work", "default"),
+        ("code", "default_code"),
+        (None, "default"),
+    ],
+)
+async def test_cron_create_without_project_materializes_default_id(
+    monkeypatch, work_mode, expected_project_id
+) -> None:
+    """未选项目不问 Agent，但按 work_mode 物化 default/default_code（#5713）。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    monkeypatch.setattr(
+        "gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fail_if_asked_agent_binding,
+    )
+
+    params = {"name": "job", "cron_expr": "* * * * *", "project_dir": ""}
+    if work_mode is not None:
+        params["work_mode"] = work_mode
+
+    await channel.methods["cron.job.create"](
+        SimpleNamespace(), "req-cron-default", params, "user-session", "user-1"
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert cron.params["project_id"] == expected_project_id
+    assert "_agentos_project_binding_verified" not in cron.params
+
+
+@pytest.mark.asyncio
+async def test_cron_create_keeps_explicit_default_project_id(monkeypatch) -> None:
+    """显式 default_code 编号原样透传，不问 Agent、不覆盖。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    monkeypatch.setattr(
+        "gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fail_if_asked_agent_binding,
+    )
+
+    await channel.methods["cron.job.create"](
+        SimpleNamespace(),
+        "req-cron-explicit-default",
+        {"name": "job", "cron_expr": "* * * * *", "project_id": "default_code"},
+        "user-session",
+        "user-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert cron.params["project_id"] == "default_code"
+    assert "_agentos_project_binding_verified" not in cron.params
 
 
 @pytest.mark.asyncio

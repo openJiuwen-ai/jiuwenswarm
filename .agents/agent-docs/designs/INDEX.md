@@ -1,34 +1,32 @@
 ---
 title: 设计文档索引
-author: alan_cheng
-author_email: chengshuo5@huawei.com
+author: kdgmpw
+author_email: lishuqi4@huawei.com
 generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-03T11:57+08:00 -->
+<!-- generated-at: 2026-11-03T12:02+08:00 -->
 
 # 设计文档索引 (INDEX)
 
-> 开发前 3 · 开发中 1 · 开发后 3 · 已否决 0
-
-按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出，全局统计按文档去重。
+按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出。
 
 ## 模块目录
 
-| 模块 | 设计数 |
-|---|---|
-| [agent_teams](#module-1) | 1 |
-| [agent_teams/workflow](#module-2) | 3 |
-| [jiuwenswarm](#module-3) | 3 |
-| [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
-| [jiuwenswarm/observability](#module-6) | 1 |
-| [jiuwenswarm/server/ipc](#module-7) | 1 |
-| [jiuwenswarm/server/supervisor](#module-8) | 1 |
-| [jiuwenswarm/server/worker](#module-9) | 1 |
-| [jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile](#module-10) | 1 |
-| [jiuwenswarm_harmony_pc/hnp](#module-11) | 1 |
+| 模块 |
+|---|
+| [agent_teams](#module-1) |
+| [agent_teams/workflow](#module-2) |
+| [jiuwenswarm](#module-3) |
+| [jiuwenswarm/channels/web/frontend](#module-4) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-5) |
+| [jiuwenswarm/observability](#module-6) |
+| [jiuwenswarm/server/ipc](#module-7) |
+| [jiuwenswarm/server/supervisor](#module-8) |
+| [jiuwenswarm/server/worker](#module-9) |
+| [jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile](#module-10) |
+| [jiuwenswarm_harmony_pc/hnp](#module-11) |
 
 <a id="module-1"></a>
 

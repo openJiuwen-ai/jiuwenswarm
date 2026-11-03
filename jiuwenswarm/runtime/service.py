@@ -1690,6 +1690,9 @@ class AgentRuntime:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
         request = self.normalize_request(request)
+        attachment_completion = self._non_team_attachment_completion(request)
+        if attachment_completion is not None:
+            return [attachment_completion]
         self._validate_permission_answer(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
@@ -2209,6 +2212,10 @@ class AgentRuntime:
         )
 
         request = self.normalize_request(request)
+        attachment_completion = self._non_team_attachment_completion(request)
+        if attachment_completion is not None:
+            yield attachment_completion
+            return
         self._validate_permission_answer(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
@@ -3980,6 +3987,25 @@ class AgentRuntime:
     def _is_attach_only_request(request: AgentRequest) -> bool:
         params = request.params if isinstance(request.params, dict) else {}
         return params.get(TEAM_ATTACH_ONLY_PARAM) is True
+
+    @classmethod
+    def _non_team_attachment_completion(cls, request: AgentRequest) -> RuntimeEvent | None:
+        """End a stale Team subscription before it can enter user admission."""
+        if (
+            request.req_method is not ReqMethod.CHAT_SEND
+            or not cls._is_attach_only_request(request)
+            or cls._request_targets_team(request)
+        ):
+            return None
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        return RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id or "default",
+            session_id=request.session_id,
+            payload=None,
+            is_complete=True,
+        )
 
     def _team_lifecycle(self) -> SessionRuntimeLifecyclePort:
         if self._session_runtime_lifecycle is None:

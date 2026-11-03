@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: MengHan18
-author_email: hanmeng22@huawei.com
+author: kdgmpw
+author_email: lishuqi4@huawei.com
 generated: true
 ---
 
@@ -9,20 +9,20 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 4 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+按模块分组；跨模块文档在各相关分组展示。
 
 ## 模块导航
 
-| 模块 | 文档数 |
-|---|---|
-| [jiuwenswarm/agents/harness/common/rails](#module-1) | 1 |
-| [jiuwenswarm/agents/harness/common/tools](#module-2) | 1 |
-| [jiuwenswarm/channels/web/frontend](#module-3) | 1 |
-| [jiuwenswarm/server/ipc](#module-4) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-5) | 2 |
-| [jiuwenswarm/server/supervisor](#module-6) | 1 |
-| [jiuwenswarm/server/worker](#module-7) | 1 |
-| [未分类](#module-8) | 1 |
+| 模块 |
+|---|
+| [jiuwenswarm/agents/harness/common/rails](#module-1) |
+| [jiuwenswarm/agents/harness/common/tools](#module-2) |
+| [jiuwenswarm/channels/web/frontend](#module-3) |
+| [jiuwenswarm/server/ipc](#module-4) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-5) |
+| [jiuwenswarm/server/supervisor](#module-6) |
+| [jiuwenswarm/server/worker](#module-7) |
+| [未分类](#module-8) |
 
 <a id="module-1"></a>
 

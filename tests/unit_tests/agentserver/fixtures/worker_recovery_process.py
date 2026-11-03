@@ -3,7 +3,7 @@
 """Persistent subprocess fixture using production IPC, dispatcher and journal.
 
 Execution state is deterministic; this validates recovery transport, not a model.
-Replay pacing simulates a busy transport without blocking another scope's writes.
+Replay gating simulates a busy transport without blocking another scope's writes.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -55,7 +56,7 @@ class RecoveryRuntime:
                                   "body": {"event_type": "chat.delta", "content": "live-after-replay"}}))
 
 
-async def serve(path: str) -> None:
+async def serve(path: str, replay_release: Path) -> None:
     server = IpcServer(path)
     await server.start()
     holder = ConnHolder()
@@ -76,12 +77,19 @@ async def serve(path: str) -> None:
             generation = holder.open_session(conn)
             raw_send = conn.send
 
-            async def paced_send(message, raw_send=raw_send):
-                if message.get("replayed") and message.get("sequence", 0) % 32 == 1:
-                    await asyncio.sleep(0.02)
+            async def gated_send(message, raw_send=raw_send):
                 await raw_send(message)
+                if message.get("replayed") and message.get("sequence") == 1:
+                    while not replay_release.exists():
+                        await asyncio.sleep(0.01)
+                # Bound each burst by actual Gateway consumption, rather than
+                # transport speed or wall-clock pacing on a particular OS.
+                if message.get("replayed") and message.get("sequence", 0) % 32 == 0:
+                    consumed = replay_release.with_name(f"consumed-{message['sequence']}")
+                    while not consumed.exists():
+                        await asyncio.sleep(0.01)
 
-            conn.send = paced_send
+            conn.send = gated_send
             await conn.send({"kind": KIND_HELLO, "pid": os.getpid(), "generation": generation,
                              "instance": bridge.events.instance, "runtime_loaded": True, "python_prefix": sys.prefix})
             try:
@@ -99,4 +107,4 @@ async def serve(path: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(serve(sys.argv[1]))
+    asyncio.run(serve(sys.argv[1], Path(sys.argv[2])))

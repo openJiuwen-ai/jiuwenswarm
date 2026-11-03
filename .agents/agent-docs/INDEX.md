@@ -1,7 +1,7 @@
 ---
 title: D/F/B/S 文档总索引
-author: MengHan18
-author_email: hanmeng22@huawei.com
+author: kdgmpw
+author_email: lishuqi4@huawei.com
 generated: true
 ---
 
@@ -9,37 +9,37 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 31 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+按模块分组；跨模块文档在各相关分组展示。
 
 ## 模块导航
 
-| 模块 | 文档数 |
-|---|---|
-| [agent_teams](#module-1) | 1 |
-| [agent_teams/workflow](#module-2) | 3 |
-| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
-| [gateway/channel_manager/web](#module-4) | 1 |
-| [gateway/message_handler](#module-5) | 1 |
-| [jiuwenswarm](#module-6) | 3 |
-| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-7) | 1 |
-| [jiuwenswarm/agents/harness/common/rails](#module-8) | 2 |
-| [jiuwenswarm/agents/harness/common/tools](#module-9) | 2 |
-| [jiuwenswarm/agents/harness/common/tools/cron](#module-10) | 1 |
-| [jiuwenswarm/channels/web](#module-11) | 2 |
-| [jiuwenswarm/channels/web/frontend](#module-12) | 3 |
-| [jiuwenswarm/common](#module-13) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-14) | 1 |
-| [jiuwenswarm/observability](#module-15) | 1 |
-| [jiuwenswarm/server/ipc](#module-16) | 3 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-17) | 4 |
-| [jiuwenswarm/server/runtime/mcp](#module-18) | 1 |
-| [jiuwenswarm/server/supervisor](#module-19) | 3 |
-| [jiuwenswarm/server/worker](#module-20) | 3 |
-| [jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile](#module-21) | 1 |
-| [jiuwenswarm_harmony_pc/hnp](#module-22) | 1 |
-| [tests/unit_tests/gateway](#module-23) | 1 |
-| [tests/unit_tests/personal_context](#module-24) | 1 |
-| [未分类](#module-25) | 12 |
+| 模块 |
+|---|
+| [agent_teams](#module-1) |
+| [agent_teams/workflow](#module-2) |
+| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) |
+| [gateway/channel_manager/web](#module-4) |
+| [gateway/message_handler](#module-5) |
+| [jiuwenswarm](#module-6) |
+| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-7) |
+| [jiuwenswarm/agents/harness/common/rails](#module-8) |
+| [jiuwenswarm/agents/harness/common/tools](#module-9) |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-10) |
+| [jiuwenswarm/channels/web](#module-11) |
+| [jiuwenswarm/channels/web/frontend](#module-12) |
+| [jiuwenswarm/common](#module-13) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-14) |
+| [jiuwenswarm/observability](#module-15) |
+| [jiuwenswarm/server/ipc](#module-16) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-17) |
+| [jiuwenswarm/server/runtime/mcp](#module-18) |
+| [jiuwenswarm/server/supervisor](#module-19) |
+| [jiuwenswarm/server/worker](#module-20) |
+| [jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile](#module-21) |
+| [jiuwenswarm_harmony_pc/hnp](#module-22) |
+| [tests/unit_tests/gateway](#module-23) |
+| [tests/unit_tests/personal_context](#module-24) |
+| [未分类](#module-25) |
 
 <a id="module-1"></a>
 
@@ -74,6 +74,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261031_1139_gateway-session-e2a](features/F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
+| [B_20261102_1644_cron-web-default-project-id](bugfix/gateway/channel_manager/B_20261102_1644_cron-web-default-project-id.md) | B | 前端未选项目创建定时任务落库 project_id 回退为空串 | kdgmpw | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/src/components/CronPanel/cronProjectDisplay.ts, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：恢复 4b00671f6（#5713）已实现的行为，属于对该修复在企业版合入后被回退的局部回归修复，无独立设计。 |
 
 <a id="module-5"></a>
 
