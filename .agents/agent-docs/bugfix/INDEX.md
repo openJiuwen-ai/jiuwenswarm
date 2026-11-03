@@ -1,7 +1,7 @@
 ---
 title: 故障修复 B索引
-author: Rossoneri
-author_email: 863031676@qq.com
+author: openjiuwen_ai
+author_email: openjiuwen_ai@163.com
 generated: true
 ---
 
@@ -22,11 +22,9 @@ generated: true
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-5) |
 | [jiuwenswarm/channels/web](#module-6) |
 | [jiuwenswarm/channels/web/frontend](#module-7) |
-| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-8) |
-| [jiuwenswarm/server/runtime](#module-9) |
-| [tests/unit_tests/gateway](#module-10) |
-| [tests/unit_tests/personal_context](#module-11) |
-| [未分类](#module-12) |
+| [tests/unit_tests/gateway](#module-8) |
+| [tests/unit_tests/personal_context](#module-9) |
+| [未分类](#module-10) |
 
 <a id="module-1"></a>
 
@@ -88,29 +86,13 @@ generated: true
 
 <a id="module-8"></a>
 
-## jiuwenswarm/channels/web/frontend/src/features/settings
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [B_20261103_0951_reuse-configured-model](recommendation/B_20261103_0951_reuse-configured-model.md) | B | 重新开启话题推荐时复用已配置模型 | Rossoneri | jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/channels/web/frontend/src/features/settings/modules/general/TopicModelSettings.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/MediaModelConfigDialog.tsx, jiuwenswarm/channels/web/frontend/tests/recommendation.test.mjs | 无独立 D：根据用户明确要求修正已保存模型的重新启用行为，无独立设计。 |
-
-<a id="module-9"></a>
-
-## jiuwenswarm/server/runtime
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [B_20261103_0945_search-service-recovery](recommendation/B_20261103_0945_search-service-recovery.md) | B | 搜索配置恢复后重新创建话题推荐服务 | Rossoneri | jiuwenswarm/server/runtime | jiuwenswarm/server/runtime/recommendation_host.py, tests/unit_tests/test_topic_recommendation.py | 无独立 D：修复现有推荐服务在搜索配置恢复后无法重新初始化的问题，无独立设计。 |
-
-<a id="module-10"></a>
-
 ## tests/unit_tests/gateway
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-11"></a>
+<a id="module-9"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -118,7 +100,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-12"></a>
+<a id="module-10"></a>
 
 ## 未分类
 

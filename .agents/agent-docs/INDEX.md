@@ -1,7 +1,7 @@
 ---
 title: D/F/B/S 文档总索引
-author: Rossoneri
-author_email: 863031676@qq.com
+author: openjiuwen_ai
+author_email: openjiuwen_ai@163.com
 generated: true
 ---
 
@@ -23,21 +23,16 @@ generated: true
 | [jiuwenswarm](#module-6) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-7) |
 | [jiuwenswarm/agents/harness/common/rails](#module-8) |
-| [jiuwenswarm/agents/harness/common/recommendation](#module-9) |
-| [jiuwenswarm/agents/harness/common/tools](#module-10) |
-| [jiuwenswarm/agents/harness/common/tools/cron](#module-11) |
-| [jiuwenswarm/channels/web](#module-12) |
-| [jiuwenswarm/channels/web/frontend](#module-13) |
-| [jiuwenswarm/channels/web/frontend/src/components/ChatPanel](#module-14) |
-| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-15) |
-| [jiuwenswarm/channels/web/frontend/src/hooks](#module-16) |
-| [jiuwenswarm/gateway/channel_manager/web](#module-17) |
-| [jiuwenswarm/observability](#module-18) |
-| [jiuwenswarm/server/runtime](#module-19) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-20) |
-| [tests/unit_tests/gateway](#module-21) |
-| [tests/unit_tests/personal_context](#module-22) |
-| [未分类](#module-23) |
+| [jiuwenswarm/agents/harness/common/tools](#module-9) |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-10) |
+| [jiuwenswarm/channels/web](#module-11) |
+| [jiuwenswarm/channels/web/frontend](#module-12) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-13) |
+| [jiuwenswarm/observability](#module-14) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-15) |
+| [tests/unit_tests/gateway](#module-16) |
+| [tests/unit_tests/personal_context](#module-17) |
+| [未分类](#module-18) |
 
 <a id="module-1"></a>
 
@@ -73,7 +68,6 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261031_1139_gateway-session-e2a](features/F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
 | [B_20261102_1644_cron-web-default-project-id](bugfix/gateway/channel_manager/B_20261102_1644_cron-web-default-project-id.md) | B | 前端未选项目创建定时任务落库 project_id 回退为空串 | kdgmpw | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/src/components/CronPanel/cronProjectDisplay.ts, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：恢复 4b00671f6（#5713）已实现的行为，属于对该修复在企业版合入后被回退的局部回归修复，无独立设计。 |
-| [S_02_prompt-suggestion-recovery](specs/recommendation/S_02_prompt-suggestion-recovery.md) | S | 下一步提问展示与补读契约 | Rossoneri | jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/server/runtime, gateway/channel_manager/web, jiuwenswarm/channels/web/frontend/src/hooks | jiuwenswarm/agents/harness/common/recommendation/prompt_suggestion.py, jiuwenswarm/server/runtime/recommendation_rpc.py, gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/src/hooks/usePromptSuggestionBox.ts | — |
 
 <a id="module-5"></a>
 
@@ -112,14 +106,6 @@ generated: true
 
 <a id="module-9"></a>
 
-## jiuwenswarm/agents/harness/common/recommendation
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_prompt-suggestion-recovery](specs/recommendation/S_02_prompt-suggestion-recovery.md) | S | 下一步提问展示与补读契约 | Rossoneri | jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/server/runtime, gateway/channel_manager/web, jiuwenswarm/channels/web/frontend/src/hooks | jiuwenswarm/agents/harness/common/recommendation/prompt_suggestion.py, jiuwenswarm/server/runtime/recommendation_rpc.py, gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/src/hooks/usePromptSuggestionBox.ts | — |
-
-<a id="module-10"></a>
-
 ## jiuwenswarm/agents/harness/common/tools
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -127,7 +113,7 @@ generated: true
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-11"></a>
+<a id="module-10"></a>
 
 ## jiuwenswarm/agents/harness/common/tools/cron
 
@@ -135,7 +121,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](bugfix/jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | jiuwenswarm/agents/harness/common/tools/cron, jiuwenswarm/agents/harness/code/rails/heartbeat | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
 
-<a id="module-12"></a>
+<a id="module-11"></a>
 
 ## jiuwenswarm/channels/web
 
@@ -145,7 +131,7 @@ generated: true
 | [B_20261102_1104_cron-stable-model-selection](bugfix/jiuwenswarm/channels/web/B_20261102_1104_cron-stable-model-selection.md) | B | 定时任务模型选择丢失稳定 ID 与执行失败报错不可见修复 | kdgmpw | jiuwenswarm/channels/web | jiuwenswarm/channels/web/frontend/src/types/cron.ts, jiuwenswarm/channels/web/frontend/src/components/CronPanel/CronTaskDrawer.tsx, jiuwenswarm/channels/web/frontend/src/components/CronPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/CronPanel/cronModelSelection.ts, jiuwenswarm/channels/web/frontend/src/utils/wsEventDedup.ts, jiuwenswarm/channels/web/frontend/src/features/free-models/chatError.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/package.json, jiuwenswarm/channels/web/frontend/tests/cronModelSelection.test.mjs, jiuwenswarm/channels/web/frontend/tests/modelPicker.test.mjs, jiuwenswarm/channels/web/frontend/tests/wsEventDedup.test.mjs, jiuwenswarm/channels/web/frontend/tests/chatError.test.mjs | 无独立 D：稳定选择契约（ModelPicker selection/onSelectionChange、CronJob.model_selection、 chat.error 去重窗口）均为既有实现，本次是 cron 抽屉这一旧契约调用方的迁移补接与 去重键缺维修复，无独立设计。 |
 | [B_20261103_1112_raw-file-range-seek](bugfix/jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | jiuwenswarm/channels/web, jiuwenswarm/channels/web/frontend | jiuwenswarm/channels/web/app_web.py, jiuwenswarm/channels/web/frontend/vite.config.ts, tests/unit_tests/test_app_web_raw_file.py | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 
-<a id="module-13"></a>
+<a id="module-12"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -156,32 +142,7 @@ generated: true
 | [B_20261103_1112_raw-file-range-seek](bugfix/jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | jiuwenswarm/channels/web, jiuwenswarm/channels/web/frontend | jiuwenswarm/channels/web/app_web.py, jiuwenswarm/channels/web/frontend/vite.config.ts, tests/unit_tests/test_app_web_raw_file.py | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
-<a id="module-14"></a>
-
-## jiuwenswarm/channels/web/frontend/src/components/ChatPanel
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261103_1036_topic-list-presentation](features/F_20261103_1036_topic-list-presentation.md) | F | 首页话题推荐标题与无边框列表 | Rossoneri | jiuwenswarm/channels/web/frontend/src/components/ChatPanel | jiuwenswarm/channels/web/frontend/src/components/ChatPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ChatPanel.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json | 无独立 D：按用户提供的列表样式参考实施，无独立设计。 |
-| [F_20261103_1057_composer-follow-up-question](features/F_20261103_1057_composer-follow-up-question.md) | F | 回答后在输入框占位位置显示下一步提问 | Rossoneri | jiuwenswarm/channels/web/frontend/src/components/ChatPanel | jiuwenswarm/channels/web/frontend/src/components/ChatPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/channels/web/frontend/src/hooks/usePromptSuggestionBox.ts, jiuwenswarm/agents/harness/common/recommendation/prompt_suggestion.py, jiuwenswarm/server/runtime/recommendation_rpc.py, gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/tests/recommendation.test.mjs | 无独立 D：按用户明确要求调整既有提示词推荐交互，无独立设计。 |
-
-<a id="module-15"></a>
-
-## jiuwenswarm/channels/web/frontend/src/features/settings
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [B_20261103_0951_reuse-configured-model](bugfix/recommendation/B_20261103_0951_reuse-configured-model.md) | B | 重新开启话题推荐时复用已配置模型 | Rossoneri | jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/channels/web/frontend/src/features/settings/modules/general/TopicModelSettings.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/MediaModelConfigDialog.tsx, jiuwenswarm/channels/web/frontend/tests/recommendation.test.mjs | 无独立 D：根据用户明确要求修正已保存模型的重新启用行为，无独立设计。 |
-
-<a id="module-16"></a>
-
-## jiuwenswarm/channels/web/frontend/src/hooks
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_prompt-suggestion-recovery](specs/recommendation/S_02_prompt-suggestion-recovery.md) | S | 下一步提问展示与补读契约 | Rossoneri | jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/server/runtime, gateway/channel_manager/web, jiuwenswarm/channels/web/frontend/src/hooks | jiuwenswarm/agents/harness/common/recommendation/prompt_suggestion.py, jiuwenswarm/server/runtime/recommendation_rpc.py, gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/src/hooks/usePromptSuggestionBox.ts | — |
-
-<a id="module-17"></a>
+<a id="module-13"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -189,7 +150,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-18"></a>
+<a id="module-14"></a>
 
 ## jiuwenswarm/observability
 
@@ -197,16 +158,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-19"></a>
-
-## jiuwenswarm/server/runtime
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [B_20261103_0945_search-service-recovery](bugfix/recommendation/B_20261103_0945_search-service-recovery.md) | B | 搜索配置恢复后重新创建话题推荐服务 | Rossoneri | jiuwenswarm/server/runtime | jiuwenswarm/server/runtime/recommendation_host.py, tests/unit_tests/test_topic_recommendation.py | 无独立 D：修复现有推荐服务在搜索配置恢复后无法重新初始化的问题，无独立设计。 |
-| [S_02_prompt-suggestion-recovery](specs/recommendation/S_02_prompt-suggestion-recovery.md) | S | 下一步提问展示与补读契约 | Rossoneri | jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/server/runtime, gateway/channel_manager/web, jiuwenswarm/channels/web/frontend/src/hooks | jiuwenswarm/agents/harness/common/recommendation/prompt_suggestion.py, jiuwenswarm/server/runtime/recommendation_rpc.py, gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/src/hooks/usePromptSuggestionBox.ts | — |
-
-<a id="module-20"></a>
+<a id="module-15"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -217,7 +169,7 @@ generated: true
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
-<a id="module-21"></a>
+<a id="module-16"></a>
 
 ## tests/unit_tests/gateway
 
@@ -225,7 +177,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-22"></a>
+<a id="module-17"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -233,7 +185,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-23"></a>
+<a id="module-18"></a>
 
 ## 未分类
 
@@ -250,5 +202,4 @@ generated: true
 | [B_20261026_1602_code-multimodal-loading](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) | B | 配置多模态模型后，Code 未按 Work 规则加载工具 | 待确认 | — | — | 待核实 |
 | [B_20261026_1606_issue-5753-session-project-binding](bugfix/jiuwenswarm/server/runtime/session/B_20261026_1606_issue-5753-session-project-binding.md) | B | Issue #5753：普通会话发送消息后混入全局项目目录 | 待确认 | — | — | 待核实 |
 | [B_20261026_2035_gateway-contract-collection](bugfix/tests/unit_tests/common/B_20261026_2035_gateway-contract-collection.md) | B | Gateway 拆包后协议契约测试无法收集 | 待确认 | — | — | 待核实 |
-| [S_01_general-topic-model](specs/recommendation/S_01_general-topic-model.md) | S | 常规页话题推荐配置契约 | Rossoneri | — | — | — |
 | [S_01_multimodal-tool-loading](specs/jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | 待确认 | — | — | — |

@@ -185,7 +185,11 @@ async def _select_model(
             await host.topic_service.set_enabled(False, persist=False)
     return _ok(
         await _status_payload(host, {"auth_session": auth_session}),
-        events=[(TOPIC_STARTERS_CONTROL_CHANGED_EVENT, {"enabled": False})] if configuration is None and not model else None,
+        events=(
+            [(TOPIC_STARTERS_CONTROL_CHANGED_EVENT, {"enabled": False})]
+            if configuration is None and not model
+            else None
+        ),
     )
 
 

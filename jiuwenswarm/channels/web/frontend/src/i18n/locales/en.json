@@ -505,6 +505,7 @@
     },
     "general": {
       "topicModelTitle": "Configure topic recommendation model",
+      "topicModelDisconnected": "Disconnected. Reconnect and try again.",
       "topicModelSave": "Save and enable",
       "topicModelProtocol": "Topic recommendations require an OpenAI-compatible model.",
       "topicModelDelete": "Delete the topic recommendation model configuration and turn off topic recommendations.",
@@ -1824,6 +1825,7 @@
       "nextStep": "Help me turn an idea into a practical next step."
     },
     "topicStarter": {
+      "statusMissingConfiguration": "The topic model configuration is incomplete. Check General settings.",
       "recommendedForYou": "Recommended for you",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",

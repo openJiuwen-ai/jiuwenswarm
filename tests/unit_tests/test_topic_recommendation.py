@@ -540,6 +540,23 @@ def test_clearing_topic_model_turns_off_topics_and_preserves_chat_models(chat_co
     assert "mdl_long" in {item["model_id"] for item in options["model_options"]}
 
 
+def test_deleting_dedicated_topic_model_persists_disabled_state_on_disk(chat_config):
+    import yaml
+
+    assert controls.save_recommendation_model_configuration({
+        "provider": "OpenAI", "model": "dedicated-topic-model",
+        "api_base": "https://topics.example/v1", "api_key": "test-topic-key",
+    })
+    switches.save_recommendation_switches(topic_enabled=True, now=1234.0)
+    assert controls.save_recommendation_model("")
+    saved = yaml.safe_load(chat_config.read_text(encoding="utf-8"))
+    assert saved["recommendation"]["topic_enabled"] is False
+    assert "model_config" not in saved["recommendation"]
+    assert controls.recommendation_model_configuration() == {}
+    assert controls.load_recommendation_controls()["enabled"] is False
+    assert saved["models"], "deleting a dedicated topic model must preserve chat models"
+
+
 def test_clearing_topic_model_does_not_validate_the_model_catalog(settings, monkeypatch):
     settings["recommendation"] = {"model": "removed-model", "topic_enabled": True}
 

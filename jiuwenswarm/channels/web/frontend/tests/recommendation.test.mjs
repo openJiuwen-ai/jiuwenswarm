@@ -496,9 +496,11 @@ test('General renders and persists the topic switch through config while keeping
     throw new Error(`Unexpected settings request: ${method}`);
   };
   const root = createRoot(document.getElementById('root'));
-  const render = async () => {
+  let settingsPageRevision = 0;
+  const render = async (connected = true) => {
     await react.act(async () => root.render(react.createElement(SettingsPage, {
-      definition, request, isConnected: true, connectionState: 'ready',
+      key: settingsPageRevision,
+      definition, request, isConnected: connected, connectionState: connected ? 'ready' : 'disconnected',
     })));
     await react.act(settle);
   };
@@ -552,18 +554,34 @@ test('General renders and persists the topic switch through config while keeping
     const savedKeyInput = document.querySelector('[data-testid="settings-agent-media-config-dialog-field"][data-variant="api_key"] input');
     assert.equal(savedKeyInput.value, 'saved-topic-key');
     assert.equal(savedKeyInput.type, 'password');
+    assert.equal(requests.some(request => request.method === 'topic_starters.reveal_model_key'), false);
     assert.ok(requests.some(request => request.method === 'topic_starters.status' && request.params?.include_api_key === true));
     await react.act(async () => document.querySelector('[data-testid="settings-agent-media-config-dialog-save-btn"]').click());
     await react.act(settle);
     const savedModel = requests.findLast(request => request.method === 'topic_starters.select_model');
     assert.equal(savedModel.params.configuration.api_key, 'saved-topic-key');
+    assert.equal(savedModel.params.configuration.model, 'topic-chat');
+    assert.equal('model' in savedModel.params, false, 'configuration saves must not also carry a clear-model sentinel');
     assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
+    await react.act(settle);
+    await render(false);
+    const disconnectedDialog = [...document.querySelectorAll('.settings-confirm-dialog')]
+      .find(dialog => dialog.textContent.includes('Disconnected. Reconnect and try again.'));
+    assert.ok(disconnectedDialog, 'disconnect must replace loading with a closable error');
+    await react.act(async () => disconnectedDialog.querySelector('.settings-confirm-dialog__close').click());
+    await render(true);
     await react.act(async () => document.querySelector('[data-testid="settings-topic-model-delete"]').click());
     await react.act(async () => document.querySelector('.settings-confirm-dialog__footer button:last-child').click());
     await react.act(settle);
     assert.equal(topicSwitch().getAttribute('aria-checked'), 'false');
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
     assert.equal(requests.some(request => request.method === 'models.delete'), false, 'unlinking recommendations must preserve the shared model');
+    settingsPageRevision += 1;
+    await render();
+    assert.equal(storedValue, 'false', 'model deletion must persist the disabled switch on the backend');
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'false', 'a fresh settings page must read the persisted disabled switch');
+    assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
   } finally {
     await react.act(async () => root.unmount());
   }
@@ -638,16 +656,28 @@ test('disabled homepage hides cached cards immediately and links to General; ena
   }
 });
 
-test('enabled recommendation with missing configuration or unavailable provider hides the enable hint and settings button', async () => {
+test('enabled recommendations show a configuration-specific recovery hint without a disabled-feature hint', async () => {
   for (const state of ['missing_configuration', 'provider_unavailable']) {
-    const panel = await mountWelcome(`sess-enabled-${state}`, { holdResponses: true });
+    let settingsOpens = 0;
+    const panel = await mountWelcome(`sess-enabled-${state}`, {
+      holdResponses: true, onOpenGeneralSettings: () => { settingsOpens += 1; },
+    });
     try {
       await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
         available: false, preparation_state: state, reason: state,
       }));
       await react.act(settle);
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
-      assert.equal(document.querySelector('[data-testid="chat-panel-topic-settings"]'), null);
+      const settingsButton = document.querySelector('[data-testid="chat-panel-topic-settings"]');
+      if (state === 'missing_configuration') {
+        assert.ok(settingsButton);
+        assert.ok(document.querySelector('[data-testid="chat-panel-topic-configuration-hint"]').textContent.includes('configuration is incomplete'));
+        await react.act(async () => settingsButton.click());
+        assert.equal(settingsOpens, 1);
+      } else {
+        assert.equal(settingsButton, null);
+        assert.ok(document.querySelector('[role="status"]').textContent.trim());
+      }
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]'), null);
       assert.equal(document.body.textContent.includes('For topics that understand you better'), false);
     } finally {

@@ -498,6 +498,7 @@
     },
     "general": {
       "topicModelTitle": "配置话题推荐模型",
+      "topicModelDisconnected": "连接已断开，请恢复连接后重试。",
       "topicModelSave": "保存并启用",
       "topicModelProtocol": "话题推荐仅支持 OpenAI 兼容协议的模型。",
       "topicModelDelete": "将删除话题推荐模型配置并关闭话题推荐。",
@@ -1764,6 +1765,7 @@
       "nextStep": "帮我把一个想法变成可执行的下一步。"
     },
     "topicStarter": {
+      "statusMissingConfiguration": "话题推荐模型未配置完整，请前往常规设置检查。",
       "recommendedForYou": "为你推荐",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",

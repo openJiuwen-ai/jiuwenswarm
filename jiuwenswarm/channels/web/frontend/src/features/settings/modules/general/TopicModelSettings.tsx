@@ -12,14 +12,19 @@ import '../agent/AgentSettings.css';
 type TopicModelConfig = Record<string, string | boolean>;
 
 function useTopicModel(revision?: unknown, includeApiKey = false) {
+  const { t } = useTranslation();
   const { request, isConnected } = useSettingsServices();
   const [config, setConfig] = useState<TopicModelConfig>({});
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const sequence = useRef(0);
   const load = useCallback(async () => {
-    if (!isConnected) return;
     const current = ++sequence.current;
+    if (!isConnected) {
+      setLoading(false);
+      setError(t('settingsPanel.general.topicModelDisconnected'));
+      return;
+    }
     setLoading(true);
     setError('');
     try {
@@ -31,7 +36,7 @@ function useTopicModel(revision?: unknown, includeApiKey = false) {
     } finally {
       if (current === sequence.current) setLoading(false);
     }
-  }, [isConnected, request, includeApiKey]);
+  }, [isConnected, request, t, includeApiKey]);
   useEffect(() => { void load(); return () => { sequence.current += 1; }; }, [load, revision]);
   return { config, error, loading, load, clear: () => setConfig({}) };
 }
@@ -73,7 +78,7 @@ export function TopicModelConfiguration({ onSave, onClose, enableOnSave = true }
         const configuration = Object.fromEntries(Object.entries(updates)
           .filter(([key]) => key !== 'topic_enabled' && key !== 'topic_context_window_tokens')
           .map(([key, value]) => [key.replace(/^topic_/, ''), value]));
-        await request('topic_starters.select_model', { model: '', configuration });
+        await request('topic_starters.select_model', { configuration });
         await onSave();
       }}
       onSaved={() => undefined}
@@ -99,6 +104,7 @@ export function TopicModelSummary({ disabled, onEditingChange }: SettingsCustomI
     setBusy(true);
     setSaveError('');
     try {
+      // The delete RPC persists both the cleared connection and the disabled topic switch atomically.
       await request('topic_starters.select_model', { model: '' });
       source.patchLocal({ topic_recommendation_enabled: 'false' });
       clear();

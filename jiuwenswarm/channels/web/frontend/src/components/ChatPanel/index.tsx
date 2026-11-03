@@ -2691,12 +2691,19 @@ export const ChatPanel = React.memo(function ChatPanel({
                       {t('chat.topicStarter.openSettings')}
                     </button>
                   </p>
-                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) && recommendationState !== 'missing_configuration' ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
+                ) : recommendationState === 'missing_configuration' ? (
+                  <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-topic-configuration-hint">
+                    {t('chat.topicStarter.statusMissingConfiguration')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </div>
+                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
                   {recommendationState !== 'provider_unavailable' ? t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate))) : null}
                   {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}
                   {topicStarterShowsRetryAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-retry" onClick={() => { manualRecommendationRetry.current = true; if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true; setRecommendationRefresh(value => value + 1); }} className="ml-2 text-text-link underline">{t('chat.topicStarter.retryPreparation')}</button> : null}
                 </div> : null}
-                {recommendationState !== 'disabled' && topicStarterErrorKey && (
+                {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (
                   <p role="alert" data-testid="chat-panel-welcome-topic-starter-error">
                     {t(topicStarterErrorKey)}
                   </p>
