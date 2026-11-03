@@ -617,7 +617,7 @@ export function SkillPanel({
       window.dispatchEvent(
         new CustomEvent('jiuwen:new-conversation', {
           detail: {
-            skillName: 'skill-creator',
+            skillName: 'workswarm-builtin',
             suffixText: t('skills.chatPrompts.editSkill'),
             secondSkillName: skillName,
             ...(skillType === 'swarm_skill' ? { mode: 'team' as const } : {}),
@@ -639,7 +639,7 @@ export function SkillPanel({
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
-          skillName: 'skill-creator',
+          skillName: 'workswarm-builtin',
           suffixText: t('skills.chatPrompts.createSkill'),
           mode: 'agent' as const,
           metadata: { scene: 'create_skill' },

@@ -1287,7 +1287,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         "skill_source_hash": hashlib.sha256(
             (
                 Path(__file__).parents[2]
-                / "jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/SKILL.md"
+                / "jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/dynamic-memory-cli/SKILL.md"
             ).read_bytes()
         ).hexdigest(),
         "acceptance_source": load_json(SOURCE_MANIFEST),

@@ -11,6 +11,7 @@
     "huawei-cloud-maas-setup",
     "skill-omni-creation",
     "swarmskill-creator",
-    "workswarm-app-builder"
+    "workswarm-app-builder",
+    "workswarm-builtin"
   ]
 }

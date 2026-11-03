@@ -4719,11 +4719,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onUseGroupPrompt={handleUseGroupPrompt}
               onCreateViaChat={() => requestSessionNavigation('new', {
                 initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
-                initialSelectedSkills: ['agent-creator'],
+                initialSelectedSkills: ['workswarm-builtin'],
               })}
               onCreateGroupViaChat={() => requestSessionNavigation('new', {
                 initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
-                initialSelectedSkills: ['agent-group-creator'],
+                initialSelectedSkills: ['workswarm-builtin'],
                 forceMode: 'agent',
               })}
               navigationRequest={agentManagementNavigationRequest}
@@ -4853,7 +4853,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <ConnectorMarketPanel
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
-                    skillName: 'plugin-creator',
+                    skillName: 'workswarm-builtin',
                     suffixText: t('connectorMarket.chatPrompts.createPlugin'),
                     metadata: { scene: 'create_plugin' },
                   },

@@ -143,6 +143,8 @@ Built-in capabilities, including:
 
 Loadable modules. Each skill typically defines goals, steps, tool usage, and output rules.
 
+Built-in capabilities are discovered through `workswarm-builtin` (WorkSwarm Built-in Capabilities). The model reads its catalog and loads only the relevant skill files; member skills are no longer separate default installations. The catalog prompt guides app development to code mode without a runtime mode gate. Upgrades archive unchanged, source-confirmed legacy copies and preserve customized copies and disabled preferences.
+
 **Examples:**
 
 - `skill-creator` — skill creation assistant, helps generate new skills  

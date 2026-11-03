@@ -37,7 +37,7 @@ def _load_module_by_path(name: str, path: Path) -> ModuleType:
 def plots(tmp_path, monkeypatch) -> ModuleType:
     """The trace analyzer's plotting module, with the temp dir redirected."""
     path = (
-        get_builtin_skills_dir()
+        (get_builtin_skills_dir() / "workswarm-builtin" / "references" / "capabilities")
         / "ascend-moe-optimizer-trace-analyzer"
         / "analyzers"
         / "plots.py"
@@ -99,7 +99,7 @@ def test_user_scope_survives_an_unresolvable_user_name(plots, monkeypatch):
 def test_skill_creator_report_path_is_not_built_from_the_temp_root():
     """The live report is allocated by mkstemp, not named from a timestamp."""
     source = (
-        get_builtin_skills_dir() / _SKILL_CREATOR / "scripts" / "run_loop.py"
+        (get_builtin_skills_dir() / "workswarm-builtin" / "references" / "capabilities") / _SKILL_CREATOR / "scripts" / "run_loop.py"
     ).read_text(encoding="utf-8")
 
     assert "tempfile.mkstemp(" in source
@@ -108,7 +108,7 @@ def test_skill_creator_report_path_is_not_built_from_the_temp_root():
 
 def test_skill_creator_guidance_recommends_a_scratch_directory():
     """The authoring skill teaches the pattern that its own output will copy."""
-    text = (get_builtin_skills_dir() / _SKILL_CREATOR / "SKILL.md").read_text(
+    text = ((get_builtin_skills_dir() / "workswarm-builtin" / "references" / "capabilities") / _SKILL_CREATOR / "SKILL.md").read_text(
         encoding="utf-8"
     )
 

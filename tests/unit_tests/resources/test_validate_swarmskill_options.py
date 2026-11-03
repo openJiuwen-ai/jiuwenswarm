@@ -9,7 +9,7 @@ import pytest
 
 _VALIDATOR = (
     Path(__file__).resolve().parents[3]
-    / "jiuwenswarm/resources/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py"
+    / "jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/swarmskill-creator/scripts/validate_swarmskill.py"
 )
 
 

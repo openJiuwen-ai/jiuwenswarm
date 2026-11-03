@@ -2539,6 +2539,7 @@ class JiuWenSwarm:
             after_names = set(self._skill_manager.list_installed_skill_dir_names())
             skip_names = {
                 "_marketplace",
+                "workswarm-builtin",
                 "_pending_knowledge",
                 "skill-omni-creation",
                 "skill-creator",

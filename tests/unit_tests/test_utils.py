@@ -468,18 +468,20 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
         / "agent"
         / "workspace"
         / "skills"
+        / "workswarm-builtin"
+        / "references"
+        / "capabilities"
         / "rsi-program-dataset-creator"
         / "SKILL.md"
     ).is_file()
 
 
-@pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
 def test_ensure_default_builtin_skills_installs_program_evolution_design(
     tmp_path: Path,
     monkeypatch,
-    skill_name,
 ) -> None:
-    """New built-in skills are copied into an existing workspace on startup."""
+    """The catalog is installed on startup and user edits survive restart."""
+    skill_name = "workswarm-builtin"
     builtin_dir = tmp_path / "builtin-skills"
     user_skills_dir = tmp_path / "user-skills"
     source_skill = builtin_dir / skill_name
@@ -488,6 +490,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
         f"---\nname: {skill_name}\ndescription: test\n---\n",
         encoding="utf-8",
     )
+    (source_skill / "legacy_hashes.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: user_skills_dir)
 

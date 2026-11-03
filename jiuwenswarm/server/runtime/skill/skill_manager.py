@@ -318,16 +318,7 @@ _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-ski
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
 
 _SKILL_DISPLAY_FILENAME = "skill_display.md"
-_BUILTIN_SKILL_UI_WHITELIST = frozenset(
-    {
-        "advanced-daily-report",
-        "gitcode-api",
-        "financial-document-parser",
-        "skill-gen-4-enterprise-doc",
-        "skill-creator",
-        "swarmskill-creator",
-    }
-)
+_BUILTIN_SKILL_UI_WHITELIST = frozenset({"workswarm-builtin"})
 _SKILL_DISPLAY_KEYS = (
     "display_name_zh",
     "description_zh",
@@ -5053,10 +5044,11 @@ class SkillManager:
             }
 
         output_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_from_knowledge_"))
-        skills = ["skill-omni-creation"] if has_link else ["skill-creator-router"]
+        skills = ["workswarm-builtin"]
         prompt_parts = [
             "请根据以下知识来源生成一个完整、可安装的 Skill，并写入指定输出目录。",
             f"输出目录（必须在此目录内生成含 SKILL.md 的 Skill 根目录）: {output_dir}",
+            "请先读取内置能力目录，再读取 skill-creator；链接来源按该入口选择 skill-omni-creation。",
             "要求：",
             "1. SKILL.md 必须含有效 YAML front matter，name 与 description 均为非空字符串；",
             "2. 不得创建根级 .archive/；",

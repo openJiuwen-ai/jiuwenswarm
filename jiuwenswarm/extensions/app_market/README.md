@@ -48,29 +48,30 @@ sequenceDiagram
 
 该技能为内置自研技能（与 agent-creator 等一致），随 WorkSwarm 启动自动安装，无需手动部署：
 
-- 在“技能 → 我的技能 → 内置技能”中查看和开关。
-- 在会话输入框的“+ → 技能”中搜索选择。
-- 技能源码位于 [jiuwenswarm/resources/agent/workspace/skills/workswarm-app-builder](../../resources/agent/workspace/skills/workswarm-app-builder/)。
+- 在“技能 → 我的技能 → 内置技能”中选择 **WorkSwarm 内置能力**。
+- 在会话输入框的“+ → 技能”中选择总目录，描述应用开发需求；模型按目录读取应用开发说明。
+- 应用开发适用于 **code 模式**，由总目录提示词引导；其他模式提示切换后再开发，不增加发布接口的模式拦截。
+- 技能源码位于 [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/)。
 
 ## 使用技能
 
 技能启用后，描述应用需求即可进入开发流程，两种方式任选其一，上架结果均可在“扩展 → 应用市场”查看。
 
-### 方式一：主动选择技能
+### 方式一：明确选择应用开发能力
 
-在会话中选择 **WorkSwarm 应用开发**，直接描述应用需求：
+在 code 模式选择 **WorkSwarm 内置能力**，并明确使用其中的应用开发能力：
 
-> 帮我开发一个五子棋小游戏，支持AI对战
+> 使用内置应用开发能力，帮我开发一个五子棋小游戏，支持AI对战
 
-选择技能后即进入开发与上架流程，完成开发和验证后自动上架，无需在需求中重复技能名、WorkSwarm 或“上架”。用户明确要求暂不上架时，遵循用户要求。
+明确选择应用开发能力后进入开发与上架流程，完成开发和验证后自动上架，无需在需求中重复技能名、WorkSwarm 或“上架”。用户明确要求暂不上架时，遵循用户要求。
 
 ### 方式二：直接描述需求
 
-不选择技能，输入相同的需求。WorkSwarm 会根据应用开发和 AI 对战需求自动匹配该技能，开发和验证完成后，在当前对话中提示是否上架；用户确认后执行发布。此方式要求技能处于启用状态。
+不选择技能，输入相同的需求。WorkSwarm 会根据应用开发和 AI 对战需求自动匹配该技能，开发和验证完成后，在当前对话中提示是否上架；用户确认后执行发布。此方式要求总目录处于启用状态。选择总目录本身不代表授权发布。
 
 ### 上架行为
 
 - 上架提示针对具体应用，不将整个会话标记为“已上架”。
 - 同一会话可以开发和上架多个应用。
 
-应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-app-builder/SKILL.md)。
+应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md)。

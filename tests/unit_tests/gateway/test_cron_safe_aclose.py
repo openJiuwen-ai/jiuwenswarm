@@ -57,7 +57,7 @@ def test_run_report_imap_id_uses_specific_exceptions() -> None:
     from pathlib import Path
 
     src = Path(
-        "jiuwenswarm/resources/agent/workspace/skills/"
+        "jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/"
         "advanced-daily-report/run_report.py"
     ).read_text(encoding="utf-8")
     # The ID-command guard must catch IMAP/OS errors, not everything.
