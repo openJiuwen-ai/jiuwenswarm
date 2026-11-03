@@ -5,28 +5,28 @@ download path trusted the URL and the caller-supplied filename. That allowed
 ``file://`` reads, private-network requests and writes outside the workspace.
 Keep every rule in one place so other import paths can reuse them.
 
-Residual risk: DNS is validated before the connection, then urllib resolves
-the host again. A hostile DNS server can rebind between the two lookups. The
-IP allowlist still blocks private ranges at validation time; pinning the
-connection would need a custom HTTP handler.
+The connection is pinned to an address that passed the public-address check.
+``urllib`` re-resolves the hostname, so a hostile DNS server could answer with
+a public address during validation and a private address during connect. This
+module builds the ``http.client`` connection itself and keeps the original
+hostname for the ``Host`` header and TLS SNI.
 """
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import logging
 import os
 import re
+import shutil
 import socket
+import ssl
+import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Final
-from urllib.error import HTTPError, URLError
-from urllib.parse import ParseResult, urlparse
-from urllib.request import (
-    HTTPRedirectHandler,
-    Request,
-    build_opener,
-)
+from urllib.parse import ParseResult, urljoin, urlparse, urlunsplit
 
 from jiuwenswarm.server.runtime.attachments.upload_storage import (
     unique_upload_path,
@@ -42,7 +42,16 @@ ALLOWED_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
 #: disk use, not memory.
 DEFAULT_MAX_BYTES: Final[int] = 256 * 1024 * 1024
 
+#: Total wall-clock budget for one import, including redirects and reads.
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
+
+#: Upper bound for a single connect or read wait. The total deadline above
+#: still applies.
+CONNECT_TIMEOUT_SECONDS: Final[float] = 15.0
+
+MAX_REDIRECTS: Final[int] = 5
+
+_READ_CHUNK_BYTES: Final[int] = 65536
 
 _MAX_FILENAME_LENGTH: Final[int] = 200
 
@@ -50,6 +59,10 @@ _UNSAFE_FILENAME_CHARS = re.compile(r"[\x00-\x1f\x7f<>:\"|?*]")
 
 #: Names that would resolve to a directory or the workspace root.
 _RESERVED_FILENAMES: Final[frozenset[str]] = frozenset({"", ".", ".."})
+
+_REDIRECT_STATUSES: Final[frozenset[int]] = frozenset({301, 302, 303, 307, 308})
+
+_OK_STATUSES: Final[frozenset[int]] = frozenset({200, 206})
 
 
 class UnsafeImportUrlError(ValueError):
@@ -85,28 +98,36 @@ def _reject_non_public_address(address: str) -> None:
         )
 
 
-def validate_import_url(url: str) -> ParseResult:
-    """Return parsed URL facts, or raise when the target is unsafe.
+def _resolve_public_addresses(parsed: ParseResult) -> tuple[str, ...]:
+    """Return every resolved address after checking all of them.
 
-    Checks the scheme, credentials, port, and every address the host resolves
-    to. A host that resolves to any private, loopback, link-local or reserved
-    address is rejected, because the request may pick any of them.
+    A host that resolves to one public and one private address is rejected,
+    because the connection may pick either result.
     """
-    parsed = _parsed_url(url)
     host = str(parsed.hostname or "").strip()
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
     try:
         infos = socket.getaddrinfo(
             host,
-            parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+            parsed.port or default_port,
             type=socket.SOCK_STREAM,
         )
     except socket.gaierror as exc:
         raise UnsafeImportUrlError(f"url host does not resolve: {host}") from exc
-    addresses = {str(info[4][0]) for info in infos if info[4]}
+    addresses = tuple(
+        dict.fromkeys(str(info[4][0]) for info in infos if info[4])
+    )
     if not addresses:
         raise UnsafeImportUrlError(f"url host does not resolve: {host}")
     for address in addresses:
         _reject_non_public_address(address)
+    return addresses
+
+
+def validate_import_url(url: str) -> ParseResult:
+    """Return parsed URL facts, or raise when the target is unsafe."""
+    parsed = _parsed_url(url)
+    _resolve_public_addresses(parsed)
     return parsed
 
 
@@ -132,13 +153,6 @@ def sanitize_filename(raw: object, *, fallback: str = "download") -> str:
     return name
 
 
-def _open_target(target: Path, *, overwrite: bool) -> int:
-    """Open ``target`` without following a symlink and without clobbering."""
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    flags |= os.O_TRUNC if overwrite else os.O_EXCL
-    return os.open(str(target), flags, 0o600)
-
-
 def _resolve_target(workspace: Path, filename: str, *, overwrite: bool) -> Path:
     root = workspace.resolve(strict=False)
     candidate = (root / filename).resolve(strict=False)
@@ -155,12 +169,147 @@ def _resolve_target(workspace: Path, filename: str, *, overwrite: bool) -> Path:
     return candidate
 
 
-class _ValidatingRedirectHandler(HTTPRedirectHandler):
-    """Validate every redirect hop before urllib follows it."""
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection that dials a validated address, not a fresh DNS result."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
-        validate_import_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+    def __init__(self, host: str, *, pinned_address: str, **kwargs) -> None:
+        super().__init__(host, **kwargs)
+        self._pinned_address = pinned_address
+
+    def connect(self) -> None:
+        self.sock = self._create_connection(
+            (self._pinned_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection pinned to an address while keeping SNI and cert checks."""
+
+    def __init__(self, host: str, *, pinned_address: str, **kwargs) -> None:
+        super().__init__(host, **kwargs)
+        self._pinned_address = pinned_address
+
+    def connect(self) -> None:
+        sock = self._create_connection(
+            (self._pinned_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        try:
+            self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
+
+
+def _build_connection(
+    parsed: ParseResult,
+    address: str,
+    timeout: float,
+) -> http.client.HTTPConnection:
+    host = str(parsed.hostname or "")
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    port = parsed.port or default_port
+    if parsed.scheme.lower() == "https":
+        return _PinnedHTTPSConnection(
+            host,
+            pinned_address=address,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+    return _PinnedHTTPConnection(
+        host,
+        pinned_address=address,
+        port=port,
+        timeout=timeout,
+    )
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError("download timed out")
+    return remaining
+
+
+def _set_read_timeout(connection: http.client.HTTPConnection, timeout: float) -> None:
+    sock = getattr(connection, "sock", None)
+    if sock is not None:
+        sock.settimeout(max(0.001, timeout))
+
+
+def _temp_file(target: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".part",
+        dir=str(target.parent),
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _commit_temp(temp_path: Path, target: Path, *, overwrite: bool) -> Path:
+    """Move the finished temp file into place without losing an older file."""
+    if overwrite:
+        os.replace(temp_path, target)
+        return target
+
+    candidate = target
+    for _ in range(1000):
+        try:
+            os.link(temp_path, candidate)
+        except FileExistsError:
+            candidate = unique_upload_path(candidate)
+            continue
+        except OSError:
+            # Filesystems without hard links: create the target exclusively,
+            # then copy. The old file is never touched.
+            try:
+                descriptor = os.open(
+                    str(candidate),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                candidate = unique_upload_path(candidate)
+                continue
+            try:
+                with os.fdopen(descriptor, "wb") as out, temp_path.open("rb") as src:
+                    shutil.copyfileobj(src, out)
+            except BaseException:
+                candidate.unlink(missing_ok=True)
+                raise
+        temp_path.unlink(missing_ok=True)
+        return candidate
+    raise RuntimeError("could not allocate a unique filename")
+
+
+def _request_once(
+    parsed: ParseResult,
+    addresses: tuple[str, ...],
+    *,
+    timeout: float,
+) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    headers = {
+        "User-Agent": "jiuwenswarm-agent",
+        "Host": parsed.netloc,
+        "Accept-Encoding": "identity",
+        "Connection": "close",
+    }
+    last_error: BaseException | None = None
+    for address in addresses:
+        connection = _build_connection(parsed, address, timeout)
+        try:
+            connection.request("GET", path, headers=headers)
+            return connection, connection.getresponse()
+        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+            connection.close()
+            last_error = exc
+    raise RuntimeError(f"download failed: {last_error}")
 
 
 def download_url_to_workspace(
@@ -175,50 +324,71 @@ def download_url_to_workspace(
 ) -> Path:
     """Download ``url`` to ``workspace`` and return the written path.
 
+    The total wall-clock budget is ``timeout``. A slow peer cannot extend it by
+    sending one byte now and then.
+
     Raises ``UnsafeImportUrlError`` when the URL or name is unsafe, and
-    ``RuntimeError`` when the transfer is too large or fails.
+    ``RuntimeError`` when the transfer is too large, times out, or fails.
     """
-    parsed = validate_import_url(url)
+    deadline = time.monotonic() + max(0.001, float(timeout))
     workspace_dir = Path(workspace)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     filename = sanitize_filename(preferred_name, fallback=fallback_name)
     target = _resolve_target(workspace_dir, filename, overwrite=overwrite)
 
-    request = Request(
-        str(url).strip(),
-        headers={"User-Agent": "jiuwenswarm-agent"},
-    )
-    opener = build_opener(_ValidatingRedirectHandler())
-    written = 0
-    try:
-        with opener.open(request, timeout=timeout) as upstream:
-            declared = upstream.headers.get("Content-Length")
+    current_url = str(url).strip()
+    redirects = 0
+    temp_path: Path | None = None
+    while True:
+        parsed = _parsed_url(current_url)
+        addresses = _resolve_public_addresses(parsed)
+        remaining = _remaining(deadline)
+        connect_timeout = min(remaining, CONNECT_TIMEOUT_SECONDS)
+        try:
+            connection, response = _request_once(
+                parsed, addresses, timeout=connect_timeout
+            )
+        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+            raise RuntimeError(f"download failed: {exc}") from exc
+
+        try:
+            if response.status in _REDIRECT_STATUSES:
+                location = response.getheader("Location")
+                if not location:
+                    raise RuntimeError("redirect response has no Location header")
+                redirects += 1
+                if redirects > MAX_REDIRECTS:
+                    raise RuntimeError("too many redirects")
+                current_url = urljoin(current_url, location)
+                continue
+
+            if response.status not in _OK_STATUSES:
+                raise RuntimeError(f"download failed: HTTP {response.status}")
+
+            declared = response.getheader("Content-Length")
             if declared and declared.isdigit() and int(declared) > max_bytes:
-                raise RuntimeError(
-                    f"remote file is too large: {declared} bytes"
-                )
-            descriptor = _open_target(target, overwrite=overwrite)
-            try:
-                with os.fdopen(descriptor, "wb") as out:
-                    while True:
-                        chunk = upstream.read(65536)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        if written > max_bytes:
-                            raise RuntimeError(
-                                f"remote file exceeds the {max_bytes} byte limit"
-                            )
-                        out.write(chunk)
-            except BaseException:
-                target.unlink(missing_ok=True)
-                raise
-    except (HTTPError, URLError) as exc:
-        raise RuntimeError(f"download failed: {exc}") from exc
-    if written == 0:
-        logger.debug(
-            "[remote_fetch] downloaded an empty file: scheme=%s host=%s",
-            parsed.scheme,
-            parsed.hostname,
-        )
-    return target
+                raise RuntimeError(f"remote file is too large: {declared} bytes")
+
+            temp_path = _temp_file(target)
+            written = 0
+            with temp_path.open("wb") as out:
+                while True:
+                    _set_read_timeout(connection, _remaining(deadline))
+                    chunk = response.read(_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise RuntimeError(
+                            f"remote file exceeds the {max_bytes} byte limit"
+                        )
+                    out.write(chunk)
+            committed = _commit_temp(temp_path, target, overwrite=overwrite)
+            temp_path = None
+            return committed
+        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+            raise RuntimeError(f"download failed: {exc}") from exc
+        finally:
+            connection.close()
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
