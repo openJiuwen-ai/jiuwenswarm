@@ -6823,11 +6823,6 @@ async def test_consume_workflow_events_human_popup_carries_run_executor(monkeypa
 async def test_consume_workflow_events_does_not_emit_budget_exhausted_chat_error(monkeypatch):
     """Budget exhaustion is conveyed by the workflow.updated frame's
     budget_exhausted_scope; the consumer must not emit a separate chat.error."""
-
-
-@pytest.mark.anyio
-async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat_error(monkeypatch):
-    """The web UI must show a terminal session-budget failure even with no active run."""
     broadcasted: list[dict[str, object]] = []
     event = {
         "event_type": "workflow.updated",
