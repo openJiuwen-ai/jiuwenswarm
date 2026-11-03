@@ -1722,7 +1722,10 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     )
 
     from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+    from jiuwenswarm.agents.harness.common.rails.secret_shield import SecretShieldRail
 
+    assert any(isinstance(rail, SecretShieldRail) for rail in plan_rails)
+    assert any(isinstance(rail, SecretShieldRail) for rail in code_rails)
     assert orchestration_rail in plan_rails
     assert orchestration_rail in fast_rails
     assert ask_user_rail in plan_rails

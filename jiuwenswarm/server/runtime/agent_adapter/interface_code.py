@@ -556,7 +556,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "ContextProcessorRail",
         "SysOperationRail", "LspRail", "ProjectMemoryRail", "CodingMemoryRail",
         "TTSERail",  # Reserved: TTSE in code mode is provided by a plugin only.
-        "MemoryForbiddenRail",
+        "MemoryForbiddenRail", "SecretShieldRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
         "FileSystemRail",  # 别名
         "DesignRail",  # SDD 状态机（wave-1），受 modes.code.sdd.enabled 门控
@@ -1894,6 +1894,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_agent_md_prompt_rail", self._build_agent_md_prompt_rail),
             _RailBuildInfo("_coding_memory_rail", self._build_coding_memory_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
+            _RailBuildInfo("_secret_shield_rail", self._build_secret_shield_rail),
             _RailBuildInfo(
                 "_code_agent_mode_rail",
                 self._build_agent_mode_rail,
