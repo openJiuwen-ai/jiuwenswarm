@@ -1162,6 +1162,42 @@ async def test_cron_create_keeps_explicit_default_project_id(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_cron_create_backfills_tenant_ids_from_http_routing(monkeypatch) -> None:
+    """企业版 HTTP 创建体不带 group/bot 时，从请求头落到的 _web_routing 回填。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    monkeypatch.setattr(
+        "gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
+        lambda _client: False,
+    )
+    # HTTP outbound 与 WS 一样挂 _web_routing（见 web_http_dispatch）。
+    http_request = SimpleNamespace(
+        _web_routing={
+            "user_id": "zxy",
+            "group_id": "zuzhi1",
+            "bot_id": "bot-abc",
+        },
+        _jiuwen_auth_session="",
+    )
+
+    await channel.methods["cron.job.create"](
+        http_request,
+        "req-cron-tenant",
+        {"name": "job", "cron_expr": "0 9 * * *", "description": "hello"},
+        "user-session",
+        "zxy",
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert cron.params["user_id"] == "zxy"
+    assert cron.params["group_id"] == "zuzhi1"
+    assert cron.params["bot_id"] == "bot-abc"
+
+
+@pytest.mark.asyncio
 async def test_cron_create_with_project_asks_the_agent(monkeypatch) -> None:
     """选了具体项目时，不论是不是 AgentOS，都让 Agent 核对，网关不翻本地名单。"""
     channel = FakeWebChannel()
