@@ -35,8 +35,10 @@
 - [启动装配与运行时](docs/features/F_01_assembly-and-runtime.md)：单例装配、顺序约束、零扩展快路径、渠道钩子与停机。
 - [`gateway.request` 与认证门禁](docs/features/F_02_gateway-request-and-auth-gate.md)：四路由语义、门禁放行条件与本地方法表。
 - [运行时规约](docs/specs/S_01_gateway-extension-runtime.md)：入口、配置、包、事件、路由、错误码与不变量的唯一维护位置。
-- 待建立：`docs/features/F_03_render-service.md`、`F_04_ui-store.md`、`F_05_ui-click.md`、`F_06_http-fetch.md`
-  与 `docs/specs/S_02_render-service.md`、`S_03_ui-store.md`、`S_04_ui-click.md`、`S_05_http-fetch.md`。
+- 待建立：`docs/features/F_03_render-service.md`、`F_04_ui-store.md`、`F_05_ui-click.md`
+  与 `docs/specs/S_02_ui-render.md`、`S_03_ui-store.md`、`S_04_ui-click.md`。
+- [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算、重定向策略与登录示例链路。
+- [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键、错误码与示例包契约。
 
 ### 代码入口
 

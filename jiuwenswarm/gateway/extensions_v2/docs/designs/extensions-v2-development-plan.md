@@ -25,7 +25,7 @@
 | EXTV2-GW-03 | `ui.render` | 渲染协议、校验、登记、传输、`ops.ui.render`、门禁渲染登录框 | `F_03_render-service.md` | `S_02_render-service.md` | `test_gateway_ui_render.py` | 未开始 |
 | EXTV2-GW-04 | `ui.store` | 作用域存储、写即下发、`ops.ui.store` | `F_04_ui-store.md` | `S_03_ui-store.md` | `test_gateway_ui_store.py` | 未开始 |
 | EXTV2-GW-05 | `ui.click` | `webui.dispatch` 上行适配、动作校验、`ops.ui.click` | `F_05_ui-click.md` | `S_04_ui-click.md` | `test_gateway_ui_click.py` | 未开始 |
-| EXTV2-GW-06 | `ops.http.fetch` 与示例包 | 出站 HTTP、白名单策略、`examples/auth_login_demo` | `F_06_http-fetch.md` | `S_05_http-fetch.md` | `test_gateway_http_fetch.py` | 未开始 |
+| EXTV2-GW-06 | `ops.http.fetch` 与示例包 | 出站 HTTP、白名单策略、`examples/auth_login_demo` | [F_06](../features/F_06_http-fetch.md) | [S_05](../specs/S_05_http-fetch.md) | `test_gateway_http_fetch.py` | 进行中（HTTP 已实现） |
 
 ## 3. 依赖与开工条件
 
@@ -62,7 +62,8 @@ flowchart LR
 | 日期 | 条目 | 变更 |
 | --- | --- | --- |
 | 2026-11-01 | GW-01、GW-02 | 装配骨架、`gateway.request`、认证门禁、本地路由与对应单测落地 |
-| 2026-11-01 | GW-03～GW-06 | 待实现 |
+| 2026-11-01 | GW-03～GW-05 | 待实现 |
+| 2026-11-01 | GW-06 | `ops.http.fetch`、出站白名单、超时与体积预算落地；`auth_login_demo` 示例包待实现 |
 
 ## 6. 风险与待确认
 

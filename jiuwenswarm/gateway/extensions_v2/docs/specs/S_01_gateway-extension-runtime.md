@@ -126,3 +126,4 @@
 | 四路由 | `test_gateway_request.py` |
 | 门禁放行与拒绝 | `test_gateway_auth_gate.py` |
 | 本地方法表 | `test_gateway_auth_gate.py`、`test_gateway_request.py` |
+| 出站 HTTP 白名单与预算 | `test_gateway_http_fetch.py`（契约细节见 [S_05](S_05_http-fetch.md)） |

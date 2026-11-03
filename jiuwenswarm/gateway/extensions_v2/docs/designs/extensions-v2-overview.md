@@ -4,7 +4,7 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 类型 | 设计基线；Gateway 装配、`gateway.request`、认证门禁、本地路由、`ui.render`、`ui.store`、`ui.click`、`ops.http.fetch` 已实现 |
+| 类型 | 设计基线；Gateway 装配、`gateway.request`、认证门禁、本地路由、`ops.http.fetch` 已实现；`ui.render`、`ui.store`、`ui.click` 与 `examples/auth_login_demo` 待实现 |
 | 最近一次修订日期 | 2026-11-01 |
 | 维护责任 | Gateway Extensions V2 模块维护者；与 AgentServer `extensions_v2` 的契约差异由两侧维护者共同确认 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
