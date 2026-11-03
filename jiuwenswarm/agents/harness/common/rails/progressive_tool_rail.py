@@ -1144,13 +1144,11 @@ class ProgressiveToolRail(DeepAgentRail):
         for tool in tools:
             name = str(getattr(tool, "name", "") or "")
             declared, _required_skill = _required_skill_requirement(tool)
-            if (
-                not name
-                or declared
-                or name in self.eager_tools
-                or name in blocked
-                or name == _PINNED_SCHEMA_TOOL_NAME
-            ):
+            if not name or declared:
+                continue
+            if name in self.eager_tools or name in blocked:
+                continue
+            if name == _PINNED_SCHEMA_TOOL_NAME:
                 continue
             deferred.append(tool)
         return deferred
