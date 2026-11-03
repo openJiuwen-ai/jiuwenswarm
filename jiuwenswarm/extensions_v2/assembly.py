@@ -121,7 +121,12 @@ def _build_assembly(server: Any) -> ExtensionAssembly:
     manager = ExtensionManager(resolve_install_dir(), store_dir=resolve_store_dir())
     transport = RenderTransport(push=_push_from(server))
     catalog = WebUICatalogService(manager.active_packages)
-    webui = WebUIRuntime(bus=bus, transport=transport, catalog=catalog)
+    webui = WebUIRuntime(
+        bus=bus,
+        transport=transport,
+        catalog=catalog,
+        workspace_locator=_workspace_locator(server),
+    )
     return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport)
 
 
@@ -134,6 +139,11 @@ async def _activate_installed(manager: ExtensionManager) -> None:
 
 def _push_from(server: Any) -> Any:
     return server if callable(getattr(server, "send_push", None)) else None
+
+
+def _workspace_locator(server: Any) -> Any:
+    locate = getattr(getattr(server, "session_workspace_files", None), "workspace", None)
+    return locate if callable(locate) else None
 
 
 def _host_version() -> str | None:

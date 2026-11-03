@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from weakref import WeakValueDictionary
@@ -52,11 +52,13 @@ class WebUIRuntime:
         transport: RenderTransport,
         registry: ActiveRenderRegistry | None = None,
         catalog: WebUICatalogService | None = None,
+        workspace_locator: Callable[[str, str], Awaitable[object]] | None = None,
     ) -> None:
         self.bus = bus
         self.transport = transport
         self.registry = registry or ActiveRenderRegistry()
         self._catalog = catalog or WebUICatalogService(lambda: ())
+        self._locate_workspace = workspace_locator
         self._connections: WeakValueDictionary[str, WebUIConnectionContext] = WeakValueDictionary()
 
     def register_event_types(self, bus: ExtensionEventBus | None = None) -> None:
@@ -133,10 +135,29 @@ class WebUIRuntime:
         if connection_id:
             metadata["ws_id"] = connection_id
         session_id = request.target.session_id.strip()
-        context = SessionContext(session_id=session_id, metadata=metadata) if session_id else None
+        cwd, project_root = await self._session_paths(session_id, channel_id) if session_id else (None, None)
+        if project_root:
+            metadata["project_root"] = project_root
+        context = SessionContext(session_id=session_id, cwd=cwd, metadata=metadata) if session_id else None
         with self._connection_scope(connection_id, user_id=user_id, channel_id=channel_id):
             output = await self.bus.trigger(Event(request.event_type, request), context)
         return output if isinstance(output, UiActionOutput) else None
+
+    async def _session_paths(self, session_id: str, channel_id: str) -> tuple[str | None, str | None]:
+        """Return the host-declared cwd and project root of one session."""
+
+        if self._locate_workspace is None:
+            return None, None
+        try:
+            located = await self._locate_workspace(session_id, channel_id)
+        except Exception:  # noqa: BLE001 - a lookup failure must not block dispatch
+            logger.debug("[WebUI] session workspace lookup failed: %s", session_id, exc_info=True)
+            return None, None
+        if getattr(located, "status", "") != "ready":
+            return None, None
+        cwd = getattr(located, "cwd", None)
+        project_root = getattr(located, "project_root", None)
+        return (str(cwd) if cwd else None, str(project_root) if project_root else None)
 
     @contextmanager
     def _connection_scope(self, connection_id: str, *, user_id: str = "", channel_id: str = "web") -> Iterator[None]:
