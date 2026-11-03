@@ -72,6 +72,107 @@ async def _saturated_default_pool():
 
 
 @pytest.mark.asyncio
+async def test_listener_close_preserves_accepted_connection_for_shutdown_ack() -> None:
+    async with _pair() as (client, peer, server):
+        await asyncio.wait_for(server.stop_accepting(), 1)
+        await peer.send({"kind": "shutdown.done", "ok": True})
+        assert await asyncio.wait_for(client.recv(), 1) == {
+            "kind": "shutdown.done", "ok": True,
+        }
+        await peer.close()
+        await client.close()
+        await asyncio.wait_for(server.close(), 1)
+
+
+@pytest.mark.asyncio
+async def test_closed_listener_does_not_unlink_a_replacement_endpoint() -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        await server.close()
+        replacement = Path(server.path)
+        replacement.write_text("replacement owner", encoding="utf-8")
+        try:
+            await server.close()
+            assert replacement.read_text(encoding="utf-8") == "replacement owner"
+        finally:
+            replacement.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix endpoint ownership across concurrent close")
+async def test_concurrent_listener_close_does_not_unlink_a_new_owner(monkeypatch) -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        waiting = asyncio.Event()
+        releases = [asyncio.Event(), asyncio.Event()]
+        entered = 0
+        wait_closed = server._unix.wait_closed
+
+        async def controlled_wait_closed():
+            nonlocal entered
+            index = entered
+            entered += 1
+            if entered == 2:
+                waiting.set()
+            await wait_closed()
+            await releases[index].wait()
+
+        monkeypatch.setattr(server._unix, "wait_closed", controlled_wait_closed)
+        first = asyncio.create_task(server.close())
+        second = asyncio.create_task(server.close())
+        replacement = IpcServer(server.path)
+        try:
+            await asyncio.wait_for(waiting.wait(), 1)
+            releases[0].set()
+            await asyncio.wait_for(first, 1)
+            await replacement.start()
+            releases[1].set()
+            await asyncio.wait_for(second, 1)
+            assert Path(replacement.path).exists()
+        finally:
+            for release in releases:
+                release.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+            await replacement.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix listener cancellation and queued stream cleanup")
+async def test_cancelled_listener_stop_can_resume_draining_connections() -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        closing = asyncio.Event()
+        drained = asyncio.Event()
+
+        async def blocked_close():
+            closing.set()
+            await asyncio.Event().wait()
+
+        async def remaining_close():
+            drained.set()
+
+        await server._queue.put(SimpleNamespace(close=blocked_close))
+        await server._queue.put(SimpleNamespace(close=remaining_close))
+        stopping = asyncio.create_task(server.stop_accepting())
+        try:
+            await asyncio.wait_for(closing.wait(), 1)
+            stopping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stopping
+            assert not server._unix.is_serving()
+            await asyncio.wait_for(server.close(), 1)
+            assert drained.is_set()
+        finally:
+            stopping.cancel()
+            await asyncio.gather(stopping, return_exceptions=True)
+            if server._unix is not None:
+                server._unix.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "nt", reason="Windows named-pipe executor isolation")
 async def test_named_pipe_heartbeat_survives_default_pool_saturation() -> None:
     async with _pair() as (client, peer, _server):
