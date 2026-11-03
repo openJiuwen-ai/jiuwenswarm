@@ -4776,6 +4776,7 @@
   },
   "authPrompt": {
     "title": "操作授权",
+    "matchedRule": "匹配规则",
     "titleConfirm": "操作确认",
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
