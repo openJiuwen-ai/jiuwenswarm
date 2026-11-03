@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
@@ -14,7 +14,6 @@ from uuid import uuid4
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCallInputs
 from openjiuwen.harness.extension_binder import apply_extension_hot, unapply_extension_hot
@@ -25,7 +24,6 @@ from openjiuwen.harness.resources import ExtensionParts, load_agent_template_pac
 from openjiuwen.harness.resources.extension_resolver import resolve_agent_template_parts
 from openjiuwen.harness.schema.build_context import BuildContext
 from openjiuwen.harness.schema.config import SubAgentConfig
-from openjiuwen.harness.subagent_lifecycle import cleanup_subagent_task_resources
 from openjiuwen.symphony import ExpertCandidate, plan_experts
 
 from jiuwenswarm.common.utils import get_agent_experts_dir, get_expert_cache_dir
@@ -43,7 +41,6 @@ CONFIRMATION_STATE_KEY = "__symphony_expert_confirmation__"
 CONFIRMATION_NONCE_KEY = "__symphony_confirmation_nonce__"
 EXPERT_PLAN_ACTION_KEY = "__symphony_expert_plan_action__"
 _EXPERT_TYPE_PREFIX = "symphony_expert_"
-_MAX_PARALLEL = 3
 _MAX_DISPLAY_SUMMARY_LENGTH = 80
 _PROMPT_SECTION = "symphony_expert_turn"
 _SKILL_GRAPH_TOOLS = frozenset({
@@ -231,16 +228,17 @@ class DynamicExpertRound:
         self.response: dict[str, Any] | None = None
         self._refs: list[Any] = []
         self._skill_rails: list[DynamicExpertSkillRail] = []
-        self._child_ids: set[str] = set()
         self._planning_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
-        self._semaphore = asyncio.Semaphore(_MAX_PARALLEL)
         self._bindings: dict[str, str] = {}
         self._predecessors: dict[str, set[str]] = {}
         self._states: dict[str, str] = {}
         self._completed: dict[str, str] = {}
-        self._inflight: dict[str, str] = {}
-        self._interrupted: dict[str, str] = {}
+        self._dispatches: dict[str, dict[str, Any]] = {}
+        self._task_ids: dict[str, str] = {}
+        self._task_manager: Any = None
+        self._task_scope: Any = None
+        self._unsubscribe_tasks: Callable[[], None] | None = None
         self._planning_batch_delegation_ids: set[str] = set()
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
@@ -515,10 +513,6 @@ class DynamicExpertRound:
                     for rail in getattr(config, "rails", []) or []
                     if isinstance(rail, DynamicExpertSkillRail)
                 ]
-                child_ids = {
-                    config.agent_card.id for config in self._selected_configs.values()
-                    if isinstance(config, SubAgentConfig)
-                }
                 predecessors = {expert_id: set() for expert_id in nodes}
                 for edge in graph["edges"]:
                     predecessors[edge["target"]].add(edge["source"])
@@ -538,7 +532,6 @@ class DynamicExpertRound:
                 }
                 self._refs = refs
                 self._skill_rails = skill_rails
-                self._child_ids = child_ids
                 self.plan = graph
                 self._bindings = bindings
                 self._states = {expert_id: "pending" for expert_id in nodes}
@@ -602,57 +595,74 @@ class DynamicExpertRound:
             parts.append("前置专家结果：\n" + "\n\n".join(upstream))
         return "\n\n".join(parts)
 
-    async def reserve(
-        self, subagent_type: str, model_task: str, call_id: str, *, resume: bool = False,
-    ) -> tuple[str | None, str]:
-        await self._semaphore.acquire()
-        reserved = False
-        try:
-            async with self._state_lock:
-                expert_id = next((key for key, value in self._bindings.items() if value == subagent_type), None)
-                can_resume = resume and self._interrupted.get(call_id) == expert_id
-                reason = ""
-                if self._closed or self.plan is None:
-                    reason = "本轮专家计划已结束"
-                elif expert_id is None:
-                    reason = "该专家不在本轮计划中"
-                elif resume and not can_resume:
-                    reason = "该专家节点没有可恢复的中断调用"
-                elif self._states[expert_id] != "pending" and not can_resume:
-                    reason = "该专家节点已调用，不可重复执行"
-                elif any(self._states[key] == "failed" for key in self._predecessors[expert_id]):
-                    reason = "前置专家执行失败，不能执行该节点"
-                elif not self._predecessors[expert_id] <= self._completed.keys():
-                    reason = "前置专家尚未完成，请按计划依赖顺序调用"
-                if reason:
-                    return None, reason
-                assert expert_id is not None
+    def bind_task_manager(self, manager: Any) -> None:
+        if self._task_manager is manager:
+            return
+        if self._task_manager is not None:
+            raise ValueError("本轮专家的任务工具已更换，请重新发起任务")
+        self._task_scope = manager.scope_for_session(self.session_id)
+        self._task_manager = manager
+        self._unsubscribe_tasks = manager.add_task_listener(self._on_task_state)
+
+    def _on_task_state(self, scope: Any, record: dict[str, Any]) -> None:
+        if scope != self._task_scope:
+            return
+        batch = self._dispatches.get(record.get("dispatch_tool_call_id"))
+        index = record.get("dispatch_index")
+        if batch is None or not isinstance(index, int) or not 0 <= index < len(batch["experts"]):
+            return
+        batch["started"] = True
+        expert_id = batch["experts"][index]
+        self._task_ids[record["task_id"]] = expert_id
+        status = record.get("status")
+        self._states[expert_id] = "interrupted" if status == "waiting_approval" else status
+        if status == "completed":
+            self._completed[expert_id] = str(record.get("output") or "")
+
+    async def prepare_dispatch(self, call_id: str, requests: list[Any], task_ids: list[str]) -> list[dict[str, Any]]:
+        """Reserve the whole validated batch atomically, before Core starts workers."""
+        async with self._state_lock:
+            if self._closed or self.plan is None:
+                raise ValueError("本轮专家计划已结束")
+            if any(key not in self._task_ids for key in task_ids):
+                raise ValueError("只能等待或取消本轮专家任务")
+            signature = (tuple(requests), tuple(sorted(task_ids)))
+            previous = self._dispatches.get(call_id)
+            if previous is not None:
+                if signature not in (previous["original"], previous["rewritten"]):
+                    raise ValueError("同一工具调用不能改派其他专家任务")
+                return previous["tasks"]
+            experts, tasks = [], []
+            for request in requests:
+                expert_id = next((key for key, value in self._bindings.items()
+                                  if value == request.subagent_type), None)
+                if expert_id is None:
+                    raise ValueError("动态专家协作只能执行已确认方案中的专家节点")
+                if expert_id in experts or self._states[expert_id] != "pending":
+                    raise ValueError("该专家节点已调用，不可重复执行")
+                if any(self._states[key] in {"failed", "timed_out", "cancelled"}
+                       for key in self._predecessors[expert_id]):
+                    raise ValueError("前置专家执行失败，不能执行该节点")
+                if not self._predecessors[expert_id] <= self._completed.keys():
+                    raise ValueError("前置专家尚未完成，请按计划依赖顺序调用")
+                experts.append(expert_id)
+                tasks.append({"subagent_type": request.subagent_type,
+                              "task_description": self._task_context(expert_id, request.task_description)})
+            # No await or state mutation until every task is accepted.
+            rewritten = tuple(replace(request, task_description=task["task_description"])
+                              for request, task in zip(requests, tasks))
+            self._dispatches[call_id] = {"original": signature, "rewritten": (rewritten, signature[1]),
+                                         "experts": experts, "tasks": tasks, "started": False}
+            for expert_id in experts:
                 self._states[expert_id] = "running"
-                self._inflight[call_id] = expert_id
-                self._interrupted.pop(call_id, None)
-                reserved = True
-                return expert_id, self._task_context(expert_id, model_task)
-        finally:
-            if not reserved:
-                self._semaphore.release()
+            return tasks
 
-    async def suspend(self, call_id: str) -> None:
-        async with self._state_lock:
-            expert_id = self._inflight.pop(call_id, None)
-            if expert_id is not None:
-                self._states[expert_id] = "interrupted"
-                self._interrupted[call_id] = expert_id
-                self._semaphore.release()
-
-    async def finish(self, call_id: str, *, success: bool, output: str = "") -> None:
-        async with self._state_lock:
-            expert_id = self._inflight.pop(call_id, None)
-            if expert_id is None:
-                return
-            self._states[expert_id] = "completed" if success else "failed"
-            if success:
-                self._completed[expert_id] = output
-            self._semaphore.release()
+    def rollback_dispatch(self, call_id: str) -> None:
+        batch = self._dispatches.get(call_id)
+        if batch is not None and not batch["started"]:
+            for expert_id in batch["experts"]:
+                self._states[expert_id] = "pending"
+            self._dispatches.pop(call_id)
 
     def guidance(self) -> str:
         if self.pending_plan is not None:
@@ -690,7 +700,7 @@ class DynamicExpertRound:
 
         lines = [
             "按 planned_graph 依赖顺序调用真实 task_tool，完成本轮专家委派；"
-            "可在同一次模型输出中并行调用没有依赖的节点。工具会阻止越序和重复调用。"
+            "将当前依赖已就绪的独立节点放入一次 dispatch 的 tasks；后续用 task_ids 等待或取消本轮任务。工具会阻止越序和重复调用。"
             "复核已完成结果并统一答复；未执行或失败的任务不得写成已完成。",
         ]
         for expert_id, node in self.plan["nodes"].items():
@@ -701,7 +711,7 @@ class DynamicExpertRound:
             )
         if all(state == "completed" for state in self._states.values()):
             lines.append("所有专家节点已完成。现在复核并汇总，不要再次委派。")
-        elif any(state == "failed" for state in self._states.values()):
+        elif any(state in {"failed", "timed_out", "cancelled"} for state in self._states.values()):
             lines.append("已有专家失败。仅继续执行不依赖失败节点的任务，并在最终答复中说明未执行部分。")
         return "\n".join(lines)
 
@@ -736,18 +746,17 @@ class DynamicExpertRound:
                 self.clear_confirmation_state()
                 self._confirmation = {}
                 refs, self._refs = self._refs, []
-        # TaskTool deliberately retains interrupted children. The pinned Core
-        # has no public drain API; remove only this round's unique child IDs.
+        # Core owns child lifetime; cancel only tasks bound to this expert round.
         try:
-            card = self.agent.ability_manager.get("task_tool")
-            task_tool = Runner.resource_mgr.get_tool(card.id) if isinstance(card, ToolCard) else None
-            pending = getattr(task_tool, "_pending_subagents", {})
-            for session_id, (child, _affinity) in list(pending.items()):
-                if child.card.id in self._child_ids:
-                    pending.pop(session_id, None)
-                    await cleanup_subagent_task_resources(child)
-        except Exception as exc:  # noqa: BLE001 - still close rails and parent bindings
-            _warn("[symphony.experts] failed to drain interrupted experts: %s", exc)
+            if (self._task_manager is not None and self._task_scope is not None and self._task_ids
+                    and self._task_manager.scope_for_run(self._task_scope.run_id) is not None):
+                await self._task_manager.cancel(self._task_scope, list(self._task_ids))
+        except Exception as exc:  # noqa: BLE001 - still unload rails and bindings
+            _warn("[symphony.experts] failed to drain expert tasks: %s", exc)
+        finally:
+            if self._unsubscribe_tasks is not None:
+                self._unsubscribe_tasks()
+                self._unsubscribe_tasks = None
         for rail in self._skill_rails:
             try:
                 await rail.close()
@@ -940,10 +949,13 @@ class DynamicExpertRail(DeepAgentRail):
         if tool_name != "task_tool":
             return
         args = self._arguments(ctx.inputs.tool_args)
-        subagent_type = str(args.get("subagent_type") or "")
-        if not subagent_type.startswith(_EXPERT_TYPE_PREFIX):
-            if round_state is not None and (round_state.pending_plan is not None or round_state.plan is not None):
-                self._reject(ctx, "动态专家协作只能执行已确认方案中的专家节点")
+        tasks = args.get("tasks")
+        requests_expert = (isinstance(tasks, list) and any(
+            isinstance(task, dict) and str(task.get("subagent_type", "")).startswith(_EXPERT_TYPE_PREFIX)
+            for task in tasks
+        )) or str(args.get("subagent_type", "")).startswith(_EXPERT_TYPE_PREFIX)
+        active_plan = round_state is not None and (round_state.pending_plan is not None or round_state.plan is not None)
+        if not active_plan and not requests_expert:
             return
         if _in_plan_mode(self._agent, ctx.session):
             self._reject(ctx, "请先通过计划审批退出只读规划模式，再执行动态专家任务")
@@ -954,44 +966,37 @@ class DynamicExpertRail(DeepAgentRail):
         if not call_id:
             self._reject(ctx, "动态专家调用缺少工具调用 ID")
             return
-        expert_id, task = await round_state.reserve(
-            subagent_type,
-            str(args.get("task_description") or ""),
-            call_id,
-            resume=isinstance(args.get("query"), InteractiveInput),
-        )
-        if expert_id is None:
-            self._reject(ctx, task)
-            return
-        if isinstance(args.get("query"), InteractiveInput):
-            # Core supplies an object with the user's interrupt answers. Keep
-            # it intact so TaskTool resumes the already-mounted child.
-            ctx.inputs.tool_args = args
-        else:
-            args["task_description"] = task
-            args["query"] = task
-            ctx.inputs.tool_args = json.dumps(args, ensure_ascii=False)
+        try:
+            card = self._agent.ability_manager.get("task_tool")
+            tool = Runner.resource_mgr.get_tool(card.id) if isinstance(card, ToolCard) else None
+            if tool is None:
+                raise ValueError("当前代理无法使用 task_tool")
+            action, requests, task_ids, _timeout = tool.parse_group_inputs(args)
+            round_state.bind_task_manager(tool.task_manager)
+            if action == "dispatch":
+                prepared = await round_state.prepare_dispatch(call_id, requests, task_ids)
+                args["tasks"] = [{**task, **context} for task, context in zip(args["tasks"], prepared)]
+                # Both execution and subsequent rails must retain Core's resume input.
+                ctx.inputs.tool_args = args
+                ctx.inputs.tool_call.arguments = args
+            elif any(key not in round_state._task_ids for key in task_ids):
+                raise ValueError("只能等待或取消本轮专家任务")
+        except (ValueError, TypeError) as exc:
+            self._reject(ctx, str(exc))
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
-        # Parallel tool calls share ctx.extra in Core. Use this call's own ID
-        # so one expert cannot consume another expert's completion marker.
-        call_id = str(getattr(ctx.inputs.tool_call, "id", "") or "")
         round_state = self._round(ctx)
-        if not call_id or round_state is None:
+        if round_state is None or ctx.inputs.tool_name != "task_tool" or ctx.extra.get("_skip_tool"):
             return
-        result = ctx.inputs.tool_result
-        if isinstance(result, dict) and result.get("result_type") == "interrupt" and "interrupt_ids" in result:
-            await round_state.suspend(call_id)
-            return
-        data = getattr(result, "data", None)
-        output = str(data.get("output") or "") if isinstance(data, dict) else ""
-        await round_state.finish(call_id, success=getattr(result, "success", False) is True, output=output)
+        # State/output come from task notifications, including completions that
+        # are never collected by wait. A failed dispatch must release reservations.
+        if getattr(ctx.inputs.tool_result, "success", None) is False:
+            round_state.rollback_dispatch(str(getattr(ctx.inputs.tool_call, "id", "") or ""))
 
     async def on_tool_exception(self, ctx: AgentCallbackContext) -> None:
-        call_id = str(getattr(ctx.inputs.tool_call, "id", "") or "")
         round_state = self._round(ctx)
-        if call_id and round_state is not None:
-            await round_state.finish(call_id, success=False)
+        if round_state is not None and ctx.inputs.tool_name == "task_tool":
+            round_state.rollback_dispatch(str(getattr(ctx.inputs.tool_call, "id", "") or ""))
 
 
 __all__ = ["DynamicExpertRail", "DynamicExpertRound", "ExpertPlanTool", "LocalExpert", "PLAN_TOOL_NAME", "scan_local_experts"]

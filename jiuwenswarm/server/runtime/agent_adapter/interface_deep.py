@@ -62,6 +62,7 @@ from openjiuwen.harness import (
 )
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import PromptSection, resolve_language
+from openjiuwen.harness.subagent_types import GENERAL_PURPOSE_TYPE
 from openjiuwen.harness.rails import (
     LLMRetryRail,
     SkillUseRail,
@@ -5093,7 +5094,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """Build SubagentRail for subagent delegation."""
         try:
             subagent_rail = BrowserTaskPromptRail(
-                include_usage_rules=self._include_outer_subagent_usage_rules()
+                include_usage_rules=self._include_outer_subagent_usage_rules(),
             )
             logger.info("[JiuWenSwarmDeepAdapter] SubagentRail create success")
         except Exception as exc:
@@ -7822,6 +7823,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if self._instance is None:
             return
         await self._instance.stop()
+        await self._close_task_groups(reason="adapter_stopped")
+
+    async def _close_task_groups(self, session_id=None, *, reason):
+        close = getattr(getattr(self, "_instance", None), "cancel_background_subtasks", None)
+        if not callable(close):
+            return None
+        return await close(session_id, reason=reason)
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
@@ -8151,9 +8159,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """Per-session teardown: rail abort, shell kill, cancelled tool collection."""
         sid = self._resolve_interrupt_session_id(session_id)
         cancelled_tasks = await self._cancel_session_agent_tasks(sid)
+        task_group_summary = await self._close_task_groups(sid, reason=intent)
         cancelled_tool_results = self._collect_cancelled_tools_for_session(
             session_id,
             reset_for_new_task=reset_for_new_task,
+            task_group_summary=task_group_summary,
         )
         try:
             from openjiuwen.core.sys_operation.shell_process_registry import (
@@ -8188,6 +8198,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         session_id: str | None,
         *,
         reset_for_new_task: bool = False,
+        task_group_summary: dict | None = None,
     ) -> list[dict[str, Any]]:
         """Abort rail checkpoints and collect in-flight tools for *session_id*.
 
@@ -8198,7 +8209,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             return []
         sid = self._resolve_interrupt_session_id(session_id)
         self._stream_event_rail.abort(session_id or sid)
-        self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+        if task_group_summary is None:
+            self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+        else:
+            self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid, task_group_summary=task_group_summary)
         cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(
             session_id or sid,
         )
@@ -14145,6 +14159,31 @@ def _jws_install_subagent_runtime_patch() -> None:
 
         if not sub.find_rails_by_type((SubagentLoggingRail,)):
             sub.add_rail(SubagentLoggingRail())
+        if sub.card.name == GENERAL_PURPOSE_TYPE:
+            # Scope inherited user-facing rules after the runtime env section (89).
+            sub.system_prompt_builder.add_section(PromptSection(
+                name="runtime.subagent_role",
+                content={"en": (
+                    "# Subtask role\n\n"
+                    "You execute the current delegated subtask for the parent agent.\n"
+                    "- Follow its goal, scope, read/write boundaries and completion criteria; "
+                    "keep inherited permission and safety constraints.\n"
+                    "- Finish when the criteria are met. Report out-of-scope findings "
+                    "instead of expanding the task.\n"
+                    "- Diagnose failures before retrying. Retry with new information or a "
+                    "meaningful change; when blocked, return completed work, the specific "
+                    "error, remaining work and needed input.\n"
+                    "- Hand back conclusions, key evidence, accessible artifact paths, "
+                    "actual verification and unfinished items. State uncertainty; "
+                    "do not label partial work complete.\n"
+                    "- Your final response is a handoff to the parent agent. The parent "
+                    "handles final user-facing delivery; send files directly only when "
+                    "this subtask explicitly requires it.\n"
+                    "- This task handoff may exceed inherited short-summary limits when "
+                    "needed to preserve key evidence, important errors and unfinished work.\n"
+                )},
+                priority=90,
+            ))
         # pylint: disable=protected-access
         parent_ws = getattr(self._deep_config, "workspace", None)
         # pylint: enable=protected-access

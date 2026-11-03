@@ -13,6 +13,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, List, Mapping, Optional
 
 import yaml
@@ -31,6 +32,7 @@ from openjiuwen.core.single_agent.rail.base import (
     ToolCallInputs,
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
+from openjiuwen.harness.rails.subagent import SubagentRail
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
@@ -353,7 +355,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Shared across sessions (same workspace → same tool instance)
         self._main_todo_tool: Optional[TodoListTool] = None
         # Track in-flight tool calls for cancellation status emission
-        self._inflight_tool_calls: dict[str, dict[str, Any]] = {}
+        self._inflight_tool_calls: dict[Any, dict[str, Any]] = {}
+        # Projection metadata only. Core owns execution, approvals and results.
+        self._task_group_views: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._task_group_runs: dict[str, str] = {}
+        self._task_group_listeners: dict[Any, Any] = {}
+        self._task_group_emissions: dict[tuple[str, str, str], asyncio.Task] = {}
         # Store cancelled tool info for interrupt response (per-session to avoid
         # cross-session leakage in concurrent collect→get→clear sequences).
         self._cancelled_tool_results: dict[str, list[dict[str, Any]]] = {}
@@ -378,6 +385,19 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
         self._sync_image_capabilities()
+
+    def uninit(self, agent: Any) -> None:
+        for unsubscribe in self._task_group_listeners.values():
+            unsubscribe()
+        self._task_group_listeners.clear()
+        for task in self._task_group_emissions.values():
+            task.cancel()
+        self._task_group_emissions.clear()
+        for key in self._task_group_views:
+            self._inflight_tool_calls.pop(key, None)
+        self._task_group_views.clear()
+        self._task_group_runs.clear()
+        self._deep_agent = None
 
     def _get_prompt_language(self) -> str:
         """Get the current prompt language from the agent's system_prompt_builder."""
@@ -623,6 +643,33 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
         self._cancelled_tool_results.pop(sid, None)
+        # A HITL response closes the old stream, not the logical task. Retain
+        # only lightweight card identity while Core still owns its run.
+        for key, info in self._task_group_views.items():
+            if key[0] == sid:
+                info["session"] = None
+        if not self._has_active_task_group(sid):
+            self._task_group_runs.pop(sid, None)
+            for key in list(self._task_group_views):
+                if key[0] == sid:
+                    self._task_group_views.pop(key)
+                    self._inflight_tool_calls.pop(key, None)
+                    emission = self._task_group_emissions.pop(key, None)
+                    if emission is not None:
+                        emission.cancel()
+        for manager, unsubscribe in list(self._task_group_listeners.items()):
+            if not any(manager.scope_if_active(key) is not None for key in self._task_group_runs):
+                unsubscribe()
+                self._task_group_listeners.pop(manager)
+
+    def _has_active_task_group(self, session_id: str) -> bool:
+        if self._deep_agent is None:
+            return False
+        for rail in self._deep_agent.find_rails_by_type((SubagentRail,)):
+            manager = getattr(rail, "task_manager", None)
+            if manager is not None and manager.scope_if_active(session_id) is not None:
+                return True
+        return False
 
     def get_cancelled_tool_results(self, session_id: str = "") -> list[dict[str, Any]]:
         """Get cancelled tool results collected during interrupt.
@@ -640,7 +687,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         sid = session_id or "default"
         self._cancelled_tool_results.pop(sid, None)
 
-    def collect_cancelled_tool_updates(self, session_id: str = "") -> None:
+    def collect_cancelled_tool_updates(self, session_id: str = "", *, task_group_summary: dict | None = None) -> None:
         """Collect cancelled tool info for interrupt response.
 
         Args:
@@ -648,19 +695,32 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         """
         sid = session_id or "default"
         bucket = self._cancelled_tool_results.setdefault(sid, [])
+        records = {f"subtask:{r['dispatch_tool_call_id']}:{r['dispatch_index']}": r
+                   for r in (task_group_summary or {}).get("tasks", [])}
         for tc_id, info in list(self._inflight_tool_calls.items()):
             # Only collect tools matching the target session
             if session_id and info.get("session_id") != session_id:
                 continue
             tc = info.get("tool_call")
+            if info.get("projected") is False:
+                self._inflight_tool_calls.pop(tc_id, None)
+                continue
             if tc is None:
                 continue
-            bucket.append({
+            if tc_id in self._task_group_views:
+                info["terminal"] = True
+            result = {
                 "tool_name": getattr(tc, "name", ""),
-                "tool_call_id": tc_id,
+                "tool_call_id": getattr(tc, "id", tc_id),
                 "result": "[Interrupted] Tool execution cancelled by user.",
                 "status": "error",
-            })
+            }
+            record = records.get(getattr(tc, "id", tc_id))
+            if record is not None:
+                success = record["status"] == "completed"
+                result.update(result=str(record), raw_output=record, success=success,
+                              is_error=not success, status="completed" if success else "error")
+            bucket.append(result)
             self._inflight_tool_calls.pop(tc_id, None)
         logger.info(
             "[StreamEventRail] collected %d cancelled tools for session=%s",
@@ -702,6 +762,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # ctx.extra (same inheritance as _SID_KEY above), so a parent abort
         # still stops in-flight sub-agents.
         ctx.extra[self._ABORT_EPOCH_KEY] = self._abort_epoch.get(sid, 0)
+        await self._bind_task_group_events(ctx)
         try:
             from openjiuwen.core.sys_operation.shell_process_registry import (
                 set_shell_session_id,
@@ -712,6 +773,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.debug("[StreamEventRail] set_shell_session_id failed", exc_info=True)
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
+        await self._flush_task_group_events(ctx)
+        result = getattr(ctx.inputs, "result", None)
+        summary = result.get("task_group_summary") if isinstance(result, dict) else None
+        if isinstance(summary, dict) and ctx.session is not None:
+            await self._emit_task_group_results(ctx, summary.get("tasks", []), final=True)
         token = ctx.extra.pop(self._SHELL_SID_TOKEN_KEY, None)
         if token is None:
             return
@@ -730,6 +796,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         declared = self._sync_image_capabilities()
+        await self._bind_task_group_events(ctx)
         sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
         raw_epoch = ctx.extra.get(self._ABORT_EPOCH_KEY)
@@ -790,7 +857,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 and isinstance(cleaned_args, Mapping)
                 and isinstance(cleaned_args.get("query"), InteractiveInput)
             )
-            if not is_task_tool_resume:
+            group_action = self._task_group_action(ctx)
+            if group_action:
+                await self._bind_task_group_events(ctx)
+            if group_action == "dispatch":
+                await self._emit_task_group_calls(ctx)
+            if not is_task_tool_resume and not group_action:
                 await self._emit_tool_call(
                     session,
                     tc,
@@ -807,7 +879,141 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     "tool_call": tc,
                     "session": session,
                     "session_id": sid,
+                    "projected": not bool(group_action),
                 }
+
+    @staticmethod
+    def _task_group_action(ctx):
+        if ctx.inputs.tool_name != "task_tool":
+            return None
+        return _parse_tool_call_arguments(ctx.inputs.tool_call).get("action")
+
+    def _task_group_run(self, ctx):
+        sid = self._resolve_sid(ctx, ctx.session)
+        binding = ctx.extra.get("task_group.run")
+        if binding:
+            return str(binding[0])
+        # Inner ReAct callbacks have their own ctx.extra. Resolve ownership from
+        # Core rather than substituting the UI abort epoch for its run UUID.
+        for manager in self._task_group_listeners:
+            scope = manager.scope_if_active(sid)
+            if scope is not None:
+                return scope.run_id
+        # Final summaries can arrive after Core has already closed its run.
+        return self._task_group_runs.get(sid)
+
+    async def _emit_task_group_calls(self, ctx):
+        sid = self._resolve_sid(ctx, ctx.session)
+        run_id = self._task_group_run(ctx)
+        if run_id is None:
+            return
+        previous = self._task_group_runs.get(sid)
+        if previous and previous != run_id:
+            for key in list(self._task_group_views):
+                if key[:2] == (sid, previous):
+                    self._task_group_views.pop(key)
+                    self._inflight_tool_calls.pop(key, None)
+        self._task_group_runs[sid] = run_id
+        tc = ctx.inputs.tool_call
+        args = _parse_tool_call_arguments(tc)
+        items = args.get("tasks")
+        if not isinstance(items, list) or len(items) > 128:
+            return
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            display_id = f"subtask:{tc.id}:{index}"
+            key = (sid, run_id, display_id)
+            info = self._task_group_views.get(key)
+            if info is not None and (info["terminal"] or info.get("started")):
+                continue
+            child_call = SimpleNamespace(id=display_id, name="task_tool", arguments=item)
+            if info is None:
+                info = {"tool_call": child_call, "session_id": sid, "terminal": False,
+                        "session": ctx.session, "emit_lock": asyncio.Lock()}
+                self._task_group_views[key] = info
+                self._inflight_tool_calls[key] = info
+            info["started"] = await self._emit_tool_call(ctx.session, child_call, session_id=sid)
+
+    async def _bind_task_group_events(self, ctx):
+        if self._deep_agent is None or ctx.session is None:
+            return
+        find_rails = getattr(self._deep_agent, "find_rails_by_type", None)
+        if not callable(find_rails):
+            return
+        for rail in find_rails((SubagentRail,)):
+            manager = getattr(rail, "task_manager", None)
+            if manager is not None and manager not in self._task_group_listeners:
+                self._task_group_listeners[manager] = manager.add_task_listener(self._on_task_group_state)
+        await self._flush_task_group_events(ctx)
+
+    def _on_task_group_state(self, scope, record):
+        if record.get("status") not in {"completed", "failed", "timed_out", "cancelled"}:
+            return
+        display_id = f"subtask:{record['dispatch_tool_call_id']}:{record['dispatch_index']}"
+        key = (scope.parent_session_id or "default", scope.run_id, display_id)
+        info = self._task_group_views.get(key)
+        if info is None or info["terminal"]:
+            return
+        info["record"] = record
+        if key not in self._task_group_emissions:
+            task = asyncio.create_task(self._push_task_group_result(key))
+            self._task_group_emissions[key] = task
+            def done(completed):
+                if self._task_group_emissions.get(key) is completed:
+                    self._task_group_emissions.pop(key)
+                if not completed.cancelled() and completed.exception() is not None:
+                    logger.warning("[StreamEventRail] task result notification failed: %s", completed.exception())
+            task.add_done_callback(done)
+
+    async def _push_task_group_result(self, key):
+        # Retry one transient write; retain failures for resume/wait/final summary.
+        for _attempt in range(2):
+            info = self._task_group_views.get(key)
+            if info is None:
+                return
+            async with info["emit_lock"]:
+                session, record = info.get("session"), info.get("record")
+                if info["terminal"] or session is None or record is None:
+                    return
+                sent = await self._emit_tool_result(session, info["tool_call"], {
+                    **record, "success": record.get("status") == "completed",
+                })
+                if sent:
+                    info["terminal"] = True
+                    info.pop("record", None)
+                    self._inflight_tool_calls.pop(key, None)
+                    return
+            await asyncio.sleep(0)
+
+    async def _flush_task_group_events(self, ctx):
+        sid = self._resolve_sid(ctx, ctx.session)
+        run_id = self._task_group_run(ctx)
+        for key, info in list(self._task_group_views.items()):
+            if key[:2] == (sid, run_id):
+                info["session"] = ctx.session
+                if info.get("record") is not None and not info["terminal"]:
+                    await self._push_task_group_result(key)
+
+    async def _emit_task_group_results(self, ctx, records, *, final=False):
+        if not isinstance(records, list):
+            return
+        sid = self._resolve_sid(ctx, ctx.session)
+        run_id = self._task_group_run(ctx)
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            display_id = f"subtask:{record.get('dispatch_tool_call_id')}:{record.get('dispatch_index')}"
+            key = (sid, run_id, display_id)
+            info = self._task_group_views.get(key)
+            if info is None or info["terminal"]:
+                continue
+            status = record.get("status")
+            if status not in {"completed", "failed", "timed_out", "cancelled"} and not (final and status == "cancelling"):
+                continue
+            info["record"] = record
+            info["session"] = ctx.session
+            await self._push_task_group_result(key)
 
     # ------------------------------------------------------------------
     # after_tool_call: emit tool_result + todo.updated
@@ -832,7 +1038,22 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             isinstance(ctx.inputs.tool_result, dict)
             and ctx.inputs.tool_result.get("result_type") == "interrupt"
         )
-        if interrupt is None and not is_interrupt_result:
+        group_action = self._task_group_action(ctx)
+        if group_action:
+            result = ctx.inputs.tool_result
+            data = getattr(result, "data", None)
+            if isinstance(data, dict):
+                await self._emit_task_group_results(ctx, data.get("ready", data.get("tasks", [])))
+            elif interrupt is None and not is_interrupt_result and group_action == "dispatch":
+                args = _parse_tool_call_arguments(tc)
+                items = args.get("tasks")
+                if isinstance(items, list):
+                    await self._emit_task_group_results(ctx, [
+                        {"dispatch_tool_call_id": tc_id, "dispatch_index": index,
+                         "status": "failed", "error": str(getattr(result, "error", None) or result)}
+                        for index in range(min(len(items), 128))
+                    ])
+        elif interrupt is None and not is_interrupt_result:
             await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
         self._symphony_stream_handler.request_force_finish(
             ctx,
@@ -937,7 +1158,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         model_display_name: str = "",
         session_id: str = "",
         skill_directory: Path | None = None,
-    ) -> None:
+    ) -> bool:
         try:
             name = getattr(tool_call, "name", "")
             arguments = getattr(tool_call, "arguments", {})
@@ -998,15 +1219,17 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     payload={"tool_call": tool_call_payload},
                 )
             )
+            return True
         except Exception:
             logger.debug("tool_call emit failed", exc_info=True)
+            return False
 
     async def _emit_tool_result(
         self,
         session: Session,
         tool_call: Any,
         result: Any,
-    ) -> None:
+    ) -> bool:
         try:
             raw_output = _structured_tool_result_payload(result)
             tool_result_payload = {
@@ -1036,8 +1259,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     },
                 )
             )
+            return True
         except Exception:
             logger.debug("tool_result emit failed", exc_info=True)
+            return False
 
     @staticmethod
     async def _emit_ask_user_question_if_interrupted(

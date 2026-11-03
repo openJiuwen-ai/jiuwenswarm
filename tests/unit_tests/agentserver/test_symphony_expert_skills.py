@@ -37,6 +37,7 @@ from openjiuwen.harness.resources.extension_resolver import ResolvedSkill
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.tools.subagent.task_tool import TaskTool
 
+from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.symphony import expert_team
 from jiuwenswarm.symphony.expert_skills import DynamicExpertSkillRail, snapshot_public_skills
 
@@ -151,11 +152,30 @@ async def _bind(parent, *specs):
     card = parent.ability_manager.get("task_tool")
     tool = Runner.resource_mgr.get_tool(card.id)
     assert isinstance(tool, TaskTool)
+    original_create = parent.create_subagent
+    def create(*args, **kwargs):
+        child = original_create(*args, **kwargs)
+        for spec in specs:
+            if spec.agent_card.name == args[0]:
+                for blueprint, runtime in zip(
+                    [rail for rail in spec.rails if isinstance(rail, DynamicExpertSkillRail)],
+                    child.find_rails_by_type((DynamicExpertSkillRail,)),
+                ):
+                    blueprint._test_runtime_rail = runtime
+                    assert blueprint is not runtime  # TaskTool creates an isolated child.
+        return child
+    parent.create_subagent = create
     return tool
 
 
-async def _invoke(tool, *, name="expert", session_id="parent-session", call_id="outer-call", query=None):
-    args = {"subagent_type": name, "task_description": "执行专家节点"}
+def _runtime_rail(blueprint):
+    return getattr(blueprint, "_test_runtime_rail", blueprint)
+
+
+async def _invoke(tool, *, name="expert", session_id="parent-session", call_id="outer-call", query=None, timeout_s=None):
+    args = {"action": "dispatch", "tasks": [{"subagent_type": name, "task_description": "执行专家节点"}]}
+    if timeout_s is not None:
+        args["timeout_s"] = timeout_s
     if query is not None:
         args["query"] = query
     return await asyncio.wait_for(tool.invoke(
@@ -164,6 +184,7 @@ async def _invoke(tool, *, name="expert", session_id="parent-session", call_id="
 
 
 def _assert_clean(rail):
+    rail = _runtime_rail(rail)
     child = rail._agent
     assert rail.load_record is None
     assert rail.skills_meta == []
@@ -196,7 +217,8 @@ def _package(root, expert_id, body="专家正文", *, with_tool=False):
             '    async def invoke(self, inputs, **kwargs):\n'
             '        return {"evidence": "已取得专家工具证据"}\n'
             '    async def stream(self, inputs, **kwargs):\n'
-            '        yield {"evidence": "已取得专家工具证据"}\n'
+            '        yield {"evidence": "已取得专家工具证据"}\n',
+            encoding="utf-8",
         )
         value = json.loads(manifest.read_text())
         value["tools"] = [{"file": "evidence.py", "class": "EvidenceTool"}]
@@ -470,7 +492,7 @@ async def test_real_task_uses_own_and_public_skills_without_disabled_siblings(tm
 
     result = await _invoke(tool)
 
-    assert result.success and result.data["output"] == "完成"
+    assert result.success and result.data["ready"][0]["output"] == "完成"
     seen = "\n".join(_tool_messages(model))
     assert "专家优先正文" in seen and "公共独有正文" in seen
     assert "公共同名正文" not in seen and "不可暴露正文" not in seen
@@ -492,21 +514,22 @@ async def test_missing_or_unmountable_skill_stops_before_model(tmp_path, monkeyp
         _skill(directory.parent, directory.name)
         second = _skill(directory.parent, "second")
         rail = DynamicExpertSkillRail(public_skills=[], expert_skills=[_resolved(directory), _resolved(second)])
-        original_reload = rail.reload_skills
+        original_reload = DynamicExpertSkillRail.reload_skills
         reload_count = 0
 
-        async def fail_second_bind():
+        async def fail_second_bind(self):
             nonlocal reload_count
             reload_count += 1
             if reload_count == 2:
                 raise RuntimeError("second skill bind failed")
-            await original_reload()
+            await original_reload(self)
 
-        monkeypatch.setattr(rail, "reload_skills", fail_second_bind)
+        monkeypatch.setattr(DynamicExpertSkillRail, "reload_skills", fail_second_bind)
     parent = await _parent(tmp_path)
     tool = await _bind(parent, _spec(model, rail))
-    with pytest.raises(Exception):
-        await _invoke(tool)
+    result = await _invoke(tool)
+    assert result.success and result.data["ready"][0]["status"] == "failed"
+    assert result.data["ready"][0]["error"]
     assert model.calls == []
     _assert_clean(rail)
 
@@ -517,8 +540,9 @@ async def test_real_model_failure_releases_skill_load(tmp_path):
     model = ScriptedModel(RuntimeError("scripted model failed"))
     rail = DynamicExpertSkillRail(public_skills=[], expert_skills=[_resolved(directory)])
     parent = await _parent(tmp_path)
-    with pytest.raises(Exception, match="scripted model failed"):
-        await _invoke(await _bind(parent, _spec(model, rail)))
+    result = await _invoke(await _bind(parent, _spec(model, rail)))
+    assert result.success and result.data["ready"][0]["status"] == "failed"
+    assert "scripted model failed" in str(result.data["ready"][0]["error"])
     assert len(model.calls) == 1
     _assert_clean(rail)
 
@@ -549,15 +573,19 @@ async def test_real_task_cancellation_drains_mount_and_releases_skills(tmp_path,
             return record
 
         monkeypatch.setattr(DeepAgent, "load_plugin_ability", blocked_mount)
-    task = asyncio.create_task(_invoke(tool))
+    receipt = await _invoke(tool, timeout_s=0)
+    scope = tool.task_manager.scope_if_active("parent-session")
+    cancelling = None
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
-        assert rail._agent._load_records
-        task.cancel()
+        assert _runtime_rail(rail)._agent._load_records
+        cancelling = asyncio.create_task(tool.task_manager.cancel(scope, receipt.data["pending_ids"]))
+        await asyncio.sleep(0)
     finally:
         release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        if cancelling is not None:
+            await cancelling
+        await tool.close_task_groups("parent-session")
     assert len(model.calls) == (0 if during_mount else 1)
     _assert_clean(rail)
 
@@ -580,18 +608,19 @@ async def test_real_task_interrupt_resume_keeps_one_mount_and_child(tmp_path, mo
     monkeypatch.setattr(DeepAgent, "load_plugin_ability", observe_load)
     interrupted = await _invoke(tool)
     assert interrupted["result_type"] == "interrupt"
-    child = rail._agent
-    record_id = rail.load_record.load_id
-    assert len(tool._pending_subagents) == 1
+    child = _runtime_rail(rail)._agent
+    record_id = _runtime_rail(rail).load_record.load_id
+    scope = tool.task_manager.scope_if_active("parent-session")
+    assert len(tool.task_manager.interrupted_records(scope)) == 1
     assert child.ability_manager.get("skill_tool") is not None
     feedback = InteractiveInput()
     feedback.update(interrupted["interrupt_ids"][0], {"approved": True})
 
     result = await _invoke(tool, query=feedback)
 
-    assert result.success and result.data["output"] == "恢复完成"
-    assert rail._agent is child and load_ids == [record_id]
-    assert tool._pending_subagents == {}
+    assert result.success and result.data["ready"][0]["output"] == "恢复完成"
+    assert _runtime_rail(rail)._agent is child and load_ids == [record_id]
+    assert tool.task_manager.interrupted_records(scope) == []
     assert "恢复后真实技能正文" in "\n".join(_tool_messages(model))
     _assert_clean(rail)
 
@@ -626,11 +655,12 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
     normal_roots = []
 
     def inspect_operations(_messages, **_kwargs):
-        child = rail._agent
+        runtime = _runtime_rail(rail)
+        child = runtime._agent
         operation = child.deep_config.sys_operation
         assert operation._run_config.restrict_to_sandbox is True
-        assert rail.sys_operation is not operation
-        assert Runner.resource_mgr.get_sys_operation(rail.sys_operation.id) is None
+        assert runtime.sys_operation is not operation
+        assert Runner.resource_mgr.get_sys_operation(runtime.sys_operation.id) is None
         read_tool = Runner.resource_mgr.get_tool(child.ability_manager.get("read_file").id)
         bash_tool = Runner.resource_mgr.get_tool(child.ability_manager.get("bash").id)
         assert read_tool.operation is operation
@@ -644,7 +674,7 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
     assert "你是测试专家" in spec.system_prompt
     result = await _invoke(await _bind(parent, spec), name=spec.agent_card.name)
 
-    assert result.success and result.data["output"] == "沙箱任务完成"
+    assert result.success and result.data["ready"][0]["output"] == "沙箱任务完成"
     assert "你是测试专家" in str(model.calls[0]["messages"])
     assert str(own) in "\n".join(_tool_messages(model))
     outputs = {
@@ -659,7 +689,7 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
         assert "outside sandbox" in output
         assert "不得读取的包外秘密" not in output
         assert "沙箱内获准的专家正文" not in output
-    assert rail._agent.deep_config.sys_operation._run_config.sandbox_root == normal_roots[0]
+    assert _runtime_rail(rail)._agent.deep_config.sys_operation._run_config.sandbox_root == normal_roots[0]
     assert parent.deep_config.sys_operation._run_config.sandbox_root == parent_roots
     assert parent.deep_config.sys_operation._run_config.restrict_to_sandbox is True
     _assert_clean(rail)
@@ -790,7 +820,8 @@ async def test_plan_approval_precedes_expert_planning_and_handoff(tmp_path, monk
         handoff_expert=adapter._handoff_confirmed_expert,
     )
     adapter._dynamic_expert_rounds = {session.get_session_id(): round_state}
-    provider = lambda sid: adapter._dynamic_expert_rounds.get(sid)
+    def provider(sid):
+        return adapter._dynamic_expert_rounds.get(sid)
     mode_rail = (adapter._build_work_agent_mode_rail() if work_mode == "work"
                  else adapter._build_agent_mode_rail())
     approval_rail = adapter._build_work_plan_approval_rail()
@@ -856,7 +887,8 @@ async def test_plan_approval_precedes_expert_planning_and_handoff(tmp_path, monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("work_mode", ["work", "code", "design"])
-async def test_confirmed_multi_experts_execute_real_dependency_tasks_and_keep_host_tools(tmp_path, monkeypatch, work_mode):
+@pytest.mark.parametrize("child_approval", [False, True])
+async def test_confirmed_multi_experts_execute_real_dependency_tasks_and_keep_host_tools(tmp_path, monkeypatch, work_mode, child_approval):
     from openjiuwen.core.foundation.tool import Tool, ToolCard
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -888,17 +920,21 @@ async def test_confirmed_multi_experts_execute_real_dependency_tasks_and_keep_ho
                for key in ("researcher", "reviewer")}
     model = parent.deep_config.model
     specs = {key: _production_spec(parent, expert, model)[0] for key, expert in experts.items()}
+    if child_approval:
+        specs["researcher"].rails.append(InterruptSkillOnce())
     monkeypatch.setattr(expert_team, "scan_local_experts", AsyncMock(return_value=experts))
     monkeypatch.setattr(expert_team, "_subagent_config", lambda _parent, expert, _model: specs[expert.id])
     round_state = expert_team.DynamicExpertRound(parent, "请专家合作完成报告", model, session_id=session.get_session_id())
     adapter._dynamic_expert_rounds = {session.get_session_id(): round_state}
-    provider = lambda sid: adapter._dynamic_expert_rounds.get(sid)
+    def provider(sid):
+        return adapter._dynamic_expert_rounds.get(sid)
     competing = CompetingAgent()
     mode_rail = (adapter._build_work_agent_mode_rail() if work_mode == "work"
                  else adapter._build_agent_mode_rail())
     await apply_extension_hot(parent, ExtensionParts(
         tools=[expert_team.ExpertPlanTool(provider), competing],
-        rails=[mode_rail, expert_team.DynamicExpertRail(provider), DynamicExpertConfirmationRail(provider)],
+        rails=[mode_rail, expert_team.DynamicExpertRail(provider), DynamicExpertConfirmationRail(provider),
+               JiuSwarmStreamEventRail()],
     ))
     model.responses.extend([
         _call(expert_team.PLAN_TOOL_NAME, query=round_state.query),
@@ -918,15 +954,22 @@ async def test_confirmed_multi_experts_execute_real_dependency_tasks_and_keep_ho
         assert adapter._prepare_confirmation_resume(session.get_session_id(), {"request_id": request_id}, inputs)
         model.responses.extend([
             _call("Agent", prompt="尝试绕过专家计划"),
-            _call("task_tool", subagent_type=expert_team._subagent_type("reviewer"), task_description="提前执行"),
-            _call("task_tool", subagent_type=expert_team._subagent_type("researcher"), task_description="调研"),
+            _call("task_tool", action="dispatch", tasks=[{"subagent_type": expert_team._subagent_type("reviewer"), "task_description": "提前执行"}]),
+            _call("task_tool", action="dispatch", tasks=[{"subagent_type": expert_team._subagent_type("researcher"), "task_description": "调研"}]),
             _call("skill_tool", skill_name="private"), _call("skill_tool", skill_name="host-skill"),
             _call("expert_evidence"), AssistantMessage(content="调研发现：关键事实"),
-            _call("task_tool", subagent_type=expert_team._subagent_type("reviewer"), task_description="复核"),
+            _call("task_tool", action="dispatch", tasks=[{"subagent_type": expert_team._subagent_type("reviewer"), "task_description": "复核"}]),
             _call("skill_tool", skill_name="private"), AssistantMessage(content="复核已确认关键事实"),
             AssistantMessage(content="专家报告完成"),
         ])
         result = await asyncio.wait_for(parent.invoke(inputs, session=session), 15)
+        if child_approval:
+            assert result["result_type"] == "interrupt"
+            assert round_state._states["researcher"] == "interrupted"
+            feedback = InteractiveInput()
+            feedback.update(result["interrupt_ids"][0], {"approved": True})
+            result = await asyncio.wait_for(parent.invoke({"query": feedback}, session=session), 15)
+        assert result.get("result_type") == "answer", result
         assert result["output"] == "专家报告完成"
         assert not competing.called
         assert round_state.response["status"] == "ready"
@@ -988,7 +1031,8 @@ async def test_planning_batch_blocks_parallel_delegation_then_restores_normal_us
         parent, "请产品内专家处理任务", model, session_id=session.get_session_id(),
     )
     adapter._dynamic_expert_rounds = {session.get_session_id(): round_state}
-    provider = lambda sid: adapter._dynamic_expert_rounds.get(sid)
+    def provider(sid):
+        return adapter._dynamic_expert_rounds.get(sid)
     await apply_extension_hot(parent, ExtensionParts(
         tools=[expert_team.ExpertPlanTool(provider), DelegationTool()],
         rails=[adapter._build_agent_mode_rail(), expert_team.DynamicExpertRail(provider),

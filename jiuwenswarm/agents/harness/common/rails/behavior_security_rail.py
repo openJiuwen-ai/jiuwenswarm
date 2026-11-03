@@ -7,8 +7,9 @@ from openjiuwen.core.single_agent.interrupt import InterruptRequest
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
 from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail
+from openjiuwen.harness.subagent_types import tool_owner_id_of
 
-from jiuwenswarm.common.behavior_security import ACTIVE_BEHAVIOR, _event_id, raw_event
+from jiuwenswarm.common.behavior_security import ACTIVE_BEHAVIOR, REPORT_OWNER_ID, _event_id, raw_event
 from jiuwenswarm.common.utils import logger
 
 OUTPUT_BLOCK_MESSAGE = (
@@ -23,6 +24,11 @@ class BehaviorSecurityRail(DeepAgentRail):
     def __init__(self, bridge):
         super().__init__()
         self.bridge = bridge
+        self._report_owner_id: str | None = None
+
+    def init(self, agent):
+        # Tool callbacks receive the inner ReActAgent, so bind the outer owner here.
+        self._report_owner_id = tool_owner_id_of(agent)
 
     async def before_invoke(self, ctx):
         if ctx.session is None:
@@ -51,6 +57,7 @@ class BehaviorSecurityRail(DeepAgentRail):
         # A retry uses the same callback context; retire its previous attempt.
         self._finish_tool_call(ctx)
         ctx.extra["behavior.finished"] = False
+        ctx.extra[REPORT_OWNER_ID] = self._report_owner_id
         ctx.extra["behavior.policy_revision"] = self.bridge.policy_revision()
         task = asyncio.current_task()
         if task is not None:
@@ -101,5 +108,4 @@ class BehaviorSecurityRail(DeepAgentRail):
                 })
 
     def uninit(self, agent):
-        config = getattr(agent, "deep_config", None)
-        self.bridge.cancel_reports(getattr(config, "tool_owner_id", None))
+        self.bridge.cancel_reports(self._report_owner_id)
