@@ -350,10 +350,9 @@ def task_management_tools():
         (
             "jiuwen_task_query",
             (
-                "Find Core invocations and their results in this conversation, plus the user's scheduled "
-                "tasks (定时任务) from all conversations in scheduled_jobs. Query before selecting an "
+                "Find Core invocations and their results in this conversation. Query before selecting an "
                 "ambiguous task; use exact returned job_id and revision for controls. "
-                "query is a literal substring of the task title or original task text, not a question or "
+                "query is a literal substring of the original task text, not a question or "
                 "a list of keywords. Prefer a known job_id. If no task matches, shorten query "
                 "or list without query; no match does NOT prove completion or absence of files."
             ),

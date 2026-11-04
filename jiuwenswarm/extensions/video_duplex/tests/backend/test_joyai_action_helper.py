@@ -149,9 +149,8 @@ async def test_invalid_helper_json_is_a_validation_error(monkeypatch, raw):
 
 @pytest.mark.asyncio
 async def test_fenced_helper_json_preserves_valid_response(monkeypatch):
-    monkeypatch.setattr(helper, "request_review", AsyncMock(return_value=
-        '```json\n{"decision":"keep","response":"hello","tool":null}\n```',
-    ))
+    response = '```json\n{"decision":"keep","response":"hello","tool":null}\n```'
+    monkeypatch.setattr(helper, "request_review", AsyncMock(return_value=response))
     original = {"response": "hello"}
     result = await helper.review_action(
         instruction="hello", result=original, context="", current_tasks=[],
