@@ -51,11 +51,12 @@ Gateway 与 AgentServer 共同支持的属性使用相同名称和语义；宿�
 | `events` | 第 5 章允许的事件绑定；不声明时省略，声明时必须为非空对象 |
 
 `Button.value` 和 `Text.value` 是文案；二者不接受 `props.children`、`label` 或节点子组件。
-`Tag.props.children`、`Divider.props.children` 是各自声明的字符串属性，继续保留。
+`Tag.props.children`、`Divider.props.children`、`Avatar.props.children` 是各自声明的字符串属性，继续保留。
 `Tabs.props.items[].children` 是页签内容节点，`TreeSelect` / `FileTree` 数据项里的 children 是各自的数据子项，不能混为一类。
 
 Python `RenderNode.children=()` 是模型默认值，序列化时省略；直接构造 JSON 时，叶子组件应省略节点级 children，不能传 `children: []`。
-不接受任意 `className`、`style`、`onClick`、`srcdoc` 或 ReactNode。宿主的 `appearance`、主题 token、连接状态和本地交互状态也不是插件 props。
+不接受任意 `className`、`style`、`onClick`、`srcdoc` 或 ReactNode；Avatar 仅开放第 4.19 节登记的三个 style 字段。
+宿主的 `appearance`、主题 token、连接状态和本地交互状态也不是插件 props。
 
 ### 2.2 基础类型、尺寸与默认值
 
@@ -423,12 +424,20 @@ file=null 表示无文件；非空对象至少提供 content 或 downloadUrl，n
 
 | 属性 | 类型 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- | --- |
-| `src` | string | 是 | — | 头像 URL；不接受旧字段 url |
+| `src` | string | 否 | — | 头像 URL；不接受旧字段 url |
+| `children` | string | 否 | — | 原样显示的头像文本；不是节点级 children |
 | `alt` | string | 否 | — | 资源替代文本 |
+| `gap` | number（>= 0，<= 4096） | 否 | — | AntD 文本缩放时的左右间距，单位 px |
+| `style` | object | 否 | — | 只接受 backgroundColor、color、fontSize |
+| `style.backgroundColor` / `style.color` | string | 否 | — | 3 / 4 / 6 / 8 位十六进制 CSS 颜色 |
+| `style.fontSize` | number（>= 1，<= 4096） | 否 | — | 数值像素字号 |
 | `size` | `small` / `medium` / `large` / `sm` / `md` / `lg` / `default` / number（>= 1，<= 4096） | 否 | `"medium"` | 标准尺寸、default 别名或像素数值 |
 | `shape` | `circle` / `square` | 否 | `"circle"` | 形状 |
 
-src 必填并遵循 URL 规则。size 的 default 别名映射为 medium，数值只要求有限且在 1..4096，不额外要求整数。无子节点或事件。
+src 显式提供时须为非空合法 URL；允许仅有文本或空头像。图片优先，图片失败后的 children 显示、文本缩放和 gap 使用 AntD 原生行为。
+alt 只描述图片，不作为显示文本；宿主不从账号名推导首字素、配色或字号，相关展示由插件声明。
+style 不接受其他键，宿主 appearance.style 最后覆盖组件样式。size 的 default 别名映射为 medium，
+数值只要求有限且在 1..4096，不额外要求整数。无节点级 children 或事件。
 
 ### 4.20 Dropdown
 
@@ -563,7 +572,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | Slider | slider.ts | webuiSlider：数值和 marks | 插件参数滑块 |
 | Tabs | tabs.ts | webuiTabs：页签内容与激活 | 插件内部页签；区别于右侧宿主页签 |
 | Empty | empty.ts | webuiEmpty：空态图片与描述 | 空列表、无数据提示 |
-| Avatar | avatar.ts | webuiAvatar：src 头像、尺寸与形状 | 首次欢迎页、Workbench 内的侧栏用户菜单 |
+| Avatar | avatar.ts | webuiAvatar：src 图片、children 文本、受控 style、尺寸与形状 | 首次欢迎页、Workbench 和登录示例的侧栏用户菜单 |
 | Image | image.ts | webuiImage：图片、fallback 与预览 | 插件图片与大图预览 |
 | Divider | divider.ts | webuiDivider：标题和方向 | 插件内容分段 |
 | Card | card.ts | webuiCard：标题、封面与内容 | 欢迎页、插件内容卡片 |

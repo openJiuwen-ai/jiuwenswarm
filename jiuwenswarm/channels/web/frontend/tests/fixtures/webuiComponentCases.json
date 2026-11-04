@@ -1,5 +1,17 @@
 {
   "invalid": [
+    ["Avatar", {"style": {"position": "fixed"}}],
+    ["Avatar", {"style": {"backgroundColor": "url(https://example.test)"}}],
+    ["Avatar", {"style": {"color": "invalid"}}],
+    ["Avatar", {"style": {"fontSize": "10px"}}],
+    ["Avatar", {"style": {"fontSize": 0}}],
+    ["Avatar", {"gap": -1}],
+    ["Avatar", {"name": "Alice"}],
+    ["Avatar", {"children": 123}],
+    ["Avatar", {"children": "A", "src": ""}],
+    ["Avatar", {"children": "A", "src": "javascript:alert(1)"}],
+    ["Avatar", {"url": "/logo.svg"}],
+
     [
       "Dropdown",
       {
@@ -540,10 +552,6 @@
     ],
     [
       "Avatar",
-      {}
-    ],
-    [
-      "Avatar",
       {
         "src": "javascript:alert(1)"
       }
@@ -692,6 +700,13 @@
     ]
   ],
   "valid": [
+    ["Avatar", {}],
+    ["Avatar", {"children": "AB"}],
+    ["Avatar", {"children": "张", "size": 20, "style": {"backgroundColor": "#89D7D8", "color": "#fff", "fontSize": 10}}],
+    ["Avatar", {"children": "A", "src": "/logo.svg"}],
+    ["Avatar", {"alt": "Description only", "gap": 0}],
+    ["Avatar", {"style": {"backgroundColor": "#abcd", "color": "#12345678"}}],
+
     [
       "Text",
       {

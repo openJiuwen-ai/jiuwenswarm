@@ -27,6 +27,8 @@ clear 移除活动树，但保留目标的渲染版本；连接或会话结束�
 
 标题、背景、透明宣传图、头像、宽度、留白和菜单位置均由插件声明。
 用户名行组合 Box、Avatar、Text，并声明 disabled=true；分隔线使用原生 type=divider。
+2026-11-04：示例在插件中计算首字素与稳定配色，通过 Avatar.props.children 和原生 style 下发；宿主只做通用 AntD 渲染。
+属性白名单见[通用组件契约](../../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)，自定义图片仍由插件显式声明 url。
 菜单宽度、placement、align、autoFocus 和 destroyOnHidden 直接映射 AntD 属性。
 Form.requiredMark=false 隐藏必填星号而保留校验；Input.autoComplete=off 是浏览器偏好提示，
 不保证禁止浏览器保存密码或显示已保存账号。

@@ -145,11 +145,17 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "required": ("items",), "events": {"ui.change": obj({"activeKey": TEXT}, "activeKey")}},
     "Empty": {"props": {"image": TEXT, "description": TEXT}},
     "Avatar": {"props": {
-        "src": TEXT, "alt": TEXT,
+        "src": TEXT, "children": TEXT, "alt": TEXT,
+        "gap": {"kind": "number", "min": 0, "max": 4096},
+        "style": obj({
+            "backgroundColor": {"kind": "string", "maxBytes": 9},
+            "color": {"kind": "string", "maxBytes": 9},
+            "fontSize": {"kind": "number", "min": 1, "max": 4096},
+        }),
         "size": union(token("small", "medium", "large", "sm", "md", "lg", "default"),
                       {"kind": "number", "min": 1, "max": 4096}),
         "shape": token("circle", "square"),
-    }, "required": ("src",)},
+    }},
     "Image": {"props": {
         "src": TEXT, "alt": TEXT, "width": union(NUMBER, TEXT), "height": union(NUMBER, TEXT),
         "fallback": TEXT, "preview": union(BOOL, obj({"src": TEXT}, "src")),
@@ -496,6 +502,11 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "invalid preview URL"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
+    if component == "Avatar":
+        style = props.get("style", {})
+        if any(key in style and re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", style[key]) is None
+               for key in ("backgroundColor", "color")):
+            return "Avatar colors must use hexadecimal notation"
     url_fields = {"Button": ("href",), "Avatar": ("src",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
     if any(key in props and not valid_url(props[key], iframe=component == "Iframe") for key in url_fields.get(component, ())):
         return "invalid resource URL"
