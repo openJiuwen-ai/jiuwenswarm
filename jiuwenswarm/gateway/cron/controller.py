@@ -27,7 +27,7 @@ from jiuwenswarm.gateway.cron.models import (
     resolve_cron_model,
     validate_cron_model,
 )
-from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported

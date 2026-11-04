@@ -2240,7 +2240,7 @@ async def _run(
         }
         if updated_env_keys and (proactive_keys & set(updated_env_keys)):
             try:
-                from jiuwenswarm.gateway.cron.proactive_cron_sync import sync_proactive_tick_job
+                from agent_gateway.cron.proactive_cron_sync import sync_proactive_tick_job
                 await sync_proactive_tick_job(cron_controller, config_payload)
             except Exception as e:  # noqa: BLE001  # 兜底：proactive 同步失败不阻断配置保存
                 logger.warning("[App] proactive.tick sync on config save failed: %s", e)
@@ -2616,7 +2616,7 @@ async def _run(
         return bool(enabled_raw), "enabled = false" if not enabled_raw else ""
 
     def _create_dingtalk_channel(settings: dict):
-        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+        from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
             DingTalkChannel,
             DingTalkConfig,
         )
@@ -3230,7 +3230,7 @@ async def _run(
 
     # 主动推荐：按 config 自动注册/删除 proactive.tick 定时 job
     try:
-        from jiuwenswarm.gateway.cron.proactive_cron_sync import sync_proactive_tick_job
+        from agent_gateway.cron.proactive_cron_sync import sync_proactive_tick_job
         await sync_proactive_tick_job(cron_controller, get_config())
     except Exception as e:  # noqa: BLE001  # 兜底：启动时 proactive job 注册失败不阻断 Gateway 启动
         logger.warning("[App] proactive.tick auto-register failed (non-fatal): %s", e)
