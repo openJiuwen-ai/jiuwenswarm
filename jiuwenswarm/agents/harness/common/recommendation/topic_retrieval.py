@@ -375,7 +375,11 @@ class ActiveExpressionExample:
     schema_version: str = ACTIVE_EXPRESSION_EXAMPLE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.input_origin != "manual_free_text" or self.assistance_origin != "none":
+        from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
+            is_user_revisit_eligible,
+        )
+
+        if not is_user_revisit_eligible(self.input_origin, self.assistance_origin):
             raise TerminalRetrievalContractError("invalid_active_expression_example")
         _rejected4 = (
             not _nonempty(self.user_state_snapshot_id)
@@ -446,19 +450,24 @@ class ActiveExpressionAdmission:
 def admit_active_expression(
     observation: ActiveExpressionObservation,
 ) -> ActiveExpressionAdmission:
-    """Keep the outcome, but only admit natural unassisted manual text."""
+    """Keep the outcome; admit hand-typed turns and prompt-suggestion accepts."""
 
-    if observation.input_origin != "manual_free_text":
+    from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
+        is_user_revisit_eligible,
+    )
+
+    if not is_user_revisit_eligible(
+        observation.input_origin, observation.assistance_origin,
+    ):
         return ActiveExpressionAdmission(
             observation=observation,
             example=None,
-            exclusion_reason="ineligible_input_origin",
-        )
-    if observation.assistance_origin != "none":
-        return ActiveExpressionAdmission(
-            observation=observation,
-            example=None,
-            exclusion_reason="assisted_input_excluded",
+            exclusion_reason=(
+                "ineligible_input_origin"
+                if observation.input_origin
+                not in {"manual_free_text", "prompt_suggestion"}
+                else "assisted_input_excluded"
+            ),
         )
     return ActiveExpressionAdmission(
         observation=observation,

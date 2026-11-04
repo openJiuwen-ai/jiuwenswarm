@@ -88,6 +88,32 @@ def test_repair_missing_consent_boundary_when_topics_already_enabled(
     assert controls.load_recommendation_controls()["history_after"] == 99.0
     assert controls.repair_missing_consent_boundary(now=100.0) is False
 
+
+def test_prompt_suggestion_turns_are_revisit_eligible_like_hand_typed():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        V6SourceMessage,
+        _summary_origins,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
+        is_user_revisit_eligible,
+    )
+
+    assert is_user_revisit_eligible("manual_free_text", "none")
+    assert is_user_revisit_eligible("prompt_suggestion", "prompt_suggestion")
+    assert not is_user_revisit_eligible("starter_click", "starter_click")
+    mixed = (
+        V6SourceMessage(
+            "e1", "s", 0, "手打问题", 1.0,
+            "manual_free_text", "none", "cluster", "natural_question", None,
+        ),
+        V6SourceMessage(
+            "e2", "s", 1, "提示建议问题", 2.0,
+            "prompt_suggestion", "prompt_suggestion", "cluster", "natural_question", None,
+        ),
+    )
+    assert all(message.natural for message in mixed)
+    assert _summary_origins(mixed) == ("manual_free_text", "none")
+
 def test_recommendation_switches_reload_ui_only():
     from jiuwenswarm.common.config_panel.config_set_handlers import ConfigChangeSet, needs_agent_reload
 

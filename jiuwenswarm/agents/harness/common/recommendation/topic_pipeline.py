@@ -168,6 +168,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     SessionSummaryArtifact,
     distill_trigger_interests,
     eligible_natural_revisit_summaries,
+    is_user_revisit_eligible,
 )
 from jiuwenswarm.server.runtime.session.project_store import list_projects
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -2494,9 +2495,7 @@ class V6SourceMessage:
 
     @property
     def natural(self) -> bool:
-        return (
-            self.input_origin == "manual_free_text" and self.assistance_origin == "none"
-        )
+        return is_user_revisit_eligible(self.input_origin, self.assistance_origin)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3416,6 +3415,16 @@ def _summary_origins(
     assistance_origins = tuple(
         dict.fromkeys(item.assistance_origin for item in messages)
     )
+    # Hand-typed and prompt-suggestion turns are equivalent for RID. When a
+    # session mixes only those, project a single eligible pair instead of
+    # "mixed" so natural_revisit_eligible stays true.
+    if messages and all(
+        is_user_revisit_eligible(item.input_origin, item.assistance_origin)
+        for item in messages
+    ):
+        if len(input_origins) == 1 and len(assistance_origins) == 1:
+            return input_origins[0], assistance_origins[0]
+        return "manual_free_text", "none"
     return (
         input_origins[0] if len(input_origins) == 1 else "mixed",
         assistance_origins[0] if len(assistance_origins) == 1 else "mixed",
@@ -4853,12 +4862,10 @@ class TopicPipeline:
                 input_origin = str(
                     record.get("input_origin") or "pasted_or_unknown"
                 )
-                if input_origin != "manual_free_text":
-                    continue
                 assistance_origin = str(
                     record.get("assistance_origin") or "unknown"
                 )
-                if assistance_origin != "none":
+                if not is_user_revisit_eligible(input_origin, assistance_origin):
                     continue
                 witness_items.append(
                     (
