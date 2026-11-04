@@ -25,8 +25,8 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FilePreview', 'FileTree', 'Iframe',
-    'Image', 'Input', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
+    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Empty', 'FilePreview', 'FileTree', 'Iframe', 'Image', 'Input',
+    'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect', 'Form', 'Form.Item', 'Dropdown',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {
     id: 'application.entry',
@@ -108,7 +108,7 @@ test('TreeSelect accepts eight levels and rejects excessive depth and total opti
 });
 
 const eventCases = [
-  ['Button', 'ui.click', {}, { value: 'extra' }],
+  ['Button', 'ui.click', {}, { value: 12 }],
   ['Input', 'ui.change', { value: '北京', isComposing: false }, { value: '北京' }],
   ['Input', 'ui.press_enter', { value: '' }, { value: null }],
   ['Switch', 'ui.change', { checked: false }, { checked: 'false' }],

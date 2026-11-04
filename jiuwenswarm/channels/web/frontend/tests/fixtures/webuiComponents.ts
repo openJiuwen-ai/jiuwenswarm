@@ -4,6 +4,8 @@ import { componentRendererRegistry } from '../../src/features/webui/renderer/ada
 
 export { componentRendererRegistry };
 export { buttonIcon } from '../../src/features/webui/renderer/adapters/webuiButton/buttonIcon.tsx';
+export { browserClientCapabilities } from '../../src/features/webui/client/browserClient.ts';
+export { GatewayImage } from '../../src/features/webui/client/GatewayResources.tsx';
 export const componentCatalog = createCatalog({
   components: componentRendererRegistry.list().map((name) => {
     const rule = contractCatalog.getComponent(name);

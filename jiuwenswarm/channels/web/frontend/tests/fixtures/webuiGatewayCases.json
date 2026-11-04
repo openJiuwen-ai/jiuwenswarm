@@ -1,0 +1,645 @@
+[
+  {
+    "name": "box gap 0",
+    "root": {
+      "component": "Box",
+      "props": {
+        "gap": 0
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "box gap 12.5",
+    "root": {
+      "component": "Box",
+      "props": {
+        "gap": 12.5
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "box gap 48",
+    "root": {
+      "component": "Box",
+      "props": {
+        "gap": 48
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "box gap -1",
+    "root": {
+      "component": "Box",
+      "props": {
+        "gap": -1
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "box gap lg",
+    "root": {
+      "component": "Box",
+      "props": {
+        "gap": "lg"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "box gap large",
+    "root": {
+      "component": "Box",
+      "props": {
+        "gap": "large"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "icon trigger",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "icon": "ellipsis",
+        "ariaLabel": "Actions"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "icon alias trigger",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "icon": "refresh",
+        "ariaLabel": "Refresh"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "unknown icon",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "icon": "unknown",
+        "ariaLabel": "Actions"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "icon without accessible label",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "icon": "ellipsis"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "icon with blank accessible label",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "icon": "ellipsis",
+        "ariaLabel": "  "
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "two trigger sources",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "icon": "ellipsis",
+        "ariaLabel": "Actions"
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "display trigger",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ]
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "missing trigger",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "multiple display triggers",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ]
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        },
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "unsupported dropdown label property",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "apply",
+            "label": "Apply"
+          }
+        ],
+        "label": "Actions"
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "unique form fields",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "username"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        },
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "password"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "duplicate form fields",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        },
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "same field name in separate forms",
+    "root": {
+      "component": "Box",
+      "children": [
+        {
+          "component": "Form",
+          "props": {
+            "name": "one"
+          },
+          "children": [
+            {
+              "component": "Form.Item",
+              "props": {
+                "name": "value"
+              },
+              "children": [
+                {
+                  "component": "Input"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "component": "Form",
+          "props": {
+            "name": "two"
+          },
+          "children": [
+            {
+              "component": "Form.Item",
+              "props": {
+                "name": "value"
+              },
+              "children": [
+                {
+                  "component": "Input"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "duplicate form names",
+    "root": {
+      "component": "Box",
+      "children": [
+        {
+          "component": "Form",
+          "props": {
+            "name": "sample"
+          },
+          "children": [
+            {
+              "component": "Form.Item",
+              "props": {
+                "name": "value"
+              },
+              "children": [
+                {
+                  "component": "Input"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "component": "Form",
+          "props": {
+            "name": "sample"
+          },
+          "children": [
+            {
+              "component": "Form.Item",
+              "props": {
+                "name": "value"
+              },
+              "children": [
+                {
+                  "component": "Input"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "empty form",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": []
+    },
+    "valid": false
+  },
+  {
+    "name": "form item outside form",
+    "root": {
+      "component": "Form.Item",
+      "props": {
+        "name": "value"
+      },
+      "children": [
+        {
+          "component": "Input"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "form input with remote event",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value"
+          },
+          "children": [
+            {
+              "component": "Input",
+              "events": {
+                "ui.change": {
+                  "id": "change"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "reserved field __proto__",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "__proto__"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "reserved field constructor",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "constructor"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "reserved field prototype",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "prototype"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown form reference",
+    "root": {
+      "component": "Button",
+      "props": {
+        "form": "missing"
+      },
+      "events": {
+        "ui.click": {
+          "id": "apply"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy form item name",
+    "root": {
+      "component": "FormItem",
+      "props": {
+        "name": "value"
+      },
+      "children": [
+        {
+          "component": "Input"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "rich menu with disabled display row and divider",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "account",
+            "disabled": true,
+            "label": [
+              {
+                "component": "Text",
+                "props": {
+                  "value": "Actions"
+                }
+              }
+            ]
+          },
+          {
+            "type": "divider"
+          },
+          {
+            "key": "exit",
+            "label": "Exit"
+          }
+        ]
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "interactive menu label",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "account",
+            "label": [
+              {
+                "component": "Button",
+                "props": {
+                  "label": "Nested"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": false
+  }
+]

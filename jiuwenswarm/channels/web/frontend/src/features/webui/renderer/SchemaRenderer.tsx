@@ -10,6 +10,8 @@ import type { WebUINormalizedNode } from '../contracts/normalized.ts';
 import type { WebUIAdapterContext, WebUIRendererRegistry, WebUINodeBinder } from './types.ts';
 import type { WebUINodeBinding } from '../runtime/types.ts';
 import { useContentActivity } from './ContentActivity.tsx';
+import { WebUIFormsProvider } from './adapters/webuiForm/WebUIForm.tsx';
+import type { WebUIAdapterProps } from './types.ts';
 
 export interface WebUISchemaRendererProps {
   tree: WebUINormalizedNode;
@@ -27,15 +29,15 @@ export function WebUISchemaRenderer({
   renderGeneration,
   bindNode,
 }: WebUISchemaRendererProps) {
-  return <Fragment key={renderGeneration}><RenderNode node={tree} registry={registry} context={context} bindNode={bindNode} /></Fragment>;
+  return <Fragment key={renderGeneration}><WebUIFormsProvider><RenderNode node={tree} registry={registry} context={context} bindNode={bindNode} /></WebUIFormsProvider></Fragment>;
 }
 
-function RenderNode({ node, registry, context, bindNode }: {
+function RenderNode({ node, registry, context, bindNode, ...fieldControl }: {
   node: WebUINormalizedNode;
   registry: WebUIRendererRegistry;
   context: WebUIAdapterContext;
   bindNode?: WebUINodeBinder;
-}): ReactNode {
+} & NonNullable<WebUIAdapterProps['fieldControl']>): ReactNode {
   const active = useContentActivity();
   const binding = useMemo<{ current: WebUINodeBinding | null }>(() => ({ current: null }),
     [node, active, context.connected]);
@@ -63,7 +65,7 @@ function RenderNode({ node, registry, context, bindNode }: {
   };
 
   return (
-    <Adapter key={node.key} node={node} context={context} appearance={context.styles?.[node.component]} emit={emit} contentGroups={contentGroups}>
+    <Adapter key={node.key} node={node} context={context} fieldControl={fieldControl} appearance={context.styles?.[node.component]} emit={emit} contentGroups={contentGroups}>
       {children}
     </Adapter>
   );

@@ -6240,6 +6240,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   ]);
 
   useEffect(() => {
+    const releaseConnection = webClient.retainConnection();
     return () => {
       streamDeltaBatcherRef.current?.flushAll();
       lastConnectSignatureRef.current = '';
@@ -6248,8 +6249,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       pendingAgentGroupBindingRef.current.clear();
       groupBindingReconcileRef.current.clear();
       reconcileAgentGroupBindingRef.current = null;
-      webClient.disconnect();
-      setConnected(false);
+      releaseConnection();
+      setConnected(webClient.getState() === 'ready');
     };
   }, [
     setConnected,
@@ -6279,7 +6280,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   }, [apiBase, apiKey, model, projectDir, provider]);
 
   useEffect(() => {
-    const unsub = webClient.onStateChange((state) => {
+    const handleStateChange = (state: WebConnectionState) => {
       setConnectionState(state);
       const connected = state === 'ready';
       setIsConnected(connected);
@@ -6363,7 +6364,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }
       wasConnectedRef.current = connected;
-    });
+    };
+    const unsub = webClient.onStateChange(handleStateChange);
+    handleStateChange(webClient.getState());
     return () => {
       const pending = teamConnectionGraceTimerRef.current;
       if (pending) {

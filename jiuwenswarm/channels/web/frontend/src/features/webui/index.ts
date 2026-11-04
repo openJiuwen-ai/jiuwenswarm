@@ -40,3 +40,5 @@ export type {
   WebUINormalizedTarget,
 } from './contracts/index.ts';
 export type { WebUICatalog, WebUIComponentRule, WebUIPropRule, WebUISlotRule } from './catalog/index.ts';
+export { browserClientCapabilities, createClientCapabilityHost } from './client/index.ts';
+export type { ClientDeclarationSnapshot, RequestBinding } from './client/index.ts';

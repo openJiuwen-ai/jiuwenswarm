@@ -15,6 +15,7 @@ import type {
   WebUITransport,
   WebUITransportHandlers,
 } from './types.ts';
+import type { ClientCapabilityHost } from '../client/createClientCapabilityHost.ts';
 
 export interface WebUIClientEvent {
   payload: Record<string, unknown>;
@@ -39,12 +40,17 @@ export function mapWebClientState(state: string): WebUIConnectionState {
   return 'disconnected';
 }
 
-export function createWebClientTransport(client: WebUIClientLike): WebUITransport {
+export function createWebClientTransport(client: WebUIClientLike, capabilities?: ClientCapabilityHost): WebUITransport {
   return {
     subscribe(handlers: WebUITransportHandlers) {
-      const offRender = client.on(WEBUI_RENDER_EVENT, (event) => handlers.onRenderFrame(event.payload));
-      const offClear = client.on(WEBUI_CLEAR_EVENT, (event) => handlers.onClearFrame(event.payload));
-      const offError = client.on(WEBUI_ERROR_EVENT, (event) => handlers.onErrorFrame(event.payload));
+      const accepted = (payload: unknown) => !capabilities || capabilities.acceptsFrame(payload);
+      const offRender = client.on(WEBUI_RENDER_EVENT, (event) => { if (accepted(event.payload)) handlers.onRenderFrame(event.payload); });
+      const offClear = client.on(WEBUI_CLEAR_EVENT, (event) => { if (accepted(event.payload)) handlers.onClearFrame(event.payload); });
+      const offError = client.on(WEBUI_ERROR_EVENT, (event) => { if (accepted(event.payload)) handlers.onErrorFrame(event.payload); });
+      const offOperation = capabilities ? client.on('client.operation', (event) => { capabilities.acceptOperation(event.payload); }) : undefined;
+      const offDeclarations = capabilities ? client.on('client.declarations', (event) => {
+        try { capabilities.configure(event.payload); } catch { /* The capability host exposes a localized configuration error. */ }
+      }) : undefined;
       const offState = client.onStateChange((state) => {
         handlers.onConnectionStateChange(mapWebClientState(state));
       });
@@ -53,6 +59,8 @@ export function createWebClientTransport(client: WebUIClientLike): WebUITranspor
         offClear();
         offError();
         offState();
+        offOperation?.();
+        offDeclarations?.();
       };
     },
     async dispatch(request) {

@@ -1,3 +1,5 @@
+import { gatewayFetch } from './services/gatewayFetch';
+import { browserClientCapabilities } from './features/webui/client/browserClient';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { restoredGitIdentity } from './components/ChatPanel/executionSettings';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
@@ -495,7 +497,7 @@ async function saveShareImageJob(jobId: string, filename: string): Promise<boole
     return outcome === 'saved';
   }
   if (!window.pywebview) {
-    const response = await fetch(downloadUrl, { method: 'HEAD', cache: 'no-store' });
+    const response = await gatewayFetch(downloadUrl, { method: 'HEAD', cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`share_export_download_http_${response.status}`);
     }
@@ -534,6 +536,10 @@ async function waitForShareImageJob(
     }
   }
   return isCurrentMonitor() ? status : null;
+}
+
+function getClientRequestContextSnapshot(): string {
+  return `${browserClientCapabilities.getEpoch()}:${browserClientCapabilities.isChanging()}:${browserClientCapabilities.isUnavailable()}`;
 }
 
 function AppContent({
@@ -585,6 +591,12 @@ function AppContent({
   const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
+  const clientRequestContext = useSyncExternalStore(
+    browserClientCapabilities.subscribe,
+    getClientRequestContextSnapshot,
+    getClientRequestContextSnapshot,
+  );
+  const clientRequestContextReady = !browserClientCapabilities.isChanging() && !browserClientCapabilities.isUnavailable();
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
   const [exportingShareSessionIds, setExportingShareSessionIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -2073,12 +2085,14 @@ function AppContent({
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
     const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
     const snapshotTurnRevision = useChatStore.getState().getRuntime(targetSessionId)?.turnRevision ?? 0;
+    const contextEpoch = browserClientCapabilities.getEpoch();
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
       const response = await request<Session & { runtime?: { recovery_pending?: boolean } }>(
         'session.get_metadata',
         { session_id: targetSessionId },
       );
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return null;
       const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
@@ -2245,6 +2259,7 @@ function AppContent({
       }
       return session;
     } catch (error) {
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return null;
       console.warn('Failed to fetch session metadata:', error);
       if (sessionIdRef.current === targetSessionId && (error as WebError | undefined)?.code === 'NOT_FOUND') {
         setMissingSessionId(targetSessionId);
@@ -2262,14 +2277,15 @@ function AppContent({
   }, [request, t]);
 
   const loadSessionMetadata = useCallback((targetSessionId: string): Promise<Session | null> => {
-    const inFlight = sessionMetadataRequestsRef.current.get(targetSessionId);
+    const requestKey = JSON.stringify([browserClientCapabilities.getEpoch(), targetSessionId]);
+    const inFlight = sessionMetadataRequestsRef.current.get(requestKey);
     if (inFlight) return inFlight;
     const pending = fetchSessionMetadata(targetSessionId).finally(() => {
-      if (sessionMetadataRequestsRef.current.get(targetSessionId) === pending) {
-        sessionMetadataRequestsRef.current.delete(targetSessionId);
+      if (sessionMetadataRequestsRef.current.get(requestKey) === pending) {
+        sessionMetadataRequestsRef.current.delete(requestKey);
       }
     });
-    sessionMetadataRequestsRef.current.set(targetSessionId, pending);
+    sessionMetadataRequestsRef.current.set(requestKey, pending);
     return pending;
   }, [fetchSessionMetadata]);
 
@@ -2312,9 +2328,11 @@ function AppContent({
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
+    const contextEpoch = browserClientCapabilities.getEpoch();
     try {
       const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryDiagnosisEnabled(
@@ -2340,6 +2358,7 @@ function AppContent({
         }
       }
     } catch (error) {
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       console.error('Failed to fetch config:', error);
       setServerConfig(null);
       setConfigError(t('app.configError'));
@@ -2347,11 +2366,13 @@ function AppContent({
     // 同步获取多模型列表与模型组目录
     try {
       const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
       setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       console.warn('Failed to fetch models list:', error);
     }
   }, [request, t, setAvailableModelGroups, setAvailableModels]);
@@ -2686,24 +2707,31 @@ function AppContent({
   const fetchConfigRef = useRef(fetchConfig);
   fetchConfigRef.current = fetchConfig;
 
+  const configInitializationRef = useRef<{ context: string; pending: Promise<void> } | null>(null);
   useEffect(() => {
     if (!isConnected) {
+      configInitializationRef.current = null;
       return;
     }
+    if (!clientRequestContextReady) return;
+    const contextEpoch = browserClientCapabilities.getEpoch();
+    const initialization = configInitializationRef.current;
+    const pending = initialization?.context === clientRequestContext ? initialization.pending : fetchConfigRef.current();
+    configInitializationRef.current = { context: clientRequestContext, pending };
     let cancelled = false;
     void (async () => {
-      await fetchConfigRef.current();
-      if (!cancelled) setInitialDataLoaded(true);
+      await pending;
+      if (!cancelled && contextEpoch === browserClientCapabilities.getEpoch()) setInitialDataLoaded(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [isConnected]);
+  }, [clientRequestContext, clientRequestContextReady, isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
   useEffect(() => {
-    if (!initialDataLoaded || !isConnected || initialProjectsLoadedRef.current) {
+    if (!initialDataLoaded || !isConnected || !clientRequestContextReady || initialProjectsLoadedRef.current) {
       return;
     }
     let cancelled = false;
@@ -2739,7 +2767,7 @@ function AppContent({
     return () => {
       cancelled = true;
     };
-  }, [initialDataLoaded, isConnected, loadProjects]);
+  }, [clientRequestContext, clientRequestContextReady, initialDataLoaded, isConnected, loadProjects]);
 
   // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
   // 把残留的运行态纠正回空闲。
@@ -2754,8 +2782,9 @@ function AppContent({
     if (reconnected) {
       metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
+    if (!clientRequestContextReady) return;
     void loadSessionMetadata(routeSessionId);
-  }, [isConnected, loadSessionMetadata, routeSessionId]);
+  }, [clientRequestContext, clientRequestContextReady, isConnected, loadSessionMetadata, routeSessionId]);
 
   useEffect(() => {
     if (!isConnected || !sessionId) return;
@@ -2824,7 +2853,8 @@ function AppContent({
   useEffect(() => {
     // The canvas restores its own director history through DesignerPage.
     if (route.kind === 'design-project') return;
-    if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    if (!isConnected || !clientRequestContextReady || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    const contextEpoch = browserClientCapabilities.getEpoch();
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     const recoveryRefresh = recoveryHistoryRefreshRef.current.delete(sessionId);
     
@@ -2934,6 +2964,7 @@ function AppContent({
         )
       : null;
 
+    let cancelled = false;
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
       shouldApply: recoveryRefresh ? () => {
@@ -2947,6 +2978,7 @@ function AppContent({
         limit: 50,
       }),
       onReady: (messages, cursorMeta) => {
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
         historyRestoreFromPanelHintRef.current = false;
@@ -2996,6 +3028,7 @@ function AppContent({
         useSessionStore.getState().receiveSessionTokenUsage(payload);
       },
       onEmpty: (cursorMeta) => {
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
         replaceHistoryMessages(
@@ -3166,6 +3199,7 @@ function AppContent({
         console.warn('[history.restore]', message);
       },
       onFailure: (failure) => {
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         historyRestoreFromPanelHintRef.current = false;
         if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
           historyRestoreHandlesRef.current.delete(sessionId);
@@ -3204,6 +3238,7 @@ function AppContent({
           historyRestoreHandlesRef.current.delete(sessionId);
         }
         // 发生错误时，设置 historyPagerMeta 为 null，显示欢迎信息
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         setHistoryPagerMeta(sessionId, null);
         console.error('Failed to load history:', error);
         setLoadingHistory(sessionId, false);
@@ -3218,7 +3253,16 @@ function AppContent({
         }
       }
     })();
+    return () => {
+      cancelled = true;
+      restoreHandle.dispose();
+      if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
+        historyRestoreHandlesRef.current.delete(sessionId);
+      }
+    };
   }, [
+    clientRequestContext,
+    clientRequestContextReady,
     isConnected,
     sessionId,
     historyBootstrapKey,
@@ -4830,7 +4874,7 @@ function AppContent({
         await monitorAndSaveShareImageJob(pending, currentSessionId, token);
         return;
       }
-      const createResponse = await fetch('/share-api/jobs', {
+      const createResponse = await gatewayFetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
         headers: { 'content-type': 'application/json' },
@@ -5048,6 +5092,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
+        webUIReady={initialDataLoaded && isConnected}
         activeNav={activeNav}
         onNavigate={handleNavItemClick}
         onNewSession={handleNewSession}

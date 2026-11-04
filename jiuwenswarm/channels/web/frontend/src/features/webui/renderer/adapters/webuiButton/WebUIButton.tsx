@@ -7,6 +7,7 @@
 import { Button as AntButton } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
 import { buttonIcon } from './buttonIcon.tsx';
+import { useWebUIForms } from '../webuiForm/WebUIForm.tsx';
 
 type ButtonType = 'default' | 'primary' | 'dashed' | 'link' | 'text';
 type ButtonSize = 'small' | 'middle' | 'large';
@@ -35,11 +36,22 @@ function resolveButton(props: Readonly<Record<string, unknown>>): { type: Button
 }
 
 export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterProps) {
+  const forms = useWebUIForms();
   const label = typeof node.props.label === 'string' ? node.props.label : '';
   const size = typeof node.props.size === 'string' ? (SIZE_MAP[node.props.size] ?? 'middle') : 'middle';
   const disabled = node.props.disabled === true || !context.connected;
   const { type, danger } = resolveButton(node.props);
-  const onClick = node.events?.['ui.click'] ? () => void emit('ui.click', {}) : undefined;
+  const onClick = node.events?.['ui.click'] ? async () => {
+    if (typeof node.props.form !== 'string') { await emit('ui.click', {}); return; }
+    const form = forms?.get(node.props.form);
+    if (!form) return;
+    try {
+      const values = await form.validateFields();
+      await emit('ui.click', values);
+    } catch {
+      // AntD Form.Item presents local validation errors; no event is sent.
+    }
+  } : undefined;
   const className = [appearance?.className, context.selected ? appearance?.activeClassName : undefined].filter(Boolean).join(' ');
   const artwork = appearance?.icon ?? buttonIcon(node.props.icon);
   const icon = artwork && <span className={appearance?.iconClassName} aria-hidden="true">{artwork}</span>;

@@ -17,6 +17,7 @@ import { fileTreeRule } from './components/fileTree.ts';
 import { filePreviewRule } from './components/filePreview.ts';
 import { iframeRule } from './components/iframe.ts';
 import { avatarRule } from './components/avatar.ts';
+import { formRule, formItemRule } from './components/form.ts';
 import { dropdownRule } from './components/dropdown.ts';
 
 /** Component contract; Box/Text/Button retain their existing props. */
@@ -25,7 +26,7 @@ export const componentCatalog = createCatalog({
     ...basicComponentRules,
     inputRule, switchRule, selectRule, treeSelectRule,
     sliderRule, tabsRule, emptyRule, imageRule, dividerRule, cardRule, tagRule, panelRule, fileTreeRule, filePreviewRule,
-    iframeRule, avatarRule, dropdownRule,
+    iframeRule, avatarRule, formRule, formItemRule, dropdownRule,
   ],
   slots: webUISlots,
 });

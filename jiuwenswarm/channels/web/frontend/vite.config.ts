@@ -1918,6 +1918,10 @@ export default defineConfig(({ mode }) => ({
     port: frontendPort,
     strictPort: true,
     proxy: {
+      '/extension-assets': {
+        target: webTarget,
+        changeOrigin: true,
+      },
       ...(hubOAuthBroker ? {
         '/marketplace-oauth/hub': { target: hubOAuthBroker },
         '/oauth/hub': { target: hubOAuthBroker },
