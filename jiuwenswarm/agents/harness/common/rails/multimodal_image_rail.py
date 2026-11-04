@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from openjiuwen.core.foundation.llm import SystemMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentKind
@@ -30,6 +31,7 @@ from jiuwenswarm.common.utils import logger
 # 提示尾部、是否渲染不可观测，而运行时附件每次调用重建且模型必读，用它兜住负载事实。
 _IMAGE_STATE_ATTACHMENT_SECTION = "runtime.image_state"
 _IMAGE_STATE_ATTACHMENT_SOURCE = "jiuwenswarm.multimodal_image_rail"
+_IMAGE_STATE_SYNC_WINDOW_MUTATOR_ATTR = "_jiuwenswarm_multimodal_image_state_sync_mutator"
 
 
 class MultimodalImageRail(DeepAgentRail):
@@ -167,24 +169,44 @@ class MultimodalImageRail(DeepAgentRail):
     def _attachment_language(self) -> str:
         return str(getattr(self._system_prompt_builder, "language", "") or "cn")
 
-    def _build_image_state_attachment(self, *, enabled: bool, images_sent: int) -> str:
+    def _build_image_state_attachment(
+        self,
+        *,
+        enabled: bool,
+        images_sent: int,
+        provided_paths: list[str] | None = None,
+    ) -> str:
         """构造「本次请求图片负载」附件正文。
 
         只陈述事实 + 与该事实一致的下一步：有像素就直说可以直接看、别再调视觉/OCR
         工具；没像素就直说这次没图、需要时用视觉工具。经验库里的 TIP 是按旧模型写的，
         模型只有看到这条事实才不用靠经验猜（B_01：切原生后首轮仍调 VQA，白花一轮）。
+
+        重复读取限制只落在「实际随请求提供像素」的图片上（``provided_paths`` 非空时才
+        写），与 read_file 按目标放行护栏（vision_tool_targets_all_provided）保持一致，
+        避免劝模型"别重读"却没限定范围，导致没进消息的图既看不到又不被重读。
         """
 
+        provided = [p for p in (provided_paths or []) if p]
         if self._attachment_language() == "en":
             if enabled and images_sent > 0:
-                return (
-                    "# Images In This Request\n\n"
+                parts = [
+                    "# Images In This Request",
+                    "",
                     f"- This request carries {images_sent} image(s), already provided as image "
-                    "content: inspect the pixels directly to answer.\n"
+                    "content: inspect the pixels directly to answer.",
                     "- Do not call visual_question_answering / image_reading / image_ocr to look "
-                    "again, and do not read_file the same image; text, watermarks and IDs in the "
-                    "image should be read from the pixels you received."
+                    "again.",
+                ]
+                if provided:
+                    parts.append(
+                        f"- Do not read_file these {images_sent} provided image(s) again; "
+                        "use read_file for any other image you need to inspect."
+                    )
+                parts.append(
+                    "- Read text, watermarks and IDs in the image from the pixels you received."
                 )
+                return "\n".join(parts)
             return (
                 "# Images In This Request\n\n"
                 "- This request carries 0 images as image content (no pixels were attached).\n"
@@ -192,13 +214,19 @@ class MultimodalImageRail(DeepAgentRail):
                 "visual_question_answering; do not guess from context."
             )
         if enabled and images_sent > 0:
-            return (
-                "# 本次请求的图片\n\n"
-                f"- 本次请求附带图片：{images_sent} 张，已作为图像内容直接提供，"
-                "可直接查看像素作答。\n"
-                "- 不要调用 visual_question_answering / image_reading / image_ocr 再「看一遍」，"
-                "也不要 read_file 读取同一张图；图中文字、水印、编号以你收到的像素为准。"
-            )
+            parts = [
+                "# 本次请求的图片",
+                "",
+                f"- 本次请求附带图片：{images_sent} 张，已作为图像内容直接提供，可直接查看像素作答。",
+                "- 不要调用 visual_question_answering / image_reading / image_ocr 再「看一遍」。",
+            ]
+            if provided:
+                parts.append(
+                    f"- 也不要 read_file 重新读取这 {images_sent} 张已随请求提供像素的图片；"
+                    "其它图片如需查看请正常使用 read_file。"
+                )
+            parts.append("- 图中文字、水印、编号以你收到的像素为准。")
+            return "\n".join(parts)
         return (
             "# 本次请求的图片\n\n"
             "- 本次请求附带图片：0 张（图片未作为像素附带）。\n"
@@ -213,6 +241,7 @@ class MultimodalImageRail(DeepAgentRail):
         enabled: bool,
         images_sent: int,
         has_image_references: bool,
+        provided_paths: list[str] | None = None,
     ) -> None:
         """把负载事实写进运行时附件（best-effort，写失败不阻断模型调用）。"""
 
@@ -232,7 +261,9 @@ class MultimodalImageRail(DeepAgentRail):
             await writer.add_section(
                 _IMAGE_STATE_ATTACHMENT_SECTION,
                 self._build_image_state_attachment(
-                    enabled=enabled, images_sent=images_sent
+                    enabled=enabled,
+                    images_sent=images_sent,
+                    provided_paths=provided_paths,
                 ),
                 PromptAttachmentKind.RUNTIME,
                 _IMAGE_STATE_ATTACHMENT_SOURCE,
@@ -245,6 +276,81 @@ class MultimodalImageRail(DeepAgentRail):
             )
         except Exception as exc:  # pragma: no cover - 旁路失败不阻断
             logger.warning("[MultimodalImageRail] write image state attachment failed: %s", exc)
+
+    def _remove_image_state_sync_window_mutator(self, ctx: AgentCallbackContext) -> bool:
+        """摘掉上一轮安装的最终窗口同步 mutator（跨请求复用需按当前 ctx 重装）。"""
+
+        mutators = getattr(ctx.context, "_window_mutators", None)
+        if not isinstance(mutators, list):
+            return False
+        before = len(mutators)
+        mutators[:] = [
+            mutator
+            for mutator in mutators
+            if not bool(getattr(mutator, _IMAGE_STATE_SYNC_WINDOW_MUTATOR_ATTR, False))
+        ]
+        return len(mutators) != before
+
+    def _install_image_state_sync_window_mutator(
+        self, ctx: AgentCallbackContext, enabled: bool
+    ) -> bool:
+        """安装压缩后按最终窗口重写图片状态提示（策略段 + runtime.image_state）。
+
+        ``before_model_call`` 在 ``get_context_window`` 压缩**之前**按完整历史写策略段
+        与附件；若 FullCompact 随后把含图历史搬走，系统提示与附件仍宣称"已提供 N 张、
+        别调 VQA"，模型实际收到 0 张。context 引擎的 window mutator 在压缩之后、附件
+        注入之前执行，这里借它按最终窗口重算，并重建系统提示 / 重写附件，保证发给模型
+        的提示与实际负载一致。工具护栏（``mark_native_images_sent`` / provided paths）
+        仍由 ``after_model_call`` 按最终窗口归位，本 mutator 不重复写。
+        """
+
+        mutators = getattr(ctx.context, "_window_mutators", None)
+        if not isinstance(mutators, list):
+            return False
+        # 幂等：每轮 before_model_call 重装，替换旧闭包（旧 ctx / enabled 已过期）。
+        self._remove_image_state_sync_window_mutator(ctx)
+
+        # 在方法作用域捕获 bound helper：闭包运行在 context 引擎的 window-mutator
+        # 循环里，不直接触碰 rail 的受保护成员（G.CLS.11）。
+        sync_policy = self._sync_image_policy_section
+        sync_attachment = self._sync_image_state_attachment
+        system_prompt_builder = self._system_prompt_builder
+
+        async def _image_state_sync_window_mutator(_context: Any, window: Any) -> Any:
+            context_messages = list(getattr(window, "context_messages", []) or [])
+            final_images_sent = count_image_content_blocks(context_messages)
+            final_has_refs = bool(
+                collect_image_references_from_messages(context_messages)
+            )
+            final_provided = collect_provided_image_paths(context_messages)
+
+            # 策略段按最终窗口重写：0 张删段（放行视觉工具兜底），>0 张写"别调 VQA"。
+            sync_policy(enabled, final_images_sent)
+            builder = system_prompt_builder
+            if builder is not None:
+                new_system = builder.build()
+                model_copy = getattr(window, "model_copy", None)
+                if callable(model_copy):
+                    window = model_copy(
+                        update={"system_messages": [SystemMessage(content=new_system)]}
+                    )
+
+            await sync_attachment(
+                ctx,
+                enabled=enabled,
+                images_sent=final_images_sent,
+                has_image_references=final_has_refs,
+                provided_paths=final_provided,
+            )
+            return window
+
+        setattr(
+            _image_state_sync_window_mutator,
+            _IMAGE_STATE_SYNC_WINDOW_MUTATOR_ATTR,
+            True,
+        )
+        mutators.append(_image_state_sync_window_mutator)
+        return True
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         enabled = self._read_image_multimodal_enabled()
@@ -274,6 +380,9 @@ class MultimodalImageRail(DeepAgentRail):
                     "[MultimodalImageRail] removed stale image filter mutator "
                     "after switching to native image input"
                 )
+            # 装最终窗口同步 mutator：压缩后按实际发给模型的消息重写策略段 + runtime
+            # image_state 附件，避免压缩搬走含图历史后提示词还宣称"已提供 N 张"。
+            self._install_image_state_sync_window_mutator(ctx, enabled)
             # 在窗口构建之前就地写入历史：像素进入本次请求的 token 计量，压缩判定
             # 才能看到本轮新上传的图片（需求「压缩之前按视觉 token 把图片计入窗口」）。
             try:
@@ -328,6 +437,7 @@ class MultimodalImageRail(DeepAgentRail):
                 enabled=enabled,
                 images_sent=images_sent,
                 has_image_references=has_image_references,
+                provided_paths=provided_paths,
             )
             logger.info(
                 "[MultimodalImageRail] injected attached=%d visible=%d provided=%s "
@@ -341,6 +451,7 @@ class MultimodalImageRail(DeepAgentRail):
             )
             return
 
+        self._remove_image_state_sync_window_mutator(ctx)
         self._mark_images_sent(ctx, 0)
         # 非原生分支不向消息写像素（历史里的 image 块只在视图副本上剥离），快照写空。
         self._snapshot_provided_image_paths(ctx, None)
