@@ -276,23 +276,12 @@ export function topicStarterShowsStatus(state: string | null | undefined, hasCar
   return !hasCards || state === 'preparing' || state === 'failed' || state === 'provider_unavailable';
 }
 
-export function topicStarterStatusMessageKey(state: string, hasCards: boolean): string {
-  if (hasCards) {
-    if (state === 'preparing') {
-      return 'chat.topicStarter.statusPreparingWithCards';
-    }
-    if (state === 'disabled' || state === 'missing_configuration') {
-      return 'chat.topicStarter.statusNeedsSettings';
-    }
-    return 'chat.topicStarter.statusUpdateIncomplete';
-  }
-  if (state === 'preparing') {
-    return 'chat.topicStarter.statusPreparing';
-  }
+export function topicStarterStatusMessageKey(state: string, _hasCards = false): string {
+  // Homepage keeps two copy jobs only: soft wait vs go-to-settings.
   if (SETTINGS_PREPARATION_STATES.has(state)) {
     return 'chat.topicStarter.statusNeedsSettings';
   }
-  return 'chat.topicStarter.statusNoCards';
+  return 'chat.topicStarter.statusPreparing';
 }
 
 export function topicStarterShowsSettingsAction(state: string): boolean {

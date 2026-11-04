@@ -72,21 +72,21 @@ const dynamicSlate = {
   topics: [topic(1), topic(2)],
 };
 
-test('collapses homepage recommendation status into three jobs', () => {
+test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterShowsStatus('ready', false), false);
   assert.equal(topicStarterShowsStatus('preparing', false), true);
   assert.equal(topicStarterStatusMessageKey('preparing', false), 'chat.topicStarter.statusPreparing');
-  assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparingWithCards');
+  assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterShowsSettingsAction('preparing'), false);
   assert.equal(topicStarterShowsStatus('disabled', true), true);
   assert.equal(topicStarterStatusMessageKey('disabled', true), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('disabled', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('missing_configuration', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('provider_unavailable', false), 'chat.topicStarter.statusNeedsSettings');
-  assert.equal(topicStarterStatusMessageKey('waiting_for_input', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('no_content', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('failed', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('failed', true), 'chat.topicStarter.statusUpdateIncomplete');
+  assert.equal(topicStarterStatusMessageKey('waiting_for_input', false), 'chat.topicStarter.statusPreparing');
+  assert.equal(topicStarterStatusMessageKey('no_content', false), 'chat.topicStarter.statusPreparing');
+  assert.equal(topicStarterStatusMessageKey('failed', false), 'chat.topicStarter.statusPreparing');
+  assert.equal(topicStarterStatusMessageKey('failed', true), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterShowsSettingsAction('disabled'), true);
   assert.equal(topicStarterShowsSettingsAction('failed'), false);
   assert.equal(topicStarterShowsRetryAction('waiting_for_input'), true);
@@ -661,7 +661,7 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
   }
 });
 
-test('enabled recommendations show a configuration-specific recovery hint without a disabled-feature hint', async () => {
+test('enabled recommendations show a shared unavailable hint with settings recovery', async () => {
   for (const state of ['missing_configuration', 'provider_unavailable']) {
     let settingsOpens = 0;
     const panel = await mountWelcome(`sess-enabled-${state}`, {
@@ -673,16 +673,14 @@ test('enabled recommendations show a configuration-specific recovery hint withou
       }));
       await react.act(settle);
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+      const status = document.querySelector('[role="status"]');
+      assert.ok(status);
+      assert.ok(status.textContent.includes('unavailable'));
+      assert.ok(status.classList.contains('chat-suggestions__title'));
       const settingsButton = document.querySelector('[data-testid="chat-panel-topic-settings"]');
-      if (state === 'missing_configuration') {
-        assert.ok(settingsButton);
-        assert.ok(document.querySelector('[data-testid="chat-panel-topic-configuration-hint"]').textContent.includes('configuration is incomplete'));
-        await react.act(async () => settingsButton.click());
-        assert.equal(settingsOpens, 1);
-      } else {
-        assert.equal(settingsButton, null);
-        assert.ok(document.querySelector('[role="status"]').textContent.trim());
-      }
+      assert.ok(settingsButton);
+      await react.act(async () => settingsButton.click());
+      assert.equal(settingsOpens, 1);
       assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]'), null);
       assert.equal(document.body.textContent.includes('For topics that understand you better'), false);
     } finally {
