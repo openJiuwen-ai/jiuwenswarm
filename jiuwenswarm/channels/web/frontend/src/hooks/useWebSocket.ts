@@ -1169,6 +1169,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const lastGoalGetAttemptAtRef = useRef<Map<string, number>>(new Map());
   const wasConnectedRef = useRef(false);
   const contextCompressionSummaryRef = useRef<Map<string, ContextCompressionSummary>>(new Map());
+  // 成员「本 turn 完成次数」的计数基数。成员的 store summary 兼任展示
+  // （完成汇总详情），不能当基数用——finish 后展示保留到下一条消息，若
+  // completed 继续以它累加，成员条会跨 turn 越滚越大（CR-002）。基数与
+  // 展示分离：基数在这里按 turn 清零，store summary 只在 turn 收尾时随
+  // 记录一起清。
+  const memberCompressionCountRef = useRef<Map<string, number>>(new Map());
   const pendingContextCompressionStartRef =
     useRef<Map<string, PendingContextCompressionStart>>(new Map());
   const pendingTeamMemberContextCompressionStartRef =
@@ -1587,7 +1593,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     clearPendingContextCompressionStart(sessionId);
     contextCompressionSummaryRef.current.delete(sessionId);
     useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
-  }, [clearPendingContextCompressionStart]);
+    // 防御性对称：流未正常收尾（断连等）就发新消息时，reset 是唯一的 turn
+    // 边界——成员的基数与展示记录一并清掉，不让上一 turn 泄漏进来。
+    const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
+    for (const memberId of Object.keys(memberStates ?? {})) {
+      memberCompressionCountRef.current.delete(getTeamMemberContextCompressionKey(sessionId, memberId));
+      setTeamMemberContextCompressionStatus(sessionId, memberId, undefined, undefined);
+    }
+  }, [clearPendingContextCompressionStart, getTeamMemberContextCompressionKey, setTeamMemberContextCompressionStatus]);
 
   const finishContextCompressionTurn = useCallback((sessionId: string) => {
     clearPendingContextCompressionStart(sessionId);
@@ -1607,11 +1620,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     // 不清会把本 turn 的计数泄漏进下一个 turn 的徽标。
     contextCompressionSummaryRef.current.delete(sessionId);
 
-    // 成员侧对齐同一 turn 边界：清各成员的累计计数与运行态（pending 由
-    // 各成员分支自行清理）。中断抑制对成员同理——被暂停/取消的成员轮次
-    // 不该在下一 turn 的成员条上冒出累计完成的次数。
+    // 成员侧对齐同一 turn 边界：计数基数无条件清（新 turn 从 0 重新累计），
+    // 展示（完成汇总详情）按中断抑制保留到下一条消息——与主会话的
+    // ref.delete + summary 展示位完全对称。基数在 ref、展示在 store，
+    // 二者分离后 store 里保留的 summary 不会再被当作下一 turn 的累加起点。
     const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
     for (const memberId of Object.keys(memberStates ?? {})) {
+      const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+      memberCompressionCountRef.current.delete(key);
       const memberRuntime = memberStates?.[memberId]?.runtime;
       const memberInterrupted =
         memberRuntime?.status === 'cancelled' || memberRuntime?.status === 'paused';
@@ -1623,7 +1639,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         !memberInterrupted && memberSummary && memberSummary.count > 0 ? memberSummary : undefined,
       );
     }
-  }, [clearPendingContextCompressionStart, setTeamMemberContextCompressionStatus]);
+  }, [clearPendingContextCompressionStart, getTeamMemberContextCompressionKey, setTeamMemberContextCompressionStatus]);
 
   const buildContextCompressionRuntimeState = useCallback(
     (payload: ContextCompressionStatePayload): Omit<ContextCompressionRuntime, 'status'> | null => {
@@ -1753,11 +1769,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'completed') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
-        const current =
+        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        // 基数取 turn 级 ref 而非 store summary：store summary 在 turn 收尾后
+        // 会保留展示（与主会话徽标对称），若以它累加，成员计数跨 turn 越滚越大
+        // （CR-002）。ref 在 finishContextCompressionTurn 按 turn 清零。
+        const currentCount = memberCompressionCountRef.current.get(key) ?? 0;
+        const currentSummary =
           useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression[memberId]?.summary;
+        memberCompressionCountRef.current.set(key, currentCount + 1);
         const nextSummary = {
-          count: (current?.count || 0) + 1,
-          summaries: [...(current?.summaries || []), runtimeState.summary],
+          count: currentCount + 1,
+          summaries: [...(currentSummary?.summaries ?? []), runtimeState.summary],
         };
         setTeamMemberContextCompressionStatus(sessionId, memberId, {
           ...runtimeState,
