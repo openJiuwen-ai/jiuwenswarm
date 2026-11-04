@@ -486,9 +486,9 @@ async def test_tool_denial_keeps_each_provider_receipt_and_first_response_identi
 
 @pytest.mark.parametrize(("first_text", "outcome", "reason", "shown"), [
     ("继续", "candidate", None, ["继续"]),
-    ("谢谢，译得很好", "filtered", "evaluative", []),
+    ("谢谢，译得很好", "candidate", None, ["谢谢，译得很好"]),
 ])
-async def test_tool_denial_selects_and_filters_the_first_assistant_text(
+async def test_tool_denial_keeps_the_first_assistant_text(
     product, monkeypatch, first_text, outcome, reason, shown,
 ) -> None:
     client = _ModelClient(
@@ -923,20 +923,24 @@ async def test_a_first_turn_whose_prompt_was_not_cached_yet_is_followed_by_a_sug
     assert _outcomes(product.store) == [("candidate", None)]
 
 
-@pytest.mark.parametrize(("reply", "outcome", "reason"), [
-    (AssistantMessage(content="  "), "suppressed", "empty"),
-    (AssistantMessage(content="谢谢，译得很好"), "filtered", "evaluative"),
-    (AssistantMessage(content="我来帮你整理术语表"), "filtered", "claude_voice"),
-    (AssistantMessage(content="（不输出）"), "filtered", "meta_wrapped"),
+@pytest.mark.parametrize(("reply", "outcome", "reason", "shown"), [
+    (AssistantMessage(content="  "), "suppressed", "empty", None),
+    (AssistantMessage(content="谢谢，译得很好"), "candidate", None, "谢谢，译得很好"),
+    (AssistantMessage(content="我来帮你整理术语表"), "candidate", None, "我来帮你整理术语表"),
+    (AssistantMessage(content="（不输出）"), "candidate", None, "（不输出）"),
 ])
-async def test_reply_that_is_not_the_users_next_input_is_not_shown(product, monkeypatch, reply, outcome, reason) -> None:
+async def test_non_empty_fork_replies_reach_the_page_without_content_filters(
+    product, monkeypatch, reply, outcome, reason, shown,
+) -> None:
     client = _ModelClient(AssistantMessage(content="译好了。", usage_metadata=_usage(900, 800, 10)), reply)
 
     await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
     await _settled()
 
     assert len(client.requests) == 2
-    assert product.page.events == []
+    assert [event.payload["text"] for event in product.page.events] == (
+        [] if shown is None else [shown]
+    )
     assert _outcomes(product.store) == [(outcome, reason)]
 
 
@@ -962,6 +966,13 @@ def test_a_json_suggestion_is_unwrapped() -> None:
     )
 
 
+def test_a_fenced_json_suggestion_is_unwrapped() -> None:
+    raw = '```json\n{"suggestion": "那清朝有哪些小说家？"}\n```'
+    assert prompt_suggestion.select_suggestions(raw) == (
+        ["那清朝有哪些小说家？"], "candidate", None,
+    )
+
+
 async def test_only_the_first_likely_next_input_reaches_the_page(product, monkeypatch) -> None:
     reply = AssistantMessage(
         content="买ETF，长期配置\n谢谢\n跌破4100美元时提醒我\n再写一条多余的",
@@ -984,85 +995,11 @@ async def test_only_the_first_likely_next_input_reaches_the_page(product, monkey
     assert [event.payload["suggestion_id"] for event in product.page.events] == [row["suggestion_id"] for row in generations]
 
 
-@pytest.mark.parametrize(("text", "reason"), [
-    pytest.param("无输出。", "meta_text", id="saved-phase20-empty-response"),
-    ("无输出", "meta_text"), ("无输出！", "meta_text"),
-    ("不输出", "meta_text"), ("不输出。", "meta_text"),
-    pytest.param("什么都不输出。", "meta_text", id="review-acceptance-20261013-echoed-instruction"),
-    ("什么也不输出", "meta_text"),
-    ("检查无输出的原因", None), ("排查不输出的原因", None), ("为什么脚本什么都不输出", None),
+@pytest.mark.parametrize("text", [
+    "无输出。", "无输出", "检查无输出的原因", "继续下一步", "继续吧",
+    "北京", "看起来不错", "无建议", "继续。提交",
 ])
-async def test_chinese_empty_results_are_not_sent_but_commands_containing_the_words_are(
-    product, monkeypatch, text, reason,
-) -> None:
-    fork_started, release = asyncio.Event(), asyncio.Event()
-
-    async def reply() -> AssistantMessage:
-        fork_started.set()
-        await release.wait()
-        return AssistantMessage(content=text, usage_metadata=_usage(1100, 1000, 6))
-
-    main_answer = AssistantMessage(content="收到。", usage_metadata=_usage(900, 800, 10))
-    client = _ModelClient(main_answer, reply)
-    agent = await _agent(client, monkeypatch)
-    executed = []
-
-    async def run_tool(*args: Any, **kwargs: Any):
-        executed.append((args, kwargs))
-        return "found", ToolMessage(content="found", tool_call_id="lookup")
-
-    monkeypatch.setattr(agent.ability_manager, "_execute_single_tool_call", run_tool)
-    query = "本轮只确认收到" if reason else "检查这段脚本为什么没有输出"
-    await _turn(_facade(_Host(agent)), "req-1", query)
-    await fork_started.wait()
-    session_history.flush_history_writes()
-    before = session_history.load_history_records(SESSION)
-    release.set()
-    await _settled()
-
-    assert len(client.requests) == 2
-    main, fork = client.requests
-    assert fork.messages[:-2] == main.messages
-    assert fork.messages[-2] == main_answer
-    assert fork.tools == main.tools
-    assert fork.model == main.model == "dialogue-model"
-    assert fork.kwargs == main.kwargs == {}
-    assert len(executed) == 0
-    assert session_history.load_history_records(SESSION) == before
-    assert [event.payload["text"] for event in product.page.events] == ([] if reason else [text])
-    assert _outcomes(product.store) == [("filtered" if reason else "candidate", reason)]
-    assert _generations(product.store)[0]["text"] == text
-
-
-@pytest.mark.parametrize(("text", "reason"), [
-    ("继续下一步", "nonspecific"), ("继续下一步。", "nonspecific"),
-    ("继续下一步!", "nonspecific"), ("继续下一步……", "nonspecific"),
-    ("继续", None), ("继续吧", None), ("是的", None), ("试试看", None),
-    ("继续比较大潮和小潮", None), ("继续下一步比较口感", None),
-    ("解释“继续下一步”的含义", None),
-])
-async def test_next_step_placeholder_is_not_sent_but_specific_commands_are(product, monkeypatch, text, reason) -> None:
-    client = _ModelClient(
-        AssistantMessage(content="比较已经答完。", usage_metadata=_usage(900, 800, 10)),
-        AssistantMessage(content=text, usage_metadata=_usage(1100, 1000, 6)),
-    )
-
-    await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "解释合并与删除记忆，再比较适用情况")
-    await _settled()
-
-    assert [event.payload["text"] for event in product.page.events] == ([] if reason else [text])
-    assert _outcomes(product.store) == [("filtered" if reason else "candidate", reason)]
-
-
-@pytest.mark.parametrize(("text", "reason"), [
-    ("是的", None), ("当然", None), ("好", None), ("好的", None),
-    ("推送", None), ("提交", None), ("部署", None), ("停止", None),
-    ("继续", None), ("检查", None), ("退出", None), ("不", None), ("不要", None),
-    ("继续吧", None), pytest.param("试试看", None, id="try-it-out"),
-    ("北京", "too_few_words"), ("SQLite", "too_few_words"), ("看起来不错", "evaluative"),
-    ("无建议", "meta_text"), ("继续。提交", "multiple_sentences"),
-])
-async def test_chinese_source_commands_keep_the_original_short_input_exception(product, monkeypatch, text, reason) -> None:
+async def test_former_content_filter_hits_are_shown(product, monkeypatch, text) -> None:
     client = _ModelClient(
         AssistantMessage(content="译好了。", usage_metadata=_usage(900, 800, 10)),
         AssistantMessage(content=text, usage_metadata=_usage(1100, 1000, 6)),
@@ -1071,8 +1008,8 @@ async def test_chinese_source_commands_keep_the_original_short_input_exception(p
     await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
     await _settled()
 
-    assert [event.payload["text"] for event in product.page.events] == ([text] if reason is None else [])
-    assert _outcomes(product.store) == [("candidate" if reason is None else "filtered", reason)]
+    assert [event.payload["text"] for event in product.page.events] == [text]
+    assert _outcomes(product.store) == [("candidate", None)]
 
 
 def _completed(request_id: str) -> None:
@@ -1177,42 +1114,18 @@ def test_every_agent_rail_set_keeps_the_last_model_call(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("text", [
-    "导出成双语对照", "好的，继续", "检查错别字", "术语要统一成哪套译法？", "帮我来一份术语表", "提醒我不错过截止日期",
-    "把整份说明逐段译成英文并在每段后面附上原文和页码以便逐句核对术语",
-    "please run every single unit test in the repository and then report back to me",
-    "run the tests", "yes", "/review", "push it to the release branch",
+    "导出成双语对照", "done", "不出", "北京", "长" * 241,
+    "Let me run the tests", "我帮你导出成双语对照", "**导出**成双语对照",
 ])
-def test_filter_keeps_what_the_user_would_type(text) -> None:
+def test_filter_suggestion_is_a_noop(text) -> None:
     assert prompt_suggestion.filter_suggestion(text) is None
+    assert prompt_suggestion.select_suggestions(text) == ([text], "candidate", None)
 
 
-@pytest.mark.parametrize(("text", "reason"), [
-    ("done", "done"),
-    ("不出", "meta_text"),
-    ("（不出）", "meta_text"),
-    ("Stay silent, the next step is unclear", "meta_text"),
-    ("[no suggestion]", "meta_wrapped"),
-    ("（不输出）", "meta_wrapped"),
-    ("本轮不预测", "meta_text"),
-    ("（本轮不预测）", "meta_wrapped"),
-    ("API Error: 500 upstream", "error_message"),
-    ("Suggestion: run the tests", "prefixed_label"),
-    ("建议：检查错别字", "prefixed_label"),
-    ("北京", "too_few_words"),
-    ("refactor", "too_few_words"),
-    ("长" * 241, "too_long"),
-    ("检查错别字。然后导出", "multiple_sentences"),
-    ("Run the tests. Then push it", "multiple_sentences"),
-    ("**导出**成双语对照", "has_formatting"),
-    ("- 导出成双语对照", "has_formatting"),
-    ("looks good, ship it", "evaluative"),
-    ("谢谢，就这样吧", "evaluative"),
-    ("Let me run the tests", "claude_voice"),
-    ("我帮你导出成双语对照", "claude_voice"),
-    ("以下是术语表的整理方案", "claude_voice"),
-])
-def test_filter_drops_what_is_not_the_users_next_input(text, reason) -> None:
-    assert prompt_suggestion.filter_suggestion(text) == reason
+def test_list_marker_line_still_strips_prefix() -> None:
+    assert prompt_suggestion.select_suggestions("- 导出成双语对照") == (
+        ["导出成双语对照"], "candidate", None,
+    )
 
 
 class _Browser:
