@@ -6,6 +6,20 @@ an isolated browser `WebContentsView` on the right side of the application.
 
 ## Local files and downloads
 
+App Market HTML entries use separate Electron BrowserWindows, one per stable
+app ID. Windows have WorkSwarm branding and skip taskbar buttons. Minimizing hides
+them; the market's Open / restore action restores the existing page without reload.
+The regular Web client keeps its sandboxed iframe panel, with expand, hide and
+close actions; it does not use Electron viewport APIs. Apps must allow embedding.
+Manual closing does not stop the service. Successful market stop/delete closes
+only that app's page; storage is not cleared. The main window owns cleanup on exit.
+App windows retain persist:app-market-<appId>, sandbox isolation and no preload or
+Node integration. Permissions are denied by default. They do not depend on chat
+sessions or the browser headless setting. Saves and NPC checkpoints belong to the
+application. Browser storage follows URL origins and is not merged across Web and
+Electron; changing service ports does not migrate localStorage automatically.
+Regression check: node --test tests/electron/app_market_windows.test.cjs.
+
 Native file drops use the preload's `webUtils.getPathForFile` bridge and the
 shared local-file consumer for chat attachments and connector package imports.
 Directories and virtual files without disk paths remain unsupported.

@@ -16,6 +16,8 @@ const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
+const { createAppMarketWindows } = require('./app_market_windows.cjs');
+const appMarketWindows = createAppMarketWindows(BrowserWindow, () => mainWindow, resolveIconPath);
 let macUpdateInProgress = false;
 
 const BACKEND_HOST = '127.0.0.1';
@@ -2437,6 +2439,8 @@ async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
 }
 
 function registerIpcHandlers() {
+  registerHandler('desktop:open-market-app', appMarketWindows.open);
+  registerHandler('desktop:close-market-app', appMarketWindows.close);
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;

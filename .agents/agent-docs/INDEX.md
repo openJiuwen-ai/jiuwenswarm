@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 26 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 28 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -19,18 +19,20 @@ generated: true
 | [agent_teams/workflow](#module-2) | 3 |
 | [jiuwenswarm](#module-3) | 3 |
 | [jiuwenswarm/agents/harness/common](#module-4) | 1 |
-| [jiuwenswarm/channels/web/frontend](#module-5) | 2 |
-| [jiuwenswarm/common](#module-6) | 4 |
-| [jiuwenswarm/extensions/app_market](#module-7) | 4 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-8) | 1 |
-| [jiuwenswarm/observability](#module-9) | 1 |
-| [jiuwenswarm/resources/agent/workspace/skills](#module-10) | 4 |
-| [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-11) | 4 |
-| [jiuwenswarm/runtime](#module-12) | 2 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-13) | 3 |
-| [jiuwenswarm/server/runtime/session](#module-14) | 1 |
-| [jiuwenswarm/server/runtime/skill](#module-15) | 4 |
-| [未分类](#module-16) | 12 |
+| [jiuwenswarm/channels/desktop/electron](#module-5) | 2 |
+| [jiuwenswarm/channels/web/frontend](#module-6) | 2 |
+| [jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel](#module-7) | 2 |
+| [jiuwenswarm/common](#module-8) | 4 |
+| [jiuwenswarm/extensions/app_market](#module-9) | 4 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-10) | 1 |
+| [jiuwenswarm/observability](#module-11) | 1 |
+| [jiuwenswarm/resources/agent/workspace/skills](#module-12) | 4 |
+| [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-13) | 4 |
+| [jiuwenswarm/runtime](#module-14) | 2 |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-15) | 3 |
+| [jiuwenswarm/server/runtime/session](#module-16) | 1 |
+| [jiuwenswarm/server/runtime/skill](#module-17) | 4 |
+| [未分类](#module-18) | 12 |
 
 <a id="module-1"></a>
 
@@ -70,6 +72,15 @@ generated: true
 
 <a id="module-5"></a>
 
+## jiuwenswarm/channels/desktop/electron
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261103_1106_app-market-electron](features/F_20261103_1106_app-market-electron.md) | F | 应用市场分端浏览器容器 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
+| [S_01_app-market-windows](specs/jiuwenswarm/channels/desktop/S_01_app-market-windows.md) | S | 应用市场分端展示契约 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs | — |
+
+<a id="module-6"></a>
+
 ## jiuwenswarm/channels/web/frontend
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -77,7 +88,16 @@ generated: true
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | jiuwenswarm/channels/web/frontend | — | — |
 | [F_20261103_1149_builtin-skill-catalog](features/F_20261103_1149_builtin-skill-catalog.md) | F | 内置能力总目录实施记录 | kdgmpw | jiuwenswarm/resources/agent/workspace/skills, jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/channels/web/frontend | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwenswarm/server/runtime/skill/skill_manager.py, jiuwenswarm/server/runtime/agent_adapter/user_turn.py, tests/unit_tests/test_builtin_catalog.py | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 
-<a id="module-6"></a>
+<a id="module-7"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261103_1106_app-market-electron](features/F_20261103_1106_app-market-electron.md) | F | 应用市场分端浏览器容器 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
+| [S_01_app-market-windows](specs/jiuwenswarm/channels/desktop/S_01_app-market-windows.md) | S | 应用市场分端展示契约 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs | — |
+
+<a id="module-8"></a>
 
 ## jiuwenswarm/common
 
@@ -88,7 +108,7 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/B_20261103_1636_builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/resources/agent/workspace/skills | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/server/runtime/skill/skill_manager.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/legacy_versions.json, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/SKILL.md, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/skill_display.md, tests/unit_tests/test_builtin_catalog.py | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/S_01_builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/resources/agent/workspace/skills | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwenswarm/server/runtime/skill/skill_manager.py | — |
 
-<a id="module-7"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/extensions/app_market
 
@@ -99,7 +119,7 @@ generated: true
 | [B_20261103_1433_npc-session-project](bugfix/jiuwenswarm/extensions/app_market/B_20261103_1433_npc-session-project.md) | B | 微缩生活岛 NPC 会话归属错误 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md, tests/unit_tests/test_app_market_runtime.py | 无独立 D：根据明确的故障修复要求落实既有项目绑定接口，无独立设计。 |
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/S_01_app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
 
-<a id="module-8"></a>
+<a id="module-10"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -107,7 +127,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-9"></a>
+<a id="module-11"></a>
 
 ## jiuwenswarm/observability
 
@@ -115,7 +135,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-10"></a>
+<a id="module-12"></a>
 
 ## jiuwenswarm/resources/agent/workspace/skills
 
@@ -126,7 +146,7 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/B_20261103_1636_builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/resources/agent/workspace/skills | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/server/runtime/skill/skill_manager.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/legacy_versions.json, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/SKILL.md, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/skill_display.md, tests/unit_tests/test_builtin_catalog.py | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/S_01_builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/resources/agent/workspace/skills | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwenswarm/server/runtime/skill/skill_manager.py | — |
 
-<a id="module-11"></a>
+<a id="module-13"></a>
 
 ## jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin
 
@@ -137,7 +157,7 @@ generated: true
 | [B_20261103_1433_npc-session-project](bugfix/jiuwenswarm/extensions/app_market/B_20261103_1433_npc-session-project.md) | B | 微缩生活岛 NPC 会话归属错误 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md, tests/unit_tests/test_app_market_runtime.py | 无独立 D：根据明确的故障修复要求落实既有项目绑定接口，无独立设计。 |
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/S_01_app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
 
-<a id="module-12"></a>
+<a id="module-14"></a>
 
 ## jiuwenswarm/runtime
 
@@ -146,7 +166,7 @@ generated: true
 | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) | D | 应用角色会话的最小提示词运行配置 | kdgmpw | jiuwenswarm/runtime, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | — | — |
 | [F_20261103_1501_app-role-session](features/F_20261103_1501_app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | jiuwenswarm/runtime, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime/session, jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/runtime/app_role.py, jiuwenswarm/runtime/session_provisioner.py, jiuwenswarm/server/agent_ws_server.py, jiuwenswarm/server/runtime/agent_adapter/interface_app_role.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/server/runtime/agent_manager.py, jiuwenswarm/server/runtime/session/session_metadata.py, jiuwenswarm/agents/harness/common/session_ops_service.py, tests/unit_tests/agentserver/test_app_role_adapter.py, tests/unit_tests/agentserver/test_session_create_runtime_boundary.py, tests/unit_tests/runtime/test_session_create_provisioner.py, tests/unit_tests/agentserver/test_agent_warm_pool.py | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 
-<a id="module-13"></a>
+<a id="module-15"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -156,7 +176,7 @@ generated: true
 | [F_20261103_1149_builtin-skill-catalog](features/F_20261103_1149_builtin-skill-catalog.md) | F | 内置能力总目录实施记录 | kdgmpw | jiuwenswarm/resources/agent/workspace/skills, jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/channels/web/frontend | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwenswarm/server/runtime/skill/skill_manager.py, jiuwenswarm/server/runtime/agent_adapter/user_turn.py, tests/unit_tests/test_builtin_catalog.py | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [F_20261103_1501_app-role-session](features/F_20261103_1501_app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | jiuwenswarm/runtime, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime/session, jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/runtime/app_role.py, jiuwenswarm/runtime/session_provisioner.py, jiuwenswarm/server/agent_ws_server.py, jiuwenswarm/server/runtime/agent_adapter/interface_app_role.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/server/runtime/agent_manager.py, jiuwenswarm/server/runtime/session/session_metadata.py, jiuwenswarm/agents/harness/common/session_ops_service.py, tests/unit_tests/agentserver/test_app_role_adapter.py, tests/unit_tests/agentserver/test_session_create_runtime_boundary.py, tests/unit_tests/runtime/test_session_create_provisioner.py, tests/unit_tests/agentserver/test_agent_warm_pool.py | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 
-<a id="module-14"></a>
+<a id="module-16"></a>
 
 ## jiuwenswarm/server/runtime/session
 
@@ -164,7 +184,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261103_1501_app-role-session](features/F_20261103_1501_app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | jiuwenswarm/runtime, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime/session, jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/runtime/app_role.py, jiuwenswarm/runtime/session_provisioner.py, jiuwenswarm/server/agent_ws_server.py, jiuwenswarm/server/runtime/agent_adapter/interface_app_role.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/server/runtime/agent_manager.py, jiuwenswarm/server/runtime/session/session_metadata.py, jiuwenswarm/agents/harness/common/session_ops_service.py, tests/unit_tests/agentserver/test_app_role_adapter.py, tests/unit_tests/agentserver/test_session_create_runtime_boundary.py, tests/unit_tests/runtime/test_session_create_provisioner.py, tests/unit_tests/agentserver/test_agent_warm_pool.py | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 
-<a id="module-15"></a>
+<a id="module-17"></a>
 
 ## jiuwenswarm/server/runtime/skill
 
@@ -175,7 +195,7 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/B_20261103_1636_builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/resources/agent/workspace/skills | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/server/runtime/skill/skill_manager.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/legacy_versions.json, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/SKILL.md, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/skill_display.md, tests/unit_tests/test_builtin_catalog.py | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/S_01_builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | jiuwenswarm/common, jiuwenswarm/server/runtime/skill, jiuwenswarm/resources/agent/workspace/skills | jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwenswarm/server/runtime/skill/skill_manager.py | — |
 
-<a id="module-16"></a>
+<a id="module-18"></a>
 
 ## 未分类
 

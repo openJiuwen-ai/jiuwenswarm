@@ -56,6 +56,8 @@ export interface ElectronBubbleAnchorRect {
 }
 
 export interface JiuwenElectronDesktopApi {
+  openMarketApp?: (appId: string, url: string, title: string) => Promise<boolean>;
+  closeMarketApp?: (appId: string) => Promise<boolean>;
   readonly isElectron: true;
   readonly apiBase?: string;
   readonly wsBase?: string;

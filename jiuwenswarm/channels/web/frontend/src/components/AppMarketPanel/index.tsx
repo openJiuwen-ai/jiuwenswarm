@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Circle, CircleCheck, Loader2, LogOut, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { AppWindow, Circle, CircleCheck, Loader2, LogOut, Play, RefreshCw, Square, Trash2, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
-import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { CategoryTabs } from '../ui/CategoryTabs/CategoryTabs';
 import { PageCard } from '../ui/PageCard/PageCard';
+import { Button } from '../ui/Button/Button';
+import { AppMarketBrowserPane } from './AppMarketBrowserPane';
+import { webAppViews } from './webAppViews';
+import './AppMarketPanel.css';
+
+const PANE_HINT_DISMISSED = 'app-market-pane-hint-dismissed';
 
 interface AppInfo {
   app_id: string;
@@ -40,15 +45,6 @@ function errorDetail(error: unknown): string {
   return '';
 }
 
-function openApplication(app: AppInfo, instance: InstanceInfo) {
-  const url = instance.url;
-  if (!url) return;
-  // The desktop helper accepts previewable filenames; the app name may have no extension.
-  if (!openFileInDesktopBrowser({ name: `${app.name}.html`, download_url: url })) {
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }
-}
-
 function StateIcon({ state, label }: { state: AppState; label: string }) {
   const Icon =
     state === 'running' ? CircleCheck : state === 'starting' ? Loader2 : state === 'stopping' ? LogOut : Circle;
@@ -59,16 +55,26 @@ function StateIcon({ state, label }: { state: AppState; label: string }) {
       title={label}
       aria-label={label}
       data-testid="app-market-status"
-      className={`inline-flex shrink-0 ${color}`}
+      className={`inline-flex shrink-0 items-center gap-1 text-xs ${color}`}
     >
       <Icon size={14} aria-hidden="true" className={state === 'starting' ? 'animate-spin' : undefined} />
+      <span data-testid="app-market-status-text">{label}</span>
     </span>
   );
 }
 
 export function AppMarketPanel() {
   const { t } = useTranslation();
+  const isElectron = !!window.jiuwenDesktop?.isElectron;
+  const hintKey = isElectron ? 'app-market-desktop-window-hint-dismissed' : PANE_HINT_DISMISSED;
+  const [windowHintVisible, setWindowHintVisible] = useState(() => {
+    try { return localStorage.getItem(hintKey) !== '1'; } catch { return true; }
+  });
   const [activeTab, setActiveTab] = useState<Tab>('all');
+  const [activeApp, setActiveApp] = useState<AppInfo | null>(null);
+  const [paneExpanded, setPaneExpanded] = useState(false);
+  const openRevision = useRef(0);
+  const openingAppId = useRef<string | null>(null);
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [instances, setInstances] = useState<InstanceInfo[]>([]);
   const [listState, setListState] = useState<LoadState>('loading');
@@ -115,6 +121,42 @@ export function AppMarketPanel() {
     },
     [t],
   );
+
+  const openApplication = async (app: AppInfo, instance: InstanceInfo) => {
+    if (!instance.url) return;
+    const revision = ++openRevision.current;
+    openingAppId.current = app.app_id;
+    try {
+      const desktop = window.jiuwenDesktop;
+      if (desktop?.isElectron) {
+        if (!desktop.openMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
+        if (!(await desktop.openMarketApp(app.app_id, instance.url, app.name))) {
+          throw new Error(t('appMarket.openFailed'));
+        }
+      } else {
+        webAppViews.open(app.app_id, instance.url, app.name);
+      }
+      if (!isElectron && revision === openRevision.current) setActiveApp(app);
+    } catch (error) {
+      if (revision === openRevision.current) showError('appMarket.openFailed', error);
+    }
+  };
+
+  const hideApplication = () => {
+    ++openRevision.current;
+    setActiveApp(null);
+  };
+
+  const closeApplication = async (app: AppInfo) => {
+    try {
+      const closed = isElectron ? await window.jiuwenDesktop?.closeMarketApp?.(app.app_id) : webAppViews.close(app.app_id);
+      if (!closed) throw new Error(t('appMarket.panelCloseFailed'));
+      if (openingAppId.current === app.app_id) ++openRevision.current;
+      setActiveApp(current => current?.app_id === app.app_id ? null : current);
+    } catch (error) { showError('appMarket.panelCloseFailed', error); }
+  };
+
+  useEffect(() => () => { ++openRevision.current; }, []);
 
   const refresh = useCallback(async () => {
     setListState('loading');
@@ -171,7 +213,8 @@ export function AppMarketPanel() {
       instanceRevision.current += 1;
       setInstances((current) => [...current.filter((item) => item.app_id !== app.app_id), instance]);
       setMessage({ text: t('appMarket.startSuccess'), error: false });
-      openApplication(app, instance);
+      // Page loading must not keep the running application's operation lock.
+      void openApplication(app, instance);
     } catch (error) {
       showError('appMarket.startFailed', error);
       // Refresh without holding the optimistic state after a failed start.
@@ -192,6 +235,22 @@ export function AppMarketPanel() {
         current.map((item) => (item.instance_id === instance.instance_id ? { ...item, state: 'stopped' } : item)),
       );
       setMessage({ text: t('appMarket.stopSuccess'), error: false });
+      const desktop = window.jiuwenDesktop;
+      if (desktop?.isElectron) {
+        try {
+          if (!desktop.closeMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
+          if (!(await desktop.closeMarketApp(app.app_id))) throw new Error(t('appMarket.closeWindowFailed'));
+          if (openingAppId.current === app.app_id) ++openRevision.current;
+          setActiveApp(current => current?.app_id === app.app_id ? null : current);
+        } catch (error) {
+          // Window cleanup must not report an already successful service stop as failed.
+          showError('appMarket.closeWindowFailed', error);
+        }
+      } else {
+        webAppViews.close(app.app_id);
+        if (openingAppId.current === app.app_id) ++openRevision.current;
+        setActiveApp(current => current?.app_id === app.app_id ? null : current);
+      }
       await fetchInstances();
     } catch (error) {
       showError('appMarket.stopFailed', error);
@@ -209,6 +268,7 @@ export function AppMarketPanel() {
       setApps((current) => current.filter((item) => item.app_id !== app.app_id));
       setInstances((current) => current.filter((item) => item.app_id !== app.app_id));
       setMessage({ text: t('appMarket.deleteSuccess'), error: false });
+      await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
     } catch (error) {
       showError('appMarket.deleteFailed', error);
@@ -224,7 +284,8 @@ export function AppMarketPanel() {
   const displayApps = activeTab === 'all' ? apps : apps.filter((app) => getState(app.app_id) !== 'stopped');
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-5" data-testid="app-market-panel">
+    <div className={`app-market-layout${!isElectron && activeApp && paneExpanded ? ' app-market-layout-expanded' : ''}`} data-testid="app-market-panel">
+      <div className="app-market-list flex min-h-0 flex-1 flex-col gap-5" data-testid="app-market-list">
       <div className="page-shell flex shrink-0 items-center justify-between gap-4">
         <CategoryTabs<Tab>
           items={[
@@ -248,6 +309,26 @@ export function AppMarketPanel() {
           <RefreshCw size={16} aria-hidden="true" />
         </button>
       </div>
+      {windowHintVisible && (
+        <div
+          className="page-shell flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          data-testid="app-market-pane-hint"
+        >
+            <p data-testid="app-market-pane-hint-text">{t(isElectron ? 'appMarket.desktopWindowHint' : 'appMarket.paneHint')}</p>
+          <Button
+            variant="quiet"
+            size="sm"
+            className="shrink-0"
+            data-testid="app-market-pane-hint-dismiss"
+            onClick={() => {
+              setWindowHintVisible(false);
+              try { localStorage.setItem(hintKey, '1'); } catch { /* The hint can still close for this visit. */ }
+            }}
+          >
+            {t('appMarket.gotIt')}
+          </Button>
+        </div>
+      )}
       {message && (
         <div
           role={message.error ? 'alert' : 'status'}
@@ -269,11 +350,15 @@ export function AppMarketPanel() {
               const instance = instanceMap.get(app.app_id);
               const state = getState(app.app_id);
               const busy = !!pending[app.app_id] || state === 'starting' || state === 'stopping';
+              const toggleLabel = t(state === 'running'
+                ? 'appMarket.stopApp'
+                : state === 'stopped' ? 'appMarket.start' : `appMarket.states.${state}`);
               return (
                 <PageCard
                   key={app.app_id}
                   testId="app-market-card"
-                  className="cursor-default"
+                  variant={app.app_id}
+                  className="app-market-card cursor-default"
                   avatar={{ name: app.name, iconUrl: app.icon_url, testId: 'app-market-card-avatar' }}
                   title={app.name}
                   label={[`v${app.version}`]}
@@ -281,13 +366,27 @@ export function AppMarketPanel() {
                   titleEnd={<StateIcon state={state} label={t(`appMarket.states.${state}`)} />}
                   actionSlot={
                     <div className="flex shrink-0 items-center gap-2">
+                      {state === 'running' && instance?.url && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          data-testid="app-market-open"
+                          title={t('appMarket.openRestore')}
+                          aria-label={t('appMarket.openRestore')}
+                          disabled={busy}
+                          icon={isElectron ? <AppWindow size={16} aria-hidden="true" /> : <ExternalLink size={16} aria-hidden="true" />}
+                          onClick={() => void openApplication(app, instance)}
+                        >
+                          {t('appMarket.openRestore')}
+                        </Button>
+                      )}
                       <button
                         type="button"
                         className="page-card-action"
                         data-testid="app-market-toggle"
                         data-variant={state}
-                        title={t(state === 'running' ? 'appMarket.stop' : state === 'stopped' ? 'appMarket.start' : `appMarket.states.${state}`)}
-                        aria-label={t(state === 'running' ? 'appMarket.stop' : state === 'stopped' ? 'appMarket.start' : `appMarket.states.${state}`)}
+                        title={toggleLabel}
+                        aria-label={toggleLabel}
                         aria-busy={state === 'starting' || state === 'stopping' || undefined}
                         disabled={busy}
                         onClick={() => {
@@ -322,6 +421,13 @@ export function AppMarketPanel() {
           </div>
         )}
       </div>
+      </div>
+      {!isElectron && activeApp && (
+        <AppMarketBrowserPane key={activeApp.app_id} appId={activeApp.app_id} name={activeApp.name}
+          expanded={paneExpanded} onExpand={() => setPaneExpanded(current => !current)}
+          onHide={hideApplication} onClose={() => void closeApplication(activeApp)}
+          onError={error => showError('appMarket.openFailed', error)} />
+      )}
     </div>
   );
 }
