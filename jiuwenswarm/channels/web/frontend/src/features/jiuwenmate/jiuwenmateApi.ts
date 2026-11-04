@@ -435,7 +435,7 @@ export function withColleagueEdit(
     knowledge?: readonly string[];
   },
 ): JiuwenMateWireSettings {
-  return toWireSettings(
+  const settings = toWireSettings(
     {
       ...colleague,
       name: edit.name ?? colleague.name,
@@ -455,7 +455,12 @@ export function withColleagueEdit(
     },
     models,
   );
+  // An editing client's catalog may be stale; the server validates the stored selection.
+  settings.capabilities.model = (edit.model ?? colleague.capabilities.model).trim() || null;
+  return settings;
 }
+
+export type JiuwenMateSettingsEdit = Parameters<typeof withColleagueEdit>[2];
 
 function toConnections(value: unknown, agentId: string, workspaceDir: string | null): JiuwenMateConnection[] {
   const connections = rows(value).flatMap((item): JiuwenMateConnection[] => {
@@ -513,6 +518,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     isDefault: wire.is_default === true,
     currentVersion: typeof wire.current_version === 'string' ? wire.current_version : null,
     hasUnpublishedChanges: wire.has_unpublished_changes === true,
+    hasUnpublishedModelChanges: wire.has_unpublished_model_changes === true,
     workspaceDir,
   };
 }
@@ -552,7 +558,12 @@ export function toModelCatalog(value: unknown): JiuwenMateModelCatalog {
     const model = record(item);
     const id = text(model.selection_key);
     if (!id) return [];
-    return [{ id, label: text(model.display_name) || text(model.model_name) || id, provider: text(model.provider) }];
+    return [{
+      id,
+      label: text(model.display_name) || text(model.model_name) || id,
+      provider: text(model.provider),
+      ...(text(model.vendor_key) ? { vendorKey: text(model.vendor_key) } : {}),
+    }];
   });
   return {
     models,
@@ -1031,6 +1042,18 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       }),
     async readSettings(agentId: string): Promise<JiuwenMateWireSettings> {
       return record(await request(JIUWENMATE_METHODS.settingsGet, { agent_id: agentId })).settings as JiuwenMateWireSettings;
+    },
+    async saveSettings(
+      agentId: string, models: readonly JiuwenMateModelOption[], edit: JiuwenMateSettingsEdit,
+    ): Promise<JiuwenMateColleague> {
+      const current = record(await request(JIUWENMATE_METHODS.settingsGet, { agent_id: agentId }));
+      const source = toColleague({ ...record(current.settings), agent_id: agentId });
+      const settings = withColleagueEdit(source, models, edit);
+      await request(JIUWENMATE_METHODS.settingsUpdate, {
+        agent_id: agentId, settings,
+      });
+      if (settings.capabilities.model) await request(JIUWENMATE_METHODS.publish, { agent_id: agentId });
+      return colleague(JIUWENMATE_METHODS.get, { agent_id: agentId });
     },
     updateSettings: (agentId: string, settings: JiuwenMateWireSettings) =>
       colleague(JIUWENMATE_METHODS.settingsUpdate, { agent_id: agentId, settings }),

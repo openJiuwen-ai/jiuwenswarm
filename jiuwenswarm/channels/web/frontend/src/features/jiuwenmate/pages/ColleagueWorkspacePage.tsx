@@ -139,6 +139,9 @@ interface ColleagueWorkspacePageProps {
   onRenameColleague: (agentId: string, name: string) => Promise<void>;
   onSavePermissionProfile?: (agentId: string, profile: 'default' | 'automatic' | 'full_access') => Promise<void>;
   savingPermissionProfile?: boolean;
+  onSaveModel?: (agentId: string, modelId: string) => Promise<void>;
+  savingModel?: boolean;
+  onOpenModelSettings?: () => void;
 }
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
@@ -184,6 +187,9 @@ export function ColleagueWorkspacePage({
   onRenameColleague,
   onSavePermissionProfile,
   savingPermissionProfile = false,
+  onSaveModel,
+  savingModel = false,
+  onOpenModelSettings,
   groupChat,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
@@ -260,6 +266,7 @@ export function ColleagueWorkspacePage({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [permissionActionId, setPermissionActionId] = useState<string | null>(null);
   const [permissionProfileError, setPermissionProfileError] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<{ scope: string; message: string } | null>(null);
   const cancelRename = useRef(false);
   const agentId = workspace?.agentId ?? colleagueId;
   const conversationList = useConversations(chat, agentId, connectionEpoch);
@@ -626,9 +633,16 @@ export function ColleagueWorkspacePage({
     );
   };
 
+  const modelSetupNotice = colleague.currentVersion === null
+    ? t(colleague.capabilities.model ? 'jiuwenmate.chat.notPublished' : 'jiuwenmate.chat.modelNotConfigured')
+    : null;
+  const requestSetupNotice = privateChat.errorCode === 'MODEL_NOT_CONFIGURED'
+    ? t('jiuwenmate.chat.modelNotConfigured')
+    : privateChat.errorCode === 'NOT_PUBLISHED' ? t('jiuwenmate.chat.notPublished') : null;
+
   const sendDraft = async () => {
     const text = draft.trim();
-    if (!text || privateChat.sending || !activeConversationId || sharingConversation) return;
+    if (!text || modelSetupNotice || privateChat.sending || !activeConversationId || sharingConversation) return;
     followReplies.current = true;
     const conversation = await privateChat.send(text);
     if (!conversation) return;
@@ -638,6 +652,18 @@ export function ColleagueWorkspacePage({
       { ...conversation, agentId },
       ...items.filter((item) => item.agentId !== agentId || item.id !== conversation.id),
     ]);
+  };
+
+  const modelScope = JSON.stringify([colleague.id, colleague.currentVersion, colleague.capabilities.model]);
+  const visibleModelError = modelError?.scope === modelScope ? modelError.message : null;
+  const saveModel = async (modelId: string) => {
+    if (!onSaveModel || savingModel || (modelId === colleague.capabilities.model && !colleague.hasUnpublishedModelChanges)) return;
+    setModelError(null);
+    try {
+      await onSaveModel(colleague.id, modelId);
+    } catch (error) {
+      setModelError({ scope: modelScope, message: errorMessage(error) || t('jiuwenmate.chat.failed', { reason: '' }) });
+    }
   };
 
   const savePermissionProfile = async (profile: 'default' | 'automatic' | 'full_access') => {
@@ -670,20 +696,25 @@ export function ColleagueWorkspacePage({
 
   const composer = (
     <>
-      {privateChat.error || conversationList.error || allRecordsError || permissionProfileError ? (
+      {modelSetupNotice || privateChat.error || conversationList.error || allRecordsError || permissionProfileError || visibleModelError ? (
         <p className="jiuwenmate-chat-error" role="alert" data-testid="jiuwenmate-chat-error">
-          {permissionProfileError ?? t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
+          {modelSetupNotice ?? visibleModelError ?? permissionProfileError ?? requestSetupNotice ??
+            t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
         </p>
       ) : null}
       <ConversationComposer
         value={draft}
         onChange={setDraft}
-        onSend={() => void sendDraft()}
+        onSend={modelSetupNotice ? undefined : () => void sendDraft()}
         sending={privateChat.sending}
         onStop={running ? () => void privateChat.abort(running.requestId, 'stop') : undefined}
         stopping={running?.control?.status === 'accepted'}
         modelCatalog={modelCatalog}
         modelId={colleague?.capabilities.model ?? ''}
+        onModelChange={onSaveModel ? (modelId) => void saveModel(modelId) : undefined}
+        modelSaving={savingModel}
+        modelPending={colleague.hasUnpublishedModelChanges}
+        onOpenModelSettings={onOpenModelSettings}
         permissionProfile={colleague.permissionProfile ?? 'default'}
         onPermissionProfileChange={(profile) => void savePermissionProfile(profile)}
         permissionProfileSaving={savingPermissionProfile}
