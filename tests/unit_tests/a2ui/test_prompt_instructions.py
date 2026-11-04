@@ -176,11 +176,13 @@ def test_a2ui_prompt_cancel_button_only_when_needed():
 
     assert "only when genuinely needed" in en
     assert "do NOT add a Cancel button by default" in en
+    assert "no-op buttons with no real effect" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "确有需要" in zh
     assert "默认不要添加" in zh
+    assert "暂不需要" in zh
 
 
 def test_a2ui_prompt_image_url_reachable_rule():
