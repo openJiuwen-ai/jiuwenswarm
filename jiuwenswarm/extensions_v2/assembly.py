@@ -13,6 +13,7 @@ from typing import Any
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2 import bootstrap
+from jiuwenswarm.extensions_v2.session_authorization.service import AuthorizationCaller, SessionAuthorizationService
 from jiuwenswarm.extensions_v2.session_compaction.service import SessionCompactionService
 from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_store_dir
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartEventBus
@@ -33,6 +34,7 @@ class ExtensionAssembly:
     webui: WebUIRuntime
     transport: RenderTransport
     compact: SessionCompactionService
+    authorization: SessionAuthorizationService
 
 
 _ASSEMBLY: ExtensionAssembly | None = None
@@ -57,16 +59,21 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
                     return
                 await assembly.webui.drop_package(package_id)
 
+            async def cleanup_package_authorization(package_id: str, generation: int, reason: str) -> None:
+                del reason
+                assembly.authorization.revoke_package(package_id, generation)
+
             await assembly.manager.init(
                 assembly.bus,
                 host_version=_host_version(),
-                cleanup_callbacks=(cleanup_package_views,),
+                cleanup_callbacks=(cleanup_package_views, cleanup_package_authorization),
                 host_event_types=lambda bus: bootstrap.register_event_types(bus, assembly.webui),
                 host_handlers=lambda bus: bootstrap.register_handlers(
                     bus,
                     assembly.webui,
                     file_service=getattr(server, "session_workspace_files", None),
                     compact_service=assembly.compact,
+                    authorization_service=assembly.authorization,
                 ),
             )
         except Exception:  # noqa: BLE001 - extensions must not block chat startup
@@ -96,6 +103,11 @@ def get_compaction_service() -> SessionCompactionService | None:
     return _ASSEMBLY.compact if _ASSEMBLY is not None else None
 
 
+def get_authorization_service() -> SessionAuthorizationService | None:
+    """Return the host binding service; no credential collector is installed."""
+    return _ASSEMBLY.authorization if _ASSEMBLY is not None else None
+
+
 async def shutdown_extensions() -> None:
     """Release active views and package handlers without deleting install copies."""
 
@@ -104,8 +116,11 @@ async def shutdown_extensions() -> None:
         assembly = _ASSEMBLY
         if assembly is None:
             return
-        await assembly.compact.close()
-        await assembly.manager.shutdown()
+        try:
+            await assembly.compact.close()
+            await assembly.manager.shutdown()
+        finally:
+            assembly.authorization.close()
         await assembly.webui.shutdown()
         _ASSEMBLY = None
 
@@ -140,7 +155,39 @@ def _build_assembly(server: Any) -> ExtensionAssembly:
         bus, policy_epoch=lambda: tuple((record.package_id, id(record)) for record in manager.active_packages()),
         invocation_guard=lambda ops: manager.registry.is_ready and manager.registry.runtime.is_active_invocation(ops),
     )
-    return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport, compact=compact)
+    authorization = _build_authorization_service(bus, manager)
+    return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport,
+                             compact=compact, authorization=authorization)
+
+
+def _build_authorization_service(bus: ExtensionEventBus, manager: ExtensionManager) -> SessionAuthorizationService:
+    def supported() -> bool:
+        return (manager.registry.is_ready
+                and callable(getattr(manager.registry.runtime, "is_active_invocation", None))
+                and callable(getattr(manager.registry.runtime, "invocation_generation", None)))
+
+    def live(caller: AuthorizationCaller) -> bool:
+        if not manager.registry.is_ready:
+            return False
+        metadata = caller.metadata
+        active = manager.registry.runtime.get_active(metadata.package_id)
+        return bool(active is not None and active.generation == caller.generation
+                    and active.version == metadata.package_version and active.root == metadata.root)
+
+    def caller_for_ops(ops) -> AuthorizationCaller | None:
+        if not supported() or not manager.registry.runtime.is_active_invocation(ops):
+            return None
+        metadata = ops.package_metadata
+        if metadata is None:
+            return None
+        generation = manager.registry.runtime.invocation_generation(ops)
+        if generation is None:
+            return None
+        caller = AuthorizationCaller(metadata, generation)
+        return caller if live(caller) else None
+
+    return SessionAuthorizationService(bus, caller_for_ops=caller_for_ops,
+                                       caller_is_live=live, supported=supported)
 
 
 async def _activate_installed(manager: ExtensionManager) -> None:
