@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import httpx
 
-from gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,
     DingTalkConfig,
 )
-from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
-from gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
+from agent_gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.common.schema.message import Message, EventType
 
 

@@ -22,17 +22,17 @@ from openjiuwen_protocol.e2a.models import E2AEnvelope
 from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
 from openjiuwen_protocol.message import ReqMethod
 
-from gateway import app_gateway, telemetry
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.channel_manager import ChannelManager
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from gateway.message_handler.message_handler import MessageHandler
-from gateway.routing.agent_client import WebSocketAgentServerClient
-from gateway.routing.e2a_proxy import proxy_unary_request
-from gateway.routing.keys import AgentRef, RoutingKey
+from agent_gateway import app_gateway, telemetry
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.routing.e2a_proxy import proxy_unary_request
+from agent_gateway.routing.keys import AgentRef, RoutingKey
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.utils import mask_sensitive
-from gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
+from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 @pytest.fixture(autouse=True)

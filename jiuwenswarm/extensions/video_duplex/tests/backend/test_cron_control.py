@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.controller import CronController
-from gateway.cron.models import CronJob
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.models import CronJob
 
 from jiuwenswarm.extensions.video_duplex.backend import cron_control, queue_manager
 from jiuwenswarm.extensions.video_duplex.backend.cron_control import (
@@ -244,7 +244,7 @@ def test_cron_arguments_are_validated_strictly(name, arguments):
 
 @pytest.mark.asyncio
 async def test_unavailable_cron_returns_a_receipt_instead_of_raising(monkeypatch):
-    from gateway.cron import controller as controller_module
+    from agent_gateway.cron import controller as controller_module
 
     def unavailable(**kwargs):
         raise RuntimeError("CronController not initialized")

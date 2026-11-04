@@ -58,8 +58,8 @@ async def test_required_preparation_failure_prevents_runtime_consumers(monkeypat
 async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(
     monkeypatch, worker_callback_framework,
 ):
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.worker import service
 
@@ -109,8 +109,8 @@ async def _raise(error):
 async def test_execution_code_overlaps_construction_and_failure_retains_owner(
     monkeypatch, worker_callback_framework,
 ):
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     barrier = threading.Barrier(2, timeout=2)
@@ -146,8 +146,8 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
 async def test_extensions_observe_execution_patches_after_parallel_server_construction(
     monkeypatch, worker_callback_framework,
 ):
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     overlap = threading.Barrier(2, timeout=2)

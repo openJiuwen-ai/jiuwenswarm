@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_INTERNAL,
     HOST_USER_PROMPT_PREFIX_EN,

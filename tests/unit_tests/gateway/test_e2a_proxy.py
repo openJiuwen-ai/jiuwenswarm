@@ -15,17 +15,17 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openjiuwen_protocol.message import ReqMethod
-from gateway import telemetry
-from gateway.routing.agent_client import (
+from agent_gateway import telemetry
+from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
 )
-from gateway.routing.agent_request_timeout import (
+from agent_gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
     AgentRequestTimeoutError,
 )
-from gateway.routing.e2a_proxy import (
+from agent_gateway.routing.e2a_proxy import (
     SERVICE_UNAVAILABLE_CODE,
     _new_fetch_request_id,
     fetch_agent_unary,

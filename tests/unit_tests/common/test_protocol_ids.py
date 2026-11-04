@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.common.protocol_ids import (
+from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     SESSION_ID_MAX_LEN,
     WORKFLOW_RUN_ID_MAX_LEN,

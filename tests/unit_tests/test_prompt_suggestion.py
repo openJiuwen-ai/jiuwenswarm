@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
-
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.foundation.llm import (
     AssistantMessage, ModelClientConfig, ModelRequestConfig, ToolCall, ToolMessage, UserMessage,
@@ -31,6 +30,9 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness import DeepAgent, create_deep_agent
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from openjiuwen.harness.schema.state import DeepAgentState, PlanModeState
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion, topic_controls
@@ -38,9 +40,6 @@ from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import P
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -774,7 +773,7 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.models import E2AResponse
-    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     server = AgentWebSocketServer()

@@ -37,9 +37,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.common.protocol_ids import validate_session_id
+
 from jiuwenswarm.server.client_attachments.errors import ClientAttachError, ClientAttachErrorCode
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from gateway.common.protocol_ids import validate_session_id
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_sessions_dir

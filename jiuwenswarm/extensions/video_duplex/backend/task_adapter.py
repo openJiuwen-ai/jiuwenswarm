@@ -26,7 +26,7 @@ EVENT_SEND_TIMEOUT = 2
 
 
 class AgentRequestTimeoutError(TimeoutError):
-    """AgentServer unary 请求超时（与 gateway.routing.agent_request_timeout 同契约的最小子集）."""
+    """AgentServer unary 请求超时（与 agent_gateway.routing.agent_request_timeout 同契约的最小子集）."""
 
     code = "AGENT_SERVER_TIMEOUT"
 
@@ -61,8 +61,8 @@ async def send_agent_request_with_timeout(
 
 
 def task_identity(ws, scope):
-    """Use WebChannel's user scope; connection admission belongs to the gateway."""
-    from gateway.channel_manager.web.web_connect import WebChannel
+    """Use WebChannel's user scope; connection admission belongs to the agent_gateway."""
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     if not isinstance(scope, str) or not scope:
         raise ValueError("Invalid task conversation")
@@ -106,7 +106,7 @@ async def task_agent_query(client, method, params, session, owner):
 class AgentTaskExecutor:
     def __init__(self, client, store, normalize_media):
         self.client, self.store, self.normalize_media = client, store, normalize_media
-        from gateway.extensions.video_duplex.backend.tasks.bridge import (
+        from agent_gateway.extensions.video_duplex.backend.tasks.bridge import (
             GatewayTaskEndpoint,
         )
 

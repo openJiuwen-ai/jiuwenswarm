@@ -18,11 +18,11 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema import Message
 from openjiuwen_protocol.message import ReqMethod
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
+
+from jiuwenswarm.common.schema import Message
 
 
 class _FakeAgentClient:

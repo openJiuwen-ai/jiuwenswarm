@@ -25,16 +25,16 @@ from openjiuwen.harness.rails.evolution import (
     project_symphony_execution_fragments,
 )
 from openjiuwen.symphony.flow import SkillPackAdapter, SkillPackNotInstallableError
+from agent_gateway.channel_manager.web.app_web_handlers import (
+    _FORWARD_NO_LOCAL_HANDLER_METHODS,
+    _FORWARD_REQ_METHODS,
+)
 
 from jiuwenswarm.common.host_services import (
     install_runtime_push_handler,
     restore_runtime_push_handler,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_NO_LOCAL_HANDLER_METHODS,
-    _FORWARD_REQ_METHODS,
-)
 from jiuwenswarm.server.runtime.agent_adapter.interface import _SKILL_ROUTES
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,

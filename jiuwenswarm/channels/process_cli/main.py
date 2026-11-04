@@ -15,6 +15,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
+from agent_gateway.common.mode_matrix import is_plan_mode, is_team_mode
+
 from jiuwenswarm.channels.process_cli.display_context import (
     resolve_cli_work_mode,
     resolve_display_mode,
@@ -25,7 +27,6 @@ from jiuwenswarm.channels.process_cli.model_options import (
     prepare_model_options,
     validate_model_options,
 )
-from gateway.common.mode_matrix import is_plan_mode, is_team_mode
 from jiuwenswarm.common.runtime_model_config import runtime_model_config
 
 

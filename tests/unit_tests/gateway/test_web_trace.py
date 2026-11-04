@@ -12,9 +12,9 @@ from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from gateway import telemetry
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway import telemetry
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 @pytest.fixture

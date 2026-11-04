@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.runtime.cron.etcd_store import EtcdCronJobStore
-from gateway.runtime.cron.factory import create_gateway_cron_store, load_cron_store_settings
-from gateway.runtime.cron.store import FileCronJobStore
+from agent_gateway.runtime.cron.etcd_store import EtcdCronJobStore
+from agent_gateway.runtime.cron.factory import create_gateway_cron_store, load_cron_store_settings
+from agent_gateway.runtime.cron.store import FileCronJobStore
 
 
 def _cron_cfg(**kwargs: object) -> dict:

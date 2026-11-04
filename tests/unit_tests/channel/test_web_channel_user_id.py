@@ -7,12 +7,12 @@ from typing import Any
 import pytest
 from openjiuwen_protocol.message import EventType, Message
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.app_web_handlers import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _register_web_handlers,
 )
-from gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
     _MethodHandlerInvocation,
@@ -388,7 +388,7 @@ async def test_openai_account_unexpected_error_uses_method_dispatcher(monkeypatc
         })
 
     monkeypatch.setattr(
-        "gateway.channel_manager.web.app_web_handlers._openai_account_auth_status_payload",
+        "agent_gateway.channel_manager.web.app_web_handlers._openai_account_auth_status_payload",
         raise_unexpected_error,
     )
     monkeypatch.setattr(channel, "send_response", capture_response)

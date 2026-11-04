@@ -2058,7 +2058,7 @@ class _FakeWebChannel:
 @pytest.fixture()
 def registered_channel(sessions_dir):
     """注册所有 web handler，返回 _FakeWebChannel（含 session.get_metadata）"""
-    from gateway.channel_manager.web.app_web_handlers import (
+    from agent_gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )

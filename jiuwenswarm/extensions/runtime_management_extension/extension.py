@@ -8,12 +8,13 @@ import asyncio
 import logging
 import os
 
+from agent_gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
+from agent_gateway.extensions.types import ExtensionConfig
+from agent_gateway.routing.agent_client import AgentServerClient
+
 from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client import (
     RuntimeRoutedAgentClient,
 )
-from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
-from gateway.extensions.types import ExtensionConfig
-from gateway.routing.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 

@@ -6,18 +6,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from agent_gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
-from gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
 from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
-from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
 
@@ -277,7 +277,7 @@ async def test_checkpoint_ack_can_finish_while_session_is_closing(routed_task, m
 async def test_checkpoint_roundtrip_over_websocket_without_shared_task_database(routed_task, monkeypatch):
     """Use the production client/dispatcher; only server startup and model work are omitted."""
     from websockets.legacy.server import serve
-    from gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
 

@@ -16,17 +16,17 @@ from typing import Any, Literal
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.history import InMemoryHistory
-
-from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
-from jiuwenswarm.channels.process_cli.duplex_input import DuplexLineReader
-from jiuwenswarm.channels.process_cli.live_layout import FORWARDED_RECEIPT_PREFIX
-from jiuwenswarm.channels.process_cli.prompt import LIVE_INPUT_PROMPT
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
     deprecate_mode,
     is_plan_mode,
     is_single_agent_mode,
 )
+
+from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
+from jiuwenswarm.channels.process_cli.duplex_input import DuplexLineReader
+from jiuwenswarm.channels.process_cli.live_layout import FORWARDED_RECEIPT_PREFIX
+from jiuwenswarm.channels.process_cli.prompt import LIVE_INPUT_PROMPT
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES

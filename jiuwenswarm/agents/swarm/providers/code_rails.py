@@ -32,13 +32,13 @@ from openjiuwen.agent_teams.harness.manifest import (
     param_field,
 )
 from openjiuwen.harness.prompts import resolve_language
-
-from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     is_code_profile_mode,
     is_team_mode,
     is_team_plan_mode,
 )
+
+from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)

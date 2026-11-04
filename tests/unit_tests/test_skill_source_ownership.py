@@ -9,8 +9,8 @@ import hmac
 
 import pytest
 
-import gateway.extensions.sdk.artifact_security as gw_security
-import gateway.extensions.sdk.skill_source as gw_source
+import agent_gateway.extensions.sdk.artifact_security as gw_security
+import agent_gateway.extensions.sdk.skill_source as gw_source
 import jiuwenswarm.extensions.sdk.skill_source as ws_source
 import jiuwenswarm.server.runtime.skill.artifact_security as ws_security
 
