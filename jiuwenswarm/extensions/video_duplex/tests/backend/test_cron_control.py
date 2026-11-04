@@ -346,10 +346,8 @@ async def test_manager_hides_cron_tools_without_an_executor(monkeypatch):
 @pytest.mark.parametrize("owner", ["alice", ""])
 async def test_real_controller_keeps_list_and_detail_in_the_same_user_scope(owner):
     records = {
-        item.id: item for item in [
-            CronJob(**job("mine", user_id=owner), group_id="", bot_id=""),
-            CronJob(**job("other", user_id="bob"), group_id="", bot_id=""),
-        ]
+        "mine": CronJob(**job("mine", user_id=owner), group_id="", bot_id=""),
+        "other": CronJob(**job("other", user_id="bob"), group_id="", bot_id=""),
     }
     records["mine"].project_id = "project-A"
     store = SimpleNamespace(
@@ -373,10 +371,8 @@ async def test_real_controller_keeps_list_and_detail_in_the_same_user_scope(owne
 @pytest.mark.asyncio
 async def test_real_controller_changes_only_owned_jobs_in_another_project():
     records = {
-        item.id: item for item in [
-            CronJob(**job("mine"), group_id="", bot_id=""),
-            CronJob(**job("other", user_id="bob"), group_id="", bot_id=""),
-        ]
+        "mine": CronJob(**job("mine"), group_id="", bot_id=""),
+        "other": CronJob(**job("other", user_id="bob"), group_id="", bot_id=""),
     }
     records["mine"].project_id = "project-A"
 
