@@ -1,0 +1,20 @@
+schemaVersion: 1
+package:
+  id: sample.counter
+  version: 1.0.0
+  displayName: State Counter
+  description: Persistent session counter with state-driven panel refresh.
+extensions:
+  - id: counter
+    runtime: backend
+    module: extension.py
+ui:
+  apiVersion: 1
+  items:
+    - type: web.slot.contribution
+      id: counter.panel
+      slot: conversation.input.below
+      panel:
+        title: State Counter
+      renderer:
+        kind: webui-tree

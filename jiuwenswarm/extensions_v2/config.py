@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_INSTALL_DIR = "extension_pkgs"
+DEFAULT_STORE_DIR = "extension/store"
+DEFAULT_STATE_DIR = "extension/state"
 INSTALL_DIR_ENV = "EXTENSION_INSTALL_DIR"
+STORE_DIR_ENV = "EXTENSION_STORE_DIR"
+STATE_DIR_ENV = "EXTENSION_STATE_DIR"
 
 
 def resolve_install_dir(config: Mapping[str, Any] | None = None) -> Path:
@@ -21,10 +25,45 @@ def resolve_install_dir(config: Mapping[str, Any] | None = None) -> Path:
     has no explicit value.
     """
 
+    return _resolve_configured_dir(
+        config,
+        key="install_dir",
+        env_name=INSTALL_DIR_ENV,
+        default=DEFAULT_INSTALL_DIR,
+    )
+
+
+def resolve_store_dir(config: Mapping[str, Any] | None = None) -> Path:
+    """Resolve ``extensions.store_dir`` to an absolute directory."""
+    return _resolve_configured_dir(
+        config,
+        key="store_dir",
+        env_name=STORE_DIR_ENV,
+        default=DEFAULT_STORE_DIR,
+    )
+
+
+def resolve_state_dir(config: Mapping[str, Any] | None = None) -> Path:
+    """Resolve ``extensions.state_dir`` to an absolute directory."""
+    return _resolve_configured_dir(
+        config,
+        key="state_dir",
+        env_name=STATE_DIR_ENV,
+        default=DEFAULT_STATE_DIR,
+    )
+
+
+def _resolve_configured_dir(
+    config: Mapping[str, Any] | None,
+    *,
+    key: str,
+    env_name: str,
+    default: str,
+) -> Path:
     source = config if config is not None else _read_config()
-    raw = _configured_value(source)
+    raw = _configured_value(source, key)
     if not raw:
-        raw = os.getenv(INSTALL_DIR_ENV, "").strip() or DEFAULT_INSTALL_DIR
+        raw = os.getenv(env_name, "").strip() or default
 
     path = Path(raw).expanduser()
     if not path.is_absolute():
@@ -37,23 +76,14 @@ def resolve_install_dir(config: Mapping[str, Any] | None = None) -> Path:
 def _read_config() -> Mapping[str, Any]:
     try:
         from jiuwenswarm.common.config import get_config
-
-        value = get_config()
     except Exception:
         return {}
-    return value if isinstance(value, Mapping) else {}
+    return value if isinstance((value := get_config()), Mapping) else {}
 
 
-def resolve_store_dir() -> Path:
-    """Resolve package data under the host's existing user workspace."""
-    from jiuwenswarm.common.utils import get_user_workspace_dir
-
-    return (get_user_workspace_dir() / "extension" / "store").resolve()
-
-
-def _configured_value(config: Mapping[str, Any]) -> str:
+def _configured_value(config: Mapping[str, Any], key: str) -> str:
     extensions = config.get("extensions")
     if not isinstance(extensions, Mapping):
         return ""
-    value = extensions.get("install_dir")
+    value = extensions.get(key)
     return value.strip() if isinstance(value, str) else ""

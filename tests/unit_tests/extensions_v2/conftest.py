@@ -11,3 +11,7 @@ def isolate_package_store(tmp_path, monkeypatch):
         "jiuwenswarm.extensions_v2.assembly.resolve_store_dir",
         lambda: tmp_path / "package-data",
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.resolve_state_dir",
+        lambda: tmp_path / "package-state",
+    )

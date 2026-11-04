@@ -88,12 +88,20 @@
 ### 5.1 构造
 
 ```python
-ExtensionManager(install_dir: Path, *, store_dir: Path | None = None)
+ExtensionManager(
+    install_dir: Path,
+    *,
+    store_dir: Path | None = None,
+    state_dir: Path | None = None,
+)
 ```
 
 `install_dir` 立即展开为绝对路径，不要求目录已存在。
-传入 store_dir 时，构造 `openjiuwen.core.extension.data.JsonStore` 并在初始化时注入；不传则不装配持久化服务。
-AgentServer 始终传入 `resolve_store_dir()`，其目录为当前 Swarm 用户数据根下的 `extension/store`。
+传入 `store_dir` 时，构造 `openjiuwen.core.extension.data.JsonStore` 并在初始化时注入；不传则不装配 store。
+传入 `state_dir` 时，构造 `openjiuwen.core.extension.data.JsonState` 并在初始化时注入；不传则不装配 state。
+AgentServer 始终传入 `resolve_store_dir()` 与 `resolve_state_dir()`；二者读取
+`resources/config.yaml` 的 `extensions.store_dir` / `extensions.state_dir`
+（缺省分别为 `extension/store`、`extension/state`），相对路径锚定用户工作目录。
 
 ### 5.2 初始化
 
