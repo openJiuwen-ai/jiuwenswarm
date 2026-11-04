@@ -16,6 +16,9 @@ import wave
 import openai
 import pytest
 import websockets
+from agent_gateway.channel_manager.web.media.normalizer import (
+    normalize_chat_media_attachments,
+)
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
@@ -32,9 +35,6 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_live,
     video_search,
     video_voice,
-)
-from agent_gateway.channel_manager.web.media.normalizer import (
-    normalize_chat_media_attachments,
 )
 
 
