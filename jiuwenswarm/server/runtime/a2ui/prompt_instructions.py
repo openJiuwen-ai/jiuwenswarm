@@ -191,16 +191,12 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "stable sources; do not use guessed upload.wikimedia.org thumbnail paths."
     )
     unsupported_component_rule_en = (
-        " A2UI has no dialog, popup, alert, toast, or floating-overlay "
-        "component — do not simulate these with absolute-positioned cards or "
-        "fake close buttons; use inline status or an inline card inside the "
-        "normal surface instead. Modal IS supported for a genuine "
-        "focus-blocking dialog (e.g., a detail view or a confirmation that "
-        "must interrupt the surface): set entryPointChild to the component "
-        "that opens it (typically a Button) and contentChild to the component "
-        "shown inside. Do not use Modal for non-blocking toasts or alerts. "
-        "If the request cannot be approximated faithfully, answer in plain "
-        "text that the requested component is not currently supported."
+        " A2UI does not support Modal, Dialog, Popup, Alert, Toast, or "
+        "floating overlay components. Do not simulate these components with "
+        "absolute-positioned cards or fake close buttons. Use inline status, "
+        "inline card, or a confirmation area inside the normal surface "
+        "instead. If the request cannot be approximated faithfully, answer "
+        "in plain text that the requested component is not currently supported."
     )
     autonomy_rule_en = (
         " When the user's request requires interactive information collection "
@@ -321,13 +317,9 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "不要使用猜测的 upload.wikimedia.org thumbnail 路径。"
     )
     unsupported_component_rule_zh = (
-        " A2UI 没有 dialog、popup、alert、toast、浮层这类组件——"
-        "不要用绝对定位卡片或假关闭按钮模拟，请在普通 surface 内用行内状态或行内卡片替代。"
-        "Modal 是支持的，用于确实需要阻断焦点的对话框"
-        "（如详情视图或必须中断当前界面的确认）："
-        "entryPointChild 设为打开它的组件（通常是 Button），"
-        "contentChild 设为内部展示的组件。"
-        "不要用 Modal 做非阻断的 toast/alert。"
+        " A2UI 不支持 Modal、Dialog、Popup、Alert、Toast、浮层等组件。"
+        "不要用绝对定位卡片或假的关闭按钮模拟这些组件。"
+        "请在普通 surface 内使用行内状态、行内卡片或确认区域替代。"
         "如果无法忠实近似，请用纯文本说明当前暂不支持该组件。"
     )
     autonomy_rule_zh = (
