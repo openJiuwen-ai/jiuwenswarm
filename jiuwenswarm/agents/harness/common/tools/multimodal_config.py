@@ -10,6 +10,8 @@
 import os
 from typing import Any
 
+from jiuwenswarm.common.utils import logger
+
 
 def _parse_bool(val: Any, default: bool = False) -> bool:
     if val is None:
@@ -18,6 +20,13 @@ def _parse_bool(val: Any, default: bool = False) -> bool:
         return val
     s = str(val).strip().lower()
     return s in ("1", "true", "yes", "on")
+
+
+def _parse_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _get_embed_config(config_base: dict[str, Any]) -> dict[str, Any]:
@@ -214,6 +223,67 @@ def apply_vision_model_config_from_yaml(config_base: dict[str, Any] | None) -> N
         os.environ["VISION_MODEL_NAME"] = model_name
     if provider:
         os.environ["VISION_PROVIDER"] = provider
+
+
+def build_vision_model_config(config_base: dict[str, Any] | None) -> Any | None:
+    """Build a vision model config from service config + env, or None if unconfigured.
+
+    Gates on ``models.vision`` having a dedicated ``api_key``; resolves endpoint /
+    model **from ``models.vision.model_config`` 优先**（``api_base`` 与 ``base_url``
+    均识别，与 ``complete_multimodal_model_configured`` 同一组 key），env 仅作兜底，
+    **不依赖 ``apply_vision_model_config_from_yaml`` 写入的进程级 env 反读**——避免
+    base_url 键不被识别、以及旧 env 残留跨请求/跨 Agent 串用。Shared so the team
+    member rail path can build it without depending on the main agent adapter.
+    """
+    from openjiuwen.harness import VisionModelConfig
+
+    if not dedicated_multimodal_model_configured(config_base, "vision"):
+        logger.info("[vision_config] skipped: models.vision has no dedicated api_key")
+        return None
+    if not isinstance(config_base, dict):
+        return None
+
+    mc = _get_model_config(config_base, "vision")
+    embed_cfg = _get_embed_config(config_base)
+    # 与 complete_multimodal_model_configured 使用同一组 key（api_base / base_url）。
+    api_key = str(mc.get("api_key") or "").strip()
+    api_base = str(mc.get("api_base") or mc.get("base_url") or "").strip()
+    model_name = str(mc.get("model_name") or mc.get("model") or "").strip()
+    strict = _parse_bool(mc.get("strict"), default=False)
+
+    if not strict:
+        if not api_key:
+            api_key = str(embed_cfg.get("embed_api_key") or os.getenv("API_KEY", "")).strip()
+        if not api_base:
+            api_base = str(
+                embed_cfg.get("embed_api_base") or os.getenv("API_BASE", "")
+            ).strip()
+        if not model_name:
+            model_name = str(
+                _get_embed_model_name(embed_cfg, "vision")
+                or os.getenv("MODEL_NAME", "")
+            ).strip()
+    # env 仅兜底：上面从 config 解析为空时才回读独立视觉 env，避免旧值串用。
+    if not api_key:
+        api_key = str(os.getenv("VISION_API_KEY", "")).strip()
+    if not api_base:
+        api_base = str(
+            os.getenv("VISION_BASE_URL") or os.getenv("VISION_API_BASE") or ""
+        ).strip()
+    if not model_name:
+        model_name = str(
+            os.getenv("VISION_MODEL") or os.getenv("VISION_MODEL_NAME") or ""
+        ).strip()
+
+    if not api_key or not api_base or not model_name:
+        logger.info("[vision_config] skipped: incomplete config")
+        return None
+    return VisionModelConfig(
+        api_key=api_key,
+        base_url=api_base,
+        model=model_name,
+        max_retries=_parse_int(os.getenv("VISION_MAX_RETRIES"), 3),
+    )
 
 
 def apply_video_model_config_from_yaml(config_base: dict[str, Any] | None) -> None:

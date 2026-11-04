@@ -143,6 +143,46 @@ def _serialize_value(obj: Any) -> Any:
     return _serialize_value_with_flag(obj)[0]
 
 
+def _image_ref_from_item(obj: dict[str, Any], data_url: str) -> dict[str, Any]:
+    header, _, payload = data_url.partition(",")
+    mime_type = obj.get("mime_type") or header[len("data:"):].split(";", 1)[0]
+    ref = {
+        "type": "image_ref",
+        "mime_type": mime_type,
+        "bytes": len(payload) * 3 // 4,
+    }
+    # 保留可用的元数据字段，便于 UI/回放展示与校验。
+    for key in ("width", "height"):
+        if obj.get(key) is not None:
+            ref[key] = obj[key]
+    # 有真实路径时以路径引用（history.jsonl 是回放/UI 数据，图片留在原路径）；
+    # 无路径（用户粘贴/上传、图像生成等仅存于内存的图）则保留原始 data_url，
+    # 避免把图片数据与路径一并丢弃导致历史无法恢复。
+    path = obj.get("source_path") or obj.get("path")
+    if path:
+        ref["path"] = path
+    else:
+        ref["data_url"] = data_url
+    return ref
+
+
+def _replace_image_data_urls(obj: Any) -> Any:
+    """Replace inline ``data:image`` payloads (e.g. read_file multimodal items) with path refs.
+
+    history.jsonl is replay/UI data; the image itself stays at its original path.
+    仅当该项可解析出真实路径时才改写为 ``image_ref``；无路径的图片保留原始
+    ``data_url``，避免历史数据丢失。
+    """
+    if isinstance(obj, dict):
+        data_url = obj.get("data_url")
+        if isinstance(data_url, str) and data_url.startswith("data:image/"):
+            return _image_ref_from_item(obj, data_url)
+        return {key: _replace_image_data_urls(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_replace_image_data_urls(value) for value in obj]
+    return obj
+
+
 def _session_dir(session_id: str, *, create: bool = True) -> Path:
     session_dir = get_agent_sessions_dir() / session_id
     if create:
@@ -1322,6 +1362,7 @@ def append_history_record(
                 )
     if mode:
         item["mode"] = str(mode)
+    item = _replace_image_data_urls(item)
 
     # 调试落盘开关（trace.json 的 session_history / JIUWENSWARM_TRACE_SESSION=1）：
     # 把这条即将落盘的记录镜像到 <日志目录>/session_flat/<sid>_history.jsonl，
