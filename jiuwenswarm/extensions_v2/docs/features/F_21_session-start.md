@@ -2,11 +2,11 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | F_22 / session-start |
+| 编号 | F_21 / session-start |
 | 建档日期 | 2026-10-28 |
 | 后续修订 | 2026-11-03，包定向从 Core `handler_ids` 改为宿主注册期匹配；2026-11-02 按既定 session.append 七段格式对齐 Claude Mods 字段，旧字段迁移见第 4.2 节 |
 | 计划与进度入口 | [EXTV2-18 / Server PR06](../designs/extensions-v2-development-plan.md#extv2-18-激活实例首次输入前初始化) |
-| 主责契约 | [S_12](../specs/S_12_session-start.md) |
+| 主责契约 | [S_09](../specs/S_09_session-start.md) |
 
 ## 1. 范围、状态与依据
 
@@ -180,7 +180,7 @@ USER 处理本包资源，通过 `return await next_handler(event)` 继续本条
 
 USER 普通异常沿 Core 隔离；框架错误和原输入取消传播，不自动重放已经开始的初始化尝试。调用开始即标记已尝试，外部副作用不自动回滚。门拒绝重入，重载仍沿 Core 热切换并重新核对真实实例；在途计数成对保护卸载。
 
-字段范围以 [S_12](../specs/S_12_session-start.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
+字段范围以 [S_09](../specs/S_09_session-start.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
 
@@ -271,7 +271,7 @@ python -m pytest -o addopts= -q tests/unit_tests/core/events tests/unit_tests/co
 ## 7. 参考资料
 
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionStartInput/Result；参照小写 Mods 事件。
-- [主责规约 S_12](../specs/S_12_session-start.md)。
+- [主责规约 S_09](../specs/S_09_session-start.md)。
 - [事件定义与校验](../../event_types/session_start.py)、[默认 CORE](../../event_handlers/session_start.py)。
 - [示例包说明](../../examples/session_start/README.md)。
-- [session.append 文档格式基准](F_16_session-history-ops.md)。
+- [session.append 文档格式基准](F_16_session-append.md)。

@@ -12,6 +12,7 @@ from jiuwenswarm.extensions_v2.event_types.session_attach import register_sessio
 from jiuwenswarm.extensions_v2.event_types.session_detach import register_session_detach_event
 from jiuwenswarm.extensions_v2.event_types.session_end import register_session_end_event
 from jiuwenswarm.extensions_v2.event_types.session_history import register_session_history_events
+from jiuwenswarm.extensions_v2.event_types.session_start import register_session_start_event
 from jiuwenswarm.extensions_v2.event_types.session_queries import register_session_query_events
 from jiuwenswarm.extensions_v2.event_types.session_receive import register_session_receive_event
 from jiuwenswarm.extensions_v2.event_types.session_compact import register_session_compact_event
@@ -19,7 +20,6 @@ from jiuwenswarm.extensions_v2.event_types.session_authorize import register_ses
 from jiuwenswarm.extensions_v2.event_types.server_run_command import register_server_run_command_event
 from jiuwenswarm.extensions_v2.event_types.session_send import register_session_send_event
 from jiuwenswarm.extensions_v2.event_handlers.session_queries import register_session_query_handlers
-from jiuwenswarm.extensions_v2.event_types.session_start import register_session_start_event
 from jiuwenswarm.extensions_v2.event_handlers.session_authorize import register_authorization_lifecycle_handlers
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import SessionFileService, register_session_ops
 
@@ -37,6 +37,10 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
     webui.register_event_types(bus)
     register_context_usage_events(bus)
     register_session_history_events(bus)
+    register_session_start_event(bus)
+    register_session_end_event(bus)
+    register_session_attach_event(bus)
+    register_session_detach_event(bus)
     register_session_query_events(bus)
     register_session_send_event(bus)
     register_session_receive_event(bus)
@@ -44,10 +48,6 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
     register_session_authorize_event(bus)
     register_server_run_command_event(bus)
     _register_team_event_types(bus)
-    register_session_start_event(bus)
-    register_session_end_event(bus)
-    register_session_attach_event(bus)
-    register_session_detach_event(bus)
 
 
 def register_handlers(

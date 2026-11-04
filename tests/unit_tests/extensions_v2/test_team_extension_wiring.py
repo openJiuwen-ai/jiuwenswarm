@@ -66,9 +66,22 @@ async def test_bootstrap_contributes_team_ops_namespace(tmp_path: Path, monkeypa
     from openjiuwen.agent_teams.monitor.models import MonitorEvent, MonitorEventType
 
     bus = _ready_bus()
+    query_calls = []
+
+    async def observe_query(event, ops, next_handler):
+        query_calls.append(event.event_type)
+        return await next_handler(event)
+
+    bus.register_event_handler("session.cwd", observe_query, {})
     builder = await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
     assert builder is not None
-    ops = builder.build(None, SessionContext(session_id="session-1"))
+    ops = builder.build(None, SessionContext(
+        session_id="session-1", cwd=str(tmp_path),
+        metadata={"project_root": str(tmp_path)},
+    ))
+    assert await ops.session.cwd() == str(tmp_path)
+    assert await ops.session.root() == str(tmp_path)
+    assert query_calls == ["session.cwd"]
 
     # The namespace exists; without team storage configured the resolver
     # reports the team as not found (an explicit error, never a crash).

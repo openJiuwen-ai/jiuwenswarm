@@ -2,12 +2,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | F_24 / session-end |
+| 编号 | F_22 / session-end |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
+| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录；同日接续查询文档基线统一编号、验收标识和引用，契约不变 |
 | 计划与进度 | [EXTV2-19 / Server PR10](../designs/extensions-v2-development-plan.md#extv2-19-主会话结束通知与用户资源清理) |
-| 主责规约 | [S_13](../specs/S_13_session-end.md) |
+| 主责规约 | [S_10](../specs/S_10_session-end.md) |
 
 ## 1. 范围、状态与依据
 
@@ -170,7 +170,7 @@ USER 处理本包资源，通过 `return await next_handler(event)` 继续本条
 
 宿主结束任务默认总预算 1.5 秒，包括关联收尾与 end 通知。失败/超时记日志后继续原释放，不允许 USER 拒绝或替换结果；原关闭取消仍按实际取消传播。已尝试不自动重放，忽略取消的任务可能晚退出，在途计数直到实际退出才释放。崩溃、强杀或执行未能停稳时不保证正常结束 Hook；不承诺撤销已提交外部操作。
 
-字段范围以 [S_13](../specs/S_13_session-end.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
+字段范围以 [S_10](../specs/S_10_session-end.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
 
@@ -253,7 +253,7 @@ result.json、user-handler-results.jsonl、各删除/归档响应、日志和 so
 ## 7. 参考资料
 
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionEndInput/Result；参照小写 Mods 事件。
-- [主责规约 S_13](../specs/S_13_session-end.md)。
+- [主责规约 S_10](../specs/S_10_session-end.md)。
 - [事件定义与校验](../../event_types/session_end.py)、[默认 CORE](../../event_handlers/session_end.py)。
 - [示例包说明](../../examples/session_end/README.md)。
-- [session.append 文档格式基准](F_16_session-history-ops.md)。
+- [session.append 文档格式基准](F_16_session-append.md)。

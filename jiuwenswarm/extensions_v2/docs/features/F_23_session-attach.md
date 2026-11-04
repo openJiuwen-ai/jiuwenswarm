@@ -2,12 +2,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | F_25 / session-attach |
+| 编号 | F_23 / session-attach |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
+| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录；同日接续查询文档基线统一编号、验收标识和引用，契约不变 |
 | 计划与进度 | [EXTV2-20 / Server PR08](../designs/extensions-v2-development-plan.md#extv2-20-界面与主会话关联建立通知) |
-| 主责规约 | [S_14](../specs/S_14_session-attach.md) |
+| 主责规约 | [S_11](../specs/S_11_session-attach.md) |
 
 ## 1. 范围、状态与依据
 
@@ -188,7 +188,7 @@ USER 处理本包资源，通过 `return await next_handler(event)` 继续本条
 
 等待预算默认 2 秒。USER 错误或通知超时不恢复已提交关联；原调用取消继续传播。超时使作用域失效并请求取消，忽略取消的任务不能产生迟到有效 CORE 回执，在途计数直到实际退出才归零。USER 外部副作用不自动回滚，按 attachment_id 清理自己的资源。
 
-字段范围以 [S_14](../specs/S_14_session-attach.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
+字段范围以 [S_11](../specs/S_11_session-attach.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
 
@@ -218,7 +218,7 @@ USER 处理本包资源，通过 `return await next_handler(event)` 继续本条
 
 原 attach/detach 合并交付为 Server !95；本次保留同一个关联服务、独立事件与文档，并与 session.end 固定删除观察者组合。前端、共享 SessionFileService 和已合入历史/用量能力沿用当前目标分支。
 
-以下 378 项与原 real-195031 是 PR08 首次提交的历史证据；本轮 PR08/11 在同一 PR !95 交付，追加解除语义由 [F_26](F_26_session-detach.md) / [S_15](../specs/S_15_session-detach.md) 单独维护。当前联合源码的 446 项回归与 6 次 attach / 5 次 detach 真实验证见 F_26 第 6 节。
+以下 378 项与原 real-195031 是 PR08 首次提交的历史证据；本轮 PR08/11 在同一 PR !95 交付，追加解除语义由 [F_24](F_24_session-detach.md) / [S_12](../specs/S_12_session-detach.md) 单独维护。当前联合源码的 446 项回归与 6 次 attach / 5 次 detach 真实验证见 F_24 第 6 节。
 
 2026-10-29，Windows / Python 3.11.15，Server 基于上文固定基线并包含首次 PR08 变更，Core 为 ead700d7d18a247968d64de54918cf5d201a207a。378 项扩展、Runtime、创建/切换提交、KVC 参与者和架构回归通过，无跳过；另单独复验本特性及相关生命周期 27 项通过，包含在前述范围中、不重复累计。只有外部 Authlib 弃用提示，未运行格式化或静态检查工具。
 
@@ -242,7 +242,7 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2/test_session_atta
 
 单独发送一次真实 Qwen3.8-Flash 回合，得到有效用量；这次聊天不会多发 attach，之后新视图可正常关联。不是靠聊天或手工 notify 提供第一次上下文。未 mock Ops、模型或 Adapter，未手工构造 SessionContext。现成示例日志 6 次 accepted=True；卸载后默认切换正常。result.json、user-handler-results.jsonl、wire.jsonl、source-before/source-after 收据保存来源和一致性，cleanup.json 确认 Worker 退出和端口关闭。
 
-边界：内存事实不跨 Worker/Runtime 重启保存，当时 view 关闭的显式撤销尚未接入，本轮 PR11 已在同 PR 增补，详见 S_15；表项不是物理在线证明。首次 PR08 不提供 viewport、surfaces Ops、detach 事件、Team/子 Agent 或产品浏览器视觉验收；当前 detach 由 F_26 独立说明。没有非 Windows 实机、远端 CI、大规模视图性能或跨重启 exactly-once 证据。2 秒仅为事件等待预算，不是整个文件校验或创建/切换的耗时上限。外部初始化副作用可能已经发生，平台不承诺回滚。
+边界：内存事实不跨 Worker/Runtime 重启保存，当时 view 关闭的显式撤销尚未接入，本轮 PR11 已在同 PR 增补，详见 S_12；表项不是物理在线证明。首次 PR08 不提供 viewport、surfaces Ops、detach 事件、Team/子 Agent 或产品浏览器视觉验收；当前 detach 由 F_24 独立说明。没有非 Windows 实机、远端 CI、大规模视图性能或跨重启 exactly-once 证据。2 秒仅为事件等待预算，不是整个文件校验或创建/切换的耗时上限。外部初始化副作用可能已经发生，平台不承诺回滚。
 
 2026-11-02 文档整理：以原 session.append 为参照，统一对象示例、五列通知输入表、三列输出表、会话资料说明及具体用户 Handler 案例；保留所有字段来源、默认／缺失、权限、超时和历史验证记录。只改文档，当前契约及 Core !110 前置不变。本轮核对结构、字段、示例与真实默认 CORE 回执、链接及差异，不重跑真实业务、模型或浏览器验收。
 
@@ -251,7 +251,7 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2/test_session_atta
 ## 7. 参考资料
 
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionAttachInput/Result；参照小写 Mods 事件。
-- [主责规约 S_14](../specs/S_14_session-attach.md)。
+- [主责规约 S_11](../specs/S_11_session-attach.md)。
 - [事件定义与校验](../../event_types/session_attach.py)、[默认 CORE](../../event_handlers/session_attach.py)。
 - [示例包说明](../../examples/session_attach/README.md)。
-- [session.append 文档格式基准](F_16_session-history-ops.md)。
+- [session.append 文档格式基准](F_16_session-append.md)。

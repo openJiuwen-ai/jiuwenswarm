@@ -137,8 +137,8 @@ async def test_real_user_reads_ops_and_current_association_before_usage(attach_h
     before, after = rows(attach_host)
     assert before["sid"] == "attach-a"
     assert before["package"] == "attach.reader" and before["cwd"] is None
-    assert before["root"] == attach_host.root and before["model"]["model_name"] == "demo-model"
-    assert before["model"]["source"] == "session" and before["association"]["previous_session_id"] is None
+    assert before["root"] == attach_host.root and before["model"] == "demo-model"
+    assert before["association"]["previous_session_id"] is None
     assert after["receipt"] == {"clientId":"web:view-one"}
     assert attach_host.participant.associations.get("web","view-one") .event_input() == attach_host.invocations[0].original
 

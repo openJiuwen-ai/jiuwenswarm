@@ -9,8 +9,8 @@ they are not the methods registered in the public Handler Ops catalog.
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -164,6 +164,8 @@ async def session_append(
         fingerprint=fingerprint, update_metadata=False,
     )
     return result.to_dict()
+
+
 async def session_turns(ops: EventHandlerOps) -> int | None:
     """Read committed main user-input turns, or None for an unknown session."""
     context = _require_session(ops, "session.turns")
@@ -223,7 +225,7 @@ def register_session_ops(
     compact_service=None,
     authorization_service=None,
 ) -> None:
-    """Register workspace capabilities before Registry initializes Ops once."""
+    """Register session capabilities before Registry initializes Ops once."""
 
     async def files(ops: EventHandlerOps, *, expanded_paths: list[str] | None = None) -> dict[str, Any]:
         context = _require_session(ops, "session.files")

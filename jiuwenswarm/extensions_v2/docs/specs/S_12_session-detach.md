@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | S_15 / session-detach |
+| 编号 | S_12 / session-detach |
 | 最近修订日期 | 2026-11-02 |
-| 特性与验收 | [F_26](../features/F_26_session-detach.md) |
+| 特性与验收 | [F_24](../features/F_24_session-detach.md) |
 
 ## 1. 范围与公共契约
 
@@ -77,8 +77,8 @@ params = {"session_id": "demo-session-a", "view_id": "view-main",
 
 普通解除通知等待预算默认 2 秒；运行结束产生的 detach 与 session.end 共用宿主 1.5 秒结束预算。某个 USER 消耗预算时，后续通知可能没有执行机会；平台事实已解除，原 Runtime 继续释放，不伪造 CORE 回执。原调用取消传播，忽略取消的代码不能取得迟到有效回执；外部副作用不自动回滚。
 
-本次输入/输出的旧字段迁移唯一解释入口为 [F_26 第 4.2 节](../features/F_26_session-detach.md#42-旧-handler--回执迁移)。平台方法与 SessionContext 的 session_id 保持 snake_case，不将公开 camelCase 修改扩大到全部内部接口。
+本次输入/输出的旧字段迁移唯一解释入口为 [F_24 第 4.2 节](../features/F_24_session-detach.md#42-旧-handler--回执迁移)。平台方法与 SessionContext 的 session_id 保持 snake_case，不将公开 camelCase 修改扩大到全部内部接口。
 
 ## 4. 验证与关联
 
-运行验证、环境和证据范围在 [关联特性第 6 节](../features/F_26_session-detach.md#6-验收与未决问题) 维护。定向入口为 tests/unit_tests/extensions_v2/test_session_detach.py 和 test_session_lifecycle_contracts.py；Server/Runtime 原生接线与真实进程按 feature 的实际记录核对。
+运行验证、环境和证据范围在 [关联特性第 6 节](../features/F_24_session-detach.md#6-验收与未决问题) 维护。定向入口为 tests/unit_tests/extensions_v2/test_session_detach.py 和 test_session_lifecycle_contracts.py；Server/Runtime 原生接线与真实进程按 feature 的实际记录核对。
