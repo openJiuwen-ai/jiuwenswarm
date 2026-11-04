@@ -12,7 +12,7 @@
 
 本项目保留 `server.run_command` 名称，对照 Claude Code Mods 固定提交 `bf2323b3021c9d3db7a31e1e7d61068c3f704497`、类型文件标注版本 2.1.277 的 `command.run`、`CommandRunInput`、`CommandRunResult`、`CommandPresentation` 和 `PromptOrigin`。它处理 `/name args` 这种斜杠命令；系统进程执行属于 Claude 的 process.run。
 
-本次实现事件、唯一 CORE、可信调用封装和 Worker DeepAdapter 原生文本命令入口。没有新增插件 Ops 方法。F_29 / S_16 已分配给并行 authorize PR !114，本文使用 F_30 / S_17；不会把 authorize 代码作为本 PR 的前置。
+本次实现事件、唯一 CORE、可信调用封装和 Worker DeepAdapter 原生文本命令入口。没有新增插件 Ops 方法。目标分支已合入 authorize PR !114 的 F_29 / S_16，本文沿用已登记的 F_30 / S_17。合并冲突时保留两个事件的独立注册。
 
 ## 2. 能力说明与 Claude 对照
 
@@ -253,7 +253,9 @@ async def on_list(event, ops, next_handler):
 
 ## 6. 验收与未决问题
 
-开发验证使用 Server 目标 39fdb7354 和实际 Core 31fee3a86。最终专项 52 项新增事件/适配测试通过，既有演进命令、边界和 AgentServer CLI 命令回归 99 项通过，合计 151 个不同用例。扩展全组 943 通过、2 跳过、7 失败；7 项已在同一 Server/Core 的干净目标基线复现，测试 ID 和首行错误一致。最终重入和输入边界修正后重新跑过 52 项专项，没有把全组标为全部通过。
+2026-11-04 合并当前 Server 目标 `415d91a65`，使用实际 Core `31fee3a86` 重新验证。命令事件/适配 52、compact 15、authorize 35、session.start 18、既有命令 99，共 219 个不同定向用例通过。原有 5 项 compact 私有接口测试已改为真实用户包注册，全部通过，见 [F_28 第 6.5 节](F_28_session-compact.md#65-当前-core-的受管-handler-测试适配)。
+
+扩展全组 990 通过、2 跳过、2 失败；剩余 Store Probe 与 Workbench 的失败在未修改的 Server 415d91a65 / 同一 Core 基线复现，测试 ID 和首行原因一致。最终追加 USER 完成校验后重跑 compact 15 项通过。独立 ZIP、原生命令和隐藏备注恢复也在合并后的代码重新验证通过。
 
 | 场景 | 已验证的实际结果 |
 | --- | --- |

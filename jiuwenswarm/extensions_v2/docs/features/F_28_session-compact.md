@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_28 / session-compact |
 | 设计日期 | 2026-11-03 |
+| 后续修订 | 2026-11-04：在 PR !119 中适配当前 Core 的测试注册，生产压缩接入范围不变 |
 | 状态 | Ops / Event 接口与 Handler 链已开发；主流程接入注释保留，待合入 |
 | 关联计划 | [EXTV2-26](../designs/extensions-v2-development-plan.md#extv2-26-会话压缩与压缩前扩展) |
 | 主责规约 | [S_15_session-compact.md](../specs/S_15_session-compact.md) |
@@ -257,7 +258,7 @@ async def compact(*, instructions: str | None = None) -> SessionCompacted | Sess
   → 原业务 CORE 完成；会话消息、模型和历史均未因 compact 改变
 
 独立受控测试（不接生产 Adapter）
-  → 手工装配 Bus / Runtime / Builder / service，显式绑定测试引擎
+  → 通过 Registry / ExtensionManager 安装用户包并构建 Ops，显式绑定测试引擎
   → 外层 test.caller USER 调用 compact Ops
   → service → Core 显式 compact_context → Hook → Event(session.compact, input)
   → 内层 USER 补充 instructions → 可选 BUILTIN → CORE 校验并调用 continuation
@@ -355,6 +356,16 @@ Runtime 包装负责当前 Ops 对象、嵌套层、任务及活动期；compact
 迁移后 compact、session.start 和原压缩命令回归合跑 **86 项通过**，无跳过或排除；新进程导入、旧模块不存在以及 setuptools 对新子包的发现均通过。两份 HTML 同步当前路径，历史固定提交的源码链接明确保留历史布局。Core 仅同步跨仓方案文档路径，不修改运行代码；本次不重复运行 Core 业务测试或生产真实压缩。
 
 证据：`D:\work_space\.codex-temp\session-compact-package-layout-20261103` 中 server-regression.xml、package-verification.json 和 delivery-verification.json。
+
+### 6.5 当前 Core 的受管 Handler 测试适配
+
+2026-11-04 在 [PR !119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119) 中，合并 Server 目标 `415d91a65`，使用实际 Core 目标 `31fee3a86` 重新验证。原有测试直接调用私有 `_tracked_handler(package_id, handler)`；当前 Core 需要激活代次，原 5 项测试在 Handler 注册阶段失败。
+
+本轮将公共 fixture 改为通过 ExtensionManager/Registry 真实安装测试用户包，由 Core 自动发布受管 Handler、注入包身份和 generation。测试仅登记自己的回调 Ops；每次回调验证公开 is_active_invocation 与 invocation_generation，并保持原压缩、skip、重入、子 Task/失效 Ops 和提交次数断言。五项受管 Handler 测试均显式检查 USER 回调正常完成，避免 USER 故障隔离造成误通过。卸载场景使用真实 manager.uninstall，fixture 统一清理服务和用户包。
+
+compact 文件 15 项全部通过，原 5 项均真正执行到功能断言；连同命令事件、authorize、session.start 和既有命令回归，共 219 个不同定向用例通过。扩展全组 990 通过、2 跳过，另 2 项 Store Probe/Workbench 失败已在干净同版本目标复现，不计为通过。
+
+本次修改限测试适配和冲突合并；原生压缩绑定仍仅由测试显式建立，生产手动/自动压缩保持原有路径。模型使用原有受控测试模型，不扩大为真实模型服务验收。测试入口：[test_session_compact.py](../../../../tests/unit_tests/extensions_v2/test_session_compact.py)。
 
 ## 7. 参考资料
 
