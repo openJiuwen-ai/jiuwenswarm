@@ -23,6 +23,27 @@ async def make_group(service, *, kind="agent_template"):
 
 
 @pytest.mark.asyncio
+async def test_early_organization_stage_retry_recovery_and_startup_failure(service, monkeypatch):
+    group = await make_group(service)
+    store = ge.GroupExecutions(group["group_id"])
+    args = dict(title="Task", task="Task", organization_id="org", owner_member="advisor",
+                team_id="owner", root_task_id="root", tasks={}, task_details={},
+                status="running", phase="executing", organization_plan_id="plan")
+    first = await store.upsert_organization_card("org-card", **args, organization_stage="starting")
+    advanced = await store.upsert_organization_card("org-card", **args, organization_stage="executing")
+    assert advanced["revision"] == first["revision"] + 1
+    retry = await store.upsert_organization_card("org-card", **args, organization_stage="starting", only_if_missing=True)
+    assert retry == advanced
+    recovered = ge.GroupExecutions(group["group_id"])
+    assert recovered.get("org-card")["organization_stage"] == "executing"
+    monkeypatch.setattr(ge, "read_group", lambda _: {**group, "organization_plans": [{"plan_id": "plan", "status": "failed"}]})
+    await recovered.reconcile()
+    assert recovered.get("org-card")["status"] == "failed"
+    assert recovered.get("org-card")["organization_stage"] is None
+    assert (await recovered.upsert_organization_card("org-card", **args, organization_stage="starting"))["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_execution_creation_idempotency_busy_and_owner_isolation(service):
     group = await make_group(service)
     store = ge.GroupExecutions(group["group_id"])

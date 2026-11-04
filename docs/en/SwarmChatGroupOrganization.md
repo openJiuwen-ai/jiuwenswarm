@@ -188,6 +188,14 @@ The Owner background's existing poll reads these children from the organization 
 
 ---
 
+## Early organization progress
+
+Requests mentioning multiple expert teams exclusively create the organization card when the plan is recorded, before proxies launch instances through `run_team`. The same card displays Starting expert teams, Experts working, and Summarizing based on real task state; the interval before execution uses Processing. Queued requests retain their queued state. The stage is persisted for refresh without replacing child rows or completion status. Duplicate acceptance cannot reset an existing card; failed/expired startup plans close their bound early cards. Publishing errors do not stop execution. Single experts, single teams, mixed mentions, and historical cards without a stage keep their existing presentation.
+
+Organization cards link `organization_plan_id` to the prompt's `client_message_id` and never sort before that prompt. This applies to early creation, message acceptance, and history refresh without changing the stored creation time.
+
+Organization cards show an overall stage only while no child rows exist. Once rows are present, all overall stage footers are hidden, including startup, execution, summary, and processing; progress is shown by the task rows, including the summary task. Other card types keep their existing presentation.
+
 ## Back
 
 - [Documentation home](../README_EN.md)

@@ -1705,6 +1705,54 @@ def _install_card_store(monkeypatch) -> _CardStore:
 
 
 @pytest.mark.asyncio
+async def test_early_card_only_for_multi_team_mentions(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    for mentions in [["writer"], ["business"], ["writer", "business"], ["writer", "business", "insight"]]:
+        await _record_group_organization_plan(SESSION, {"mentions": mentions, "body": "Task", "client_message_id": "ordinary"})
+        assert not store.calls
+    await _record_group_organization_plan(SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"})
+    assert len(store.calls) == 1
+    assert store.calls[0][1]["organization_stage"] == "starting"
+    assert store.calls[0][1]["only_if_missing"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_type,status,expected", [
+    ("work", "OPEN", "processing"),
+    ("work", "CLAIMED", "executing"),
+    ("organization.summary", "IN_PROGRESS", "summarizing"),
+])
+async def test_organization_stage_follows_real_tasks(monkeypatch, task_type, status, expected):
+    from unittest.mock import AsyncMock
+
+    plan = _stale_plan()
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    task = SimpleNamespace(task_id="child", task_type=task_type, status=status,
+                           parent_task_id=bootstrap._root_task_id(plan["plan_id"]),
+                           root_task_id=bootstrap._root_task_id(plan["plan_id"]))
+    pool = SimpleNamespace(list_tasks=AsyncMock(return_value=[task]))
+    await bootstrap.publish_organization_card(session_id=SESSION, plan=plan, organization_id=ORG,
+                                               team_id="owner", task_pool=pool)
+    assert store.calls[-1][1]["organization_stage"] == expected
+    pool.list_tasks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_card_write_failure_does_not_block_proxy_launch(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    store.upsert_organization_card = AsyncMock(side_effect=RuntimeError("card unavailable"))
+    await bootstrap.publish_pending_organization_card(SESSION, {**_stale_plan(), "status": "pending"})
+    store.upsert_organization_card.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
     plan = _stale_plan()
     root_id = bootstrap._root_task_id(plan["plan_id"])

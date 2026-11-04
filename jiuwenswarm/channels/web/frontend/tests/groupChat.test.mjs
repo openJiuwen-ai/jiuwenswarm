@@ -1,10 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
+import { groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
 import { parseChatRoute, chatRoutePath } from '../node_modules/.cache/group-chat/multi-session/routing/route.js';
 
 const message = (id, timestamp, content = id) => ({ message_id: id, timestamp, content });
 const execution = (id, revision, status = 'running') => ({ execution_id: id, revision, status, created_at: 10 });
+
+test('early organization cards follow their own prompt across acceptance and history refresh', () => {
+  const card = { ...execution('a-card', 1), execution_kind: 'organization', organization_plan_id: 'request' };
+  const pending = { ...message('optimistic', 9000), pending: true, client_message_id: 'request' };
+  const accepted = { ...message('z-prompt', 11000), client_message_id: 'request' };
+  assert.deepEqual(groupTimeline([pending], [card]).map((item) => item.id), ['optimistic', 'a-card']);
+  const messages = mergeMessages([pending], [accepted, message('later', 12000)]);
+  assert.deepEqual(groupTimeline(messages, [card]).map((item) => item.id), ['z-prompt', 'a-card', 'later']);
+  assert.deepEqual(groupTimeline([accepted], [{ ...card, revision: 2, updated_at: 20 }]).map((item) => item.id),
+    ['z-prompt', 'a-card']);
+  assert.deepEqual(groupTimeline([], [card]).map((item) => item.id), ['a-card']);
+  for (const execution_kind of ['agent', 'team', 'organization']) {
+    const ordinary = { ...card, execution_kind, organization_plan_id: execution_kind === 'organization' ? null : 'request' };
+    assert.deepEqual(groupTimeline([accepted], [ordinary]).map((item) => item.id), ['a-card', 'z-prompt']);
+  }
+  const otherCard = { ...card, execution_id: 'other-card', organization_plan_id: 'other' };
+  assert.deepEqual(groupTimeline([accepted], [otherCard, card]).map((item) => item.id),
+    ['other-card', 'z-prompt', 'a-card']);
+});
 
 test('background refresh retries timeouts without masking initial load or other failures', () => {
   const timeout = Object.assign(new Error('Request timed out'), { code: 'REQUEST_TIMEOUT' });
@@ -288,6 +307,30 @@ await build({
   } }],
 });
 const { ExecutionCard } = await import(pathToFileURL(resolve(executionBundlePath)).href);
+
+test('organization stages are isolated from ordinary cards and terminal states', () => {
+  const render = (record) => renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  for (const stage of ['starting', 'processing', 'executing', 'summarizing']) {
+    for (const tasks of [{}, { child: 'in_progress' }, { child: 'completed' }]) {
+      const record = { ...execution('org', 1), execution_kind: 'organization', tasks, organization_stage: stage };
+      if (Object.keys(tasks).length > 0) {
+        assert.doesNotMatch(render(record), /groupChat.organizationStage|group-chat-organization-status|group-chat-organization-stage/);
+        assert.match(render(record), /group-chat-subtask-status/);
+      } else {
+        assert.match(render(record), new RegExp(`groupChat.organizationStage.${stage}`));
+      }
+      for (const status of ['completed', 'failed', 'cancelled', 'queued']) {
+        assert.doesNotMatch(render({ ...record, status }), /groupChat.organizationStage/);
+      }
+      for (const execution_kind of ['agent', 'team']) {
+        const ordinary = { ...record, execution_kind };
+        assert.equal(render(ordinary), render({ ...ordinary, organization_stage: undefined }));
+      }
+      assert.equal(render({ ...record, organization_stage: 'unknown' }),
+        render({ ...record, organization_stage: undefined }));
+    }
+  }
+});
 
 test('execution cards show compact titles, real child names and state counts without internal instructions', () => {
   const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: {

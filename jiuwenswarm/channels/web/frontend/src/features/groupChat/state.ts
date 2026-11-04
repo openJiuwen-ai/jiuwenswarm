@@ -38,6 +38,20 @@ export function mergeExecutions(current: GroupExecution[], incoming: GroupExecut
   return [...executions.values()].sort((a, b) => a.created_at - b.created_at);
 }
 
+export function groupTimeline(messages: GroupMessage[], executions: GroupExecution[]) {
+  const prompts = new Map(messages.filter((message) => message.client_message_id)
+    .map((message) => [message.client_message_id, message]));
+  return [
+    ...messages.map((message) => ({ id: message.message_id, at: message.timestamp, order: 0, message, execution: null })),
+    ...executions.map((execution) => {
+      const prompt = execution.execution_kind === 'organization' && execution.organization_plan_id
+        ? prompts.get(execution.organization_plan_id) : undefined;
+      return { id: execution.execution_id, at: Math.max(execution.created_at * 1000, prompt?.timestamp ?? -Infinity),
+        order: prompt ? 1 : 0, message: null, execution };
+    }),
+  ].sort((a, b) => a.at - b.at || a.order - b.order || a.id.localeCompare(b.id));
+}
+
 export function newMember(kind: GroupMember['kind'], id: string, displayName: string, description?: string): GroupMember {
   return { kind, id, display_name: displayName, member_name: `member-${crypto.randomUUID()}`, ...(description ? { description } : {}) };
 }
