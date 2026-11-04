@@ -24,7 +24,7 @@
 
 | 能力 | 适用任务与检索词 |
 | --- | --- |
-| [workswarm-app-builder](capabilities/workswarm-app-builder/SKILL.md) | 仅 code 模式：网页应用、小游戏、AI 交互工具；开发、验证与确认上架 |
+| [workswarm-app-builder](capabilities/workswarm-app-builder/SKILL.md) | 仅 code 模式，开发、验证和上架网页应用、小游戏与 AI 交互工具，支持单角色 NPC 和多角色独立发言的 Team NPC |
 | [harmonyos-dev-suite](capabilities/harmonyos-dev-suite/SKILL.md) | HarmonyOS 鸿蒙应用开发 |
 | [huawei-cloud-maas-setup](capabilities/huawei-cloud-maas-setup/SKILL.md) | 华为云 MaaS 开通、配置与接入 |
 | [delayed-restart-app](capabilities/delayed-restart-app/SKILL.md) | 延迟重启 WorkSwarm 应用 |

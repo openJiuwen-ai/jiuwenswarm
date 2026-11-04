@@ -1,4 +1,3 @@
-import { AppMarketPanel, type AppMarketEditHandler } from '../AppMarketPanel';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConnectorStore, CONNECTOR_ERROR_TOAST_ID } from '../../stores/connectorStore';
@@ -71,7 +70,6 @@ interface ConnectorMarketPanelProps {
    * 不传这个 prop 就退化成原来的"尚未接入"提示（同款可选 prop 处理）。
    */
   onCreateViaChat?: () => void;
-  onEditApp?: AppMarketEditHandler;
 }
 
 export function ConnectorMarketPanel({
@@ -79,7 +77,6 @@ export function ConnectorMarketPanel({
   onUsePluginExample,
   onUseExtension,
   onCreateViaChat,
-  onEditApp,
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
@@ -187,7 +184,7 @@ export function ConnectorMarketPanel({
 
   // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {
-    if (view.name !== 'market' || topTab === 'app') return;
+    if (view.name !== 'market') return;
     // MCP/插件都按 filter 分别拉"广场"(builtin)/"我的"(local) 两份列表（MCP 见 connectorStore.ts
     // 头注释，2026-08-17 按 MCP 接口文档 v2 改造；插件 2026-08-19 对齐同款做法——之前这里插件分支
     // 固定传 undefined 拿混合列表，靠 MarketplacePage.tsx 前端按 pkg.source 二次过滤，用户反馈
@@ -210,7 +207,6 @@ export function ConnectorMarketPanel({
     <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-panel">
       {view.name === 'market' && (
         <MarketplacePage
-          appMarketPanel={<AppMarketPanel onEdit={onEditApp} />}
           topTab={topTab}
           onTopTabChange={setTopTab}
           myKind={myKind}

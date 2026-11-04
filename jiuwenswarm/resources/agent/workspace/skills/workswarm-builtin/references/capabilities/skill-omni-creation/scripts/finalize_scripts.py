@@ -44,9 +44,10 @@ def main() -> None:
         required=True,
         help="Verified script paths relative to scripts/. Pass --keep with no values when none passed.",
     )
-    default_skills_dir = Path(__file__).resolve().parent.parent.parent
-    parser.add_argument("--skills-dir", default=str(default_skills_dir))
+    parser.add_argument("--skills-dir", default=None)
     args = parser.parse_args()
+    if args.skills_dir is None:
+        args.skills_dir = str(common.default_skills_dir())
 
     script_dir = (Path(args.skills_dir) / args.slug / "scripts").resolve()
     keep_rel: set[Path] = set()

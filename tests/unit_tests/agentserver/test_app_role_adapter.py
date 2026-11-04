@@ -185,8 +185,10 @@ def test_profile_validation_and_context_budget():
         {"role": "user", "request_id": "old", "content": "x" * 48000},
         {"role": "assistant", "event_type": "chat.final", "request_id": "old", "content": "answer"},
     ]
-    messages = role_module.build_role_messages("persona", records, "Hi", "new")
+    system = APP_ROLE_SYSTEM_PROMPT + "\nApplication character instructions:\npersona"
+    messages = role_module.build_role_messages(system, records, "Hi", "new")
     assert len(messages) == 2
     assert APP_ROLE_SYSTEM_PROMPT in messages[0].content
+    assert "persona" in messages[0].content
     with pytest.raises(ValueError, match="size limit"):
-        role_module.build_role_messages("persona", [], "x" * 48000, "new")
+        role_module.build_role_messages(system, [], "x" * 48000, "new")

@@ -57,7 +57,7 @@
     "logs": "Logs",
     "update": "Updates",
     "personalContext": "Knowledge",
-    "appMarket": "App Market"
+    "appMarket": "Apps"
   },
   "appMarket": {
     "pageResources": "Page",
@@ -73,8 +73,7 @@
     "serverResourceHint": "Measures the backend host, not the browser computer. A local connection usually targets this computer, but proxies and port forwarding may target a remote server; containers may report host statistics. Updates every 3 seconds. Warns after 3 samples at or above 85% CPU or memory; clears when both are below 75%.",
     "highResourceUsage": "High system usage. Consider stopping unused apps or other tasks.",
     "serviceResourceHint": "Updates every 3 seconds. Estimates CPU (machine capacity) and resident memory of market service process trees on the server machine. Excludes browser pages, host and AI sessions. — means sampling or unavailable.",
-    "title": "App Market",
-    "subtitle": "Manage local app lifecycle: start, stop, and delete",
+    "title": "Apps",
     "allApps": "All Apps",
     "running": "Running",
     "start": "Start",

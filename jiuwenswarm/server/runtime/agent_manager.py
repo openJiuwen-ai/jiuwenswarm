@@ -1269,6 +1269,7 @@ class AgentManager:
         create_token: str | None = None,
         execution_profile: str = "default",
         role_instructions: str = "",
+        npc_team: dict | None = None,
     ):
         token = str(create_token or "").strip()
         key = self.warm_pool.make_key(
@@ -1284,6 +1285,14 @@ class AgentManager:
         create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
         if execution_profile != "default":
             create_signature += (execution_profile, role_instructions)
+            # The roster definition is part of the same
+            # idempotent identity; bindings are host-internal and excluded.
+            create_signature += (
+                tuple(
+                    (member.get("name"), member.get("role_instructions"))
+                    for member in ((npc_team or {}).get("members") or [])
+                ),
+            )
         token_key = (key.channel_id, token)
         async with self._session_create_token_lock:
             if token:

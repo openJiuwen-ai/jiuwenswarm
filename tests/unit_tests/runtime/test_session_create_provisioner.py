@@ -32,6 +32,12 @@ class _State:
 class _Manager:
     def __init__(self, state: _State) -> None:
         self.state = state
+        self._created = 0
+
+    async def create_session(self, channel_id: str = "", session_id: str | None = None) -> str:
+        self._created += 1
+        self.state.events.append(f"create_session:{self._created}")
+        return f"member-session-{self._created}"
 
     async def claim_prewarmed_session(self, **kwargs: Any) -> Any:
         self.state.events.append("claim")
@@ -153,6 +159,8 @@ async def test_app_role_create_persists_configuration_and_disables_prewarm(monke
     {"execution_profile": "app_role"},
     {"execution_profile": "app_role", "role_instructions": "rules", "persist_session": True},
     {"execution_profile": "app_role", "role_instructions": "rules", "mode": "team"},
+    {"role_instructions": "rules", "npc_team": {"members": [{"name": "a", "role_instructions": "r"}]}},
+    {"role_instructions": "rules", "role_tools": ["web_search"]},
 ])
 async def test_invalid_role_configuration_is_rejected_before_session_claim(monkeypatch, tmp_path, overrides):
     state = _State()
@@ -161,6 +169,149 @@ async def test_invalid_role_configuration_is_rejected_before_session_claim(monke
     with pytest.raises(SessionProvisionError):
         await provisioner.prepare_session_create(_input(**overrides))
     assert "claim" not in state.events
+
+
+@pytest.mark.asyncio
+async def test_app_role_rejects_tool_equipment_before_claim(monkeypatch, tmp_path):
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    with pytest.raises(SessionProvisionError, match="tools are not supported"):
+        await provisioner.prepare_session_create(_input(
+            execution_profile="app_role",
+            role_instructions="Chief rules.",
+            role_tools=["web_search"],
+        ))
+    assert "claim" not in state.events
+
+
+@pytest.mark.asyncio
+async def test_app_role_team_creates_native_roster_without_independent_sessions(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+    from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec
+
+    from jiuwenswarm.agents.harness import team as team_package
+    from jiuwenswarm.agents.swarm.assembly import build_app_role_team_spec
+    from jiuwenswarm.runtime.app_role import validate_app_role_request
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state, target_is_team=True)
+    monkeypatch.setenv("OPENJIUWEN_HOME", str(tmp_path))
+
+    class TeamManager:
+        async def prepare_session_switch(self, *_args, **_kwargs):
+            state.events.append("team.prepare")
+
+    monkeypatch.setattr(team_package, "get_team_manager", lambda _channel: TeamManager())
+    provisioner = _provisioner(state)
+    prepared = await provisioner.prepare_session_create(_input(
+        execution_profile="app_role",
+        role_instructions="You are the chief.",
+        mode="team",
+        work_mode="code",
+        npc_team={"members": [{"name": "fisherman", "role_instructions": "You are the fisherman."}]},
+    ))
+    metadata = get_session_metadata(prepared.result.session_id)
+    assert metadata["mode"] == "team.code.normal"
+    assert "npc_member_sessions" not in metadata
+    validate_app_role_request(metadata, {"mode": "team"})
+    with pytest.raises(ValueError, match="mode is fixed"):
+        validate_app_role_request(metadata, {"mode": "agent"})
+
+    spec = build_app_role_team_spec(
+        TeamAgentSpec(team_name="npc-test", agents={"leader": DeepAgentSpec()}), metadata,
+    )
+    assert (spec.team_mode, spec.bootstrap_mode, spec.dispatch_mode) == ("predefined", "framework", "scheduled")
+    assert spec.spawn_mode == "inprocess"
+    assert [member.member_name for member in spec.predefined_members] == ["fisherman"]
+    assert "You are the fisherman." in spec.predefined_members[0].prompt
+    member = spec.agents["fisherman"]
+    assert not member.enable_sys_operation
+    assert "npc-test" in member.workspace.root_path
+    agent = spec.build()
+    assert agent.harness.sys_operation is None
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
+async def test_npc_team_create_cascades_member_sessions(monkeypatch, tmp_path):
+    from openjiuwen.harness.tools.web import _common
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    original = provisioner._agent_manager.claim_prewarmed_session
+    captured = {}
+
+    async def claim(**kwargs):
+        captured.update(kwargs)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(provisioner._agent_manager, "claim_prewarmed_session", claim)
+    prepared = await provisioner.prepare_session_create(_input(
+        execution_profile="app_role",
+        role_instructions="You are the village chief.",
+        title="Village Office",
+        npc_team={
+            "members": [
+                {"name": "fisherman", "role_instructions": "Old fisherman rules.", "title": "Island · Fisherman"},
+                {"name": "merchant", "role_instructions": "Merchant rules."},
+            ]
+        },
+    ))
+    leader = get_session_metadata(prepared.result.session_id)
+    assert leader["npc_team"]["members"][0]["name"] == "fisherman"
+    assert "role_tools" not in leader
+    bindings = leader["npc_member_sessions"]
+    assert set(bindings) == {"fisherman", "merchant"}
+    assert "role_tools" not in captured
+    assert captured["npc_team"]["members"][0]["name"] == "fisherman"
+
+    fisherman = get_session_metadata(bindings["fisherman"])
+    merchant = get_session_metadata(bindings["merchant"])
+    assert fisherman["execution_profile"] == "app_role"
+    assert fisherman["role_instructions"] == "Old fisherman rules."
+    assert fisherman["npc_member"] == {
+        "leader_session_id": prepared.result.session_id, "name": "fisherman",
+    }
+    assert "role_tools" not in fisherman
+    assert fisherman["project_id"] == leader["project_id"]
+    assert fisherman["work_mode"] == leader["work_mode"]
+    assert fisherman["persist_session"] is False
+    assert fisherman["title"] == "Island · Fisherman"
+    assert merchant["title"] == "Village Office · merchant"
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
+async def test_npc_team_token_retry_conflict_is_rejected(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+        init_session_metadata,
+    )
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    init_session_metadata(
+        session_id="created-session",
+        channel_id="web",
+        title="Existing",
+        mode="agent",
+        execution_profile="app_role",
+        role_instructions="You are the village chief.",
+        npc_team={"members": [{"name": "fisherman", "role_instructions": "Old fisherman rules."}]},
+    )
+    with pytest.raises(SessionProvisionError, match="conflicts with the session execution profile"):
+        await provisioner.prepare_session_create(_input(
+            execution_profile="app_role",
+            role_instructions="You are the village chief.",
+            npc_team={"members": [{"name": "merchant", "role_instructions": "Different roster."}]},
+        ))
+    # The stored roster must be untouched by the rejected retry.
+    assert get_session_metadata("created-session")["npc_team"]["members"][0]["name"] == "fisherman"
 
 
 @pytest.mark.asyncio

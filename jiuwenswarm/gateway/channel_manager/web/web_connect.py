@@ -129,6 +129,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.session_result",
         "chat.usage_metadata",
         "chat.usage_summary",
+        "npc.member",
         "chat.file",
         "chat.retract",
         "security.alert",
@@ -942,6 +943,7 @@ class WebChannel(BaseWsChannel):
         # payload 判断会自动跳过它，不会重复赋值。
         return (
             event_name.startswith("chat.")
+            or event_name == "npc.member"
             or event_name.startswith("goal.")
             or event_name == "execution.error"
         )

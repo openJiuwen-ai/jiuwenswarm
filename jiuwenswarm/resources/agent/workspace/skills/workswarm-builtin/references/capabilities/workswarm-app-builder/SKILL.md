@@ -3,6 +3,7 @@ name: workswarm-app-builder
 description: |
   用于开发可运行的本地网页应用、小游戏或 AI 交互工具，以及将应用上架本机应用市场。
   用户说"帮我开发一个五子棋小游戏，支持AI对战"等应用开发需求时自动匹配，无需提及技能名、WorkSwarm 或上架。
+  支持在应用中接入单角色 NPC，或接入由多个角色分别发言的 Team NPC。
   仅讨论游戏规则、算法或问答而未要求开发应用时不触发。
 ---
 
@@ -33,9 +34,9 @@ description: |
 |---|---|---|
 | 优雅停止 | 应用自身 `POST /_workswarm/shutdown`，请求头 `Authorization: Bearer <WORKSWARM_STATUS_TOKEN>` | 自带 `scripts/app_server.py` 的应用必须实现：校验令牌后清理角色会话（中断、删除并确认）再退出；响应 200 后尽快退出。市场停止时先调用它并最多等待 8 秒，未实现或超时才强杀，强杀不会触发任何退出处理。纯静态托管由市场模板内置 |
 | 页面来源与缓存 | Web 使用应用专属的 `*.localhost` 主机，桌面使用 `127.0.0.1`。应用服务端所有响应带 `Cache-Control: no-store` | 自带服务器的 Host 校验必须按端口放行 `127.0.0.1`、`localhost` 及任意 `*.localhost`（市场 Web 入口为 `workswarm-app-<摘要>.localhost:<port>`），页面通过同源路径加载资源和调用应用接口。`WORKSWARM_APP_URL` 是本地服务地址，页面从实际浏览器来源构造 URL。纯静态托管由模板内置 |
-| 创建 | Web `/ws`：`session.create`，`create_token`、`persist_session:false`、`mode:"agent"`、`project_id`、`work_mode`、`title` | 项目与工作模式继承创建应用的会话；纯对话角色指定 `execution_profile:"app_role"` 和 `role_instructions`；保存真实 `session_id`；不指定模型 |
+| 创建 | Web `/ws`：`session.create`，`create_token`、`persist_session:false`、`project_id`、`work_mode`、`title` | 纯对话 NPC 使用 `execution_profile:"app_role"` 和 `role_instructions`；单角色用 `mode:"agent"`，团队角色用 `mode:"team"` 和 `npc_team.members`；保存返回的真实 `session_id` 与 `mode` |
 | 检查 | Web：`session.get_metadata`，`session_id` | 仅明确 `NOT_FOUND/SESSION_NOT_FOUND` 才补建；断连、超时、鉴权错误不代表会话丢失 |
-| 消息 | Web：`chat.send`，`session_id`、`query/content`、`mode/work_mode`，`is_stream:true` | accepted 不是答案；匹配 session 和 request ID 的 `chat.final`，忽略旧请求重放和 keepalive；错误、审批或提问明确处理 |
+| 消息 | Web：`chat.send`，`session_id`、`query/content`、`mode/work_mode`，`is_stream:true` | 按会话与请求关联结果；团队 NPC 优先匹配 `turn_request_id`，等待回合结束状态；错误、审批或提问明确处理 |
 | 中断 | Web：`chat.interrupt`，`session_id`、`wait_for_stop:true` | 超时或重开时停止旧回合，丢弃迟到响应 |
 | 清空 | 通用 `/tui`：`session.rewind`，`session_id`、`turn_index:1` | 当前 Web Channel 未提供此方法；不修改核心接口，不做不支持的订制 |
 | 删除 | Web：`session.delete`，`session_ids:[...]` | 删除可能异步，查询确认不存在后才移除本地绑定；清理失败保留待处理记录 |
@@ -43,13 +44,14 @@ description: |
 ## 会话与请求规范
 
 - 纯文字 NPC、棋手等无需工具的角色使用 `execution_profile:"app_role"`。创建时将人格、业务规则、输出 schema 写入 `role_instructions`（1–12000 字符），后续聊天仅发送当前业务输入。宿主保留精简基础系统提示；不加载项目指令、个人/项目记忆、技能和工具。创建响应必须确认 `execution_profile:"app_role"`；旧宿主不支持时明确提示升级，不降级到普通助手。需要工具的角色继续使用普通会话。轻量角色仅支持文字对话和取消，不支持暂停/继续、增强执行、永续记忆、cron 或装备工具；保留自身对话历史。
+- 根据玩法决定角色拓扑。单个 NPC 或几个互不协作的 NPC 使用各自的单角色会话。同一轮需要多个有身份的角色协作并各自发言时，使用原生 Team NPC。开始实现团队玩法前，读取 [Team NPC 接入指南](references/team-npc.md)，按示例完成角色名册、应用服务端 Gateway 客户端、回合事件处理和前端渲染。玩家只向 leader 提交输入，应用按角色逐条展示最终发言。
 - 角色会话必须绑定创建应用的项目。市场通过 `WORKSWARM_SOURCE_SESSION` 注入发布清单的来源会话 ID；应用服务端调用 `session.get_metadata` 读取其 `project_id` 和 `work_mode`，创建角色会话时透传这两个字段。不要以应用子目录代替项目路径，也不要固定 `work_mode:"work"`；消息请求沿用角色会话的工作模式。旧市场未注入时，可从应用自身配置读取发布时保存的来源会话 ID。来源缺失或查询失败时明确报错，不静默建到默认项目；真正的默认项目沿用来源的默认项目 ID 与工作模式。
-- 每用户、每应用、每个稳定 AI 角色最多一个活动会话；N 个角色最多 N 个会话。应用保存绑定和幂等创建 token，初始化串行执行，多标签页不能并发建会话或请求同一角色。不使用时间戳或局号作为 role_id。
+- 每用户、每应用、每个独立角色或团队最多一个活动的应用绑定；团队成员会话由 Team 管理。应用保存绑定和幂等创建 token，初始化串行执行，多标签页不能并发建会话或提交同一轮。不使用时间戳或局号作为 role_id。
 - 默认 `persist_session:false`，仍保留普通多轮历史；该参数不是聊天历史保存开关。不要为保存对局开启永续记忆，不修改元数据绕过创建配置。
-- 独立对局默认新局重置：清空本地棋盘，检查并复用角色会话，中断并 rewind 历史，成功后才启用操作；缺失才创建新会话。新局首轮重新初始化，禁止旧棋盘搭配新会话。
+- 独立对局默认新局重置。单角色中断后可 rewind 并复用；团队 NPC 需要清除上下文时删除旧 Team 会话并重新创建，清理确认后才启用新局。新局首轮重新初始化，禁止旧棋盘搭配新会话。
 - 应用负责优雅退出和会话清理，市场只终止进程；在 `/_workswarm/shutdown` 处理或进程退出处理里中断、删除并确认，不依赖页面 unload。市场请求优雅停止后最多等待 8 秒，超时强杀且不触发退出处理，因此清理逻辑要在此窗口内完成。强杀或断网后保留绑定，下一次启动先完成待清理任务。不要按标题批量删除普通会话。
 - 首轮一次写清角色、规则、初始状态、后续增量输入和输出 schema，以及重复操作的语义。后续省略 instruction，只发 `{"state_delta":{"last_move":[row,col,color]}}` 这类短增量；WorkSwarm 保留历史，不重发规则、棋盘或历史记录。
-- 超时重试复用同一会话，只重发当前操作增量；即使首轮超时也不重发全量或 reset。首轮明确重复 last_move 是同一次操作重试，不能重复落子；已完成时返回同一结果。更复杂业务使用应用自己的操作标识和幂等校验，不能只依赖模型口头承诺。
+- 单角色超时重试复用同一会话，只重发当前操作增量；即使首轮超时也不重发全量或 reset。首轮明确重复 last_move 是同一次操作重试，不能重复落子；已完成时返回同一结果。团队回合的断连、取消和重试遵循 [Team NPC 接入指南](references/team-npc.md)。业务幂等由应用自己的操作标识和结果校验保证。
 - 应用自行设置有限的端到端等待时间和重试次数，考虑供应商限流退避，避免短时间重复发送、叠加重试。显示等待时长和错误，并允许重开/取消；不要把 keepalive 当作答案。不更改 WorkSwarm 通用重试策略。
 - 默认模型交给 WorkSwarm；不硬编码模型、provider、API 地址、`max_tokens` 或关闭思考参数。难度通过首轮决策要求区分，不承诺仅凭提示词保证低时延。
 - 返回内容必须校验 JSON/schema、范围、合法性及请求序号；每次仅应用一次仍有效结果。存档优先保存结构化状态，不要求模型恢复记忆；无跨局记忆需求时不触发总结调用。
@@ -69,7 +71,7 @@ description: |
 ## 上架流程
 
 1. 按展示质量规范生成应用页面、图标、版本、名称和简介，写入标准 HTML 元信息。
-2. 接入应用自己的 Gateway 客户端，按会话管理规范验证数量上限、复用、重置及退出清理，并完成真实 AI 请求；需要存档时另测保存与恢复。
+2. 接入应用自己的 Gateway 客户端，按会话管理规范验证数量上限、复用、重置及退出清理，并完成真实 AI 请求。团队玩法按 [Team NPC 接入指南](references/team-npc.md#验收) 验证各角色独立发言及回合收口；需要存档时另测保存与恢复。
 3. 在现有对话中展示应用及所需 `ai` 能力；主动选择技能时验证通过后自动发布，自动匹配时提示并等待确认。验证失败不得登记。
 4. 确认后执行本 Skill 的发布脚本（复用 WorkSwarm GatewayClient 调用 `app_market.publish`，不直接改市场数据）：
 

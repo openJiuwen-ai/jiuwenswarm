@@ -453,7 +453,7 @@ description: "<1-3句中文：描述这个 Skill 的用途和适用场景>"
 
 detector 判定需要脚本后，严格按此顺序执行：
 
-1. 读 `agents/code-writer.md`，把脚本写入 `{skill_directory}/../<slug>/scripts/`（若本次运行过 `save_images.py`，以其打印的 `SKILL_DIR` 为准）
+1. 读 `agents/code-writer.md`，把脚本写入 `save_images.py` 打印的 `SKILL_DIR/scripts/`；输出目录属于用户技能库，不是内置总目录的子能力
 2. 读 `agents/code-verifier.md`，逐个验证并记录通过名单；验证失败或依赖无法就绪时，不得中止主流程
 3. 调用 `finalize_scripts.py <slug> --keep <验证通过的相对脚本路径...>`；未列入通过名单的脚本由代码删除。没有脚本通过时只传 `--keep`
 4. 写一次生成的 SKILL.md：有幸存脚本则只引用这些脚本；没有幸存脚本则写纯文本+图片版，不写脚本依赖或调用

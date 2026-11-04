@@ -57,7 +57,7 @@
     "logs": "日志",
     "update": "更新",
     "personalContext": "知识",
-    "appMarket": "应用市场"
+    "appMarket": "应用"
   },
   "appMarket": {
     "pageResources": "页面",
@@ -73,8 +73,7 @@
     "serverResourceHint": "统计后端服务所在机器，不是浏览器所在电脑。本地连接通常指向本机，但代理、端口转发可能指向远程服务器；容器可能返回宿主机指标。每 3 秒更新，CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
     "highResourceUsage": "整机资源占用偏高，建议停止暂时不用的应用或其他任务。",
     "serviceResourceHint": "每 3 秒更新应用市场后端服务进程树的 CPU 和驻留内存估算；CPU 按整机容量计。数据属于服务所在机器，不含浏览器页面、主程序和 AI 会话。— 表示采样中或暂不可用。",
-    "title": "应用市场",
-    "subtitle": "管理本地应用的启动、停止和删除",
+    "title": "应用",
     "allApps": "全部应用",
     "running": "运行中",
     "start": "启动",

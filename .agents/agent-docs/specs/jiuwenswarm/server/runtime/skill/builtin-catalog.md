@@ -37,3 +37,9 @@ Swarm UI 与默认安装只发布总目录；现有 Symphony 直接子目录扫�
 `UserTurn` 在显式指定已迁移且原路径不存在的旧名字时，补充总目录入口，同时保留旧名字表达的能力选择；已有用户同名目录不重定向。新建 Skill/Agent/专家团/插件的前端入口和知识转技能后台任务直接选择总目录。
 
 未确认来源的副本保持原发现语义，内容改变且来源明确为 builtin 的副本作为本地保留项继续独立显示，这是保留用户资产的迁移边界。没有执行真实模型端到端行为验证时，不以提示词包含约束证明模型一定遵循。初次实施证据见 `F_20261103_1149_builtin-skill-catalog`，历史版本与列表修复见 `B_20261103_1636_builtin-catalog-upgrade`。
+
+## 子技能脚本的路径契约
+
+子能力迁入目录后，不得通过固定父目录层数推导用户技能库。`skill-omni-creation` 的保存与收口脚本优先调用 `get_agent_skills_dir()`，独立环境按 `skills` 祖先定位；显式 `--skills-dir` 覆盖默认目录。生成物位于用户技能库的独立 `<slug>/`，后续写脚本以 `SKILL_DIR` 为准，不写入总目录内部。
+
+PPT 同步脚本的目标、manifest key、文件 path 与 hash 校验统一使用 `workswarm-builtin/references/capabilities/ppt-creation`。旧 manifest key 迁往新 key，同名文件去重并修正路径；报告同步成功必须对应实际使用的总目录副本，不额外创建顶层 `ppt-creation` 技能。修复证据见 `B_20261104_1509_catalog-script-paths`。

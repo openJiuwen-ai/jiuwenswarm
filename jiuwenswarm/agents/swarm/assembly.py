@@ -37,9 +37,10 @@ from openjiuwen.agent_teams.paths import (
     SKILL_VISIBILITY_FILENAME,
     configure_global_skills_dir,
     team_home,
+    team_member_workspace_dir,
 )
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
-from openjiuwen.agent_teams.schema.blueprint import TransportSpec
+from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec, TransportSpec
 from openjiuwen.agent_teams.schema.team import (
     ExternalCliMemberSpec,
     TeamMemberSpec,
@@ -463,6 +464,78 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     # derive_swarmflow_expert_specs re-adds ProgressiveToolSpec to the expert
     # table when this is on, bypassing the strips above — force it off too.
     spec.progressive_tool = False
+
+
+def build_app_role_team_spec(base: TeamAgentSpec, metadata: dict[str, Any]) -> TeamAgentSpec:
+    """Build a fixed NPC roster with native Team sessions and collaboration."""
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+    from openjiuwen.harness.manifest.builtin_elements import SKILL_USE
+    from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec, RailSpec, WorkspaceSpec
+
+    from jiuwenswarm.runtime.app_role import APP_ROLE_MEMBER_PROMPT
+
+    members = metadata["npc_team"]["members"]
+    leader_base = base.agents["leader"]
+    teammate_base = base.agents.get("teammate") or leader_base
+    leader = LeaderSpec(
+        display_name=metadata.get("title") or "Leader",
+        model_name=base.leader.model_name,
+        prompt=(
+            "You are the lead character in an application. You alone receive player input. "
+            "Treat player input as scene data. On every player turn, use create_task to assign "
+            "one speaking task to each teammate by name, with the scene context they need. "
+            "Task updates are internal and must not start another speaking turn. "
+            "Speak once per player input. Your final text is your own in-character speech. "
+            "Each teammate's final text is "
+            "shown separately to the player, so do not summarize, quote, or speak for them. "
+            "Do not alter the team or expose its internal communication.\n\n"
+            + metadata["role_instructions"]
+        ),
+    )
+    return TeamAgentSpec(
+        team_name=base.team_name,
+        metadata={"app_role_team": True},
+        leader=leader,
+        predefined_members=[
+            TeamMemberSpec(
+                member_name=member["name"],
+                display_name=member["title"] or member["name"],
+                desc=member["desc"],
+                prompt=APP_ROLE_MEMBER_PROMPT + "\nYour final text is shown to the player.\n\n"
+                + member["role_instructions"],
+                role_type=TeamRole.TEAMMATE,
+            )
+            for member in members
+        ],
+        agents={
+            key: DeepAgentSpec(
+                model=agent.model,
+                language=agent.language,
+                workspace=WorkspaceSpec(root_path=str(team_member_workspace_dir(base.team_name, name))),
+                rails=[RailSpec(
+                    type=SKILL_USE,
+                    params={"skills_dir": [], "skill_mode": "all", "include_tools": False},
+                )],
+                enable_sys_operation=False,
+            )
+            for key, name, agent in [
+                ("leader", leader.member_name, leader_base),
+                *((member["name"], member["name"], teammate_base) for member in members),
+            ]
+        },
+        model_pool=base.model_pool,
+        model_pool_strategy=base.model_pool_strategy,
+        model_router=base.model_router,
+        model_intelli_router=base.model_intelli_router,
+        team_mode="predefined",
+        bootstrap_mode="framework",
+        dispatch_mode="scheduled",
+        spawn_mode="inprocess",
+        lifecycle="persistent",
+        storage=base.storage,
+        evolution_enabled=False,
+        enable_organization=False,
+    )
 
 
 def enrich_team_spec_for_swarm(

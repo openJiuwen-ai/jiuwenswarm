@@ -22,7 +22,7 @@
 
 ### Step 1: 确定脚本目录
 
-- 默认：`{skill_directory}/../<slug>/scripts/`（skills 根目录即本 skill 安装目录的上一级）
+- 默认：先运行 `save_images.py <slug> --keep`，使用其打印的 `SKILL_DIR/scripts/`；不要将生成物写入内置总目录的子能力目录。
 - 若本次运行过 `save_images.py`：以其打印的 `SKILL_DIR` 为准，脚本目录为 `SKILL_DIR/scripts/`
 - 创建目录：`mkdir -p <脚本目录>`
 

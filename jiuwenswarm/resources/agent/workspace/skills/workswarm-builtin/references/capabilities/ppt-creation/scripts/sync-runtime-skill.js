@@ -11,14 +11,16 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 
-const SRC = path.resolve(__dirname, "..");                       // .../skills/ppt-creation (repo copy)
+const SRC = path.resolve(__dirname, "..");
+const SKILL_KEY = "workspace/skills/workswarm-builtin/references/capabilities/ppt-creation";
 const DST = path.resolve(
-  process.env.HOME, ".jiuwenswarm/agent/workspace/skills/ppt-creation" // runtime copy
+  process.env.HOME || os.homedir(), `.jiuwenswarm/agent/${SKILL_KEY}`
 );
 const AGENT_DATA = [
-  path.resolve(SRC, "../../agent-data.json"),                    // repo manifest
-  path.resolve(process.env.HOME, ".jiuwenswarm/agent/workspace/agent-data.json"), // runtime manifest
+  path.resolve(SRC, "../../../../../agent-data.json"),
+  path.resolve(DST, "../../../../../agent-data.json"),
 ];
 
 const EXCLUDE_DIRS = new Set(["node_modules", "output", ".git"]);
@@ -109,8 +111,19 @@ function reconcileManifest(manifestPath) {
   if (!fs.existsSync(manifestPath)) { console.warn(`  (skip, absent) ${manifestPath}`); return; }
   const data = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   let added = 0, removed = 0;
-  const skillKey = "workspace/skills/ppt-creation";
+  let updated = false;
+  const skillKey = SKILL_KEY;
   const prefix = `${skillKey}/`;
+  const legacyKey = "workspace/skills/ppt-creation";
+  for (const key of Object.keys(data)) {
+    if (key !== legacyKey && !key.startsWith(`${legacyKey}/`)) continue;
+    const migratedKey = `${skillKey}${key.slice(legacyKey.length)}`;
+    const entries = Array.isArray(data[key]) ? data[key] : [];
+    const combined = [...entries, ...(data[migratedKey] || [])];
+    data[migratedKey] = Array.from(new Map(combined.map((entry) => [entry?.name, entry])).values());
+    delete data[key];
+    updated = true;
+  }
 
   // Remove directory keys and file entries whose source paths no longer exist.
   for (const key of Object.keys(data)) {
@@ -126,6 +139,13 @@ function reconcileManifest(manifestPath) {
       const exists = entry && entry.name && !isRepoOnly(entry.name) &&
         fs.existsSync(path.join(dirPath, entry.name));
       if (!exists) removed += 1;
+      if (exists) {
+        const expectedPath = `agent/${key}/${entry.name}`;
+        if (entry.path !== expectedPath) {
+          entry.path = expectedPath;
+          updated = true;
+        }
+      }
       return exists;
     });
     data[key] = kept;
@@ -134,9 +154,7 @@ function reconcileManifest(manifestPath) {
   for (const dirRel of MANIFEST_DIRS) {
     const dirPath = path.join(SRC, dirRel);
     if (!fs.existsSync(dirPath)) continue;
-    const key = dirRel
-      ? `workspace/skills/workswarm-builtin/references/capabilities/ppt-creation/${dirRel}`
-      : "workspace/skills/ppt-creation";
+    const key = dirRel ? `${skillKey}/${dirRel}` : skillKey;
     if (!Array.isArray(data[key])) data[key] = [];
     const present = new Set(data[key].map((e) => e.name));
     for (const name of fs.readdirSync(dirPath)) {
@@ -144,16 +162,14 @@ function reconcileManifest(manifestPath) {
       if (!present.has(name)) {
         data[key].push({
           name,
-          path: dirRel
-            ? `agent/workspace/skills/workswarm-builtin/references/capabilities/ppt-creation/${dirRel}/${name}`
-            : `agent/workspace/skills/workswarm-builtin/references/capabilities/ppt-creation/${name}`,
+          path: `agent/${key}/${name}`,
           isMarkdown: name.endsWith(".md"),
         });
         added += 1;
       }
     }
   }
-  if (added || removed) fs.writeFileSync(manifestPath, JSON.stringify(data, null, 2));
+  if (added || removed || updated) fs.writeFileSync(manifestPath, JSON.stringify(data, null, 2));
   console.log(
     `  ${path.basename(path.dirname(manifestPath))}/agent-data.json: +${added}, -${removed} file entr${removed === 1 ? "y" : "ies"}`
   );

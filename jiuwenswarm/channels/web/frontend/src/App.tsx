@@ -17,6 +17,8 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
 
 import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { AppMarketEditorAction } from './components/AppMarketPanel/AppMarketEditorAction';
+import { AppMarketPage } from './components/AppMarketPanel/AppMarketPage';
+import type { AppMarketEditTarget } from './components/AppMarketPanel';
 import { ChatPanel } from './components/ChatPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
@@ -4078,6 +4080,56 @@ function AppContent({
     handleNavigate(nav, peekTarget);
   };
 
+  // 应用市场卡片"编辑"——创建/复用该应用的编辑会话并跳转过去，随后在会话右栏打开应用预览
+  // （app_market.preview 面板 tab）。原先内联在扩展页 ConnectorMarketPanel 的 onEditApp 里，
+  // 应用市场提升为侧边栏一级入口后由 AppMarketPage 继续使用，提取到这里避免随渲染分支重复。
+  const handleEditApp = useCallback(
+    async (target: AppMarketEditTarget, isCurrent: () => boolean) => {
+      if (creatingSessionRef.current) return;
+      let pending = pendingAppEditsRef.current.get(target.appId);
+      if (!pending) {
+        pending = request<{ session: Session; created: boolean }>(
+          'app_market.edit_session', {
+            app_id: target.appId,
+            title: t('appMarket.editSessionTitle', { name: target.name }),
+            ...useSessionStore.getState().getModelSelectionPayload(sessionIdRef.current),
+          }, { timeoutMs: 180_000 }).then(({ session, created }) => {
+            // Initialize only the new session, even if navigation was canceled.
+            // An existing runtime includes drafts the user deliberately cleared.
+            const chatStore = useChatStore.getState();
+            if (created && !chatStore.getRuntime(session.session_id)) {
+              chatStore.ensureRuntime(session.session_id);
+              chatStore.setInputValue(session.session_id,
+                t('appMarket.editPrompt', { name: target.name, entryPath: target.entryPath }));
+            }
+            return session;
+          }).finally(() => pendingAppEditsRef.current.delete(target.appId));
+        pendingAppEditsRef.current.set(target.appId, pending);
+      }
+      const session = await pending;
+      if (!isCurrent()) return;
+      closeSidebarPeek();
+      await handleRestoreSession(session.session_id, session.mode, session, { canActivate: isCurrent });
+      if (sessionIdRef.current !== session.session_id) return;
+      useSessionStore.getState().setAppMarketPreview(session.session_id, {
+        appId: target.appId, name: target.name, instanceId: target.instanceId,
+      });
+      setHeartbeatPanelOpen(false);
+      setToolPanelHidden(false);
+      setSingleAgentPanelActiveTab('app');
+      setSingleAgentPanelExpanded(true);
+    },
+    [
+      t,
+      closeSidebarPeek,
+      handleRestoreSession,
+      setHeartbeatPanelOpen,
+      setSingleAgentPanelActiveTab,
+      setSingleAgentPanelExpanded,
+      setToolPanelHidden,
+    ],
+  );
+
   const pinSecondarySidebar = (target: SecondarySidebar) => {
     if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
     setSecondarySidebarCollapsed(false);
@@ -4867,41 +4919,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
-                onEditApp={async (target, isCurrent) => {
-                  if (creatingSessionRef.current) return;
-                  let pending = pendingAppEditsRef.current.get(target.appId);
-                  if (!pending) {
-                    pending = request<{ session: Session; created: boolean }>(
-                      'app_market.edit_session', {
-                        app_id: target.appId,
-                        title: t('appMarket.editSessionTitle', { name: target.name }),
-                        ...useSessionStore.getState().getModelSelectionPayload(sessionIdRef.current),
-                      }, { timeoutMs: 180_000 }).then(({ session, created }) => {
-                        // Initialize only the new session, even if navigation was canceled.
-                        // An existing runtime includes drafts the user deliberately cleared.
-                        const chatStore = useChatStore.getState();
-                        if (created && !chatStore.getRuntime(session.session_id)) {
-                          chatStore.ensureRuntime(session.session_id);
-                          chatStore.setInputValue(session.session_id,
-                            t('appMarket.editPrompt', { name: target.name, entryPath: target.entryPath }));
-                        }
-                        return session;
-                      }).finally(() => pendingAppEditsRef.current.delete(target.appId));
-                    pendingAppEditsRef.current.set(target.appId, pending);
-                  }
-                  const session = await pending;
-                  if (!isCurrent()) return;
-                  closeSidebarPeek();
-                  await handleRestoreSession(session.session_id, session.mode, session, { canActivate: isCurrent });
-                  if (sessionIdRef.current !== session.session_id) return;
-                  useSessionStore.getState().setAppMarketPreview(session.session_id, {
-                    appId: target.appId, name: target.name, instanceId: target.instanceId,
-                  });
-                  setHeartbeatPanelOpen(false);
-                  setToolPanelHidden(false);
-                  setSingleAgentPanelActiveTab('app');
-                  setSingleAgentPanelExpanded(true);
-                }}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'workswarm-builtin',
@@ -4929,6 +4946,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   )
                 }
               />
+            </div>
+          </div>
+        )}
+        {activeNav === 'appMarket' && (
+          <div className="app-page-body">
+            <div className="page-content">
+              <AppMarketPage onEditApp={handleEditApp} />
             </div>
           </div>
         )}

@@ -4752,7 +4752,32 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path):
+async def test_npc_team_stream_only_exposes_final_speech_and_turn_status(monkeypatch):
+    events = (
+        {"event_type": "chat.delta", "content": "partial"},
+        {"event_type": "chat.reasoning", "content": "private reasoning"},
+        {"event_type": "team.message", "content": "internal coordination"},
+        {"event_type": "chat.final", "member_name": "analyst", "content": "My own answer"},
+        {"event_type": "chat.processing_status", "is_processing": False},
+    )
+
+    async def stream(*_args):
+        for event in events:
+            yield SimpleNamespace(payload=event, request_id="", channel_id="")
+
+    monkeypatch.setattr(team_helpers, "_process_team_message_stream_locked", stream)
+    request = SimpleNamespace(
+        session_id="sess-npc-stream",
+        params={},
+        trusted_runtime_binding={"app_role_team": True},
+    )
+    chunks = [chunk.payload async for chunk in team_helpers.process_team_message_stream(request, {}, None)]
+    assert chunks == list(events[-2:])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("npc_team", [False, True])
+async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path, npc_team):
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
 
@@ -4861,7 +4886,12 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     await _TeamHelpersTestApi.consume_stream_with_query(
         "web",
         "sess-leader-only",
-        SimpleNamespace(team_name="demo-team"),
+        SimpleNamespace(
+            team_name="demo-team",
+            metadata={"app_role_team": npc_team},
+            leader=SimpleNamespace(member_name="team_leader", display_name="Chief"),
+            predefined_members=[SimpleNamespace(member_name="analyst", display_name="Analyst")],
+        ),
         "hello",
     )
 
@@ -4879,11 +4909,18 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     assert [event["event_type"] for event in broadcasted] == [
         "chat.processing_status",
         "team.runtime_ready",
-        'chat.final',
-        'chat.final',
-        'chat.final',
+        *(["chat.final"] * (2 if npc_team else 3)),
         "chat.processing_status",
     ]
+    if npc_team:
+        assert [
+            (event["member_name"], event["display_name"], event["content"])
+            for event in broadcasted if event["event_type"] == "chat.final"
+        ] == [
+            ("team_leader", "Chief", "leader answer"),
+            ("analyst", "Analyst", "teammate answer"),
+        ]
+        assert broadcasted[-1]["npc_missing_members"] == []
     # Round-start processing_status
     assert broadcasted[0]["is_processing"] is True
     assert broadcasted[0]["is_complete"] is False
@@ -4895,7 +4932,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
             event.get("event_type") == "chat.processing_status"
             and event.get("is_processing") is False
         )
-        for event in broadcasted[2:5]
+        for event in broadcasted[2:-1]
     )
 
 

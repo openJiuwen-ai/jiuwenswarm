@@ -27,6 +27,7 @@ await i18next
   .use(initReactI18next)
   .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: resources } } });
 const { AppMarketPanel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/index.mjs');
+const { AppMarketPage } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketPage.mjs');
 const { webClient } = await import('../node_modules/.cache/app-market-panel/services/webClient.mjs');
 const { AppMarketSessionPreview, AppMarketPreviewReload } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketSessionPreview.mjs');
 const { useSessionStore } = await import('../node_modules/.cache/app-market-panel/stores/sessionStore.mjs');
@@ -116,6 +117,29 @@ async function mount(handler, props = {}) {
 }
 
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
+
+// 应用市场已是侧边栏一级入口（AppMarketPage）：页头 + 市场面板的独立页面，
+// 不再经由扩展页 tab 承载（MarketplacePage 的 'app' tab 已移除）。
+test('app market page renders a standalone page header above the market panel', async () => {
+  const previous = webClient.request;
+  const previousInterval = globalThis.setInterval;
+  globalThis.setInterval = () => 987654;
+  webClient.request = async (method) => response(method);
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(AppMarketPage)));
+    const title = find('app-market-page-title');
+    assert.ok(title, 'page title is rendered');
+    assert.equal(title.textContent, i18next.t('appMarket.title'));
+    assert.ok(find('app-market-panel'), 'market panel is embedded below the header');
+    await tick();
+    assert.ok(card('gomoku'), 'app cards render inside the standalone page');
+  } finally {
+    await act(async () => root.unmount());
+    webClient.request = previous;
+    globalThis.setInterval = previousInterval;
+  }
+});
 
 for (const action of ['stop', 'delete']) {
   test(`${action} closes only the selected desktop application when two apps are running`, async () => {
@@ -849,10 +873,16 @@ import { transform } from 'esbuild';
 
 // Exercise the actual App handoff with a mounted market so unmount invalidates
 // the same intent callback used by production navigation.
-const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-const editStart = appSource.indexOf('onEditApp={') + 'onEditApp={'.length;
-const editEnd = appSource.indexOf('\n                onCreateViaChat', editStart);
-const editCode = appSource.slice(editStart, editEnd).trim().slice(0, -1);
+// The handler now lives in App.tsx as the handleEditApp useCallback (shared by the
+// standalone app-market page); slice the async arrow out of the useCallback and
+// compile it standalone — the identifiers it closes over are exactly the deps below.
+// Normalize CRLF first so the slice anchors work on Windows checkouts too.
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const editStart = appSource.indexOf('async (target: AppMarketEditTarget, isCurrent: () => boolean) => {');
+const editEnd = appSource.indexOf('\n    },\n    [', editStart);
+// editEnd sits right before the arrow's closing "}" (which precedes the ",\n    [" of
+// the deps list), so stop there and append the brace back.
+const editCode = appSource.slice(editStart, editEnd) + '}';
 const compiledEdit = (await transform(`export default ${editCode}`, { loader: 'tsx', format: 'cjs' })).code;
 function editHandler(dependencies) {
   return new Function(...Object.keys(dependencies), `const module = { exports: {} }; ${compiledEdit}; return module.exports.default;`)(...Object.values(dependencies));

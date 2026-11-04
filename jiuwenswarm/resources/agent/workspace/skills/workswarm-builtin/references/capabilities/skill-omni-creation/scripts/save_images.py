@@ -36,9 +36,10 @@ def main() -> None:
         default=None,
         help="Cross-platform path list; use --keep with no values for an empty selection.",
     )
-    _default_skills_dir = Path(__file__).resolve().parent.parent.parent
-    parser.add_argument("--skills-dir", default=str(_default_skills_dir))
+    parser.add_argument("--skills-dir", default=None)
     args = parser.parse_args()
+    if args.skills_dir is None:
+        args.skills_dir = str(common.default_skills_dir())
 
     if args.keep is not None:
         keep_paths: list[str] = args.keep

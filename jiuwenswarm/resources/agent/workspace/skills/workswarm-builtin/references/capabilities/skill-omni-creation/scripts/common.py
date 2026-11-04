@@ -34,6 +34,20 @@ FILTER_WORKERS = 3
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 WORK_ROOT = SCRIPT_DIR / "work"
+
+
+def default_skills_dir() -> pathlib.Path:
+    """Resolve the host library, including when run from a nested catalog."""
+    try:
+        from jiuwenswarm.common.utils import get_agent_skills_dir
+    except ImportError:
+        for parent in SCRIPT_DIR.parents:
+            if parent.name == "skills":
+                return parent
+        raise RuntimeError("Cannot locate the skill library; install workswarm or use --skills-dir")
+    return get_agent_skills_dir()
+
+
 OPERATION_TIMEOUT_SECONDS = 600
 # Web-page stalls must surface well inside the agent's 300s tool budget so the
 # fallback path (web_fetch_webpage) is taken instead of retrying the same scrape.
