@@ -321,6 +321,10 @@ class ExecutionDriver:
                 if self._permission_approvals is not None
                 else None
             )
+            if approval is not None and handle.reason is not None:
+                return "cancelled" if handle.reason == "cancel" else "stopped"
+            if approval is not None and approval.execution_id != execution.recovery_ref:
+                raise PersistentAgentError("permission pause is not the continuation predecessor", code="CONFLICT")
             event_stream = (
                 core.resume_persistent_request(spec, context, approval.reply)
                 if approval is not None and approval.reply is not None

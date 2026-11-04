@@ -596,8 +596,8 @@ class AgentManager:
         if (native is not None and any(call.get("approval_ref") for call in native.intercepted)
                 or await asyncio.to_thread(self.sharing_repository.for_native, approval_id) is not None):
             raise PersistentAgentError("Cross-group sharing requires the owner's dedicated approval.", code="FORBIDDEN")
-        approval = await asyncio.to_thread(
-            self._permission_approvals.decide,
+        approval, newly_decided = await asyncio.to_thread(
+            self._permission_approvals.decide_once,
             approval_id,
             decision=decision,
             principal_ref=access.principal_ref,
@@ -608,7 +608,8 @@ class AgentManager:
             approver_agent_id=approver_agent_id,
             now=self._clock(),
         )
-        self._schedule_permission_resume(approval)
+        if newly_decided:
+            self._schedule_permission_resume(approval)
         return await self.request_view(approval.namespace_id, approval.request_id)
 
     def _require_sharing_owner(self, namespace_id: str, config_id: str, access: AccessSnapshot) -> None:
@@ -934,9 +935,12 @@ class AgentManager:
                     await self._scheduler.wake(approval.namespace_id, approval.session_id)
                     return
                 try:
-                    self._scheduler.resume(state)
+                    self._scheduler.resume(state, expected_execution_id=approval.execution_id)
                 except PersistentAgentError as exc:
                     if exc.code == "CONTINUATION_NOT_READY":
+                        latest = await asyncio.to_thread(self._permission_approvals.get, approval.approval_id)
+                        if latest is None or latest.status == "consumed":
+                            return
                         await asyncio.sleep(0.05)
                         continue
                     raise

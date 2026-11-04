@@ -37,6 +37,8 @@ def approval_instructions(approval: PermissionApproval) -> str:
 
 
 def _decision_feedback(approval: PermissionApproval, *, duplicate: bool = False) -> str:
+    if approval.decision is None and (duplicate or approval.status != "pending"):
+        return "原操作已结束或审批已失效。"
     responses = (approval.reply or {}).get("responses", ())
     if approval.status == "expired" or any(
         (item.get("feedback") or "").startswith("Permission approval expired") for item in responses

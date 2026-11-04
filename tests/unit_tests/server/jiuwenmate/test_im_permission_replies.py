@@ -3,7 +3,7 @@
 from dataclasses import replace
 import asyncio
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -318,3 +318,34 @@ async def test_dingtalk_group_approval_preserves_group_delivery_and_bypasses_rep
     assert len(_group_requests(host)) == 1 and len(resumed) == 1
     assert notices[-1]["is_direct_message"] is False
     assert notices[-1]["chat_id"] == "conversation-test"
+
+
+async def test_cancel_accepted_during_preflight_wins_over_saved_im_approval(host, monkeypatch):
+    approval, _, resumed = await pause(host, monkeypatch)
+    attached = asyncio.Event()
+    proceed = asyncio.Event()
+    original_attach = execution_driver.ExecutionHandle._attach
+
+    async def attach(handle, context):
+        await original_attach(handle, context)
+        attached.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(execution_driver.ExecutionHandle, "_attach", attach)
+    monkeypatch.setattr(host.manager._scheduler._driver, "_abort", AsyncMock())
+    await host.inbound.handle(replace(_event(), message_id="decision-1", text="批准"))
+    await asyncio.wait_for(attached.wait(), timeout=5)
+    try:
+        await host.manager.scheduler.abort("local", approval.request_id, "cancel")
+    finally:
+        proceed.set()
+    await settle(lambda: _requests(host)[0].outcome == "cancelled")
+    assert not resumed
+    schedule = Mock()
+    monkeypatch.setattr(host.manager, "_schedule_permission_resume", schedule)
+    await host.manager.decide_permission_approval(
+        approval.approval_id, decision="approve", access=_requests(host)[0].record.access,
+        channel=approval.route.channel, target_id=approval.route.target_id, app_id=approval.route.app_id,
+        tool_call_id="call-1",
+    )
+    schedule.assert_not_called()

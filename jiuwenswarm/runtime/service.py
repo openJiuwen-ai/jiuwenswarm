@@ -41,6 +41,9 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
+from agent_gateway.common.interrupt_resume import is_client_tool_resume
+from jiuwenswarm.runtime.client_tools import client_tool_answers
+from jiuwenswarm.runtime.interaction import asked_interaction_ids, interaction_ids
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
     RuntimeSessionState,
@@ -915,7 +918,7 @@ class AgentRuntime:
                 on_control_event=None,
                 agent_execution=None,
             ),
-            suspension_key=self._waiting_control_id,
+            interaction_ids=asked_interaction_ids,
         )
 
     def get_session_execution(
@@ -1517,7 +1520,7 @@ class AgentRuntime:
                         on_control_event=on_control_event,
                         agent_execution=_agent_execution,
                     ),
-                    suspension_key=self._waiting_control_id,
+                    interaction_ids=asked_interaction_ids,
                     team=team_details,
                 )
             return await self._invoke_started(
@@ -1819,9 +1822,9 @@ class AgentRuntime:
             await self._ensure_session_registered(request)
             stream = self._session_coordinator.deliver_control_stream(
                 request.session_id or "default",
-                self._control_request_id(request),
+                self._control_ids(request),
                 lambda: self._stream_control_started(request),
-                suspension_key=self._waiting_control_id,
+                interaction_ids=interaction_ids,
             )
         else:
             stream = self.stream(
@@ -2047,7 +2050,7 @@ class AgentRuntime:
                     request.request_id,
                     lambda owner_channel: self._stream_session_input_started(request, owner_channel),
                     idle_input,
-                    suspension_key=self._waiting_control_id,
+                    interaction_ids=interaction_ids,
                     expected_execution_id=request.params.get("expected_execution_id"),
                 )
             else:
@@ -2100,7 +2103,7 @@ class AgentRuntime:
                         work_kind,
                         team_operation,
                         details=details,
-                        suspension_key=self._waiting_control_id,
+                        interaction_ids=interaction_ids,
                         channel_id=request.channel_id or "default",
                     )
                 else:
@@ -2119,7 +2122,7 @@ class AgentRuntime:
                         request.request_id,
                         work_kind,
                         operation,
-                        suspension_key=self._waiting_control_id,
+                        interaction_ids=interaction_ids,
                         channel_id=request.channel_id or "default",
                     )
         else:
@@ -2323,7 +2326,7 @@ class AgentRuntime:
                             and not self._session_coordinator.record_interaction(
                                 request.session_id or "default",
                                 request.request_id,
-                                control_id,
+                                frozenset({control_id}),
                             )
                         ):
                             # No live Heartbeat execution owns this question, so
@@ -2335,7 +2338,7 @@ class AgentRuntime:
                                 "control_id=%s",
                                 request.session_id or "default",
                                 request.request_id,
-                                control_id,
+                                frozenset({control_id}),
                             )
                             continue
                     else:
@@ -2509,9 +2512,9 @@ class AgentRuntime:
         try:
             stream = self._session_coordinator.deliver_control_stream(
                 session_id,
-                request_id,
+                self._control_ids(request),
                 lambda: self._stream_control_started(request),
-                suspension_key=self._waiting_control_id,
+                interaction_ids=interaction_ids,
             )
             async with aclosing(stream):
                 async for event in stream:
@@ -2550,11 +2553,11 @@ class AgentRuntime:
         try:
             events = await self._session_coordinator.deliver_control(
                 session_id,
-                request_id,
+                self._control_ids(request),
                 lambda: self._deliver_control_started(
                     request, on_control_event=on_control_event,
                 ),
-                suspension_key=self._waiting_control_id,
+                interaction_ids=asked_interaction_ids,
             )
             if not heartbeat_control:
                 for event in events:
@@ -3417,9 +3420,8 @@ class AgentRuntime:
             await coordinator.cancel_execution(
                 session_id, execution_id=execution.execution_id
             )
-            await self._clear_pending_interaction(
-                session_id, execution.waiting_control_id
-            )
+            for control_id in execution.waiting_control_ids:
+                await self._clear_pending_interaction(session_id, control_id)
 
     def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
         """Admit a stale answer, but let a live turn inject without waiting.
@@ -3766,6 +3768,13 @@ class AgentRuntime:
             session_id=session_id,
             channel_id=request.channel_id or "default",
         )
+
+    @staticmethod
+    def _control_ids(request: AgentRequest) -> tuple[str, ...]:
+        params = request.params if isinstance(request.params, dict) else {}
+        if is_client_tool_resume(params):
+            return tuple(answer.request_id for answer in client_tool_answers(params.get("answers") or ()))
+        return (str(params.get("request_id") or request.request_id or ""),)
 
     @staticmethod
     def _control_request_id(request: AgentRequest) -> str:

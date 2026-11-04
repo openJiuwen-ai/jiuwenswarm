@@ -150,6 +150,11 @@ class PermissionApprovalRepository(SQLiteStore):
         record = state.record
         payload = event.payload
         intercepted = tuple(item.model_dump(mode="json") for item in payload.intercepted)
+        call_ids = [item["tool_call_id"] for item in intercepted]
+        if (any(getattr(event, key) != getattr(record, key)
+                for key in ("namespace_id", "agent_id", "session_id", "request_id", "source_ref"))
+                or len(call_ids) != len(set(call_ids)) or not all(call_ids)):
+            raise PersistentAgentError("confirmation pause identity mismatch", code="CONFLICT")
         if not intercepted or payload.reason != "awaiting_confirmation":
             raise PersistentAgentError("execution is not awaiting permission confirmation")
         route = record.route_snapshot
@@ -175,15 +180,16 @@ class PermissionApprovalRepository(SQLiteStore):
             ).fetchone()
             if existing is not None:
                 return self._approval(existing)
-            if recovered and not any(
-                row["event_id"] == event.event_id
+            host_log = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='requests'").fetchone()
+            if (recovered or host_log) and not any(
+                row["event_id"] == event.event_id and json.loads(row["event_json"]) == event.model_dump(mode="json")
                 for row in self._unregistered_pauses(conn, record.namespace_id, record.session_id)
             ):
                 raise PersistentAgentError("confirmation pause is no longer current", code="CONFLICT")
             # A previous one-time decision has now been applied; a new pause replaces it.
             conn.execute(
                 "UPDATE permission_approvals SET status = 'consumed' WHERE namespace_id = ? AND request_id = ?"
-                " AND status IN ('approved', 'rejected', 'expired')",
+                " AND status IN ('pending', 'approved', 'rejected', 'expired')",
                 (record.namespace_id, record.request_id),
             )
             conn.execute(
@@ -400,7 +406,45 @@ class PermissionApprovalRepository(SQLiteStore):
             ).fetchone()
         return self._approval(updated)
 
-    def decide(
+    @staticmethod
+    def _require_current_pause(conn: sqlite3.Connection, approval: PermissionApproval) -> None:
+        """Check the host request, predecessor and exact paused batch in the decision transaction."""
+        tables = {row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('request_controls','requests')"
+        )}
+        identity = (approval.namespace_id, approval.request_id)
+        if "request_controls" in tables and conn.execute(
+            "SELECT 1 FROM request_controls WHERE namespace_id=? AND request_id=? AND status='accepted'",
+            identity,
+        ).fetchone():
+            raise PersistentAgentError("request already stopped or cancelled", code="CONFLICT")
+        if "requests" not in tables:
+            return  # Standalone approval store without a host execution log.
+        current = conn.execute(
+            "SELECT event.event_json FROM requests r "
+            "JOIN executions e ON e.namespace_id=r.namespace_id AND e.request_id=r.request_id "
+            "JOIN execution_events event ON event.namespace_id=e.namespace_id "
+            "AND event.execution_id=e.execution_id AND event.request_id=r.request_id "
+            "WHERE r.namespace_id=? AND r.request_id=? AND r.session_id=? AND r.agent_id=? "
+            "AND (r.status='dispatched' OR (r.status='ended' AND r.outcome='paused')) "
+            "AND e.execution_id=? AND e.rowid=(SELECT latest.rowid FROM executions latest "
+            "WHERE latest.namespace_id=r.namespace_id AND latest.request_id=r.request_id "
+            "ORDER BY latest.started_at DESC,latest.rowid DESC LIMIT 1) "
+            "ORDER BY event.local_seq DESC LIMIT 1",
+            (*identity, approval.session_id, approval.agent_id, approval.execution_id),
+        ).fetchone()
+        tail = json.loads(current["event_json"]) if current else {}
+        if (tail.get("event_type") != "execution.paused"
+                or tail.get("payload", {}).get("reason") != "awaiting_confirmation"
+                or tail["payload"].get("intercepted") != list(approval.intercepted)):
+            raise PersistentAgentError("permission pause is no longer current", code="CONFLICT")
+
+    def decide(self, approval_id: str, **kwargs: Any) -> PermissionApproval:
+        """Return the durable result, including for an identical authenticated replay."""
+        approval, _ = self.decide_once(approval_id, **kwargs)
+        return approval
+
+    def decide_once(
         self,
         approval_id: str,
         *,
@@ -412,7 +456,7 @@ class PermissionApprovalRepository(SQLiteStore):
         tool_call_id: str | None,
         now: datetime,
         approver_agent_id: str | None = None,
-    ) -> PermissionApproval:
+    ) -> tuple[PermissionApproval, bool]:
         """Apply one authenticated response only on the stored channel, target, and initiator."""
         if decision not in ("approve", "reject"):
             raise PersistentAgentError("invalid permission decision")
@@ -423,8 +467,6 @@ class PermissionApprovalRepository(SQLiteStore):
             if row is None:
                 raise PersistentAgentError("permission approval not found", code="NOT_FOUND")
             approval = self._approval(row)
-            if approval.status != "pending":
-                raise PersistentAgentError("permission approval is no longer pending", code="CONFLICT")
             if approval.principal_ref != principal_ref or approval.route is None:
                 raise PersistentAgentError("permission approval belongs to another initiator", code="FORBIDDEN")
             if approval.approver_agent_id != (approver_agent_id or approval.agent_id):
@@ -435,12 +477,21 @@ class PermissionApprovalRepository(SQLiteStore):
                 or approval.route.app_id != app_id
             ):
                 raise PersistentAgentError("permission approval belongs to another channel or conversation", code="FORBIDDEN")
+            if approval.status != "pending":
+                approved_call = next(
+                    (item["tool_call_id"] for item in (approval.reply or {}).get("responses", ())
+                     if item["choice"] == "approve"), None,
+                )
+                if decision == approval.decision and approved_call == tool_call_id:
+                    return approval, False
+                raise PersistentAgentError("permission approval is no longer pending", code="CONFLICT")
             if decision == "approve" and tool_call_id not in {
                 item["tool_call_id"] for item in approval.intercepted
             }:
                 raise PersistentAgentError("approval must name one intercepted tool call")
             if decision == "reject" and tool_call_id is not None:
                 raise PersistentAgentError("rejection cannot name a tool call")
+            self._require_current_pause(conn, approval)
             expired = now >= approval.expires_at
             effective = "reject" if expired else decision
             status = "expired" if expired else "approved" if effective == "approve" else "rejected"
@@ -459,7 +510,7 @@ class PermissionApprovalRepository(SQLiteStore):
             updated = conn.execute(
                 "SELECT * FROM permission_approvals WHERE approval_id = ?", (approval_id,)
             ).fetchone()
-        return self._approval(updated)
+        return self._approval(updated), True
 
     def expire_pending(self, *, now: datetime) -> list[PermissionApproval]:
         """Turn every overdue approval into a durable rejection response."""
@@ -498,6 +549,8 @@ class PermissionApprovalRepository(SQLiteStore):
             if row is None:
                 raise PersistentAgentError("permission approval not found", code="NOT_FOUND")
             approval = self._approval(row)
+            if approval.status != "consumed":
+                self._require_current_pause(conn, approval)
             if approval.status != "pending":
                 return approval
             calls = {item["tool_call_id"]: item for item in approval.intercepted}

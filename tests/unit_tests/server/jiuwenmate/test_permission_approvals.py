@@ -143,6 +143,11 @@ def test_decision_is_one_time_and_contains_only_the_intercepted_tool_calls(tmp_p
         now=NOW,
     )
 
+    duplicate = repository.decide(
+        approval.approval_id, decision="approve", principal_ref="user-1", channel="web",
+        target_id="conversation-1", app_id=None, tool_call_id="call-1", now=NOW,
+    )
+    assert duplicate == decided
     assert decided.status == "approved"
     assert [item["tool_call_id"] for item in decided.reply["responses"]] == ["call-1", "call-2"]
     assert [item["choice"] for item in decided.reply["responses"]] == ["approve", "reject"]
