@@ -735,6 +735,13 @@ class ConchRuntime(RuntimeAdapter):
         if not request.command:
             raise ValueError("command must not be empty")
         command = await self._prepare_command(sandbox_id, list(request.command))
+        removals = [key for key, value in (request.env or {}).items() if value is None]
+        if removals:
+            prefix = ["env"]
+            for key in removals:
+                prefix.extend(["-u", key])
+            command = prefix + command
+        execution_env = {key: value for key, value in (request.env or {}).items() if value is not None}
         cmd = command[0]
         args = list(command[1:])
         stdin = request.stdin_data
@@ -746,7 +753,7 @@ class ConchRuntime(RuntimeAdapter):
                     cmd=cmd,
                     args=args,
                     cwd=request.workdir,
-                    env=request.env,
+                    env=execution_env or None,
                     stdin=stdin,
                     timeout=request.timeout,
                     background=False,
@@ -785,6 +792,13 @@ class ConchRuntime(RuntimeAdapter):
             )
         original_command = list(request.command)
         command = await self._prepare_command(sandbox_id, original_command)
+        removals = [key for key, value in (request.env or {}).items() if value is None]
+        if removals:
+            prefix = ["env"]
+            for key in removals:
+                prefix.extend(["-u", key])
+            command = prefix + command
+        execution_env = {key: value for key, value in (request.env or {}).items() if value is not None}
         cmd = command[0]
         args = list(command[1:])
         sdk = _import_conch()
@@ -794,7 +808,7 @@ class ConchRuntime(RuntimeAdapter):
                 cmd=cmd,
                 args=args,
                 cwd=request.workdir,
-                env=request.env,
+                env=execution_env or None,
                 stdin=request.stdin_data,
                 background=True,
                 tag=request.job_id,
