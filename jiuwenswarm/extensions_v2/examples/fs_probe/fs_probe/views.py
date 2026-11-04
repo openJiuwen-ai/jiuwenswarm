@@ -39,7 +39,7 @@ def panel_tree(
             {
                 "value": "Waiting for the next chat round to scan the workspace.",
                 "size": "sm",
-                "variant": "secondary",
+                "type": "secondary",
             },
         )
     else:
@@ -85,16 +85,16 @@ def _header(snapshot: ProbeSnapshot) -> RenderNode:
         {
             "value": f"工作路径：{_display_path(snapshot.cwd)}",
             "size": "sm",
-            "monospace": True,
-            "max_lines": 1,
+            "code": True,
+            "ellipsis": True,
         },
     )
     buttons = RenderNode(
         "Box",
         {"direction": "row", "gap": "sm", "wrap": True},
         children=(
-            _button("Rescan", ACTION_RESCAN, "secondary"),
-            _button("Write marker", ACTION_WRITE, "primary"),
+            _button("Rescan", ACTION_RESCAN, False),
+            _button("Write marker", ACTION_WRITE, True),
         ),
     )
     return RenderNode(
@@ -104,10 +104,15 @@ def _header(snapshot: ProbeSnapshot) -> RenderNode:
     )
 
 
-def _button(label: str, action_id: str, variant: str) -> RenderNode:
+def _button(label: str, action_id: str, primary: bool) -> RenderNode:
     return RenderNode(
         "Button",
-        {"label": label, "variant": variant, "size": "sm"},
+        {
+            "value": label,
+            "type": "primary" if primary else "default",
+            "variant": "solid" if primary else "filled",
+            "size": "sm",
+        },
         events={"ui.click": {"id": action_id, "args": {}}},
     )
 
@@ -120,12 +125,12 @@ def _status_line(snapshot: ProbeSnapshot) -> RenderNode:
     )
     value = " · ".join(f"{label} {status.value}" for label, status in checks)
     if all(status is FsStatus.OK for _, status in checks):
-        tone = "success"
+        text_type = "success"
     elif any(status is FsStatus.ERROR for _, status in checks):
-        tone = "danger"
+        text_type = "danger"
     else:
-        tone = "warning"
-    return RenderNode("Text", {"value": f"接口状态：{value}", "size": "sm", "tone": tone, "max_lines": 1})
+        text_type = "warning"
+    return RenderNode("Text", {"value": f"接口状态：{value}", "size": "sm", "type": text_type, "ellipsis": True})
 
 
 def _meta_line(snapshot: ProbeSnapshot) -> RenderNode:
@@ -135,7 +140,7 @@ def _meta_line(snapshot: ProbeSnapshot) -> RenderNode:
     parts.append(f"updated {snapshot.refreshed_at}")
     value = " · ".join(parts)
     return RenderNode(
-        "Text", {"value": f"目录信息：{value}", "size": "sm", "variant": "secondary", "max_lines": 1}
+        "Text", {"value": f"目录信息：{value}", "size": "sm", "type": "secondary", "ellipsis": True}
     )
 
 
@@ -259,9 +264,9 @@ def _footer_line(snapshot: ProbeSnapshot) -> RenderNode:
         {
             "value": value,
             "size": "sm",
-            "variant": "secondary",
-            "monospace": True,
-            "max_lines": 1,
+            "type": "secondary",
+            "code": True,
+            "ellipsis": True,
         },
     )
 
@@ -308,8 +313,8 @@ def _write_line(snapshot: ProbeSnapshot) -> RenderNode | None:
             {
                 "value": f"marker written · {_relative(write.path, snapshot.cwd)}",
                 "size": "sm",
-                "tone": "success",
-                "max_lines": 1,
+                "type": "success",
+                "ellipsis": True,
             },
         )
     message = write.error.message if write.error is not None else write.status.value
@@ -318,8 +323,8 @@ def _write_line(snapshot: ProbeSnapshot) -> RenderNode | None:
         {
             "value": f"marker failed · {message}",
             "size": "sm",
-            "tone": "danger",
-            "max_lines": 1,
+            "type": "danger",
+            "ellipsis": True,
         },
     )
 

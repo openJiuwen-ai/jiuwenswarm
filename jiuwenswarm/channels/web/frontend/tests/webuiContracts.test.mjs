@@ -25,8 +25,8 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Empty', 'FilePreview', 'FileTree', 'Iframe', 'Image', 'Input',
-    'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect', 'Form', 'Form.Item', 'Dropdown',
+    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
+    'Iframe', 'Image', 'Input', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {
     id: 'application.entry',
@@ -49,17 +49,33 @@ test('catalog rejects unsupported events', () => {
     /unsupported event/);
 });
 
-test('Button and Dropdown accept every whitelist icon and alias, and reject unsupported names', () => {
+test('Icon and icon-bearing components accept every whitelist icon and alias, and reject unsupported names', () => {
   const names = [...Object.keys(iconWhitelist.icons), ...Object.keys(iconWhitelist.aliases)];
+  assert.deepEqual(componentCatalog.getComponent('Icon').props.name.values, names);
+  for (const icon of names) assert.equal(checkProps('Icon', { name: icon }).error, undefined, icon);
+  for (const icon of ['not-an-icon', 'Camera', 'constructor', '__proto__', '', null]) {
+    assert.equal(typeof checkProps('Icon', { name: icon }).error, 'string', String(icon));
+  }
   for (const component of ['Button', 'Dropdown']) {
     assert.deepEqual(componentCatalog.getComponent(component).props.icon.values, names);
-    const props = component === 'Button' ? { label: 'Action', iconOnly: true }
+    const props = component === 'Button' ? { 'aria-label': 'Action' }
       : { items: [{ key: 'action', label: 'Action' }], ariaLabel: 'Actions' };
     for (const icon of names) assert.equal(checkProps(component, { ...props, icon }).error, undefined, icon);
     for (const icon of ['not-an-icon', 'Camera', 'constructor', '__proto__', '', null]) {
       assert.equal(typeof checkProps(component, { ...props, icon }).error, 'string', String(icon));
     }
   }
+});
+
+test('Icon keeps its leaf contract and rejects blank accessible labels', () => {
+  const rule = componentCatalog.getComponent('Icon');
+  assert.equal(rule.allowChildren, false);
+  assert.equal(rule.events, undefined);
+  assert.deepEqual(rule.defaults, undefined);
+  assert.equal(checkProps('Icon', { name: 'search', 'aria-label': 'Search' }).error, undefined);
+  assert.equal(checkProps('Icon', { name: 'search', 'aria-label': '  ' }).error, 'icon label must be non-empty');
+  assert.equal(checkProps('Icon', { name: 'search', 'aria-label': '' }).error, 'icon label must be non-empty');
+  assert.equal(typeof checkProps('Icon', {}).error, 'string');
 });
 
 test('Box keeps source layout defaults and supports column direction', () => {
@@ -140,7 +156,8 @@ test('component event sets retain the source restrictions', () => {
 test('size aliases normalize consistently and compact components reject large sizes', () => {
   const cases = [
     ['Text', {}], ['Button', {}], ['Input', {}], ['Select', { options: [] }],
-    ['TreeSelect', { treeData: [] }], ['Tabs', { items: [] }], ['Divider', {}], ['Avatar', { url: '/logo.svg' }],
+    ['TreeSelect', { treeData: [] }], ['Tabs', { items: [] }], ['Divider', {}], ['Avatar', { src: '/logo.svg' }],
+    ['Icon', { name: 'search' }],
   ];
   for (const [name, props] of cases) {
     for (const [alias, canonical] of [['sm', 'small'], ['md', 'medium'], ['lg', 'large']]) {
@@ -153,6 +170,6 @@ test('size aliases normalize consistently and compact components reject large si
     assert.equal(checkProps(name, { size: 'md' }).value.size, 'medium');
     for (const size of ['lg', 'large']) assert.ok(checkProps(name, { size }).error);
   }
-  assert.equal(checkProps('Avatar', { url: '/logo.svg', size: 'default' }).value.size, 'medium');
-  assert.equal(checkProps('Avatar', { url: '/logo.svg', size: 48 }).value.size, 48);
+  assert.equal(checkProps('Avatar', { src: '/logo.svg', size: 'default' }).value.size, 'medium');
+  assert.equal(checkProps('Avatar', { src: '/logo.svg', size: 48 }).value.size, 48);
 });

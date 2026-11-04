@@ -144,16 +144,17 @@ def _turn_tree(update: ContextUsageUpdate) -> RenderNode:
     children = [
         RenderNode(
             "Text",
-            {"value": format_tokens(update.total_tokens), "size": "sm", "variant": "secondary"},
+            {"value": format_tokens(update.total_tokens), "size": "sm", "type": "secondary"},
         ),
     ]
     rate = cache_rate(update.cache_tokens, update.input_tokens)
     cache = format_rate(rate)
     if cache is not None:
+        cache_type = _cache_type(rate)
         children.append(
             RenderNode(
                 "Text",
-                {"value": f"缓存 {cache}", "size": "sm", "tone": _cache_tone(rate)},
+                {"value": f"缓存 {cache}", "size": "sm", **({"type": cache_type} if cache_type else {})},
             )
         )
     return RenderNode(
@@ -170,7 +171,7 @@ def _summary_tree(state: SessionUsage) -> RenderNode:
         parts.append(f"缓存 {rate}")
     left = RenderNode(
         "Text",
-        {"value": " · ".join(parts), "size": "sm", "variant": "secondary"},
+        {"value": " · ".join(parts), "size": "sm", "type": "secondary"},
     )
 
     right_parts: list[str] = []
@@ -180,12 +181,13 @@ def _summary_tree(state: SessionUsage) -> RenderNode:
     if state.context_window_tokens:
         right_parts.append(f"窗口 {format_tokens(state.context_window_tokens)}")
     right_value = " · ".join(right_parts)
+    percent_type = _percent_type(state.usage_percent) if state.usage_percent is not None else None
     right = RenderNode(
         "Text",
         {
             "value": right_value,
             "size": "sm",
-            "tone": _percent_tone(state.usage_percent) if state.usage_percent is not None else "neutral",
+            **({"type": percent_type} if percent_type else {}),
         },
     )
     children = [left]
@@ -198,19 +200,19 @@ def _summary_tree(state: SessionUsage) -> RenderNode:
     )
 
 
-def _cache_tone(rate: float | None) -> str:
+def _cache_type(rate: float | None) -> str | None:
     if rate is None:
-        return "neutral"
+        return "secondary"
     if rate >= 0.8:
         return "success"
     if rate >= 0.5:
-        return "info"
-    return "neutral"
+        return None
+    return "secondary"
 
 
-def _percent_tone(percent: float) -> str:
+def _percent_type(percent: float) -> str | None:
     if percent >= 90:
         return "danger"
     if percent >= 70:
         return "warning"
-    return "info"
+    return None

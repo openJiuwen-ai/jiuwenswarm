@@ -125,11 +125,11 @@ async def test_zip_registration_login_logout_and_multiple_persistent_accounts(tm
             assert "request_context" not in params
             record = next(item for item in runtime.registry.snapshot() if item.target.slot_id == "application.sidebar.footer")
             footer = {"root": node_to_payload(record.root)}
-            avatar = footer["root"]["children"][0]["props"]["url"]
+            avatar = footer["root"]["children"][0]["props"]["src"]
             assert footer["root"]["props"]["items"] == [
                 {"key": "account", "disabled": True, "label": [
                     {"component": "Box", "props": {"direction": "row", "align": "center", "gap": "sm"},
-                     "children": [{"component": "Avatar", "props": {"url": avatar, "alt": "当前用户", "size": 20}},
+                     "children": [{"component": "Avatar", "props": {"src": avatar, "alt": "当前用户", "size": 20}},
                                   {"component": "Text", "props": {"value": username}}]},
                 ]},
                 {"type": "divider"}, {"key": "logout", "label": "退出登录"},

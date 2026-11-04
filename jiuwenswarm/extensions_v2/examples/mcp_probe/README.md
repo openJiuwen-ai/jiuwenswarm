@@ -22,3 +22,8 @@ Install by copying this directory to
 `~/.jiuwenswarm/extension_pkgs/example.mcp-probe/1.0.0` and restarting the
 AgentServer. The `python` on the AgentServer `PATH` must provide the `mcp`
 package.
+
+Component props follow [S_17](../../docs/specs/S_17_webui-component-props.md): Button uses value and type / variant;
+Text uses type / strong / code / ellipsis. Single-line truncation uses ellipsis; multiline truncation has been removed.
+The result length limit remains in place. Copy updated sources into the installed package before restarting;
+editing this repository does not update an existing installation.

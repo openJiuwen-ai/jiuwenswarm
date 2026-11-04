@@ -1,25 +1,37 @@
 # WebUI 插件交互
 
+完整组件属性统一维护在 [S_17 Props 权威规约](../docs/specs/S_17_webui-component-props.md)，覆盖全部字段、默认值、嵌套结构、事件和受影响功能。
+插件声明、后端校验与前端渲染都遵循该文件；变更先更新规范，再同步三端和调用方。本文保留使用示例，不另行定义属性全集。
+
+Button 和 Text 的文案字段统一为字符串 `value`，不接受 `props.children`；适配器将 `value` 渲染为 React 子内容。节点级 `children` 仅用于允许嵌套的容器组件。
+
 插件通过 `ops.ui.render` 发布树，并用节点上的 `events` 绑定业务动作。例如：
 
 ```python
 RenderNode(
     "Button",
-    {"label": "刷新"},
+    {"value": "刷新"},
     events={"ui.click": {"id": "refresh", "args": {"section": "summary"}}},
 )
 ```
 
 这只声明视图与动作，组件是否能显示取决于宿主是否已接入对应渲染器。
-插件端校验支持 20 种目录组件（含 `Avatar`、`FileTree`、`FilePreview` 与 `Dropdown`）。
-组件列表和字段规则见 [组件规约](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
+插件端校验支持 21 种目录组件（含 `Avatar`、`FileTree`、`FilePreview`、`Dropdown` 与 `Icon`）。
+组件字段见上述权威规约；运行和交互约束见 [组件规约](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
 
-无边框的文字按钮使用 `variant="ghost"`，浏览器映射为 Ant Design `type="text"`，
-hover 背景由宿主主题统一提供。Button 与 Dropdown 共用约 100 个 Lucide 图标及兼容别名 `refresh`，
+无边框的文字按钮使用 `type="text"`，hover 背景由宿主主题统一提供。Button、Dropdown 与 Icon 共用约 100 个 Lucide 图标及兼容别名 `refresh`，
 完整名称见前端唯一维护入口：[icons/whitelist.json](../../channels/web/frontend/src/features/webui/icons/whitelist.json)；
-需要纯图标入口时设置 `iconOnly=True`，并保留非空 label 作为可访问名称与悬停提示。
-例如 `{"label": "刷新", "variant": "ghost", "icon": "refresh", "iconOnly": True}`。
+需要纯图标按钮时省略 `value` 并设置 `icon`，同时保留非空 `aria-label` 作为可访问名称与悬停提示。
+例如 `{"type": "text", "icon": "refresh", "aria-label": "刷新"}`。
 聊天头部按插件声明渲染按钮，其他动作不会自动显示为刷新。
+
+独立展示图标使用 `Icon`，`name` 只接受白名单名称，可选 `size` 与可访问名：
+
+```python
+RenderNode("Icon", {"name": "search", "size": "large", "aria-label": "搜索"})
+```
+
+省略 `aria-label` 时按装饰图标处理，不进入可访问树；`size` 使用 small/medium/large（兼容 sm/md/lg）。
 
 维护图标时只编辑仓库路径 `jiuwenswarm/channels/web/frontend/src/features/webui/icons/whitelist.json`。
 `icons` 将插件使用的 kebab-case 名称映射到 Lucide React 导出名，`aliases` 将旧名称映射到 `icons` 中的名称。
@@ -103,8 +115,8 @@ RenderNode(
 value 优先于 defaultValue；合法 replace 重新初始化选择。禁用或断连时不可操作。
 
 组件 size 统一推荐 small/medium/large，兼容 sm/md/lg；Switch/Card 只有 small/medium，
-Avatar 额外兼容 default 和像素数值。Text.max_lines 只接受正整数，不限行时省略该属性（不再传 0）。
-Text 的 primary/danger/ghost 分别使用主题主色、错误色和弱化文本色，显式 tone 优先；Button.secondary 使用填充外观。
+Avatar 使用 `src` 指定图片地址，额外兼容 default 和像素数值；Icon 同样使用 small/medium/large。
+Text 样式对齐 Ant Design `Typography.Text`（`type`、`strong`、`italic`、`underline`、`delete`、`code`、`mark`、`keyboard`、`disabled`、`ellipsis`）；Button 样式对齐 Ant Design `Button`（`type`、`color`、`variant`、`shape`、`size`、`danger`、`ghost`、`disabled`、`block`、`loading`、`href`、`target`、`icon`、`iconPlacement`、`aria-label`）：`color` 含 13 个预设色，`loading` 支持布尔或 `{delay}`，`href` 走 HTTP(S)/相对地址校验，`target` 需与 `href` 同时声明。纯图标按钮要求非空 `aria-label`。
 Dropdown 必须选择 icon 或非空 children 作为触发区，不能同时提供；图标入口仍要求非空 ariaLabel。
 application.menu.main 接受普通 Box/Card 组件树，页面无需 Iframe；Panel/Iframe 的专用根限制保持原样。
 

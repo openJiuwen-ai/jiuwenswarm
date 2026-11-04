@@ -249,8 +249,10 @@ class WorkbenchHandlers:
         if request.event_type == "ui.select":
             data = request.payload.get("data")
             if (request.payload.get("action_id") != USER_SELECT_ACTION
-                    or not isinstance(data, Mapping) or data.get("key") != "logout"):
+                    or not isinstance(data, Mapping) or data.get("key") not in ("profile", "logout")):
                 return UiActionOutput(accepted=False, status="invalid")
+            if data["key"] == "profile":
+                return UiActionOutput(accepted=True, status="selected")
             self._signed_in[connection] = False
             return await self._render_user_menu(ops, target, False)
         if request.event_type == "ui.click" and request.payload.get("action_id") == USER_LOGIN_ACTION:

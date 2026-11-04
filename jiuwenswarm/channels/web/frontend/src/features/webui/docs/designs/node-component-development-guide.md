@@ -1,6 +1,6 @@
 # WebUI 渲染节点组件开发模板
 
-本文面向给 WebUI 渲染协议新增节点组件的开发者。组件规则、适配器与测试入口以当前实现为准；示例中的 `Meter` 只用于演示新增流程，不是现有组件。本文只覆盖"新增一个渲染节点组件"；新增事件类型、槽位和 Ops 不在本文范围，分别见[内置事件开发模板](../../../../../../../../extensions_v2/docs/designs/builtin-event-development-guide.md)与[F_07 界面项与交互](../../../../../../../../extensions_v2/docs/features/F_07_ui-contributions.md)。本文与扩展 V2 的《内置事件开发模板》同级，放在前端子系统的 `docs/designs/` 下。最近修订：2026-11-02。
+本文面向给 WebUI 渲染协议新增节点组件的开发者。组件契约以 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) 为准；规则、适配器与测试负责实现和验证。示例中的 `Meter` 只用于演示新增流程，不是现有组件。本文只覆盖"新增一个渲染节点组件"；新增事件类型、槽位和 Ops 不在本文范围，分别见[内置事件开发模板](../../../../../../../../extensions_v2/docs/designs/builtin-event-development-guide.md)与[F_07 界面项与交互](../../../../../../../../extensions_v2/docs/features/F_07_ui-contributions.md)。本文与扩展 V2 的《内置事件开发模板》同级，放在前端子系统的 `docs/designs/` 下。最近修订：2026-11-04。
 
 ## 1. 先看整体流程
 
@@ -20,7 +20,7 @@ flowchart LR
 
 要点：
 
-- 后端是权威校验方：`COMPONENT_RULES` 未登记的组件在下行前被拒，未知 props 同样拒绝。
+- S_17 定义三端共享契约，后端负责最终执行校验：`COMPONENT_RULES` 未登记的组件在下行前被拒，未知 props 同样拒绝。
 - 前端 `catalog` 是同一份契约的镜像：protocol 用它校验整帧，渲染层用它和注册表做精确一致性检查。
 - 渲染层不解释业务：适配器只把已校验的节点转成 React 元素，并把交互按节点声明上报。
 
@@ -30,7 +30,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 前端组件规则 | `catalog/components/<name>.ts` 与 `catalog/componentCatalog.ts` | 前端协议校验、默认值准备与跨字段检查 | 整帧被拒（未知组件/非法 props）；目录组装直接抛错 |
 | 前端适配器 | `renderer/adapters/webuiXxx/WebUIXxx.tsx` 与 `renderer/adapters/componentRegistry.ts` | 把规范化节点渲染成 React 元素 | `assertCatalogMatchesRegistry` 在挂载前抛错，实例降级为失败态 |
-| 后端权威规则 | `extensions_v2/webui/component_rules.py` 的 `COMPONENT_RULES` | 组件是否存在、props 与事件数据是否合法 | 插件 `ops.ui.render` 失败，前端看不到该组件 |
+| 后端校验规则 | `extensions_v2/webui/component_rules.py` 的 `COMPONENT_RULES` | 按 S_17 校验组件是否存在、props 与事件数据是否合法 | 插件 `ops.ui.render` 失败，前端看不到该组件 |
 | 共享用例 | `tests/fixtures/webuiComponentCases.json`、`tests/fixtures/webuiEventCases.json` | 前后端同一份正反用例 | 只验证一侧，规则容易漂移 |
 | 文档 | `S_01`、`F_01`、扩展 V2 的 `webui/README.md` | 契约、行为与插件用法 | 文档与实现不一致 |
 
@@ -71,7 +71,7 @@ jiuwenswarm/channels/web/frontend/
 └── scripts/build-webui-components.mjs      # 组件测试的 esbuild 入口
 
 jiuwenswarm/extensions_v2/webui/
-├── component_rules.py                  # 后端权威规则表与事件数据校验
+├── component_rules.py                  # 后端规则表与事件数据校验
 └── schema.py                           # 节点/事件遍历校验
 ```
 
@@ -84,7 +84,7 @@ jiuwenswarm/extensions_v2/webui/
 
 ## 3. 新增一个组件的完整步骤
 
-推荐顺序：先定前后端规则，再写适配器，最后补测试和文档。
+维护顺序：先在 S_17 登记组件完整 props、默认值、children、事件和功能影响，再同步前后端规则、适配器、插件、测试和使用文档。
 
 ### 3.1 定义组件规则
 
@@ -219,7 +219,7 @@ export function createComponentRendererRegistry() {
 
 `assertCatalogMatchesRegistry` 要求目录与注册表精确对应：缺失适配器或多余适配器都会在子树挂载前抛错，`WebUIProvider` 与真实组装入口共用该校验。运行时不做全局注册。
 
-### 3.5 后端同步权威规则
+### 3.5 后端同步校验规则
 
 在 `extensions_v2/webui/component_rules.py` 的 `COMPONENT_RULES` 中登记同一个组件：
 
@@ -238,7 +238,7 @@ export function createComponentRendererRegistry() {
 
 - 后端规则词汇覆盖前端 `WebUIPropRule` 的主要 kind（`token`/`string`/`boolean`/`number`/`null`/`array`/`object`/`record`/`union`/`nodes`/`lazy`），另有树选项、文件节点等组合规则；前端独有的 `string-list`/`record-list` 在后端用 `array`/`record` 组合表达。默认值由前端目录负责，后端不复制。
 - `schema.py` 的节点遍历会拒绝未登记组件与未知 props；`validate_props` 负责类型、必填和跨字段约束；`validate_event_data` 负责事件数据语义。
-- 后端是权威：前端放过而后端拒绝时，整帧失败，插件侧收到 `webui.render.error`；两侧都要写用例。
+- 后端负责最终拒绝：前端放过而后端拒绝时，整帧失败，插件侧收到 `webui.render.error`；两端都须符合 S_17 并写用例。
 - 若组件要作为槽位根组件（类似 Panel/Iframe 的整页组件），还要同步 `catalog/slots.ts` 的 `rootComponents`、`schema.py` 的根节点限制以及 F_07/F_08 的槽位文档。
 
 ### 3.6 补测试与共享用例
@@ -248,11 +248,12 @@ export function createComponentRendererRegistry() {
 - `tests/webuiContracts.test.mjs`：目录组件清单是硬编码数组，新增组件要加入。
 - `tests/webuiComponents.test.mjs`：注册表适配器断言清单是硬编码数组，新增组件要加入。
 - `tests/webuiComponentsReact.test.mjs`：用 JSDOM 渲染真实适配器并断言交互，新增组件补一段。
-- 后端 `tests/unit_tests/extensions_v2/webui/test_webui_events.py`：包含组件数量与清单断言（当前 `len(COMPONENT_RULES) == 20`），新增时同步更新并补专项用例。
+- 后端 `tests/unit_tests/extensions_v2/webui/test_webui_events.py`：包含组件数量与清单断言（当前 `len(COMPONENT_RULES) == 21`），新增时同步更新并补专项用例。
 - 如需在组件测试里导出额外符号，更新 `tests/fixtures/webuiComponents.ts`（esbuild 入口）。
 
 ### 3.7 更新文档
 
+- `extensions_v2/docs/specs/S_17_webui-component-props.md`：唯一属性规范；先登记字段、默认值、嵌套结构、事件及影响功能，再实施变更。
 - `docs/specs/S_01_components.md`：组件清单、必要时新增不变量（C-NN）、限制与验证入口。
 - `docs/features/F_01_antd-components.md`：组件范围与数量、模块职责、渲染与外观行为、验证入口。
 - `extensions_v2/webui/README.md`：插件可用的组件列表与写法（组件对插件开放时）。

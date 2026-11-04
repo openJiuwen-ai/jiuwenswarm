@@ -19,3 +19,8 @@ Demonstrates `ops.fs.*` from a WebUI extension package.
 Install by copying this directory to
 `~/.jiuwenswarm/extension_pkgs/example.fs-probe/1.0.0` and restarting the
 AgentServer.
+
+Component props follow [S_17](../../docs/specs/S_17_webui-component-props.md): Button uses value and type / variant;
+Text uses type / strong / code / ellipsis. Single-line truncation uses ellipsis; multiline truncation has been removed.
+The preview byte limit remains in place. Copy updated sources into the installed package before restarting;
+editing this repository does not update an existing installation.
