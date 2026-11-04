@@ -77,12 +77,13 @@ token 不自动过期。退出登录撤销当前 token，成功后按顺序下�
 
 2026-11-04 本轮范围回归：
 
-- `.venv/bin/python -m pytest tests/unit_tests/gateway/extensions_v2/ -o addopts='' -o log_cli=false --asyncio-mode=auto -q`：110 项通过。
-  其中 30 组组件契约向量由前端和 Gateway 共同消费，另验证全部白名单图标。
-  使用仓库锁定 Core 86990bd16a 的源码隔离运行同一套用例，110 项也全部通过；未修改 uv.lock。
+- `.venv/bin/python -m pytest tests/unit_tests/gateway/extensions_v2/ -o addopts='' -o log_cli=false --asyncio-mode=auto -q`：精简后 108 项通过。
+  其中 28 组组件契约向量由前端和 Gateway 共同消费；Gateway 的 Dropdown 只支持展示子节点触发器，另验证 icon 属性被拒绝。
+  精简前使用仓库锁定 Core 86990bd16a 的源码隔离运行过 110 项用例并全部通过；精简后未重复该隔离验证，uv.lock 保持原有本地修改。
 - 示例 10 项测试覆盖实际 ZIP 安装、账号持久化、注册即登录、退出重登录、伪造或过时动作、HTTP header、资源路径边界、
   缺失授权、重载隔离及中英文表单与菜单。打包只包含明确列出的源码、说明与素材，不包含数据库、日志或缓存。
-- 前端 418 项 Node 测试、Chrome 157.0.8103.38 协议浏览器测试与 Vite 生产构建通过，详细入口见前端 F_02。
+- 精简后重新执行前端 contracts 119 项与 components 115 项，全部通过；图标及别名的正向用例留在前端验证。
+  精简前已完成前端 418 项 Node 测试、Chrome 157.0.8103.38 协议浏览器测试与 Vite 生产构建，详细入口见前端 F_02；本次未重复浏览器测试与构建。
 - 隔离网络联调使用临时安装目录和真实示例 ZIP，由临时 HTTP/WebSocket 适配器承载 GatewayRuntime、浏览器桥接及 HTTP 中间件。
   真实 Chrome 验证匿名业务请求拒绝、注册直接登录、错误密码、两个账号切换、旧账号重登录、HTTP 凭据绑定和刷新恢复，页面脚本错误为零。
   测试账号只写入临时目录；该适配器不包含生产 WebChannel 原生业务分发或完整 AgentServer。
@@ -94,8 +95,10 @@ token 不自动过期。退出登录撤销当前 token，成功后按顺序下�
 
 ## English verification summary
 
-The current regression run passed 110 Gateway tests, including 10 installed-example cases and 30 component vectors
-shared with the browser. Frontend tests (418), Chrome 157 protocol testing and the Vite build passed. An isolated real
+After removing Gateway Dropdown icon triggers, the regression passed 108 Gateway tests, including 10 installed-example
+cases and 28 component vectors shared with the browser. Frontend contract tests (119) and component tests (115) passed;
+existing frontend and AgentServer icon support is unchanged. Before this reduction, frontend tests (418), Chrome 157
+protocol testing and the Vite build passed; browser testing and the build were not repeated for this reduction. An isolated real
 HTTP/WebSocket adapter hosted GatewayRuntime and the actual ZIP; Chrome verified registration, sign-in/out, invalid
 passwords, account switching, HTTP bindings and refresh restoration without page errors. This does not establish
 production WebChannel/AgentServer behavior, model inference, real identity-service acceptance or account data isolation.

@@ -31,6 +31,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - `webui.dispatch` 在 USER 请求策略继续之后，只分派本 Gateway 包声明的 entry/footer；其他目标继续原有路径。
 - ready 按声明贡献分派；交互事件必须匹配当前连接、包、槽位、实例、revision、node_key、action_id 和 args。
 - 本地 UI 子集为 Box、Text、Button、Input、Form、Form.Item、Dropdown、Avatar、Card、Image。
+  Gateway Dropdown 仅支持一个展示子节点作为触发器，不开放 icon 属性；登录示例使用 Avatar。
   渲染复用正式 GatewayWebUIRuntime 的组件规则和预算，交互从同一 ActiveRenderRegistry 读取树并校验。
 - localStorage 命令与前端 ClientOperation 一致，归属取当前 Ops 的包和连接，不接受调用者指定其他浏览器。
   没有执行回执、查询、重试或 token 有效期语义。
@@ -61,3 +62,4 @@ by the BUILTIN browser dispatcher. Anonymous interaction policy belongs to plugi
 login fields or action identifiers. Other targets retain the existing request chain and authentication behavior.
 HTTP forward results continue to the native route even when handled is false. Explicit plugin denial and consumption
 remain effective. Generic regression tests do not depend on an example package.
+Gateway Dropdown accepts one display child as its trigger; icon triggers remain outside this Gateway integration.

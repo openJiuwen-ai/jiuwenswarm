@@ -214,7 +214,7 @@ sequenceDiagram
 
 ## 2026-11-04 契约对齐验证
 
-Box 数值 gap、Dropdown 图标触发源与可访问标签、重复表单字段及本地输入事件约束与前端统一。
-图标白名单由同一 JSON 分别生成到 AgentServer 和 Gateway 模块，不跨宿主导入。
-前端与 Gateway 共同执行 30 组契约向量；Gateway extensions_v2 当前 110 项测试通过，包含 10 项登录示例安装测试。
+Box 数值 gap、Dropdown 展示触发器、重复表单字段及本地输入事件约束与前端统一。
+Gateway 不开放 Dropdown.icon，不生成图标白名单；前端与 AgentServer 原有图标能力保持不变。
+前端与 Gateway 共同执行 28 组契约向量；Gateway 另验证 icon 属性被拒绝。精简后 Gateway extensions_v2 的 108 项测试通过，包含 10 项登录示例安装测试。
 认证门禁实现未修改；异常处理回归测试补充有效 header，避免把门禁拒绝与异常处理混为一项断言。

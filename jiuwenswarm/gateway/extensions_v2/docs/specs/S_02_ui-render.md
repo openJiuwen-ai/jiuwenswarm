@@ -93,11 +93,11 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 表单组件契约：`Form` 必须有唯一 `name` 和非空子节点，子节点只能是 `Form.Item`；`Form.Item` 的 `name` 在同一表单内唯一且不能是 `__proto__`、`constructor` 或 `prototype`，必须只有一个不声明远程事件的 `Input` 子节点，可带 `rules`（`required` / `min` / `max` / `pattern` / `message`）；`Button.form` 必须引用同一棵树中的 `Form.name`。点击时前端按 `Form.name` 组装 `ui.click.data`。AgentServer 副本暂不引入这三条规则，两份 `component_rules.py` 在表单契约上有意分歧。
 
-Gateway 的组件规则与浏览器组件目录对齐；运行时与 AgentServer 分别持有实例。通用模型保持对应，浏览器能力的激活归属及版本生命周期由 [S_06](S_06_local-browser-bridge.md) 维护，不跨宿主 import。
+Gateway 的组件规则采用浏览器组件目录的子集；运行时与 AgentServer 分别持有实例。通用模型保持对应，浏览器能力的激活归属及版本生命周期由 [S_06](S_06_local-browser-bridge.md) 维护，不跨宿主 import。
 
-`Box.gap` 接受 none/sm/md/lg 或非负有限数值（px）。Dropdown 只允许一个触发源：白名单图标与非空 ariaLabel，或一个展示子节点；不接受旧 label 属性。图标白名单从前端 JSON 生成到两个宿主各自的模块。表单、菜单和布局的共享验证向量位于前端 tests/fixtures/webuiGatewayCases.json。
+`Box.gap` 接受 none/sm/md/lg 或非负有限数值（px）。Gateway 的 Dropdown 必须有且只有一个展示子节点作为触发器，不接受 icon 或旧 label 属性；前端与 AgentServer 原有的图标能力保持不变。表单、菜单和布局的共享验证向量位于前端 tests/fixtures/webuiGatewayCases.json。
 
-Form.Item is the canonical field-node name. Field names are unique within a form, reserved prototype names and remote input events are rejected, and forms require fields. Box accepts numeric non-negative finite gaps. Dropdown accepts exactly one icon or display trigger source; icon triggers require an accessible label. Shared vectors verify browser and Gateway acceptance.
+Form.Item is the canonical field-node name. Field names are unique within a form, reserved prototype names and remote input events are rejected, and forms require fields. Box accepts numeric non-negative finite gaps. Gateway Dropdown requires exactly one display child as its trigger and rejects the icon property. Existing browser and AgentServer icon support is unchanged. Shared vectors verify the common browser and Gateway subset.
 
 ## 7. 错误码
 

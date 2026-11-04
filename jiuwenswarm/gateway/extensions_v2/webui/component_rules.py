@@ -17,7 +17,6 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
-from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
 def token(*values: str) -> dict[str, Any]:
@@ -169,7 +168,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "required": ("name",), "children": True, "childComponents": ("Input",)},
     "Dropdown": {"props": {
         "trigger": token("click", "hover"), "disabled": BOOL,
-        "icon": token(*WEBUI_ICON_NAMES), "ariaLabel": TEXT,
+        "ariaLabel": TEXT,
         "placement": token("bottomLeft", "bottom", "bottomRight", "topLeft", "top", "topRight",
                            "left", "leftTop", "leftBottom", "right", "rightTop", "rightBottom"),
         "align": obj({"points": array(token("tl", "tc", "tr", "cl", "cc", "cr", "bl", "bc", "br")),
@@ -393,8 +392,6 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     if component == "Button" and "form" in props and not props["form"].strip():
         return "form reference is required"
     if component == "Dropdown":
-        if props.get("icon") and not props.get("ariaLabel", "").strip():
-            return "icon dropdowns require a non-empty ariaLabel"
         items = props["items"]
         keys = [item["key"] for item in items if "key" in item]
         if not items or not _unique(keys) or any(not key.strip() for key in keys) or any(
