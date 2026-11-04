@@ -11336,8 +11336,15 @@ class JiuWenSwarmDeepAdapter:
     ) -> SymphonyOrchestrationRail | None:
         """Build dynamic Symphony orchestration prompt guidance."""
         try:
+            from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import SkillPackRouter
+
             return SymphonyOrchestrationRail(
                 config_base=lambda: self._config_base_cache,
+                skillpack_router=SkillPackRouter(
+                    manager=lambda: self._skill_manager,
+                    toolkit=lambda: self._get_or_create_skill_retrieval_toolkit(),
+                    model=lambda: self._model,
+                ),
             )
         except Exception as exc:
             logger.warning(
@@ -16948,6 +16955,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id,
                 answers,
                 request.params,
+                session_id=session_id,
             )
             resolved = bool(response_payload.get("resolved"))
         elif request_id.startswith("team_skill_evolve_"):
@@ -16989,6 +16997,8 @@ class JiuWenSwarmDeepAdapter:
         request_id: str,
         answers: list[Any],
         params: Any,
+        *,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Resolve a Symphony candidate without accepting a client path."""
 
@@ -17035,6 +17045,7 @@ class JiuWenSwarmDeepAdapter:
             package_id=(str(params.get("package_id") or "").strip() or None),
             integrity=(str(params.get("integrity") or "").strip() or None),
             skill_manager=self._skill_manager,
+            session_id=session_id,
         )
         if receipt.get("installed") and receipt.get("newly_installed"):
             refresh_warnings: list[str] = []

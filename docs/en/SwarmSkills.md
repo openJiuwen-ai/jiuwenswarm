@@ -918,7 +918,7 @@ A: Yes. SKILL.md, roles/, workflow\.md, bind.md, and dependencies.yaml are all r
 
 **Q: What is the default Team Skills Hub URL?**
 
-A: The default URL is `https://teamskills.openjiuwen.com`, which can be overridden via the `TEAM_SKILLS_HUB_BASE_URL` environment variable.
+A: The default URL is `https://swarmskills.openjiuwen.com`, which can be overridden via the `TEAM_SKILLS_HUB_BASE_URL` environment variable.
 
 ***
 
