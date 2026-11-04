@@ -1,5 +1,5 @@
 import type { ModelEntry, ModelSelection } from '../../types';
-import { resolveEffectiveModel } from '../../stores/sessionStore';
+import { getModelDisplayName } from '../../features/settings/modules/models/modelPresentation';
 
 /**
  * 反查稳定选择对应条目的展示名。
@@ -23,26 +23,37 @@ export interface CronModelFormValue {
 }
 
 /**
- * 新建/模板创建抽屉打开时的默认模型预填。
- *
- * 复用会话侧同一套解析（alias 优先、失配兜底到首个可选模型），并把
- * model_id 一并写入稳定的 modelSelection；免费模型等无 model_id 的条目
- * 只预填 modelName。编辑已有任务或用户已选模型时返回 null，不覆盖现值。
+ * 抽屉「未选模型」时提示行的判定结果（仅展示用，不写 form、不进提交值）。
+ * 展示条件（表单未选模型且清单已加载）由调用方 CronTaskDrawer 控制。
  */
-export function resolveCronDefaultModel(
-  mode: 'create' | 'edit' | 'template',
-  current: CronModelFormValue,
+export type CronDefaultHint =
+  | { kind: 'named'; modelName: string }
+  | { kind: 'generic' }
+  | { kind: 'empty' };
+
+/**
+ * 解析「未选模型」提示行内容。
+ *
+ * 严格命中（alias 或 model_name 精确匹配 defaultModelName）才展示具体模型，
+ * 展示名复用 picker 的 getModelDisplayName（alias 优先），保证提示与菜单里
+ * 用户看到的条目能对上——重名目录（多条目同 model_name）只有 alias 能区分
+ * 默认命中的是哪一条。不做「首个可选模型」兜底——默认未配置/失配时把目录
+ * 第一个模型说成默认，既误导展示，也与触发时后端实际解析的结果无关。
+ * 命中失败或未配置默认显示通用文案；目录未加载出任何条目时返回警示态
+ * （任务触发时可能失败）。
+ */
+export function resolveCronDefaultHint(
   chatAvailableModels: ModelEntry[],
   defaultModelName: string | null,
-): CronModelFormValue | null {
-  if (mode === 'edit') return null;
-  if (current.modelName || current.modelSelection) return null;
-  const resolved = resolveEffectiveModel(chatAvailableModels, null, defaultModelName);
-  if (!resolved) return null;
-  return {
-    modelName: resolved.model_name,
-    modelSelection: resolved.model_id ? { type: 'model', id: resolved.model_id } : null,
-  };
+): CronDefaultHint {
+  if (chatAvailableModels.length === 0) return { kind: 'empty' };
+  if (defaultModelName) {
+    const matched = chatAvailableModels.find(
+      (model) => model.alias === defaultModelName || model.model_name === defaultModelName,
+    );
+    if (matched) return { kind: 'named', modelName: getModelDisplayName(matched) };
+  }
+  return { kind: 'generic' };
 }
 
 /**

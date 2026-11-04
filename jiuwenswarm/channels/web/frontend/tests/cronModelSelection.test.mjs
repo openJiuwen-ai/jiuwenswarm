@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   cronModelPayloadFields,
   modelNameForSelection,
-  resolveCronDefaultModel,
+  resolveCronDefaultHint,
 } from '../node_modules/.cache/cron-model-selection/cronModelSelection.mjs';
 
 // 复刻真实故障场景：目录里两条 model_name 相同（不同 api_key）的配置。
@@ -13,7 +13,7 @@ import {
 const duplicateNamedModels = [
   { model_id: 'mdl-first', model_name: 'deepseek-flash', api_base: 'https://a', api_key: 'k1', model_provider: 'OpenAI' },
   { model_id: 'mdl-second', model_name: 'deepseek-flash', api_base: 'https://b', api_key: 'k2', model_provider: 'OpenAI' },
-  { model_id: 'mdl-glm', model_name: 'GLM-5.3', api_base: 'https://c', api_key: 'k3', model_provider: 'OpenAI' },
+  { model_id: 'mdl-glm', model_name: 'GLM-5.3', alias: 'GLM 稳定版', api_base: 'https://c', api_key: 'k3', model_provider: 'OpenAI' },
 ];
 
 test('modelNameForSelection: 按 model_id 命中重名目录中的选中条目', () => {
@@ -48,51 +48,27 @@ test('cronModelPayloadFields: 未选模型时不携带任何模型字段', () =>
   assert.deepEqual(cronModelPayloadFields({ modelName: null, modelSelection: null }), {});
 });
 
-const emptyModelForm = { modelName: null, modelSelection: null };
-
-test('resolveCronDefaultModel: 新建/模板模式预填默认模型，并带上稳定 model_id', () => {
-  for (const mode of ['create', 'template']) {
-    assert.deepEqual(
-      resolveCronDefaultModel(mode, emptyModelForm, duplicateNamedModels, 'GLM-5.3'),
-      {
-        modelName: 'GLM-5.3',
-        modelSelection: { type: 'model', id: 'mdl-glm' },
-      },
-    );
-  }
+test('resolveCronDefaultHint: 默认模型名严格命中（alias 或 model_name）时展示具体模型', () => {
+  // 展示名与 picker 同源（getModelDisplayName）：alias 优先，用户才能把提示
+  // 对应到菜单条目——重名目录只有 alias 能区分默认命中的是哪一条
+  assert.deepEqual(resolveCronDefaultHint(duplicateNamedModels, 'GLM-5.3'), {
+    kind: 'named',
+    modelName: 'GLM 稳定版',
+  });
+  // 命中条目没有 alias 时回退 model_name（登录免费模型等）
+  assert.deepEqual(resolveCronDefaultHint(duplicateNamedModels, 'deepseek-flash'), {
+    kind: 'named',
+    modelName: 'deepseek-flash',
+  });
 });
 
-test('resolveCronDefaultModel: 默认模型名失配时回退首个可选模型', () => {
-  assert.deepEqual(
-    resolveCronDefaultModel('create', emptyModelForm, duplicateNamedModels, 'renamed-model'),
-    {
-      modelName: 'deepseek-flash',
-      modelSelection: { type: 'model', id: 'mdl-first' },
-    },
-  );
+test('resolveCronDefaultHint: 失配/未配置默认时不兜底首个模型，返回通用文案', () => {
+  // 社区检视 P3：不得把目录第一个模型当默认展示（会被误读且与触发时解析无关）
+  assert.deepEqual(resolveCronDefaultHint(duplicateNamedModels, 'renamed-model'), { kind: 'generic' });
+  assert.deepEqual(resolveCronDefaultHint(duplicateNamedModels, null), { kind: 'generic' });
 });
 
-test('resolveCronDefaultModel: 无 model_id 的免费模型只预填 modelName', () => {
-  const freeModels = [
-    { model_name: 'free-model', api_base: 'https://free', api_key: '', model_provider: 'OpenAI' },
-  ];
-  assert.deepEqual(
-    resolveCronDefaultModel('create', emptyModelForm, freeModels, 'free-model'),
-    { modelName: 'free-model', modelSelection: null },
-  );
-});
-
-test('resolveCronDefaultModel: 编辑模式或已有选择时不做预填', () => {
-  assert.equal(
-    resolveCronDefaultModel('edit', emptyModelForm, duplicateNamedModels, 'GLM-5.3'),
-    null,
-  );
-  const selected = { modelName: 'GLM-5.3', modelSelection: { type: 'model', id: 'mdl-glm' } };
-  assert.equal(resolveCronDefaultModel('create', selected, duplicateNamedModels, 'deepseek-flash'), null);
-  const namedOnly = { modelName: 'free-model', modelSelection: null };
-  assert.equal(resolveCronDefaultModel('create', namedOnly, duplicateNamedModels, 'GLM-5.3'), null);
-});
-
-test('resolveCronDefaultModel: 模型清单未加载时不预填', () => {
-  assert.equal(resolveCronDefaultModel('create', emptyModelForm, [], 'GLM-5.3'), null);
+test('resolveCronDefaultHint: 目录为空时返回警示态（任务触发时可能失败）', () => {
+  assert.deepEqual(resolveCronDefaultHint([], 'GLM-5.3'), { kind: 'empty' });
+  assert.deepEqual(resolveCronDefaultHint([], null), { kind: 'empty' });
 });

@@ -2692,6 +2692,9 @@
       "placeholderEffectiveDate": "Select effective date",
       "missingFieldsHint": "Still needed: {{fields}}",
       "modelUnavailable": "The selected model “{{model}}” is unavailable. Check the model configuration.",
+      "modelDefaultHintNamed": "No model selected. The task will use the default model {{model}} when it fires.",
+      "modelDefaultHintGeneric": "No model selected. The task will run with the system default model when it fires.",
+      "modelDefaultHintEmpty": "No available model detected. The task may fail when it fires.",
       "scheduleAlreadyExpiredHint": "The selected run time is already in the past, please choose another",
       "charCount": "{{count}}/{{max}}",
       "maxLengthReachedHint": "Maximum length reached ({{max}} characters)"
