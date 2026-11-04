@@ -41,6 +41,8 @@ import { JiuwenMateConfirmDialog } from '../components/JiuwenMateDialog';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
+import { EmptyState } from '../../../components/ui/EmptyState/EmptyState';
+import { errorMessage } from '../jiuwenmateApi';
 import type { GroupSharingApi } from '../groupSharingApi';
 import type {
   ColleagueResourceOption,
@@ -140,6 +142,7 @@ interface ColleagueProfilePageProps extends WelinkOfficeActions {
   initialEditing?: boolean;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onLoadSettings?: (agentId: string) => Promise<JiuwenMateWireSettings>;
+  onOpenModelSettings?: () => void;
   schedules?: readonly JiuwenMateSchedule[];
   savingSchedule?: boolean;
   onCreateSchedule?: (draft: ScheduleDraft) => void | Promise<void>;
@@ -196,6 +199,7 @@ export function ColleagueProfilePage({
   initialEditing = false,
   onSaveSettings,
   onLoadSettings,
+  onOpenModelSettings,
   schedules = [],
   savingSchedule = false,
   onCreateSchedule,
@@ -238,6 +242,7 @@ export function ColleagueProfilePage({
   const [savedPersona, setSavedPersona] = useState(colleague.persona ?? '');
   const [tags, setTags] = useState(colleague.tags);
   const [model, setModel] = useState(colleague.capabilities.model);
+  const [settingsError, setSettingsError] = useState<{ section: JiuwenMateProfileSection; message: string } | null>(null);
   const [skills, setSkills] = useState(colleague.capabilities.skills);
   const [connectors, setConnectors] = useState(colleague.capabilities.connectors);
   const [plugins, setPlugins] = useState(colleague.capabilities.plugins);
@@ -585,27 +590,38 @@ export function ColleagueProfilePage({
     };
   }, [colleague.id, onLoadSettings, section]);
   const showPencil = PENCIL_SECTIONS.some((item) => item === section);
+  const persistSettings = async (edit: ColleagueSettingsEdit): Promise<boolean> => {
+    setSettingsError(null);
+    try {
+      await onSaveSettings?.(edit);
+      return true;
+    } catch (error) {
+      setSettingsError({ section, message: errorMessage(error) || t('jiuwenmate.profile.saveSettingsFailed') });
+      return false;
+    }
+  };
   const saveSettings = (edit: ColleagueSettingsEdit) => {
-    void Promise.resolve(onSaveSettings?.(edit))
-      .then(() => {
+    void persistSettings(edit)
+      .then((saved) => {
+        if (!saved) return;
         setEditing(false);
         if (edit.persona !== undefined) setSavedPersona(edit.persona);
-      })
-      .catch(() => undefined);
+      });
   };
   const changeGroupReplyMode = (mode: 'passive' | 'adaptive') => {
     const previous = groupReplyMode;
     setGroupReplyMode(mode);
-    void Promise.resolve(onSaveSettings?.({ groupReplyMode: mode })).catch(() => setGroupReplyMode(previous));
+    void persistSettings({ groupReplyMode: mode }).then((saved) => { if (!saved) setGroupReplyMode(previous); });
   };
   const changePermissionProfile = (profile: 'default' | 'automatic' | 'full_access') => {
     if (profile === permissionProfile || savingResources || !onSaveSettings) return;
     if (profile === 'full_access' && !window.confirm(t('jiuwenmate.profile.permissions.fullAccessConfirm'))) return;
     const previous = permissionProfile;
     setPermissionProfile(profile);
-    void Promise.resolve(onSaveSettings({ permissionProfile: profile })).catch(() => setPermissionProfile(previous));
+    void persistSettings({ permissionProfile: profile }).then((saved) => { if (!saved) setPermissionProfile(previous); });
   };
   const openSection = (next: JiuwenMateProfileSection) => {
+    setSettingsError(null);
     setSection(next);
     setEditing(false);
   };
@@ -645,7 +661,12 @@ export function ColleagueProfilePage({
             </button>
           ))}
         </nav>
-        <div className="jiuwenmate-profile__content" data-section={section}>
+        <div
+          className="jiuwenmate-profile__content"
+          data-section={section}
+          data-variant={settingsError?.section === section ? 'save-error' : 'ready'}
+          data-testid="jiuwenmate-profile-content"
+        >
           <header className="jiuwenmate-profile__header">
             <ColleagueAvatar colleague={colleague} size="large" />
             <h1>{colleague.name}</h1>
@@ -680,6 +701,11 @@ export function ColleagueProfilePage({
               </button>
             </span>
           </header>
+          {settingsError?.section === section ? (
+            <p className="jiuwenmate-profile__settings-error" role="alert" data-testid="jiuwenmate-profile-settings-error">
+              {settingsError.message}
+            </p>
+          ) : null}
           {section === 'overview' ? (
             <>
               {editing ? (
@@ -729,6 +755,7 @@ export function ColleagueProfilePage({
               onPluginsChange={setPlugins}
               onKnowledgeChange={setKnowledge}
               onSaveSettings={saveSettings}
+              onOpenModelSettings={onOpenModelSettings}
               onGroupReplyModeChange={changeGroupReplyMode}
               onPermissionProfileChange={changePermissionProfile}
               onConfigureIm={onConfigureIm}
@@ -1253,6 +1280,7 @@ function ProfileSectionDetail({
   onPluginsChange,
   onKnowledgeChange,
   onSaveSettings,
+  onOpenModelSettings,
   onGroupReplyModeChange,
   onPermissionProfileChange,
   onConfigureIm,
@@ -1305,6 +1333,7 @@ function ProfileSectionDetail({
   onPluginsChange: (items: string[]) => void;
   onKnowledgeChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
+  onOpenModelSettings?: () => void;
   onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
   onPermissionProfileChange: (profile: 'default' | 'automatic' | 'full_access') => void;
   onConfigureIm: (connection?: JiuwenMateConnection, platform?: JiuwenMateImPlatform) => void;
@@ -1361,22 +1390,25 @@ function ProfileSectionDetail({
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
-        <label className="jiuwenmate-profile__persona-editor">
+        <label className="jiuwenmate-profile__persona-editor" data-testid="jiuwenmate-profile-persona-editor">
           <span className="jiuwenmate-sr-only">{t('jiuwenmate.create.description')}</span>
-          <textarea value={persona} onChange={(event) => onPersonaChange(event.target.value)} />
+          <textarea
+            value={persona}
+            onChange={(event) => onPersonaChange(event.target.value)}
+            data-testid="jiuwenmate-profile-persona-input"
+          />
         </label>
-        {dirty ? (
-          <div className="jiuwenmate-profile__resource-actions">
-            <button
-              type="button"
-              className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
-              disabled={!dirty || savingResources}
-              onClick={() => onSaveSettings?.({ persona: persona.trim() })}
-            >
-              {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
-            </button>
-          </div>
-        ) : null}
+        <div className="jiuwenmate-profile__resource-actions" data-testid="jiuwenmate-profile-persona-actions">
+          <button
+            type="button"
+            className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
+            disabled={!dirty || savingResources}
+            onClick={() => onSaveSettings?.({ persona: persona.trim() })}
+            data-testid="jiuwenmate-profile-persona-save"
+          >
+            {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
+          </button>
+        </div>
       </section>
     );
   }
@@ -1387,6 +1419,33 @@ function ProfileSectionDetail({
       ? modelCatalog.models
       : [{ id: model, label: model, provider: '' }, ...modelCatalog.models];
     const dirty = model !== colleague.capabilities.model;
+    if (choices.length === 0) {
+      return (
+        <section
+          className="jiuwenmate-profile__block jiuwenmate-profile__block--empty-model"
+          data-testid="jiuwenmate-profile-detail"
+          data-variant={section}
+        >
+          <h2>{title}</h2>
+          <EmptyState id="jiuwenmate-profile-model-empty" text={t('settingsPanel.models.empty')}>
+            <p className="jiuwenmate-profile__model-empty-hint" data-testid="jiuwenmate-profile-model-empty-hint">
+              {t('jiuwenmate.profile.modelEmptyHint')}
+            </p>
+            {onOpenModelSettings ? (
+              <button
+                type="button"
+                className="jiuwenmate-dark-button"
+                onClick={onOpenModelSettings}
+                data-testid="jiuwenmate-profile-model-add"
+              >
+                <Plus size={14} aria-hidden />
+                {t('settingsPanel.models.addModel')}
+              </button>
+            ) : null}
+          </EmptyState>
+        </section>
+      );
+    }
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>

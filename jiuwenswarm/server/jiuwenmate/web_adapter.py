@@ -177,9 +177,16 @@ def _ignore(event: AgentEvent) -> None:
 def configured_model_catalog() -> dict[str, Any]:
     """The models the colleague service resolves, without connection details."""
     from jiuwenswarm.common.config import get_default_models
-    from jiuwenswarm.runtime.model_catalog import build_model_catalog
+    from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider
 
-    return build_model_catalog(get_default_models()).to_dict()
+    entries = get_default_models()
+    catalog = ConfiguredModelProvider(lambda: entries).catalog().to_dict()
+    for model in catalog["models"]:
+        index = int(model["selection_key"].rpartition("#")[2])
+        vendor_key = entries[index]["model_client_config"].get("vendor_key")
+        if isinstance(vendor_key, str) and vendor_key.strip():
+            model["vendor_key"] = vendor_key.strip()
+    return catalog
 
 
 def _text_param(params: Mapping[str, Any], name: str) -> str:
