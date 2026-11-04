@@ -1603,6 +1603,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       undefined,
       !interrupted && summary && summary.count > 0 ? summary : undefined,
     );
+    // turn 收尾即清计数（展示与否都已终局）：ref 的语义是"本 turn 累计"，
+    // 不清会把本 turn 的计数泄漏进下一个 turn 的徽标。
+    contextCompressionSummaryRef.current.delete(sessionId);
   }, [clearPendingContextCompressionStart]);
 
   const buildContextCompressionRuntimeState = useCallback(
@@ -1645,10 +1648,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'started' || status === 'running') {
         clearPendingContextCompressionStart(sessionId);
-        // 新一轮压缩开始：清掉上一轮的完成计数，保证「本轮完成 N 次」徽标
-        // 只统计当前这轮（chat.final 收尾时展示）。否则上一轮的 completed
-        // 会在本轮被取消时冒出来，把取消轮误标成有完成。
-        contextCompressionSummaryRef.current.delete(sessionId);
+        // 计数不清：contextCompressionSummaryRef 的语义是「本 turn 内累计完成的
+        // 压缩次数」，同一 turn 里 Leader/成员会连续多轮压缩，每轮 started 清零
+        // 会让徽标只显示最后一轮的次数。取消轮的误标由
+        // finishContextCompressionTurn 按 runtime 的 cancelled/paused 抑制，
+        // 与计数解耦。
         const pending: PendingContextCompressionStart = {
           // 记下这一轮压缩的起始时刻：界面在 300ms 后才显示提示，但计时要从
           // 真正开始压缩算起；每轮 started 都会覆盖，因此计时自动从头开始。
@@ -1739,8 +1743,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'started' || status === 'running') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
-        // 同主会话：新一轮压缩开始时清上一轮完成计数，徽标只统计本轮。
-        setTeamMemberContextCompressionStatus(sessionId, memberId, undefined, undefined);
+        // 计数保留：成员的「完成 N 次」与主会话同理按 turn 累计，
+        // started 不清（理由同主会话分支）；中断轮由收尾抑制负责。
         const key = getTeamMemberContextCompressionKey(sessionId, memberId);
         const pending: PendingContextCompressionStart = {
           // 成员压缩与 leader 压缩各自独立计时，同样每轮 started 重新开始。
