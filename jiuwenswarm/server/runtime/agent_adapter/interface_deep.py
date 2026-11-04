@@ -13708,7 +13708,8 @@ class JiuWenSwarmDeepAdapter:
         # 中 CancelIoEx 后立即 CloseHandle，与仍在阻塞 ReadDirectoryChangesW 的
         # emitter 线程竞争 → access violation 直接杀 worker，见 runtime worker
         # closed 问题单）。注意此处 gating 只降频缓解，未根治 watchdog 关闭竞态。
-        # 门控基线用独立的 _last_closed_memory_fingerprint（本方法末尾无条件推进），
+        # 门控基线用独立的 _last_closed_memory_fingerprint（本方法末尾在关闭成功
+        # 或未进入关闭分支时推进，失败保留旧基线待重试），
         # 不与 rail 重建基线 _memory_embedding_fingerprint 耦合——后者仅在
         # builtin_on 且 register_rail 成功时回写，记忆默认关闭的 mode（agent/team）
         # 与 custom code spec 等只应用快照的路径恒为空串，若用它做门控基线会恒判
@@ -13721,6 +13722,7 @@ class JiuWenSwarmDeepAdapter:
         # 记忆召回静默为空，且它们的 observer 也要陪跑一轮 stop/join 关闭竞态。
         # 本 adapter 未建 instance（root adapter 只扇出不持有 rail）时同样跳过。
         memory_fingerprint = self._memory_config_fingerprint(config_base)
+        closed_ok = True
         if (
             memory_fingerprint
             and memory_fingerprint != self._last_closed_memory_fingerprint
@@ -13735,12 +13737,21 @@ class JiuWenSwarmDeepAdapter:
                         closed,
                     )
             except Exception as e:
+                # 关闭失败（openjiuwen 版本缺 aclose_memory_managers_for 的
+                # ImportError、Workspace 构造或 close 本身异常）时不推进基线：
+                # 一旦推进，同指纹的后续 reload 永久放弃关闭，旧 manager 滞留
+                # INDEX_CACHE，新 embedding 配置静默不生效。保留旧基线让下次
+                # reload 重试——旧实现（每次 reload 无条件 close）本就每次重试，
+                # 门控不应丢失这层语义，重试仍限定在本 adapter 粒度。
+                closed_ok = False
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] aclose own memory managers failed: %s", e
                 )
-        # 无条件推进 aclose 门控基线：后续 reload 仅在指纹相对本快照再变化时才
-        # close；空指纹同样推进，避免"空→非空"的往复被反复判为变化。
-        self._last_closed_memory_fingerprint = memory_fingerprint
+        # 仅在关闭成功、或未进入关闭分支（指纹为空 / 指纹未变 / 无 instance）时
+        # 推进 aclose 门控基线；空指纹同样推进，避免"空→非空"的往复被反复判为
+        # 变化。失败时基线保持旧值，下次 reload 同指纹会再次尝试 close。
+        if closed_ok:
+            self._last_closed_memory_fingerprint = memory_fingerprint
 
         self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)

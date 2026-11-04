@@ -173,3 +173,75 @@ async def test_reload_snapshot_aclose_gated_by_memory_fingerprint(
         await adapter._apply_reload_config_snapshot(None, None)
         assert aclose_for.await_count == 2
         assert aclose_all.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_reload_snapshot_aclose_failure_keeps_baseline_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed close must not advance the gate baseline.
+
+    If the baseline advanced past a failed close (import of
+    aclose_memory_managers_for failing on an older openjiuwen, Workspace
+    construction or the close itself raising), later reloads with the same
+    fingerprint would skip the close branch forever: the stale manager stays
+    in INDEX_CACHE and the new embedding config silently never takes effect.
+    Keeping the old baseline makes the next same-fingerprint reload retry the
+    close, and once a retry succeeds the baseline advances and unchanged
+    fingerprints stop closing again.
+    """
+    import importlib
+
+    mod = importlib.import_module(_OJ_MEMORY_MANAGER_MODULE)
+    if not hasattr(mod, "aclose_memory_managers_for"):
+        pytest.skip("openjiuwen agent-scoped memory manager close not available")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(interface_module, "get_env_file", lambda: env_file)
+
+    config_base = {
+        "react": {},
+        "embed": {
+            "embed_model": "m",
+            "embed_base_url": "http://x",
+            "embed_api_key": "k",
+        },
+    }
+    aclose_for = AsyncMock(side_effect=RuntimeError("close boom"))
+    aclose_all = AsyncMock()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._refresh_multimodal_configs = MagicMock()
+    adapter._instance = MagicMock()
+    adapter._instance.card.id = "agent-1"
+    adapter._workspace_dir = str(tmp_path)
+    adapter._resolved_language = "zh"
+    with (
+        patch.object(interface_module, "clear_config_cache", MagicMock()),
+        patch(f"{_OJ_MEMORY_MANAGER_MODULE}.aclose_memory_managers_for", aclose_for),
+        patch(f"{_OJ_MEMORY_MANAGER_MODULE}.aclose_memory_manager_cache", aclose_all),
+        patch.object(interface_module, "get_config", lambda: config_base),
+    ):
+        # 首次 reload：进入关闭分支但 close 抛异常 → 基线不推进（保持空串）。
+        await adapter._apply_reload_config_snapshot(None, None)
+        assert aclose_for.await_count == 1
+        assert adapter._last_closed_memory_fingerprint == ""
+        assert aclose_all.await_count == 0
+
+        # 同指纹再次 reload：基线未推进，重试 close 而非永久放弃。
+        await adapter._apply_reload_config_snapshot(None, None)
+        assert aclose_for.await_count == 2
+        assert adapter._last_closed_memory_fingerprint == ""
+
+        # 重试成功 → 基线推进到当前指纹。
+        aclose_for.side_effect = None
+        aclose_for.return_value = 1
+        await adapter._apply_reload_config_snapshot(None, None)
+        assert aclose_for.await_count == 3
+        assert adapter._last_closed_memory_fingerprint == (
+            adapter._memory_config_fingerprint(config_base)
+        )
+
+        # 同指纹不再 close（门控恢复正常降频语义）。
+        await adapter._apply_reload_config_snapshot(None, None)
+        assert aclose_for.await_count == 3
