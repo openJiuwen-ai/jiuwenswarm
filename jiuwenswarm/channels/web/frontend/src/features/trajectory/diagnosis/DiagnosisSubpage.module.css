@@ -179,6 +179,11 @@
 }
 
 .chip {
+  flex: 0 0 auto;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border-radius: 0.25rem;
   background: rgba(var(--color-action-primary-rgb), 0.1);
   color: var(--color-action-primary);
@@ -627,29 +632,36 @@
   gap: 0.5rem;
 }
 
-.causeHeadTop {
-  align-items: center;
-  flex-wrap: nowrap;
-}
-
 .causeAt {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: min(24rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.causeDimension {
+.causeTopic {
   display: flex;
   min-width: 0;
-  flex: 1 1 0;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.25rem;
   margin: 0;
   font-size: 0.75rem;
   line-height: 1.25rem;
 }
 
+.causeTopicText {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
 .badge {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: min(24rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border-radius: 0.625rem;
   background: var(--color-surface-muted);
   padding: 0 0.5rem;
