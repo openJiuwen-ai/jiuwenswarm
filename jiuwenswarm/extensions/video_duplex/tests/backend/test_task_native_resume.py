@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import pytest
 from types import SimpleNamespace
 
 import pytest

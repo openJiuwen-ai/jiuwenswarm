@@ -36,8 +36,8 @@ async def gateway_scheduled_jobs(owner):
     """Read the Gateway cron store with the same owner scope as the sidebar's ``cron.job.list``."""
     from agent_gateway.cron.controller import CronController
 
-    # An empty owner is the anonymous single-user scope; the sidebar then lists every job too.
-    return await CronController.get_instance().list_jobs(user_id=owner or None)
+    # Empty identity reads anonymous jobs only; None would expose every owner's jobs.
+    return await CronController.get_instance().list_jobs(user_id=owner)
 
 
 class AgentRequestTimeoutError(TimeoutError):
@@ -254,7 +254,7 @@ class AgentTaskExecutor:
                         ))
                         return
             except Exception:
-                pass
+                logger.warning("Execution cleanup reconciliation failed task=%s", task["id"], exc_info=True)
             raise ExecutionUncertain(
                 "Execution cleanup is unconfirmed; no work was replayed"
             ) from exc
@@ -408,7 +408,8 @@ class AgentTaskExecutor:
             session_id=task["core_session_id"],
             req_method=ReqMethod.CHAT_CANCEL,
             user_id=task["owner"] or None,
-            params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
+            params={"intent": "cancel",
+                    **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
                     "managed_task_request": task["request_id"],
                     **({"managed_task_probe": True} if probe else {})},
             is_stream=False,
@@ -416,7 +417,8 @@ class AgentTaskExecutor:
         )
         trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
         response = await asyncio.wait_for(client.send_request(request), 20)
-        trace_task("cancel_rpc_response", task=task_state(task), ok=response.ok, payload=receipt_state(response.payload))
+        trace_task("cancel_rpc_response", task=task_state(task),
+                   ok=response.ok, payload=receipt_state(response.payload))
         return response
 
     async def cancel(self, task, *, probe=False):
@@ -659,7 +661,10 @@ class VideoSearchManager:
             # Never truncate the exact question that an answer must be bound to.
             result["interaction_requires_ui"] = True
             if interaction.get("source") == "permission_interrupt":
-                result["message"] = "Permission requests require a manual click on the on-screen card; do not submit a voice answer."
+                result["message"] = (
+                    "Permission requests require a manual click on the on-screen card; "
+                    "do not submit a voice answer."
+                )
         else:
             result["interaction"] = interaction
         # Voice answers approval cards with one of each card's own option labels.
@@ -819,7 +824,8 @@ class VideoSearchManager:
         chosen = [a["selected_options"][0] for a in bound]
         if not resumed.is_set():
             return dict(job_id="", interaction_id=interaction_id, state="submitted", applied=False, answers=chosen,
-                        message="Submitted, but Core has not resumed the task yet; query again before saying it was approved")
+                        message=("Submitted, but Core has not resumed the task yet; "
+                                 "query again before saying it was approved"))
         self._chat_cards.pop(session, None)
         closed = {"session_id": session, "request_id": interaction_id}
         await asyncio.gather(*(
@@ -836,7 +842,9 @@ class VideoSearchManager:
             task["session"].startswith("task-duplex:")
             and task["status"] == "waiting_user"
             and interaction.get("state") == "pending"
-            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", ""}
+            and interaction.get("source") in {
+                "permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", "",
+            }
         )
         if pending:
             if self._approval_cards.get(card_key) == interaction["id"]:
@@ -1025,12 +1033,14 @@ class VideoSearchManager:
                     "state": "rejected", "applied": False, "code": "TASK_NOT_FOUND",
                     "attempted_job_id": args["job_id"], "retryable": True,
                     "message": (
-                        "No operation was performed. This ID does not identify a Core invocation in the current conversation. "
+                        "No operation was performed. This ID does not identify a Core invocation "
+                        "in the current conversation. "
                         "Do not infer that the resulting resource was deleted or that the user request is impossible. "
                         "Query jiuwen_task_query without job_id, locate the intended invocation from its requirement "
                         "and result, and copy its exact job_id and revision before trying a corrected operation. "
                         "IDs inside result text identify external resources, not Core invocations; send such IDs "
-                        "to Core in the follow-up instruction, never as job_id. If the target remains ambiguous, ask the user. "
+                        "to Core in the follow-up instruction, never as job_id. "
+                        "If the target remains ambiguous, ask the user. "
                         "Never repeat this rejected ID, operate on another conversation, or recreate the resource."
                     ),
                 }

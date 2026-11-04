@@ -6,7 +6,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Collection, Iterator, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.foundation.tool import ClientToolResult, ClientToolStatus, default_client_output
@@ -242,6 +242,15 @@ async def discard_permission_continuation(
 _UNPROVEN = object()
 
 
+class _PendingInterruptSplit(NamedTuple):
+    loop_session: Any
+    state: Any
+    context: Any
+    context_engine: Any
+    active_ids: list[str]
+    stale_ids: list[str]
+
+
 def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None):
     """Split Core's pending interrupt into live and already-answered tool calls.
 
@@ -323,7 +332,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
             tail_id_set.add(tool_call_id)
     active_ids = [tid for tid in pending_tool_ids if tid not in tail_id_set]
     stale_ids = [tid for tid in pending_tool_ids if tid in tail_id_set]
-    return loop_session, state, context, context_engine, active_ids, stale_ids
+    return _PendingInterruptSplit(loop_session, state, context, context_engine, active_ids, stale_ids)
 
 
 def has_live_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None) -> bool:
@@ -341,7 +350,7 @@ def has_live_pending_interrupt(instance: Any, target_sid: str, loop_session_id: 
         return True
     if split is None:
         return False
-    return split is not _UNPROVEN and bool(split[4])
+    return split is not _UNPROVEN and bool(split.active_ids)
 
 
 async def discard_pending_permission_interrupt_for_target(
@@ -375,7 +384,9 @@ async def discard_pending_permission_interrupt_for_target(
     try:
         split = _split_pending_interrupt(instance, target_sid, loop_session_id)
         if split is _UNPROVEN and drop_unproven:
-            loop_session = instance._loop_session
+            loop_session = getattr(instance, "_loop_session", None)
+            if loop_session is None:
+                return False
             loop_session.update_state({INTERRUPTION_KEY: None})
             context_engine = getattr(getattr(instance, "react_agent", None), "context_engine", None)
             if context_engine is not None:

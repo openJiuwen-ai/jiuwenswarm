@@ -1,12 +1,16 @@
 """Bind Host requests and output leases, and observe native execution settlement."""
 
 import asyncio
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
+
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
-from jiuwenswarm.common.schema.message import ReqMethod
 
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
+from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
+from jiuwenswarm.extensions.video_duplex.backend.tasks.service import CANCEL_SETTLEMENT_TIMEOUT
 from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
     active_cua_executions,
     bind_managed_task_request,
@@ -15,11 +19,7 @@ from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
     unbind_managed_task_session,
 )
 
-from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.service import CANCEL_SETTLEMENT_TIMEOUT
-
 from .bridge import RemoteTaskEndpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 
 _settlements = set()
 # Requests whose settlement reporter is still waiting on native work.
@@ -195,12 +195,12 @@ async def bind_task_execution(request, adapter, inputs):
 
         # Awaiting this same request task from the reporter would deadlock on itself.
         current_execution = asyncio.current_task()
-        pending_executions = {
-            native for native in checkpoint.native_executions
-            if native is not current_execution and (
-                not invocation_cancelled or native in checkpoint.cancellation_executions or native.cancelling()
-            )
-        }
+        pending_executions = set()
+        for native in checkpoint.native_executions:
+            if native is current_execution:
+                continue
+            if not invocation_cancelled or native in checkpoint.cancellation_executions or native.cancelling():
+                pending_executions.add(native)
         # Output cancellation alone does not prove that CUA cleanup has ended.
 
         def retain_reporter(reporter):

@@ -19,6 +19,10 @@ import websockets
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
+from agent_gateway.channel_manager.web.media.normalizer import (
+    normalize_chat_media_attachments,
+)
+
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
     empty_task_file_query,  # noqa: F401 -- pytest fixture
@@ -31,9 +35,6 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_live,
     video_search,
     video_voice,
-)
-from agent_gateway.channel_manager.web.media.normalizer import (
-    normalize_chat_media_attachments,
 )
 
 
@@ -2818,3 +2819,18 @@ async def test_core_agent_full_answer_follows_tool_language(monkeypatch) -> None
     assert "must be written in English" in prompt
     assert "必须使用简体中文" not in prompt
     assert "Speak to the user in English" in prompt
+
+
+def test_file_revision_prompt_uses_delivered_file_receipt():
+    context = video_search._delegation_context_text([{
+        "question": "Save the introduction as a PDF",
+        "query": "Save the introduction as a PDF",
+        "files": [{"name": "intro.pdf", "path": "/work/intro.pdf"}],
+        "result": "The file is ready.",
+    }])
+    prompt = video_search.build_execution_prompt(
+        "Where was the PDF saved?", "Where was the PDF saved?", "", context,
+    )
+    assert "/work/intro.pdf" in prompt
+    assert "send_file_to_user" in prompt
+    assert "Never invent a location or claim delivery without a file receipt" in prompt

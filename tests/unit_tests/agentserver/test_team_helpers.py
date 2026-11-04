@@ -9153,3 +9153,23 @@ async def test_cold_start_preserves_request_waiter_with_attached_page(monkeypatc
     assert add_waiter.call_count == int(request_scoped)
     if request_scoped:
         assert add_waiter.call_args.args[2:4] == ("voice-round", queue)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", [
+    "designer.graph.updated", "designer.run.updated", "designer.node.updated", "designer.leader.activity",
+])
+@pytest.mark.parametrize("channel", ["video_tool", "web"])
+async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, channel):
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.design.team_bridge import _push_team_event
+
+    host = SimpleNamespace(send_push=AsyncMock())
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: host)
+    payload = {"event_type": event, "session_id": "design-chat", "graph": {"graph_id": "g"}}
+    await _push_team_event(channel, "design-chat", payload, "original-turn")
+    frame = host.send_push.call_args.args[0]
+    assert frame["channel_id"] == "web"
+    assert frame["session_id"] == "design-chat"
+    assert frame["request_id"] == "original-turn"
+    assert frame["payload"] is payload

@@ -1,5 +1,8 @@
 """Task business boundaries with real SQLite and controlled execution/stop receipts."""
 
+# Controlled Core internals are required to reproduce cancellation cleanup races.
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 
@@ -923,7 +926,9 @@ async def test_titles_persist_search_and_revision_without_replacing_instructions
     assert child["title"] == "用英文介绍香港天气"
     assert child["request"]["prior_result"]["answer"] == task["instruction"]
     assert service.store.read(task["id"])["title"] == "查询香港天气"
-    assert service.modify("alice", "conversation", task["id"], "english", TaskModification(1, "改成英文", "用英文介绍香港天气")) == receipt
+    assert service.modify(
+        "alice", "conversation", task["id"], "english", TaskModification(1, "改成英文", "用英文介绍香港天气")
+    ) == receipt
 
 
 async def test_queued_title_change_preserves_full_requirement_and_legacy_replay(tasks):
@@ -955,8 +960,7 @@ def _round_harness(round_task=None):
 async def test_5545_stopped_round_without_scheduler_handle_still_settles(
     tasks, monkeypatch, has_round_task
 ):
-    """#5545: the output closes while the stopped round (e.g. CUA cleanup) still
-    unwinds outside the scheduler map; its end must still be acknowledged."""
+    """A stopped round must settle even when cleanup runs outside the scheduler (#5545)."""
     from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
@@ -990,8 +994,7 @@ async def test_5545_stopped_round_without_scheduler_handle_still_settles(
 
 
 async def test_5545_failed_stop_request_still_ends_cancelled_when_execution_ends(tasks):
-    """#5545: a stop request that errors must not leave the task 'stopping' forever
-    once the execution has actually ended."""
+    """A failed stop must settle when execution actually ends (#5545)."""
     service, executor = tasks
     service.concurrency = 1
     task = independent(service, "first")
@@ -1089,7 +1092,9 @@ async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch
             async with module.bind_task_execution(request, adapter, {}):
                 await task_checkpoint(rail, ctx, "before_model")
                 module.capture_task_execution(
-                    rail, SimpleNamespace(session_id=request.session_id, params={"managed_task_request": request.request_id}), stale,
+                    rail,
+                    SimpleNamespace(session_id=request.session_id, params={"managed_task_request": request.request_id}),
+                    stale,
                 )
                 raise asyncio.CancelledError()
 
@@ -1120,7 +1125,9 @@ async def test_completed_voice_cancel_becomes_one_core_followup_with_exact_user_
     assert child["request"]["prior_result"] == original
     assert child["parent_id"] == task["id"]
     assert service.store.read(task["id"])["result"] == original
-    assert await service.cancel("alice", "conversation", task["id"], "voice-cancel", user_instruction=instruction) == receipt
+    assert await service.cancel(
+        "alice", "conversation", task["id"], "voice-cancel", user_instruction=instruction
+    ) == receipt
     assert len(service.list("alice", "conversation")[0]) == 2
     with pytest.raises(ValueError):
         await service.cancel("alice", "conversation", task["id"], "different-request", user_instruction=instruction)

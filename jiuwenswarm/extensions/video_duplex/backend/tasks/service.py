@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 def _clean_title(title):
     """Display-only task name: one line, at most 80 characters."""
-    if not isinstance(title, str) or len(title) > 80 or "\n" in title or "\r" in title:
+    if not isinstance(title, str) or len(title) > 80:
+        raise ValueError("Invalid title")
+    if "\n" in title or "\r" in title:
         raise ValueError("Invalid title")
     return title.strip()
 
@@ -137,10 +139,11 @@ class TaskService:
             for task in tasks:
                 if task["status"] in TERMINAL:
                     continue
-                if task["status"] == "unknown" or task.get("recovery_observer") or (
+                stopping_without_worker = (
                     task["status"] == "cancelling" and task.get("output_closed")
                     and task["id"] not in self.workers
-                ):
+                )
+                if task["status"] == "unknown" or task.get("recovery_observer") or stopping_without_worker:
                     self._spawn_reconcile(task)
 
     def _prune_reconciliation(self, tasks):
@@ -307,15 +310,13 @@ class TaskService:
                 return held
 
         if not request.get("independent", False):
-            earlier = [
-                t for t in tasks
-                if same_scope(t)
-                and t["id"] != task["id"]
-                and (
-                    t in active
-                    or (t["position"] < task["position"] and t["status"] not in TERMINAL)
-                )
-            ]
+            earlier = []
+            for other in tasks:
+                if not same_scope(other) or other["id"] == task["id"]:
+                    continue
+                waiting_before = other["position"] < task["position"] and other["status"] not in TERMINAL
+                if other in active or waiting_before:
+                    earlier.append(other)
             if earlier:
                 return earlier
         # Missing declarations mean unknown resources, not a proven conflict.
@@ -443,7 +444,11 @@ class TaskService:
             tasks = self.store.rows(db, owner, session)
         if status:
             tasks = [t for t in tasks if t["status"] == status]
-        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold() or query.casefold() in t.get("title", "").casefold()]
+        matched = []
+        for task in tasks:
+            if query.casefold() in task["instruction"].casefold() or query.casefold() in task.get("title", "").casefold():
+                matched.append(task)
+        tasks = matched
         end = offset + limit
         return tasks[offset:end], (end if len(tasks) > end else None)
 
@@ -841,11 +846,12 @@ class TaskService:
 
     def _waiting_on(self, task, all_tasks):
         """Name the tasks a waiting task is held behind, using kick()'s rules."""
-        active = [
-            t for t in all_tasks
-            if t["status"] in {"running", "cancelling", "unknown", "waiting_user"}
-            or t["id"] in self.workers
-        ]
+        active = []
+        for task_entry in all_tasks:
+            if task_entry["status"] in {"running", "cancelling", "unknown", "waiting_user"}:
+                active.append(task_entry)
+            elif task_entry["id"] in self.workers:
+                active.append(task_entry)
         blockers = self._blockers(task, all_tasks, active)
         if not blockers:
             counted = [t for t in active if self._holds_capacity(t)]

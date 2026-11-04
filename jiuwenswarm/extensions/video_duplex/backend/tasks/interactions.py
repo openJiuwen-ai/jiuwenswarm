@@ -89,7 +89,9 @@ def voice_approval_answers(interaction, answers):
     """
     native_approval_question(interaction)
     if interaction.get("source") not in VOICE_APPROVAL_SOURCES:
-        raise ValueError("Permission requests require a manual click on the on-screen card; voice answers are not allowed")
+        raise ValueError(
+            "Permission requests require a manual click on the on-screen card; voice answers are not allowed"
+        )
     questions = interaction["questions"]
     if not isinstance(answers, list) or len(answers) != len(questions):
         raise ValueError("Answer every approval question exactly once")
