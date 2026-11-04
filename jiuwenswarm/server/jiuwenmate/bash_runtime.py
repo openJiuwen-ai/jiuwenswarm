@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,50 @@ from openjiuwen.harness.tools.shell.bash import BashTool
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import _kill_children, _stop_process
 from jiuwenswarm.server.jiuwenmate.cli_group_commands import UnsafeGroupRead, parse_group_read
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
+    build_shell_environment_prompt, get_shell_capabilities,
+)
 
 _KEY = "jiuwenmate.bash_runtime"
 PROVIDER = "jiuwenmate.bash"
 WEB_FETCH_PROVIDER = "core.web_fetch"
+
+
+async def shell_environment_guidance(language: str = "cn") -> str:
+    """Describe the execution host using the existing bounded, cached Shell probe."""
+    os_type = sys.platform
+    capabilities = await get_shell_capabilities(os_type)
+    environment = build_shell_environment_prompt(language, os_type, capabilities=capabilities)
+    if language == "cn":
+        default = (
+            "Windows 的 auto 根据命令特征选择 Shell，未识别时使用 cmd。"
+            if os_type.startswith("win") else "当前平台的 auto 使用 /bin/sh，不代表用户的登录 Shell。"
+        )
+        return (
+            f"# 运行环境\n\n## 平台与 Shell\n\n- 当前执行平台：`{os_type}`。"
+            "命令运行在 Agent 所在主机，消息渠道和用户客户端不决定命令环境。\n\n"
+            f"{environment}\n\n"
+            "- `bash` 是工具名，不保证命令由 Bash 执行。" + default + "\n"
+            '- Bash 专属语法显式指定 `shell_type="bash"`；PowerShell cmdlet 指定 '
+            '`shell_type="powershell"`；CMD 语法仅在 Windows 使用 `shell_type="cmd"`。\n'
+            "- 不依赖 auto 猜测 heredoc（<<）或脚本类型；确认目标 Shell 可用，再明确选择。"
+            "路径必须匹配当前主机及所选 Shell，不照搬另一操作系统的路径。"
+        )
+    default = (
+        "On Windows, auto selects a Shell from command syntax and falls back to cmd for unrecognized commands."
+        if os_type.startswith("win") else "On this platform, auto uses /bin/sh, not the user's login Shell."
+    )
+    return (
+        f"# Runtime Environment\n\n## Platform and Shell\n\n- Execution platform: `{os_type}`. "
+        "Commands run on the Agent host; neither the message channel nor the user's client selects the Shell.\n\n"
+        f"{environment}\n\n- `bash` is the tool name, not a guarantee of Bash execution. {default}\n"
+        '- Select `shell_type="bash"` for Bash-specific syntax and `shell_type="powershell"` for PowerShell '
+        'cmdlets. Use `shell_type="cmd"` for CMD syntax only on Windows.\n'
+        "- Do not rely on auto to infer heredoc (<<) or script syntax. Confirm the Shell is available and select it "
+        "explicitly. Paths must match the execution host and selected Shell, not another operating system."
+    )
+
+
 _CLI_SHARING_GUIDANCE = (
     "飞书群消息、消息详情和消息附件的 CLI 读取会由宿主检查来源，并在跨群时暂停当前 Bash 调用等待所有者审批。"
     "批准后原调用返回冻结的获批结果，附件导入本 Session 的 imports；不要自行批准或改用其他命令绕过拒绝。"
