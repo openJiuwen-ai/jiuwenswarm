@@ -88,11 +88,17 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   保留原规则。`flash` 保留独立 canonical，并纳入单 Agent 轨迹白名单；尚未实现的
   `flash.*` 在此入口拒绝。续接结合已存 `mode` 与 `adapter_mode` 恢复，保证前台准备与租户池二次解析一致；活跃 Plan 与中断归属优先于新的默认模式。
 
-- **N16 Flash 配置占位符**：模板的 `flash.enabled` 与
-  `flash.skill_selection.enabled` 分别引用 `${JIUWENSWARM_FLASH_ENABLED:-false}`
-  与 `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`；两变量属于 Track A，
+- **N16 Flash 配置占位符**：模板的 `flash.enabled`、
+  `flash.skill_selection.enabled`、`flash.evolution.enabled` 与
+  `flash.evolution.skill_sleep.enabled` 分别引用
+  `${JIUWENSWARM_FLASH_ENABLED:-false}`、
+  `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`、
+  `${JIUWENSWARM_FLASH_EVOLUTION_ENABLED:-false}` 与
+  `${JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED:-true}`；四变量属于 Track A，
   沙箱启动注入后经统一配置加载解析，`get_config()` 返回布尔值，消费方不再直读环境。
-  旧 YAML / provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
+  Flash 在线技能自演进不继承 `react.evolution` 全局开关，默认关闭；SkillSleep
+  独立常驻默认开启，训练是否执行仍由技能级 `selfEvolution` 决定。旧 YAML /
+  provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
   未注入时保留原布尔配置。非法字符串关闭开关，不改变其它字段的字符串解析语义。
   配置文件、实例创建/热更新快照及预热均通过 `resolve_config_env_vars` 统一解析。
   原始 YAML、合并缓存及 provider 输入保持不变；重启或清理配置缓存后重新解析。
