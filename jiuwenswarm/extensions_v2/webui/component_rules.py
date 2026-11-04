@@ -38,6 +38,11 @@ INTEGER = {"kind": "number", "integer": True, "min": 0}
 SIZE = token("small", "medium", "large", "sm", "md", "lg")
 COMPACT_SIZE = token("small", "medium", "sm", "md")
 VARIANT = token("outlined", "borderless", "filled", "underlined")
+# Ant Design preset colors (theme/interface/presetColors.ts), shared by Button.color.
+PRESET_COLORS = (
+    "blue", "purple", "cyan", "green", "magenta", "pink", "red",
+    "orange", "yellow", "volcano", "geekblue", "lime", "gold",
+)
 INPUT_PROPS = {"disabled": BOOL, "ariaLabel": TEXT, "size": SIZE, "variant": VARIANT,
                "status": token("error", "warning")}
 OPTION_VALUE = union(TEXT, NUMBER)
@@ -64,15 +69,18 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "wrap": BOOL, "flex": {"kind": "number", "min": 0, "max": 1000},
     }, "children": True},
     "Text": {"props": {
-        "value": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
-        "tone": token("neutral", "info", "success", "warning", "danger"),
-        "size": SIZE, "weight": token("regular", "medium", "bold"),
-        "max_lines": {"kind": "number", "integer": True, "min": 1}, "monospace": BOOL,
+        "value": TEXT, "type": token("secondary", "success", "warning", "danger"),
+        "size": SIZE, "strong": BOOL, "italic": BOOL, "underline": BOOL, "delete": BOOL,
+        "code": BOOL, "mark": BOOL, "keyboard": BOOL, "disabled": BOOL, "ellipsis": BOOL,
     }},
     "Button": {"props": {
-        "label": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
-        "size": SIZE, "disabled": BOOL,
-        "icon": token(*WEBUI_ICON_NAMES), "iconOnly": BOOL,
+        "value": TEXT, "type": token("default", "primary", "dashed", "link", "text"),
+        "color": token("default", "primary", "danger", *PRESET_COLORS),
+        "variant": token("outlined", "dashed", "solid", "filled", "text", "link"),
+        "shape": token("default", "circle", "round", "square"),
+        "size": SIZE, "danger": BOOL, "ghost": BOOL, "disabled": BOOL, "block": BOOL,
+        "loading": union(BOOL, obj({"delay": NUMBER})), "href": TEXT, "target": token("_self", "_blank"),
+        "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": TEXT,
     }, "events": {"ui.click": NO_DATA}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
@@ -118,11 +126,11 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "required": ("items",), "events": {"ui.change": obj({"activeKey": TEXT}, "activeKey")}},
     "Empty": {"props": {"image": TEXT, "description": TEXT}},
     "Avatar": {"props": {
-        "url": TEXT, "alt": TEXT,
+        "src": TEXT, "alt": TEXT,
         "size": union(token("small", "medium", "large", "sm", "md", "lg", "default"),
                       {"kind": "number", "min": 1, "max": 4096}),
         "shape": token("circle", "square"),
-    }, "required": ("url",)},
+    }, "required": ("src",)},
     "Image": {"props": {
         "src": TEXT, "alt": TEXT, "width": union(NUMBER, TEXT), "height": union(NUMBER, TEXT),
         "fallback": TEXT, "preview": union(BOOL, obj({"src": TEXT}, "src")),
@@ -180,6 +188,10 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "required": ("items",),
         "children": True,
         "events": {"ui.select": obj({"key": TEXT}, "key")},
+    },
+    "Icon": {
+        "props": {"name": token(*WEBUI_ICON_NAMES), "size": SIZE, "aria-label": TEXT},
+        "required": ("name",),
     },
 }
 
@@ -330,11 +342,16 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     for key, value in props.items():
         if key not in rule["props"] or not check_value(rule["props"][key], value):
             return f"invalid {component}.{key}"
-    if component == "Button" and props.get("iconOnly"):
-        if not props.get("icon") or not props.get("label", "").strip():
-            return "icon-only buttons require an icon and a non-empty label"
+    if component == "Button":
+        label = props.get("value", "")
+        if props.get("icon") and not label.strip() and not props.get("aria-label", "").strip():
+            return "icon-only buttons require a non-empty aria-label"
+        if "target" in props and "href" not in props:
+            return "button target requires href"
     if component == "Dropdown" and props.get("icon") and not props.get("ariaLabel", "").strip():
         return "icon dropdowns require a non-empty ariaLabel"
+    if component == "Icon" and "aria-label" in props and not props["aria-label"].strip():
+        return "icon label must be non-empty"
     if component == "Input" and "maxLength" in props:
         if any(len(props[key].encode("utf-16-le")) // 2 > props["maxLength"]
                for key in ("value", "defaultValue") if key in props):
@@ -409,7 +426,7 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "invalid preview URL"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
-    url_fields = {"Avatar": ("url",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
+    url_fields = {"Button": ("href",), "Avatar": ("src",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
     if any(key in props and not valid_url(props[key], iframe=component == "Iframe") for key in url_fields.get(component, ())):
         return "invalid resource URL"
     if component == "Image":
@@ -431,7 +448,7 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     if component == "Dropdown":
         items = props["items"]
         keys = [item["key"] for item in items]
-        if not items or not all(keys) or not _unique(keys) or any(not item["label"].strip() for item in items):
+        if not items or any(not key.strip() for key in keys) or not _unique(keys) or any(not item["label"].strip() for item in items):
             return "invalid dropdown items"
     return None
 

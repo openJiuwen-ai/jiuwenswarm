@@ -1,49 +1,43 @@
 /**
  * Schema 组件：Button。
- * 只服务插件渲染层：处理 schema props 与事件，接收宿主注入的外观，默认使用 antd Button，
+ * 只服务插件渲染层：直接透传 antd Button 属性与事件，接收宿主注入的外观，
  * 不考虑作为通用 UI 组件复用。
  */
 
-import { Button as AntButton } from 'antd';
+import { Button as AntButton, type ButtonProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
 import { buttonIcon } from './buttonIcon.tsx';
 import { useWebUIForms } from '../webuiForm/WebUIForm.tsx';
 
-type ButtonType = 'default' | 'primary' | 'dashed' | 'link' | 'text';
-type ButtonSize = 'small' | 'middle' | 'large';
-
-const SIZE_MAP: Readonly<Record<string, ButtonSize>> = {
+const SIZE_MAP: Readonly<Record<string, ButtonProps['size']>> = {
   sm: 'small',
-  md: 'middle',
+  md: 'medium',
   lg: 'large',
   small: 'small',
-  medium: 'middle',
+  medium: 'medium',
   large: 'large',
 };
 
-function resolveButton(props: Readonly<Record<string, unknown>>): { type: ButtonType; danger: boolean } {
-  const variant = typeof props.variant === 'string' ? props.variant : 'default';
-  if (variant === 'primary') {
-    return { type: 'primary', danger: false };
-  }
-  if (variant === 'danger') {
-    return { type: 'default', danger: true };
-  }
-  if (variant === 'ghost') {
-    return { type: 'text', danger: false };
-  }
-  return { type: 'default', danger: false };
-}
-
 export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterProps) {
+  const p = node.props as Pick<
+    ButtonProps,
+    | 'type' | 'color' | 'variant' | 'shape' | 'size' | 'danger' | 'ghost' | 'disabled' | 'block'
+    | 'loading' | 'href' | 'target' | 'iconPlacement'
+  > & {
+    value?: string;
+    form?: string;
+    icon?: string;
+    'aria-label'?: string;
+  };
   const forms = useWebUIForms();
-  const label = typeof node.props.label === 'string' ? node.props.label : '';
-  const size = typeof node.props.size === 'string' ? (SIZE_MAP[node.props.size] ?? 'middle') : 'middle';
-  const disabled = node.props.disabled === true || !context.connected;
-  const { type, danger } = resolveButton(node.props);
+  const label = typeof p.value === 'string' ? p.value : '';
+  // antd Button 没有 ariaLabel 属性；纯图标按钮的可访问名来自 HTML aria-label。
+  const ariaLabel = typeof p['aria-label'] === 'string' && p['aria-label'].trim() ? p['aria-label'] : undefined;
+  const size = typeof p.size === 'string' ? (SIZE_MAP[p.size] ?? 'medium') : 'medium';
+  const disabled = p.disabled === true || !context.connected;
   const onClick = node.events?.['ui.click'] ? async () => {
-    if (typeof node.props.form !== 'string') { await emit('ui.click', {}); return; }
-    const form = forms?.get(node.props.form);
+    if (typeof p.form !== 'string') { await emit('ui.click', {}); return; }
+    const form = forms?.get(p.form);
     if (!form) return;
     try {
       const values = await form.validateFields();
@@ -53,9 +47,10 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
     }
   } : undefined;
   const className = [appearance?.className, context.selected ? appearance?.activeClassName : undefined].filter(Boolean).join(' ');
-  const artwork = appearance?.icon ?? buttonIcon(node.props.icon);
+  const artwork = appearance?.icon ?? buttonIcon(p.icon);
   const icon = artwork && <span className={appearance?.iconClassName} aria-hidden="true">{artwork}</span>;
-  const hideLabel = appearance?.hideLabel ?? node.props.iconOnly === true;
+  const hideLabel = appearance?.hideLabel ?? label.length === 0;
+  const accessibleLabel = ariaLabel ?? (hideLabel && label ? label : undefined);
   const content = (
     <>
       {icon}
@@ -69,8 +64,8 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
         className={className}
         style={appearance.style}
         disabled={disabled}
-        title={label}
-        aria-label={label}
+        title={accessibleLabel ?? (label || undefined)}
+        aria-label={accessibleLabel ?? (label || undefined)}
         aria-pressed={appearance.activeClassName ? !!context.selected : undefined}
         onClick={onClick}
         data-testid="webui-button"
@@ -81,17 +76,24 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
   }
   return (
     <AntButton
-      type={type}
-      color={node.props.variant === 'secondary' ? 'default' : undefined}
-      variant={node.props.variant === 'secondary' ? 'filled' : undefined}
+      type={p.type}
+      color={p.color ?? (p.variant && p.variant !== 'solid' ? 'default' : undefined)}
+      variant={p.variant}
+      shape={p.shape}
       size={size}
-      danger={danger}
+      danger={p.danger}
+      ghost={p.ghost}
+      block={p.block}
+      loading={p.loading}
+      href={p.href}
+      target={p.href ? p.target : undefined}
+      iconPlacement={p.iconPlacement}
       disabled={disabled}
       className={className || undefined}
       style={appearance?.style}
       icon={icon}
-      title={appearance || hideLabel ? label : undefined}
-      aria-label={hideLabel ? label : undefined}
+      title={accessibleLabel ?? (appearance && label ? label : undefined)}
+      aria-label={accessibleLabel}
       aria-pressed={appearance?.activeClassName ? !!context.selected : undefined}
       onClick={onClick}
       // schema 文本来自插件数据，必须逐字渲染；关闭 antd 对两个中文字的自动空格。

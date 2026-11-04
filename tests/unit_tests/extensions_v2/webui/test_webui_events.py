@@ -31,19 +31,62 @@ def test_icon_whitelist_matches_frontend_and_gates_both_components():
     assert WEBUI_ICON_NAMES == names
     for component in ("Button", "Dropdown"):
         assert COMPONENT_RULES[component]["props"]["icon"]["values"] == names
-        props = {"label": "Action", "iconOnly": True} if component == "Button" else {
+        props = {"aria-label": "Action"} if component == "Button" else {
             "items": [{"key": "action", "label": "Action"}], "ariaLabel": "Actions",
         }
         for name in names:
             assert validate_props(component, {**props, "icon": name}) is None, name
         for name in ("not-an-icon", "Camera", "constructor", "__proto__", "", None):
             assert validate_props(component, {**props, "icon": name}) is not None
+    # Icon uses the name field instead of the icon field.
+    assert COMPONENT_RULES["Icon"]["props"]["name"]["values"] == names
+    for name in names:
+        assert validate_props("Icon", {"name": name}) is None, name
+    for name in ("not-an-icon", "Camera", "constructor", "__proto__", "", None):
+        assert validate_props("Icon", {"name": name}) is not None, name
+    assert validate_props("Icon", {}) is not None
+    assert validate_props("Icon", {"name": "plus", "aria-label": " "}) is not None
+    assert validate_props("Icon", {"name": "plus", "aria-label": "Add"}) is None
+
+
+def test_button_accepts_value_and_antd_style_props_and_rejects_legacy_names():
+    valid = (
+        {"value": "打开", "href": "https://example.com/docs", "target": "_blank"},
+        {"value": "提交", "loading": True},
+        {"value": "等待", "loading": {"delay": 100}},
+        {"value": "品牌", "color": "geekblue"},
+        {"icon": "refresh", "aria-label": "刷新", "type": "text"},
+    )
+    for props in valid:
+        assert validate_props("Button", props) is None, props
+    invalid = (
+        {"icon": "refresh"},
+        {"value": "x", "ariaLabel": "legacy"},
+        {"value": "x", "href": "javascript:alert(1)"},
+        {"value": "x", "target": "_blank"},
+        {"value": "x", "color": "unknown"},
+        {"value": "x", "loading": {"delay": "fast"}},
+    )
+    for props in invalid:
+        assert validate_props("Button", props) is not None, props
 
 
 def _button(*, args=None, disabled=False):
-    return RenderNode("Button", {"label": "Refresh", "disabled": disabled}, events={
+    return RenderNode("Button", {"value": "Refresh", "disabled": disabled}, events={
         "ui.click": {"id": "refresh", "args": {} if args is None else args},
     })
+
+
+@pytest.mark.parametrize("component", ["Button", "Text"])
+def test_text_value_contract_is_enforced_for_nested_nodes(component):
+    for value in ("", "确认 / Confirm"):
+        node = RenderNode(component, {"value": value})
+        assert validate_root(RenderNode("Box", children=(node,))).ok
+        assert node_to_payload(node)["props"] == {"value": value}
+    for props in ({"children": "old"}, {"value": "same", "children": "same"}, {"value": None}):
+        node = RenderNode(component, props)
+        assert not validate_root(RenderNode("Box", children=(node,))).ok
+    assert not validate_root(RenderNode(component, {"value": "text"}, children=(RenderNode("Text"),))).ok
 
 
 def _action(**changes):
@@ -109,6 +152,22 @@ def test_tree_rejects_invalid_component_contracts(root):
     assert not validate_root(root).ok
 
 
+@pytest.mark.parametrize("props,has_children,accepted", [
+    ({}, True, True),
+    ({"children": "Title"}, False, True),
+    ({"children": ""}, True, False),
+    ({"children": "Title"}, True, False),
+    ({"orientation": "vertical"}, True, False),
+    ({"orientation": "vertical"}, False, True),
+])
+def test_divider_title_sources_match_frontend(props, has_children, accepted):
+    children = (RenderNode("Text", {"value": "Title"}),) if has_children else ()
+    divider = RenderNode("Divider", props, children=children)
+    assert validate_root(divider).ok is accepted
+    tabs = RenderNode("Tabs", {"items": [{"key": "section", "label": "Section", "children": [divider]}]})
+    assert validate_root(tabs).ok is accepted
+
+
 def test_request_enforces_slot_root_components():
     panel = RenderNode("Panel", {"title": "Files"}, children=(RenderNode("Text", {"value": "body"}),))
     iframe = RenderNode("Iframe", {"title": "Web", "src": "https://example.com"})
@@ -129,6 +188,10 @@ def test_request_enforces_slot_root_components():
 @pytest.mark.parametrize("icon,children,accepted", [
     (False, (), False),
     (False, (RenderNode("Text", {"value": "Menu"}),), True),
+    (False, (RenderNode("Text", {"value": "One"}), RenderNode("Text", {"value": "Two"})), False),
+    (False, (RenderNode("Box", children=(RenderNode("Button", {"value": "Nested"}),)),), False),
+    (False, (RenderNode("Image", {"src": "/logo.svg"}),), False),
+    (False, (RenderNode("Image", {"src": "/logo.svg", "preview": False}),), True),
     (True, (), True),
     (True, (RenderNode("Text", {"value": "Ignored"}),), False),
 ])
@@ -142,10 +205,23 @@ def test_dropdown_requires_exactly_one_trigger_source(icon, children, accepted):
     assert validate_root(tabs).ok is accepted
 
 
+def test_icon_renders_at_root_and_nested_but_rejects_children_and_missing_name():
+    icon = RenderNode("Icon", {"name": "plus", "size": "small", "aria-label": "Add"})
+    assert validate_root(icon).ok
+    assert validate_root(RenderNode("Box", children=(icon,))).ok
+    assert validate_request(UiRenderInput(TARGET, icon)).ok
+    # Icon is a leaf: children, events and unknown props are rejected by the schema.
+    assert not validate_root(RenderNode("Icon", {"name": "plus"}, children=(RenderNode("Text"),))).ok
+    assert not validate_root(RenderNode("Icon", {"name": "plus"}, events={"ui.click": {"id": "open"}})).ok
+    assert not validate_root(RenderNode("Icon", {"name": "plus", "icon": "plus"})).ok
+    for props in ({}, {"name": ""}, {"name": "not-an-icon"}, {"name": "plus", "aria-label": "  "}):
+        assert not validate_root(RenderNode("Icon", props)).ok, props
+
+
 @pytest.mark.parametrize("component,props", [
     ("Text", {}), ("Button", {}), ("Input", {}), ("Switch", {}), ("Card", {}),
     ("Select", {"options": []}), ("TreeSelect", {"treeData": []}),
-    ("Tabs", {"items": []}), ("Divider", {}), ("Avatar", {"url": "/logo.svg"}),
+    ("Tabs", {"items": []}), ("Divider", {}), ("Avatar", {"src": "/logo.svg"}),
 ])
 def test_size_aliases_match_frontend(component, props):
     sizes = ("small", "medium", "sm", "md") if component in ("Switch", "Card") else (
@@ -314,7 +390,7 @@ async def test_valid_handler_can_replace_and_reply_and_old_revision_is_rejected(
 
 
 def test_component_event_catalog_excludes_deferred_features():
-    assert len(COMPONENT_RULES) == 20
+    assert len(COMPONENT_RULES) == 21
     assert {"Avatar", "FileTree", "FilePreview", "Dropdown"} <= COMPONENT_RULES.keys()
     assert {name for rule in COMPONENT_RULES.values() for name in rule.get("events", {})} <= UPSTREAM_EVENTS
 
@@ -343,6 +419,11 @@ async def test_application_entry_ready_accepts_first_visit_reason():
     RenderNode("Tabs", {"items": [{"key": "a", "label": "A"}], "selected": "a"}, children=(RenderNode("Text"),)),
     RenderNode("Tabs", {"items": [{"key": "a", "label": "A"}]}, children=(RenderNode("Text"),)),
     RenderNode("Slider", {"name": "amount", "value": 50}),
+    RenderNode("Text", {"children": "legacy"}),
+    RenderNode("Text", {"value": "legacy", "tone": "danger"}),
+    RenderNode("Button", {"label": "legacy"}),
+    RenderNode("Button", {"value": "legacy", "iconOnly": True}),
+    RenderNode("Avatar", {"url": "/logo.svg"}),
 ])
 def test_legacy_component_props_are_rejected(root):
     assert not validate_root(root).ok

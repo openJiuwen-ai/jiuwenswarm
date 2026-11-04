@@ -23,6 +23,8 @@ from jiuwenswarm.extensions_v2.examples.webui_workbench_v2.webui_workbench_v2.ha
 from jiuwenswarm.extensions_v2.examples.webui_workbench_v2.webui_workbench_v2.state import SessionState
 from jiuwenswarm.extensions_v2.examples.webui_workbench_v2.webui_workbench_v2.views import (
     TURN_SELECT_ACTION,
+    USER_LOGIN_ACTION,
+    USER_SELECT_ACTION,
     build_view,
 )
 from jiuwenswarm.extensions_v2.webui.models import RenderTarget, UiActionInput, UiRenderOutput
@@ -34,10 +36,48 @@ def test_workbench_header_declares_its_refresh_icon_and_text_variant() -> None:
     assert validate_root(root).ok
     assert root.component == "Button"
     assert root.props == {
-        "label": "刷新工作台 / Refresh workbench", "variant": "ghost", "size": "md",
-        "icon": "refresh", "iconOnly": True,
+        "type": "text", "size": "md",
+        "icon": "refresh", "aria-label": "刷新工作台 / Refresh workbench",
     }
     assert root.events["ui.click"] == {"id": "workbench.refresh", "args": {}}
+
+
+@pytest.mark.asyncio
+async def test_workbench_user_menu_combines_profile_logout_and_login_per_connection() -> None:
+    handler = WorkbenchHandlers()
+    render = AsyncMock(return_value=UiRenderOutput(status="delivered"))
+    ops = SimpleNamespace(ui=SimpleNamespace(render=render))
+    next_handler = AsyncMock()
+    target = RenderTarget("", "application.sidebar.footer", "webui.workbench-v2", "user-menu",
+                          connection_id="browser-a")
+
+    async def send(event_type: str, payload: dict | None = None, owner: RenderTarget = target):
+        request = UiActionInput(event_type, owner, payload or {})
+        return await handler.on_event(Event(event_type, request), ops, next_handler)
+
+    assert (await send("ui.ready")).accepted
+    menu = render.call_args.args[0].root
+    assert validate_root(menu).ok
+    assert [item["key"] for item in menu.props["items"]] == ["profile", "logout"]
+    assert menu.children[0].props["src"] == "/logo.svg"
+    render.reset_mock()
+    result = await send("ui.select", {"action_id": USER_SELECT_ACTION, "data": {"key": "profile"}})
+    assert result.accepted and result.status == "selected"
+    render.assert_not_awaited()
+    assert handler._signed_in == {}
+    assert not (await send("ui.select", {"action_id": USER_SELECT_ACTION, "data": {"key": "unknown"}})).accepted
+    assert (await send("ui.select", {"action_id": USER_SELECT_ACTION, "data": {"key": "logout"}})).accepted
+    signed_out = render.call_args.args[0].root
+    assert validate_root(signed_out).ok
+    assert signed_out.component == "Button"
+    assert signed_out.props["value"] == "登录 / Sign in"
+    assert (await send("ui.ready")).accepted
+    assert render.call_args.args[0].root.component == "Button"
+    assert (await send("ui.ready", owner=replace(target, connection_id="browser-b"))).accepted
+    assert render.call_args.args[0].root.component == "Dropdown"
+    assert (await send("ui.click", {"action_id": USER_LOGIN_ACTION})).accepted
+    assert render.call_args.args[0].root.component == "Dropdown"
+    next_handler.assert_not_awaited()
 
 
 def test_workbench_round_menu_places_a_symbol_button_before_the_icon_trigger() -> None:
@@ -48,7 +88,7 @@ def test_workbench_round_menu_places_a_symbol_button_before_the_icon_trigger() -
     assert root.props["wrap"] is False
     button, dropdown = root.children
     assert button.component == "Button"
-    assert button.props == {"label": "👍", "variant": "ghost", "size": "md"}
+    assert button.props == {"value": "👍", "type": "text", "size": "md"}
     assert not button.events
     assert dropdown.component == "Dropdown"
     assert dropdown.props["icon"] == "ellipsis"
@@ -81,11 +121,11 @@ def test_workbench_round_selection_only_updates_the_addressed_round(key: str) ->
     assert validate_root(root).ok
     assert root.component == "Box"
     assert [node.component for node in root.children] == ["Button", "Text"]
-    assert root.children[0].props["label"] == current.usage_label()
+    assert root.children[0].props["value"] == current.usage_label()
     assert root.children[1].props["value"] == current.result
     other_root = build_view("conversation.session.content.after", state, "request-2")
     assert other_root.component == "Button"
-    assert other_root.props["label"] == other.usage_label()
+    assert other_root.props["value"] == other.usage_label()
 
 
 @pytest.mark.asyncio
@@ -104,7 +144,7 @@ async def test_workbench_ready_restores_snapshot_and_round_action_publishes_visi
     await ready(target)
     original = render.call_args.args[0].root
     assert original.component == "Button"
-    assert original.props["label"] == "用量：未上报 / Usage: not reported"
+    assert original.props["value"] == "用量：未上报 / Usage: not reported"
     assert not original.events
     state = handler._sessions["session-1"]
     state.query = "协议"
@@ -128,7 +168,7 @@ async def test_workbench_ready_restores_snapshot_and_round_action_publishes_visi
     assert {item.target for item in requests} == {target, menu_target}
     snapshot = next(item.root for item in requests if item.target == target)
     assert validate_root(snapshot).ok
-    assert snapshot.children[0].props["label"] == state.turn("request-1").usage_label()
+    assert snapshot.children[0].props["value"] == state.turn("request-1").usage_label()
     assert snapshot.children[1].props["value"] == "本轮刷新 / Round refresh: 1"
     await ready(other_round)
     assert render.call_args.args[0].root == other_snapshot
@@ -148,7 +188,7 @@ def test_workbench_usage_is_read_only_and_formats_reported_total(total, label: s
     root = build_view("conversation.session.content.after", state, "request-1")
     assert validate_root(root).ok
     assert root.component == "Button"
-    assert root.props == {"label": label, "variant": "ghost", "size": "md", "icon": "database"}
+    assert root.props == {"value": label, "type": "text", "size": "md", "icon": "database"}
     assert not root.events
 
 
@@ -187,10 +227,10 @@ async def test_workbench_usage_notification_and_ready_order_preserves_round_isol
         usage.return_value = {"session_id": "session-1", "turn": {"request_id": "old", "total_tokens": 1}}
     await handler.on_event(Event("ui.ready", request), ops, next_handler)
     if not notify_first:
-        assert render.call_args.args[0].root.props["label"] == "用量：未上报 / Usage: not reported"
+        assert render.call_args.args[0].root.props["value"] == "用量：未上报 / Usage: not reported"
         await notify()
     await notify()
-    assert render.call_args.args[0].root.props["label"] == "用量：22.8M tokens"
+    assert render.call_args.args[0].root.props["value"] == "用量：22.8M tokens"
     assert all(call.args[0].target == target for call in render.call_args_list)
     assert handler._sessions["session-1"].turn("request-2").total_tokens == 77
     assert handler._sessions["session-2"].turn("request-1").total_tokens == 55
@@ -247,7 +287,7 @@ async def test_workbench_refresh_requeries_usage_and_rejects_mismatched_notifica
     usage.assert_awaited_once_with()
     assert state.turn("request-1").total_tokens == 800
     root = render.call_args.args[0].root
-    assert root.children[0].props["label"] == "用量：800 tokens"
+    assert root.children[0].props["value"] == "用量：800 tokens"
     assert root.children[1].props["value"] == "本轮刷新 / Round refresh: 1"
 
 
@@ -288,16 +328,16 @@ async def test_installed_workbench_reads_bound_usage_and_recovers_available_roun
         frame = transport.send_frame.call_args.args[0]
         assert frame.target == replace(target, scope="session")
         assert frame.root.component == "Button"
-        assert frame.root.props["label"] == "用量：250 tokens"
+        assert frame.root.props["value"] == "用量：250 tokens"
         assert frame.root.props["icon"] == "database"
         assert not frame.root.events
 
         assert (await manager.reload("webui.workbench-v2")).status == "SUCCESS"
         assert (await bus.trigger(ready, context)).accepted
-        assert transport.send_frame.call_args.args[0].root.props["label"] == "用量：250 tokens"
+        assert transport.send_frame.call_args.args[0].root.props["value"] == "用量：250 tokens"
         old = replace(target, instance_key="older-round")
         assert (await bus.trigger(Event("ui.ready", UiActionInput("ui.ready", old)), context)).accepted
-        assert transport.send_frame.call_args.args[0].root.props["label"] == "用量：未上报 / Usage: not reported"
+        assert transport.send_frame.call_args.args[0].root.props["value"] == "用量：未上报 / Usage: not reported"
         transport.send_error.assert_not_awaited()
     finally:
         await manager.shutdown()

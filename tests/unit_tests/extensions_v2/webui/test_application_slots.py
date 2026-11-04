@@ -372,7 +372,7 @@ async def test_workbench_example_entry_renders_avatar_and_clears_on_close(tmp_pa
         }
         avatar_node = frame["root"]["children"][0]["children"][0]
         assert avatar_node["component"] == "Avatar"
-        assert avatar_node["props"]["url"] == "/logo.svg"
+        assert avatar_node["props"]["src"] == "/logo.svg"
 
         close_req = AgentRequest(
             request_id="entry-close",
