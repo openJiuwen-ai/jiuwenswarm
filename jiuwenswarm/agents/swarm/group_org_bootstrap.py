@@ -2476,13 +2476,14 @@ async def _plan_child_tasks(task_pool: Any, plan: dict) -> tuple[list[Any], Any]
 
 
 async def _organization_rows(
-    session_id: str, plan: dict, task_pool: Any, *, fail_unfinished: bool
+    session_id: str, plan: dict, task_pool: Any, *, fail_unfinished: bool,
+    snapshot: tuple[list[Any], Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     """One card row per organization child. The title is that subtask."""
     labels = _team_labels(session_id)
     tasks: dict[str, str] = {}
     details: dict[str, dict[str, str]] = {}
-    children, root = await _plan_child_tasks(task_pool, plan)
+    children, root = snapshot if snapshot is not None else await _plan_child_tasks(task_pool, plan)
     for task in children:
         task_id = str(task.task_id)
         status = await _expert_row_status(task_pool, task)
@@ -2559,6 +2560,20 @@ async def _expert_row_status(task_pool: Any, task: Any) -> str:
     return "pending"
 
 
+async def publish_pending_organization_card(session_id: str, plan: dict) -> None:
+    """Show the accepted multi-team request before any proxy calls run_team."""
+    if plan.get("status") != "pending":
+        return
+    await publish_organization_card(
+        session_id=session_id,
+        plan=plan,
+        organization_id=organization_id_for_plan(plan, session_id),
+        team_id=instance_team_id(session_id, str(plan["owner_member"])),
+        status="queued" if _blocking_earlier_plans(session_id, plan) else "running",
+        only_if_missing=True,
+    )
+
+
 async def publish_organization_card(
     *,
     session_id: str,
@@ -2570,6 +2585,7 @@ async def publish_organization_card(
     message_id: str | None = None,
     fail_unfinished: bool = False,
     create: bool = True,
+    only_if_missing: bool = False,
 ) -> None:
     """Upsert the one organization card. A write failure does not stop the run."""
     plan_id = str(plan.get("plan_id") or "")
@@ -2580,9 +2596,23 @@ async def publish_organization_card(
         store = GroupExecutions(session_id)
         if not create and store.read().get(execution_id) is None:
             return
+        snapshot = await _plan_child_tasks(task_pool, plan)
         tasks, details = await _organization_rows(
-            session_id, plan, task_pool, fail_unfinished=fail_unfinished
+            session_id, plan, task_pool, fail_unfinished=fail_unfinished, snapshot=snapshot
         )
+        children, root = snapshot
+        stage = None
+        if status == "running":
+            if task_pool is None:
+                stage = "starting"
+            elif any(_is_summary_task(task) for task in children) or (
+                root is not None and str(root.task_id) in tasks
+            ):
+                stage = "summarizing"
+            elif any(value != "pending" for value in tasks.values()):
+                stage = "executing"
+            else:
+                stage = "processing"
         if status == "completed":
             phase = "completed"
         elif status == "failed":
@@ -2603,6 +2633,9 @@ async def publish_organization_card(
             status=status,
             phase=phase,
             message_id=message_id,
+            organization_stage=stage,
+            organization_plan_id=plan_id,
+            only_if_missing=only_if_missing,
         )
     except Exception:
         logger.exception(
