@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { needsGatewayResource, downloadGatewayResource } from '../../features/webui/client/GatewayResources';
 import { Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
@@ -45,6 +46,11 @@ export function ArtifactList({
   const handleDownload = async (artifact: ArtifactItem) => {
     const downloadUrl = artifactDownloadUrl(artifact);
     if (!downloadUrl) return;
+    if (needsGatewayResource(downloadUrl)) {
+      try { await downloadGatewayResource(downloadUrl, artifact.name || 'download'); }
+      catch { window.alert(t('artifacts.downloadFailed', { name: artifact.name })); }
+      return;
+    }
 
     const pywebviewApi = (window as DownloadCapableWindow).pywebview?.api;
     if (pywebviewApi?.download_file) {

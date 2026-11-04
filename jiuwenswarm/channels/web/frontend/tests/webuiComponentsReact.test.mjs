@@ -24,6 +24,9 @@ class ComponentMessageChannel extends NativeMessageChannel {
   constructor() { super(); channels.push(this); }
 }
 const noop = () => {};
+// jsdom does not implement the native modal-dialog API; browser tests cover modality.
+dom.window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+dom.window.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
 dom.window.matchMedia = () => ({
   matches: false, addListener: noop, removeListener: noop, addEventListener: noop, removeEventListener: noop,
 });
@@ -57,12 +60,71 @@ const { theme } = await import('antd');
 const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer, FileTree, createComponentState,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
-  WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n, buttonIcon,
+  WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n, buttonIcon, browserClientCapabilities, GatewayImage,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
   session_id: 'sess-1', slot_id: 'conversation.input.above', package_id: 'pkg.demo', instance_key: 'main',
 };
+
+test('protected images mount only after resource loading and discard old-context URLs before loading again', async () => {
+  const host = browserClientCapabilities;
+  const originalFetch = globalThis.fetch;
+  const desktop = window.jiuwenDesktop;
+  const createObjectURL = URL.createObjectURL;
+  const revokeObjectURL = URL.revokeObjectURL;
+  const storageKeys = new Set(Object.keys(window.localStorage));
+  const pending = [];
+  const revoked = [];
+  let serial = 0;
+  window.jiuwenDesktop = { apiBase: 'http://localhost' };
+  globalThis.fetch = (url) => new Promise((resolve) => pending.push({ url, resolve }));
+  URL.createObjectURL = () => `blob:http://localhost/resource-${++serial}`;
+  URL.revokeObjectURL = (url) => revoked.push(url);
+  host.configure({ clientProtocolVersion: 1, gatewayInstanceId: 'image-gateway', connectionEpoch: 'image-connection',
+    packages: [{ packageId: 'image-package', activationGeneration: 'image-generation',
+      grants: ['local_storage.write', 'request.bind.gateway'], requestBindings: [{ type: 'http',
+        source: { key: 'credential' }, target: { location: 'header', name: 'Authorization', prefix: 'Bearer ' } }] }] });
+  await Promise.resolve();
+  const app = await setup({ component: 'Image', props: { src: '/protected-image', alt: 'Protected', preview: false } });
+  const container = document.createElement('div'); document.body.append(container);
+  const raw = createRoot(container);
+  const completeImages = async () => {
+    const batch = pending.splice(0);
+    assert.equal(batch.length, 2);
+    await act(async () => {
+      for (const request of batch) request.resolve(new Response(new Uint8Array([137, 80, 78, 71]),
+        { headers: { 'Content-Type': 'image/png' } }));
+    });
+  };
+  try {
+    await act(async () => raw.render(createElement(GatewayImage, { src: '/protected-native-image', alt: 'Native' })));
+    assert.equal(app.container.querySelector('img'), null);
+    assert.equal(container.querySelector('img'), null);
+    await completeImages();
+    const first = [app.container.querySelector('img').src, container.querySelector('img').src];
+    assert.ok(first.every((url) => url.startsWith('blob:')));
+    await act(async () => host.acceptOperation({ clientProtocolVersion: 1, operation_id: 'image-change',
+      invocation_id: 'image-invocation', connection_epoch: 'image-connection', package_id: 'image-package',
+      activation_generation: 'image-generation', method: 'local_storage.set',
+      params: { key: 'credential', value: 'changed' }, deadline: Date.now() + 30_000 }));
+    assert.equal(app.container.querySelector('img'), null);
+    assert.equal(container.querySelector('img'), null);
+    assert.ok(first.every((url) => revoked.includes(url)));
+    await completeImages();
+    assert.ok([app.container.querySelector('img').src, container.querySelector('img').src]
+      .every((url) => url.startsWith('blob:') && !first.includes(url)));
+  } finally {
+    await app.close();
+    await act(async () => raw.unmount()); container.remove();
+    host.invalidate();
+    for (const key of Object.keys(window.localStorage)) if (!storageKeys.has(key)) window.localStorage.removeItem(key);
+    window.jiuwenDesktop = desktop;
+    globalThis.fetch = originalFetch;
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+  }
+});
 
 test('FilePreview embeds images and verified PDFs using the native browser viewer', async () => {
   const originalFetch = globalThis.fetch;
@@ -282,6 +344,14 @@ async function changeInput(input, value, isComposing = false) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
     input.dispatchEvent(new window.InputEvent('input', { bubbles: true, inputType: 'insertText', isComposing }));
+  });
+}
+function untilDOM(container, predicate) {
+  if (predicate()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const observer = new MutationObserver(() => { if (predicate()) { observer.disconnect(); clearTimeout(deadline); resolve(); } });
+    const deadline = setTimeout(() => { observer.disconnect(); reject(new Error('Expected DOM update did not arrive')); }, 2500);
+    observer.observe(container, { subtree: true, childList: true, attributes: true });
   });
 }
 async function pressEnter(input, options = {}) {
@@ -893,11 +963,12 @@ test('Input click sends the current draft and allows read-only clicks while bloc
 });
 
 test('Input sends exact change data and clear values without dispatching on mount, click, Enter or blur', async () => {
-  const app = await setup(inputTree({ value: '北京', ariaLabel: 'City', allowClear: true, showCount: true, maxLength: 20 }));
+  const app = await setup(inputTree({ value: '北京', ariaLabel: 'City', allowClear: true, showCount: true, maxLength: 20, autoComplete: 'off' }));
   try {
     const input = app.container.querySelector('[data-testid="webui-input"]');
     assert.equal(input.value, '北京');
     assert.equal(input.getAttribute('aria-label'), 'City');
+    assert.equal(input.getAttribute('autocomplete'), 'off');
     assert.equal(input.maxLength, 20);
     assert.equal(app.business().length, 0);
     await click(input);
@@ -1381,7 +1452,12 @@ test('WebUIEntryHost renders application.entry with Avatar and closes on clear f
     await act(async () => {
       transport.injectClearFrame({ target: entryTarget, revision: 2, reason: 'completed' });
     });
-    assert.equal(container.querySelector('[data-testid="webui-entry-host"]'), null, 'entry host unmounts after clear');
+    assert.equal(dialog.hasAttribute('open'), false, 'clear closes the current view and keeps its consumer');
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Stale' } }, 1, entryTarget)));
+    assert.equal(dialog.hasAttribute('open'), false, 'an old frame cannot reopen a cleared entry');
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Reopened' } }, 3, entryTarget)));
+    assert.equal(dialog.hasAttribute('open'), true);
+    assert.match(dialog.textContent, /Reopened/);
   } finally {
     await act(async () => root.unmount());
     container.remove();
@@ -1390,7 +1466,7 @@ test('WebUIEntryHost renders application.entry with Avatar and closes on clear f
 });
 
 
-test('WebUIEntryHost skips mounting and ready after an accepted first visit', async () => {
+test('WebUIEntryHost keeps a consumer without repeating first-visit ready', async () => {
   window.localStorage.setItem('workswarm.webui.entry.visited', '1');
   const transport = createMockTransport();
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
@@ -1400,8 +1476,12 @@ test('WebUIEntryHost skips mounting and ready after an accepted first visit', as
   try {
     await act(async () => root.render(createElement(WebUIEntryHost,
       { runtime, registry: componentRendererRegistry }, createElement('span', null, 'Workspace'))));
-    assert.equal(container.querySelector('[data-testid="webui-entry-host"]'), null);
+    assert.equal(container.querySelector('[data-testid="webui-entry-host"]')?.open, false);
     assert.equal(container.textContent, 'Workspace');
+    assert.equal(transport.dispatches.length, 0);
+    const entryTarget = { scope: 'application', slot_id: 'application.entry', package_id: 'pkg.demo', instance_key: 'again' };
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Later view' } }, 1, entryTarget)));
+    assert.equal(container.querySelector('[data-testid="webui-entry-host"]')?.open, true);
     assert.equal(transport.dispatches.length, 0);
     await act(async () => {
       transport.setConnectionState('disconnected');
@@ -1413,6 +1493,164 @@ test('WebUIEntryHost skips mounting and ready after an accepted first visit', as
     container.remove(); runtime.dispose();
     window.localStorage.removeItem('workswarm.webui.entry.visited');
   }
+});
+
+const formTree = (rules = [{ required: true, message: '请输入账号' }, { min: 4, message: '至少四个字符' }]) => ({
+  component: 'Box', props: { direction: 'column' }, children: [
+    { component: 'Form', props: { name: 'credentials', requiredMark: false }, children: [
+      { component: 'Form.Item', props: { name: 'account', label: '账号', rules }, children: [{ component: 'Input' }] },
+      { component: 'Form.Item', props: { name: 'secret', label: '密码', rules: [{ pattern: '^[A-Za-z]+[0-9]+!$', message: '密码格式不正确' }] },
+        children: [{ component: 'Input', props: { type: 'password' } }] },
+    ] },
+    { component: 'Button', props: { label: '确认', form: 'credentials' }, events },
+    { component: 'Button', props: { label: '普通按钮' }, events },
+  ],
+});
+
+test('Form validates on blur and click locally, then sends exactly its current fields', async () => {
+  const app = await setup(formTree());
+  try {
+    assert.ok(app.container.querySelector('[data-testid="webui-form"]').classList.contains('ant-form-hide-required-mark'));
+    const buttons = app.container.querySelectorAll('[data-testid="webui-button"]');
+    await click(buttons[0]);
+    await untilDOM(app.container, () => app.container.textContent.includes('请输入账号'));
+    assert.equal(app.business().length, 0, 'hiding required markers preserves required validation');
+    const fields = app.container.querySelectorAll('input');
+    await changeInput(fields[0], 'abc');
+    await act(async () => fields[0].dispatchEvent(new window.FocusEvent('focusout', { bubbles: true })));
+    await untilDOM(app.container, () => app.container.textContent.includes('至少四个字符'));
+    assert.equal(app.business().length, 0);
+    assert.match(app.container.textContent, /至少四个字符/);
+    assert.equal(fields[0].getAttribute('aria-invalid'), 'true');
+    assert.ok(fields[0].getAttribute('aria-describedby'));
+    await click(buttons[0]);
+    assert.equal(app.business().length, 0);
+    await changeInput(fields[0], 'alice');
+    await changeInput(fields[1], 'invalid');
+    await click(buttons[0]);
+    assert.equal(app.business().length, 0);
+    await untilDOM(app.container, () => app.container.textContent.includes('密码格式不正确'));
+    await changeInput(fields[1], 'Secret123!');
+    assert.equal(app.business().length, 0, 'typing never sends the secret');
+    await click(buttons[0]);
+    assert.deepEqual(app.business()[0].payload.data, { account: 'alice', secret: 'Secret123!' });
+    assert.equal(app.business()[0].payload.action_id, 'confirm');
+    await click(buttons[1]);
+    assert.deepEqual(app.business()[1].payload.data, {});
+  } finally { await app.close(); }
+});
+
+test('Form fields use literal names, optional rules, and stay isolated from another named Form', async () => {
+  const tree = { component: 'Box', children: [
+    { component: 'Form', props: { name: 'one' }, children: [
+      { component: 'Form.Item', props: { name: 'literal.name' }, children: [{ component: 'Input' }] },
+    ] },
+    { component: 'Form', props: { name: 'two' }, children: [
+      { component: 'Form.Item', props: { name: 'other', rules: [{ required: true, message: 'Required' }] }, children: [{ component: 'Input' }] },
+    ] },
+    { component: 'Button', props: { label: 'First', form: 'one' }, events },
+  ] };
+  const app = await setup(tree);
+  try {
+    await click(app.container.querySelector('[data-testid="webui-button"]'));
+    assert.deepEqual(app.business()[0].payload.data, { 'literal.name': '' });
+    await changeInput(app.container.querySelector('input'), '值');
+    await click(app.container.querySelector('[data-testid="webui-button"]'));
+    assert.deepEqual(app.business()[1].payload.data, { 'literal.name': '值' });
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('input').value, '');
+    assert.equal(app.container.querySelector('input').disabled, true);
+  } finally { await app.close(); }
+});
+
+test('Dropdown expands locally and sends only the registered clicked menu key', async () => {
+  const app = await setup({ component: 'Dropdown', props: { items: [
+    { key: 'account', label: 'alice', disabled: true }, { type: 'divider' }, { key: 'exit', label: '退出登录' },
+  ],
+    placement: 'topLeft', align: { points: ['bl', 'tr'], offset: [0, 0] } }, events: { 'ui.select': events['ui.click'] },
+    children: [{ component: 'Avatar', props: { url: '/logo.svg', alt: 'User' } }] });
+  try {
+    await click(app.container.querySelector('[data-testid="webui-dropdown-trigger"]'));
+    assert.equal(app.business().length, 0);
+    const account = document.querySelector('[data-testid="webui-dropdown-item"][data-variant="account"]');
+    assert.equal(account.closest('[role="menuitem"]').getAttribute('aria-disabled'), 'true');
+    assert.equal(document.querySelectorAll('[role="separator"]').length, 1);
+    await click(account);
+    assert.equal(app.business().length, 0, 'the native disabled label cannot dispatch an action');
+    const item = document.querySelector('[data-testid="webui-dropdown-item"][data-variant="exit"]');
+    assert.equal(item.textContent, '退出登录');
+    await click(item);
+    assert.equal(app.business()[0].event, 'ui.select');
+    assert.deepEqual(app.business()[0].payload.data, { key: 'exit' });
+    assert.equal(app.business()[0].payload.action_id, 'confirm');
+  } finally { await app.close(); }
+});
+
+test('Dropdown renders plugin-composed labels and native popup width without initial action focus', async () => {
+  const app = await setup({ component: 'Dropdown', props: {
+    autoFocus: false, destroyOnHidden: true, styles: { root: { width: 200 } }, items: [
+      { key: 'account', disabled: true, label: [{ component: 'Box', props: { align: 'center', gap: 'sm' }, children: [
+        { component: 'Avatar', props: { url: '/avatar.svg', alt: 'User', size: 20 } },
+        { component: 'Text', props: { value: 'Alice' } },
+      ] }] },
+      { type: 'divider' }, { key: 'exit', label: 'Sign out' },
+    ],
+  }, events: { 'ui.select': events['ui.click'] }, children: [{ component: 'Avatar', props: { url: '/avatar.svg', alt: 'User' } }] });
+  try {
+    const trigger = app.container.querySelector('[data-testid="webui-dropdown-trigger"]');
+    trigger.focus();
+    await click(trigger);
+    const account = document.querySelector('[data-testid="webui-dropdown-item"][data-variant="account"]');
+    assert.equal(account.querySelector('img').alt, 'User');
+    assert.equal(account.querySelector('[data-testid="webui-avatar"]').style.width, '20px');
+    assert.equal(account.querySelector('[data-testid="webui-text"]').textContent, 'Alice');
+    assert.equal(document.querySelector('.ant-dropdown').style.width, '200px');
+    assert.equal(document.activeElement, trigger);
+    assert.equal(document.querySelector('.ant-dropdown-menu-item-active'), null);
+    await click(account);
+    assert.equal(app.business().length, 0, 'display labels do not dispatch actions');
+    const menu = document.querySelector('[role="menu"]');
+    await click(trigger);
+    await untilDOM(document.body, () => !document.querySelector('[role="menu"]'));
+    await click(trigger);
+    assert.notEqual(document.querySelector('[role="menu"]'), menu, 'native destroyOnHidden recreates the popup');
+    await click(document.querySelector('[data-testid="webui-dropdown-item"][data-variant="exit"]'));
+    assert.deepEqual(app.business()[0].payload.data, { key: 'exit' });
+  } finally { await app.close(); }
+});
+
+test('application footer mounts without a session and follows the published single-slot semantics', async () => {
+  const scope = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.one', instance_key: 'main' };
+  const app = await setup({ component: 'Text', props: { value: 'First' } }, scope);
+  try {
+    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Second' } }, 1,
+      { ...scope, package_id: 'pkg.two' })));
+    assert.doesNotMatch(app.container.textContent, /First/);
+    assert.match(app.container.textContent, /Second/);
+    assert.equal(app.transport.dispatches[0].target.scope, 'application');
+    assert.equal(app.transport.dispatches[0].target.sessionId, '');
+  } finally { await app.close(); }
+});
+
+test('a new request context can replace the blocking entry without exposing the old view', async () => {
+  const target = { scope: 'application', slot_id: 'application.entry', package_id: 'pkg.demo', instance_key: 'old' };
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog }); runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(WebUIEntryHost, { runtime, registry: componentRendererRegistry })));
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Previous view' } }, 5, target)));
+    await act(async () => runtime.resetRequestContext());
+    assert.equal(container.querySelector('dialog').open, true);
+    const next = { ...target, instance_key: 'new' };
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Button', props: { label: 'Current view' }, events }, 1, next)));
+    assert.doesNotMatch(container.textContent, /Previous view/);
+    await click(container.querySelector('[data-testid="webui-button"]'));
+    assert.equal(transport.dispatches.findLast((item) => item.event === 'ui.click').target.instanceKey, 'new');
+    await act(async () => transport.injectClearFrame({ target: next, revision: 2 }));
+    assert.equal(container.querySelector('dialog').open, false);
+  } finally { await act(async () => root.unmount()); container.remove(); runtime.dispose(); }
 });
 
 
@@ -1549,3 +1787,44 @@ for (const operation of ['expand', 'select']) {
     }
   });
 }
+
+test('Dropdown with a non-preview Image trigger opens only its menu', async () => {
+  const app = await setup({ component: 'Dropdown', props: { items: [{ key: 'one', label: 'One' }] }, events: { 'ui.select': events['ui.click'] },
+    children: [{ component: 'Box', children: [
+      { component: 'Image', props: { src: '/logo.svg', alt: 'Menu trigger', preview: false } },
+    ] }] });
+  try {
+    await click(app.container.querySelector('img'));
+    await untilDOM(document.body, () => Boolean(document.querySelector('[role="menu"]')));
+    assert.equal(document.querySelector('.ant-image-preview'), null);
+    assert.equal(app.business().length, 0);
+    await click(document.querySelector('[data-testid="webui-dropdown-item"]'));
+    assert.equal(app.business().length, 1);
+    assert.deepEqual(app.business()[0].payload.data, { key: 'one' });
+  } finally { await app.close(); }
+});
+
+test('Form drafts survive retained Tabs and activity changes but reset on disconnect or destroyed content', async () => {
+  for (const destroyOnHidden of [false, true]) {
+    const tree = { component: 'Tabs', props: { destroyOnHidden, items: [
+      { key: 'form', label: 'Form', children: [formTree([])] },
+      { key: 'other', label: 'Other', children: [{ component: 'Text', props: { value: 'Other content' } }] },
+    ] } };
+    const app = await setup(tree);
+    try {
+      const input = () => app.container.querySelector('input');
+      await changeInput(input(), 'keep-this-draft');
+      await click(app.container.querySelector('[data-testid="webui-tab-label"][data-variant="other"]'));
+      assert.equal(app.business().length, 0);
+      await click(app.container.querySelector('[data-testid="webui-tab-label"][data-variant="form"]'));
+      assert.equal(input().value, destroyOnHidden ? '' : 'keep-this-draft');
+      await changeInput(input(), 'local-draft');
+      await app.activity(false);
+      await app.activity(true);
+      assert.equal(input().value, 'local-draft');
+      await act(async () => app.transport.setConnectionState('disconnected'));
+      await act(async () => app.transport.setConnectionState('connected'));
+      assert.equal(input().value, '');
+    } finally { await app.close(); }
+  }
+});

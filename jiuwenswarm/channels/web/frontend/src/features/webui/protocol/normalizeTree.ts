@@ -9,6 +9,7 @@ import { protocolOk, protocolReject, type WebUIProtocolResult } from '../contrac
 import type { WebUILimits } from './limits.ts';
 import { checkPropValue } from './checkPropValue.ts';
 import { isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './utils.ts';
+import { validateFormStructure } from './formStructure.ts';
 
 const actionArgRule: WebUIPropRule = {
   kind: 'lazy',
@@ -41,6 +42,8 @@ export function normalizeTree(
   if (!result.ok) {
     return result;
   }
+  const structureError = validateFormStructure(result.value);
+  if (structureError) return protocolReject('SCHEMA_ERROR', structureError);
   return protocolOk({ tree: result.value, nodeCount: context.nodes });
 }
 
@@ -123,6 +126,10 @@ function normalizeNode(
     const items = props.value[prop] as Record<string, unknown>[];
     const metadata: Record<string, unknown>[] = [];
     for (let index = 0; index < items.length; index += 1) {
+      if (typeof items[index][field] === 'string') {
+        metadata.push(items[index]);
+        continue;
+      }
       const { [field]: nodes = [], ...item } = items[index];
       const group: WebUINormalizedNode[] = [];
       for (const [childIndex, child] of (nodes as unknown[]).entries()) {

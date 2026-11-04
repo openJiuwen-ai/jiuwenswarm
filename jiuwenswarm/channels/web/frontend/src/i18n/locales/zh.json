@@ -78,7 +78,10 @@
     "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
   },
   "webui": {
-    "entryLabel": "欢迎"
+    "entryLabel": "应用界面",
+    "menuLabel": "打开操作菜单",
+    "clientOperationError": "无法执行浏览器操作。",
+    "clientConfigurationError": "无法启用浏览器扩展能力。"
   },
   "nav": {
     "chat": "对话",

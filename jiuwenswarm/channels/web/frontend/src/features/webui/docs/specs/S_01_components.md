@@ -1,16 +1,49 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-03。关联设计：[F_01](../features/F_01_antd-components.md)。
+最近修订：2026-11-03。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
 
 ## 范围与适用条件
 
 本规约定义组件目录的属性和事件数据规则，以及插件端的渲染与交互校验契约。
+宿主负责插槽位置、基础留白、主题与生命周期；插件通过已开放的 AntD 组件属性及原生布局属性声明具体页面样式。宿主负责通用白名单校验和属性适配，不增加登录页面专用的样式分支。
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Dropdown。字段、默认值、必填与事件数据的唯一实现定义在
+Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown。字段、默认值、必填与事件数据的唯一实现定义在
 [`catalog/components/`](../../catalog/components/)，本文不复制完整属性表。
-槽位目录包含应用范围的 `application.entry` 与 `application.sidebar.footer`，其余 13 个槽位为会话范围。
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`，其余 13 个槽位为会话范围。
+
+## 表单、菜单与应用插槽
+
+- Box 新增受控 width/height/minHeight/maxWidth、padding、backgroundImage/backgroundFit 和 visibleFrom；尺寸仅接受有界数值、px/% 或适用字段的 auto，不开放任意 style/className。visibleFrom 的 sm/md/lg 对应 576/768/992px，低于断点时隐藏并停用子树交互。
+  gap 接受 none/sm/md/lg 或非负有限数值；数值按 px 直接传给 AntD Flex.gap，例如 gap=48，间距由插件声明。
+  marginInline 接受 auto、非负有界数值或 px/% 字符串，直接写入原生 CSS margin-inline；插件可用 width=100%、maxWidth=1200、marginInline=auto 声明内容区居中。
+- Image.fit 支持 contain/cover，preview=false 可用于 Logo 和宣传图。背景图和内容图均由插件提供 URL，不内置登录图片或官网样式。
+- Input.autoComplete 为可选字符串，直接传给 AntD Input 的原生自动填充属性；插件可声明 off，但浏览器密码管理器可以忽略此偏好，宿主不承诺禁止保存密码弹窗。
+- Form.name 在同一渲染实例内唯一；禁止嵌套 Form。可选 requiredMark 为布尔值，直接传给 AntD Form；false 隐藏必填星号，不改变 rules 的必填校验。Form.Item 仅接收 name、可选 label/rules 和一个 Input，字段名按字面解释，同一 Form 内不得重复。
+- Form 在保留的隐藏页签或暂时停用的内容中保留字段值；断连、replace、clear、实例结束或 destroyOnHidden 导致实际销毁时重新初始化。
+- rules 支持字符串 required/min/max/pattern/message；前端使用 AntD Form 在 blur 和按钮确认时本地校验，Form.Item 展示关联错误。禁止函数、自定义 validator 和表单输入的上行事件声明。
+- Button.form 引用当前实例内的 Form.name；校验通过后，以字段名为键直接放入 ui.click.data。无 form 的按钮保持 data={}，无效引用不执行普通点击。
+- Dropdown.items 的普通菜单项声明唯一非空 key、label，可选 type=item 和 disabled；分隔项使用 AntD 原生 type=divider，可选 key。所有显式 key 唯一；禁用项及分隔项不接受点击事件。触发器使用 icon 或一棵展示型 children 内容，不接受嵌套交互组件；触发子树中的 Image 必须由插件显式设置 preview=false。展开/收起在本地处理，可点击菜单项发送 ui.select.data.key。
+  label 接受非空字符串或非空展示节点数组，复用 Box、Text、Avatar、Image、Tag；节点数组与触发内容使用相同的校验和树规模限制，不接受嵌套交互或图片预览。插件可组合头像与正文 Text，正文颜色由主题决定。
+  autoFocus 为可选布尔值，遵循 AntD 默认 false；鼠标展开不主动聚焦菜单项，键盘交互沿用 AntD 行为。styles.root.width 接受 0–4096 的数值（px），直接传给 AntD；具体菜单宽度由插件声明，例如 200。
+  可选 destroyOnHidden 直接传给 AntD；插件可声明 true，在关闭时销毁菜单，重新展开时不保留先前的焦点高亮。
+  可选 placement 使用 AntD 的 12 种非 Center 方位；可选 align 复用其锚点对齐，points 为两个 tl/tc/tr/cl/cc/cr/bl/bc/br，依次指定菜单与触发器的锚点，offset 为可选的两个有界数值（-128 到 128px）。
+  右上方示例为 placement=topLeft、align.points=[bl,tr]、align.offset=[0,0]，将菜单左下角对齐头像触发器右上角。上述字段直接传给 AntD，不增加位置别名或自定义定位算法。
+- application.entry 始终保留消费者，首次欢迎 ui.ready 仍只按首访触发。有效 render 可随时显示，clear 关闭当前视图后可重入，渲染失败保持全屏错误；原生 modal dialog 和 inert 阻止底层交互。内容区铺满视口，宽度、背景和留白由插件的 Box 控制。
+- application.sidebar.footer 是应用级单实例显示槽位，不依赖聊天 session，沿用已合入的槽位目录；宿主为底部保留 12px 间距。
+
+### English contract summary
+
+The host owns slot placement, baseline spacing, theme and lifecycle. Plugins declare page presentation through the exposed AntD and native layout properties; the renderer performs generic validation and adaptation without login-specific styling branches.
+
+Input.autoComplete is an optional string passed directly to AntD Input. Plugins may declare off; browser password managers can override this preference, so it does not guarantee suppression of browser credential prompts.
+
+Dropdown menu entries support native AntD disabled and type=item properties; dividers use type=divider with an optional key. Explicit keys must be unique. Disabled entries and dividers cannot dispatch actions. A label is a nonempty string or an array of display nodes (Box, Text, Avatar, Image, Tag), using the same validation and tree limits as the trigger; interactive content and image previews are prohibited. Plugins can compose an avatar and regular theme-colored Text. Optional autoFocus follows AntD's false default and preserves native keyboard behavior. Optional destroyOnHidden maps directly to AntD; true destroys the menu on close so reopening does not retain its previous focus highlight. Optional styles.root.width passes a 0–4096 pixel number directly to AntD; plugins choose the actual width, such as 200.
+
+Form owns controlled string fields and local blur/confirmation validation. Retained hidden tabs and temporary content inactivity preserve field values; disconnection, replacement, clearing, instance disposal or destroyed tab content resets them. Its optional boolean requiredMark maps directly to AntD Form: false hides the required marker while preserving required validation. Button.form references a unique Form in the same rendering instance and sends its fields directly in ui.click.data. Ordinary buttons keep empty data. Dropdown declares key/label items, opens locally, and sends the selected key through ui.select. The trigger uses either icon or one display-only child subtree. Images in its trigger subtree must explicitly set preview=false. Optional placement and align use native AntD positioning, with two anchor points and optional offsets bounded to -128..128px. The entry consumer survives clear and uses native modal focus isolation. The sidebar footer is application scoped, uses the published single-view selection without a chat session, and leaves 12px at the bottom.
+
+Box provides bounded dimensions, padding, background-image fitting and explicit minimum-width visibility at 576/768/992px. Its gap accepts none/sm/md/lg or a finite nonnegative number passed directly to AntD Flex.gap in pixels. marginInline accepts auto, bounded nonnegative numbers or px/% values and maps directly to native CSS. Image.fit supports contain/cover. Entry content fills the viewport; plugins compose split or centered pages without a login-specific layout component. See [page layout properties](S_03_page-composition.md).
 
 ## 接口与不变量
 

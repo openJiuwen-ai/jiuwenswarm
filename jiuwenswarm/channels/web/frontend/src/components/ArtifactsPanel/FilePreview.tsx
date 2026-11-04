@@ -1,3 +1,5 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
+import { GatewayImage, GatewayVideo, GatewayFrame } from '../../features/webui/client/GatewayResources';
 import { useEffect, useState } from 'react';
 import { AlertCircle, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -41,7 +43,7 @@ function TextPreview({ artifact, kind }: { artifact: PreviewArtifact; kind: Text
     }
     let cancelled = false;
     setState({ content: '', error: false, loading: true });
-    void fetch(url, { cache: 'no-store' })
+    void gatewayFetch(url, { cache: 'no-store' })
       .then(async response => {
         const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
         if (!response.ok || contentType.includes('text/html')) throw new Error('read_failed');
@@ -126,13 +128,13 @@ export function FilePreview({
     case 'image':
       return (
         <div className="flex h-full min-h-0 w-full items-center justify-center overflow-hidden" data-testid="artifact-image-preview-frame">
-          <img src={url} alt={artifact.name} className="h-full w-full object-contain" data-testid="artifact-image-preview" />
+          <GatewayImage src={url} alt={artifact.name} className="h-full w-full object-contain" data-testid="artifact-image-preview" />
         </div>
       );
     case 'video':
       return (
         <div className="flex h-full min-h-0 w-full items-center justify-center overflow-hidden" data-testid="artifact-video-preview-frame">
-          <video
+          <GatewayVideo
             src={url}
             controls
             preload="metadata"
@@ -142,7 +144,7 @@ export function FilePreview({
         </div>
       );
     case 'pdf':
-      return <iframe title={artifact.name} src={url} className="block h-full min-h-full w-full border-0 bg-transparent" data-testid="artifact-pdf-preview" />;
+      return <GatewayFrame title={artifact.name} src={url} className="block h-full min-h-full w-full border-0 bg-transparent" data-testid="artifact-pdf-preview" />;
     case 'docx':
       return <DocxPreview url={url} title={artifact.name} />;
     case 'spreadsheet':

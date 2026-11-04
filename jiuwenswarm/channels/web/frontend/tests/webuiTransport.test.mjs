@@ -165,6 +165,34 @@ test('web client transport builds the dispatch request and parses the receipt', 
   });
 });
 
+test('trusted client declarations configure the capability host and unsubscribe with the transport', () => {
+  const client = createFakeClient();
+  const calls = [];
+  const capabilities = {
+    configure: (snapshot) => { calls.push(['configure', snapshot]); },
+    acceptOperation: (operation) => { calls.push(['operation', operation]); },
+    acceptsFrame: () => true,
+  };
+  const transport = createWebClientTransport(client, capabilities);
+  const off = transport.subscribe({
+    onRenderFrame: (frame) => { calls.push(['render', frame]); },
+    onClearFrame: () => undefined,
+    onErrorFrame: () => undefined,
+    onConnectionStateChange: () => undefined,
+  });
+  const snapshot = { clientProtocolVersion: 1, gatewayInstanceId: 'gateway', connectionEpoch: 'socket', packages: [] };
+  client.emit('client.declarations', snapshot);
+  client.emit('webui.render', { revision: 1 });
+  assert.deepEqual(calls, [['configure', snapshot], ['render', { revision: 1 }]]);
+  capabilities.configure = () => { throw new Error('configuration rejected'); };
+  assert.doesNotThrow(() => client.emit('client.declarations', {}));
+  off();
+  assert.equal(client.offCalls, 6);
+  client.emit('client.declarations', snapshot);
+  client.emit('client.operation', {});
+  assert.equal(calls.length, 2);
+});
+
 test('web client transport returns null for failures and malformed receipts', async () => {
   const failing = createFakeClient();
   failing.request = async () => {

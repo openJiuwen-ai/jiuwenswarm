@@ -1,3 +1,4 @@
+import { gatewayFetch } from './gatewayFetch';
 /**
  * 华为账号（Account Kit）登录客户端：只做 HTTP 调用，状态在 `stores/authStore.ts`。
  *
@@ -125,7 +126,7 @@ async function readError(response: Response, fallback: string): Promise<AuthApiE
 
 /** 发起登录：拿到浏览器要打开的授权地址。 */
 export async function authorize(): Promise<AuthorizeResponse> {
-  const response = await fetch(authUrl('/authorize'), {
+  const response = await gatewayFetch(authUrl('/authorize'), {
     method: 'POST',
     credentials: 'include',
     headers: stateChangingHeaders(),
@@ -145,7 +146,7 @@ export type ClaimOutcome = { kind: 'pending' } | { kind: 'done'; status: AuthSta
  * 成功后存下 session id：桌面 WebView 拿不到种在系统浏览器里的 cookie，只能靠请求头带会话。
  */
 export async function claim(state: string, claimToken: string): Promise<ClaimOutcome> {
-  const response = await fetch(authUrl('/claim'), {
+  const response = await gatewayFetch(authUrl('/claim'), {
     method: 'POST',
     credentials: 'include',
     headers: stateChangingHeaders({ 'Content-Type': 'application/json' }),
@@ -166,7 +167,7 @@ export async function claim(state: string, claimToken: string): Promise<ClaimOut
  */
 export async function cancelLogin(state: string, claimToken: string): Promise<void> {
   try {
-    await fetch(authUrl('/cancel'), {
+    await gatewayFetch(authUrl('/cancel'), {
       method: 'POST',
       credentials: 'include',
       keepalive: true,
@@ -192,7 +193,7 @@ export function openExternal(url: string): Window | null {
 
 /** 查询当前登录状态。后端未开启登录时返回 `enabled: false`。 */
 export async function status(): Promise<AuthStatus> {
-  const response = await fetch(authUrl('/status'), {
+  const response = await gatewayFetch(authUrl('/status'), {
     method: 'GET',
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
@@ -213,7 +214,7 @@ export interface LoginModelInfo {
 
 /** 登录后自动获得的模型。它们同时也并进了普通模型列表，这里是给账号面板看的。 */
 export async function listLoginModels(): Promise<LoginModelInfo[]> {
-  const response = await fetch(authUrl('/models'), {
+  const response = await gatewayFetch(authUrl('/models'), {
     method: 'GET',
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
@@ -248,7 +249,7 @@ export interface QuotaResult {
 
 /** 查免费积分。积分用完了也是正常返回（`exhausted=true`），不是错误。 */
 export async function fetchQuota(): Promise<QuotaResult> {
-  const response = await fetch(authUrl('/quota'), {
+  const response = await gatewayFetch(authUrl('/quota'), {
     method: 'GET',
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
@@ -259,7 +260,7 @@ export async function fetchQuota(): Promise<QuotaResult> {
 }
 
 export async function logout(): Promise<void> {
-  await fetch(authUrl('/logout'), {
+  await gatewayFetch(authUrl('/logout'), {
     method: 'POST',
     credentials: 'include',
     headers: stateChangingHeaders(),
