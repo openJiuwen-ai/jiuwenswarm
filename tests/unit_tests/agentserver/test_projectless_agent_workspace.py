@@ -706,12 +706,14 @@ async def test_sandbox_recreation_is_scoped_to_current_isolation(monkeypatch):
         interface_deep, "_sys_operation_isolation_key", lambda card: card.isolation_key,
     )
 
+    adapters = []
     for isolation_key in ("session-a", "session-b"):
         adapter = object.__new__(JiuWenSwarmDeepAdapter)
         adapter._sys_operation_card = SimpleNamespace(
             mode=OperationMode.SANDBOX,
             isolation_key=isolation_key,
             gateway_config=SimpleNamespace(
+                isolation=SimpleNamespace(container_scope="custom"),
                 launcher_config=SimpleNamespace(
                     base_url="http://sandbox/", sandbox_type="jiuwenbox", extra_params={},
                 ),
@@ -720,16 +722,21 @@ async def test_sandbox_recreation_is_scoped_to_current_isolation(monkeypatch):
         adapter._workspace_dir = None
         adapter._is_code_agent = False
         adapter._resolve_project_dir_for_sandbox = lambda: None
-        await adapter.apply_sandbox_runtime_patch({"files": {}}, files_changed=True)
+        adapters.append(adapter)
 
-    assert [call.kwargs["shared_key"] for call in recreate.await_args_list] == [
+    await asyncio.gather(
+        *(adapter.apply_sandbox_runtime_patch({"files": {}}, files_changed=True)
+          for adapter in adapters)
+    )
+
+    assert sorted(call.kwargs["shared_key"] for call in recreate.await_args_list) == [
         "http://sandbox|session-a", "http://sandbox|session-b",
     ]
 
 
 @pytest.mark.asyncio
 async def test_sandbox_recreation_without_isolation_key_does_not_clear_endpoint(
-    monkeypatch,
+    monkeypatch, caplog,
 ):
     from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox
 
@@ -758,6 +765,42 @@ async def test_sandbox_recreation_without_isolation_key_does_not_clear_endpoint(
     await adapter.apply_sandbox_runtime_patch({"files": {}}, files_changed=True)
 
     recreate.assert_not_awaited()
+    assert "files policy change was not applied" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sandbox_recreation_skips_session_scope_template(monkeypatch, caplog):
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    recreate = AsyncMock()
+    monkeypatch.setattr(jiuwenbox, "force_recreate_jiuwenbox_sandbox", recreate)
+    monkeypatch.setattr(interface_deep, "is_enterprise", lambda: False)
+    monkeypatch.setattr(
+        interface_deep, "build_filesystem_policy", lambda *_args, **_kwargs: ({}, []),
+    )
+    monkeypatch.setattr(
+        interface_deep, "_sys_operation_isolation_key", lambda _card: "{session_id}",
+    )
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._sys_operation_card = SimpleNamespace(
+        mode=OperationMode.SANDBOX,
+        gateway_config=SimpleNamespace(
+            isolation=SimpleNamespace(container_scope="session"),
+            launcher_config=SimpleNamespace(
+                base_url="http://sandbox", sandbox_type="jiuwenbox", extra_params={},
+            ),
+        ),
+    )
+    adapter._workspace_dir = None
+    adapter._is_code_agent = False
+    adapter._resolve_project_dir_for_sandbox = lambda: None
+
+    await adapter.apply_sandbox_runtime_patch({"files": {}}, files_changed=True)
+
+    recreate.assert_not_awaited()
+    assert "only CUSTOM isolation scope is supported" in caplog.text
 
 
 @pytest.mark.asyncio

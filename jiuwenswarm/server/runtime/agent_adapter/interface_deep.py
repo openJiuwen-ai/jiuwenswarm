@@ -6072,11 +6072,25 @@ class JiuWenSwarmDeepAdapter:
             if not launcher.base_url or not isolation_key:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
-                    "missing endpoint or isolation key"
+                    "missing endpoint or isolation key; files policy change "
+                    "was not applied to the existing sandbox"
+                )
+                return
+            isolation = getattr(card.gateway_config, "isolation", None)
+            scope = getattr(isolation, "container_scope", None)
+            # Only CUSTOM has a fully resolved isolation key on the card.
+            # SESSION templates still contain {session_id}; using one as a
+            # shared-cache key could evict another session's sandbox.
+            if getattr(scope, "value", scope) != "custom":
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
+                    "only CUSTOM isolation scope is supported; files policy "
+                    "change was not applied to the existing sandbox"
                 )
                 return
             try:
                 from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+                    build_jiuwenbox_shared_scope_key,
                     force_recreate_jiuwenbox_sandbox,
                 )
             except Exception as exc:
@@ -6089,7 +6103,9 @@ class JiuWenSwarmDeepAdapter:
             try:
                 new_sandbox_id = await force_recreate_jiuwenbox_sandbox(
                     launcher.base_url,
-                    shared_key=f"{str(launcher.base_url).rstrip('/')}|{isolation_key}",
+                    shared_key=build_jiuwenbox_shared_scope_key(
+                        str(launcher.base_url), str(isolation_key)
+                    ),
                     policy=new_policy,
                     policy_mode=extra.get("policy_mode", "append"),
                     preserve_files_upload=upload_list,
