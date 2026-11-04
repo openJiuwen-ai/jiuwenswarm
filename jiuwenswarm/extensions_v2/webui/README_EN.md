@@ -94,6 +94,7 @@ Prefer small/medium/large component sizes; sm/md/lg remain aliases. Switch/Card 
 and Avatar also accepts default and numeric pixel sizes. Text.max_lines must be a positive integer;
 omit it for unlimited lines (remove legacy 0 values). Explicit Text.tone overrides variant; primary/danger/ghost
 use theme primary/error/tertiary text colors, and Button.secondary uses a filled appearance.
+Avatar accepts text through props.children and native style.backgroundColor/color/fontSize. Colors use 3-, 4-, 6- or 8-digit hexadecimal notation; fontSize is numeric from 1 to 4096 pixels and gap from 0 to 4096. AntD handles image priority and text after image failure. Empty avatars are allowed, name is rejected, and the host does not derive initials or colors.
 Dropdown requires exactly one trigger source: icon or nonempty children; icon triggers also require a nonempty ariaLabel.
 application.menu.main accepts native Box/Card trees without an Iframe. Panel/Iframe root-only restrictions still apply.
 

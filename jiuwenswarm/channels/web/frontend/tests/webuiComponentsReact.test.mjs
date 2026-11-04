@@ -389,6 +389,38 @@ async function setup(tree, scope = target, transportOptions = {}) {
   };
 }
 
+test('Avatar uses native children, styles and image priority without deriving account presentation', async () => {
+  const tree = (props) => ({ component: 'Avatar', props });
+  const style = { backgroundColor: '#89D7D8', color: '#FFFFFF', fontSize: 10 };
+  const app = await setup(tree({ children: 'ab', alt: 'Account image', size: 20, gap: 2, style }));
+  try {
+    const avatar = () => app.container.querySelector('[data-testid="webui-avatar"]');
+    assert.equal(avatar().textContent, 'ab', 'text is passed through without taking an initial or changing case');
+    assert.equal(avatar().dataset.variant, 'text');
+    assert.equal(avatar().style.backgroundColor, 'rgb(137, 215, 216)');
+    assert.equal(avatar().style.color, 'rgb(255, 255, 255)');
+    assert.equal(avatar().style.width, '20px');
+    assert.equal(avatar().style.fontSize, '10px');
+    await app.replace(tree({ children: '张三 👩‍💻', size: 20 }));
+    assert.equal(avatar().textContent, '张三 👩‍💻');
+    assert.equal(avatar().style.backgroundColor, '');
+    assert.equal(avatar().style.color, '');
+    assert.equal(avatar().style.fontSize, '18px', 'numeric size retains the native AntD default without a plugin style');
+    await app.replace(tree({ url: '/logo.svg', children: 'T', alt: 'Account image', style }), 3);
+    assert.equal(avatar().querySelector('img').getAttribute('src'), '/logo.svg');
+    assert.equal(avatar().querySelector('img').alt, 'Account image');
+    assert.equal(avatar().textContent, '', 'AntD gives an image priority over children');
+    await act(async () => avatar().querySelector('img').dispatchEvent(new window.Event('error')));
+    assert.equal(avatar().querySelector('img'), null);
+    assert.equal(avatar().textContent, 'T', 'AntD handles image errors using the supplied children');
+    await app.replace(tree({ alt: 'Description only' }), 4);
+    assert.equal(avatar().textContent, '', 'alt remains an image description, not display content');
+    assert.equal(avatar().getAttribute('aria-label'), null);
+    await app.replace(tree({}), 5);
+    assert.equal(avatar().textContent, '');
+  } finally { await app.close(); }
+});
+
 test('real Button preserves Chinese labels and dispatches the declared node event', async () => {
   const app = await setup({ component: 'Button', props: { label: '确认', variant: 'primary', size: 'sm' }, events });
   try {
@@ -1590,18 +1622,20 @@ test('Dropdown renders plugin-composed labels and native popup width without ini
   const app = await setup({ component: 'Dropdown', props: {
     autoFocus: false, destroyOnHidden: true, styles: { root: { width: 200 } }, items: [
       { key: 'account', disabled: true, label: [{ component: 'Box', props: { align: 'center', gap: 'sm' }, children: [
-        { component: 'Avatar', props: { url: '/avatar.svg', alt: 'User', size: 20 } },
+        { component: 'Avatar', props: { children: 'A', alt: 'User', size: 20, style: { backgroundColor: '#B1E795', color: '#FFFFFF', fontSize: 10 } } },
         { component: 'Text', props: { value: 'Alice' } },
       ] }] },
       { type: 'divider' }, { key: 'exit', label: 'Sign out' },
     ],
-  }, events: { 'ui.select': events['ui.click'] }, children: [{ component: 'Avatar', props: { url: '/avatar.svg', alt: 'User' } }] });
+  }, events: { 'ui.select': events['ui.click'] }, children: [{ component: 'Avatar', props: { children: 'A', alt: 'User', style: { backgroundColor: '#B1E795', color: '#FFFFFF', fontSize: 14 } } }] });
   try {
     const trigger = app.container.querySelector('[data-testid="webui-dropdown-trigger"]');
     trigger.focus();
     await click(trigger);
     const account = document.querySelector('[data-testid="webui-dropdown-item"][data-variant="account"]');
-    assert.equal(account.querySelector('img').alt, 'User');
+    assert.equal(account.querySelector('[data-testid="webui-avatar"]').textContent, 'A');
+    assert.equal(account.querySelector('[data-testid="webui-avatar"]').style.backgroundColor,
+      trigger.querySelector('[data-testid="webui-avatar"]').style.backgroundColor);
     assert.equal(account.querySelector('[data-testid="webui-avatar"]').style.width, '20px');
     assert.equal(account.querySelector('[data-testid="webui-text"]').textContent, 'Alice');
     assert.equal(document.querySelector('.ant-dropdown').style.width, '200px');

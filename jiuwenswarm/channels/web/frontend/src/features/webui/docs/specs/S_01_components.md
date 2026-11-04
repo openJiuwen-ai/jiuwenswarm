@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-03。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
+最近修订：2026-11-04。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
 
 ## 范围与适用条件
 
@@ -19,6 +19,10 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   gap 接受 none/sm/md/lg 或非负有限数值；数值按 px 直接传给 AntD Flex.gap，例如 gap=48，间距由插件声明。
   marginInline 接受 auto、非负有界数值或 px/% 字符串，直接写入原生 CSS margin-inline；插件可用 width=100%、maxWidth=1200、marginInline=auto 声明内容区居中。
 - Image.fit 支持 contain/cover，preview=false 可用于 Logo 和宣传图。背景图和内容图均由插件提供 URL，不内置登录图片或官网样式。
+- Avatar 使用 props.children 声明原样显示的文本；url 映射为 AntD src，alt 只作为图片描述，gap、size、shape 使用原生行为。
+  style 只接受 backgroundColor、color（3/4/6/8 位 CSS 十六进制颜色）和 fontSize（1–4096 的数值像素）；gap 接受 0–4096。
+  图像优先、加载失败后的 children 显示及文本缩放由 AntD 处理；允许空头像，不再接受 name。
+  首字母、配色、字色和字号由插件声明，宿主不推导账号展示。显式 url 仍须为合法的非空资源地址。
 - Input.autoComplete 为可选字符串，直接传给 AntD Input 的原生自动填充属性；插件可声明 off，但浏览器密码管理器可以忽略此偏好，宿主不承诺禁止保存密码弹窗。
 - Form.name 在同一渲染实例内唯一；禁止嵌套 Form。可选 requiredMark 为布尔值，直接传给 AntD Form；false 隐藏必填星号，不改变 rules 的必填校验。Form.Item 仅接收 name、可选 label/rules 和一个 Input，字段名按字面解释，同一 Form 内不得重复。
 - Form 在保留的隐藏页签或暂时停用的内容中保留字段值；断连、replace、clear、实例结束或 destroyOnHidden 导致实际销毁时重新初始化。
@@ -36,6 +40,8 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
 ### English contract summary
 
 The host owns slot placement, baseline spacing, theme and lifecycle. Plugins declare page presentation through the exposed AntD and native layout properties; the renderer performs generic validation and adaptation without login-specific styling branches.
+
+Avatar passes props.children text, alt, gap, size, shape and controlled style directly to AntD, mapping url to src. AntD owns image priority, children rendering after image failure and text scaling. Empty avatars are allowed; name is rejected. Style accepts only backgroundColor/color in 3-, 4-, 6- or 8-digit CSS hexadecimal notation, and numeric fontSize from 1 to 4096 pixels; gap is numeric from 0 to 4096. Plugins provide initials, colors and typography. An explicit url must be a valid, nonempty resource address.
 
 Input.autoComplete is an optional string passed directly to AntD Input. Plugins may declare off; browser password managers can override this preference, so it does not guarantee suppression of browser credential prompts.
 

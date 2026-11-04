@@ -7,7 +7,10 @@ The example lives in `jiuwenswarm/extensions_v2/examples/auth_login_demo`; `doma
 `webui.login-demo` is a Gateway extension package. It owns registration, mock accounts, non-expiring tokens,
 the full-page entry tree, responsive artwork, form rules and the sidebar avatar menu.
 Layout uses generic components and existing gap tokens; menu placement uses native AntD placement/align.
-Form.requiredMark=false hides label asterisks while preserving required validation. The avatar asset is copied from user-in-team.svg.
+Form.requiredMark=false hides label asterisks while preserving required validation.
+The plugin computes the account initial and sends it as Avatar.props.children. It chooses a stable background from the full name and declares native style values for the background, white text and font size.
+Unicode grapheme segmentation uses regex \X, currently supplied through Core → tiktoken. The host does not derive account initials or colors.
+Set Avatar.url for a custom image, which takes priority; omit url when no image is configured.
 Both inputs declare autoComplete=off. This native attribute expresses a browser preference; Chrome password management
 can ignore it, so the page cannot guarantee suppression of password-save prompts or saved-account suggestions.
 

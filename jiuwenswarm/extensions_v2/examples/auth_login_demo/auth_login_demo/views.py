@@ -2,7 +2,31 @@
 
 """Declarative page composition and all user-facing example copy."""
 
+import unicodedata
+
+import regex
+
 from jiuwenswarm.gateway.extensions_v2.webui.models import RenderNode
+
+AVATAR_COLORS = ("#B1E795", "#FDBD71", "#FE9187", "#FDBDCE", "#89D7D8", "#87CEEB")
+
+
+def account_avatar(username: str, alt: str, avatar: str | None = None) -> dict:
+    """Declare account-specific initials and colors with native Avatar props."""
+    name = unicodedata.normalize("NFC", username.strip())
+    if not name:
+        raise ValueError("account name must not be empty")
+    initial = regex.match(r"\X", name).group().upper()
+    encoded = name.encode("utf-16-le")
+    color_key = 2166136261
+    for index in range(0, len(encoded), 2):
+        color_key = ((color_key ^ int.from_bytes(encoded[index:index + 2], "little")) * 16777619) & 0xFFFFFFFF
+    props = {"children": initial, "alt": alt, "style": {
+        "backgroundColor": AVATAR_COLORS[color_key % len(AVATAR_COLORS)], "color": "#FFFFFF", "fontSize": 14,
+    }}
+    if avatar:
+        props["url"] = avatar
+    return props
 
 
 def render_node(tree: dict) -> RenderNode:
@@ -86,17 +110,19 @@ def login_view(language: str, layout: str, assets: dict[str, str], *, mode: str 
                           "marginInline": "auto", "align": "center", "justify": "center", "gap": "lg"}, "children": columns}]}
 
 
-def user_view(language: str, avatar: str, username: str) -> dict:
+def user_view(language: str, username: str, avatar: str | None = None) -> dict:
     """Declare native AntD menu alignment and its action identifier."""
     copy = COPY[language]
+    avatar_props = account_avatar(username, copy["user"], avatar)
     return {"component": "Dropdown", "props": {"items": [
             {"key": "account", "disabled": True, "label": [
                 {"component": "Box", "props": {"direction": "row", "align": "center", "gap": "sm"},
-                 "children": [{"component": "Avatar", "props": {"url": avatar, "alt": copy["user"], "size": 20}},
+                 "children": [{"component": "Avatar", "props": {**avatar_props, "size": 20,
+                              "style": {**avatar_props["style"], "fontSize": 10}}},
                               text(username)]},
             ]},
             {"type": "divider"}, {"key": "logout", "label": copy["logout"]}],
             "autoFocus": False, "destroyOnHidden": True, "styles": {"root": {"width": 200}},
             "placement": "topLeft", "align": {"points": ["bl", "tr"], "offset": [0, 0]}},
             "events": {"ui.select": {"id": "user.menu"}},
-            "children": [{"component": "Avatar", "props": {"url": avatar, "alt": copy["user"]}}]}
+            "children": [{"component": "Avatar", "props": avatar_props}]}

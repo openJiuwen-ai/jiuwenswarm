@@ -104,6 +104,7 @@ value 优先于 defaultValue；合法 replace 重新初始化选择。禁用或�
 
 组件 size 统一推荐 small/medium/large，兼容 sm/md/lg；Switch/Card 只有 small/medium，
 Avatar 额外兼容 default 和像素数值。Text.max_lines 只接受正整数，不限行时省略该属性（不再传 0）。
+Avatar 可通过 props.children 声明文本，通过 style.backgroundColor/color/fontSize 声明原生样式；颜色接受 3/4/6/8 位十六进制形式，fontSize 为 1–4096 数值像素，gap 为 0–4096。图像优先与图像失败后的文本显示由 AntD 处理；允许空头像，不接受 name，宿主不生成首字母或配色。
 Text 的 primary/danger/ghost 分别使用主题主色、错误色和弱化文本色，显式 tone 优先；Button.secondary 使用填充外观。
 Dropdown 必须选择 icon 或非空 children 作为触发区，不能同时提供；图标入口仍要求非空 ariaLabel。
 application.menu.main 接受普通 Box/Card 组件树，页面无需 Iframe；Panel/Iframe 的专用根限制保持原样。
