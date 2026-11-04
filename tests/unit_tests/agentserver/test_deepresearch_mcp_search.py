@@ -216,18 +216,25 @@ async def test_both_resume_branches_forward_only_original_source(phase, node):
 @pytest.mark.asyncio
 async def test_provider_exposes_only_host_allowed_tools(level, rules, expected):
     from types import SimpleNamespace
-    from openjiuwen.harness.security.core import PermissionEngine
+    from uuid import uuid4
+    from agent_shield.tool_permission import get_permission_manager
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
     tool = SimpleNamespace(server_name='search', card=SimpleNamespace(name='search'))
     registration = SimpleNamespace(request_id='req', session_id='session', tool_instances=(tool,))
     policy = {'enabled': True, 'tools': {'search': level}, 'rules': rules, 'file_guard': {'enabled': False}}
+    key = f"test:deepresearch:{uuid4()}"
+    manager = get_permission_manager()
+    manager.update_config(policy, key)
     adapter = SimpleNamespace(
         _deepresearch_mcp_snapshot=(registration, [SERVER]), _active_office_claw_mcp=registration,
         _current_request_route={'request_id': 'req', 'session_id': 'session'},
         _resolve_permission_config_for_agent=lambda **kw: policy,
-        _permission_rail=SimpleNamespace(_engine=PermissionEngine(config=policy)),
+        _permission_rail=SimpleNamespace(permission_key=key),
     )
-    assert bool(await JiuWenSwarmDeepAdapter._get_deepresearch_mcp_context(adapter)) == expected
+    try:
+        assert bool(await JiuWenSwarmDeepAdapter._get_deepresearch_mcp_context(adapter)) == expected
+    finally:
+        manager.remove_config(key)
 
 
 @pytest.mark.asyncio

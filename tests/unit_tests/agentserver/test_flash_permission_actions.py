@@ -166,8 +166,8 @@ async def test_install_deny_returns_search_results_without_install(
 async def test_cron_actions_native_sdk_backend_counts(
     permission_adapter, action, legacy, args, policy, record_property, monkeypatch
 ):
+    from agent_shield.tool_permission.engine import PermissionEngine
     from flash_sdk import sdk_tools
-    from agent_shield.tool_permission import PermissionEngine
 
     from jiuwenswarm.agents.harness.flash.tools.cron_flash import build_cron_flash_tool
 
@@ -332,11 +332,10 @@ async def test_ambiguous_or_unknown_action_is_denied(permission_adapter, name, a
 
 @pytest.mark.asyncio
 async def test_disabled_permission_preserves_existing_execution(permission_adapter):
-    from openjiuwen.harness.security.models import PermissionLevel
-
     from unittest.mock import MagicMock
 
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+    from openjiuwen.harness.security.models import PermissionLevel
 
     _, rail = permission_adapter({"web_flash": "deny", "web_search": "deny"})
     rail.update_config({**rail._static_config, "enabled": False})

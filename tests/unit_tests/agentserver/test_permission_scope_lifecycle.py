@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Ownership, active-session lifetime and bounded idle policy registrations."""
 
+import weakref
 from collections import OrderedDict
 from unittest.mock import Mock
-import weakref
 
 import pytest
 from agent_shield.tool_permission import PermissionManager, get_permission_manager
@@ -52,7 +52,7 @@ async def test_enterprise_instances_with_same_routing_key_own_distinct_configs()
 
 @pytest.fixture
 def bounded_manager(monkeypatch):
-    manager = PermissionManager(max_keys=3)
+    manager = PermissionManager._for_test(max_keys=3)
     monkeypatch.setattr(scopes_module, "_publishers", weakref.WeakValueDictionary())
     monkeypatch.setattr(scopes_module, "_idle_sessions", OrderedDict())
     monkeypatch.setattr(scopes_module, "MAX_IDLE_PERMISSION_SESSIONS", 2)
@@ -218,6 +218,7 @@ def test_orphaned_owner_releases_only_its_own_keys(bounded_manager):
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
 async def test_detached_child_keeps_session_until_it_finishes(mode):
     import asyncio
+
     from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
     from jiuwenswarm.agents.harness.common.tools.subagent_executor.authorization import (
         install_subagent_authorization_wiring,
@@ -271,11 +272,11 @@ async def test_detached_child_keeps_session_until_it_finishes(mode):
 
 @pytest.fixture
 def enterprise_rail(monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
     from jiuwenswarm.agents.harness.common.rails.permissions import (
         config_loader,
         permission_key,
     )
-    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
 
     monkeypatch.setattr(config_loader, "is_enterprise", lambda: True)
     monkeypatch.setattr(permission_key, "is_enterprise", lambda: True)
@@ -308,8 +309,10 @@ async def test_enterprise_always_allow_binds_callback_session_and_publishes_with
     enterprise_rail, cached
 ):
     from types import SimpleNamespace
+
     from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+
     from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
 
     rail, config = enterprise_rail
@@ -349,8 +352,8 @@ async def test_enterprise_always_allow_binds_callback_session_and_publishes_with
 def test_enterprise_persist_without_session_returns_failure_and_does_not_write(
     enterprise_rail, monkeypatch
 ):
-    from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
     from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
+    from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
 
     rail, config = enterprise_rail
     warning = Mock()
