@@ -210,6 +210,28 @@ export function selectionRanges(
 export const DIAGNOSIS_NODE_LIMIT = 1_500;
 
 /**
+ * Whether the per-agent include checkbox should appear for one agent.
+ *
+ * Shown for a shared axis brush (exclude members), and for a lane that already
+ * owns a window (uncheck clears that pick). Hidden for a full-trajectory pick
+ * and when nothing is picked — those are not "include in brush" moments.
+ *
+ * `fullScope` is accepted for call-site symmetry; it never shows the toggle.
+ */
+export function shouldShowIncludeToggle(
+  state: DiagnosisSelectionState,
+  fullScope: boolean,
+  subjectId?: string,
+): boolean {
+  void fullScope;
+  if (state.mode === 'axis') return true;
+  if (state.mode === 'lanes' && subjectId !== undefined) {
+    return state.laneRanges.has(subjectId);
+  }
+  return false;
+}
+
+/**
  * How many OTel spans the pick contains.
  *
  * A span counts only when the pick covers it whole on the swimlane — both

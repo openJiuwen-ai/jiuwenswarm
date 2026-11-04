@@ -223,7 +223,7 @@ function DesignerNodeShell({
         ) : null}
         <div className="designer-node__body">{body}</div>
         {nodeError ? (
-          <p className="designer-node__error" data-testid="designer-node-error" title={nodeError}>
+          <p className="designer-node__error nodrag nopan nowheel" data-testid="designer-node-error" title={nodeError}>
             {isDesignerModerationError(nodeError) ? t('designer.run.moderationBlocked') : nodeError}
           </p>
         ) : null}
@@ -290,6 +290,10 @@ function useNodePreviewUri(nodeId: string): string | null {
   );
   const nodeState = useDesignerRunStore((state) => state.nodeStates[nodeId]);
   return resolveDesignerNodePreviewRef(node, nodeState)?.uri ?? null;
+}
+
+function useNodeProducedAt(nodeId: string): number {
+  return useDesignerRunStore((state) => state.nodeStates[nodeId]?.completed_at ?? 0);
 }
 
 function DocumentFitBody({

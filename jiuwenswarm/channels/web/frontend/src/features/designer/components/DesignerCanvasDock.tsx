@@ -134,29 +134,33 @@ export function DesignerCanvasDock() {
             <DesignerAddNodeTypeIcon type={item.type} />
           </button>
         ))}
-        <button
-          type="button"
-          className={`designer-canvas-dock__btn${editingLocked ? ' designer-edit-control' : ''}`}
-          disabled={editingLocked}
-          aria-label={t('designer.dock.node.comfyui')}
-          title={t('designer.dock.comfyuiHint')}
-          data-testid="designer-canvas-dock-add-comfyui"
-          onClick={() => {
-            if (editingLocked) return;
-            fileInputRef.current?.click();
-          }}
-        >
-          <ComfyuiGenerationIcon aria-hidden />
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json,application/json"
-          multiple
-          hidden
-          data-testid="designer-canvas-dock-comfyui-input"
-          onChange={onComfyuiChange}
-        />
+        {comfyuiEnabled ? (
+          <>
+            <button
+              type="button"
+              className={`designer-canvas-dock__btn${editingLocked ? ' designer-edit-control' : ''}`}
+              disabled={editingLocked}
+              aria-label={t('designer.dock.node.comfyui')}
+              title={t('designer.dock.comfyuiHint')}
+              data-testid="designer-canvas-dock-add-comfyui"
+              onClick={() => {
+                if (editingLocked) return;
+                fileInputRef.current?.click();
+              }}
+            >
+              <ComfyuiGenerationIcon aria-hidden />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              multiple
+              hidden
+              data-testid="designer-canvas-dock-comfyui-input"
+              onChange={onComfyuiChange}
+            />
+          </>
+        ) : null}
         <span className="designer-canvas-dock__split" aria-hidden />
         <button
           type="button"

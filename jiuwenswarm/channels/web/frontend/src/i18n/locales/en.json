@@ -882,10 +882,14 @@
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
       "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
+      "notSelected": "No model",
+      "openModelSettings": "Open Settings"
     },
     "activity": {
       "thinking": "Thinking",
@@ -906,7 +910,6 @@
       "bootstrapError": "Failed to build the workflow. Please try again later.",
       "notImplemented": "Not implemented",
       "send": "Send",
-      "running": "The design leader is working…",
       "stop": "Stop",
       "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
@@ -1136,15 +1139,6 @@
     }
   },
   "videoLive": {
-    "screenCapture": {
-      "failed": "Screen sharing failed: {{reason}} [{{errorType}}]; native error: {{nativeMessage}}; stage: {{stage}}; elapsed: {{elapsedMs}} ms; diagnostic ID: {{captureId}}",
-      "permissionOrCancel": "Sharing was not authorized: selection may have been cancelled, or browser/system screen-recording permission denied; the exception alone does not identify which",
-      "aborted": "Capture was aborted: the picker may have been cancelled, a previous request may still be pending, or system capture may have failed",
-      "unreadable": "The system could not read the selected screen; check screen-recording permission and capture/system state",
-      "invalidState": "The page state does not allow sharing; check window focus and whether the request followed a user click",
-      "security": "The current security policy blocks screen sharing",
-      "unknown": "Screen capture or frame initialization failed; check the native error and diagnostic ID in the logs"
-    },
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
@@ -1280,6 +1274,7 @@
       "archivedSessionsDeleted": "Deleted {{count}} archived conversations",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed.",
       "removedProjectNote": "This project was removed, so its conversations stay hidden from the workspace. Restoring any conversation restores the project too.",
+      "designModeNote": "Design mode doesn't support archiving yet.",
       "errors": {
         "forbidden": "This operation is not supported for this resource",
         "notFound": "The resource no longer exists or has changed. Refresh and try again.",
@@ -1597,7 +1592,8 @@
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "multiModelCollaboration": "Multi-model collaboration",
-      "toolOptimize": "Tool retrieval optimization"
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -1864,6 +1860,10 @@
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
         "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
       },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
@@ -2299,8 +2299,9 @@
       "noteLabel": "User feedback: describe issues in the selected range (optional)",
       "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
       "cancel": "Cancel diagnosis",
-      "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
-      "includeAgent": "Diagnose {{name}}",
+      "selectionHint": "Drag a range on the time axis, or use Select all for one agent's whole lane. When selected, uncheck the box to clear that agent's pick.",
+      "includeAgent": "Selected: {{name}}",
+      "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
       "timeAxis": "Time axis",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
@@ -2318,6 +2319,7 @@
         "interrupted": "Interrupted"
       },
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
         "pending": "Waiting",
         "running": "Running",
@@ -2341,8 +2343,10 @@
       "suggestions": "Diagnosis suggestions",
       "noSuggestions": "This diagnosis has no actionable suggestions",
       "details": "Diagnosis details",
+      "resultTabs": "Diagnosis details and suggestions",
+      "suggestionsReady": "Suggestions ready",
       "dismiss": "Dismiss",
-      "note": "Diagnosis note",
+      "note": "User feedback",
       "object": "Diagnosis target",
       "objectAgents": "Agents",
       "objectFull": "Entire trajectory",
@@ -2364,6 +2368,7 @@
         "cancelDelete": "Cancel",
         "deleteRunning": "A diagnosis in progress cannot be deleted"
       },
+      "rewardResult": "Artifact evaluation",
       "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
       "rewardTotal": "Total {{score}}",
       "artifactFix": "Artifact fix",
@@ -2385,7 +2390,11 @@
         "user": "User note"
       },
       "signalSourceLabel": "Source: {{source}}",
-      "attributionLabel": "Attribution: {{kind}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
       "attributionKind": {
         "artifact": "Artifact",
         "skill": "Skill",
@@ -2402,6 +2411,8 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
+      "sectionExpand": "Expand",
+      "sectionCollapse": "Collapse",
       "findingCauses": "{{count}} artifact finding(s)",
       "findingSkill": "{{count}} skill finding(s)",
       "findingExperience": "{{count}} experience finding(s)",
@@ -2420,10 +2431,15 @@
         "partial": "Task partly completed"
       },
       "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
       "ttseReady": "Experience available",
       "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "skillSelectAll": "Select all",
+      "skillSelectOne": "Select {{name}}",
+      "skillFillSelected": "Fill selected ({{count}})",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
       "ttseResult": {
-        "triggered": "Triggered; TTSE is generating and saving the experience in the background",
+        "triggered": "Triggered",
         "failed": "Trigger failed"
       },
       "blocked": "Unavailable: {{reason}}",
@@ -2793,6 +2809,7 @@
       "unmuteMic": "Unmute microphone",
       "muteSpeaker": "Mute model audio",
       "unmuteSpeaker": "Unmute model audio",
+      "startSharing": "Share screen",
       "stopSharing": "Stop screen sharing",
       "listening": "Listening",
       "connecting": "Connecting",
@@ -3570,7 +3587,6 @@
       "builtinPathPlaceholder": "Built-in CLI (managed)",
       "installNow": "Install",
       "notInstalledHint": "No SDK detected yet. Click",
-      "removePath": "Remove this path from history",
       "savedHint": "Saved",
       "detectSucceeded": "Detection passed",
       "editPath": "Edit",
@@ -5061,7 +5077,7 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
-      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
+      "installOutcomeUnknown": "The connection dropped before the install result was confirmed. The package is kept — retry the install from My Experts later.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
@@ -6413,7 +6429,7 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI experiments",
+      "title": "RSI Tasks",
       "loading": "Loading…",
       "error": "Failed to load RSI tasks"
     },

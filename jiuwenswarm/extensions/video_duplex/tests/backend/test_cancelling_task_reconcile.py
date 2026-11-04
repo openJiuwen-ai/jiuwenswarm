@@ -3,6 +3,8 @@ settled by Core's confirmation instead of holding the session forever."""
 
 import asyncio
 
+import pytest
+
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.tests.backend.test_managed_tasks import Executor, until
@@ -82,10 +84,11 @@ async def test_restart_settles_cancelling_task_as_cancelled(tmp_path):
         await service.close()
 
 
-async def test_settle_wait_timeout_probes_core_and_cancels_stopping_task(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_output_end_waits_for_actual_settlement_without_duplex_deadline(tmp_path, monkeypatch, cancelled):
     real_timeout = asyncio.timeout
-    # Shorten only the existing 20 s settlement wait for this test.
-    monkeypatch.setattr(asyncio, "timeout", lambda d: real_timeout(0.2 if d == 20 else d))
+    # A reintroduced duplex deadline must fail before the assertions below.
+    monkeypatch.setattr(asyncio, "timeout", lambda d: real_timeout(0.02 if d == 20 else d))
     store = TaskStore(tmp_path / "tasks.sqlite")
     core = CoreSays(probe_settled=True, cancel_settled=False)
     executor = Bound(core, store, result={"answer": "partial"})
@@ -94,15 +97,19 @@ async def test_settle_wait_timeout_probes_core_and_cancels_stopping_task(tmp_pat
         active = service.submit("alice", SESSION, "a", "打开浏览器", TARGET)
         await until(lambda: store.read(active["id"]).get("execution_bound"))
         second = service.submit("alice", SESSION, "b", "继续")
-        await service.cancel("alice", SESSION, active["id"], "stop-1")
-        await until(lambda: ("cancel", store.read(active["id"])["request_id"]) in core.requests)
-        # The stopped stream ends, but the settlement acknowledgement is lost.
+        if cancelled:
+            await service.cancel("alice", SESSION, active["id"], "stop-1")
+            await until(lambda: ("cancel", store.read(active["id"])["request_id"]) in core.requests)
+        # The output ends before native execution cleanup finishes.
         executor.release.set()
-        await asyncio.wait_for(until(
-            lambda: service.get("alice", SESSION, active["id"])["status"] in {"cancelled", "completed"}
-        ), 3)
-        assert service.get("alice", SESSION, active["id"])["status"] == "cancelled"
-        assert ("probe", store.read(active["id"])["request_id"]) in core.requests
+        await asyncio.sleep(0.1)
+        assert store.read(active["id"])["status"] == ("cancelling" if cancelled else "running")
+        assert store.read(second["id"])["status"] == "queued"
+        assert ("probe", store.read(active["id"])["request_id"]) not in core.requests
+        store.update(active["id"], lambda t: t.update(
+            execution_settled=True, execution_cancelled=cancelled,
+        ))
+        await until(lambda: store.read(active["id"])["status"] == ("cancelled" if cancelled else "completed"))
         await asyncio.wait_for(until(lambda: executor.calls == [active["id"], second["id"]]), 2)
     finally:
         await service.close()

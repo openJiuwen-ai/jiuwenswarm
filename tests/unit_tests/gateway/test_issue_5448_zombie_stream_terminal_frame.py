@@ -30,9 +30,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 
 SESSION_ID = "sess-issue-5448"
 TEAM_MODE = "team.work.normal"

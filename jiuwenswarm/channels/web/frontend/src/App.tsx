@@ -234,8 +234,7 @@ import {
   setOrganizationOwnerStopped,
 } from './features/teamOrganization/processing';
 import {
-  normalizeTeamBootstrapMode,
-  resolveNewSessionBootstrapMode,
+  normalizeTeamDispatchMode,
   resolveNewSessionDispatchMode,
   resolveRestoredTeamDispatchMode,
   setTeamScheduledDispatchEnabled,
@@ -969,6 +968,10 @@ function AppContent({
   }, [chatSurfaceView, selectChatSurfaceView]);
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
+  }, [selectChatSurfaceView]);
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
   }, [selectChatSurfaceView]);
   const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
@@ -3251,7 +3254,6 @@ function AppContent({
         prefixText?: string;
         suffixText?: string;
         secondSkillName?: string;
-        preserveDraft?: boolean;
         metadata?: Record<string, unknown>;
         mode?: AgentMode;
       };
@@ -4968,6 +4970,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           mode={mode}
                           sessionId={sessionId}
                           onBack={leaveDiagnosisView}
+                          onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}

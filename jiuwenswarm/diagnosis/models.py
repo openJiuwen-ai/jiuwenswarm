@@ -330,6 +330,7 @@ class DiagnosisProgressEvent(_Model):
         "stage_started",
         "output_delta",
         "stage_finished",
+        "reward",
         "reward_failure_causes",
         "evolution_judge",
     ]
@@ -339,6 +340,8 @@ class DiagnosisProgressEvent(_Model):
     summary: str | None = None
     skip_reason: str | None = None
     elapsed_ms: int | None = None
+    # The artifact evaluation, sent once when diagnosis finishes scoring.
+    reward: dict[str, Any] | None = None
     # Whole-table replacement events: every item known so far.
     reward_failure_causes: list[RewardFailureCause] | None = None
     evolution_judge: list[EvolutionJudge] | None = None

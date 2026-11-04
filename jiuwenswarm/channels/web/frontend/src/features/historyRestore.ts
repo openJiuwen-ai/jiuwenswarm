@@ -2347,6 +2347,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   const entries: HistoryTimelineEntry[] = [];
   let requestCursor: string | null = null;
   let cursorMeta: HistoryCursorMeta | null = null;
+  let completionTokenUsage: SessionTokenUsageSnapshot | null = null;
   let snapshotMeta: HistoryCursorMeta | null = null;
   let discoveredSubagentIds: string[] = [];
   let disposed = false;
@@ -2531,6 +2532,20 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
+      if (tokenUsageSnapshot) {
+        options.onSessionTokenUsage?.(tokenUsageSnapshot);
+      }
+      const isEmpty = (
+        messages.length === 0
+        && toolReplay.length === 0
+        && harnessReplay.length === 0
+        && teamReplay.length === 0
+        && subagentReplay.length === 0
+        && pendingQuestionReplay.length === 0
+        && answeredQuestionReplay.length === 0
+        && !latestContextUsage
+        && (!tokenUsageSnapshot || tokenUsageSnapshot.revision === 0)
+      );
       if (discoveredSubagentIds.length > 0) {
         options.onDiscoveredSubagentIds?.(discoveredSubagentIds);
       }
@@ -2596,6 +2611,7 @@ export interface FetchHistoryCursorBatchResult {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageSnapshot: Record<string, unknown> | null;
+  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   /** Parent history.done may list on-disk subagent bucket ids (GitCode #4887). */
   discoveredSubagentIds: string[];
   cursor: HistoryCursorMeta;
@@ -2638,6 +2654,7 @@ export function fetchHistoryCursorBatch(
 
   const entries: HistoryTimelineEntry[] = [];
   let cursorMeta: HistoryCursorMeta | null = null;
+  let completionTokenUsage: SessionTokenUsageSnapshot | null = null;
   let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
@@ -2744,6 +2761,7 @@ export function fetchHistoryCursorBatch(
     dispose();
     options.onReady({
       ...materialized,
+      tokenUsageSnapshot: completionTokenUsage ?? materialized.tokenUsageSnapshot,
       contextUsageSnapshot,
       discoveredSubagentIds,
       cursor: cursorMeta,

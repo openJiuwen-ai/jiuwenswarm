@@ -226,8 +226,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'text',
     'modes.team.jiuwen_team.external_cli_path_histories',
   ),
-  yamlField('topic_recommendation_enabled', 'recommendation', 'boolean', 'recommendation.topic_enabled'),
-  yamlField('prompt_suggestion_enabled', 'recommendation', 'boolean', 'recommendation.prompt_enabled'),
   yamlField('proactive_recommendation_enabled', 'experimental', 'boolean', 'proactive_recommendation.enabled'),
   yamlField(
     'proactive_recommendation_max_recommend_per_day',

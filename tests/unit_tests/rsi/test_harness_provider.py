@@ -411,13 +411,6 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
             eval_ref.write_text(yaml.safe_dump({"harness_refs_path": str(refs_path), "cases": cases}), encoding="utf-8")
             return str(eval_ref)
 
-    class Analyzer:
-        async def analyze(self, invocation: Any) -> str:
-            assert provider.read_state(request.task_id).baseline == baseline_score
-            assert invocation.source_stage == "single_harness_batch"
-            analysis_calls.append(invocation)
-            raise RuntimeError("optimization-batch-reached")
-
     # Historical epoch tasks retain their original policy after an SDK upgrade.
     orchestrator = SingleHarnessIterativeOptimizationOrchestrator(
         AutoCoordinatingHarnessConfig.from_dict({
@@ -426,7 +419,7 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
             "data_loader": {"batch_size": 1},
             "scheduling": {"promotion_policy": "epoch_full_evaluation"},
         }),
-        evaluator=Evaluator(), analyzer=Analyzer(), member_optimizer=object(),
+        evaluator=Evaluator(), analyzer=object(), member_optimizer=object(),
     )
     provider = HarnessProvider(tmp_path, orchestrator=orchestrator)
     with pytest.raises(RuntimeError, match="optimization-batch-reached"):

@@ -76,8 +76,6 @@ interface UseHubMarketplaceParams {
   marketplaceCategory: string;
   marketplaceSubView: MarketplaceSubView;
   setMarketplaceSubView: (view: MarketplaceSubView) => void;
-  /** 企业版广场改挂企业技能源，跳过 Hub 拉取 */
-  skipHubFetch?: boolean;
 }
 
 export function useHubMarketplace({
@@ -86,7 +84,6 @@ export function useHubMarketplace({
   marketplaceCategory,
   marketplaceSubView,
   setMarketplaceSubView,
-  skipHubFetch = false,
 }: UseHubMarketplaceParams) {
   /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);

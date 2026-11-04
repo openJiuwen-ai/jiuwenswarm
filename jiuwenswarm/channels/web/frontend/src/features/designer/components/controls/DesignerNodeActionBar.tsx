@@ -61,6 +61,7 @@ export function DesignerNodeActionBar({ nodeId, nodeType }: DesignerNodeActionBa
       event.stopPropagation();
       if (!material || !hasOutput) return;
       const filename = designerMaterialFilename(material, `designer-node-${nodeId}`);
+      let saved = false;
       if (material.previewUrl) {
         saved = await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
       } else if (material.textUrl) {

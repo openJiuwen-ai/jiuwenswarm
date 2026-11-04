@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 import yaml
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse, StreamingResponse
-from agent_gateway.common.config_panel import config_set_handlers as _gw_config_set_handlers
-from agent_gateway.extensions.registry import ExtensionRegistry
-from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
-from agent_gateway.channel_manager.web.app_web_handlers import (
+
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _build_external_cli_publish_url,
     _detect_external_cli_agent,
@@ -358,6 +358,39 @@ async def test_vendors_fetch_models_rejects_untrusted_ark_generation_base(monkey
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_external_cli_validate_paths_survives_unreadable_paths(monkeypatch, tmp_path):
+    """A PermissionError yields null: unreadable is not proof of absence."""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    usable_file = tmp_path / "claude.cmd"
+    usable_file.write_text("demo")
+    locked_path = str(tmp_path / "locked" / "codex.cmd")
+    original_is_file = Path.is_file
+
+    def flaky_is_file(self):
+        if self.name == "codex.cmd":
+            raise PermissionError(13, "Permission denied")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+
+    await channel.methods["external_cli.validate_paths"](
+        object(),
+        "req-validate-paths-eacces",
+        {"paths": [str(usable_file), locked_path]},
+        "sess-validate-paths-eacces",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    results = channel.responses[-1]["payload"]["results"]
+    assert results[str(usable_file)] is True
+    # null (not False): a locked path must never be treated as missing, so
+    # the history cleanup keeps it in the dropdown.
+    assert results[locked_path] is None
 
 
 @pytest.mark.asyncio
@@ -3019,72 +3052,6 @@ async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
     histories_updates: list[dict[str, list[str]]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
-        lambda: {
-            "preferred_language": "zh",
-            "modes": {
-                "team": {
-                    "jiuwen_team": {
-                        "external_cli_agents": [
-                            {"cli_agent": "codex", "cli_path": "/custom/codex"},
-                        ],
-                    },
-                },
-            },
-        },
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
-        lambda: {"modes": {"team": {}}},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
-        lambda cli_agent, cli_path="": pytest.fail("untouched agents must not be re-detected"),
-    )
-    monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
-        lambda agents, publish_url=None: updates.append((agents, publish_url)),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_path_histories_in_config",
-        lambda histories: histories_updates.append(dict(histories)),
-    )
-
-    await channel.methods["config.set"](
-        object(),
-        "req-claude-switch-keeps-codex",
-        {
-            "external_cli_agent_claude_enabled": "true",
-            "external_cli_agent_claude_use_builtin": "true",
-        },
-        "sess-claude-switch-keeps-codex",
-    )
-
-    assert updates == [
-        (
-            [{"cli_agent": "claude"}, {"cli_agent": "codex", "cli_path": "/custom/codex"}],
-            "ws://127.0.0.1:19000/ws",
-        )
-    ]
-    # The untouched codex path must not leak into any history write.
-    assert histories_updates == [{}]
-    assert channel.responses[-1]["ok"] is True
-
-
-@pytest.mark.asyncio
-async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
-    """Toggling one card must not re-detect or rewrite the other agent's entry."""
-    channel = FakeWebChannel()
-    updates: list[tuple[list[dict], str | None]] = []
-
-    monkeypatch.setenv("WEB_PORT", "19000")
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     monkeypatch.setattr(
@@ -3118,6 +3085,10 @@ async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
         "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
         lambda agents, publish_url=None: updates.append((agents, publish_url)),
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_path_histories_in_config",
+        lambda histories: histories_updates.append(dict(histories)),
+    )
 
     await channel.methods["config.set"](
         object(),
@@ -3135,6 +3106,8 @@ async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
             "ws://127.0.0.1:19000/ws",
         )
     ]
+    # The untouched codex path must not leak into any history write.
+    assert histories_updates == [{}]
     assert channel.responses[-1]["ok"] is True
 
 
@@ -3212,7 +3185,7 @@ async def test_config_set_appends_replaced_path_when_switching_to_builtin(monkey
     histories_updates: list[dict[str, list[str]]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3238,7 +3211,7 @@ async def test_config_set_appends_replaced_path_when_switching_to_builtin(monkey
         lambda cli_agent, cli_path="": pytest.fail("built-in mode must not validate cli_path"),
     )
     monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -3276,7 +3249,7 @@ async def test_config_set_appends_replaced_cli_path_to_history(monkeypatch):
     histories_updates: list[dict[str, list[str]]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3310,7 +3283,7 @@ async def test_config_set_appends_replaced_cli_path_to_history(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -3371,7 +3344,7 @@ async def test_config_set_history_only_save_rewrites_config_yaml(monkeypatch, tm
     channel = FakeWebChannel()
     agent_writes: list[list[dict[str, str]]] = []
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
         lambda: {
@@ -3401,7 +3374,7 @@ async def test_config_set_history_only_save_rewrites_config_yaml(monkeypatch, tm
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.refresh_external_cli_builtin_models",
-        lambda agents, **_: None,
+        lambda agents: None,
     )
 
     await channel.methods["config.set"](
@@ -3422,7 +3395,7 @@ async def test_config_set_history_only_save_rewrites_config_yaml(monkeypatch, tm
 @pytest.mark.asyncio
 async def test_external_cli_validate_paths_reports_existence(tmp_path):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     existing_file = tmp_path / "claude.cmd"
     existing_file.write_text("demo")
@@ -3456,19 +3429,17 @@ async def test_external_cli_validate_paths_reports_existence(tmp_path):
 
 @pytest.mark.asyncio
 async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(monkeypatch):
-    """The handler runs the intersection prune against gateway-side config copy."""
+    """The handler forwards the request to the server-side intersection prune."""
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
     pruned: list[tuple[str, list[str]]] = []
 
     def fake_prune(cli_agent, remove_paths):
         pruned.append((cli_agent, list(remove_paths)))
         return ["/kept/codex"]
 
-    # 该 prune 由 gateway 本地执行（读本进程 CONFIG_YAML_PATH），patch 必须落在
-    # gateway 副本上；母仓同名函数只在 ConfigAdapter 代理路径下才被执行。
     monkeypatch.setattr(
-        "agent_gateway.common.config.prune_external_cli_path_histories_in_config",
+        "jiuwenswarm.common.config.prune_external_cli_path_histories_in_config",
         fake_prune,
     )
 

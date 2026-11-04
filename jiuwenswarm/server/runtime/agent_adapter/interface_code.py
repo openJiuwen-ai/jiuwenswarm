@@ -74,6 +74,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
     apply_discovery_metadata,
 )
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    apply_discovery_metadata,
+)
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
     CodeGraphFlags, parse_source_volume_to_bytes, resolve_code_graph_flags,

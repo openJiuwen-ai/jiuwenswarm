@@ -10,15 +10,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
-from agent_gateway.channel_manager.base import RobotMessageRouter
-from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
+from jiuwenswarm.common.schema.message import EventType, Message
+from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
     XiaoyiChannel,
     XiaoyiChannelConfig,
 )
-from agent_gateway.message_handler.join_exit_handlers import _with_xiaoyi_team_task_hold
-from agent_gateway.routing.keys import XiaoyiDeliveryTarget
-from agent_gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.gateway.message_handler.join_exit_handlers import (
+    _with_xiaoyi_team_task_hold,
+)
+from jiuwenswarm.gateway.routing.keys import XiaoyiDeliveryTarget
+from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 _AGENT_ID = "agent-user-1"
 _PHYSICAL_SESSION_ID = "physical-session-1"

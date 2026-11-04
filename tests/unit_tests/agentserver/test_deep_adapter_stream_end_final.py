@@ -289,7 +289,7 @@ async def test_real_terminal_final_not_duplicated(monkeypatch):
     assert finals[0]["content"] == "正常回答"
 
 
-async def test_background_subagent_status_includes_latest_session_usage(monkeypatch, tmp_path):
+def test_background_subagent_status_includes_latest_session_usage(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
 

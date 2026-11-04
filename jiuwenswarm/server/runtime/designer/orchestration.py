@@ -3224,7 +3224,8 @@ class Director:
                 "Respond JSON only: "
                 '{"ok":true,"patched_brief_markdown":"...","notes":"...","issues":["..."]}'
             ) + _language_rule()
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="brief review",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -3373,7 +3374,8 @@ class Director:
                 '"bgm_lock":{"mood":"...","style":"...","rule":"..."},'
                 '"include_speech":true,"include_music":true,"notes":"..."}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="storyboard review",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,

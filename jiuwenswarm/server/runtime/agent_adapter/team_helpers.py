@@ -2967,6 +2967,22 @@ async def process_team_message_stream(
     async with bind_design_voice_task(request, inputs):
         async with aclosing(_process_team_message_stream_with_design(request, inputs, deep_agent)) as stream:
             async for chunk in stream:
+                if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.processing_status":
+                    is_terminal_status = (
+                        chunk.payload.get("is_processing") is False
+                        and chunk.payload.get("is_complete") is True
+                    )
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] handoff_to_adapter: session_id=%s request_id=%s "
+                        "channel_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        request.session_id,
+                        chunk.request_id,
+                        chunk.channel_id,
+                        chunk.payload.get("rid"),
+                        chunk.payload.get("is_processing"),
+                        chunk.payload.get("is_complete"),
+                    )
                 yield chunk
 
 
@@ -4754,7 +4770,7 @@ async def _consume_stream_with_query(
             """Report a failed interrupt-resume wait to the frontend."""
             nonlocal terminal_broadcasted
             logger.warning(
-                "[TeamHelpers] interrupt resume wait failed: "
+                "[TeamHelpers] interrupt resume wait failed: source=resume_wait_failed is_processing=False "
                 "channel_id=%s session_id=%s error=%s",
                 _resolve_channel_id(channel_id),
                 session_id,
@@ -4862,6 +4878,7 @@ async def _consume_stream_with_query(
                     reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
                     logger.warning(
                         "[TeamHelpers] interrupt resume interact rejected: "
+                        "original_event=team.recovered is_processing=False "
                         "channel_id=%s session_id=%s reason=%s",
                         _resolve_channel_id(channel_id),
                         session_id,

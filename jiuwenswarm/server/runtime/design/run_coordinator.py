@@ -266,6 +266,7 @@ class RunCoordinator:
         trigger_scope = f"{run_id}-t{secrets.token_hex(4)}"
         run["status"] = "running"
         run["current_node_ids"] = []
+        run["metadata"] = {**(run.get("metadata") or {}), "trigger_source": source}
         # A new trigger invalidates the previous trigger's run-level error;
         # leaving it would keep showing a stale refusal on every later run.
         run.pop("error", None)
@@ -419,7 +420,10 @@ class RunCoordinator:
                 wal_path=wal_path,
                 abort_event=abort_signal,
             )
-        except _WorkflowAborted:
+        except (_WorkflowAborted, asyncio.CancelledError) as exc:
+            # CancelledError: the awaiting task died (a leader trigger when the
+            # leader is paused). Unrecorded, the run stays 'running' and the
+            # canvas stays read-only with no live trigger behind it.
             run["status"] = "cancelled"
             run["current_node_ids"] = []
             for state in (run.get("node_states") or {}).values():
@@ -428,6 +432,8 @@ class RunCoordinator:
             self._store.save_run(run)
             if on_update is not None:
                 on_update(dict(run))
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             return run
         except Exception as exc:
             logger.exception("[design-run] trigger failed: run_id=%s", run_id)

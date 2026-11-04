@@ -309,6 +309,33 @@ class ChatPanel(
     // ──────────────────────────────────────────
     // Webview → Plugin messages
     // ──────────────────────────────────────────
+
+    /** Re-fetch models.list so a session created before model config stops showing a stale placeholder. */
+    private fun refreshModels() {
+        val sid = service.session.sessionId ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val (models, model) = service.session.listModels()
+                if (service.session.sessionId != sid) return@executeOnPooledThread
+                val modelList = models.map { m ->
+                    mapOf(
+                        "model_name" to (m.get("model_name")?.asString ?: ""),
+                        "alias" to (m.get("alias")?.asString ?: ""),
+                        "model_provider" to (m.get("model_provider")?.asString ?: ""),
+                    )
+                }
+                dispatchToWebview(
+                    mapOf(
+                        "type" to "models_updated",
+                        "models" to modelList,
+                        "activeModel" to model,
+                    )
+                )
+            } catch (_: Exception) {
+                debug("models.list refresh failed")
+            }
+        }
+    }
     private fun readFileSnapshot(path: String): String? {
         val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path) ?: return null
         return try {

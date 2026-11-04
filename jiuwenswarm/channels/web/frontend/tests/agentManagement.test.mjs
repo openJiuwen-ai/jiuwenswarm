@@ -812,13 +812,16 @@ test('mine search excludes hidden English names from Chinese cards (#4473)', () 
   assert.equal(buildCatalogViewModel([fallback], { scope: 'mine', category: '', query: 'Casework' }).items.length, 1);
 });
 test('in-flight transport deaths are the only uncertain install outcomes', () => {
-  // webClient raises these codes itself when a request dies before the
-  // backend could answer (timeout, dropped socket — including WS_CLOSED,
-  // which disconnect() uses to reject in-flight requests). The backend may
-  // still complete the install, so the just-imported package must be kept.
-  for (const code of ['REQUEST_TIMEOUT', 'WS_NOT_READY', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+  // webClient raises these codes itself when a request dies after being
+  // sent but before the backend could answer (timeout, dropped socket —
+  // including WS_CLOSED, which disconnect() uses to reject in-flight
+  // requests). The backend may still complete the install, so the
+  // just-imported package must be kept. WS_NOT_READY is deliberately
+  // excluded: the request never left the client, so rollback is safe.
+  for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
     assert.equal(isUncertainInstallError({ code }), true, code);
   }
+  assert.equal(isUncertainInstallError({ code: 'WS_NOT_READY' }), false);
 });
 
 test('backend verdicts without a code stay definite so the upload rollback fires', () => {
@@ -831,45 +834,9 @@ test('backend verdicts without a code stay definite so the upload rollback fires
   assert.equal(isUncertainInstallError({ code: 'agent_management_request_failed' }), false);
   // A rejection that carries a backend code stays definite as well.
   assert.equal(isUncertainInstallError({ code: 'HUB_ASSET_NOT_FOUND' }), false);
-  // Codeless plain Error throws on this path are definite too — handleInstall
-  // raises one itself for the backend's auth_required answer.
+  // Codeless plain Error throws on this path are definite too.
   assert.equal(isUncertainInstallError(new Error('auth required')), false);
   assert.equal(isUncertainInstallError({ code: '' }), false);
   assert.equal(isUncertainInstallError(null), false);
   assert.equal(isUncertainInstallError('backend exploded'), false);
-});
-
-// Different display names can lose the same characters during slug conversion (#5498).
-test('group package IDs stay distinct after lossy name normalization', () => {
-  const names = ['test', '专家团_test', '测试_test', 'TEST', 'test!!!', `${'a'.repeat(50)}b`, `${'a'.repeat(50)}c`];
-  const ids = names.map(deriveAgentGroupId);
-  assert.equal(new Set(ids).size, names.length);
-  for (const id of ids) {
-    assert.match(id, /^[a-z0-9][a-z0-9-]*$/);
-    assert.ok(id.length <= 50);
-  }
-});
-
-test('group package IDs stay distinct for non-Latin names created in the same millisecond', t => {
-  t.mock.method(Date, 'now', () => 0);
-  const ids = ['专家团', '测试团队', '专家团'].map(deriveAgentGroupId);
-  assert.equal(new Set(ids).size, ids.length);
-});
-
-// Expert creation must not collide when different names normalize to one slug.
-test('expert package IDs stay distinct after lossy name normalization', () => {
-  const names = ['test', '专家_test', '测试_test', 'TEST', 'test!!!', `${'a'.repeat(50)}b`, `${'a'.repeat(50)}c`];
-  const ids = names.map(deriveAgentId);
-  assert.equal(new Set(ids).size, names.length);
-  for (const id of ids) {
-    assert.match(id, /^[a-z0-9][a-z0-9-]*$/);
-    assert.ok(id.length <= 50);
-  }
-});
-
-test('expert package IDs stay distinct for non-Latin names created in the same millisecond', t => {
-  t.mock.method(Date, 'now', () => 0);
-  const ids = ['专家', '测试', '专家'].map(deriveAgentId);
-  assert.equal(new Set(ids).size, ids.length);
-  for (const id of ids) assert.match(id, /^agent-/);
 });

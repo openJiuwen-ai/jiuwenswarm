@@ -85,16 +85,6 @@ async def _start(h, monkeypatch, *, mode="manual", kind="permission", count=1):
     monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
     h.verified_projection = Mock(wraps=stream_producers.build_verified_permission_ask_user_question)
     monkeypatch.setattr(stream_producers, "build_verified_permission_ask_user_question", h.verified_projection)
-    h.projection_diagnostics = []
-    original_parser = h.adapter._parse_stream_chunk
-
-    def parse(chunk, **kwargs):
-        parsed = original_parser(chunk, **kwargs)
-        if getattr(chunk, "type", None) in ("__interaction__", "controller_output", "answer"):
-            h.projection_diagnostics.append((chunk.type, repr(chunk.payload), parsed))
-        return parsed
-
-    monkeypatch.setattr(h.adapter, "_parse_stream_chunk", parse)
     monkeypatch.setattr(continuation, "_request", _stream_request)
     # The existing helper also inspects SDK state for its own assertions. Its
     # state-derived answer is deliberately discarded: only public output below
@@ -316,8 +306,8 @@ async def test_runtime_resumes_each_manual_batch_head(answer_host, harness, monk
         request_id = question["request_id"]
         assert request_id not in answered
         assert harness.coordinator.has_control_target(sid, request_id)
-        waiting = [control_id for item in harness.coordinator.snapshot_session(sid).executions
-                   if not item.state.terminal for control_id in item.waiting_control_ids]
+        waiting = [item.waiting_control_id for item in harness.coordinator.snapshot_session(sid).executions
+                   if not item.state.terminal and item.waiting_control_id]
         assert waiting == [request_id]
         answered.add(request_id)
         await _stream_request(h, **_answer(question, action))

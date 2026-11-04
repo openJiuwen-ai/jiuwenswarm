@@ -44,6 +44,8 @@ export function SettingsPage({
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;

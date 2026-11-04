@@ -2,10 +2,8 @@
 
 """断开重连后，原连接已不在的在途事件投给同 session 的新连接。
 
-场景：客户端断开重连后，旧连接在途流的迟到事件（metadata.ws_id 指向已
-unregister 的物理连接）不能落入 session 桶投给新连接——否则新请求会消费到
-旧请求的 chat.final。原事件仍丢弃，终态只向同一身份和应用的会话观察者
-发送历史失效通知，由前端在空闲时通过 history 补齐。
+发起连接仍在时仍只投给该物理连接。A4P 改绑优先于 session 桶。
+原连接已断开且没有改绑时，按 session_id 落入仍打开的连接。
 """
 
 from __future__ import annotations
@@ -221,67 +219,6 @@ async def test_orphan_delta_delivered_to_new_ws() -> None:
     assert "runtime.history_required" not in str(frame)
 
 
-@pytest.mark.parametrize("event_type", [EventType.CHAT_FINAL, EventType.CHAT_ERROR])
-@pytest.mark.parametrize("owner", [None, "u1"])
-async def test_orphan_terminal_invalidates_only_authorized_session_history(
-    event_type: EventType,
-    owner: str | None,
-) -> None:
-    channel = _make_channel()
-    expected = _FakeWs("ws-new")
-    expected._web_connection_user_id = owner
-    other_user = _FakeWs("ws-other-user")
-    other_user._web_connection_user_id = "someone-else"
-    closed = _FakeWs("ws-closed", closed=True)
-    closed._web_connection_user_id = owner
-    other_app = _FakeWs("ws-other-app")
-    other_app._web_connection_user_id = owner
-    other_session = _FakeWs("ws-other-session")
-    other_session._web_connection_user_id = owner
-    for app, session, sockets in [
-        ("default", "sess-1", [expected, other_user, closed]),
-        ("other", "sess-1", [other_app]),
-        ("default", "sess-2", [other_session]),
-    ]:
-        route = RoutingKey(
-            user_id=owner or "local", channel_id="web", app_id=app,
-            agent_ref=AgentRef(mode="agent", id="default"), session_id=session,
-        )
-        channel._clients_by_key[route] = sockets
-    calls = await _capture_broadcast(channel)
-    msg = _chat_final_msg("ws-old")
-    msg.event_type = event_type
-    msg.metadata["user_id"] = owner
-    msg.app_id = "default"
-
-    await channel.send(msg)
-
-    assert calls == [({
-        "type": "event",
-        "event": "runtime.history_required",
-        "payload": {"session_id": "sess-1"},
-    }, {expected})]
-
-
-async def test_orphan_delta_does_not_trigger_history_read_per_token() -> None:
-    channel = _make_channel()
-    socket = _FakeWs("ws-new")
-    route = RoutingKey(
-        user_id="local", channel_id="web", app_id="default",
-        agent_ref=AgentRef(mode="agent", id="default"), session_id="sess-1",
-    )
-    channel._clients_by_key[route] = [socket]
-    calls = await _capture_broadcast(channel)
-    msg = _chat_final_msg("ws-old")
-    msg.event_type = EventType.CHAT_DELTA
-    msg.metadata["user_id"] = None
-    msg.app_id = "default"
-
-    await channel.send(msg)
-
-    assert calls == []
-
-
 async def test_live_request_ws_still_receives() -> None:
     """发起连接仍在：事件仍精确投递到该物理连接（行为不变）。"""
     channel = _make_channel()
@@ -361,99 +298,6 @@ async def test_orphan_event_rebound_to_authorizing_ws() -> None:
     channel._ws_by_id["ws-new"] = rebound_ws
     channel.record_a4p_rebound("sess-1", "ws-new")
     calls = await _capture_broadcast(channel)
-
-    await channel.send(_chat_final_msg(ws_id="ws-old"))
-
-    assert len(calls) == 1
-    frame, clients = calls[0]
-    assert clients == {rebound_ws}
-    assert frame["event"] == "chat.final"
-
-
-async def test_orphan_rebound_cleared_after_terminal() -> None:
-    """恢复 turn 终态送达后解除绑定：后续迟到事件不再改投（回归孤儿丢弃）。"""
-    channel = _make_channel()
-    rebound_ws = _FakeWs("ws-new")
-    channel._ws_by_id["ws-new"] = rebound_ws
-    channel.record_a4p_rebound("sess-1", "ws-new")
-    calls = await _capture_broadcast(channel)
-
-    await channel.send(_chat_final_msg(ws_id="ws-old"))
-    assert len(calls) == 1
-
-    delta = _chat_final_msg(ws_id="ws-old")
-    delta.event_type = EventType.CHAT_DELTA
-    await channel.send(delta)
-
-    assert len(calls) == 1, "绑定应已解除，后续迟到事件不得再改投"
-
-
-def _payload_only_terminal_msg(event_name: str) -> Message:
-    """终态消息只带 payload["event_type"]，event_type 字段为 None（_chunk_to_message 的合法形态）。"""
-    return Message(
-        id="req-old",
-        type="event",
-        channel_id="web",
-        session_id="sess-1",
-        params={},
-        timestamp=time.time(),
-        ok=True,
-        payload={"event_type": event_name, "content": "旧请求的回复"},
-        event_type=None,
-        metadata={"ws_id": "ws-old"},
-    )
-
-
-async def test_orphan_terminal_payload_event_type_only_invalidates_history() -> None:
-    """payload 携带终态 event_type 而 event_type 字段为 None 时仍触发 history 失效。"""
-    channel = _make_channel()
-    expected = _FakeWs("ws-new")
-    expected._web_connection_user_id = None
-    route = RoutingKey(
-        user_id="local", channel_id="web", app_id="default",
-        agent_ref=AgentRef(mode="agent", id="default"), session_id="sess-1",
-    )
-    channel._clients_by_key[route] = [expected]
-    calls = await _capture_broadcast(channel)
-
-    msg = _payload_only_terminal_msg("chat.final")
-    msg.metadata["user_id"] = None
-    msg.app_id = "default"
-
-    await channel.send(msg)
-
-    assert calls == [({
-        "type": "event",
-        "event": "runtime.history_required",
-        "payload": {"session_id": "sess-1"},
-    }, {expected})]
-
-
-async def test_orphan_rebound_cleared_on_payload_event_type_only_terminal() -> None:
-    """终态只带 payload event_type 时也解除改绑，避免绑定残留改投后续迟到事件。"""
-    channel = _make_channel()
-    rebound_ws = _FakeWs("ws-new")
-    channel._ws_by_id["ws-new"] = rebound_ws
-    channel.record_a4p_rebound("sess-1", "ws-new")
-    calls = await _capture_broadcast(channel)
-
-    await channel.send(_payload_only_terminal_msg("chat.final"))
-    assert len(calls) == 1
-
-    delta = _chat_final_msg(ws_id="ws-old")
-    delta.event_type = EventType.CHAT_DELTA
-    await channel.send(delta)
-
-    assert len(calls) == 1, "绑定应已解除，后续迟到事件不得再改投"
-
-
-@pytest.mark.parametrize(
-    "event_name,expected_method",
-    [("chat.final", "info"), ("chat.error", "info"), ("chat.delta", "debug")],
-)
-def test_orphan_drop_log_level(event_name: str, expected_method: str) -> None:
-    """终态事件（final/error）INFO 便于现场定位，其余 DEBUG 防刷屏。"""
-    from unittest.mock import patch
 
     await channel.send(_chat_final_msg(ws_id="ws-old"))
 

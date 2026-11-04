@@ -1,4 +1,4 @@
-import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
+import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -305,14 +305,7 @@ export function SkillPanel({
     openHubMore,
     invalidateHubFetch,
     pauseHubFetching,
-  } = useHubMarketplace({
-    activeTab,
-    searchKeyword,
-    marketplaceCategory,
-    marketplaceSubView,
-    setMarketplaceSubView,
-    skipHubFetch: enterpriseEdition,
-  });
+  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView });
 
   const {
     skillGraphPanelRef,

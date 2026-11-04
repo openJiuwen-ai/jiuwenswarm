@@ -123,9 +123,9 @@ async def _require_image(
     except Exception:  # noqa: BLE001
         pass
 
-    # Per-node check, before the call: a Settings gap is logged against this
-    # node whether it is a first run or a regenerate. The generator still runs
-    # so its own error (which carries the same text) reaches the canvas.
+    # Per-node check, before the call: a Settings gap is logged and shown on
+    # this node whether it is a first run or a regenerate. The generator still
+    # runs so its own error (which carries the same text) reaches the canvas.
     handler_io.note_media_settings_gap(ctx, "image", stem)
 
     save_dir = None

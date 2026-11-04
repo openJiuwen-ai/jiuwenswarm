@@ -377,19 +377,9 @@ class MethodRouter:
             next_seq += 1
         session_usage = None
         if not subagent_id and isinstance(session_id, str) and session_id.strip():
-            try:
-                session_usage = await asyncio.to_thread(
-                    _LOAD_HISTORY_SESSION_USAGE, session_id.strip()
-                )
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "[Front] history session usage unavailable: "
-                    "request_id=%s session_id=%s",
-                    request.request_id,
-                    session_id.strip(),
-                    exc_info=True,
-                )
-                session_usage = None
+            session_usage = await asyncio.to_thread(
+                _LOAD_HISTORY_SESSION_USAGE, session_id.strip()
+            )
         done = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,

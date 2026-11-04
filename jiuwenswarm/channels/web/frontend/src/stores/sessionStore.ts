@@ -101,6 +101,22 @@ function loadLastLegacyModelName(): string | null {
   try { return localStorage.getItem(LEGACY_MODEL_STORAGE_KEY)?.trim() || null; } catch { return null; }
 }
 
+function cacheLastLegacyModelName(name: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(LEGACY_MODEL_STORAGE_KEY, name);
+    localStorage.removeItem(MODEL_SELECTION_STORAGE_KEY);
+  } catch { /* noop */ }
+}
+
+export function cacheLastModelSelection(selection: ModelSelection): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection));
+    localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY);
+  } catch { /* noop */ }
+}
+
 /** New chats restore the last stable selection, then fall back default-group -> custom -> free -> empty. */
 export function resolveNewConversationModelSelection(
   models: ModelEntry[],
@@ -741,9 +757,7 @@ function createEmptyRuntime(
     ? availableModels.find((model) => model.model_id === restoredSelection.id)
     : null;
   return {
-    // Only the new-conversation draft inherits the last selected mode.
-    // Existing Sessions restore their own mode from backend metadata.
-    mode: sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadModeFromStorage() : DEFAULT_MODE,
+    mode: loadModeFromStorage(),
     selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
     selectedModelSelection: restoreLegacyName
       ? legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null
@@ -2347,6 +2361,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
+      const model = name
+        ? state.availableModels.find((entry) => entry.model_name === name)
+          ?? state.chatAvailableModels.find((entry) => entry.model_name === name)
+        : null;
+      const selectionFromName: ModelSelection | null =
+        model?.model_id && model.model_id.trim()
+          ? { type: 'model', id: model.model_id.trim() }
+          : null;
+      if (model && name) {
+        if (!selectionFromName) cacheLastLegacyModelName(name);
+        else if (loadLastLegacyModelName()) cacheLastModelSelection(selectionFromName);
+      }
       return {
         runtimes: {
           ...state.runtimes,

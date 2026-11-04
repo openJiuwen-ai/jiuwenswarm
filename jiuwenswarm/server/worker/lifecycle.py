@@ -397,10 +397,26 @@ async def _start_worker_runtime(
         raise RuntimeError("Runtime construction did not publish its cleanup owner")
     runtime_bootstrap.bind_runtime_signals(server, signals)
     await server.start(bind_transport=False)
-    measurements.stage("runtime_started")
-    telemetry.install_runtime_observability(server)
+    log_startup_stage("runtime_started")
+
+    from openjiuwen.harness.observability import install_subagent_observability_hook
+
+    install_subagent_observability_hook()
     from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
         install_session_token_usage_subagent_hook,
+    )
+
+    install_session_token_usage_subagent_hook()
+    log_startup_stage("observability_installed")
+
+    schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)
+    if callable(schedule_warmup):
+        schedule_warmup(reason="startup")
+
+    from jiuwenswarm.server.runtime.opencode_zen import (
+        register_models_ready_callback,
+        set_main_event_loop,
+        warm_zen_free_models,
     )
 
     install_session_token_usage_subagent_hook()

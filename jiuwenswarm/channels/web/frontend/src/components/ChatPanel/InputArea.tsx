@@ -537,27 +537,6 @@ interface AttachmentDraft {
 // can clear the 'new' entry when a genuinely fresh new conversation starts, without
 // an import cycle (that module is itself imported below for NEW_CONVERSATION_ID).
 
-// Session-asset registration bookkeeping for composer attachment drafts and agent-
-// generated artifacts. Module scope, NOT useRef: InputArea unmounts and remounts
-// across the same surfaces that make attachmentDraftsBySession module-level (see
-// above) -- a useRef would reset to empty on every remount, while a restored draft
-// keeps its id (attachmentDraftsBySession) and a restored artifact keeps its path
-// (useSessionArtifacts), so the registration effect below would read them as "never
-// attempted" and register a duplicate session asset every time. Backend registration
-// is deliberately not idempotent per path (session_assets.py), so there is no safety
-// net underneath this -- these four structures are it. They live for the page's whole
-// lifetime, independent of which component instance or session is currently mounted.
-const attemptedAssetPaths = new Set<string>();
-const attemptedDraftIds = new Set<string>();
-// draftId -> the asset_id the registration effect recorded for it; releaseUnsentUploads
-// (cancel) looks this up by draft id to delete exactly that draft's own asset, never by
-// path (the same path can legitimately back more than one asset).
-const draftAssetIdByDraftId = new Map<string, string>();
-// draftIds canceled while their registration request was still in flight: when the
-// response lands, the asset it created is deleted immediately instead of being kept
-// as an orphan.
-const canceledDraftIds = new Set<string>();
-
 interface AttachmentAlert {
   id: string;
   message: string;
@@ -1415,12 +1394,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // （要等下面"切会话"那个 effect 跑完才会重置）。这一轮先跳过，避免把上一个会话还没发送的
     // 附件误登记成这个新会话的素材；下一轮渲染 attachments 跟 activeSessionId 对齐后会重新触发。
     if (attachmentSessionIdRef.current !== activeSessionId) return;
-    const sessionId = activeSessionId;
-    const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string; client_id?: string }> = [];
-    // 和 pending 严格同序：第 i 个待注册项若来自某个附件草稿，这里记它的草稿 id；
-    // 来自 agent 产出文件（没有草稿）的记 null。响应里 created[i] 对应 pending[i]，
-    // 靠这个数组把 asset_id 精确地分还给对应的草稿。
-    const pendingDraftIds: Array<string | null> = [];
+    const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string }> = [];
+    const consider = (path: string | undefined, source: 'upload' | 'generated', name?: string) => {
+      const value = path?.trim();
+      if (!value || attemptedAssetPaths.current.has(value)) return;
+      attemptedAssetPaths.current.add(value);
+      pending.push({ path: value, source, ...(name ? { name } : {}) });
+    };
     attachments.forEach((attachment) => {
       if (attachment.status !== 'ready' || attemptedDraftIds.has(attachment.id)) return;
       const path = pickString(attachment.persistedMediaItem?.path);
@@ -1788,46 +1768,28 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     // A removed chip that had already been auto-registered as a session material
     // (session.assets.register fires as soon as the upload completes, well before
-    // send) must drop that material too. Each draft owns exactly the asset_id the
-    // registration effect recorded for it (draftAssetIdByDraftId) -- never matched by
-    // path, since the same path can now legitimately back more than one asset
-    // (a deliberate re-attach of an already-registered file gets its own new
-    // entry, the same as re-attaching an image always did). Agent-generated
-    // ('generated') materials are not tied to any composer draft and are never
-    // touched here.
-    for (const draft of drafts) {
-      const assetId = draftAssetIdByDraftId.get(draft.id);
-      // Only worth remembering as "canceled" when a registration request for this
-      // draft is genuinely in flight (attempted, response not back yet): that is the
-      // one case where the response handler still needs to find this id later to
-      // delete the orphaned asset. A draft that was never attempted at all (removed
-      // before reaching 'ready', or never had a path) has no pending response ever
-      // coming for it -- adding it here would leave a permanent, unconsumed entry.
-      if (!assetId && attemptedDraftIds.has(draft.id)) canceledDraftIds.add(draft.id);
-      if (!assetId) continue;
-      draftAssetIdByDraftId.delete(draft.id);
-      canceledDraftIds.delete(draft.id);
-      // This draft's path was marked dispatched (sessionAssets.ts) so send-time
-      // registerUploads would not double-register it -- now that the draft and its
-      // asset are both gone, clear that mark too, or a fresh re-attach of the same
-      // path could send before the live registration effect dispatches it and have
-      // registerUploads silently skip it as "already handled". Only clear it when no
-      // OTHER still-attached draft shares this exact path: that one may already rely
-      // on the mark to avoid being registered a second time by registerUploads.
-      const draftPath = pickString(draft.persistedMediaItem?.path);
-      if (draftPath) {
-        const normalizedDraftPath = normalizePath(draftPath);
-        const stillShared = remaining.some((other) => {
-          const otherPath = pickString(other.persistedMediaItem?.path);
-          return Boolean(otherPath) && normalizePath(otherPath!) === normalizedDraftPath;
-        });
-        if (!stillShared && sessionId) unmarkUploadDispatched(sessionId, draftPath);
+    // send) must drop that material too, unless another still-attached draft needs
+    // the same path kept. Only 'upload' materials: agent-generated ('generated')
+    // ones are not tied to any composer draft and must survive regardless.
+    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
+      const keptPaths = new Set(
+        remaining
+          .map((draft) => pickString(draft.persistedMediaItem?.path))
+          .filter((path): path is string => Boolean(path))
+          .map(normalizePath),
+      );
+      for (const draft of drafts) {
+        const path = pickString(draft.persistedMediaItem?.path);
+        if (!path || keptPaths.has(normalizePath(path))) continue;
+        const asset = sessionAssetsRef.current.find(
+          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
+        );
+        if (!asset) continue;
+        void useSessionAssetsStore
+          .getState()
+          .remove(sessionId, asset.asset_id)
+          .catch((error) => console.error('Failed to remove session asset:', error));
       }
-      if (!sessionId || sessionId === NEW_CONVERSATION_ID) continue;
-      void useSessionAssetsStore
-        .getState()
-        .remove(sessionId, assetId)
-        .catch((error) => console.error('Failed to remove session asset:', error));
     }
   }, [activeSessionId, requestImageDiscard]);
 

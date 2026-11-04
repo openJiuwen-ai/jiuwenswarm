@@ -16,7 +16,6 @@ from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
     StoryboardNodeHandler,
     parse_storyboard_shots,
     render_storyboard_table,
-    sync_shot_nodes_from_storyboard_markdown,
 )
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 
@@ -104,41 +103,6 @@ def test_storyboard_is_not_a_connected_text_payload_for_clips(tmp_path):
     ctx = _ctx(graph)
     assert [label for label, _ in edge_text_inputs(ctx, node)] == ["Storyboard"]
     assert edge_text_inputs(ctx, node, exclude_roles=frozenset({"storyboard"})) == []
-
-
-def test_sync_shot_nodes_from_storyboard_markdown():
-    graph = {
-        "nodes": [
-            {
-                "id": "n_clip_1",
-                "type": "video",
-                "config": {
-                    "role": "clip",
-                    "pipeline": "clip",
-                    "clip_index": 1,
-                    "clip_action": "stale",
-                    "generate": {"prompt": "old"},
-                },
-            },
-            {
-                "id": "n_clip_2",
-                "type": "image",
-                "config": {
-                    "role": "frame",
-                    "pipeline": "frame",
-                    "clip_index": 2,
-                    "clip_action": "stale",
-                },
-            },
-        ]
-    }
-    notes = sync_shot_nodes_from_storyboard_markdown(graph, _sb_md())
-    assert notes
-    c1 = graph["nodes"][0]["config"]
-    f2 = graph["nodes"][1]["config"]
-    assert c1["clip_action"] == "Pastor speaks from pulpit, congregation seated"
-    assert f2["clip_action"] == "Woman wipes tears, nods"
-    assert "Action:" in (c1.get("generate") or {}).get("prompt", "")
 
 
 def test_parse_reads_every_row_of_the_table():

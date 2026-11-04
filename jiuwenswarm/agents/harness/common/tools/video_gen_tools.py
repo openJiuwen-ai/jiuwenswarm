@@ -43,8 +43,8 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
 from jiuwenswarm.agents.harness.common.tools import gen_toolkits
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.chat_final import FINAL_MODE_APPEND, annotate_chat_final
-from jiuwenswarm.common.host_services import send_runtime_push
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.runtime.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
 

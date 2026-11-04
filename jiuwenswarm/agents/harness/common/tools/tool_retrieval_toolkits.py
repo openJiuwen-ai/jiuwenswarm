@@ -24,7 +24,13 @@ from openjiuwen.core.context_engine.processor.forked.compressor.recall.bm25 impo
     tokenize as _bm25_tokenize,
 )
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard, ToolInfo
+from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.tools.tool_discovery.bm25 import BM25ToolIndex
+
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    discovery_description,
+    discovery_search_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +63,10 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
             "代码经验、事实与决策，支持分页读取与精确字符串替换。"
         ),
         tools=("coding_memory_edit", "coding_memory_read", "coding_memory_write"),
+        description_en=(
+            "Read, write and edit project coding memory: persistent facts, "
+            "decisions and lessons across sessions."
+        ),
     ),
     ToolCategory(
         path="documents",
@@ -126,40 +136,6 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description="通过语言服务器（LSP）获取代码智能：定义、引用、诊断等。",
         tools=("lsp",),
         description_en="Use language servers for code definitions, references and diagnostics.",
-    ),
-    ToolCategory(
-        path="image-processing",
-        description="使用视觉模型处理图片：OCR 文字提取与图片问答。",
-        tools=("image_ocr", "visual_question_answering"),
-    ),
-    ToolCategory(
-        path="audio-processing",
-        description="使用音频模型处理音频：语音转写、音频问答与元数据提取。",
-        tools=(
-            "audio_metadata",
-            "audio_question_answering",
-            "audio_transcription",
-        ),
-    ),
-    ToolCategory(
-        path="video-understanding",
-        description="使用视频理解模型分析视频内容并回答相关问题。",
-        tools=("video_understanding",),
-    ),
-    ToolCategory(
-        path="image-generation",
-        description="文生图：按文字提示词生成图片并保存到工作区。",
-        tools=("generate_image", "generate_visual"),
-    ),
-    ToolCategory(
-        path="video-generation",
-        description="文生视频：提交视频生成任务，按任务号轮询进度并下载结果。",
-        tools=("generate_video", "check_video_status"),
-    ),
-    ToolCategory(
-        path="lsp",
-        description="通过语言服务器（LSP）获取代码智能：定义、引用、诊断等。",
-        tools=("lsp",),
     ),
     ToolCategory(
         path="modes",
@@ -239,21 +215,6 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en="Review and apply local skill evolution proposals, and manage recorded skill experiences.",
     ),
     ToolCategory(
-        path="skill-evolution",
-        description=(
-            "本地技能与经验的演进：经用户确认创建演进评审、启动受限评审并接受"
-            "已审查的变更提案，以及演进经验的查询、读取与整理。"
-        ),
-        tools=(
-            "evolve_review_task",
-            "evolve_skill_experiences",
-            "list_skill_experiences",
-            "prepare_skill_evolution",
-            "read_skill_experiences",
-            "simplify_skill_experiences",
-        ),
-    ),
-    ToolCategory(
         path="skill-management",
         description="网络上技能搜索、安装与本地技能卸载。",
         tools=("install_skill", "search_skill", "uninstall_skill"),
@@ -285,19 +246,6 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
             "Create or resume an isolated Git worktree, switch to it and "
             "restore the previous directory on exit."
         ),
-    ),
-    ToolCategory(
-        path="user-todos",
-        description="管理用户个人待办与日程：任务、会议、提醒、计划。",
-        tools=("user_todos",),
-    ),
-    ToolCategory(
-        path="worktree",
-        description=(
-            "创建或恢复隔离的 git worktree 并切换当前会话工作目录；"
-            "退出时还原到原目录。"
-        ),
-        tools=("enter_worktree", "exit_worktree"),
     ),
 )
 
@@ -400,7 +348,7 @@ def _compact_schema_description(description: str) -> str:
     return compact[: _SCHEMA_DESC_CHARS - 1].rstrip() + "…"
 
 
-def _tool_search_input_params() -> dict[str, Any]:
+def _tool_search_input_params(language: str = "en") -> dict[str, Any]:
     """``tool_search`` card schema: list / get_schema over the category table.
 
     The discovery flow is two-phase to bound tokens: list returns names and
@@ -434,7 +382,9 @@ def _tool_search_input_params() -> dict[str, Any]:
                 "maxLength": 128,
                 "description": (
                     "list only. BM25 keyword search: within [category], or "
-                    "across all tools when category is omitted."
+                    "across all tools when category is omitted. Built-in tools "
+                    "accept Chinese or English capability terms. "
+                    "Provider descriptions may use another language."
                 ),
             },
             "tool": {
@@ -768,25 +718,28 @@ class ToolRetrievalToolkit:
 
         lines = [
             "## Tool categories",
-            "完整目录见 system prompt；本列表仅为旧拼写降级渲染。",
+            ("See the system prompt for the full catalogue; this listing supports legacy calls."
+             if self._language == "en" else "完整目录见 system prompt；本列表仅为旧拼写降级渲染。"),
             "",
         ]
         for category in self._live_categories():
-            description = " ".join((category.description or "").split())
+            description = " ".join(category.description_for(self._language).split())
             if len(category.tools) >= 2:
                 lines.append(f"- [category] {category.path}: {description}")
                 continue
             name = category.tools[0]
             tool = self._tool_by_name.get(name)
-            tool_description = (tool.description if tool else "") or ""
+            tool_description = (
+                discovery_description(tool, self._language) if tool else ""
+            )
             lines.append(
                 f"- [tool] {name}: "
                 f"{_compact_schema_description(tool_description)}"
             )
         for server, group in self.mcp_connector_groups().items():
             description = str(
-                group.get("description_zh")
-                or group.get("description_en")
+                group.get("description_en" if self._language == "en" else "description_zh")
+                or group.get("description_zh" if self._language == "en" else "description_en")
                 or ""
             ).strip() or f"Tools from MCP connector {server}."
             lines.append(f"- [category] mcp_{server}: {description}")
@@ -806,21 +759,34 @@ class ToolRetrievalToolkit:
         BM25's positive IDF cannot zero out.
         """
 
-        documents = [
-            self._tool_by_name[name] for name in names if name in self._tool_by_name
-        ]
+        documents: list[ToolInfo] = []
+        extra_search_texts: list[str] = []
+        for name in names:
+            tool = self._tool_by_name.get(name)
+            if tool is None:
+                continue
+            documents.append(tool)
+            extra_search_texts.append(discovery_search_text(tool))
         if not documents:
             return []
-        ranked = BM25ToolIndex.build(documents).search(keyword, limit=len(documents))
+        ranked = BM25ToolIndex.build(
+            documents,
+            extra_search_texts=extra_search_texts,
+        ).search(keyword, limit=len(documents))
         multi_char = {
             token for token in _bm25_tokenize(keyword) if len(token) > 1
         }
-        return [
-            tool.name
-            for tool in ranked
-            if multi_char
-            & set(_bm25_tokenize(f"{tool.name or ''} {tool.description or ''}"))
-        ]
+        selected: list[str] = []
+        for tool in ranked:
+            tokens = set(
+                _bm25_tokenize(
+                    f"{tool.name or ''} {tool.description or ''} "
+                    f"{discovery_search_text(tool)}"
+                )
+            )
+            if multi_char & tokens:
+                selected.append(tool.name)
+        return selected
 
     def _live_categories(self) -> tuple[ToolCategory, ...]:
         """Static categories whose membership intersects the live registry."""
@@ -853,7 +819,7 @@ class ToolRetrievalToolkit:
         lines = [header, ""]
         lines.extend(
             f"- [tool] {name}: "
-            f"{_compact_schema_description(self._tool_by_name[name].description)}"
+            f"{_compact_schema_description(discovery_description(self._tool_by_name[name], self._language))}"
             for name in ranked
         )
         return "\n".join(lines)
@@ -889,7 +855,7 @@ class ToolRetrievalToolkit:
             lines = [header, ""]
             lines.extend(
                 f"- [tool] {name}: "
-                f"{_compact_schema_description(self._tool_by_name[name].description)}"
+                f"{_compact_schema_description(discovery_description(self._tool_by_name[name], self._language))}"
                 for name in names
             )
             return "\n".join(lines)

@@ -1,13 +1,14 @@
-import { PanelRight, X } from 'lucide-react';
+import { PanelRight, Square, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
-import ChatModelSelector from '../../../components/ChatPanel/ChatModelSelector';
 import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
 import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
+import { requestSettingsModule } from '../../settings/settingsNavigation';
+import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSessionStore } from '../../../stores/sessionStore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
@@ -18,7 +19,7 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
-import { findDesignModelsProblem } from '../designModelsReadiness';
+import { findDesignModelsProblem, loadedDesignChatAnthropicProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
@@ -119,6 +120,7 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
+  const stopRequestedRef = useRef(false);
   // The canvas owns exactly one session: read and write the model against that
   // session id. `activeSessionId` follows the app route and can point at
   // another conversation while this panel stays mounted (#5394, #8995).
@@ -129,6 +131,7 @@ export function DesignerChatPanel() {
     sessionId ? state.runtimes[sessionId]?.selectedModelSelection ?? null : null,
   );
   const setChatModel = useDesignerStore((state) => state.setChatModel);
+  const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
   // The director chain resolves its preferred model from graph.metadata.model_name,
   // and leader rounds run on the session selection: keep both in sync so a pick
   // made here takes effect on the next round instead of only relabelling the UI.
@@ -150,6 +153,25 @@ export function DesignerChatPanel() {
       return null;
     }
   }, [sessionId, domainGraph, t]);
+
+  // Design has no model switch: a missing chat model means no leader round can
+  // run at all, so warn here instead of failing only after the user sends
+  // (#5266). Re-checked whenever the catalog size changes, e.g. after the user
+  // fixes Settings in another tab.
+  const [blockedProblem, setBlockedProblem] = useState('');
+  useEffect(() => {
+    if (!sessionId) {
+      setBlockedProblem('');
+      return;
+    }
+    let cancelled = false;
+    void findDesignModelsProblem(sessionId).then((problem) => {
+      if (!cancelled) setBlockedProblem(problem ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, availableModelCount, selectedModelName]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -223,8 +245,11 @@ export function DesignerChatPanel() {
     if ((!content && attachments.length === 0) || chatBusy) return;
     // Same gate as the landing page: a round needs the chat model and both
     // generation slots, so refuse loudly instead of failing mid-run (#5266).
-    if (blockedProblem) {
-      toast.open({ content: blockedProblem, variant: 'error' });
+    // Anthropic is read from the in-memory catalog so the click returns before
+    // any design RPC, even if the warning effect has not finished.
+    const protocolProblem = loadedDesignChatAnthropicProblem(sessionId, selectedModelName);
+    if (protocolProblem || blockedProblem) {
+      toast.open({ content: protocolProblem || blockedProblem, variant: 'error' });
       return;
     }
     setSending(true);
@@ -271,7 +296,7 @@ export function DesignerChatPanel() {
       .finally(() => {
         setSending(false);
       });
-  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, sessionId, t]);
+  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, selectedModelName, sessionId, t]);
 
   const handleStop = useCallback(() => {
     if (!sessionId) return;
@@ -433,7 +458,8 @@ export function DesignerChatPanel() {
           />
           <div className="designer-chat-panel__composer-actions">
             {sessionId ? (
-              <ChatModelSelector sessionId={sessionId} disabled={chatBusy} />
+              /* No model switch on the canvas: show the model Design runs on (#5266). */
+              <DesignerModelBadge sessionId={sessionId} />
             ) : null}
             <ApplicationPluginTaskInputActions
               eligible={
@@ -449,16 +475,30 @@ export function DesignerChatPanel() {
                 stop: t('chat.taskFullDuplexStop'),
               }}
               fallback={
-                <button
-                  type="button"
-                  className="designer-chat-panel__send"
-                  disabled={chatBusy || !canSend}
-                  onClick={handleSend}
-                  aria-label={t('designer.chat.send')}
-                  data-testid="designer-chat-panel-send"
-                >
-                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-                </button>
+                isProcessing ? (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    onClick={handleStop}
+                    aria-label={t('designer.chat.stop')}
+                    title={t('designer.chat.stop')}
+                    data-testid="designer-chat-panel-stop"
+                  >
+                    <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    disabled={chatBusy || !canSend}
+                    onClick={handleSend}
+                    aria-label={t('designer.chat.send')}
+                    title={blockedProblem || undefined}
+                    data-testid="designer-chat-panel-send"
+                  >
+                    <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                  </button>
+                )
               }
             />
           </div>

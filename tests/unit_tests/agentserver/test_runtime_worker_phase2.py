@@ -164,7 +164,6 @@ async def test_ipc_request_stream_and_cancel() -> None:
         holder.open_session(conn)
         try:
             await dispatcher.bind_runtime(runtime)
-            await dispatcher.mark_ready()
             while True:
                 message = await conn.recv()
                 if not await dispatcher.handle(message, conn):
@@ -212,8 +211,6 @@ async def test_ipc_request_stream_and_cancel() -> None:
             await asyncio.gather(serve_task, return_exceptions=True)
         if client is not None:
             await client.close()
-        if holder.conn is not None:
-            await holder.conn.close()
         await server.close()
 
 

@@ -26,7 +26,7 @@ type StateHandler = (state: WebConnectionState) => void;
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
-  timeoutId: number;
+  timeoutId: number | undefined;
   awaitRuntimeAccepted: boolean;
 }
 
@@ -317,7 +317,7 @@ class WebClient {
     };
 
     return new Promise<T>((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = timeoutMs === 0 ? undefined : window.setTimeout(() => {
         this.pending.delete(id);
         reject(this.createWebError(i18n.t('network.requestTimeout'), 'REQUEST_TIMEOUT', id, true));
       }, timeoutMs);
