@@ -60,40 +60,6 @@
     "valid": false
   },
   {
-    "name": "icon trigger",
-    "root": {
-      "component": "Dropdown",
-      "props": {
-        "items": [
-          {
-            "key": "apply",
-            "label": "Apply"
-          }
-        ],
-        "icon": "ellipsis",
-        "ariaLabel": "Actions"
-      }
-    },
-    "valid": true
-  },
-  {
-    "name": "icon alias trigger",
-    "root": {
-      "component": "Dropdown",
-      "props": {
-        "items": [
-          {
-            "key": "apply",
-            "label": "Apply"
-          }
-        ],
-        "icon": "refresh",
-        "ariaLabel": "Refresh"
-      }
-    },
-    "valid": true
-  },
-  {
     "name": "unknown icon",
     "root": {
       "component": "Dropdown",

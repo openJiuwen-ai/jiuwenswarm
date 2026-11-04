@@ -29,6 +29,7 @@ test('Dropdown requires exactly one trigger source, including inside Tabs', () =
   for (const [extra, valid] of [
     [{}, false], [{ children: [] }, false], [{ children: [child] }, true],
     [{ props: { ...props, icon: 'ellipsis', ariaLabel: 'Actions' } }, true],
+    [{ props: { ...props, icon: 'refresh', ariaLabel: 'Refresh' } }, true],
     [{ props: { ...props, icon: 'ellipsis', ariaLabel: 'Actions' }, children: [child] }, false],
   ]) {
     const dropdown = { component: 'Dropdown', props, ...extra };

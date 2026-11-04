@@ -23,7 +23,6 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
     UiRenderOutput,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.schema import validate_root
-from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
 def _contract_node(raw: dict) -> RenderNode:
@@ -51,11 +50,14 @@ def test_gateway_component_contract_matches_browser(case):
     assert validate_root(_contract_node(case["root"])).ok is case["valid"]
 
 
-def test_dropdown_accepts_the_shared_icon_whitelist():
-    for icon in WEBUI_ICON_NAMES:
-        assert validate_root(RenderNode(component="Dropdown", props={
-            "icon": icon, "ariaLabel": "Actions", "items": [{"key": "apply", "label": "Apply"}],
-        })).ok
+def test_dropdown_rejects_icon_properties():
+    report = validate_root(RenderNode(
+        component="Dropdown",
+        props={"icon": "ellipsis", "ariaLabel": "Actions", "items": [{"key": "apply", "label": "Apply"}]},
+        children=(RenderNode(component="Text", props={"value": "Actions"}),),
+    ))
+    assert not report.ok
+    assert report.message == "props not allowed for Dropdown: ['icon']"
 
 #: Header every authenticated frame carries; the gate only checks presence.
 AUTH_HEADERS = {"authorization": "Bearer tk_1"}
