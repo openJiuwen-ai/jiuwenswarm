@@ -4173,14 +4173,12 @@ def _cast_focus_alignment_patch(graph: DesignerExecutionGraph) -> list[str]:
             # the scene, partially visible" and a cast-less shot draws people.
             ref_cids = list(dict.fromkeys(focus))
             keep_cids = set(ref_cids)
-            ref_nodes = [
-                str(nid)
-                for nid in (cfg.get("character_node_ids") or [])
-                if str(nid)
-                and (
-                    keep_cids & set(_spec_character_ids(graph, str(nid)))
-                )
-            ]
+            ref_nodes = []
+            for nid in cfg.get("character_node_ids") or []:
+                if not str(nid):
+                    continue
+                if keep_cids & set(_spec_character_ids(graph, str(nid))):
+                    ref_nodes.append(str(nid))
             identity_refs = {
                 "character_ids": ref_cids,
                 "character_node_ids": ref_nodes,
