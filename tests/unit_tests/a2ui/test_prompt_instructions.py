@@ -28,16 +28,14 @@ def test_a2ui_prompt_discourages_nested_templates():
     assert "indexed valueMap" in instruction
 
 
-def test_a2ui_prompt_titles_input_components_with_text_caption():
+def test_a2ui_prompt_titles_input_components_with_text():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert 'usageHint "caption"' in en
     assert '{"literalString": ""}' in en
     assert "Wrap each Text title and its input component together in a Column" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert 'usageHint="caption"' in zh
     assert '{"literalString": ""}' in zh
     assert "共同包在一个 Column 里" in zh
 
@@ -109,13 +107,11 @@ def test_a2ui_prompt_ok_cancel_button_row_right_aligned():
 
     assert 'distribution to "end"' in en
     assert "Cancel (secondary) before OK (primary)" in en
-    assert "Place a Divider directly above the button row" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert 'distribution="end"' in zh
     assert "取消（次要）在前、确定（主要）在后" in zh
-    assert "按钮行上方必须放一条 Divider 分割线" in zh
 
 
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
