@@ -253,11 +253,27 @@ async def test_http_headers_and_asset_boundaries(tmp_path):
             assert (await client.get("/business", headers={"Authorization": "Bearer " + token})).status_code == 200
             generation = runtime.browser.generations[PACKAGE]
             asset_url = f"/extension-assets/{PACKAGE}/{generation}/background.svg"
-            assert (await client.get(asset_url)).status_code == 200
+            for name in ("background.svg", "promotion.png", "avatar.svg"):
+                expected = (SOURCE / "assets" / name).read_bytes()
+                for method in ("GET", "HEAD"):
+                    response = await client.request(method, f"/extension-assets/{PACKAGE}/{generation}/{name}")
+                    assert response.status_code == 200
+                    assert response.headers["content-type"].startswith("image/")
+                    assert response.headers["content-length"] == str(len(expected))
+                    assert response.headers["cache-control"] == "no-store"
+                    assert response.headers["x-content-type-options"] == "nosniff"
+                    assert response.content == (expected if method == "GET" else b"")
+            assert (await client.get(f"/extension-assets/{PACKAGE}/{generation}/missing.svg")).status_code == 404
             with pytest.raises(ValueError):
                 runtime.browser.asset_file(PACKAGE, generation, "../settings.json")
-            runtime.unpublish(PACKAGE)
+            await runtime.packages.reload(PACKAGE)
+            current_generation = runtime.browser.generations[PACKAGE]
+            assert current_generation != generation
             assert (await client.get(asset_url)).status_code == 404
+            current_url = f"/extension-assets/{PACKAGE}/{current_generation}/avatar.svg"
+            assert (await client.get(current_url)).status_code == 200
+            runtime.unpublish(PACKAGE)
+            assert (await client.get(current_url)).status_code == 404
     finally:
         await runtime.shutdown()
 

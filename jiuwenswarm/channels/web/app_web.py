@@ -976,7 +976,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         return True
 
     def _dispatch_proxy(self) -> bool:
-        if self._is_api_route():
+        if self._is_api_route() or urlparse(self.path).path.startswith("/extension-assets/"):
             self._proxy_http()
             return True
         if self._is_ws_route():

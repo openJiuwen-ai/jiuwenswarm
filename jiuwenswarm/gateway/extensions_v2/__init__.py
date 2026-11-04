@@ -65,7 +65,7 @@ async def intercept_gateway_frame(
         return False, dict(params)
 
 
-async def notify_gateway_disconnect(ws: Any) -> None:
+async def notify_gateway_disconnect(ws: Any, session_ids: Any = None) -> None:
     """Release connection-scoped extension state."""
 
     from jiuwenswarm.gateway.extensions_v2.assembly import get_gateway_runtime
@@ -74,6 +74,6 @@ async def notify_gateway_disconnect(ws: Any) -> None:
     if runtime is None:
         return
     try:
-        await runtime.on_disconnect(ws)
+        await runtime.on_disconnect(ws, session_ids)
     except Exception as exc:  # noqa: BLE001 - disconnect cleanup must not raise
         logger.warning("[GatewayExtensions] disconnect cleanup failed: %s", exc)
