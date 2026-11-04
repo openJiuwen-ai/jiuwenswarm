@@ -272,9 +272,10 @@ async def test_update_rails_for_mode_does_not_call_update_agent_rails():
 async def test_flash_reconcile_registers_active_evolution_when_enabled(monkeypatch):
     """Flash mounts restricted online evolution rails only when opted in."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
     }
+    adapter._config_cache = {"evolution": {"skill_evolution": True}}
     adapter._instance = SimpleNamespace(register_rail=AsyncMock())
     ensure = AsyncMock()
     unconfigure = AsyncMock()
@@ -295,7 +296,7 @@ async def test_flash_reconcile_registers_active_evolution_when_enabled(monkeypat
 async def test_flash_reconcile_defaults_keep_skill_sleep_without_online_evolution(monkeypatch):
     """Flash defaults are closed online evolution and resident SkillSleep."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {}
+    adapter._config_base_cache = {}
     adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
     adapter._skill_evolution_rail = object()
     adapter._evolution_interrupt_rail = object()
@@ -322,10 +323,11 @@ async def test_flash_reconcile_defaults_keep_skill_sleep_without_online_evolutio
 async def test_flash_reconcile_does_not_inherit_global_skill_evolution_switch(monkeypatch):
     """Flash online evolution is opt-in and never falls back to react.evolution."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "react": {"evolution": {"enabled": True, "skill_evolution": True}},
         "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
     }
+    adapter._config_cache = {"evolution": {"enabled": True, "skill_evolution": True}}
     adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
     adapter._skill_evolution_rail = object()
     adapter._evolution_interrupt_rail = object()
@@ -352,9 +354,10 @@ async def test_flash_reconcile_does_not_inherit_global_skill_evolution_switch(mo
 async def test_flash_reconcile_can_disable_skill_sleep_independently(monkeypatch):
     """A Flash-only SkillSleep switch can unload sleep without online rails."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": False}}},
     }
+    adapter._config_cache = {}
     adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
     adapter._skill_evolution_rail = object()
     adapter._skill_sleep_rail = object()
@@ -374,9 +377,10 @@ async def test_flash_reconcile_can_disable_skill_sleep_independently(monkeypatch
 async def test_flash_reconcile_unmounts_evolution_when_disabled(monkeypatch):
     """A disabled online switch unmounts only online evolution rails."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
     }
+    adapter._config_cache = {"evolution": {"enabled": True}}
     adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
     adapter._skill_evolution_rail = object()
     adapter._evolution_interrupt_rail = object()
@@ -400,9 +404,10 @@ async def test_flash_reconcile_unmounts_evolution_when_disabled(monkeypatch):
 async def test_flash_reconcile_unmounts_cold_started_skill_sleep_when_disabled(monkeypatch):
     """A cold-mounted SkillSleep rail remains resident by Flash default."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
     }
+    adapter._config_cache = {}
     adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
     adapter._skill_sleep_rail = object()
     ensure = AsyncMock()
@@ -424,9 +429,10 @@ async def test_flash_reconcile_unmounts_cold_started_skill_sleep_when_disabled(m
 async def test_flash_reconcile_isolates_unmount_failures(monkeypatch):
     """A failed active-rail unmount must not block SkillSleep reconciliation."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
     }
+    adapter._config_cache = {}
     adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
     adapter._skill_evolution_rail = object()
     adapter._skill_sleep_rail = object()
@@ -466,9 +472,10 @@ async def test_flash_reload_reconcile_does_not_mount_ttse(monkeypatch):
 async def test_flash_reconcile_serializes_concurrent_rail_updates(monkeypatch):
     """Registration and unregister await points must not interleave in Flash."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = {
+    adapter._config_base_cache = {
         "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
     }
+    adapter._config_cache = {"evolution": {"enabled": True}}
     adapter._instance = SimpleNamespace(register_rail=AsyncMock())
     active = 0
     observed_max = 0

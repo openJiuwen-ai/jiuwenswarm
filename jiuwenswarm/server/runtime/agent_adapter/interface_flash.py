@@ -1018,7 +1018,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         unrelated failure domains and permit interleaved half-mounted state.
         """
         async with self._flash_evolution_rail_lock:
-            if _flash_evolution_enabled(self._config_cache):
+            full_config = self._config_base_cache
+            if _flash_evolution_enabled(full_config):
                 await self._ensure_active_evolution_rails_registered()
             elif (
                 self._skill_evolution_rail is not None
@@ -1032,7 +1033,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                         exc,
                     )
 
-            if _flash_skill_sleep_enabled(self._config_cache):
+            if _flash_skill_sleep_enabled(full_config):
                 await self._reconcile_skill_sleep_rail()
             elif self._skill_sleep_rail is not None:
                 try:
