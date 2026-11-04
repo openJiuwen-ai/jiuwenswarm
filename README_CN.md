@@ -72,7 +72,7 @@
 | 系统 | 下载链接 | 说明 |
 | --- | --- | --- |
 | Windows | [下载 Windows 版本](https://openjiuwen.com/jiuwenswarm) | 适用于 Windows 10 / 11 |
-| macOS | [下载 macOS 版本](https://openjiuwen.com/jiuwenswarm) | 适用于 Intel / Apple Silicon |
+| macOS | [下载 macOS 版本](https://openjiuwen.com/jiuwenswarm) | 仅支持 Apple Silicon（ARM64），不支持 Intel |
 
 下载后按照提示安装使用。
 
