@@ -203,9 +203,21 @@ all 模式使用的 Python 静态服务此前只代理 /api 和 /ws，插件素�
 不引入绝对素材地址或额外 CORS 配置；后端继续校验包、激活代次和 assets 目录边界，404 原样传回。
 Vite 已有同一路径代理，不需重复修改。旧激活的素材 URL 在重载后仍应失效，不能把后端 404 改写成成功。
 
-本轮验证计划覆盖真实注册的断连钩子、重连与连接隔离、GET/HEAD 图片内容和 404 透传，以及实际安装包的素材路由。
-尚未完成本轮验证；未登录拒绝请求的 401 语义及真实投递失败的错误和回滚行为保持既有契约。
+本轮验证（2026-11-04，本地 macOS、Python 3.11.4）：
+
+- 修复前新增回归有 9 项失败，分别复现断连入口 TypeError、图片请求返回 HTML 和后端 404 被 SPA 页面替代。
+- 本次改动的独立源码快照执行 Gateway 扩展测试，以及静态素材、已有 WS 隧道和 raw-file HTTP 测试：146 项通过。
+  提交前基于最新分支再次验证：153 项通过。
+  覆盖连接隔离与重连、禁用运行时、清理异常、GET/HEAD 内容与响应头、真实安装 ZIP 的三种素材，以及重载后旧 URL 失效。
+- 独立真实 WebChannel 和 Python 静态服务使用临时安装的正式示例 ZIP，连续两次 WS 连接均渲染登录树，断连后连接映射
+  和 application 视图清理完成；日志未出现本次报告的断连或投递错误。HTTP 直连和同源代理均返回正确图片字节，
+  缺失文件及错误激活代次返回 JSON 404。Chrome 中头像、背景、宣传图均完成解码，naturalWidth 大于零。
+
+以上服务验证未连接 AgentServer 或执行模型；同事环境的原始 404 请求及响应体未提供，不能判定其具体失效条件。
+本次未改变未登录 401、真实投递失败的错误及回滚语义。
 
 The disconnect entry now accepts the existing WebChannel callback arguments and forwards them to runtime cleanup.
-The built frontend server proxies extension assets through the existing same-origin HTTP path. Backend asset checks
-and delivery-failure rollback remain authoritative; verification for this revision is pending.
+The built frontend server proxies extension assets through the existing same-origin HTTP path. Regression tests passed
+in isolated source snapshots: 146 initially and 153 on the final branch baseline. Real HTTP/WS services verified disconnect cleanup and asset delivery; Chrome
+decoded all three images. AgentServer/model execution and the colleague's original 404 conditions were not reproduced.
+Backend asset checks and delivery-failure rollback remain authoritative.

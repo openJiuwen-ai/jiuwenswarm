@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from openjiuwen.core.events import Event, SessionContext
 
@@ -18,6 +19,8 @@ from jiuwenswarm.gateway.extensions_v2.models import (
 )
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserConnection
+from jiuwenswarm.gateway.extensions_v2.webui.models import RenderNode, RenderTarget, UiRenderInput
 
 
 class FakeChannel:
@@ -264,6 +267,75 @@ async def test_disconnect_drops_connection_state(tmp_path):
     await runtime.on_disconnect(SimpleNamespace(_jiuwen_ws_id="ws-1"))
 
     assert runtime.store.get(scope="connection", scope_id="ws-1", key="token") is None
+
+
+async def test_registered_disconnect_hook_cleans_only_the_closed_connection_and_allows_reconnect(tmp_path, monkeypatch):
+    from jiuwenswarm.gateway.extensions_v2 import assembly
+
+    class DisconnectChannel(FakeChannel):
+        def __init__(self):
+            super().__init__()
+            self.disconnect_hooks = []
+
+        def on_disconnect(self, hook):
+            self.disconnect_hooks.append(hook)
+
+    channel = DisconnectChannel()
+    runtime = await _runtime(tmp_path, channel)
+    disconnected = []
+
+    async def handler(event, ops, next_handler):
+        disconnected.append(event.event_input.connection_id)
+        return await next_handler(event)
+
+    runtime.publish(_package(handler, "gateway.disconnect"))
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    assembly._hook_disconnect(channel)
+    old_ws, other_ws = _ws(), _ws()
+    old_id = await channel.ensure_ws_id(old_ws)
+    other_id = await channel.ensure_ws_id(other_ws)
+    try:
+        for connection_id, ws in ((old_id, old_ws), (other_id, other_ws)):
+            runtime.browser.connections[connection_id] = BrowserConnection(ws)
+            runtime.store.set(scope="connection", scope_id=connection_id, key="draft", value="saved")
+            target = RenderTarget(session_id="", slot_id="application.entry", package_id="demo",
+                                  instance_key="view", scope="application", connection_id=connection_id)
+            async with runtime.registry.claim(target) as claim:
+                runtime.registry.commit(claim.instance, UiRenderInput(
+                    target=target, root=RenderNode(component="Text", props={"value": "View"}),
+                ))
+        old_ws.closed = True
+        assert len(channel.disconnect_hooks) == 1
+        await channel.disconnect_hooks[0](old_ws, {"session-1"})
+        assert disconnected == [old_id]
+        assert old_id not in runtime.browser.connections
+        assert runtime.store.get(scope="connection", scope_id=old_id, key="draft") is None
+        assert [record.target.connection_id for record in runtime.registry.snapshot()] == [other_id]
+        assert other_id in runtime.browser.connections
+        assert runtime.store.get(scope="connection", scope_id=other_id, key="draft").value == "saved"
+        new_ws = _ws()
+        visited, params = await runtime.intercept(new_ws, "reconnect", "ping", {})
+        assert not visited and params == {}
+        assert new_ws._jiuwen_ws_id not in {old_id, other_id}
+    finally:
+        await runtime.shutdown()
+
+
+async def test_disconnect_entry_accepts_channel_arguments_when_runtime_is_disabled(monkeypatch):
+    from jiuwenswarm.gateway.extensions_v2 import assembly, notify_gateway_disconnect
+
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: None)
+    await notify_gateway_disconnect(_ws(), {"session-1"})
+
+
+async def test_disconnect_entry_preserves_channel_cleanup_when_extensions_raise(monkeypatch):
+    from jiuwenswarm.gateway.extensions_v2 import assembly, notify_gateway_disconnect
+
+    cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: SimpleNamespace(on_disconnect=cleanup))
+    ws, sessions = _ws(), {"session-1"}
+    await notify_gateway_disconnect(ws, sessions)
+    cleanup.assert_awaited_once_with(ws, sessions)
 
 
 async def test_broken_handler_does_not_break_the_frame(tmp_path):
