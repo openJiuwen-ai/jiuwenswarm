@@ -188,9 +188,7 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     # --- en rules ---
     image_url_rule_en = (
         " Do not invent image URLs. Use user-provided HTTPS URLs or verified "
-        "stable sources; do not use guessed upload.wikimedia.org thumbnail paths. "
-        "Use only URLs the user provided or a verified tool result returned; "
-        "do not claim a URL is reachable if you have not verified it."
+        "stable sources; do not use guessed upload.wikimedia.org thumbnail paths."
     )
     unsupported_component_rule_en = (
         " A2UI has no dialog, popup, alert, toast, or floating-overlay "
@@ -262,10 +260,13 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "the submitted value in Button.action.context using a path reference. "
         "Use DateTimeInput (not TextField) for any date or time selection "
         "field. Do not emit an empty Button.action.context for form submissions. "
-        "Each of these input components MUST have a Text title placed directly "
-        "above it, and the inline label of TextField, CheckBox, and Slider MUST "
-        "be present but empty (e.g. {\"literalString\": \"\"}) so the title is "
-        "not duplicated. "
+        "Each of TextField, MultipleChoice, DateTimeInput, and Slider MUST have "
+        "a Text title placed directly above it; for TextField and Slider the "
+        "inline label MUST be present but empty (e.g. {\"literalString\": \"\"}) "
+        "so the title is not duplicated. CheckBox is different: its own label is "
+        "rendered beside the checkbox as the caption, so do NOT add an extra Text "
+        "title above it and do NOT empty its label — keep the descriptive text in "
+        "CheckBox.label. "
         "Wrap each Text title and its input component together in a Column. "
         "Title Text usageHint follows the form structure: the form's main title "
         "MUST use usageHint \"h1\". If the form has no section grouping (e.g. a "
@@ -318,7 +319,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     image_url_rule_zh = (
         " 不要编造图片 URL。使用用户提供的 HTTPS URL 或已验证的稳定来源；"
         "不要使用猜测的 upload.wikimedia.org thumbnail 路径。"
-        "只用用户提供的或工具返回的已验证 URL；未经验证不要声称链接可达。"
     )
     unsupported_component_rule_zh = (
         " A2UI 没有 dialog、popup、alert、toast、浮层这类组件——"
@@ -371,9 +371,11 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "Button.action.context 中用 path reference 包含提交值。"
         "日期或时间选择字段必须用 DateTimeInput（不用 TextField）。"
         "表单提交不能输出空的 Button.action.context。"
-        "上述每个输入组件统一在其正上方加一个 Text 组件作为标题，"
-        "且 TextField、CheckBox、Slider 的内联 label 必须存在但置空"
-        "（如 {\"literalString\": \"\"}），避免标题重复；"
+        "TextField、MultipleChoice、DateTimeInput、Slider 各自在正上方加一个 Text 组件作为标题；"
+        "其中 TextField 与 Slider 的内联 label 必须存在但置空"
+        "（如 {\"literalString\": \"\"}），避免标题重复。"
+        "CheckBox 不同：它自身的 label 渲染在勾选框旁作为说明文字，"
+        "因此不要在其正上方额外加 Text 标题，也不要置空 label——把描述内容保留在 CheckBox.label 里。"
         "每个 Text 标题与对应输入组件必须共同包在一个 Column 里。"
         "标题 Text 的 usageHint 按表单结构定：表单大标题必须用 usageHint \"h1\"；"
         "表单没有分组时（如单个输入组件），每个输入组件的标题必须用 usageHint \"h2\"；"
