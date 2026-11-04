@@ -46,6 +46,7 @@ async def host(tmp_path, monkeypatch):
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
     monkeypatch.setattr(assembly, "resolve_store_dir", lambda: tmp_path / "store")
+    monkeypatch.setattr(assembly, "resolve_state_dir", lambda: tmp_path / "state")
     original = assembly.bootstrap.register_handlers
     records, captured_ops = [], []
     control = {"record": None}

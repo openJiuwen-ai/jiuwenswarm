@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_store_dir
+from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_state_dir, resolve_store_dir
 
 
 def test_absolute_config_path_is_used(tmp_path: Path) -> None:
@@ -47,8 +47,31 @@ def test_default_directory_is_under_workspace(monkeypatch, tmp_path: Path) -> No
     assert resolve_install_dir({}) == tmp_path / "extension_pkgs"
 
 
-def test_store_directory_follows_the_host_workspace(monkeypatch, tmp_path: Path) -> None:
+def test_store_directory_reads_extensions_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
 
-    assert resolve_store_dir() == tmp_path / "extension" / "store"
+    assert resolve_store_dir({"extensions": {"store_dir": "data/store"}}) == tmp_path / "data" / "store"
+    assert resolve_store_dir({"extensions": {"store_dir": str(tmp_path / "abs-store")}}) == tmp_path / "abs-store"
+
+
+def test_store_directory_falls_back_to_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("EXTENSION_STORE_DIR", raising=False)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+
+    assert resolve_store_dir({}) == tmp_path / "extension" / "store"
+    assert not (tmp_path / "extension").exists()
+
+
+def test_state_directory_reads_extensions_config(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+
+    assert resolve_state_dir({"extensions": {"state_dir": "data/state"}}) == tmp_path / "data" / "state"
+    assert resolve_state_dir({"extensions": {"state_dir": str(tmp_path / "abs-state")}}) == tmp_path / "abs-state"
+
+
+def test_state_directory_falls_back_to_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("EXTENSION_STATE_DIR", raising=False)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+
+    assert resolve_state_dir({}) == tmp_path / "extension" / "state"
     assert not (tmp_path / "extension").exists()
