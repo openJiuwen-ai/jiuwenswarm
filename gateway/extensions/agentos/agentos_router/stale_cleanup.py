@@ -21,6 +21,9 @@ from collections.abc import Callable
 
 from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
 from gateway.extensions.agentos.agentos_router.logutil import log_agentos
+from gateway.telemetry import (
+    bind_cleanup_trace, get_cleanup_result, record_cleanup_result, trace_operation,
+)
 from gateway.extensions.agentos.agentos_router.registry_client import (
     InstanceRecord,
     RegistryClient,
@@ -85,6 +88,21 @@ async def _cleanup_one(
     registry: RegistryClient,
     agent_manager: AgentManager,
 ) -> None:
+    with trace_operation("gw.agent.sweep", root=True, attributes={
+        "source": "startup.sweep", "instance_id": str(record.instance_id or ""),
+        "service_id": str(record.service_id or ""), "user_id": record.user,
+        "agent_type": record.framework,
+    }) as operation, bind_cleanup_trace(operation):
+        await _cleanup_one_impl(record, yuanrong=yuanrong, registry=registry, agent_manager=agent_manager)
+
+
+async def _cleanup_one_impl(
+    record: InstanceRecord,
+    *,
+    yuanrong: YuanrongFrontendAgentClient,
+    registry: RegistryClient,
+    agent_manager: AgentManager,
+) -> None:
     live_sandboxes = await _live_sandbox_ids(agent_manager)
     instance_id = str(record.instance_id or "").strip()
     service_id = str(record.service_id or "").strip()
@@ -93,6 +111,8 @@ async def _cleanup_one(
         sandbox_is_live = False
         try:
             await yuanrong.delete_sandbox(instance_id)
+            if get_cleanup_result("frontend.delete") is None:
+                record_cleanup_result("frontend.delete", "incomplete", reason="delete_result_unconfirmed")
             log_agentos(
                 logger,
                 logging.INFO,
@@ -103,7 +123,13 @@ async def _cleanup_one(
                 agent_type=record.framework,
                 instance=instance_id,
             )
-        except Exception:  # noqa: BLE001 - best-effort per record
+        except Exception as exc:  # noqa: BLE001 - best-effort per record
+            outcome = (
+                "timeout" if isinstance(exc, TimeoutError)
+                or "timeout" in type(exc).__name__.lower()
+                else "failed"
+            )
+            record_cleanup_result("frontend.delete", outcome, reason=type(exc).__name__)
             logger.exception(
                 "[AgentOS] sandbox.cleanup.delete.fail sandbox_id=%s service_id=%s",
                 instance_id,
@@ -111,6 +137,7 @@ async def _cleanup_one(
             )
     elif not instance_id:
         sandbox_is_live = False
+        record_cleanup_result("frontend.delete", "skipped", reason="instance_id_missing")
         logger.warning(
             "[AgentOS] sandbox.cleanup.skip_no_instance_id service_id=%s user=%s framework=%s",
             service_id,
@@ -119,8 +146,10 @@ async def _cleanup_one(
         )
     else:
         sandbox_is_live = True
+        record_cleanup_result("frontend.delete", "skipped", reason="live_instance")
 
     if not service_id:
+        record_cleanup_result("registry.unregister", "skipped", reason="service_id_missing")
         return
     # Same-process fast path: skip DELETE when this Gateway already has a
     # live runtime for the service. Do not treat this as the correctness
@@ -128,6 +157,7 @@ async def _cleanup_one(
     live_service_ids = await _refresh_live_service_ids(agent_manager)
     if live_service_ids is not None:
         if service_id in live_service_ids:
+            record_cleanup_result("registry.unregister", "skipped", reason="live_runtime")
             log_agentos(
                 logger,
                 logging.INFO,
@@ -140,6 +170,7 @@ async def _cleanup_one(
             )
             return
     elif sandbox_is_live:
+        record_cleanup_result("registry.unregister", "skipped", reason="live_check_failed")
         # Live sandbox is still in memory; do not wipe its registry row just
         # because the follow-up service-id snapshot failed.
         log_agentos(
@@ -177,13 +208,23 @@ async def _cleanup_one(
             expected_instance_id=instance_id,
         )
     except RegistryNotFoundError:
+        record_cleanup_result("registry.unregister", "skipped", reason="already_absent")
         return
-    except Exception:  # noqa: BLE001 - best-effort per record
+    except Exception as exc:  # noqa: BLE001 - best-effort per record
+        outcome = "timeout" if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower() else "failed"
+        record_cleanup_result("registry.unregister", outcome, reason=type(exc).__name__)
         logger.exception(
             "[AgentOS] sandbox.cleanup.unregister.fail service_id=%s",
             service_id,
         )
         return
+    if get_cleanup_result("registry.unregister") is None:
+        if result.get("deleted") is False:
+            record_cleanup_result("registry.unregister", "skipped", reason=result.get("reason") or "already_absent")
+        elif result.get("deleted") is True:
+            record_cleanup_result("registry.unregister", "success")
+        else:
+            record_cleanup_result("registry.unregister", "incomplete", reason="unregister_result_unconfirmed")
     if result.get("reason") == "instance_id_mismatch":
         log_agentos(
             logger,

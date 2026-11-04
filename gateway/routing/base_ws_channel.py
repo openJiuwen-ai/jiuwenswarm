@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from abc import abstractmethod
 from typing import Any
@@ -27,6 +28,26 @@ _BROADCAST_FALLBACK_CHANNEL_IDS: frozenset[str] = frozenset()
 # per-ws 出站队列硬顶：writer 正常时队列几乎恒空；触顶说明对端已停止读取，
 # 继续排队只堆内存。丢弃并告警（停滞 transport 由写停滞看门狗回收，issue #4946）。
 _SEND_QUEUE_MAX_FRAMES = 512
+_TRACE_LIMIT = 1024
+
+
+class _TraceFrame(dict):
+    def __init__(self, data: dict, operation: Any) -> None:
+        super().__init__(data)
+        self.operation = operation
+        self.enqueued_at = time.monotonic()
+        self.pending_count = 1
+
+
+def _is_chat_content_frame(frame: dict, payload: object) -> bool:
+    """Whether this frame is a non-empty chat content event."""
+    if frame.get("type") != "event":
+        return False
+    if frame.get("event") not in {"chat.delta", "chat.final", "chat.message"}:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("content"))
 
 
 class BaseWsChannel(BaseWebChannel):
@@ -57,6 +78,8 @@ class BaseWsChannel(BaseWebChannel):
         self._send_queues: dict[str, "asyncio.Queue[str | bytes | None]"] = {}
         self._writers: dict[str, asyncio.Task] = {}
         self._outbound_lock = asyncio.Lock()
+        self._request_traces: dict[int, set[Any]] = {}
+        self._trace_sockets: dict[int, Any] = {}
         # Channel 连接事件上报回调，由 ChannelManager 注入。
         # 签名: (event_type: str, channel_type: str, user_id: str) -> None
         self._channel_event_reporter: Any = None
@@ -246,6 +269,63 @@ class BaseWsChannel(BaseWebChannel):
 
     # ── per-ws writer：出站背压隔离 ──
 
+    def _track_request_trace(self, ws: Any, op: Any) -> bool:
+        if sum(map(len, self._request_traces.values())) >= _TRACE_LIMIT:
+            return False
+        self._request_traces.setdefault(id(ws), set()).add(op)
+        self._trace_sockets[id(ws)] = ws
+
+        def untrack() -> None:
+            self._untrack_request_trace(ws, op)
+
+        op.on_finish = untrack
+        return True
+
+    def _untrack_request_trace(self, ws: Any, op: Any) -> None:
+        tracked = self._request_traces.get(id(ws))
+        if tracked is not None:
+            tracked.discard(op)
+            if not tracked:
+                self._request_traces.pop(id(ws), None)
+                self._trace_sockets.pop(id(ws), None)
+
+    def _finish_request_trace(self, ws: Any, op: Any, outcome: str, reason: str = "") -> None:
+        op.finish(outcome, reason=reason)
+        self._untrack_request_trace(ws, op)
+
+    def _finish_ws_traces(self, ws: Any, reason: str) -> None:
+        for op in list(self._request_traces.get(id(ws), ())):
+            self._finish_request_trace(ws, op, "incomplete", reason)
+
+    @staticmethod
+    def _is_writer_unavailable(ws: Any, queue: Any, writer: Any) -> bool:
+        """Whether the transport can no longer accept a frame."""
+        if getattr(ws, "closed", False):
+            return True
+        if queue is None:
+            return True
+        return writer is not None and writer.done()
+
+    def _is_traced_response_frame(
+        self, ws: Any, op: Any, data: Any, frame_id: Any, response_trace: Any,
+    ) -> bool:
+        """Whether this frame belongs to the current request operation."""
+        if op is None or op.finished:
+            return False
+        if op not in self._request_traces.get(id(ws), ()):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("type") not in {"res", "event"}:
+            return False
+        if frame_id != op.request_id and not (
+            data.get("type") == "event" and response_trace is op
+        ):
+            return False
+        if op.channel != self.channel_id:
+            return False
+        return op.connection_id == str(id(ws))
+
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         """非阻塞入队一帧到 ws 的出站队列，立即返回。
 
@@ -253,15 +333,36 @@ class BaseWsChannel(BaseWebChannel):
         与 ``_coalesce`` 解析回 dict 的往返）、str/bytes（原样发送）或 None
         哨兵。ws 已关闭或队列缺失时静默丢弃（与旧 _safe_send 语义一致）。
         """
-        if getattr(ws, "closed", False):
-            return
+        from gateway.telemetry import current_request_trace, current_response_trace
+
+        op = current_request_trace()
+        payload = data.get("payload") if isinstance(data, dict) else None
+        frame_id = data.get("id") if isinstance(data, dict) else None
+        if frame_id is None and isinstance(payload, dict):
+            frame_id = payload.get("request_id")
+        response_trace = current_response_trace()
+        if self._is_traced_response_frame(ws, op, data, frame_id, response_trace):
+            data = _TraceFrame(data, op)
+            op.attempted_frames += 1
+            if data.get("ok") is False or data.get("event") in {"chat.error", "runtime.error"}:
+                op.record_outcome("failed", reason="response_failed")
+            op.retain_delivery()
+        else:
+            op = None
         ws_id = getattr(ws, "_jiuwen_ws_id", "")
         q = self._send_queues.get(ws_id)
-        if q is None:
+        writer = self._writers.get(ws_id)
+        if self._is_writer_unavailable(ws, q, writer):
+            if op is not None:
+                op.release_delivery(reason="writer_unavailable")
             return
         try:
             q.put_nowait(data)
+            if op is not None:
+                op.delivery_pending = True
         except asyncio.QueueFull:
+            if op is not None:
+                op.release_delivery(reason="queue_full")
             logger.warning(
                 "[%s] outbound queue full, dropping frame ws_id=%s", self.channel_id, ws_id,
             )
@@ -274,6 +375,12 @@ class BaseWsChannel(BaseWebChannel):
         - None 是哨兵：取出即退出循环（用于收尾）。
         - ws.send 异常（连接已断）：记录后退出，不再消费剩余帧。
         """
+        try:
+            await self._write_frames(ws, ws_id)
+        finally:
+            self._finish_ws_traces(ws, "writer_stopped")
+
+    async def _write_frames(self, ws: Any, ws_id: str) -> None:
         q = self._send_queues[ws_id]
         while True:
             data = await q.get()
@@ -294,16 +401,33 @@ class BaseWsChannel(BaseWebChannel):
                     try:
                         wire = json.dumps(frame, ensure_ascii=False)
                     except (TypeError, ValueError) as e:
+                        if isinstance(frame, _TraceFrame):
+                            frame.operation.release_delivery(reason="serialize_failed", count=frame.pending_count)
                         logger.warning(
                             "[%s] frame serialize failed, dropping ws_id=%s err=%s",
-                            self.channel_id, ws_id, e,
+                            self.channel_id, ws_id, "redacted" if isinstance(frame, _TraceFrame) else e,
                         )
                         continue
                 else:
                     wire = frame
                 try:
+                    send_started = time.monotonic()
                     await asyncio.wait_for(ws.send(wire), timeout=10.0)
+                    if isinstance(frame, _TraceFrame):
+                        frame.operation.written_frames += 1
+                        frame.operation.client_queue_wait_ms += (send_started - frame.enqueued_at) * 1000
+                        frame.operation.client_send_ms += (time.monotonic() - send_started) * 1000
+                        frame.operation.event("client.write.first", {
+                            "queue_wait_ms": (send_started - frame.enqueued_at) * 1000,
+                            "send_ms": (time.monotonic() - send_started) * 1000,
+                        })
+                        payload = frame.get("payload")
+                        if _is_chat_content_frame(frame, payload):
+                            frame.operation.event("client.first_content")
+                        frame.operation.release_delivery(count=frame.pending_count)
                 except asyncio.TimeoutError:
+                    if isinstance(frame, _TraceFrame):
+                        frame.operation.release_delivery(reason="send_timeout", count=frame.pending_count)
                     # Drop only this frame. Killing the writer leaves an unbounded
                     # queue with nobody draining it — later unary res frames
                     # (e.g. command.workflows list) never reach the TUI and the
@@ -314,15 +438,17 @@ class BaseWsChannel(BaseWebChannel):
                     )
                     continue
                 except Exception as e:
+                    if isinstance(frame, _TraceFrame):
+                        frame.operation.release_delivery(reason="send_failed", count=frame.pending_count)
                     if bool(getattr(ws, "closed", False)):
                         logger.debug(
                             "[%s] writer exit on closed ws ws_id=%s err=%s",
-                            self.channel_id, ws_id, e,
+                            self.channel_id, ws_id, "redacted" if isinstance(frame, _TraceFrame) else e,
                         )
                     else:
                         logger.warning(
                             "[%s] writer ws.send error, exiting ws_id=%s err=%s",
-                            self.channel_id, ws_id, e,
+                            self.channel_id, ws_id, "redacted" if isinstance(frame, _TraceFrame) else e,
                         )
                     return
 
@@ -366,6 +492,7 @@ class BaseWsChannel(BaseWebChannel):
             writer.cancel()
         self._writers.pop(ws_id, None)
         self._send_queues.pop(ws_id, None)
+        self._finish_ws_traces(ws, "connection_closed")
 
     async def _shutdown_all_writers(self) -> None:
         """通道关闭时批量清理所有 writer 协程 + 队列，防止泄漏。
@@ -375,6 +502,8 @@ class BaseWsChannel(BaseWebChannel):
         """
         ws_ids = list(self._writers.keys())
         if not ws_ids:
+            for ws in list(self._trace_sockets.values()):
+                self._finish_ws_traces(ws, "channel_stopped")
             return
         for ws_id in ws_ids:
             writer = self._writers.get(ws_id)
@@ -388,6 +517,8 @@ class BaseWsChannel(BaseWebChannel):
                 except (asyncio.CancelledError, Exception):
                     pass
             self._send_queues.pop(ws_id, None)
+        for ws in list(self._trace_sockets.values()):
+            self._finish_ws_traces(ws, "channel_stopped")
         logger.info(
             "[%s] shutdown %d writers on channel stop", self.channel_id, len(ws_ids),
         )

@@ -117,6 +117,8 @@ from gateway.common.security.ws_origin import (
 )
 from gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from gateway.routing.route_binding import GatewayRouteBinding
+from gateway.common.log_sanitize import mask_sensitive
+from gateway.telemetry import configure_gateway_telemetry, shutdown_gateway_telemetry, trace_stage
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
@@ -330,7 +332,7 @@ def _normalize_gateway_message(msg):
     # 登录模型的凭据在这里挂上，随请求带给AgentServer
     _normalize_model_auth(params, msg)
 
-    return Message(
+    normalized = Message(
         id=msg.id,
         type=msg.type,
         channel_id=msg.channel_id,
@@ -346,10 +348,14 @@ def _normalize_gateway_message(msg):
         metadata=msg.metadata,
         user_id=getattr(msg, "user_id", None),
     )
+    from gateway.telemetry import attach_message_trace, get_message_trace
+    attach_message_trace(normalized, get_message_trace(msg))
+    return normalized
 
 
 async def _normalize_and_forward_message(msg, channel_manager) -> bool:
-    await _refresh_expired_login_credential(msg)
+    with trace_stage("preprocess.credentials"):
+        await _refresh_expired_login_credential(msg)
     normalized = _normalize_gateway_message(msg)
     # ACP/直连转发路径(session.create 等)也需注入 work_mode 归一化,
     # 与 _norm_and_forward(Web/TUI 主路径)保持一致。否则直连 AgentServer 的
@@ -1996,7 +2002,12 @@ async def _run(
 
     # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
-    gateway_config = get_config().get("gateway") or {}
+    full_cfg = get_config()
+    configure_gateway_telemetry(
+        full_cfg or {},
+        user_id_formatter=lambda value: mask_sensitive(f"user_id={value}").removeprefix("user_id="),
+    )
+    gateway_config = full_cfg.get("gateway") or {}
     agent_client_config = gateway_config.get("agent_client") or {}
     using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
     if using_adx_router:
@@ -2504,7 +2515,8 @@ async def _run(
             method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
             if method_val not in forward_methods:
                 return False
-            await _refresh_expired_login_credential(msg)
+            with trace_stage("preprocess.credentials"):
+                await _refresh_expired_login_credential(msg)
             normalized = _normalize_gateway_message(msg)
             # session.create 主路径注入 work_mode 归一化(与 fallback _session_create
             # 共用同一 helper resolve_session_work_mode_params,保持主路径/fallback 一致):
@@ -3860,6 +3872,7 @@ async def _run(
         except (asyncio.CancelledError, Exception):
             pass
 
+        await shutdown_gateway_telemetry()
         logger.info("[App] Gateway stopped")
 
     if restart_requested:
@@ -3895,6 +3908,7 @@ async def _run_with_shutdown_signals(
     finally:
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
+        await shutdown_gateway_telemetry()
 
 
 def main() -> None:
