@@ -8765,11 +8765,10 @@ def test_normalize_recovered_runs_parks_running_phase_with_run(monkeypatch):
 
 
 def test_normalize_recovered_runs_heals_legacy_run_level_park(monkeypatch):
-    """A snapshot parked run-level only (pre-fix normalize) gets its phase healed.
+    """A restored snapshot parked at run level only gets its phase healed.
 
-    Runs written before the park carried phases along; their run card reads
-    paused while the phase still spins. The re-scan in pause_if_running heals
-    the stray phase on the next restore.
+    A legacy snapshot parks the run card without flipping its phases; the
+    re-scan in pause_if_running heals the stray phase on the next restore.
     """
     persist_calls: list = []
     monkeypatch.setattr(
