@@ -1743,6 +1743,11 @@ class TopicService:
         only_preset_cards = bool(served["cards"]) and all(
             is_cold_start_card(card) for card in served["cards"]
         )
+        can_prepare_personalized = (
+            self._accepting_work
+            and self._ark_config is not None
+            and self._generate is not None
+        )
         # Writing the stand-in pool settles a prior failed attempt, which would
         # otherwise clear provider_unavailable; keep the refusal visible.
         if (
@@ -1752,9 +1757,7 @@ class TopicService:
         ):
             state = "provider_unavailable"
         elif (
-            self._accepting_work
-            and self._ark_config is not None
-            and self._generate is not None
+            can_prepare_personalized
             and only_preset_cards
             and state in {
                 "ready",
