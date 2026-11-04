@@ -117,6 +117,7 @@ value 优先于 defaultValue；合法 replace 重新初始化选择。禁用或�
 组件 size 统一推荐 small/medium/large，兼容 sm/md/lg；Switch/Card 只有 small/medium，
 Avatar 使用 `src` 指定图片地址，额外兼容 default 和像素数值；Icon 同样使用 small/medium/large。
 Text 样式对齐 Ant Design `Typography.Text`（`type`、`strong`、`italic`、`underline`、`delete`、`code`、`mark`、`keyboard`、`disabled`、`ellipsis`）；Button 样式对齐 Ant Design `Button`（`type`、`color`、`variant`、`shape`、`size`、`danger`、`ghost`、`disabled`、`block`、`loading`、`href`、`target`、`icon`、`iconPlacement`、`aria-label`）：`color` 含 13 个预设色，`loading` 支持布尔或 `{delay}`，`href` 走 HTTP(S)/相对地址校验，`target` 需与 `href` 同时声明。纯图标按钮要求非空 `aria-label`。
+Avatar 可通过 props.children 声明文本，通过 style.backgroundColor/color/fontSize 声明原生样式；颜色接受 3/4/6/8 位十六进制形式，fontSize 为 1–4096 数值像素，gap 为 0–4096。图像优先与图像失败后的文本显示由 AntD 处理；允许空头像，不接受 name，宿主不生成首字母或配色。
 Dropdown 必须选择 icon 或非空 children 作为触发区，不能同时提供；图标入口仍要求非空 ariaLabel。
 application.menu.main 接受普通 Box/Card 组件树，页面无需 Iframe；Panel/Iframe 的专用根限制保持原样。
 

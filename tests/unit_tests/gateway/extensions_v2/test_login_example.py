@@ -25,6 +25,39 @@ SOURCE = Path(__file__).resolve().parents[4] / "jiuwenswarm/extensions_v2/exampl
 PACKAGE = "webui.login-demo"
 
 
+def _views_module():
+    spec = importlib.util.spec_from_file_location("login_avatar_views", SOURCE / "auth_login_demo/views.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("name,initial", [
+    ("test1", "T"), (" 张三 ", "张"), ("𠮷田", "𠮷"), ("e\u0301lodie", "É"), ("👩‍💻coder", "👩‍💻"),
+])
+def test_plugin_owns_unicode_avatar_initials(name, initial):
+    props = _views_module().account_avatar(name, "Current user")
+    assert props["children"] == initial
+    assert props["alt"] == "Current user"
+    assert "name" not in props
+
+
+def test_plugin_avatar_color_is_stable_and_its_view_declares_native_styles():
+    views = _views_module()
+    avatar = views.account_avatar("test1", "Current user")
+    assert avatar["style"] == {"backgroundColor": "#89D7D8", "color": "#FFFFFF", "fontSize": 14}
+    assert views.account_avatar(" test1 ", "Current user")["style"] == avatar["style"]
+    assert views.account_avatar("e\u0301lodie", "Current user")["style"] == views.account_avatar("élodie", "Current user")["style"]
+    assert views.account_avatar("test1", "Current user", "/avatar.svg")["src"] == "/avatar.svg"
+    with pytest.raises(ValueError, match="must not be empty"):
+        views.account_avatar("  ", "Current user")
+    tree = views.user_view("en", "test1")
+    menu_avatar = tree["props"]["items"][0]["label"][0]["children"][0]["props"]
+    assert menu_avatar["children"] == tree["children"][0]["props"]["children"] == "T"
+    assert menu_avatar["style"]["backgroundColor"] == avatar["style"]["backgroundColor"]
+    assert menu_avatar["size"] == 20 and menu_avatar["style"]["fontSize"] == 10
+
+
 class BrowserChannel:
     channel_id = "web"
 
@@ -62,7 +95,7 @@ def _zip(tmp_path):
 async def _installed(tmp_path):
     channel = BrowserChannel()
     runtime = GatewayRuntime(channel=channel, config=GatewayExtensionConfig(
-        install_dir=tmp_path / "installed", client_grants={PACKAGE: ("request.bind.gateway", "local_storage.write", "page.reload")},
+        install_dir=tmp_path / "installed",
     ))
     await runtime.start()
     report = (await runtime.packages.install([_zip(tmp_path)]))[0]
@@ -125,11 +158,17 @@ async def test_zip_registration_login_logout_and_multiple_persistent_accounts(tm
             assert "request_context" not in params
             record = next(item for item in runtime.registry.snapshot() if item.target.slot_id == "application.sidebar.footer")
             footer = {"root": node_to_payload(record.root)}
-            avatar = footer["root"]["children"][0]["props"]["src"]
+            avatar = footer["root"]["children"][0]["props"]
+            assert "name" not in avatar
+            assert avatar["children"] == username[0].upper()
+            assert avatar["alt"] == "当前用户"
+            assert avatar["style"]["color"] == "#FFFFFF"
+            assert avatar["style"]["fontSize"] == 14
             assert footer["root"]["props"]["items"] == [
                 {"key": "account", "disabled": True, "label": [
                     {"component": "Box", "props": {"direction": "row", "align": "center", "gap": "sm"},
-                     "children": [{"component": "Avatar", "props": {"src": avatar, "alt": "当前用户", "size": 20}},
+                     "children": [{"component": "Avatar", "props": {**avatar, "size": 20,
+                                  "style": {**avatar["style"], "fontSize": 10}}},
                                   {"component": "Text", "props": {"value": username}}]},
                 ]},
                 {"type": "divider"}, {"key": "logout", "label": "退出登录"},
@@ -214,11 +253,27 @@ async def test_http_headers_and_asset_boundaries(tmp_path):
             assert (await client.get("/business", headers={"Authorization": "Bearer " + token})).status_code == 200
             generation = runtime.browser.generations[PACKAGE]
             asset_url = f"/extension-assets/{PACKAGE}/{generation}/background.svg"
-            assert (await client.get(asset_url)).status_code == 200
+            for name in ("background.svg", "promotion.png", "avatar.svg"):
+                expected = (SOURCE / "assets" / name).read_bytes()
+                for method in ("GET", "HEAD"):
+                    response = await client.request(method, f"/extension-assets/{PACKAGE}/{generation}/{name}")
+                    assert response.status_code == 200
+                    assert response.headers["content-type"].startswith("image/")
+                    assert response.headers["content-length"] == str(len(expected))
+                    assert response.headers["cache-control"] == "no-store"
+                    assert response.headers["x-content-type-options"] == "nosniff"
+                    assert response.content == (expected if method == "GET" else b"")
+            assert (await client.get(f"/extension-assets/{PACKAGE}/{generation}/missing.svg")).status_code == 404
             with pytest.raises(ValueError):
                 runtime.browser.asset_file(PACKAGE, generation, "../settings.json")
-            runtime.unpublish(PACKAGE)
+            await runtime.packages.reload(PACKAGE)
+            current_generation = runtime.browser.generations[PACKAGE]
+            assert current_generation != generation
             assert (await client.get(asset_url)).status_code == 404
+            current_url = f"/extension-assets/{PACKAGE}/{current_generation}/avatar.svg"
+            assert (await client.get(current_url)).status_code == 200
+            runtime.unpublish(PACKAGE)
+            assert (await client.get(current_url)).status_code == 404
     finally:
         await runtime.shutdown()
 
@@ -248,13 +303,28 @@ async def test_registration_errors_do_not_sign_in_or_queue_storage(tmp_path):
         await runtime.shutdown()
 
 
-async def test_missing_deployment_grants_rejects_package_activation(tmp_path):
-    runtime = GatewayRuntime(channel=BrowserChannel(), config=GatewayExtensionConfig(install_dir=tmp_path / "installed"))
+async def test_installed_example_restarts_without_deployment_grants(tmp_path):
+    runtime, channel, ws = await _installed(tmp_path)
+    config = runtime.config
+    try:
+        await runtime.intercept(ws, "config", "config.get", {})
+        token = await _register(runtime, channel, ws, "alpha")
+    finally:
+        await runtime.shutdown()
+    channel = BrowserChannel()
+    runtime = GatewayRuntime(channel=channel, config=config)
     await runtime.start()
     try:
-        report = (await runtime.packages.install([_zip(tmp_path)]))[0]
-        assert report.status == "FAILED"
-        assert not runtime.active_packages()
+        assert [package.package_id for package in runtime.active_packages()] == [PACKAGE]
+        ws = SimpleNamespace(closed=False)
+        visited, params = await runtime.intercept(ws, "restored", "chat.send", {"message": "hello"}, request_context={
+            "headers": {"Authorization": "Bearer " + token},
+        })
+        assert not visited and params == {"message": "hello"}
+        await _click(runtime, ws, "user.menu", {"key": "logout"}, token)
+        assert channel.responses[-1]["payload"]["status"] == "logged_out"
+        operations = [item["payload"]["method"] for item in channel.events if item["event"] == "client.operation"]
+        assert operations == ["local_storage.delete", "page.reload"]
     finally:
         await runtime.shutdown()
 

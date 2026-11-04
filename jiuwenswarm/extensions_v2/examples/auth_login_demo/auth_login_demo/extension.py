@@ -21,7 +21,7 @@ from .views import login_view, user_view, render_node
 from .identity import MockIdentity
 
 PACKAGE_ID = "webui.login-demo"
-ASSETS = ("background.svg", "promotion.png", "avatar.svg")
+ASSETS = ("background.svg", "promotion.png")
 logger = logging.getLogger("jiuwenswarm.gateway.examples.auth_login_demo")
 
 
@@ -80,7 +80,7 @@ class LoginExtension:
             await self._render(ops, "application.entry", "login", None)
         if refresh or self._views.get(connection) != view:
             await self._render(ops, "application.sidebar.footer", "user", user_view(
-                self.language, await ops.ui.asset_url("avatar.svg"), username,
+                self.language, username,
             ))
         self._views[connection] = view
 
