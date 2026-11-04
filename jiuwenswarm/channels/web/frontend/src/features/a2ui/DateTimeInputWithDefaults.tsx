@@ -2,6 +2,7 @@
 
 import { useCallback, useId } from 'react';
 import type { ChangeEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   classMapToString,
   stylesToObject,
@@ -21,9 +22,10 @@ function dateInputKind(enableDate: boolean, enableTime: boolean): DateInputKind 
 }
 
 // 可见标题由提示词要求的上方 Text 组件提供；这里只给 input 一个无障碍名（不渲染可见 <label>，避免双标签）
-function dateTimeAriaLabel(enableDate: boolean, enableTime: boolean): string {
-  if (enableDate && enableTime) return '日期时间';
-  return enableTime ? '时间' : '日期';
+// 走 i18n，不硬编码单一语言（检视意见 CR-9：原 dateTimeAriaLabel 写死中文，英文界面读屏为中文）
+function dateTimeAriaKey(enableDate: boolean, enableTime: boolean): string {
+  if (enableDate && enableTime) return 'a2ui.dateTimeAria.datetime';
+  return enableTime ? 'a2ui.dateTimeAria.time' : 'a2ui.dateTimeAria.date';
 }
 
 export function DateTimeInputWithDefaults({
@@ -31,6 +33,7 @@ export function DateTimeInputWithDefaults({
   surfaceId,
 }: A2UIComponentProps<DateTimeInputNodeLike>) {
   const { theme, resolveString, setValue, getValue } = useA2UIComponent(node, surfaceId);
+  const { t } = useTranslation();
   const props = node.properties;
   const id = useId();
   const enableDate = props.enableDate ?? true;
@@ -59,7 +62,7 @@ export function DateTimeInputWithDefaults({
         <input
           type={dateInputKind(enableDate, enableTime)}
           id={id}
-          aria-label={dateTimeAriaLabel(enableDate, enableTime)}
+          aria-label={t(dateTimeAriaKey(enableDate, enableTime))}
           value={value}
           onChange={updateFromInput}
           className={classMapToString(theme.components.DateTimeInput.element)}
