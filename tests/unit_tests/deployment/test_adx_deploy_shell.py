@@ -98,6 +98,8 @@ web_start_systemd 127.0.0.1
         for service in ("jiuwenswarm-gateway", "jiuwenswarm-web"):
             unit = (self.root / (service + ".service")).read_text()
             self.assertNotIn("EnvironmentFile=", unit)
+            if service == "jiuwenswarm-gateway":
+                self.assertIn("--require-adx-router", unit)
             self.assertIn('--dotenv "' + str(self.root / "service.env") + '"', unit)
             self.assertIn("ExecStartPre=", unit)
         trace = self.trace.read_text()

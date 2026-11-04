@@ -1814,6 +1814,7 @@ async def _run(
         web_host: str,
         web_port: int,
         web_path: str,
+        require_adx_router: bool = False,
 ) -> None:
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
@@ -1898,6 +1899,16 @@ async def _run(
 
     # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
+    if require_adx_router and (
+        agent_server_ext is None or agent_server_ext.metadata.id != "adx_router"
+    ):
+        from jiuwenswarm.common.utils import get_config_file
+
+        selected = agent_server_ext.metadata.id if agent_server_ext else "none"
+        raise RuntimeError(
+            f"ADX Gateway requires the adx_router extension, registered client: {selected}. "
+            f"Check gateway.agent_client.type in {get_config_file()} and extension loading logs."
+        )
     full_cfg = get_config()
     configure_gateway_telemetry(
         full_cfg or {},
@@ -3706,6 +3717,11 @@ def main() -> None:
         metavar="<path>",
         help="Load environment from .env file (processed at startup, not used here).",
     )
+    parser.add_argument(
+        "--require-adx-router",
+        action="store_true",
+        help="Require the ADX Router to register before starting the Gateway.",
+    )
     args = parser.parse_args()
 
     # Handle --name: check if bootstrap .env was loaded successfully
@@ -3750,6 +3766,7 @@ def main() -> None:
                 web_host=web_host,
                 web_port=web_port,
                 web_path=web_path,
+                require_adx_router=args.require_adx_router,
             )
         )
     finally:
