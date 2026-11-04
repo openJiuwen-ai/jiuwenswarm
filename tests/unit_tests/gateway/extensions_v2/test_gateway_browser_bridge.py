@@ -1,0 +1,228 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Exercise browser routing with generic packages, without a login example."""
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from openjiuwen.core.events import Event, SessionContext
+
+from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
+from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestOutput
+from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
+from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+from jiuwenswarm.gateway.extensions_v2.webui.http import attach_browser_routes
+from jiuwenswarm.gateway.extensions_v2.webui.models import RenderNode, RenderTarget, UiActionOutput, UiRenderInput
+
+PACKAGE = "test.browser-controls"
+
+
+def _channel():
+    responses = []
+    sockets = {}
+
+    async def ensure_ws_id(ws):
+        ws._jiuwen_ws_id = "browser-one"
+        sockets[ws._jiuwen_ws_id] = ws
+        return ws._jiuwen_ws_id
+
+    async def send_event(ws, event, payload):
+        pass
+
+    async def send_response(ws, req_id, *, ok, payload=None, error=None, code=None):
+        responses.append({"ok": ok, "payload": payload, "error": error, "code": code})
+
+    return SimpleNamespace(
+        channel_id="web", responses=responses, ensure_ws_id=ensure_ws_id,
+        connection_user_id=lambda ws: None, ws_by_id=sockets.get,
+        send_event=send_event, send_response=send_response,
+    )
+
+
+async def _runtime(tmp_path: Path, policy=None, action=None, *, auth_provider=False):
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
+    await runtime.start()
+
+    async def ready(event, ops, next_handler):
+        return UiActionOutput(accepted=True, status="ready")
+
+    handlers = [HandlerDeclaration("ui.ready", ready, {}, "ready")]
+    if policy is not None:
+        handlers.append(HandlerDeclaration("gateway.request", policy, {}, "policy"))
+    if action is not None:
+        handlers.append(HandlerDeclaration("ui.click", action, {"target.package_id": PACKAGE}, "action"))
+    runtime.publish(LoadedPackage(
+        package_id=PACKAGE, version="1.0.0", root=tmp_path, handlers=tuple(handlers),
+        auth_provider=auth_provider, client={"requestBindings": []},
+        ui={"apiVersion": 1, "items": [
+            {"type": "web.slot.contribution", "slot": "application.entry"},
+            {"type": "web.slot.contribution", "slot": "application.sidebar.footer"},
+        ]},
+    ))
+    return runtime
+
+
+async def _click_params(runtime, ws, slot):
+    connection_id = await runtime.connection_id(ws)
+    target = RenderTarget(
+        session_id="", slot_id=slot, package_id=PACKAGE, instance_key="controls",
+        scope="application", connection_id=connection_id,
+    )
+    await runtime.bus.trigger(Event("ui.render", UiRenderInput(
+        target=target,
+        root=RenderNode(component="Button", props={"label": "Apply"}, events={"ui.click": {"id": "apply"}}),
+    )), SessionContext("gateway:" + connection_id, None, {"connection_id": connection_id}))
+    record = runtime.registry.get(target)
+    assert record is not None and record.root is not None
+    return {"event": "ui.click", "target": target.to_payload(), "payload": {
+        "node_key": "0", "revision": record.revision, "action_id": "apply", "args": {}, "data": {},
+    }}
+
+
+async def test_request_policy_denies_before_application_action(tmp_path):
+    observed = []
+    actions = []
+
+    async def deny(event, ops, next_handler):
+        observed.append(event.event_input.method)
+        return GatewayRequestOutput(handled=True, route="deny", error={"code": "POLICY_DENIED"})
+
+    async def action(event, ops, next_handler):
+        actions.append(event.event_input)
+        return UiActionOutput(accepted=True, status="applied")
+
+    runtime = await _runtime(tmp_path, deny, action)
+    try:
+        ws = SimpleNamespace(closed=False)
+        params = await _click_params(runtime, ws, "application.sidebar.footer")
+        visited, _ = await runtime.intercept(ws, "action", "webui.dispatch", params)
+        assert visited is True
+        assert observed == ["webui.dispatch"]
+        assert actions == []
+        assert runtime.channel.responses[-1]["code"] == "POLICY_DENIED"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_plugin_can_allow_anonymous_entry_and_deny_footer(tmp_path):
+    observed = []
+    actions = []
+
+    async def policy(event, ops, next_handler):
+        request = event.event_input
+        slot = request.params["target"]["slot_id"]
+        observed.append(slot)
+        if slot == "application.entry":
+            return await next_handler(event)
+        return GatewayRequestOutput(handled=True, route="deny", error={"code": "POLICY_DENIED"})
+
+    async def action(event, ops, next_handler):
+        actions.append(event.event_input)
+        return UiActionOutput(accepted=True, status="applied")
+
+    runtime = await _runtime(tmp_path, policy, action, auth_provider=True)
+    try:
+        ws = SimpleNamespace(closed=False)
+        entry = await _click_params(runtime, ws, "application.entry")
+        footer = await _click_params(runtime, ws, "application.sidebar.footer")
+        await runtime.intercept(ws, "entry", "webui.dispatch", entry, request_context={"tenant": "one"})
+        assert runtime.channel.responses[-1]["payload"] == {"accepted": True, "status": "applied"}
+        assert len(actions) == 1
+        assert actions[0].request_context == {"tenant": "one"}
+        await runtime.intercept(ws, "footer", "webui.dispatch", footer)
+        assert runtime.channel.responses[-1]["code"] == "POLICY_DENIED"
+        assert observed == ["application.entry", "application.sidebar.footer"]
+        assert len(actions) == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_request_policy_can_consume_without_dispatching_ui(tmp_path):
+    actions = []
+
+    async def policy(event, ops, next_handler):
+        return GatewayRequestOutput(handled=True, route="consume", response={"source": "policy"})
+
+    async def action(event, ops, next_handler):
+        actions.append(event.event_input)
+        return UiActionOutput(accepted=True, status="applied")
+
+    runtime = await _runtime(tmp_path, policy, action)
+    try:
+        ws = SimpleNamespace(closed=False)
+        params = await _click_params(runtime, ws, "application.entry")
+        await runtime.intercept(ws, "action", "webui.dispatch", params)
+        assert runtime.channel.responses[-1]["payload"] == {"source": "policy"}
+        assert actions == []
+    finally:
+        await runtime.shutdown()
+
+
+async def test_other_package_ui_keeps_the_existing_forward_path(tmp_path):
+    runtime = await _runtime(tmp_path)
+    try:
+        params = {"event": "ui.ready", "target": {
+            "scope": "application", "slot_id": "application.sidebar.footer", "package_id": "other.package",
+        }}
+        visited, returned = await runtime.intercept(SimpleNamespace(closed=False), "other", "webui.dispatch", params)
+        assert visited is False
+        assert returned == params
+        assert runtime.channel.responses == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("mode", ["no-policy", "continue", "forward"])
+async def test_http_default_forward_keeps_the_native_route(tmp_path, mode):
+    async def policy(event, ops, next_handler):
+        if mode == "continue":
+            return await next_handler(event)
+        return GatewayRequestOutput(route="forward")
+
+    runtime = await _runtime(tmp_path, None if mode == "no-policy" else policy)
+    try:
+        app = FastAPI()
+        attach_browser_routes(app, lambda: runtime)
+
+        @app.get("/business")
+        async def business():
+            return {"source": "native"}
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/business")
+        assert response.status_code == 200
+        assert response.json() == {"source": "native"}
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("route", ["deny", "consume"])
+async def test_http_keeps_plugin_denial_and_consumption(tmp_path, route):
+    async def policy(event, ops, next_handler):
+        return GatewayRequestOutput(
+            handled=True, route=route, response={"source": "policy"},
+            error={"code": "POLICY_DENIED", "status": 403},
+        )
+
+    runtime = await _runtime(tmp_path, policy)
+    try:
+        app = FastAPI()
+        attach_browser_routes(app, lambda: runtime)
+        native_calls = []
+
+        @app.get("/business")
+        async def business():
+            native_calls.append(True)
+            return {}
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/business")
+        assert response.status_code == (403 if route == "deny" else 200)
+        assert response.json() == ({"code": "POLICY_DENIED"} if route == "deny" else {"source": "policy"})
+        assert native_calls == []
+    finally:
+        await runtime.shutdown()
