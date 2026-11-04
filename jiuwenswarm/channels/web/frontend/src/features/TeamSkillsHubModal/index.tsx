@@ -7,7 +7,7 @@ import { webRequest } from "../../services/webClient";
 import { getSkillAvatar } from "../../utils/skillAvatar";
 
 /** 与后端 TEAM_SKILLS_HUB_BASE_URL 默认值一致（info 请求失败时的回退） */
-const DEFAULT_TEAMSKILLS_HUB_BASE_URL = "https://swarmskills.openjiuwen.com";
+const DEFAULT_TEAMSKILLS_HUB_BASE_URL = "https://teamskills.openjiuwen.com";
 
 type LoadState = "idle" | "loading" | "success" | "error";
 
