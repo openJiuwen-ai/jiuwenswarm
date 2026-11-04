@@ -173,6 +173,11 @@
   color: var(--color-link, var(--color-control-emphasis));
   font-size: 12px;
 }
+.asset-publish-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .asset-publish-provider-options,
 .asset-publish-account-note {
   grid-column: 1 / -1;
