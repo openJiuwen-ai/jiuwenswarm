@@ -1,15 +1,25 @@
 import io
+import ntpath
 import os
+import shutil
+import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from jiuwenswarm.server.runtime.skill import skill_manager
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     SkillManager,
+    _copytree_long,
+    _exists_long,
+    _long_path,
+    _mkdir_long,
     _safe_child_path,
     _safe_path_name,
+    _safe_rmtree,
+    _write_bytes_long,
 )
 
 pytestmark = pytest.mark.usefixtures("allow_macos_pytest_temp_sources")
@@ -582,3 +592,330 @@ async def test_team_skills_hub_validate_rejects_missing_description(tmp_path):
 
     assert result["success"] is False
     assert "description" in result["detail"]
+
+
+def _deep_member_rel() -> str:
+    """构造解压后总长必超 Windows MAX_PATH(260) 的成员相对路径。
+
+    6 层 × 51 字符 ≈ 311 字符，叠加任意临时目录基路径后必超 260；
+    单段 51 字符同时不触 NTFS 的 255 字符单文件名上限。
+    """
+    return "/".join(f"L{i}" + "x" * 50 for i in range(6))
+
+
+def _force_normal_path_failures(monkeypatch) -> None:
+    r"""模拟 LongPathsEnabled=0 机器：普通路径 mkdir/write_bytes/copytree 必败。
+
+    开发机注册表常为 1，普通路径也能超 260，长路径用例在此类机器上兜底分支
+    根本不执行（修复退化也无法暴露）；这里让普通路径 API 直接抛错，强制
+    走 \\?\ 前缀兜底分支。带前缀的调用放行给真实实现。
+    """
+    real_write = Path.write_bytes
+    real_mkdir = Path.mkdir
+    real_copytree = shutil.copytree
+
+    def fake_write(self, data):  # noqa: ANN001
+        if not str(self).startswith("\\\\?\\"):
+            raise FileNotFoundError(2, "simulated MAX_PATH(260) failure")
+        return real_write(self, data)
+
+    def fake_mkdir(self, *args, **kwargs):  # noqa: ANN001
+        if not str(self).startswith("\\\\?\\"):
+            raise FileNotFoundError(2, "simulated MAX_PATH(260) failure")
+        return real_mkdir(self, *args, **kwargs)
+
+    def fake_copytree(src, *args, **kwargs):  # noqa: ANN001
+        # py3.11 copytree 内部递归传 DirEntry 对象（str() 是 "<DirEntry ...>" 表示
+        # 形式），取 .path 才是真实路径；同时透传 7 个位置参数
+        real_src = getattr(src, "path", src)
+        if not str(real_src).startswith("\\\\?\\"):
+            raise OSError(3, "simulated MAX_PATH(260) failure")
+        return real_copytree(src, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_bytes", fake_write)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setattr(shutil, "copytree", fake_copytree)
+
+
+def _rel_parts(rel: str) -> tuple[str, ...]:
+    """归一成员相对路径的本地目录分隔（zip 内为 /，本地为 os.sep）。"""
+    return tuple(rel.split("/"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_mkdir_and_write_bytes_long_fallback_on_normal_path_failure(tmp_path, monkeypatch):
+    r"""模拟 LongPathsEnabled=0 机器：普通路径 mkdir/write 必败，兜底必须接管。"""
+    _force_normal_path_failures(monkeypatch)
+
+    target = tmp_path / "deep" / "nested" / "SKILL.md"
+    _mkdir_long(target.parent)
+    _write_bytes_long(target, b"long path content")
+    assert _long_path(target).read_bytes() == b"long path content"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_copytree_long_fallback_on_normal_path_failure(tmp_path, monkeypatch):
+    r"""安装链路兜底：普通 copytree 必败时，两侧 \?\ 加前缀重试须完成拷贝。
+
+    对应检视缺口：解压成功不等于安装成功——解压到 staging 后仍要 copytree
+    到 skills 目录，普通路径在 >260 时同样抛 WinError 3/206。
+    """
+    src = tmp_path / "staging"
+    deep_dir = src.joinpath(*_rel_parts(_deep_member_rel()))
+    # 源树也超 260：用被测兜底助手搭建（monkeypatch 前置会让普通 API 必败）
+    _mkdir_long(deep_dir)
+    _write_bytes_long(deep_dir / "SKILL.md", b"install me")
+    (src / "top.md").write_text("top", encoding="utf-8")
+
+    _force_normal_path_failures(monkeypatch)
+
+    dest = tmp_path / "skills" / "demo"
+    _copytree_long(src, dest, ignore=shutil.ignore_patterns("*.tmp"))
+
+    deep_local = dest.joinpath(*_rel_parts(_deep_member_rel()))
+    assert _long_path(deep_local / "SKILL.md").read_text(encoding="utf-8") == "install me"
+
+    assert _long_path(dest / "top.md").read_text(encoding="utf-8") == "top"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_extract_then_install_survives_forced_long_path_failures(tmp_path, monkeypatch):
+    r"""端到端（解压 → 安装拷贝）：普通路径 API 全程失败时整链仍须成功。
+
+    复现完整故障链：解压到 staging → copytree 到安装目录，两段任一用普通
+    路径都会在 LongPathsEnabled=0 机器上失败；修复后兜底接力完成安装。
+    """
+    _force_normal_path_failures(monkeypatch)
+
+    rel = _deep_member_rel()
+    staging = tmp_path / "staging"
+    SkillManager._safe_extract_zip_bytes_to_dir(
+        _zip_bytes({"SKILL.md": "demo", f"{rel}/SKILL.md": "deep content"}), staging
+    )
+
+    dest = tmp_path / "skills" / "demo"
+    _copytree_long(staging, dest)
+
+    assert _long_path(dest.joinpath(*_rel_parts(rel)) / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "deep content"
+    assert _long_path(dest / "SKILL.md").read_text(encoding="utf-8") == "demo"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_safe_extract_zip_bytes_to_dir_survives_long_paths(tmp_path):
+    r"""复现原故障：技能包层级深 + 文件名长时解压报 FileNotFoundError。
+
+    修复前普通 mkdir/write 超 260 直接失败且无兜底；修复后 \?\ 前缀兜底
+    让解压成功。越界校验先于落盘执行，恶意成员仍被拒绝（见 zip-slip 用例）。
+    """
+    rel = _deep_member_rel()
+    content = "deep content"
+    dest = tmp_path / "dest"
+    SkillManager._safe_extract_zip_bytes_to_dir(
+        _zip_bytes({"SKILL.md": "demo", f"{rel}/SKILL.md": content}), dest
+    )
+    # 普通路径读同样超限，用同款 \?\ 兜底断言内容落盘正确
+    assert _long_path(dest / rel / "SKILL.md").read_text(encoding="utf-8") == content
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_safe_extract_tar_to_dir_survives_long_paths(tmp_path):
+    """tar 与 zip 走同一组长路径兜底（安全解压家族两条成员落盘路径）。"""
+    rel = _deep_member_rel()
+    content = "deep content"
+    tar_path = tmp_path / "deep.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        info = tarfile.TarInfo(f"{rel}/SKILL.md")
+        data = content.encode("utf-8")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "dest"
+    SkillManager._safe_extract_tar_to_dir(tar_path, dest)
+    assert _long_path(dest / rel / "SKILL.md").read_text(encoding="utf-8") == content
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_exists_long_probes_over_max_path_correctly(tmp_path):
+    r"""_exists_long 对超长路径给出真实存在性结果.
+
+    LongPathsEnabled=0 机器上 Path.exists() 对超长路径恒 False（假阴性），
+    =1 开发机则普通探测同样可用；_exists_long（长路径形式探测）在两类
+    机器上都必须与磁盘事实一致。安装守卫（已安装判断、残留清理、回滚
+    条件）统一走它，与 _copytree_long/_safe_rmtree 保持同一套语义。
+    """
+    target = tmp_path / _deep_member_rel()
+    _mkdir_long(target)
+    _write_bytes_long(target / "SKILL.md", b"x")
+    assert _exists_long(target) is True
+    assert _exists_long(tmp_path / "no_such_dir") is False
+    assert _exists_long(tmp_path) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_zip_slip_rejected_under_forced_long_path_fallback(tmp_path, monkeypatch):
+    r"""强制兜底环境下越界校验仍先于 \?\ 前缀落盘.
+
+    \?\ 前缀会关闭 Win32 路径规范化（不折叠 ..），若校验与落盘路径错位，
+    越界成员可能逃逸 dest。此处让普通路径 API 全程失败、落盘必须走前缀
+    兜底，断言恶意成员仍被拒绝且 dest 外无游离文件。
+    """
+    _force_normal_path_failures(monkeypatch)
+    rel = _deep_member_rel()
+    dest = tmp_path / "dest"
+    with pytest.raises(RuntimeError, match="非法路径"):
+        SkillManager._safe_extract_zip_bytes_to_dir(
+            _zip_bytes(
+                {
+                    "SKILL.md": "demo",
+                    f"{rel}/SKILL.md": "deep content",
+                    f"{rel}/../../evil.txt": "evil",
+                }
+            ),
+            dest,
+        )
+    assert not list(tmp_path.rglob("evil.txt"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_tar_slip_rejected_under_forced_long_path_fallback(tmp_path, monkeypatch):
+    r"""tar 与 zip 同链路：强制兜底下越界成员仍被拒绝、无游离落盘."""
+    _force_normal_path_failures(monkeypatch)
+    rel = _deep_member_rel()
+    tar_path = tmp_path / "slip.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        for name, data in (("SKILL.md", b"demo"), (f"{rel}/../../evil.txt", b"evil")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "dest"
+    with pytest.raises(RuntimeError, match="非法路径"):
+        SkillManager._safe_extract_tar_to_dir(tar_path, dest)
+    assert not list(tmp_path.rglob("evil.txt"))
+
+
+def test_long_path_converts_unc_to_device_namespace():
+    r"""UNC 路径须转成 \\?\UNC\server\share 设备命名空间，而非非法的 \\?\\\server\share."""
+    unc = PureWindowsPath(r"\\server\share\skills\x")
+    result = _long_path(unc)
+    if os.name == "nt":
+        assert str(result).lower() == r"\\?\unc\server\share\skills\x"
+    else:
+        # 非 Windows 不触达 UNC 分支，原样返回。用字符串比较：Path(unc) 会
+        # 继承 PureWindowsPath 的 _parts（drive+root 单段），而 result 是对
+        # str(unc) 重新做 POSIX 词法解析，两者 parts 不同、对象比较恒 False。
+        assert str(result) == str(unc)
+
+
+def test_long_path_prefix_construction_cross_platform(monkeypatch):
+    r"""\?\ 前缀拼接语义在 Linux CI 上同样可验证（检视缺口：仅 Windows 用例覆盖）.
+
+    生产实现仅 os.name 分支与 os.path.splitdrive 两处平台相关；把 os.name
+    指为 nt、os.path 换成 ntpath 后，任何平台都能验证前缀拼接逻辑本身。
+    """
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(os, "path", ntpath)
+    # 盘符分支
+    assert str(_long_path(r"D:\deep\x")) == r"\\?\D:\deep\x"
+    # 已带 \?\ 前缀的路径透传，不二次加工
+    assert str(_long_path(r"\\?\D:\deep\x")) == r"\\?\D:\deep\x"
+    # 正斜杠输入先归一为反斜杠再拼前缀
+    assert str(_long_path("D:/deep/x")) == r"\\?\D:\deep\x"
+    # UNC 走设备命名空间转换
+    assert str(_long_path(r"\\server\share\skills\x")) == r"\\?\UNC\server\share\skills\x"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_safe_rmtree_handles_over_max_path_top_level(tmp_path):
+    r"""顶层路径本身超 MAX_PATH 时 exists() 返回 False，_safe_rmtree 不得假报成功."""
+    target = tmp_path / _deep_member_rel()
+    _mkdir_long(target)
+    _write_bytes_long(target / "SKILL.md", b"x")
+    assert _long_path(target).exists()
+    assert _safe_rmtree(target) is True
+    assert not _long_path(target).exists()
+
+
+def test_copytree_long_preserves_file_exists_error(tmp_path):
+    """目标目录已存在时保持 copytree 报错语义，兜底不得静默合并新旧目录."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _mkdir_long(src)
+    _write_bytes_long(src / "SKILL.md", b"new")
+    _mkdir_long(dst)
+    _write_bytes_long(dst / "SKILL.md", b"old")
+    with pytest.raises(FileExistsError):
+        _copytree_long(src, dst)
+    # 旧内容保持原样，未被新包合并覆盖
+    assert _long_path(dst / "SKILL.md").read_bytes() == b"old"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_copytree_long_rejects_existing_over_max_path_dest(tmp_path, monkeypatch):
+    r"""超长目标已存在时首轮抛 WinError 3 而非 FileExistsError，兜底不得静默合并.
+
+    LongPathsEnabled=0 机器上 exists() 对超长路径假阴性，copytree 探不到
+    目标已存在，抛 FileNotFoundError(WinError 3)——而这正是兜底分支的入口
+    异常；若不还原拒绝语义，新包会被静默合并进残留旧目录。
+    """
+    _force_normal_path_failures(monkeypatch)
+
+    src = tmp_path / "src"
+    _mkdir_long(src)
+    _write_bytes_long(src / "SKILL.md", b"new")
+
+    dst = tmp_path / _deep_member_rel()
+    _mkdir_long(dst)
+    _write_bytes_long(dst / "SKILL.md", b"old")
+
+    with pytest.raises(FileExistsError) as exc_info:
+        _copytree_long(src, dst)
+    # 残留旧目录内容不得被动过
+    assert _long_path(dst / "SKILL.md").read_bytes() == b"old"
+    assert "Destination already exists" in str(exc_info.value)
+
+
+def test_copytree_long_resumes_after_partial_first_pass(tmp_path, monkeypatch):
+    r"""「半拷贝 + 续拷」分支：首轮拷到一半失败，兜底必须接力补齐剩余文件.
+
+    检视缺口：强制失败桩让首轮立即抛错，最高风险的半拷贝场景未被覆盖。
+    这里让首轮真实拷出 a.txt 后在 b.txt 上失败（模拟深层路径超限的
+    WinError 3），兜底续拷须补齐全部文件。os.name 与 _long_path 打桩后，
+    用例在 Linux CI 与 Windows 上语义一致。
+    """
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(skill_manager, "_long_path", lambda p: Path(p))
+    real_copyfile = shutil.copyfile
+    calls = {"n": 0}
+
+    def flaky_copyfile(s, d, **kwargs):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(3, "simulated MAX_PATH(260) failure")
+        return real_copyfile(s, d, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfile", flaky_copyfile)
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (src / name).write_text(name, encoding="utf-8")
+
+    _copytree_long(src, dst)
+
+    assert sorted(p.name for p in dst.iterdir()) == ["a.txt", "b.txt", "c.txt"]
+    assert (dst / "c.txt").read_text(encoding="utf-8") == "c.txt"
+
+
+def test_copytree_long_honors_caller_dirs_exist_ok(tmp_path):
+    """调用方显式传 dirs_exist_ok=True 时按原语义合并，不抛 FileExistsError."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _mkdir_long(src)
+    _write_bytes_long(src / "NEW.md", b"n")
+    _mkdir_long(dst)
+    _write_bytes_long(dst / "OLD.md", b"o")
+    _copytree_long(src, dst, dirs_exist_ok=True)
+    assert _long_path(dst / "NEW.md").read_bytes() == b"n"
+    assert _long_path(dst / "OLD.md").read_bytes() == b"o"

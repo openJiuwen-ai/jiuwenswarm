@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import asyncio
 import hashlib
@@ -860,10 +861,114 @@ def _log_rejected_name(operation: str, label: str, value: Any, exc: ValueError) 
     )
 
 
+def _long_path(path: Path | str) -> Path:
+    r"""返回 Windows 长路径（\\?\ 前缀）形式，绕过 MAX_PATH(260) 限制。
+
+    非 Windows 原样返回；Windows 给绝对路径加 ``\\?\`` 前缀（NTFS 支持）。
+    路径须为绝对路径（调用方保证），且分隔符统一为 ``\\``。
+    """
+    p = str(path)
+    if os.name != "nt" or p.startswith("\\\\?\\"):
+        return Path(p)
+    # G.FIO.05 不用字符串拼接构造路径。注意不能直接 os.path.join("\\\\?\\", p)：
+    # join 遇到带盘符的组件会把整个前缀重置丢弃（设备命名空间前缀只能先与盘符
+    # 合成基路径，剩余部分交给 pathlib 追加）。
+    drive, tail = os.path.splitdrive(p.replace("/", "\\"))
+    if drive.startswith("\\\\"):
+        # UNC（\\server\share）须转成 \\?\UNC\server\share 设备命名空间形式；
+        # 走盘符分支会拼出非法的 \\?\\\server\share，兜底在网络共享上失效。
+        return Path(PureWindowsPath("\\\\?\\UNC" + drive[1:]) / tail.lstrip("\\"))
+    # PureWindowsPath 只是词法对象（无 mkdir/write_bytes 等文件系统方法），转回具体 Path
+    return Path(PureWindowsPath(f"\\\\?\\{drive}\\") / tail.lstrip("\\"))
+
+
+def _exists_long(p: Path) -> bool:
+    r"""存在性探测，Windows 上用长路径形式规避超长路径的 exists() 假阴性。
+
+    Path.exists() 内部走普通 Win32 调用，路径超 MAX_PATH(260) 时恒返回
+    False。安装链路的守卫（已安装判断、残留清理、错误清理）必须与
+    _copytree_long/_safe_rmtree 的长路径兜底同一套语义：探测、清理、拷贝
+    对"目标是否存在"的判定一致，否则会出现"探测说不存在、拷贝却报目标
+    已存在"的自相矛盾，force 覆盖安装也无法完成。
+    """
+    if os.name != "nt":
+        return p.exists()
+    return _long_path(p).exists()
+
+
+def _mkdir_long(p: Path) -> None:
+    r"""mkdir，超长路径用 \\?\ 兜底（仅 Windows）。
+
+    技能包目录层级深 + 文件名长时，普通路径可能超过 MAX_PATH(260)，
+    mkdir/write 直接报 FileNotFoundError；失败时加 \\?\ 前缀重试。
+    """
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        _long_path(p).mkdir(parents=True, exist_ok=True)
+
+
+def _write_bytes_long(p: Path, data: bytes) -> None:
+    r"""write_bytes，超长路径用 \\?\ 兜底（仅 Windows）。"""
+    try:
+        p.write_bytes(data)
+    except OSError:
+        if os.name != "nt":
+            raise
+        _long_path(p).write_bytes(data)
+
+
+def _copytree_long(src: Path, dst: Path, **kwargs: Any) -> None:
+    r"""copytree，超长路径用 \\?\ 兜底（仅 Windows）。
+
+    解压成功不等于安装成功：解压到 staging 后，安装链路还要 copytree 到
+    skills 目录，普通路径在 >260 时同样抛 WinError 3/206。先按原参数尝试
+    （保留 ignore/symlinks 等全部语义），失败且为 Windows 时两侧加 \\?\ 前缀
+    重试——copytree 内部 join 会保留前缀，遍历与元数据复制均可用。首次尝试
+    可能已部分拷贝，重试需 dirs_exist_ok 覆盖续拷。
+    """
+    dirs_exist_ok = kwargs.pop("dirs_exist_ok", False)
+    existed = _long_path(dst).exists() if os.name == "nt" else False
+    try:
+        shutil.copytree(src, dst, dirs_exist_ok=dirs_exist_ok, **kwargs)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            raise
+        if isinstance(exc, FileExistsError):
+            # 目标目录本就存在：保持 copytree 报错语义。若兜底带 dirs_exist_ok
+            # 续拷，会把新包静默合并进残留旧目录（已删文件残留、新旧混合态）。
+            raise
+        if not dirs_exist_ok and existed:
+            # 目标已存在且超长时，首轮 copytree 探不到存在性，抛的是 WinError 3
+            # （FileNotFoundError）而非 FileExistsError，上面的 isinstance 守卫
+            # 探不到。用入口探测结果还原拒绝语义，并把首轮异常挂进异常链。
+            raise FileExistsError(
+                errno.EEXIST, "Destination already exists", str(dst)
+            ) from exc
+    shutil.copytree(
+        str(_long_path(src)),
+        str(_long_path(dst)),
+        dirs_exist_ok=True,
+        **kwargs,
+    )
+
+
 def _safe_rmtree(path: Path) -> bool:
     """安全地删除目录树，处理 Windows 上的 git 文件锁定问题."""
     if not path.exists():
-        return True
+        # Windows 上顶层路径本身超过 MAX_PATH(260) 时 exists() 同样返回 False，
+        # 不能据此当作"目录已不存在"报成功。用长路径形式复查，仍在则继续走
+        # 下方 rmtree 流程：普通路径删除失败后由 \\?\ 前缀兜底接管。
+        if os.name != "nt":
+            return True
+        try:
+            if not _long_path(path).exists():
+                return True
+        except OSError:
+            return True
 
     import time
 
@@ -875,6 +980,14 @@ def _safe_rmtree(path: Path) -> bool:
             shutil.rmtree(path)
             return True
         except OSError as exc:
+            # Windows MAX_PATH(260) 兜底：超长路径用 \\?\ 前缀重试。
+            if os.name == "nt":
+                try:
+                    shutil.rmtree(_long_path(path))
+                    return True
+                except OSError:
+                    pass
+
             logger.debug("删除目录失败（尝试 %d/%d）: %s", attempt + 1, max_retries, exc)
 
             # 最后一次尝试失败，直接返回 False
@@ -886,8 +999,9 @@ def _safe_rmtree(path: Path) -> bool:
             # 尝试修改文件权限
             if os.name == "nt":
                 try:
-                    # 尝试递归修改权限
-                    for root, dirs, files in os.walk(path):
+                    # 尝试递归修改权限；顶层超 MAX_PATH 时普通路径 walk 不到任何
+                    # 内容，用长路径形式遍历（正常路径加前缀后 API 同样可用）
+                    for root, dirs, files in os.walk(_long_path(path)):
                         for name in files + dirs:
                             filepath = Path(root) / name
                             try:
@@ -948,7 +1062,7 @@ def _handle_copy_error(
         logger.error("[SkillManager] %s copy failed: dest=%s error=%s", logger_prefix, dest, exc)
     
     # 仅清理新建过程中的半成品；绝不能删除已有 Skill
-    if cleanup_dest and dest.exists():
+    if cleanup_dest and _exists_long(dest):
         _safe_rmtree(dest)
     
     # 获取错误消息字符串（支持普通 OSError 和 shutil.Error）
@@ -2665,11 +2779,11 @@ class SkillManager:
 
         # 复制到本地 skills 目录
         dest = _safe_child_path(self._skills_dir, plugin_name, "skill")
-        if dest.exists():
+        if _exists_long(dest):
             if not force:
                 return {"success": False, "detail": f"skill {plugin_name} 已存在"}
             _safe_rmtree(dest)
-        shutil.copytree(plugin_src, dest)
+        _copytree_long(plugin_src, dest)
 
         # 解析元数据并记录（添加 installed_at 时间戳）
         meta = self._parse_skill_md(self._try_find_skill_file(dest)) or {}
@@ -3439,7 +3553,7 @@ class SkillManager:
 
         # 检查 skill 是否已安装
         dest = _safe_child_path(self._skills_dir, slug, "skill")
-        if dest.exists() and not force:
+        if _exists_long(dest) and not force:
             return {
                 "success": False,
                 "detail": f"技能 {slug} 已安装",
@@ -3496,7 +3610,7 @@ class SkillManager:
                         }
 
                     # 删除已存在的
-                    if dest.exists():
+                    if _exists_long(dest):
                         if not force:
                             return {
                                 "success": False,
@@ -3506,15 +3620,15 @@ class SkillManager:
                         _safe_rmtree(dest)
 
                     # 复制到 skills 目录
-                    shutil.copytree(skill_dir, dest)
+                    _copytree_long(skill_dir, dest)
                     for mirror_root in self._get_mirror_skills_dirs():
                         mirror_dest = _safe_child_path(mirror_root, slug, "skill")
-                        if mirror_dest.exists():
+                        if _exists_long(mirror_dest):
                             if not force:
                                 continue
                             _safe_rmtree(mirror_dest)
                         mirror_root.mkdir(parents=True, exist_ok=True)
-                        shutil.copytree(skill_dir, mirror_dest)
+                        _copytree_long(skill_dir, mirror_dest)
 
                     # ClawHub 登记名必须与磁盘目录名（slug）一致：多个包常共用 SKILL.md
                     # frontmatter name（如都叫 weather），若按 parsed name 登记会互相覆盖
@@ -4251,7 +4365,7 @@ class SkillManager:
                     install_root.mkdir(parents=True, exist_ok=True)
                     dest = install_root / skill_name
 
-                    if dest.exists():
+                    if _exists_long(dest):
                         # 即使 force=true 也不得覆盖同名本地 Skill
                         installed_same = get_installed_asset_id(dest) == asset_id
                         if installed_same:
@@ -4303,10 +4417,10 @@ class SkillManager:
 
                     for mirror_root in self._get_mirror_skills_dirs():
                         mirror_dest = mirror_root / skill_name
-                        if mirror_dest.exists():
+                        if _exists_long(mirror_dest):
                             continue
                         mirror_root.mkdir(parents=True, exist_ok=True)
-                        shutil.copytree(
+                        _copytree_long(
                             skill_dir,
                             mirror_dest,
                             ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -4861,7 +4975,7 @@ class SkillManager:
         with inventory_mutex(self._skills_dir):
             self.reload_state()
             dest = _safe_child_path(self._skills_dir, skill_name, "skill")
-            if dest.exists():
+            if _exists_long(dest):
                 if not force:
                     return {
                         "ok": False,
@@ -4879,15 +4993,15 @@ class SkillManager:
                     }
                 _safe_rmtree(dest)
 
-            shutil.copytree(skill_dir, dest)
+            _copytree_long(skill_dir, dest)
             for mirror_root in self._get_mirror_skills_dirs():
                 mirror_dest = _safe_child_path(mirror_root, skill_name, "skill")
-                if mirror_dest.exists():
+                if _exists_long(mirror_dest):
                     if not force:
                         continue
                     _safe_rmtree(mirror_dest)
                 mirror_root.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(skill_dir, mirror_dest)
+                _copytree_long(skill_dir, mirror_dest)
             try:
                 self._add_local_skill({
                     "name": skill_name, "origin": skill_url, "source": "skillnet",
@@ -5051,7 +5165,7 @@ class SkillManager:
         # 处理 mirror 根目录中的技能
         for mirror_root in self._get_mirror_skills_dirs():
             mirror_dest = _safe_child_path(mirror_root, dest.name, "skill")
-            if mirror_dest.exists() and mirror_dest.is_dir():
+            if _exists_long(mirror_dest) and mirror_dest.is_dir():
                 _safe_rmtree(mirror_dest)
 
         origin = str(params.get("origin") or "").strip() or None
@@ -5096,10 +5210,10 @@ class SkillManager:
         backup_root = member_backup_dir(pack_dir)
         backup_dest = backup_root / member_dir.name
         try:
-            if backup_dest.exists():
+            if _exists_long(backup_dest):
                 _safe_rmtree(backup_dest)
             backup_root.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(member_dir, backup_dest)
+            _copytree_long(member_dir, backup_dest)
         except OSError:
             logger.warning(
                 "[SkillPack] member backup failed: member=%s pack=%s",
@@ -5150,9 +5264,9 @@ class SkillManager:
 
         dest = pack_dir / member_name if is_skillpack(pack_dir) else container_members_root(pack_dir) / member_name
         try:
-            if dest.exists():
+            if _exists_long(dest):
                 _safe_rmtree(dest)
-            shutil.copytree(backup_src, dest)
+            _copytree_long(backup_src, dest)
         except OSError as exc:
             logger.warning(
                 "[SkillPack] member restore failed: member=%s pack=%s error=%s",
@@ -5889,7 +6003,7 @@ class SkillManager:
             return {"success": False, "detail": str(exc)}
 
         dest = _safe_child_path(self._skills_dir, skill_name, "skill")
-        existing = dest.exists()
+        existing = _exists_long(dest)
         preserved_source = "local"
         preserved_version: str | None = None
 
@@ -5939,7 +6053,7 @@ class SkillManager:
                 )
         else:
             try:
-                shutil.copytree(
+                _copytree_long(
                     src,
                     dest,
                     ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -6187,24 +6301,24 @@ class SkillManager:
             default_version = None
 
         staged = dest.with_name(f".{dest.name}.new_import_{uuid.uuid4().hex[:8]}")
-        if staged.exists():
+        if _exists_long(staged):
             _safe_rmtree(staged)
 
         try:
             # 旁路准备新内容，不动原目录
-            shutil.copytree(
+            _copytree_long(
                 src,
                 staged,
                 ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
             )
             # 把原 .archive 拷进 staged（拷贝而非挪走，失败时原目录仍完整）
             if archive_dir.exists():
-                shutil.copytree(archive_dir, staged / ARCHIVE_DIRNAME)
+                _copytree_long(archive_dir, staged / ARCHIVE_DIRNAME)
 
             # 原子替换；内部失败会把 backup 恢复为 dest
             self.atomic_replace_dir(dest, staged)
         except Exception:
-            if staged.exists():
+            if _exists_long(staged):
                 _safe_rmtree(staged)
             raise
 
@@ -6297,7 +6411,7 @@ class SkillManager:
                     "SKILL.md YAML 须包含非空 name 与 description",
                 )
             dest = _safe_child_path(self._skills_dir, skill_name, "skill")
-            if dest.exists():
+            if _exists_long(dest):
                 if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
                     raise SkillRpcError(
                         ERROR_SKILL_BUILTIN_READ_ONLY,
@@ -7386,7 +7500,7 @@ class SkillManager:
         with tempfile.TemporaryDirectory(prefix="skill-rebuild-") as tmp:
             tmp_root = Path(tmp)
             work_copy = tmp_root / "content"
-            shutil.copytree(
+            _copytree_long(
                 content_root,
                 work_copy,
                 ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -7397,7 +7511,7 @@ class SkillManager:
             staging_skills = tmp_root / "skills"
             staging_skills.mkdir(parents=True, exist_ok=True)
             staged = staging_skills / name
-            if staged.exists():
+            if _exists_long(staged):
                 _safe_rmtree(staged)
             shutil.move(str(work_copy), str(staged))
 
@@ -7489,7 +7603,7 @@ class SkillManager:
         content_root.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="skill-ver-sync-", dir=str(content_root.parent)) as tmp:
             staged = Path(tmp) / "content"
-            shutil.copytree(
+            _copytree_long(
                 skill_dir,
                 staged,
                 ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -7504,28 +7618,28 @@ class SkillManager:
         staged = dest.with_name(dest.name + ".new_rebuild")
         if backup.exists():
             _safe_rmtree(backup)
-        if staged.exists():
+        if _exists_long(staged):
             _safe_rmtree(staged)
 
         # 先落到 dest 同父目录，避免跨盘 rename 失败
         try:
             src.rename(staged)
         except OSError:
-            shutil.copytree(src, staged)
+            _copytree_long(src, staged)
             _safe_rmtree(src)
 
         replaced = False
         try:
-            if dest.exists():
+            if _exists_long(dest):
                 dest.rename(backup)
                 replaced = True
             staged.rename(dest)
             if backup.exists():
                 _safe_rmtree(backup)
         except Exception:
-            if replaced and backup.exists() and not dest.exists():
+            if replaced and _exists_long(backup) and not _exists_long(dest):
                 backup.rename(dest)
-            if staged.exists():
+            if _exists_long(staged):
                 _safe_rmtree(staged)
             raise
 
@@ -7537,7 +7651,7 @@ class SkillManager:
         with tempfile.TemporaryDirectory(prefix="skill-ws-sync-", dir=str(skill_dir.parent)) as tmp:
             tmp_path = Path(tmp)
             staged = tmp_path / "workspace"
-            shutil.copytree(
+            _copytree_long(
                 content_root,
                 staged,
                 ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -8158,14 +8272,14 @@ class SkillManager:
         storage_id = f"ver-{uuid.uuid4().hex[:12]}"
         dest.parent.mkdir(parents=True, exist_ok=True)
         # 先落工作副本（不含包内根级 .archive，校验阶段已拒绝）
-        shutil.copytree(
+        _copytree_long(
             skill_dir,
             dest,
             ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
         )
         content_root = version_content_dir(dest, storage_id)
         content_root.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
+        _copytree_long(
             skill_dir,
             content_root,
             ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -8762,7 +8876,7 @@ class SkillManager:
             except ValueError as exc:
                 raise RuntimeError("ZIP 路径越界") from exc
             if is_dir:
-                dest_path.mkdir(parents=True, exist_ok=True)
+                _mkdir_long(dest_path)
                 continue
             file_count += 1
             if file_count > _SKILL_ZIP_MAX_FILE_COUNT:
@@ -8781,7 +8895,8 @@ class SkillManager:
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
                 )
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            # 越界校验已在上方完成，此处仅处理超长路径的落盘兜底
+            _mkdir_long(dest_path.parent)
             with zf.open(info, "r") as src:
                 data = src.read(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES + 1)
             if len(data) > _SKILL_ZIP_MAX_SINGLE_FILE_BYTES:
@@ -8795,13 +8910,13 @@ class SkillManager:
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
                 )
-            dest_path.write_bytes(data)
+            _write_bytes_long(dest_path, data)
 
     @staticmethod
     def _safe_extract_zip_bytes_to_dir(data: bytes, dest_dir: Path) -> None:
         """将 ZIP 字节解压到 dest_dir（不落盘 staging zip，与 ClawHub extractall 语义一致）。"""
         dest_root = dest_dir.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_long(dest_root)
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
             SkillManager._safe_extract_zip_members_into(zf, dest_root)
 
@@ -8809,7 +8924,7 @@ class SkillManager:
     def _safe_extract_zip_to_dir(zip_path: Path, dest_dir: Path) -> None:
         """将 ZIP 文件解压到 dest_dir，拒绝 Zip Slip（..、绝对路径、写出目标目录外）。"""
         dest_root = dest_dir.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_long(dest_root)
         with zipfile.ZipFile(zip_path, "r") as zf:
             SkillManager._safe_extract_zip_members_into(zf, dest_root)
 
@@ -8817,7 +8932,7 @@ class SkillManager:
     def _safe_extract_tar_to_dir(tar_path: Path, dest_dir: Path) -> None:
         """Extract TAR/TAR.GZ/TGZ safely into dest_dir."""
         dest_root = dest_dir.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_long(dest_root)
         with tarfile.open(tar_path, "r:*") as tf:
             for member in tf.getmembers():
                 raw = (member.name or "").replace("\\", "/")
@@ -8839,14 +8954,14 @@ class SkillManager:
                 except ValueError as exc:
                     raise RuntimeError("归档路径越界") from exc
                 if member.isdir():
-                    dest_path.mkdir(parents=True, exist_ok=True)
+                    _mkdir_long(dest_path)
                     continue
                 extracted = tf.extractfile(member)
                 if extracted is None:
                     continue
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_long(dest_path.parent)
                 with extracted:
-                    dest_path.write_bytes(extracted.read())
+                    _write_bytes_long(dest_path, extracted.read())
 
     @staticmethod
     def _detect_archive_format(body: bytes) -> str:
@@ -10130,7 +10245,7 @@ class SkillManager:
                     "name": safe_name,
                     "src": entry,
                     "dest": dest,
-                    "existing": dest.exists(),
+                    "existing": _exists_long(dest),
                     "builtin": bool(builtin_source),
                 }
             )
@@ -10563,7 +10678,7 @@ class SkillManager:
                     "name": safe_name,
                     "src": entry,
                     "dest": dest,
-                    "existing": dest.exists(),
+                    "existing": _exists_long(dest),
                     "builtin": bool(builtin_source),
                 }
                 skip_reason = self._precheck_sync_apply_one(item, overwrite=overwrite)
@@ -11088,7 +11203,7 @@ class SkillManager:
             )
         entity_dir = str((existing_ref or {}).get("entity_dir") or existing_name or skill_name).strip()
         dest = _safe_child_path(self._skills_dir, entity_dir, "skill")
-        if dest.exists() and existing_ref is None:
+        if _exists_long(dest) and existing_ref is None:
             raise SourceRegistryError(
                 "skill_name_conflict", f"skill directory already exists: {skill_name}"
             )
@@ -11102,10 +11217,10 @@ class SkillManager:
             f"_source_backup_{uuid.uuid4().hex}",
             "skill backup",
         )
-        shutil.copytree(skill_dir, staging)
+        _copytree_long(skill_dir, staging)
         moved_old = False
         try:
-            if dest.exists():
+            if _exists_long(dest):
                 dest.rename(backup)
                 moved_old = True
             staging.rename(dest)
@@ -11129,9 +11244,9 @@ class SkillManager:
                 replace_by_name=normalized_source_type == "prebuilt",
             )
         except Exception:
-            if dest.exists():
+            if _exists_long(dest):
                 _safe_rmtree(dest)
-            if moved_old and backup.exists():
+            if moved_old and _exists_long(backup):
                 backup.rename(dest)
             raise
         finally:
@@ -11622,9 +11737,9 @@ class SkillManager:
                     "skill_name": skill_name,
                 }
             dest = _safe_child_path(self._skills_dir, skill_name, "skill")
-            if dest.exists():
+            if _exists_long(dest):
                 _safe_rmtree(dest)
-            shutil.copytree(skill_dir, dest)
+            _copytree_long(skill_dir, dest)
             self._normalize_skill_permissions(dest)
         return {"ok": True, "skill_name": skill_name, "meta": meta}
 
@@ -11672,9 +11787,9 @@ class SkillManager:
         except ValueError as exc:
             return {"success": False, "detail": str(exc)}
         dest = _safe_child_path(self._skills_dir, safe, "skill")
-        if dest.exists():
+        if _exists_long(dest):
             _safe_rmtree(dest)
-        shutil.copytree(skill_dir, dest)
+        _copytree_long(skill_dir, dest)
         self._normalize_skill_permissions(dest)
         logger.info(
             "[SkillManager] web skill installed to disk: name=%s dest=%s",
@@ -11692,7 +11807,7 @@ class SkillManager:
         except ValueError:
             return
         dest = _safe_child_path(self._skills_dir, safe, "skill")
-        if dest.exists() and dest.is_dir():
+        if _exists_long(dest) and dest.is_dir():
             _safe_rmtree(dest)
 
     @_state_transactional
@@ -12581,11 +12696,11 @@ class SkillManager:
             return {"success": False, "detail": f"未找到内置技能: {name}"}
 
         dest = _safe_child_path(self._skills_dir, name, "skill")
-        if dest.exists() and dest.is_dir():
+        if _exists_long(dest) and dest.is_dir():
             return {"success": False, "detail": f"技能 {name} 已经安装"}
 
         try:
-            shutil.copytree(src, dest)
+            _copytree_long(src, dest)
         except Exception as exc:
             logger.error("安装内置技能失败: %s", exc)
             return {"success": False, "detail": f"安装失败: {exc}"}
@@ -12651,7 +12766,7 @@ class SkillManager:
             if not src.exists() or not src.is_dir():
                 continue
             dest = _safe_child_path(self._skills_dir, name, "skill")
-            if dest.exists() and dest.is_dir():
+            if _exists_long(dest) and dest.is_dir():
                 # 目录已被其它来源或手工拷贝占用，不覆盖。
                 continue
             result = self._install_builtin_skill_sync(name)
