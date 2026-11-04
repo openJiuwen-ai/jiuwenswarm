@@ -797,19 +797,26 @@ def _normalize_shot_crowd(raw: Any) -> dict[str, Any]:
     return out
 
 
+def _shot_has_crowd(shot: Any) -> bool:
+    """True when the storyboard agent already decided this shot's crowd."""
+    if not isinstance(shot, dict):
+        return False
+    spec = shot.get("crowd_spec")
+    return isinstance(spec, dict) and "present" in spec
+
+
 def _shots_missing_crowd(shots: list[Any]) -> bool:
     """True when at least one shot still has no agent crowd decision."""
-    for shot in shots:
-        if not isinstance(shot, dict):
-            continue
-        spec = shot.get("crowd_spec")
-        if not isinstance(spec, dict) or "present" not in spec:
-            return True
-    return False
+    return any(not _shot_has_crowd(shot) for shot in shots)
 
 
 def _apply_shot_crowds(shots: list[Any], decisions: list[dict[str, Any]]) -> None:
-    """Attach the model's per-shot crowd decisions, matched by shot number."""
+    """Attach the model's per-shot crowd decisions, matched by shot number.
+
+    Only shots the storyboard left undecided are filled. Overwriting a decided
+    shot would replace a judgement made with the full storyboard context by one
+    made from a single shot's text, which can flip an empty shot to "crowded".
+    """
     by_index: dict[int, dict[str, Any]] = {}
     for item in decisions:
         if not isinstance(item, dict):
@@ -822,7 +829,7 @@ def _apply_shot_crowds(shots: list[Any], decisions: list[dict[str, Any]]) -> Non
         if normalized:
             by_index[idx] = normalized
     for i, shot in enumerate(shots, start=1):
-        if not isinstance(shot, dict):
+        if not isinstance(shot, dict) or _shot_has_crowd(shot):
             continue
         idx = int(shot.get("clip_index") or i)
         decision = by_index.get(idx)
@@ -849,7 +856,7 @@ async def _decide_shot_crowds(
 
     payload = []
     for i, shot in enumerate(shots, start=1):
-        if not isinstance(shot, dict):
+        if not isinstance(shot, dict) or _shot_has_crowd(shot):
             continue
         payload.append(
             {
@@ -910,7 +917,7 @@ def _parse_json_array(text: str) -> list[Any]:
     if start < 0 or end <= start:
         return []
     try:
-        parsed = json.loads(raw[start : end + 1])
+        parsed = json.loads(raw[start:end + 1])
     except (ValueError, TypeError):
         return []
     return parsed if isinstance(parsed, list) else []

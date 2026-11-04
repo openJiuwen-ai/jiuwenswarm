@@ -594,7 +594,13 @@ def infer_crowd_state(
         hold = ""
     elif not hold and f"crowd_{disposition}" in _STORY_STATE_PHRASES[lang]:
         hold = phrase(_STORY_STATE_PHRASES, lang, f"crowd_{disposition}")
-    if hold and density and disposition in {"in_frame", "background_hold"} and density.lower() not in hold.lower():
+    needs_density = (
+        bool(hold)
+        and bool(density)
+        and disposition in {"in_frame", "background_hold"}
+        and density.lower() not in hold.lower()
+    )
+    if needs_density:
         hold = phrase(_STORY_STATE_PHRASES, lang, "crowd_density", hold=strip_phrase(hold), density=density)
 
     return {

@@ -84,7 +84,17 @@ def identity_ref_priority(
 
 
 _CROWD_DISPOSITIONS = frozenset(
-    {"in_frame", "background_hold", "off_camera", "exited", "empty", "unspecified"}
+    {
+        "in_frame",
+        "background_hold",
+        "off_camera",
+        "exited",
+        "empty",
+        "unspecified",
+        # A group that left earlier returns: infer_crowd_state treats it as
+        # present again, so the whitelist must not drop it.
+        "returned",
+    }
 )
 _CROWD_PLACEMENTS = frozenset({"in_frame", "background", "off_camera"})
 _PLACEMENT_DISPOSITION = {
@@ -113,6 +123,19 @@ def _tri_state(value: Any) -> bool | None:
     if text in {"false", "no", "absent", "0"}:
         return False
     return None
+
+
+def crowd_present_label(value: Any) -> str:
+    """One wording for a tri-state crowd decision, shared by every prompt path.
+
+    ``present`` is legitimately ``None`` when nobody decided; printing the
+    literal ``None`` into a model prompt has no stable meaning, so both the
+    staging prompt and the clip prompt say ``unspecified``.
+    """
+    state = _tri_state(value)
+    if state is None:
+        return "unspecified"
+    return "true" if state else "false"
 
 
 def _crowd_lock_for_setting(

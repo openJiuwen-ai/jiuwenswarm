@@ -2294,11 +2294,13 @@ class Director:
                         cfg["crowd_lock"] = crowd
                     break
         if crowd and role != "clip" and "CROWD LOCK" not in prompt:
-            present = crowd.get("present")
-            state = "unspecified" if present is None else str(present)
+            from jiuwenswarm.server.runtime.designer.pipeline.clip_policy import (
+                crowd_present_label,
+            )
+
             prompt = (
                 prompt
-                + f"\nCROWD LOCK: present={state}; "
+                + f"\nCROWD LOCK: present={crowd_present_label(crowd.get('present'))}; "
                 f"density={crowd.get('density') or 'unspecified'}. {str(crowd.get('rule') or '')[:280]}"
             )
             notes.append("inject_crowd_lock")
