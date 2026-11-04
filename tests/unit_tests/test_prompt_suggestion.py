@@ -880,24 +880,31 @@ async def test_new_request_cancels_the_suggestion_still_being_generated(product,
         assert len(cancelled["provider_receipts"]) == 1 and cancelled["missing_provider_receipts"] == 1
 
 
-@pytest.mark.parametrize(("enabled", "parent_usage", "outcomes"), [
-    # With recommendations off no suggestion is generated, and none is recorded.
-    (False, _usage(900, 800, 10), []),
-    # The fork reads the call's prompt from the cache and pays afresh for its 10,500-token answer.
-    (True, _usage(14_000, 3_000, 10_500), [("suppressed", "cache_cold")]),
-])
-async def test_no_suggestion_when_recommendations_are_off_or_the_parent_was_not_cached(
-    product, monkeypatch, enabled, parent_usage, outcomes,
-) -> None:
-    product.controls["prompt_enabled"] = enabled
-    client = _ModelClient(AssistantMessage(content="译好了。", usage_metadata=parent_usage))
+async def test_no_suggestion_when_recommendations_are_off(product, monkeypatch) -> None:
+    product.controls["prompt_enabled"] = False
+    client = _ModelClient(AssistantMessage(content="译好了。", usage_metadata=_usage(900, 800, 10)))
 
     await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
     await _settled()
 
     assert len(client.requests) == 1
     assert product.page.events == []
-    assert _outcomes(product.store) == outcomes
+    assert _outcomes(product.store) == []
+
+
+async def test_a_long_parent_answer_still_gets_a_suggestion(product, monkeypatch) -> None:
+    # A long parent completion still forks; paying for the answer again is accepted.
+    client = _ModelClient(
+        AssistantMessage(content="译好了。" + ("详" * 200), usage_metadata=_usage(14_000, 3_000, 10_500)),
+        AssistantMessage(content="导出成双语对照"),
+    )
+
+    await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
+    await _settled()
+
+    assert len(client.requests) == 2
+    assert [event.payload["request_id"] for event in product.page.events] == ["req-1"]
+    assert _outcomes(product.store) == [("candidate", None)]
 
 
 async def test_a_first_turn_whose_prompt_was_not_cached_yet_is_followed_by_a_suggestion(product, monkeypatch) -> None:

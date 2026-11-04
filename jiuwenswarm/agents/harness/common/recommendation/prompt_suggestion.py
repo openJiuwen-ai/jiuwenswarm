@@ -48,13 +48,9 @@ USER_INTERACTION_EVENTS = frozenset({
 PROMPT_VERSION = "prompt-suggestion-fork-v13"
 # A turn shows one next input.
 MAX_SUGGESTIONS = 1
-# src-raw skips a fork that would pay afresh for more than this. Ark caches a prompt prefix as the
-# call is served, so the fork sent right after it reads the call's whole prompt from the cache
-# (36,736 of 36,893 prompt tokens in a probe) and pays afresh only for the call's answer: the bound
-# is on the answer's output tokens.
-MAX_FORK_ANSWER_TOKENS = 10_000
 # Nothing of the parent call is overridden, its reasoning setting included, as in src-raw: a
 # parameter that differs from the parent's breaks the prompt-cache key.
+# A long parent answer still forks: the suggestion is worth the extra completion tokens.
 SUGGESTION_PROMPT = (
     "This is an app-generated request for a suggested next user message. "
     "The user did not write this message.\n\n"
@@ -399,8 +395,6 @@ class PromptSuggestionForks:
             reason = "plan_mode"
         elif getattr(call.answer, "tool_calls", None):
             reason = "unanswered_tool_call"
-        elif answer is not None and answer > MAX_FORK_ANSWER_TOKENS:
-            reason = "cache_cold"
         else:
             task = asyncio.create_task(self._fork(epoch, session_id, request_id, call, completion))
             self._tasks[session_id] = task
