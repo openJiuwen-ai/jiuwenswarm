@@ -360,6 +360,7 @@ class PersistentAgentRepository(SQLiteStore):
         published_settings: ColleagueSettings,
         changes: list[tuple[str, str | None, ConfigSnapshot | None]],
         published_at: datetime,
+        initialize_model: bool = False,
     ) -> None:
         """Switch every agent of a configuration to one publication, or none of them.
 
@@ -370,7 +371,7 @@ class PersistentAgentRepository(SQLiteStore):
         settings_json = json.dumps(published_settings.with_persona("").to_dict(), ensure_ascii=False)
         with self._transaction() as conn:
             row = conn.execute(
-                "SELECT revision FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, config_id)
+                "SELECT revision, is_default FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, config_id)
             ).fetchone()
             connection_rows = conn.execute(
                 "SELECT agent_id FROM colleague_connections WHERE namespace_id = ? AND config_id = ?",
@@ -381,6 +382,15 @@ class PersistentAgentRepository(SQLiteStore):
             }
             if row is None or row["revision"] != revision or owned | {config_id} != {item[0] for item in changes}:
                 raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+            if initialize_model:
+                if not row["is_default"] or revision != 1:
+                    raise PersistentAgentError("default initialization was changed concurrently", code="CONFLICT")
+                revision += 1
+                conn.execute(
+                    "UPDATE colleagues SET settings_json = ?, revision = ?, updated_at = ?"
+                    " WHERE namespace_id = ? AND agent_id = ?",
+                    (settings_json, revision, published_at.isoformat(), namespace_id, config_id),
+                )
             for agent_id, previous, snapshot in changes:
                 # The configuration's own row keeps its draft; an IM agent's row records what it now runs.
                 fields = "published_revision = ?" if agent_id == config_id else (
