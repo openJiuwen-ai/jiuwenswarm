@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_04 / colleague-connections |
 | 关联模块 | `repository.py`、`service.py`、`web_adapter.py`、`agent_manager.py`、`feishu_group_fanout.py`、`dingtalk_inbound.py`；Gateway `app_web_handlers.py` 的飞书、钉钉绑定与同事删除 |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联 feature | [F_02_02 同事配置与连接聚合](../features/F_02_02_colleague-connections.md)、[F_02](../features/F_02_colleague-management.md)、[F_21_02](../features/F_21_02_dingtalk-direct-message.md) |
 | 设计依据 | [架构](../designs/jiuwenmate-architecture.md)第 2.1、4.1、9.2 节 |
 
@@ -47,6 +47,7 @@
 8. **无孤立连接：** 添加连接的事务核对同事存在、不是 IM Agent、未隐藏，否则 `NOT_FOUND` 且不写入任何记录；同事行在仍有连接时不能删除（`CONFLICT`）。添加连接在准备版本后发现自己的 Agent 已被删除时，移除其重新建立的办公目录并返回 `NOT_FOUND`。
 9. **删除可重试且不误报：** 每个运行 Agent 的清理全部完成、并核对模板与办公目录已不存在后，才删除它的登记与同事表行；任何一步失败都返回错误，未删完的 Agent 仍能被查询到。已完成的 `unbind` / `purge` 被原样重试时返回成功；从未存在的 ID 返回 `NOT_FOUND`。
 10. **绑定与删除串行：** 在同一个 Gateway 进程中，同一同事的 `channel.feishu.bind_agent`、`channel.dingtalk.bind_agent` 与 `jiuwenmate.colleague.delete` 逐个执行，每个操作覆盖询问 AgentServer、写 YAML 与重启渠道的整段，失败、超时或取消时释放。因此绑定成功时其应用指向仍存在的连接 Agent，删除成功时 YAML 中没有指向该同事任一 Agent 的应用；删除之后到达的绑定得到 `NOT_FOUND`，不写 YAML。不同同事不共用编排锁；渠道自身的重启协调不变。
+11. **应用唯一占用：** 团队版现有飞书 `channels.feishu.apps` 与钉钉绑定流程中，同一平台的同一应用 ID 只能绑定一个配置员工。提交值和持久配置均以环境变量解析后的有效 ID 校验；提交值解析为空时返回 `BAD_REQUEST`，不改配置，钉钉应用锁也使用有效 ID。同一员工重复保存或其历史运行 Agent 迁移到 canonical ID 允许；其他员工绑定时返回 `CHANNEL_ALREADY_BOUND`，不改动原配置与凭据。停用或撤销授权不释放占用，解除连接后才能换绑。校验与写入在配置写锁内原子完成；不同平台的相同文本 ID 互不冲突。团队版解绑与删除员工也在配置事务中核对并清理持久绑定，不因运行时加载失败回退内存而漏删；文件已清理但内存仍有旧绑定时重新应用文件配置。WeLink 沿用助手凭证唯一性，共享读取账号不作为机器人渠道 ID。`feishu_enterprise` 与个人版设置保存行为不在本轮修复范围。
 
 ## 4. 接口契约
 
