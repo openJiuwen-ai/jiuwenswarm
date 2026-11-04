@@ -449,6 +449,12 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - **范围：** 无参 Ops；同名事件空输入、value/deny 输出；宿主显式绑定 Anthropic/OpenAI 凭据，签发绑定原调用包、会话与激活代次的不透明 handle。
 - **边界：** 平台尚未自动采集真实凭据；未绑定时返回 None。HTTP 消费、OAuth 和登录流程另行接入。
 - **验证入口：** F_29 第 6 节与 tests/unit_tests/extensions_v2/test_session_authorize.py；状态见第 4 节。
+### EXTV2-29 Server 斜杠命令执行扩展
+
+- **特性与规约：** [F_30 server.run_command](../features/F_30_server-run-command.md)、[S_17](../specs/S_17_server-run-command.md)，负责人刘瑜。EXTV2-27 与 F_29 / S_16 已登记给并行 [authorize !114](https://gitcode.com/huenrui_/jiuwenswarm/pull/114)；EXTV2-28 历史上已用于 compact，新增任务不复用它。
+- **范围：** 保留项目事件名，对齐 Claude command.run 的 command/args/origin/presentation 和 text/context/ref；USER 可改写参数、接管或加工文字，CORE 一次执行原生命令，最终备注写入模型上下文。
+- **接入：** Worker DeepAdapter 原生文本命令入口；Gateway 本地命令、独立 command.* RPC 和命令 Ops/目录不在当前触发覆盖内。
+- **验证入口：** F_30 第 6 节、事件/适配测试及可安装 server_run_command 示例；不依赖 authorize PR。
 
 ## 3. 特性依赖关系与并行开发
 
@@ -586,6 +592,7 @@ flowchart LR
 | EXTV2-25 store 持久化接入 | 已开发 | 李志远 | 本 PR，待合入 | 宿主目录注入、清理回调、store_probe 与专项/全量回归见 F_27 | 2026-11-03 |
 | EXTV2-26 会话压缩与压缩前扩展 | 接口已开发；主流程未接入 | 刘瑜 | [Server !109](https://gitcode.com/huenrui_/jiuwenswarm/pull/109)；先合入 [Core !125](https://gitcode.com/huenrui_/agent-core/pull/125)，均待合入 | 当前接口阶段：Core 定向 31＋原生回归 139＝170 项通过；Server 85＋真实安装包 1＝86 项通过。默认 Ops 明确 NOT_INTEGRATED；独立受控绑定验证完整层级；旧真实模型证据仅为历史，见 F_28 §6.3 / S_15 | 2026-11-03 |
 | EXTV2-27 会话凭据授权句柄 | 已开发 | 刘瑜 | [!114](https://gitcode.com/huenrui_/jiuwenswarm/pull/114)，待合入 | 宿主显式绑定、Ops/Event 链、凭据隔离与句柄撤销验证见 F_29 第 6 节 | 2026-11-04 |
+| EXTV2-29 Server 斜杠命令执行扩展 | 已开发 | 刘瑜 | 本 PR，待合入 | 151 个不同定向用例通过；真实 ZIP、Worker 入口、原生演进列表与隐藏消息恢复见 F_30 第 6 节 | 2026-11-04 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
