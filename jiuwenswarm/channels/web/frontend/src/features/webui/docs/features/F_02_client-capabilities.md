@@ -18,7 +18,8 @@ Gateway 接入与登录示例分别提交，配套契约见 [Gateway 浏览器�
 
 受信任的 Gateway 下发 client.declarations，WebUI 传输适配器把快照交给 browserClientCapabilities。
 声明不是全体 WebUI 插件目录，普通 UI 包保持原路径；客户端能力包的帧额外校验 activation_generation。
-包存储按稳定 Gateway ID、packageId 与逻辑 key 隔离，部署 grants 决定写删、请求绑定及页面刷新是否可用。
+包存储按稳定 Gateway ID、packageId 与逻辑 key 隔离。安装并激活的客户端包可直接写删存储、绑定请求及刷新页面，
+无需额外授权；声明和命令中没有额外权限字段或无消费者的逐操作标识。
 
 主 WebClient 与独立 /ws/git 客户端按声明写入 request_context，HTTP 调用使用 gatewayFetch。
 实际 Gateway HTTP 读取、上传和下载接入同一传输；Designer 本地 blob: 素材继续使用原生 fetch。
@@ -29,7 +30,7 @@ Gateway 接入与登录示例分别提交，配套契约见 [Gateway 浏览器�
 元数据只有明确返回 NOT_FOUND 才能判定会话不存在。同一上下文内合并重复元数据请求，effect 退出时释放历史订阅。
 独立推送的跨上下文归属仍需服务端生命周期协作，本地计数不提供该保证。
 
-插件显式下发 page.reload 后才刷新整页。该命令要求独立授权并检查连接、激活代次、参数及时限；
+插件显式下发 page.reload 后才刷新整页。该命令检查连接、激活代次、参数及时限；
 按消息顺序执行，立即调用 window.location.reload()，不等待原请求回包。
 存储变化、声明注入、重连和其他标签页 storage 事件均不自动刷新，也不逐个清理业务 Store。
 

@@ -12,7 +12,7 @@ default: an empty allowlist denies every outbound request.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -98,7 +98,6 @@ class GatewayExtensionConfig:
     install_dir: Path = Path(DEFAULT_INSTALL_DIR)
     http: HttpPolicy = HttpPolicy()
     auth: AuthPolicy = AuthPolicy()
-    client_grants: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExtensionConfig:
@@ -119,25 +118,7 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
         install_dir=_resolve_dir(install_dir),
         http=_read_http_policy(gateway.get("http")),
         auth=_read_auth_policy(gateway.get("auth")),
-        client_grants=_read_client_grants(gateway.get("client_grants")),
     )
-
-
-def _read_client_grants(raw: Any) -> Mapping[str, tuple[str, ...]]:
-    """Read explicit deployment grants, never permissions from package code."""
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise ValueError("client_grants must map package ids to permission lists")
-    result: dict[str, tuple[str, ...]] = {}
-    allowed = {"local_storage.write", "request.bind.gateway", "page.reload"}
-    for package_id, grants in raw.items():
-        if not isinstance(package_id, str) or not isinstance(grants, list):
-            raise ValueError("invalid client_grants entry")
-        if any(not isinstance(grant, str) or grant not in allowed for grant in grants):
-            raise ValueError("unknown browser capability grant")
-        result[package_id] = tuple(grants)
-    return result
 
 
 def _read_auth_policy(raw: Any) -> AuthPolicy:

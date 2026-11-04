@@ -6,9 +6,12 @@
 ## 范围
 
 Gateway 包可声明 `ui.items` 及 `client.requestBindings`。
-浏览器操作须由部署配置 `extensions.gateway.client_grants` 为包授权；包不能自行取得权限。
+安装并激活的客户端包直接具备浏览器存储写删、请求绑定与页面刷新能力。
+无需额外权限声明、Gateway 授权配置或确认；操作仍须通过包、连接、激活代次及参数校验。
 没有 client 声明的包保持既有行为。不会把 client 声明解释为认证规则。
 请求触发点限于主 WebSocket RPC 和 Gateway HTTP，辅助 WebSocket 通道不在本地接入范围内。
+
+浏览器声明只携带活动包身份、激活代次和请求绑定，不包含额外授权字段。Gateway 与前端同步使用此协议。
 
 ## 请求分派
 
@@ -26,6 +29,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 ## 协议
 
 - 连接建立、首次请求及包激活信息变化时下发 `client.declarations`。字段复用前端 ClientDeclarationSnapshot。
+- `client.operation` 保留用于原请求结束等待的 `invocation_id`；不生成没有回执、去重或关联消费者的逐操作标识。
 - `request_context` 作为请求扩展区独立传递给 gateway.request，不合并进业务 params。
 - HTTP 只提供真实 header 和路径给事件；请求的判定属于插件。
 - `webui.dispatch` 在 USER 请求策略继续之后，只分派本 Gateway 包声明的 entry/footer；其他目标继续原有路径。
@@ -36,8 +40,10 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - localStorage 命令与前端 ClientOperation 一致，归属取当前 Ops 的包和连接，不接受调用者指定其他浏览器。
   没有执行回执、查询、重试或 token 有效期语义。
 - SDK 适配器 `with_client_ops` 通过组合公开 Ops 提供 `ops.client.local_storage.set/delete` 与 `ops.client.page.reload()`。
-- page.reload 要求独立部署授权，参数为空；插件显式决定何时刷新，存储变化不自动重建业务页面。
+- page.reload 无需单独授权，参数为空；插件显式决定何时刷新，存储变化不自动重建业务页面。
 - 素材只读暴露活动包 assets 目录，路径须位于该目录，包失活后不可读取。
+- Web UI 静态服务将 `/extension-assets/` 请求按原路径转发到 WebChannel HTTP 服务，与 Vite 开发服务保持一致。
+  GET/HEAD 保留后端状态码、内容类型和缓存策略；无效或过期素材返回后端的 404，不返回 SPA HTML。
 
 ## 不变量
 
@@ -46,6 +52,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 3. localStorage 写删仅向发起调用的浏览器投递，Gateway 不保存浏览器数据副本。
 4. 无包时不改变原请求；请求路由及异常语义沿用已合入的 Gateway 逻辑。
 5. 断线清理实例和连接映射；包失活拒绝旧动作与旧资源。重载后实例 revision 不复用，旧激活中延迟的 Ops 不得投递到新激活。
+6. 活动客户端包的浏览器能力不依赖额外授权；安装、重载和重启统一使用本条规则。
 
 ## 验证入口
 
@@ -63,3 +70,10 @@ login fields or action identifiers. Other targets retain the existing request ch
 HTTP forward results continue to the native route even when handled is false. Explicit plugin denial and consumption
 remain effective. Generic regression tests do not depend on an example package.
 Gateway Dropdown accepts one display child as its trigger; icon triggers remain outside this Gateway integration.
+Active installed client packages can write/delete their own storage, bind requests and reload the current page without
+separate permission declarations or deployment configuration. Package identity, connection ownership, activation
+generation and input validation still apply. Gateway and frontend use the same declaration and operation protocol.
+Declarations contain no grant fields. Operations retain invocation_id for request completion coordination and do not
+carry unused operation identifiers.
+The built frontend server forwards `/extension-assets/` to WebChannel HTTP, preserving GET/HEAD responses and backend
+errors instead of serving the SPA entry page. Asset identity and activation checks remain owned by the Gateway.

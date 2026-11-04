@@ -13,7 +13,6 @@ export interface ClientDeclarationSnapshot {
   packages: {
     packageId: string;
     activationGeneration: string;
-    grants: string[];
     requestBindings: RequestBinding[];
   }[];
 }
@@ -25,7 +24,6 @@ export interface ClientContextChange {
 
 export type ClientOperation = {
   clientProtocolVersion: 1;
-  operation_id: string;
   invocation_id: string;
   connection_epoch: string;
   package_id: string;
