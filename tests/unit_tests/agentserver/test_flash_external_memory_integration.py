@@ -46,7 +46,10 @@ def flash_memory(monkeypatch):
     monkeypatch.setattr(interface_deep, "get_config", lambda: config)
     monkeypatch.setattr(memory_module, "get_memory_section", lambda cfg=None: (cfg or config)["memory"])
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._config_cache = config
+    # The full config snapshot gates Flash-only SkillSleep; the react subtree
+    # remains the input for tool/runtime react settings.
+    adapter._config_base_cache = config
+    adapter._config_cache = config.get("react", {})
     adapter._instance = RecordingAgent()
     # Isolate workspace context and built-in memory from the external gates.
     monkeypatch.setattr(adapter, "_ensure_flash_context_rail", AsyncMock())
