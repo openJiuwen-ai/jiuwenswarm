@@ -3,14 +3,19 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import i18n from 'i18next';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 
-import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js';
-import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
-import { ColleagueDeleteDialog } from '../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js';
+// Initialize React DOM with a browser so textarea input events use the browser event path.
+const browser = new JSDOM('<!doctype html>', { url: 'http://localhost' });
+globalThis.window = browser.window;
+globalThis.document = browser.window.document;
+const { createRoot } = await import('react-dom/client');
+
+const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
+const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
+const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const profileStyles = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
@@ -130,6 +135,71 @@ async function mountProfile(extra) {
   };
 }
 
+test('management model save failures stay visible and a successful retry clears the error', async () => {
+  let fail = true;
+  const view = await mountProfile({
+    initialSection: 'model',
+    modelCatalog: { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' },
+      { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' }], defaultModelId: '', defaultModelLabel: '' },
+    onSaveSettings: async () => { if (fail) throw new Error('Publication refused'); },
+  });
+  try {
+    const style = document.createElement('style');
+    style.textContent = profileStyles;
+    document.head.appendChild(style);
+    await act(async () => view.container.querySelector('input[value="kimi#1"]').click());
+    await act(async () => view.container.querySelector('.jiuwenmate-profile__save-button').click());
+    const error = view.find('settings-error');
+    assert.ok(error, 'A failed management save must show an error');
+    assert.equal(error.getAttribute('role'), 'alert');
+    assert.match(error.textContent, /Publication refused/);
+    assert.equal(window.getComputedStyle(error.parentElement).gridTemplateRows, 'auto minmax(0, 1fr)',
+      'The error must take its text height instead of the full content row');
+    assert.equal(view.container.querySelector('input[value="kimi#1"]').checked, true);
+    fail = false;
+    await act(async () => view.container.querySelector('.jiuwenmate-profile__save-button').click());
+    assert.equal(view.find('settings-error'), null);
+    assert.equal(window.getComputedStyle(view.find('detail').parentElement).gridTemplateRows, 'minmax(0, 1fr)');
+  } finally {
+    await view.close();
+  }
+});
+
+test('the persona save button stays mounted after saving and permits retry after failure', async () => {
+  let fail = false;
+  const saved = [];
+  const view = await mountProfile({ initialSection: 'persona', onSaveSettings: async (edit) => {
+    if (fail) throw new Error('Persona save failed');
+    saved.push(edit);
+  } });
+  const changePersona = async (value) => {
+    const input = view.container.querySelector('.jiuwenmate-profile__persona-editor textarea');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+  };
+  try {
+    const button = view.container.querySelector('.jiuwenmate-profile__save-button');
+    assert.ok(button, 'The persona save action must remain visible even without changes');
+    assert.equal(button.disabled, true);
+    await changePersona('更新后的人设');
+    assert.equal(button.disabled, false);
+    await act(async () => button.click());
+    assert.deepEqual(saved, [{ persona: '更新后的人设' }]);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), button);
+    assert.equal(button.disabled, true);
+    fail = true;
+    await changePersona('再次修改的人设');
+    await act(async () => button.click());
+    assert.equal(button.disabled, false);
+    assert.match(view.find('settings-error').textContent, /Persona save failed/);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__persona-editor textarea').value, '再次修改的人设');
+  } finally {
+    await view.close();
+  }
+});
+
 test('the overview keeps DingTalk setup until DingTalk is also configured', () => {
   const authorized = {
     ...colleague,
@@ -155,6 +225,19 @@ test('the overview keeps DingTalk setup until DingTalk is also configured', () =
   assert.match(pendingDingTalk, /钉钉/);
   const overview = renderProfile({ colleague: { ...authorized, dingtalkConfigured: true } });
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-quick-im"/);
+});
+
+test('a permission save without error details shows a fallback, rolls back and clears on section change', async () => {
+  const view = await mountProfile({ onSaveSettings: async () => { throw null; } });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-permission-option"][data-variant="automatic"]').click());
+    assert.match(view.find('settings-error').textContent, /配置保存或发布失败/);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-permission-option"][data-variant="default"]').getAttribute('aria-pressed'), 'true');
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-section"][data-variant="model"]').click());
+    assert.equal(view.find('settings-error'), null);
+  } finally {
+    await view.close();
+  }
 });
 
 test('the employee mail page gives a short connection note', () => {
@@ -821,6 +904,16 @@ test('skills can be changed on the skills page without the pencil', () => {
   assert.doesNotMatch(markup, /AI 员工名称/);
 });
 
+test('unconfigured and configured employees show the same save controls', () => {
+  const unconfigured = { ...colleague, currentVersion: null,
+    capabilities: { ...colleague.capabilities, model: '' } };
+  const resources = renderProfile({ colleague: unconfigured, initialSection: 'skills' });
+  assert.match(resources, /data-testid="jiuwenmate-profile-resource-save"[^>]*>保存并发布</);
+  const overview = renderProfile({ colleague: unconfigured, initialSection: 'overview', initialEditing: true });
+  assert.match(overview, />保存并发布</);
+  assert.doesNotMatch(resources + overview, /保存草稿/);
+});
+
 test('configuration pages use the design-specific persona, model, and resource layouts', () => {
   const persona = renderProfile({ initialSection: 'persona' });
   assert.match(persona, /class="jiuwenmate-profile__persona-editor"/);
@@ -857,6 +950,33 @@ test('configuration pages use the design-specific persona, model, and resource l
     colleague: { ...colleague, capabilities: { ...colleague.capabilities, knowledge: ['topics/description.md'] } },
   });
   assert.match(knowledgePopulated, /class="jiuwenmate-profile__knowledge-list"/);
+});
+
+test('an empty employee model page explains setup and opens model settings', async () => {
+  let opens = 0;
+  const view = await mountProfile({
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, model: '' } },
+    initialSection: 'model',
+    modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' },
+    onOpenModelSettings: () => { opens += 1; },
+  });
+  try {
+    assert.ok(view.find('model-empty'));
+    assert.match(view.find('model-empty').textContent, /尚未配置模型/);
+    assert.match(view.find('model-empty').textContent, /设置.*模型/);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), null);
+    await view.click('model-add');
+    assert.equal(opens, 1);
+    await view.rerender({ modelCatalog: {
+      models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'DeepSeek' }],
+      defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek',
+    } });
+    assert.equal(view.find('model-empty'), null);
+    assert.ok(view.container.querySelector('input[value="deepseek#0"]'));
+    assert.ok(view.container.querySelector('.jiuwenmate-profile__save-button'));
+  } finally {
+    await view.close();
+  }
 });
 
 test('schedules can be created on the schedules page', () => {
