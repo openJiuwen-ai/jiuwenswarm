@@ -249,6 +249,11 @@ class WebChannel(BaseWsChannel):
         # service; bound by the web handler registration.
         self.diagnosis_agent_client: Any = None
         self.trajectory_agent_client: Any = None
+        # Skill 上传 multipart 处理函数注入点（duck-typed SkillUploadHandlers）。
+        # gateway 不得 import 主仓 server.runtime.skill.*（R3 不变量），由主仓
+        # 装配期经扩展/装配点注入实现。未注入时 attach_skill_upload_routes
+        # 对写端点返回 503，资格门禁仍生效。
+        self.skill_upload_handlers: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
         # 企业北向 HTTP/SSE 的请求级 Outbound 注册表。

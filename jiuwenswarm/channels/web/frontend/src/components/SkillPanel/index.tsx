@@ -17,6 +17,11 @@ import SourceManagerIcon from '../../assets/skill-panel/source-manager.svg?react
 import RefreshIcon from '../../assets/skill-panel/refresh.svg?react';
 import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs, LoadingSpinner, EmptyState } from '../ui';
 import { webRequest } from '../../services/webClient';
+import { buildRuntimeIdentityHeaders } from '../../services/runtimeScope';
+import { generateUuidV4 } from '../../utils/uuid';
+import { cancelSkillUploadRequest, fetchSkillUploadPermission, skillUploadPermissionAvailable, toPermissionState, type SkillUploadPermissionContext, type SkillUploadPermissionState } from '../../services/skillUploadPermissionApi';
+import { useEnterpriseContext } from '../../services/enterpriseContext';
+import { SkillUploadApplyDialog } from './SkillUploadApplyDialog';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
@@ -38,7 +43,7 @@ import {
   shouldShowEnableSwitch,
   transformSkillContentImages,
 } from './skillPanelUtils';
-import { FilterDropdown, MySkillGoTryButton, TopAnchorTooltip } from './SkillPanelWidgets';
+import { FilterDropdown, MySkillGoTryButton, SkillUploadPermissionEntry, TopAnchorTooltip } from './SkillPanelWidgets';
 import { SkillToasts } from './SkillToasts';
 import { SkillGraphTab } from './SkillGraphTab';
 import { MarketplaceView, SkillPacksView } from './MarketplaceView';
@@ -215,6 +220,14 @@ export function SkillPanel({
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [synthesizeTooltip, setSynthesizeTooltip] = useState<{ left: number; top: number } | null>(null);
 
+  // 企业版上传资格门禁：allowed 才展示创建菜单，否则给申请/审核中入口
+  const [skillUploadState, setSkillUploadState] = useState<SkillUploadPermissionState | null>(null);
+  const [applyDialogOpen, setApplyDialogOpen] = useState(false);
+  const [cancellingUploadPermission, setCancellingUploadPermission] = useState(false);
+  const [retryingUploadPermission, setRetryingUploadPermission] = useState(false);
+  // 记录上一次 phase，用于检测审批结果变化并 toast 通知用户
+  const prevSkillUploadPhaseRef = useRef<string | null>(null);
+
   // 挂载/激活时序标记
   const prevIsActiveRef = useRef(isActive);
   const mountedRef = useRef(false);
@@ -236,6 +249,20 @@ export function SkillPanel({
     [showMessage, t],
   );
 
+  // 申请上下文：企业版取当前 Agent 上下文三元组（后端会做会话准入口径校验）。
+  // 提前到 refreshSkillUploadPermission 之前，以便查询资格时传 context_id。
+  const enterpriseContext = useEnterpriseContext();
+  const skillUploadApplyContext = useMemo<SkillUploadPermissionContext | null>(() => {
+    if (!enterpriseEdition) return null;
+    const selected = enterpriseContext?.selected;
+    if (!selected) return null;
+    return {
+      jiuwenclawId: selected.jiuwenclaw_id,
+      groupId: selected.group_id,
+      botId: selected.bot_id,
+    };
+  }, [enterpriseEdition, enterpriseContext]);
+
   const fetchSkills = useCallback(async (refreshMarketplaces = false) => {
     setListState('loading');
     try {
@@ -252,18 +279,118 @@ export function SkillPanel({
           timeoutMs: refreshMarketplaces ? SKILLS_FETCH_TIMEOUT_REFRESH_MS : SKILLS_FETCH_TIMEOUT_NORMAL_MS,
         },
       );
-      setSkills((data.skills || []).map(normalizeSkillItem));
+      let merged = (data.skills || []).map(normalizeSkillItem);
+      // 企业版 E2A 转发的 skills.list 可能遗漏 source_type=user 的 skill；
+      // 从 gateway 本地端点补充用户上传的 skill。
+      if (enterpriseEdition) {
+        try {
+          const localResp = await fetch('/file-api/skills/list', {
+            headers: buildRuntimeIdentityHeaders(generateUuidV4(), {}),
+          });
+          if (localResp.ok) {
+            const localData = await localResp.json();
+            const userSkills: SkillItem[] = (localData.skills || []).map(normalizeSkillItem);
+            const existingNames = new Set(merged.map((s) => s.name));
+            for (const s of userSkills) {
+              if (!existingNames.has(s.name)) {
+                merged = [...merged, s];
+              }
+            }
+          }
+        } catch {
+          // 本地端点不可用时不影响主列表
+        }
+      }
+      setSkills(merged);
       setPlugins(data.plugins || []);
       setListState('success');
     } catch (error) {
       console.error(error);
       setListState('error');
     }
-  }, []);
+  }, [enterpriseEdition]);
 
   const handleSkillsInstalled = useCallback(async () => {
     await fetchSkills();
   }, [fetchSkills]);
+
+  const refreshSkillUploadPermission = useCallback(async () => {
+    if (!skillUploadPermissionAvailable()) {
+      setSkillUploadState({ phase: 'allowed' });
+      return;
+    }
+    setSkillUploadState({ phase: 'checking' });
+    try {
+      const info = await fetchSkillUploadPermission(skillUploadApplyContext?.jiuwenclawId);
+      setSkillUploadState(toPermissionState(info));
+    } catch (error) {
+      console.error('[skill-panel] fetch skill upload permission failed:', error);
+      setSkillUploadState({ phase: 'unavailable' });
+    }
+  }, [skillUploadApplyContext]);
+
+  useEffect(() => {
+    if (!enterpriseEdition) return;
+    void refreshSkillUploadPermission();
+  }, [enterpriseEdition, refreshSkillUploadPermission]);
+
+  // 审批状态刷新：遵循设计原则"页面打开、重新获得焦点、点击刷新状态时查询"，
+  // 不引入轮询或实时推送。面板可见时监听窗口聚焦立即刷新。
+  useEffect(() => {
+    if (!enterpriseEdition || !isActive) return;
+    const onFocus = () => void refreshSkillUploadPermission();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [enterpriseEdition, isActive, refreshSkillUploadPermission]);
+
+  // 审批结果变化通知：pending → allowed（已通过）/ pending → not-allowed（被驳回）时 toast
+  useEffect(() => {
+    const prev = prevSkillUploadPhaseRef.current;
+    const curr = skillUploadState?.phase ?? null;
+    if (prev === curr) return;
+    prevSkillUploadPhaseRef.current = curr;
+    if (prev === 'pending') {
+      if (curr === 'allowed') {
+        showMessage('success', t('skills.skillUpload.approvedNotice'));
+      } else if (curr === 'not-allowed') {
+        showMessage('error', t('skills.skillUpload.rejectedNotice'));
+      }
+    }
+  }, [skillUploadState, showMessage, t]);
+
+  // 撤回本人 pending 的 Skill 上传资格申请；撤回后刷新资格状态
+  const handleCancelSkillUploadPermission = useCallback(async () => {
+    if (cancellingUploadPermission) return;
+    if (!skillUploadState || skillUploadState.phase !== 'pending') return;
+    const orderNum = skillUploadState.orderNum;
+    if (!orderNum) return;
+    if (!window.confirm(t('skills.skillUpload.cancelConfirm'))) return;
+    setCancellingUploadPermission(true);
+    setMessage(null);
+    setMessageType(null);
+    try {
+      await cancelSkillUploadRequest(orderNum);
+      showMessage('success', t('skills.skillUpload.cancelSuccess'));
+      await refreshSkillUploadPermission();
+    } catch (error) {
+      showMessage('error', errorToMessage(error) || t('skills.skillUpload.cancelFailed'));
+    } finally {
+      setCancellingUploadPermission(false);
+    }
+  }, [cancellingUploadPermission, refreshSkillUploadPermission, showMessage, setMessage, setMessageType, skillUploadState, t]);
+
+  // 重试查询上传资格（查询失败 unavailable 时用）
+  const handleRetrySkillUploadPermission = useCallback(async () => {
+    if (retryingUploadPermission) return;
+    setRetryingUploadPermission(true);
+    try {
+      await refreshSkillUploadPermission();
+    } finally {
+      setRetryingUploadPermission(false);
+    }
+  }, [retryingUploadPermission, refreshSkillUploadPermission]);
 
   const {
     hubSkills,
@@ -707,6 +834,12 @@ export function SkillPanel({
           message = t('skills.errors.uploadInvalidRequest');
         }
       }
+      if ((status === 401 || status === 403) && code === 'SKILL_UPLOAD_PERMISSION_REQUIRED') {
+        message = t('skills.errors.uploadPermissionRequired');
+      }
+      if (status === 503 && code === 'SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE') {
+        message = t('skills.errors.uploadPermissionCheckUnavailable');
+      }
       return Object.assign(new Error(message), { code, status });
     },
     [t],
@@ -716,7 +849,11 @@ export function SkillPanel({
     async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const uploadResp = await fetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
+      const uploadResp = await fetch('/file-api/skills/upload-temp', {
+        method: 'POST',
+        body: form,
+        headers: buildRuntimeIdentityHeaders(generateUuidV4(), {}),
+      });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
         throw createUploadError(uploadData.code, uploadResp.status);
@@ -726,53 +863,70 @@ export function SkillPanel({
     [createUploadError],
   );
 
-  /** 上传技能 .zip 包：先上传到临时目录，再通过 WebSocket 调用 skills.import_upload */
+  /** 一步上传并安装 .zip Skill 包：POST /file-api/skills/import（multipart body） */
+  const importSkillZip = useCallback(
+    async (file: File, overwrite: boolean): Promise<{
+      success: boolean;
+      detail?: string;
+      message?: string;
+      skill?: { name?: string };
+      code?: string;
+    }> => {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('overwrite', String(overwrite));
+      const ctx = enterpriseContext;
+      const importResp = await fetch('/file-api/skills/import', {
+        method: 'POST',
+        body: form,
+        headers: {
+          ...buildRuntimeIdentityHeaders(generateUuidV4(), {}),
+          ...(ctx?.selected.user_id ? { 'X-User-Id': ctx.selected.user_id } : {}),
+          ...(ctx?.selected.jiuwenclaw_id ? { 'X-Cluster-Id': ctx.selected.jiuwenclaw_id } : {}),
+        },
+        credentials: 'include',
+      });
+      const importData = await importResp.json();
+      if (!importResp.ok) {
+        // 返回错误数据让 handleSkillUpload 处理覆盖确认（SKILL_ALREADY_EXISTS）
+        // 而非直接 throw，否则覆盖逻辑无法触发。
+        return {
+          success: false,
+          code: importData.code,
+          detail: importData.detail || importData.message || importData.error,
+          message: importData.message || importData.error,
+        };
+      }
+      return importData;
+    },
+    [createUploadError, enterpriseContext],
+  );
+
+  /** 上传技能 .zip 包：一步 POST /file-api/skills/import（上传 + 安装在 gateway 本地完成） */
   const handleSkillUpload = useCallback(
     async (file: File) => {
       setActionTarget('import_local');
       setMessage(null);
       setMessageType(null);
       try {
-        // Step 1: 上传文件到服务端临时目录
-        const tempPath = await uploadTempFile(file);
-
-        // Step 2: 通过 WebSocket 调用 skills.import_upload
-        const doImport = async (overwrite: boolean) => {
-          const data = await webRequest<{
-            success: boolean;
-            detail?: string;
-            message?: string;
-            skill?: { name?: string };
-            code?: string;
-          }>(
-            'skills.import_upload',
-            withSession({
-              path: tempPath,
-              overwrite,
-            }),
-          );
-          if (!data.success) {
-            const err = new Error(data.detail || data.message || t('skills.errors.importFailed')) as Error & {
-              code?: string;
-            };
-            err.code = data.code;
-            throw err;
-          }
-          return data;
-        };
-
-        let data;
-        try {
-          data = await doImport(false);
-        } catch (error) {
-          const code = (error as Error & { code?: string }).code;
+        let data = await importSkillZip(file, false);
+        if (!data.success) {
+          const code = data.code;
           if (code === 'SKILL_ALREADY_EXISTS' || code === 'SKILL_IMPORT_OVERWRITE_REQUIRED') {
-            const msg = error instanceof Error ? error.message : String(error);
+            const msg = data.detail || data.message || t('skills.errors.importFailed');
             const overwrite = window.confirm(`${msg}\n${t('skills.overwriteConfirm')}`);
             if (!overwrite) return;
-            data = await doImport(true);
+            data = await importSkillZip(file, true);
+          } else if (code === 'SKILL_UPLOAD_PERMISSION_REQUIRED') {
+            throw Object.assign(new Error(t('skills.errors.uploadPermissionRequired')), {
+              code,
+            });
+          } else if (code === 'SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE') {
+            throw Object.assign(new Error(t('skills.errors.uploadPermissionCheckUnavailable')), {
+              code,
+            });
           } else {
-            throw error;
+            throw new Error(data.detail || data.message || t('skills.errors.importFailed'));
           }
         }
 
@@ -924,16 +1078,39 @@ export function SkillPanel({
       setMessage(null);
       setMessageType(null);
       try {
-        const data = await webRequest<{
-          success: boolean;
-          detail?: string;
-          message?: string;
-        }>(
-          'skills.uninstall',
-          withSession({
-            name: pluginName,
-          }),
-        );
+        let data: { success: boolean; detail?: string; message?: string; code?: string };
+        if (enterpriseEdition) {
+          // 企业版：用户上传的 skill 在 gateway 本地 workspace，WS RPC 经 E2A
+          // 转发到 AgentServer 会找不到；改走 HTTP 端点直接本地卸载。
+          const resp = await fetch('/file-api/skills/uninstall', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...buildRuntimeIdentityHeaders(generateUuidV4(), {}),
+            },
+            body: JSON.stringify({ name: pluginName }),
+            credentials: 'include',
+          });
+          const body = await resp.json();
+          data = {
+            success: resp.ok && body.success !== false,
+            detail: body.detail || body.message || body.error,
+            message: body.message || body.error,
+            code: body.code,
+          };
+        } else {
+          data = await webRequest<{
+            success: boolean;
+            detail?: string;
+            message?: string;
+            code?: string;
+          }>(
+            'skills.uninstall',
+            withSession({
+              name: pluginName,
+            }),
+          );
+        }
         if (!data.success) {
           throw new Error(data.detail || data.message || t('skills.errors.uninstallFailed'));
         }
@@ -947,7 +1124,7 @@ export function SkillPanel({
         setActionTarget(null);
       }
     },
-    [fetchSkills, handleBackToList, t, withSession, showMessage, setMessage, setMessageType, showErrorToast],
+    [enterpriseEdition, fetchSkills, handleBackToList, t, withSession, showMessage, setMessage, setMessageType, showErrorToast],
   );
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
@@ -1496,8 +1673,8 @@ export function SkillPanel({
               className="focus-visible:border-[color:var(--color-control-emphasis)]"
             />
           )}
-          {/* 企业版不提供个人创建入口（上传 / 知识转技能 / 聊天创建） */}
-          {activeTab === 'my' && !enterpriseEdition && (
+          {/* 企业版按上传资格展示创建入口；个人版无该门禁直接展示 */}
+          {activeTab === 'my' && (!enterpriseEdition || (skillUploadState && skillUploadState.phase === 'allowed')) && (
             <CreateSkillMenu
               open={createMenuOpen}
               onToggle={setCreateMenuOpen}
@@ -1514,6 +1691,16 @@ export function SkillPanel({
                 setCreateMenuOpen(false);
                 handleCreateViaChat();
               }}
+            />
+          )}
+          {activeTab === 'my' && enterpriseEdition && skillUploadState && skillUploadState.phase !== 'allowed' && (
+            <SkillUploadPermissionEntry
+              state={skillUploadState}
+              onApply={() => setApplyDialogOpen(true)}
+              onCancel={() => void handleCancelSkillUploadPermission()}
+              cancelling={cancellingUploadPermission}
+              onRetry={() => void handleRetrySkillUploadPermission()}
+              retrying={retryingUploadPermission}
             />
           )}
         </div>
@@ -1567,6 +1754,14 @@ export function SkillPanel({
           actionTarget={actionTarget}
           onUpload={handleSkillUpload}
           onClose={() => setUploadSkillModalOpen(false)}
+        />
+      )}
+      {/* 上传资格申请弹窗（企业版） */}
+      {applyDialogOpen && (
+        <SkillUploadApplyDialog
+          context={skillUploadApplyContext}
+          onSubmitted={() => void refreshSkillUploadPermission()}
+          onClose={() => setApplyDialogOpen(false)}
         />
       )}
       {/* 知识转技能弹窗 */}

@@ -29,6 +29,18 @@ _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
 # Keep the verified-download wire chunk bound aligned with AgentServer.
 _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES = 512 * 1024
 
+# Skill 上传写端点：经 skill_upload_permission 独立门禁（调 manager 授权表），
+# 不走 container file 的 AgentOSRouterClient 认证。与 jiuwenswarm/channels/web/app_web.py
+# 的 _SKILL_UPLOAD_WRITE_PATHS 对齐；企业版前端实际只用 upload-temp，余者保持兼容。
+_SKILL_UPLOAD_HTTP_PATHS = frozenset(
+    {
+        "/file-api/skills/upload-temp",
+        "/file-api/skills/import",
+        "/file-api/skills/create-from-knowledge",
+        "/file-api/skills/uninstall",
+    }
+)
+
 
 class RawFileQuery(BaseModel):
     """Query bundle for ``GET /file-api/raw-file`` (G.FNM.03)."""
@@ -639,7 +651,12 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
 
     @app.middleware("http")
     async def _file_api_access_log(request: Request, call_next):  # type: ignore[no-untyped-def]
-        if not str(request.url.path or "").startswith(prefix):
+        path = str(request.url.path or "")
+        if not path.startswith(prefix):
+            return await call_next(request)
+        # Skill 上传端点走 skill_upload_permission 独立门禁（调 manager 授权表），
+        # 不经 container file 的 AgentOSRouterClient 认证，避免双重 token 校验冲突。
+        if path in _SKILL_UPLOAD_HTTP_PATHS:
             return await call_next(request)
         started = time.monotonic()
         denied = await _authenticate_file_api(request)

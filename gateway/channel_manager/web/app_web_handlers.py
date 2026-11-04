@@ -6578,3 +6578,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # The diagnosis and trajectory HTTP proxies reach the AgentServer through this client.
     channel.diagnosis_agent_client = real_agent_client
     channel.trajectory_agent_client = real_agent_client
+    # Skill 上传 multipart handlers：主仓 server.runtime.skill.* 实现经 entry-point
+    # 装配（gateway 不得 import 主仓 server/channels，R3 不变量）。未声明/加载失败
+    # 时返回 None，写端点由 attach_skill_upload_routes 返回 503，资格门禁仍生效。
+    from gateway.common.skill_upload_handlers import load_skill_upload_handlers
+
+    channel.skill_upload_handlers = load_skill_upload_handlers()
