@@ -852,7 +852,7 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 3. 点击「上传」
 4. 首次使用需要认证（输入 Swarm Skills Hub Token）
 
-> **Token 获取方式**：访问 [Swarm Skills Hub](https://teamskills.openjiuwen.com) 注册账号后，在个人设置页面获取 API Token。
+> **Token 获取方式**：访问 [Swarm Skills Hub](https://swarmskills.openjiuwen.com) 注册账号后，在个人设置页面获取 API Token。
 
 也可以通过命令行发布：
 
@@ -864,7 +864,7 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 /teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
 ```
 
-> **鉴权说明**：发布和删除操作需要提供 `--token`（用户 Token）或 `--system-token`（系统 Token），且只能选择一种。Token 可通过 `/teamskills config --token <TOKEN>` 预配置，避免每次手动输入。Token 获取方式：访问 [Swarm Skills Hub](https://teamskills.openjiuwen.com) 注册账号后在个人设置页面获取。
+> **鉴权说明**：发布和删除操作需要提供 `--token`（用户 Token）或 `--system-token`（系统 Token），且只能选择一种。Token 可通过 `/teamskills config --token <TOKEN>` 预配置，避免每次手动输入。Token 获取方式：访问 [Swarm Skills Hub](https://swarmskills.openjiuwen.com) 注册账号后在个人设置页面获取。
 
 **步骤三：维护更新**
 
@@ -928,7 +928,7 @@ A: 是的。SKILL.md、roles/、workflow.md、bind.md、dependencies.yaml 都是
 
 **Q: Swarm Skills Hub 的默认地址是什么？**
 
-A: 默认地址为 `https://teamskills.openjiuwen.com`，可通过环境变量 `TEAM_SKILLS_HUB_BASE_URL` 覆盖。
+A: 默认地址为 `https://swarmskills.openjiuwen.com`，可通过环境变量 `TEAM_SKILLS_HUB_BASE_URL` 覆盖。
 
 ---
 
