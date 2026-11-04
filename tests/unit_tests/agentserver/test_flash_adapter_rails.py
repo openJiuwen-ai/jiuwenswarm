@@ -401,7 +401,7 @@ async def test_flash_reconcile_unmounts_evolution_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_flash_reconcile_unmounts_cold_started_skill_sleep_when_disabled(monkeypatch):
+async def test_flash_reconcile_keeps_cold_started_skill_sleep_by_default(monkeypatch):
     """A cold-mounted SkillSleep rail remains resident by Flash default."""
     adapter = JiuwenSwarmFlashAdapter()
     adapter._config_base_cache = {
@@ -423,6 +423,76 @@ async def test_flash_reconcile_unmounts_cold_started_skill_sleep_when_disabled(m
     ensure.assert_not_awaited()
     unconfigure.assert_not_awaited()
     reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_unmounts_cold_started_skill_sleep_when_disabled(monkeypatch):
+    """An explicit ``skill_sleep.enabled=false`` must remove a cold-mounted rail."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_base_cache = {
+        "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": False}}},
+    }
+    adapter._config_cache = {}
+    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._skill_sleep_rail = object()
+    ensure = AsyncMock()
+    unconfigure = AsyncMock()
+    unconfigure_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_unconfigure_skill_sleep_rail", unconfigure_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_not_awaited()
+    unconfigure.assert_not_awaited()
+    unconfigure_sleep.assert_awaited_once()
+
+
+def test_flash_review_agent_restores_when_only_flash_evolution_enabled(monkeypatch):
+    """Flash reload must not require the inherited global evolution switch."""
+
+    class _SkillEvolutionRail:
+        def __init__(self):
+            self.registered_agent = None
+
+        def _register_evolution_review_agent(self, agent):
+            self.registered_agent = agent
+
+    class _EvolutionInterruptRail:
+        pass
+
+    class _SubagentRail:
+        pass
+
+    class _Instance:
+        def __init__(self, rails):
+            self.rails = rails
+
+        def find_rails_by_type(self, rail_types):
+            return [rail for rail in self.rails if isinstance(rail, rail_types)]
+
+    rail = _SkillEvolutionRail()
+    interrupt_rail = _EvolutionInterruptRail()
+    subagent_rail = _SubagentRail()
+    instance = _Instance([subagent_rail, interrupt_rail, rail])
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._instance = instance
+    adapter._skill_evolution_rail = rail
+    adapter._config_base_cache = {
+        "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
+        "react": {"evolution": {"enabled": False}},
+    }
+    adapter._config_cache = adapter._config_base_cache["react"]
+
+    refresh_refs = Mock()
+    monkeypatch.setattr(adapter, "_refresh_active_evolution_rail_refs", refresh_refs)
+
+    adapter._sync_active_evolution_review_agent_after_reload()
+
+    assert rail.registered_agent is instance
+    refresh_refs.assert_called_once_with()
 
 
 @pytest.mark.asyncio

@@ -141,6 +141,20 @@ def test_custom_placeholder_defaults_and_unrelated_strings_are_preserved(config_
     assert config_module.resolve_env_vars("${FLASH_TEST_MISSING-false}") == "false"
 
 
+def test_sparse_skill_sleep_section_defaults_to_resident(config_file, monkeypatch):
+    resolved = config_module.resolve_config_env_vars(
+        {
+            "flash": {
+                "evolution": {
+                    "skill_sleep": {"call_threshold": 2},
+                },
+            },
+        }
+    ).get("flash", {}).get("evolution", {})
+    assert resolved.get("skill_sleep", {}).get("enabled") is True
+    assert resolved.get("skill_sleep", {}).get("call_threshold") == 2
+
+
 def test_sandbox_values_survive_sealed_task_overlay_and_child_export(config_file, monkeypatch):
     monkeypatch.setenv(FLASH_ENV, "true")
     monkeypatch.setenv(SKILL_ENV, "false")

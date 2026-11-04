@@ -175,7 +175,7 @@ def _normalize_flash_config(config: dict[str, Any]) -> None:
     for section, env_name, default_value in switches:
         if not isinstance(section, dict):
             continue
-        value = section.get("enabled", False)
+        value = section.get("enabled", default_value)
         if isinstance(value, bool):
             # 旧 YAML / provider 的布尔值仅作回退；复用与模板相同的占位符解析。
             default = str(value).lower()

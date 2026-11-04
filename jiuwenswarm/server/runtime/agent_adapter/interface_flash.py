@@ -1053,6 +1053,29 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         await self._reconcile_flash_evolution_rails()
 
+    def _sync_active_evolution_review_agent_after_reload(self) -> None:
+        """Restore the Flash evolution reviewer after a DeepAgent reload.
+
+        Flash online evolution is gated by the Flash-specific switch, not the
+        inherited global ``react.evolution`` switch. A retained rail must
+        therefore restore its review subagent even when the global switch is
+        disabled.
+        """
+        if self._instance is None or self._skill_evolution_rail is None:
+            return
+        if not _flash_evolution_enabled(self._config_base_cache):
+            return
+
+        register_review_agent = getattr(
+            self._skill_evolution_rail,
+            "_register_evolution_review_agent",
+            None,
+        )
+        if callable(register_review_agent):
+            register_review_agent(self._instance)
+
+        self._refresh_active_evolution_rail_refs()
+
     async def _ensure_flash_context_rail(self) -> None:
         """Attach workspace identity without enabling the full agent profile."""
         async with self._flash_context_rail_lock:
