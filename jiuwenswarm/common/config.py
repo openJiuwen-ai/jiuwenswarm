@@ -2778,7 +2778,27 @@ def migrate_config_from_template(
     return False
 
 
-def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+# permissions 段可由 agent_shield / E2E fixture 注入、且不在包内模板中的键。
+# 启动 cleanup_override_against_template 不得把它们当「废弃字段」剪掉，
+# 否则 shell_allowlist: null/[] 丢失后会回落到 default-30，host_guard 也会被摘掉。
+_PERMISSIONS_OVERRIDE_KEEP_KEYS = frozenset(
+    {
+        "shell_allowlist",
+        "host_guard",
+        "package_builtin_rules",
+        "agents",
+        "approval_overrides",
+    }
+)
+
+
+def _prune_override_keys(
+    template: dict[str, Any],
+    override: dict[str, Any],
+    depth: int = 0,
+    *,
+    parent_key: str = "",
+) -> dict[str, Any]:
     """递归清理 override 中模板不存在的字段（Remove 规则）。
 
     与 _deep_merge 的 Remove 规则一致，但只做清理不合并模板值。
@@ -2788,14 +2808,18 @@ def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], dep
     result: dict[str, Any] = {}
     for key, over_val in override.items():
         if key not in template:
-            # 模板没有此字段 → 丢弃
+            if parent_key == "permissions" and key in _PERMISSIONS_OVERRIDE_KEEP_KEYS:
+                result[key] = over_val
+            # 模板没有此字段 → 丢弃（permissions 扩展键除外）
             continue
         tmpl_val = template[key]
         if isinstance(tmpl_val, dict) and isinstance(over_val, dict):
             if not tmpl_val:
                 result[key] = over_val
             else:
-                result[key] = _prune_override_keys(tmpl_val, over_val, depth + 1)
+                result[key] = _prune_override_keys(
+                    tmpl_val, over_val, depth + 1, parent_key=key
+                )
         else:
             result[key] = over_val
     return result
