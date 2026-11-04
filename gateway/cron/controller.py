@@ -276,6 +276,18 @@ class CronController:
         return raw_s
 
     @staticmethod
+    def _normalize_project_filter(project_id: Any) -> str:
+        """把项目编号归一到落库口径：空串即默认项目 ``default``。
+
+        写侧入口会把未选项目物化为 ``default``/``default_code``；读侧若仍按空串
+        精确比对，create 成功后紧随的 get/run_now/delete 都会因
+        ``"" != "default"`` 判成 NOT_FOUND。双方都归一，同时兼容 #5713 之前
+        落库为空串的存量任务。
+        """
+        text = str(project_id or "").strip()
+        return text or DEFAULT_PROJECT_ID_WORK
+
+    @staticmethod
     def _matches_list_filter(
         job: Any,
         *,
@@ -289,11 +301,14 @@ class CronController:
         身份空串就是空串，不收成 ``default``（个人版与旧数据一致）。
         ``user_id is None`` 仅表示不按用户筛（内部全量列表）；空串仍严格匹配空用户。
         ``project_id is None`` 表示不按项目筛，定时任务总表和侧边栏要看到每个项目下的任务。
-        空字符串才是默认项目，不收成 ``default``。
+        空字符串与 ``default`` 都表示默认项目（读侧统一归一到 ``default``）。
         """
         if project_id is not None:
-            current_project = str(getattr(job, "project_id", "") or "")
-            if current_project != str(project_id or ""):
+            current_project = CronController._normalize_project_filter(
+                getattr(job, "project_id", "")
+            )
+            wanted_project = CronController._normalize_project_filter(project_id)
+            if current_project != wanted_project:
                 return False
         return CronController._matches_tenant(
             job, user_id=user_id, group_id=group_id, bot_id=bot_id

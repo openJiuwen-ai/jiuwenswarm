@@ -22,7 +22,7 @@ JiuwenSwarm 依据 MIT 许可证复制部分 DSH Trajectory 源码，并且仅�
 
 `../client/TrajectoryToolbar.tsx` 增加 `showScaleControls`，诊断视图可以隐藏时长和 Tokens 开关，同时保留轮次与调用的折叠。
 
-`../client/TrajectoryTimeline.tsx` 接受 `sharedDomain`、`mapTime`、`lockViewport`，以及可选的共享视口。共享时间域即诊断标尺；`mapTime` 在去掉空闲间隔后把色块放到这条标尺上。锁定后，左键拖拽仍用来选取区间。共享视口受控时，滚轮会缩放并平移这一段窗口，所有泳道一起移动。
+`../client/TrajectoryTimeline.tsx` 接受 `sharedDomain`、`mapTime`、`lockViewport`，以及可选的共享视口。共享时间域即诊断标尺；`mapTime` 在去掉空闲间隔后把色块放到这条标尺上。锁定后，左键拖拽仍用来选取区间（显示层仍会把迟到的 prep 滑到模型回复前；region 刷选按拖拽原样提交，不垫最小宽度）。共享视口受控时，滚轮会缩放并平移这一段窗口，所有泳道一起移动。
 
 `../client/TrajectoryExplorer.tsx` 是 JiuwenSwarm 对这些副本的自有组装。为支持轨迹诊断，它新增可选 props：`highlightStepKeys`、`onTimelineSelectionChange`、`clearSelectionToken`、`timelineRange`、`onTimelineRangeChange`、`sharedTimeDomain`、`mapSharedTime`、`lockTimelineViewport`、`sharedViewport` 与 `onSharedViewportChange`；它们强调时间轴片段，并让各泳道共用一段墙钟选区，不改变源自 DSH 的列表。`lockTimelineViewport` 仅在进入诊断选区时打开，浏览/缩放阶段仍与时长概览一样用手型光标拖拽平移。
 

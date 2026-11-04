@@ -11,13 +11,17 @@ AgentOS can boot without a live registry process.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+
+from gateway.telemetry import current_request_trace, inject_request_headers, record_cleanup_result, trace_operation
 
 from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
@@ -373,11 +377,15 @@ class RegistryClient:
         params: dict[str, Any] = {}
         if version is not None and str(version).strip():
             params["version"] = str(version).strip()
-        data = await self._request_json(
-            "GET",
-            f"api/images/{_encode(fw)}/launch-spec",
-            params=params or None,
-        )
+        with (trace_operation("registry.launch_spec", attributes={"http.request.method": "GET"})
+              if current_request_trace() is not None else nullcontext(None)) as operation:
+            headers = inject_request_headers({}) if operation is not None else None
+            data = await self._request_json(
+                "GET",
+                f"api/images/{_encode(fw)}/launch-spec",
+                params=params or None,
+                headers=headers,
+            )
         return LaunchSpec.from_dict(data)
 
     async def list_images(
@@ -454,7 +462,13 @@ class RegistryClient:
             )
         if not self.enabled:
             return InstanceRecord.from_dict({**body, "status": "运行", "dataset": "default"})
-        data = await self._request_json("POST", "api/instances", json=body)
+        with (trace_operation("registry.register", attributes={"http.request.method": "POST"})
+              if current_request_trace() is not None else nullcontext(None)) as operation:
+            headers = inject_request_headers({}) if operation is not None else None
+            data = await self._request_json(
+                "POST", "api/instances", json=body,
+                headers=headers,
+            )
         return InstanceRecord.from_dict(data)
 
     async def update_instance(
@@ -491,11 +505,15 @@ class RegistryClient:
             return InstanceRecord.from_dict(
                 {"service_id": sid, **body, "status": body.get("status") or "运行"}
             )
-        data = await self._request_json(
-            "PATCH",
-            f"api/instances/{_encode(sid)}",
-            json=body,
-        )
+        with (trace_operation("registry.register", attributes={"http.request.method": "PATCH"})
+              if current_request_trace() is not None else nullcontext(None)) as operation:
+            headers = inject_request_headers({}) if operation is not None else None
+            data = await self._request_json(
+                "PATCH",
+                f"api/instances/{_encode(sid)}",
+                json=body,
+                headers=headers,
+            )
         return InstanceRecord.from_dict(data)
 
     async def list_instances(
@@ -570,29 +588,71 @@ class RegistryClient:
             )
         expected = str(expected_instance_id or "").strip()
         if not self.enabled:
+            record_cleanup_result("registry.unregister", "skipped", reason="disabled")
             return {"service_id": sid, "dataset": "default", "deleted": True}
         params: dict[str, Any] | None = {"instance_id": expected} if expected else None
         try:
-            data = await self._request_json(
-                "DELETE",
-                f"api/instances/{_encode(sid)}",
-                params=params,
+            with (trace_operation("registry.unregister", attributes={"http.request.method": "DELETE"})
+                  if current_request_trace() is not None else nullcontext(None)) as operation:
+                headers = inject_request_headers({}) if operation is not None else None
+                try:
+                    data = await self._request_json(
+                        "DELETE",
+                        f"api/instances/{_encode(sid)}",
+                        params=params,
+                        headers=headers,
+                    )
+                except RegistryNotFoundError:
+                    if operation is not None:
+                        operation.record_outcome("skipped", reason="not_found")
+                    record_cleanup_result("registry.unregister", "skipped", reason="not_found")
+                    return {"service_id": sid, "deleted": False}
+                except RegistryConflictError:
+                    if operation is not None:
+                        operation.record_outcome("skipped", reason="instance_id_mismatch")
+                    record_cleanup_result("registry.unregister", "skipped", reason="instance_id_mismatch")
+                    return {
+                        "service_id": sid,
+                        "deleted": False,
+                        "reason": "instance_id_mismatch",
+                    }
+                if not isinstance(data, dict):
+                    if operation is not None:
+                        operation.record_outcome("skipped", reason="unconfirmed")
+                    record_cleanup_result("registry.unregister", "skipped", reason="unconfirmed")
+                    return {"service_id": sid, "deleted": True}
+                if data.get("deleted") is False:
+                    response_reason = data.get("reason")
+                    if response_reason in ("not_found", "instance_id_mismatch"):
+                        reason = response_reason
+                    else:
+                        reason = "instance_id_mismatch" if expected and not response_reason else "not_deleted"
+                    if operation is not None:
+                        operation.record_outcome("skipped", reason=reason)
+                    record_cleanup_result("registry.unregister", "skipped", reason=reason)
+                elif data.get("deleted") is True:
+                    record_cleanup_result("registry.unregister", "success", reason="removed")
+                else:
+                    if operation is not None:
+                        operation.record_outcome("skipped", reason="unconfirmed")
+                    record_cleanup_result("registry.unregister", "skipped", reason="unconfirmed")
+                if expected and data.get("deleted") is False and data.get("reason"):
+                    return data
+                if expected and data.get("deleted") is False:
+                    return {**data, "reason": data.get("reason") or "instance_id_mismatch"}
+                return data
+        except asyncio.CancelledError:
+            record_cleanup_result("registry.unregister", "cancelled", reason="cancelled")
+            raise
+        except Exception as exc:
+            cause = exc.__cause__
+            outcome = (
+                "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException))
+                or isinstance(cause, httpx.TimeoutException)
+                else "failed"
             )
-        except RegistryNotFoundError:
-            return {"service_id": sid, "deleted": False}
-        except RegistryConflictError:
-            return {
-                "service_id": sid,
-                "deleted": False,
-                "reason": "instance_id_mismatch",
-            }
-        if not isinstance(data, dict):
-            return {"service_id": sid, "deleted": True}
-        if expected and data.get("deleted") is False and data.get("reason"):
-            return data
-        if expected and data.get("deleted") is False:
-            return {**data, "reason": data.get("reason") or "instance_id_mismatch"}
-        return data
+            record_cleanup_result("registry.unregister", outcome, reason=type(exc).__name__)
+            raise
 
     # ── Compatibility helpers used by AgentOSRouterClient ─────────────────
 
@@ -784,6 +844,8 @@ class RegistryClient:
             return
         if self.enabled:
             await self.unregister_instance(service_id)
+        else:
+            record_cleanup_result("registry.unregister", "skipped", reason="disabled")
 
     @staticmethod
     def _instance_record_from_agent(info: AgentInfo) -> InstanceRecord:
@@ -850,12 +912,24 @@ class RegistryClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         expect_list: bool = False,
+        headers: dict[str, str] | None = None,
     ) -> Any:
         client = await self._get_http()
         try:
-            resp = await client.request(method, path, json=json, params=params)
+            if headers is None:
+                resp = await client.request(method, path, json=json, params=params)
+            else:
+                resp = await client.request(method, path, json=json, params=params, headers=headers)
         except httpx.HTTPError as exc:
+            if headers is not None and isinstance(exc, httpx.TimeoutException):
+                operation = current_request_trace()
+                if operation is not None:
+                    operation.record_outcome("timeout", reason="http_timeout")
             raise RegistryConnectionError(f"{type(exc).__name__}: {exc}") from exc
+        if headers is not None:
+            operation = current_request_trace()
+            if operation is not None:
+                operation.set_attribute("http.response.status_code", resp.status_code)
         if resp.status_code >= 400:
             raise _wrap_http_error(resp)
         if resp.status_code == 204 or not resp.content:

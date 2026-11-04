@@ -22,15 +22,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
 from gateway.common.request_identity import apply_routing_metadata
+from gateway.telemetry import bind_request_trace, current_request_trace, ensure_request_trace, start_request_trace
 from gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
@@ -96,6 +99,49 @@ def is_legacy_shared_directory_client(agent_client: Any) -> bool:
     return isinstance(agent_client, WebSocketAgentServerClient)
 
 
+@contextmanager
+def _bind_proxy_request_trace(
+    channel: Any, ws: Any, request_id: str, method: str,
+    session_id: str | None, user_id: str | None,
+):
+    """Reuse the incoming user operation, or own a standalone proxy operation."""
+    owned = False
+
+    def start():
+        nonlocal owned
+        operation = start_request_trace(
+            request_id, method, channel=channel.channel_id, connection_id=str(id(ws)),
+            session_id=session_id or "", user_id=user_id or "",
+        )
+        if operation is not None:
+            track = getattr(channel, "_track_request_trace", None)
+            if track is not None and not track(ws, operation):
+                operation.finish("incomplete", reason="capacity")
+                return None
+            owned = True
+        return operation
+
+    operation = ensure_request_trace(request_id, channel.channel_id, start=start)
+    if operation is not None:
+        operation.set_attribute("is_stream", False)
+    with (bind_request_trace(operation)
+          if operation is not None or current_request_trace() is not None else nullcontext()):
+        try:
+            yield operation
+        except asyncio.CancelledError:
+            if operation is not None:
+                operation.record_outcome("cancelled", reason="cancelled")
+            raise
+        except BaseException as exc:
+            if operation is not None:
+                operation.record_outcome("timeout" if isinstance(exc, TimeoutError) else "failed",
+                                         reason="proxy_exception")
+            raise
+        finally:
+            if owned:
+                operation.complete()
+
+
 async def proxy_unary_request(
     *,
     channel: Any,
@@ -137,103 +183,114 @@ async def proxy_unary_request(
     Returns:
         True 表示已向通道回写响应（调用方无需再 send_response）。
     """
-    # Some compatible/extension clients do not expose ``server_ready``.  They
-    # remain callable (and may apply their own timeout), so only an explicit
-    # False denotes an unavailable transport here.
-    if agent_client is None or getattr(agent_client, "server_ready", True) is False:
-        await channel.send_response(
-            ws,
-            req_id,
-            ok=False,
-            error="AgentServer is unavailable",
-            code=SERVICE_UNAVAILABLE_CODE,
-        )
-        return True
+    with _bind_proxy_request_trace(
+        channel, ws, req_id, req_method.value, session_id, user_id,
+    ) as operation:
+        # Some compatible/extension clients do not expose ``server_ready``.  They
+        # remain callable (and may apply their own timeout), so only an explicit
+        # False denotes an unavailable transport here.
+        if agent_client is None or getattr(agent_client, "server_ready", True) is False:
+            if operation is not None:
+                operation.record_outcome("failed", reason="agent_unavailable")
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="AgentServer is unavailable",
+                code=SERVICE_UNAVAILABLE_CODE,
+            )
+            return True
 
-    proxy_params = dict(params or {})
-    for key in drop_params:
-        proxy_params.pop(key, None)
-    if extra_params:
-        proxy_params.update(extra_params)
-    # user_id 以独立参数为准（经 envelope.user_id 承载，路由/观测唯一权威）；
-    # 独立 user_id 非空时移除 extra_params 中重复的 user_id，避免 params 双份
-    # 导致后续适配器遍历 params 时意外吸入用户身份字段。
-    if user_id:
-        proxy_params.pop("user_id", None)
+        proxy_params = dict(params or {})
+        for key in drop_params:
+            proxy_params.pop(key, None)
+        if extra_params:
+            proxy_params.update(extra_params)
+        # user_id 以独立参数为准（经 envelope.user_id 承载，路由/观测唯一权威）；
+        # 独立 user_id 非空时移除 extra_params 中重复的 user_id，避免 params 双份
+        # 导致后续适配器遍历 params 时意外吸入用户身份字段。
+        if user_id:
+            proxy_params.pop("user_id", None)
 
-    # An empty app_id from a hand-crafted connection URL must resolve the
-    # same way as cron creation and execution (app_web_handlers), so the
-    # restore request matches the session's actual execution identity.
-    ws_app_id = getattr(ws, "_jiuwen_app_id", None)
-    env = e2a_from_agent_fields(
-        request_id=req_id,
-        channel_id=channel.channel_id,
-        session_id=session_id,
-        req_method=req_method,
-        params=proxy_params,
-        is_stream=False,
-        timestamp=time.time(),
-        user_id=user_id or None,
-        metadata=apply_routing_metadata(
-            {"app_id": str(ws_app_id) or "default"}
-            if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
-            getattr(ws, "_web_routing", None),
-        ),
-    )
-    try:
-        response = await send_agent_request_with_timeout(
-            agent_client,
-            env,
-            label=f"{label} {req_method.value}",
-            timeout_seconds=timeout_seconds,
+        # An empty app_id from a hand-crafted connection URL must resolve the
+        # same way as cron creation and execution (app_web_handlers), so the
+        # restore request matches the session's actual execution identity.
+        ws_app_id = getattr(ws, "_jiuwen_app_id", None)
+        env = e2a_from_agent_fields(
+            request_id=req_id,
+            channel_id=channel.channel_id,
+            session_id=session_id,
+            req_method=req_method,
+            params=proxy_params,
+            is_stream=False,
+            timestamp=time.time(),
+            user_id=user_id or None,
+            metadata=apply_routing_metadata(
+                {"app_id": str(ws_app_id) or "default"}
+                if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
+                getattr(ws, "_web_routing", None),
+            ),
         )
-    except AgentRequestTimeoutError:
-        await channel.send_response(
-            ws,
-            req_id,
-            ok=False,
-            error=AGENT_SERVER_TIMEOUT_ERROR,
-            code=AGENT_SERVER_TIMEOUT_CODE,
-        )
-        return True
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[%s] %s 转发失败: request_id=%s error=%s",
-            label,
-            req_method.value,
-            req_id,
-            exc,
-        )
-        await channel.send_response(
-            ws,
-            req_id,
-            ok=False,
-            error=str(exc),
-            code=SERVICE_UNAVAILABLE_CODE,
-        )
-        return True
-
-    payload = (
-        dict(response.payload)
-        if isinstance(response.payload, dict)
-        else (response.payload if response.payload is not None else {})
-    )
-    if on_done is not None:
         try:
-            callback_result = on_done(bool(response.ok), payload)
-            if callback_result is not None:
-                await callback_result
-        except Exception as exc:  # noqa: BLE001 - maintenance must not fail the RPC
-            logger.warning("[%s] %s done callback failed: %s", label, req_method.value, exc)
-    await channel.send_response(
-        ws,
-        req_id,
-        ok=bool(response.ok),
-        payload=payload if response.ok or preserve_error_payload else None,
-        error=None if response.ok else str(payload.get("error") or f"{req_method.value} failed"),
-        code=None if response.ok else str(payload.get("code") or default_error_code),
-    )
-    return True
+            response = await send_agent_request_with_timeout(
+                agent_client,
+                env,
+                label=f"{label} {req_method.value}",
+                timeout_seconds=timeout_seconds,
+            )
+        except AgentRequestTimeoutError:
+            if operation is not None:
+                operation.record_outcome("timeout", reason="agent_timeout")
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=AGENT_SERVER_TIMEOUT_ERROR,
+                code=AGENT_SERVER_TIMEOUT_CODE,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if operation is not None:
+                operation.record_outcome("failed", reason="agent_request_failed")
+            logger.warning(
+                "[%s] %s 转发失败: request_id=%s error=%s",
+                label,
+                req_method.value,
+                req_id,
+                exc,
+            )
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(exc),
+                code=SERVICE_UNAVAILABLE_CODE,
+            )
+            return True
+
+        if operation is not None and not response.ok:
+            operation.record_outcome("failed", reason="agent_response")
+        payload = (
+            dict(response.payload)
+            if isinstance(response.payload, dict)
+            else (response.payload if response.payload is not None else {})
+        )
+        if on_done is not None:
+            try:
+                callback_result = on_done(bool(response.ok), payload)
+                if callback_result is not None:
+                    await callback_result
+            except Exception as exc:  # noqa: BLE001 - maintenance must not fail the RPC
+                logger.warning("[%s] %s done callback failed: %s", label, req_method.value, exc)
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=bool(response.ok),
+            payload=payload if response.ok or preserve_error_payload else None,
+            error=None if response.ok else str(payload.get("error") or f"{req_method.value} failed"),
+            code=None if response.ok else str(payload.get("code") or default_error_code),
+        )
+        return True
 
 
 async def fetch_agent_unary(
