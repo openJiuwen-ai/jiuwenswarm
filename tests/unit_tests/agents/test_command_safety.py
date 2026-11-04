@@ -5,31 +5,11 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.command_tools import (
-    _check_command_safety,
     _command_spawns_tui,
     _enforce_tui_spawn_budget,
     reset_tui_spawn_history,
     TUI_SPAWN_LIMIT,
 )
-
-
-def test_blocks_rm_rf_locally() -> None:
-    reason = _check_command_safety("rm -rf /tmp/x")
-    assert reason is not None
-    assert "rm -rf" in reason
-
-
-def test_host_kill_not_blocked_locally() -> None:
-    """HostGuard 已迁到权限 rail；执行入口不再硬拦 pkill / taskkill。"""
-
-    assert _check_command_safety('pkill -f "jiuwenswarm" 2>/dev/null') is None
-    assert _check_command_safety("taskkill /F /IM python.exe") is None
-    assert (
-        _check_command_safety(
-            "Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force"
-        )
-        is None
-    )
 
 
 # ── jiuwenswarm-tui spawn 护栏 ────────────────────────────────

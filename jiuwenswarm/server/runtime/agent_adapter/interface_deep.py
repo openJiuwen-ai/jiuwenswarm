@@ -8002,7 +8002,7 @@ class JiuWenSwarmDeepAdapter:
             resolve_permission_config=resolve_permission_config,
         )
 
-    def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
+    async def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
         # Per-session adapter snapshot survives long-lived runner Task boundaries.
         context = copy.deepcopy(self._current_request_route.get("materials_context"))
         if context is None:
@@ -8018,17 +8018,32 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[DeepResearch] Material permission configuration unavailable")
             permission_config = {}
         enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
-        engine = getattr(getattr(self, "_permission_rail", None), "_engine", None)
+        key = getattr(getattr(self, "_permission_rail", None), "permission_key", None)
         from openjiuwen.harness.security.models import PermissionLevel
+        from agent_shield.tool_permission import get_permission_manager
+
+        manager = get_permission_manager()
         for item in context["files"]:
             if enabled is False:
                 # A disabled permission system intentionally has no PermissionRail.
                 item["read_allowed"] = True
-            elif enabled is not True or engine is None:
+            elif enabled is not True or not key:
                 item["read_allowed"] = False
             else:
-                level, _ = engine.check_tool_permission_directly("read_file", {"file_path": item.get("path", "")})
-                item["read_allowed"] = level == PermissionLevel.ALLOW
+                try:
+                    result = await manager.check_permission(
+                        "read_file", {"file_path": item.get("path", "")}, key
+                    )
+                except Exception:
+                    # 路由身份重建会注销旧 key，并发中的材料求值可能查到已注销
+                    # 的 key；按拒绝处理，避免打断整个 deepresearch 流程。
+                    logger.warning(
+                        "[DeepResearch] Material read permission check failed",
+                        exc_info=True,
+                    )
+                    item["read_allowed"] = False
+                else:
+                    item["read_allowed"] = result.permission == PermissionLevel.ALLOW
         return context
 
     def _get_deepresearch_tool_context(self) -> dict[str, str]:
