@@ -4,8 +4,8 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 类型 | 设计基线；Gateway 装配、`gateway.request`、认证门禁、本地路由、`ops.http.fetch` 已实现；`ui.render`、`ui.store`、`ui.click` 与 `examples/auth_login_demo` 待实现 |
-| 最近一次修订日期 | 2026-11-01 |
+| 类型 | 设计基线；Gateway 装配、`gateway.request`、认证门禁、本地路由、`ops.http.fetch` 已实现；`ui.render`、entry/footer 浏览器交互与 [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 已实现；`ui.store` 尚未接入浏览器 |
+| 最近一次修订日期 | 2026-11-04 |
 | 维护责任 | Gateway Extensions V2 模块维护者；与 AgentServer `extensions_v2` 的契约差异由两侧维护者共同确认 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 详细设计 | [详细架构](extensions-v2-architecture.md)、[特性开发计划](extensions-v2-development-plan.md) |
@@ -46,7 +46,7 @@ Gateway Extensions V2 因此在 Gateway 进程内建立**一套独立的扩展�
 - `ui.render` / `ui.store` / `ui.click` 三个 WebUI 事件与对应 `ops`。
 - `ops.http.fetch`：受白名单约束的出站 HTTP。
 - 共享 `extension_pkgs` 下的包管理：`domain: gateway` 包本地安装/卸载/热重载，`/extension` 指令按归属分流。
-- `examples/auth_login_demo` 示例包。
+- [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 示例包。
 
 ### 1.4 非目标
 
@@ -141,8 +141,8 @@ sequenceDiagram
 ### 3.3 WebUI 链路
 
 - **下行**：包 Handler 调用 `ops.ui.render(request)`，CORE 校验渲染树、分配 revision、登记实例并经 `GatewayTransport` 发送 `webui.render` 帧。
-- **状态**：包 Handler 调用 `ops.ui.store(...)` 写入 `UiStateStore`，CORE 在写入成功后立即下发 `webui.store` 帧；`value=None` 表示撤销。
-- **上行**：浏览器发送 `webui.dispatch` 帧，`WebUIDispatchAdapter` 校验槽位、包与实例后转成 `ui.click` 事件；CORE 检查实例是否活跃。
+- **状态**：UiStateStore 持有 Gateway 进程内状态；浏览器存储通过客户端能力命令写删。ui.store 的浏览器订阅仍是目标设计，当前示例不依赖它。
+- **上行**：浏览器发送 webui.dispatch，BrowserBridge 在 USER 请求策略继续后校验 entry/footer 的当前实例与动作，再触发对应 ui.* 事件；其他目标沿用已有路径。
 
 ### 3.4 完成语义
 
@@ -152,14 +152,14 @@ sequenceDiagram
 | 包可用 | `load_gateway_packages` 返回的 `LoadedPackage` | 该包 Handler 已发布为 USER 层 |
 | 帧被处置 | `gateway.request` 返回 `GatewayRequestOutput` | 路由决定帧去往原生分发、本地应答或直接拒绝 |
 | 界面交付 | `GatewayTransport` 发送成功 | 帧已交给渠道，浏览器是否应用另计 |
-| 认证成立 | 连接范围 `auth.session` 存在 | 门禁放行非白名单方法 |
+| 门禁放行 | 已有门禁检查当前帧 authorization header | Token 有效性仍由 USER 包判定，不以 header 存在代替 Token 校验 |
 
 ## 4. 持续状态与约束
 
 - 包注册、`UiStateStore`、渲染登记均属于当前 Gateway 进程；停机时全部释放。
 - connection 作用域状态在 socket 关闭时清除；session 与 global 作用域由写入方与停机清理。
-- 帧拦截有 5 秒超时，点击事件有 3 秒超时；超时与异常一律 fail-open，帧回到原生路径。
-- 认证只作为连接上的一个事实存在，门禁不实现登录逻辑；登录由 USER 包 Handler 完成并写入 `auth.session`。
+- WebSocket 帧拦截沿用已有 5 秒超时与异常转发行为；HTTP 接入的失败语义见 [S_06](../specs/S_06_local-browser-bridge.md)。
+- 门禁不实现登录逻辑，沿用既有 header 判定。登录、Token 校验与撤销由 USER 示例包完成，不新增 auth.session 协议。
 - 扩展包不得被信任为沙箱代码；`ops.http.fetch` 的白名单为空时拒绝一切出站请求。
 
 ## 5. 落地边界与文档索引

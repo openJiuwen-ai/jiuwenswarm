@@ -8,7 +8,7 @@
 | 编号 / slug | `S_05 / http-fetch` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/handler_ops/http_ops.py` |
 | 设计依据 | [F_06 HTTP 能力与示例包](../features/F_06_http-fetch.md) |
-| 最近一次修订日期 | 2026-11-01 |
+| 最近一次修订日期 | 2026-11-04 |
 | 契约状态 | 已实现；本文维护 `ops.http.fetch` 的对外契约 |
 
 ## 1. 能力契约
@@ -87,25 +87,14 @@
 
 `ops.http.fetch` 只在 Gateway 侧存在；`domain: agent` 的包调用会因命名空间缺失而失败，无法借用 Gateway 的出站能力。
 
-## 6. 示例包契约
+## 6. 与登录示例的关系
 
-`examples/auth_login_demo` 声明 `domain: gateway`，入口 `auth_login_demo/extension.py`，注册两条 `ui.click`：
+[auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 使用包内 SQLite Mock，
+不调用 ops.http.fetch，不依赖远程 mock_auth_service.py、application.gate 或 auth.session。
+早期远程登录服务草案不属于当前有效接口。当前示例契约与验证见 [F_07](../features/F_07_local-login-integration.md)。
 
-| 动作 | 匹配 | 出站 | 成功副作用 |
-| --- | --- | --- | --- |
-| `auth.create` | `{"target.slot_id": "application.gate", "action_id": "auth.create"}` | `POST /v1/users` | `ops.ui.store("auth.session", {token, user_id}, ttl_s=expires_in)` + `ops.ui.render` 成功视图 |
-| `auth.login` | `{"target.slot_id": "application.gate", "action_id": "auth.login"}` | `POST /v1/login` | 同左 |
-
-服务契约（`mock_auth_service.py` 实现同一契约）：
-
-```text
-POST /v1/users   {"username", "password"}
-  → 201 {"user_id", "auth_token", "expires_in"} | 409 {"error": "user_exists"}
-POST /v1/login   {"username", "password"}
-  → 200 {"user_id", "auth_token", "expires_in"} | 401 {"error": "invalid_credentials"}
-```
-
-`UiClickOutput.status` 取值：`created`、`logged_in`、`missing_fields`、`user_exists`、`invalid_credentials`、`unavailable`、`store_failed`、`render_failed`。
+The current login example uses a package-local SQLite mock rather than this outbound HTTP API. The earlier remote
+mock-service sketch is not an active contract; F_07 owns the example's current behavior and verification.
 
 ## 7. 验证索引
 
@@ -121,7 +110,3 @@ POST /v1/login   {"username", "password"}
 | 不读取代理环境变量 | `test_gateway_http_fetch.py::test_client_ignores_proxy_environment` |
 | IPv6 与默认端口条目 | `test_gateway_http_fetch.py::test_ipv6_and_default_port_entries_match` |
 | 传输失败 | `test_gateway_http_fetch.py::test_request_failure_is_reported_as_a_code` |
-| 示例包成功路径 | `test_auth_login_demo.py::test_login_success_stores_the_session_and_repaints` |
-| 示例包失败路径 | `test_auth_login_demo.py::test_create_reports_an_existing_user_and_keeps_the_form`、`test_wrong_password_is_reported_without_storing`、`test_denied_host_is_reported_as_unavailable` |
-| 示例包入参校验 | `test_auth_login_demo.py::test_missing_fields_never_reach_the_auth_service` |
-| 示例包动作范围 | `test_auth_login_demo.py::test_other_actions_fall_through_the_chain` |

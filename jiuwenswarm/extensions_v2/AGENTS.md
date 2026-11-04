@@ -67,6 +67,8 @@
 - [assembly.py](assembly.py)：AgentServer 进程内唯一装配入口，负责 EventBus、管理门面、WebUI 运行时、启动加载与退出顺序。
 - [management/](management/)：包管理门面与本地后端；调用方只依赖 `ExtensionManager`。
 - [webui/](webui/)：WebUI 事件、渲染校验、实例登记、下行传输与上行适配。
+- [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `domain: gateway`，由 Gateway 加载；
+  示例源码集中管理，包的运行宿主由 manifest 决定。
 - [examples/token_weather/](examples/token_weather/)：端到端示例包，验证槽位声明、事件 Handler、运行时渲染树和
   `ui.ready` 恢复；不作为产品内置包。
 
