@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_30 / server-run-command |
 | 归档日期 | 2026-11-04 |
+| 交付 PR | [!119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119) |
 | 关联计划 | [EXTV2-29](../designs/extensions-v2-development-plan.md#extv2-29-server-斜杠命令执行扩展) |
 | 主责规约 | [S_17](../specs/S_17_server-run-command.md) |
 
