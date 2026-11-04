@@ -12,6 +12,11 @@ export const object = (fields: Record<string, WebUIPropRule>, required: string[]
 export const integer = (min = 0): WebUIPropRule => ({ kind: 'number', min, integer: true });
 export const size = token('small', 'medium', 'large', 'sm', 'md', 'lg');
 export const compactSize = token('small', 'medium', 'sm', 'md');
+/** Ant Design preset colors, kept identical to components/theme/interface/presetColors.ts. */
+export const presetColors = [
+  'blue', 'purple', 'cyan', 'green', 'magenta', 'pink', 'red',
+  'orange', 'yellow', 'volcano', 'geekblue', 'lime', 'gold',
+] as const;
 export function prepareSize(props: Record<string, unknown>): Record<string, unknown> {
   const aliases: Readonly<Record<string, string>> = { sm: 'small', md: 'medium', lg: 'large', default: 'medium' };
   const value = props.size;

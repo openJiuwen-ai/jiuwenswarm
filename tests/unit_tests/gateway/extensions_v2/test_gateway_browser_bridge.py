@@ -74,7 +74,7 @@ async def _click_params(runtime, ws, slot):
     )
     await runtime.bus.trigger(Event("ui.render", UiRenderInput(
         target=target,
-        root=RenderNode(component="Button", props={"label": "Apply"}, events={"ui.click": {"id": "apply"}}),
+        root=RenderNode(component="Button", props={"value": "Apply"}, events={"ui.click": {"id": "apply"}}),
     )), SessionContext("gateway:" + connection_id, None, {"connection_id": connection_id}))
     record = runtime.registry.get(target)
     assert record is not None and record.root is not None

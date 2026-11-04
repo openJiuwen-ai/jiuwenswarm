@@ -47,8 +47,8 @@ def _error(state: ProbeState | None) -> RenderNode | None:
         {
             "value": connect.error.message or connect.error.kind,
             "size": "sm",
-            "tone": "danger",
-            "monospace": True,
+            "type": "danger",
+            "code": True,
         },
     )
 
@@ -60,15 +60,15 @@ def _header(state: ProbeState | None, connected: bool) -> RenderNode:
         "Box",
         {"direction": "column", "gap": "none"},
         children=(
-            RenderNode("Text", {"value": f"mcp 名称: {SERVER_NAME}", "size": "md", "weight": "medium"}),
+            RenderNode("Text", {"value": f"mcp 名称: {SERVER_NAME}", "size": "md", "strong": True}),
             RenderNode(
                 "Text",
                 {
                     "value": f"ID: {server_id}",
                     "size": "sm",
-                    "variant": "secondary",
-                    "monospace": True,
-                    "max_lines": 1,
+                    "type": "secondary",
+                    "code": True,
+                    "ellipsis": True,
                 },
             ),
         ),
@@ -80,17 +80,17 @@ def _header(state: ProbeState | None, connected: bool) -> RenderNode:
             _button(
                 "Register (runtime)",
                 ACTION_REGISTER,
-                "secondary" if _registered(state) else "primary",
+                not _registered(state),
                 False,
             ),
             _button(
                 "Connect (mcp.json)",
                 ACTION_CONNECT,
-                "primary" if not connected else "secondary",
+                not connected,
                 False,
             ),
-            _button("Call echo", ACTION_CALL_ECHO, "secondary", not connected),
-            _button("Call info", ACTION_CALL_INFO, "secondary", not connected),
+            _button("Call echo", ACTION_CALL_ECHO, False, not connected),
+            _button("Call info", ACTION_CALL_INFO, False, not connected),
         ),
     )
     return RenderNode(
@@ -100,8 +100,13 @@ def _header(state: ProbeState | None, connected: bool) -> RenderNode:
     )
 
 
-def _button(label: str, action_id: str, variant: str, disabled: bool) -> RenderNode:
-    props: dict[str, object] = {"label": label, "variant": variant, "size": "sm"}
+def _button(label: str, action_id: str, primary: bool, disabled: bool) -> RenderNode:
+    props: dict[str, object] = {
+        "value": label,
+        "type": "primary" if primary else "default",
+        "variant": "solid" if primary else "filled",
+        "size": "sm",
+    }
     if disabled:
         props["disabled"] = True
     return RenderNode(
@@ -117,7 +122,7 @@ def _status(state: ProbeState | None) -> RenderNode:
     connect = state.connect if state is not None else None
     if connect is None:
         value = "connect idle"
-        props: dict[str, object] = {"variant": "secondary"}
+        props: dict[str, object] = {"type": "secondary"}
     else:
         parts = [f"connect {connect.status.value}"]
         if state.register is not None:
@@ -125,8 +130,8 @@ def _status(state: ProbeState | None) -> RenderNode:
         parts.append("runtime" if state.register is not None else "mcp.json")
         parts.append("agent visible" if connect.agent_visible else "agent not bound")
         value = " · ".join(parts)
-        props = {"tone": _status_tone(connect)}
-    props.update({"value": f"接口状态：{value}", "size": "sm", "max_lines": 1})
+        props = {"type": _status_type(connect)}
+    props.update({"value": f"接口状态：{value}", "size": "sm", "ellipsis": True})
     return RenderNode("Text", props)
 
 
@@ -138,9 +143,9 @@ def _register_error(state: ProbeState | None) -> RenderNode | None:
         {
             "value": f"register failed · {state.register_error}",
             "size": "sm",
-            "tone": "danger",
-            "monospace": True,
-            "max_lines": 1,
+            "type": "danger",
+            "code": True,
+            "ellipsis": True,
         },
     )
 
@@ -154,7 +159,7 @@ def _tools(state: ProbeState | None) -> RenderNode:
             {
                 "value": "Connect to load the server tools.",
                 "size": "sm",
-                "variant": "secondary",
+                "type": "secondary",
             },
         )
     rows: list[RenderNode] = [_tool_row("名称", "描述", header=True)]
@@ -167,7 +172,7 @@ def _tools(state: ProbeState | None) -> RenderNode:
         {"direction": "column", "gap": "sm"},
         children=(
             RenderNode(
-                "Text", {"value": "MCP 工具信息", "size": "sm", "weight": "medium"}
+                "Text", {"value": "MCP 工具信息", "size": "sm", "strong": True}
             ),
             table,
         ),
@@ -175,15 +180,15 @@ def _tools(state: ProbeState | None) -> RenderNode:
 
 
 def _tool_row(name: str, description: str, *, header: bool = False) -> RenderNode:
-    name_props: dict[str, object] = {"value": name, "size": "sm", "max_lines": 1}
-    desc_props: dict[str, object] = {"value": description, "size": "sm", "max_lines": 2}
+    name_props: dict[str, object] = {"value": name, "size": "sm", "ellipsis": True}
+    desc_props: dict[str, object] = {"value": description, "size": "sm"}
     if header:
-        name_props["variant"] = "secondary"
-        desc_props["variant"] = "secondary"
+        name_props["type"] = "secondary"
+        desc_props["type"] = "secondary"
     else:
-        name_props["weight"] = "medium"
-        name_props["monospace"] = True
-        desc_props["variant"] = "secondary"
+        name_props["strong"] = True
+        name_props["code"] = True
+        desc_props["type"] = "secondary"
     return RenderNode(
         "Box",
         {"direction": "row", "gap": "sm", "align": "start"},
@@ -207,7 +212,7 @@ def _last_call(state: ProbeState | None) -> RenderNode:
     if call is None:
         return RenderNode(
             "Text",
-            {"value": "No call yet.", "size": "sm", "variant": "secondary"},
+            {"value": "No call yet.", "size": "sm", "type": "secondary"},
         )
     tool = state.last_tool if state is not None and state.last_tool else "unknown"
     header = RenderNode(
@@ -216,17 +221,17 @@ def _last_call(state: ProbeState | None) -> RenderNode:
         children=(
             RenderNode(
                 "Text",
-                {"value": f"Last call : {tool}", "size": "sm", "weight": "medium"},
+                {"value": f"Last call : {tool}", "size": "sm", "strong": True},
             ),
             _tag(call.status.value, _status_color(call.status)),
         ),
     )
     if call.error is not None:
         detail = call.error.message or call.error.kind
-        tone = "danger"
+        text_type = "danger"
     else:
         detail = _render_result(call)
-        tone = "success"
+        text_type = "success"
     return RenderNode(
         "Box",
         {"direction": "column", "gap": "none"},
@@ -237,9 +242,8 @@ def _last_call(state: ProbeState | None) -> RenderNode:
                 {
                     "value": detail,
                     "size": "sm",
-                    "monospace": True,
-                    "tone": tone,
-                    "max_lines": 4,
+                    "code": True,
+                    "type": text_type,
                 },
             ),
         ),
@@ -267,7 +271,7 @@ def _status_color(status: McpStatus) -> str:
     return "error"
 
 
-def _status_tone(connect: McpConnectOutput) -> str:
+def _status_type(connect: McpConnectOutput) -> str:
     if connect.status is McpStatus.OK:
         return "success" if connect.connected else "warning"
     if connect.status in (McpStatus.TIMEOUT, McpStatus.DENIED):

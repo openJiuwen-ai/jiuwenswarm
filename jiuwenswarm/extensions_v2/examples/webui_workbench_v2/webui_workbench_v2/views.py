@@ -37,17 +37,20 @@ SLOTS = (
 )
 
 
-def text(value: str, *, secondary: bool = False, size: str = "md", weight: str = "regular") -> RenderNode:
-    return RenderNode("Text", {
-        "value": value, "size": size, "weight": weight, "variant": "secondary" if secondary else "default",
-    })
+def text(value: str, *, secondary: bool = False, size: str = "md", strong: bool = False) -> RenderNode:
+    props: dict = {"value": value, "size": size}
+    if secondary:
+        props["type"] = "secondary"
+    if strong:
+        props["strong"] = True
+    return RenderNode("Text", props)
 
 
 def button(
     label: str, action: str, *, args: dict | None = None, disabled: bool = False,
-    variant: str = "default", size: str = "md", icon: str | None = None,
+    type: str = "default", size: str = "md", icon: str | None = None,
 ) -> RenderNode:
-    props: dict = {"label": label, "size": size, "variant": variant, "disabled": disabled}
+    props: dict = {"value": label, "size": size, "type": type, "disabled": disabled}
     if icon:
         props["icon"] = icon
     return RenderNode(
@@ -101,43 +104,46 @@ def iframe_page(title: str, src: str) -> RenderNode:
 
 
 def welcome_page() -> RenderNode:
-    """Application-entry welcome card demonstrating Avatar(url=...) and entry close."""
+    """Application-entry welcome card demonstrating Avatar(src=...) and entry close."""
     return RenderNode("Card", {"title": "欢迎使用插件交互工作台 / Welcome to Plugin Workbench"}, children=(
         RenderNode("Box", {
             "direction": "column", "align": "center", "justify": "center", "gap": "md",
         }, children=(
             RenderNode("Avatar", {
-                "url": "/logo.svg", "alt": "欢迎 / Welcome", "size": 64, "shape": "circle",
+                "src": "/logo.svg", "alt": "欢迎 / Welcome", "size": 64, "shape": "circle",
             }),
             text(
                 "欢迎体验 JiuwenSwarm WebUI 插件演示，支持应用级入口槽位与会话级交互槽位。 / "
                 "Welcome to the JiuwenSwarm WebUI plugin demo.",
                 secondary=True,
             ),
-            button("开始使用 / Get started", "workbench.entry.close", variant="primary", size="md"),
+            button("开始使用 / Get started", "workbench.entry.close", type="primary", size="md"),
         )),
     ))
 
 
 def user_menu_view() -> RenderNode:
-    """Avatar trigger with one demo menu item; no real authentication is involved."""
+    """Avatar trigger with profile and sign-out demos; no real authentication is involved."""
     return RenderNode(
         "Dropdown",
         {
-            "items": [{"key": "logout", "label": "退出登录 / Sign out", "danger": True}],
+            "items": [
+                {"key": "profile", "label": "个人资料 / Profile"},
+                {"key": "logout", "label": "退出登录 / Sign out", "danger": True},
+            ],
             "placement": "topLeft",
             "ariaLabel": "用户菜单 / User menu",
         },
         events={"ui.select": {"id": USER_SELECT_ACTION, "args": {}}},
         children=(
-            RenderNode("Avatar", {"url": "/logo.svg", "alt": "用户 / User", "size": 32, "shape": "circle"}),
+            RenderNode("Avatar", {"src": "/logo.svg", "alt": "用户 / User", "size": 32, "shape": "circle"}),
         ),
     )
 
 
 def signed_out_view() -> RenderNode:
     """Signed-out shell that switches back to the user menu."""
-    return button("登录 / Sign in", USER_LOGIN_ACTION, variant="primary")
+    return button("登录 / Sign in", USER_LOGIN_ACTION, type="primary")
 
 
 def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
@@ -194,20 +200,20 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         return RenderNode("Tag", {"children": "工作台 / Workbench", "color": "processing"})
     if slot == "conversation.header.actions":
         return RenderNode("Button", {
-            "label": "刷新工作台 / Refresh workbench", "variant": "ghost", "size": "md",
-            "icon": "refresh", "iconOnly": True,
+            "aria-label": "刷新工作台 / Refresh workbench", "type": "text", "size": "md",
+            "icon": "refresh",
         }, events={"ui.click": {"id": "workbench.refresh", "args": {}}})
     turn = state.turn(instance_key)
     if slot == "conversation.session.content.after":
         usage = RenderNode("Button", {
-            "label": turn.usage_label(), "variant": "ghost", "size": "md", "icon": "database",
+            "value": turn.usage_label(), "type": "text", "size": "md", "icon": "database",
         })
         return column(usage, text(turn.result, secondary=True)) if turn.result_visible else usage
     if slot == "conversation.turn.footer.actions":
         return RenderNode("Box", {
             "direction": "row", "gap": "sm", "align": "center", "wrap": False,
         }, children=(
-            RenderNode("Button", {"label": "👍", "variant": "ghost", "size": "md"}),
+            RenderNode("Button", {"value": "👍", "type": "text", "size": "md"}),
             RenderNode("Dropdown", {
                 "icon": "ellipsis",
                 "ariaLabel": "本轮操作 / Round actions",

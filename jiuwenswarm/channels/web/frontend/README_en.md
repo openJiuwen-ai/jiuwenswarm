@@ -30,9 +30,9 @@ AI coding assistant web UI built with React + TypeScript + Tailwind CSS, with de
 
 #### Right panel pages
 
-- Native buttons form the top page bar. The permanent Tools page cannot be closed; its internal navigation contains the existing tasks, team, artifacts, review, browser, and other native sections. The browser section keeps its original close button; closing hides it and the state persists.
-- Plugin pages appear alongside Tools and can be closed. Closing the active page selects the next plugin page, then the previous plugin page, or Tools when none remain. Closing an inactive page preserves the selection.
-- Closing hides the plugin instance in the current frontend and unmounts its content. It sends no close event to the plugin and deletes no backend data. Updates to the same instance do not reopen it; dismissal lasts until the panel host unmounts or the page reloads. A reopen entry is not provided yet.
+- Tasks, team or subagents, artifacts, review, browser, and plugin pages share one row of tabs.
+- The browser tab keeps its original close button; closing hides it and persists the state per session. Plugin tabs have no host close button and are removed by the plugin through `clear`.
+- Iframe pages fit the panel by default. Select Desktop width to use a width of at least 1280px with horizontal scrolling at the bottom of narrow panels. Reload and open-original-URL actions are available; loading longer than 15 seconds shows a notice without interrupting the page.
 - Focused validation: `npm run test:panel-pages`.
 
 #### 📂 Session Management

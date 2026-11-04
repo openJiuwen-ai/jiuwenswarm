@@ -1,15 +1,10 @@
-import { Avatar } from 'antd';
+import { Avatar, type AvatarProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
 import { useGatewayResource } from '../../../client/GatewayResources.tsx';
 
 export function WebUIAvatar({ node, appearance }: WebUIAdapterProps) {
-  const p = node.props as {
-    url: string;
-    alt?: string;
-    size?: 'small' | 'medium' | 'default' | 'large' | number;
-    shape?: 'circle' | 'square';
-  };
-  const src = useGatewayResource(p.url);
+  const p = node.props as Pick<AvatarProps, 'alt' | 'size' | 'shape'> & { src: string };
+  const src = useGatewayResource(p.src);
   return (
     <Avatar
       data-testid="webui-avatar"

@@ -43,6 +43,11 @@ The promotional area is hidden below 992px. Images and the gradient are package 
 
 ## Flow
 
+Component props follow [S_17](../../docs/specs/S_17_webui-component-props.md): Button uses value,
+Text uses type / strong, and Avatar uses src. Form.Item.label and menu item labels remain valid.
+After changing repository sources, rebuild the ZIP and update the installed copy; reload alone does not copy sources.
+Restart the test Gateway after changing Python page modules. Preserve the installed data/accounts.sqlite3 when updating.
+
 A rejected business request causes the plugin to render the entry tree. Form validation is local and successful
 confirmation reuses ui.click. Registration atomically creates an account and its first session, then signs in immediately.
 Invalid fields or duplicate usernames keep the registration view without queuing browser credentials. Successful registration or sign-in queues

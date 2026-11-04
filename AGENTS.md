@@ -52,3 +52,7 @@ PR 面向 `develop`，遵循 `.gitcode/` 模板，说明问题、变更与测试
 ## 配置与智能体协作
 
 始终使用中文交流。修改子目录前阅读其中的 `AGENTS.md`；同时遵守 `AGENTS.local.md` 的本地约束。不要提交 API 密钥、真实 `.env`、运行日志或覆盖率产物；配置模板放入 `resources/`。涉及文件与进程操作时兼顾 Windows、macOS 和 Linux。
+
+WebUI 组件属性以 [S_17 WebUI 组件 Props 权威规约](jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md) 为唯一规范。
+涉及组件、props、默认值、children 或事件数据时，先修改该文件，再按其功能影响清单同步插件侧、后端、前端、示例和相关验证。
+用户要求修改该权威文件时，默认包含受影响功能的同步；用户明确只改文档时除外。不得让规则表、适配器或 Ant Design 文档独立定义另一套接口。
