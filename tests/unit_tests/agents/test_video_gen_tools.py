@@ -4,13 +4,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from pathlib import Path
 from typing import Any, Callable
+from unittest.mock import patch
 
 import httpx
 import pytest
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    RootDecisionContext,
+    bind_root_decision_context,
+    reset_root_decision_context,
+)
+from jiuwenswarm.agents.harness.common.tools import send_file_to_user as sfu
 from jiuwenswarm.agents.harness.common.tools import video_gen_tools as vg
 
 # The @tool decorator wraps each function in a LocalFunction; ``._func`` is the
@@ -507,3 +516,592 @@ def test_vllm_omni_is_configured_without_key_or_model(monkeypatch: pytest.Monkey
     assert vg.video_gen_configured() is False
     monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "vllm-omni")
     assert vg.video_gen_configured() is True
+
+
+# ---------------------------------------------------------------------------
+# Background completion watcher (GitCode #5806)
+#
+# generate_video/check_video_status poll synchronously for a bounded window
+# and, if the job is still running, tell the agent to call check_video_status
+# again. In Team/multi-agent mode the round's stream can end before anyone
+# does that, so the finished video was never reaching the user. These tests
+# cover the background watcher that keeps polling after the bounded window
+# gives up and pushes the outcome into the chat once the job settles.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_watch_registries():
+    vg._WATCHED_PENDING_JOBS.clear()
+    vg._BACKGROUND_WATCH_TASKS.clear()
+    yield
+    vg._WATCHED_PENDING_JOBS.clear()
+    vg._BACKGROUND_WATCH_TASKS.clear()
+
+
+def _root_context(
+    session_id: str = "sess-1", request_id: str = "req-1", channel_id: str = "web"
+) -> RootDecisionContext:
+    return RootDecisionContext(
+        session_id=session_id, request_id=request_id, channel_id=channel_id, trusted_turns=(),
+    )
+
+
+@contextlib.contextmanager
+def _bound_root_context(context: RootDecisionContext):
+    token = bind_root_decision_context(context)
+    try:
+        yield
+    finally:
+        reset_root_decision_context(token)
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        (
+            "Video job job-abc submitted and still pending after 10s - generation can take "
+            "several minutes. Call check_video_status with job_id=job-abc to check progress "
+            "and download it once ready.",
+            "job-abc",
+        ),
+        ("Video job job-xyz is still running.", "job-xyz"),
+        (
+            "Video job job-xyz is still running. Call check_video_status again to keep waiting "
+            "(do not use shell sleep).",
+            "job-xyz",
+        ),
+        (
+            "Video job job-unreachable is still unconfirmed - the provider could not be reached "
+            "(ConnectError()). Call check_video_status again to keep waiting (do not use shell sleep).",
+            "job-unreachable",
+        ),
+        ("Video generated successfully!\nSaved to: /tmp/v.mp4", None),
+        ("[ERROR]: video job job-err ended with status failed: boom", None),
+        ("", None),
+    ],
+)
+def test_extract_pending_job_id(message: str, expected: str | None):
+    assert vg._extract_pending_job_id(message) == expected
+
+
+def test_schedule_completion_watch_noop_without_root_context():
+    vg._schedule_completion_watch_if_pending("Video job job-1 is still running.", None)
+    assert vg._WATCHED_PENDING_JOBS == set()
+    assert vg._BACKGROUND_WATCH_TASKS == set()
+
+
+def test_schedule_completion_watch_noop_on_terminal_message():
+    with _bound_root_context(_root_context()):
+        vg._schedule_completion_watch_if_pending("Video generated successfully!\nSaved to: /tmp/v.mp4", None)
+    assert vg._WATCHED_PENDING_JOBS == set()
+    assert vg._BACKGROUND_WATCH_TASKS == set()
+
+
+@pytest.mark.asyncio
+async def test_schedule_completion_watch_dedupes_same_job_id(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    async def fake_watch(job_id: str, save_dir: str | None, context: RootDecisionContext) -> None:
+        calls.append(job_id)
+        await asyncio.sleep(10)  # never resolves within the test
+
+    monkeypatch.setattr(vg, "_watch_until_settled", fake_watch)
+    with _bound_root_context(_root_context()):
+        vg._schedule_completion_watch_if_pending("Video job job-dup is still running.", None)
+        vg._schedule_completion_watch_if_pending("Video job job-dup is still running.", None)
+        # Scheduling a task only queues it on the loop; yield once so it
+        # actually starts running (up to its first await) before asserting.
+        await asyncio.sleep(0)
+
+    assert calls == ["job-dup"]
+    assert len(vg._BACKGROUND_WATCH_TASKS) == 1
+    for task in vg._BACKGROUND_WATCH_TASKS:
+        task.cancel()
+    await asyncio.gather(*vg._BACKGROUND_WATCH_TASKS, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_generate_video_pending_job_delivers_file_via_watcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A job still pending when generate_video's bounded poll window gives up
+    must still reach the chat once it finishes - nobody is guaranteed to call
+    check_video_status again on its behalf once the turn (or, in Team mode,
+    the whole round) has already ended."""
+    _set_video_model_config(monkeypatch)
+    _speed_up_polling(monkeypatch)
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    video_bytes = b"fake-mp4-bytes"
+    poll_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/videos" and request.method == "POST":
+            return httpx.Response(200, json={"id": "job-watch", "status": "pending"})
+        if request.url.path == "/api/v1/videos/job-watch":
+            poll_count["n"] += 1
+            # First poll (inside generate_video's own bounded wait) is still
+            # pending; the background watcher's own poll finds it done.
+            status = "pending" if poll_count["n"] == 1 else "completed"
+            return httpx.Response(200, json={"id": "job-watch", "status": status})
+        if request.url.path == "/api/v1/videos/job-watch/content":
+            return httpx.Response(200, content=video_bytes)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), _bound_root_context(_root_context(session_id="sess-watch", request_id="req-watch")):
+        result = await generate_video(prompt="a cyclist riding through a park", save_dir=str(tmp_path))
+        assert "job-watch" in result
+        assert "check_video_status" in result
+
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert "job-watch" not in vg._WATCHED_PENDING_JOBS
+    assert len(pushed) == 1
+    assert pushed[0]["payload"]["event_type"] == "chat.file"
+    assert pushed[0]["session_id"] == "sess-watch"
+    files = pushed[0]["payload"]["files"]
+    assert files[0]["name"] == "video_job-watch.mp4"
+    saved_path = tmp_path / "video_job-watch.mp4"
+    assert saved_path.read_bytes() == video_bytes
+
+
+@pytest.mark.asyncio
+async def test_generate_video_pending_job_pushes_error_when_it_eventually_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A job that settles into a failure state after the bounded window also
+    must not vanish silently - the user otherwise sees nothing at all."""
+    _set_video_model_config(monkeypatch)
+    _speed_up_polling(monkeypatch)
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    poll_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/videos" and request.method == "POST":
+            return httpx.Response(200, json={"id": "job-fail", "status": "pending"})
+        if request.url.path == "/api/v1/videos/job-fail":
+            poll_count["n"] += 1
+            if poll_count["n"] == 1:
+                return httpx.Response(200, json={"id": "job-fail", "status": "pending"})
+            return httpx.Response(
+                200, json={"id": "job-fail", "status": "failed", "error": "model overloaded"}
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    monkeypatch.setattr(vg, "send_runtime_push", _push)
+
+    with _bound_root_context(_root_context(session_id="sess-fail", request_id="req-fail")):
+        result = await generate_video(prompt="a puppy running")
+        assert "job-fail" in result
+
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert len(pushed) == 1
+    payload = pushed[0]["payload"]
+    assert payload["event_type"] == "chat.final"
+    assert payload["final_mode"] == vg.FINAL_MODE_APPEND
+    assert "job-fail" in payload["content"]
+    assert "model overloaded" in payload["content"]
+    assert pushed[0]["session_id"] == "sess-fail"
+
+
+@pytest.mark.asyncio
+async def test_watcher_gives_up_after_max_watch_seconds(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(vg, "_WATCH_MAX_SECONDS", 0.02)
+
+    async def _always_pending(job_id: str, save_dir: str | None = None) -> str:
+        return f"Video job {job_id} is still running."
+
+    monkeypatch.setattr(vg, "_check_video_status_impl", _always_pending)
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    monkeypatch.setattr(vg, "send_runtime_push", _push)
+
+    with _bound_root_context(_root_context()):
+        vg._schedule_completion_watch_if_pending("Video job job-stuck is still running.", None)
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert pushed == []
+    assert "job-stuck" not in vg._WATCHED_PENDING_JOBS
+
+
+@pytest.mark.asyncio
+async def test_check_video_status_also_arms_watcher_when_still_pending(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The agent re-calling check_video_status (instead of generate_video)
+    after a first timeout must also arm the watcher - this is the path an
+    agent actually takes per generate_video's own returned instructions."""
+    _set_video_model_config(monkeypatch)
+    check_video_status = vg.check_video_status._func
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "job-check", "status": "running"})
+
+    _patch_async_client(monkeypatch, handler)
+
+    with _bound_root_context(_root_context()):
+        result = await check_video_status("job-check")
+        assert "job-check" in result
+        assert "is still running" in result
+        assert "job-check" in vg._WATCHED_PENDING_JOBS
+
+    for task in vg._BACKGROUND_WATCH_TASKS:
+        task.cancel()
+    await asyncio.gather(*vg._BACKGROUND_WATCH_TASKS, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_check_video_status_transient_network_error_stays_pending(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A transient provider-reachability blip (ConnectError etc.) on the
+    legacy/direct API path must not look like a terminal failure to
+    _extract_pending_job_id - otherwise _watch_until_settled treats a
+    still-running job as settled, pushes a bogus failure notice, and gives
+    up instead of retrying."""
+    _set_video_model_config(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _patch_async_client(monkeypatch, handler)
+
+    with _bound_root_context(_root_context()):
+        result = await vg._check_video_status_impl("job-flaky")
+
+    assert "job-flaky" in result
+    assert "is still unconfirmed" in result
+    assert vg._extract_pending_job_id(result) == "job-flaky"
+    assert "job-flaky" in vg._WATCHED_PENDING_JOBS
+
+    for task in vg._BACKGROUND_WATCH_TASKS:
+        task.cancel()
+    await asyncio.gather(*vg._BACKGROUND_WATCH_TASKS, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_watcher_survives_transient_poll_error_and_still_delivers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A single flaky poll mid-watch must not abort delivery: the watcher
+    keeps retrying past a transient network error and still delivers the
+    file once the job actually completes."""
+    _set_video_model_config(monkeypatch)
+    _speed_up_polling(monkeypatch)
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    video_bytes = b"fake-mp4-bytes"
+    poll_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/videos" and request.method == "POST":
+            return httpx.Response(200, json={"id": "job-flaky2", "status": "pending"})
+        if request.url.path == "/api/v1/videos/job-flaky2":
+            poll_count["n"] += 1
+            if poll_count["n"] == 1:
+                return httpx.Response(200, json={"id": "job-flaky2", "status": "pending"})
+            if poll_count["n"] == 2:
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(200, json={"id": "job-flaky2", "status": "completed"})
+        if request.url.path == "/api/v1/videos/job-flaky2/content":
+            return httpx.Response(200, content=video_bytes)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), _bound_root_context(_root_context(session_id="sess-flaky", request_id="req-flaky")):
+        result = await generate_video(prompt="a cyclist riding through a park", save_dir=str(tmp_path))
+        assert "job-flaky2" in result
+
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert "job-flaky2" not in vg._WATCHED_PENDING_JOBS
+    assert len(pushed) == 1
+    assert pushed[0]["payload"]["event_type"] == "chat.file"
+    saved_path = tmp_path / "video_job-flaky2.mp4"
+    assert saved_path.read_bytes() == video_bytes
+
+
+# ---------------------------------------------------------------------------
+# _is_terminal_job_result (code review on 07a49414f: "not a recognized
+# still-pending message" is not the same as "settled" - every other
+# transient/intermediate error shape must also keep the watcher retrying)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("Video generated successfully!\nSaved to: /tmp/v.mp4", True),
+        ("[ERROR]: video job job-err ended with status failed: boom", True),
+        ("[ERROR]: video job job-err ended with status cancelled: no detail", True),
+        ("Video job job-abc is still running.", False),
+        (
+            "Video job job-abc submitted and still pending after 10s - generation can take "
+            "several minutes. Call check_video_status with job_id=job-abc to check progress "
+            "and download it once ready.",
+            False,
+        ),
+        ("[ERROR]: checking video job job-x failed: 503 service unavailable", False),
+        ("[ERROR]: checking video job job-x returned invalid JSON: ValueError('bad')", False),
+        ("[ERROR]: video job job-x completed but downloading content failed: 500", False),
+        (
+            "[ERROR]: video generation is not configured - set the Video processing "
+            "API key, API URL, and model name in configuration settings.",
+            False,
+        ),
+        ("[ERROR]: job_id is required.", False),
+        ("", False),
+    ],
+)
+def test_is_terminal_job_result(message: str, expected: bool):
+    assert vg._is_terminal_job_result(message) is expected
+
+
+@pytest.mark.asyncio
+async def test_watcher_survives_non_200_poll_response_and_still_delivers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A single 5xx poll response mid-watch (a plain non-200 HTTP response,
+    not an httpx exception) must not look terminal either - before this fix
+    _watch_until_settled used "not a still-pending message" as its only
+    terminal signal, so this would have pushed a bogus failure and stopped
+    watching before the job actually finished."""
+    _set_video_model_config(monkeypatch)
+    _speed_up_polling(monkeypatch)
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    video_bytes = b"fake-mp4-bytes"
+    poll_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/videos" and request.method == "POST":
+            return httpx.Response(200, json={"id": "job-5xx", "status": "pending"})
+        if request.url.path == "/api/v1/videos/job-5xx":
+            poll_count["n"] += 1
+            if poll_count["n"] == 1:
+                return httpx.Response(200, json={"id": "job-5xx", "status": "pending"})
+            if poll_count["n"] == 2:
+                return httpx.Response(503, text="service unavailable")
+            return httpx.Response(200, json={"id": "job-5xx", "status": "completed"})
+        if request.url.path == "/api/v1/videos/job-5xx/content":
+            return httpx.Response(200, content=video_bytes)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), _bound_root_context(_root_context(session_id="sess-5xx", request_id="req-5xx")):
+        result = await generate_video(prompt="a cyclist riding through a park", save_dir=str(tmp_path))
+        assert "job-5xx" in result
+
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert "job-5xx" not in vg._WATCHED_PENDING_JOBS
+    assert len(pushed) == 1
+    assert pushed[0]["payload"]["event_type"] == "chat.file"
+    saved_path = tmp_path / "video_job-5xx.mp4"
+    assert saved_path.read_bytes() == video_bytes
+
+
+@pytest.mark.asyncio
+async def test_watcher_survives_download_failure_and_retries_until_it_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The job can report status=completed while the content download itself
+    transiently fails (e.g. a momentary CDN hiccup) - that must not be
+    treated as a final failure either; the watcher keeps polling (which
+    re-attempts the download on the next completed poll) until it actually
+    succeeds, instead of declaring the real video lost."""
+    _set_video_model_config(monkeypatch)
+    _speed_up_polling(monkeypatch)
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    video_bytes = b"fake-mp4-bytes"
+    poll_count = {"n": 0}
+    download_attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/videos" and request.method == "POST":
+            return httpx.Response(200, json={"id": "job-dl", "status": "pending"})
+        if request.url.path == "/api/v1/videos/job-dl":
+            poll_count["n"] += 1
+            if poll_count["n"] == 1:
+                return httpx.Response(200, json={"id": "job-dl", "status": "pending"})
+            return httpx.Response(200, json={"id": "job-dl", "status": "completed"})
+        if request.url.path == "/api/v1/videos/job-dl/content":
+            download_attempts["n"] += 1
+            if download_attempts["n"] == 1:
+                return httpx.Response(500, text="internal error")
+            return httpx.Response(200, content=video_bytes)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), _bound_root_context(_root_context(session_id="sess-dl", request_id="req-dl")):
+        result = await generate_video(prompt="a cyclist riding through a park", save_dir=str(tmp_path))
+        assert "job-dl" in result
+
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert "job-dl" not in vg._WATCHED_PENDING_JOBS
+    assert download_attempts["n"] == 2
+    assert len(pushed) == 1
+    assert pushed[0]["payload"]["event_type"] == "chat.file"
+    saved_path = tmp_path / "video_job-dl.mp4"
+    assert saved_path.read_bytes() == video_bytes
+
+
+# ---------------------------------------------------------------------------
+# _deliver_watch_result must not log/treat a send_file_to_user FAILURE as a
+# successful delivery (code review on 07a49414f: send_file never raises, it
+# returns a Chinese failure string - the exact "no active push host" case
+# this watcher exists for was being logged as "delivered" and otherwise
+# dropped, leaving the user with neither the file nor any notice).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deliver_watch_result_falls_back_when_send_file_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Direct unit check that _deliver_watch_result inspects send_file's
+    return value instead of treating any string back from it as success."""
+    video_path = tmp_path / "video_job-direct.mp4"
+    video_path.write_bytes(b"fake-mp4-bytes")
+    result = f"Video generated successfully!\nSaved to: {video_path}\n(job job-direct - the remote source URL expires 24h after completion, so this local file is now the durable copy.)"
+
+    async def _failing_send_file(self, path, target_channels=None, **_ignored):
+        return "发送文件失败：所有文件均不存在"
+
+    monkeypatch.setattr(sfu.SendFileToolkit, "send_file", _failing_send_file)
+
+    fallback_pushed: list[dict] = []
+
+    async def _fallback_push(message: dict) -> bool:
+        fallback_pushed.append(message)
+        return True
+
+    monkeypatch.setattr(vg, "send_runtime_push", _fallback_push)
+
+    await vg._deliver_watch_result("job-direct", result, _root_context())
+
+    assert len(fallback_pushed) == 1
+    content = fallback_pushed[0]["payload"]["content"]
+    assert "视频已生成" in content
+    assert "发送文件失败" in content
+    assert str(video_path) in content
+
+
+@pytest.mark.asyncio
+async def test_watcher_pushes_text_notice_when_delivery_fails_despite_completed_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Full regression: the job completes and downloads fine, but there's no
+    active Runtime push host for send_file_to_user by the time the watcher
+    fires (the literal "turn/session already ended" scenario). The user must
+    still get a text notice naming the local file, not silence and not a
+    misleading "delivered" log."""
+    _set_video_model_config(monkeypatch)
+    _speed_up_polling(monkeypatch)
+    monkeypatch.setattr(vg, "_WATCH_POLL_INTERVAL_SECONDS", 0.01)
+    video_bytes = b"fake-mp4-bytes"
+    poll_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/videos" and request.method == "POST":
+            return httpx.Response(200, json={"id": "job-nopush", "status": "pending"})
+        if request.url.path == "/api/v1/videos/job-nopush":
+            poll_count["n"] += 1
+            status = "pending" if poll_count["n"] == 1 else "completed"
+            return httpx.Response(200, json={"id": "job-nopush", "status": status})
+        if request.url.path == "/api/v1/videos/job-nopush/content":
+            return httpx.Response(200, content=video_bytes)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _patch_async_client(monkeypatch, handler)
+
+    async def _file_push_unavailable(message: dict) -> bool:
+        return False
+
+    fallback_pushed: list[dict] = []
+
+    async def _fallback_push(message: dict) -> bool:
+        fallback_pushed.append(message)
+        return True
+
+    monkeypatch.setattr(vg, "send_runtime_push", _fallback_push)
+
+    with patch.object(sfu, "send_runtime_push", _file_push_unavailable), _bound_root_context(
+        _root_context(session_id="sess-nopush", request_id="req-nopush")
+    ):
+        result = await generate_video(prompt="a cyclist riding through a park", save_dir=str(tmp_path))
+        assert "job-nopush" in result
+
+        tasks = list(vg._BACKGROUND_WATCH_TASKS)
+        assert len(tasks) == 1
+        await asyncio.gather(*tasks)
+
+    assert "job-nopush" not in vg._WATCHED_PENDING_JOBS
+    saved_path = tmp_path / "video_job-nopush.mp4"
+    assert saved_path.read_bytes() == video_bytes
+    assert len(fallback_pushed) == 1
+    content = fallback_pushed[0]["payload"]["content"]
+    assert "视频已生成" in content
+    assert str(saved_path) in content

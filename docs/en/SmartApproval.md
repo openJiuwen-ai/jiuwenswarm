@@ -138,7 +138,7 @@ Most users can leave these options unchanged:
 permissions:
   auto:
     reviewer_timeout_ms: 60000
-    reviewer_min_confidence: 0.7
+    reviewer_output_format: json_object
     persistent_audit_enabled: false
     bounded_write_max_files: 3
     bounded_write_excluded_paths: []
@@ -147,12 +147,18 @@ permissions:
 | Setting | Effect |
 | --- | --- |
 | `reviewer_timeout_ms` | Maximum time allowed for a review. A timeout sends the request to manual review; it never causes the request to be allowed automatically. |
-| `reviewer_min_confidence` | Minimum reviewer confidence. Results below this threshold are sent for manual review. |
+| `reviewer_output_format` | `json_object` (default) requests JSON mode on the built-in OpenAI-compatible Chat transport; `prompt` disables this default. Explicit model formats and other protocols are preserved. |
 | `persistent_audit_enabled` | Writes approval decisions to a persistent audit log. |
 | `bounded_write_max_files` | Maximum number of files allowed on the bounded-write fast path. |
 | `bounded_write_excluded_paths` | Additional sensitive paths to exclude from the fast path. These are combined with the built-in protected paths. |
 
 AutoReviewer uses the configured model service, so an eligible request may incur one additional model call and a small amount of latency. If the service is unavailable or times out, or if it returns an invalid response, the request is escalated or denied—never silently allowed.
+
+JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying.
+
+The reviewer returns only `outcome`, `reason_code`, and `rationale`. Manual display details are derived by the existing Host path; complete legacy manual details remain accepted. The generated `confidence` score is no longer requested or used as a threshold: an otherwise valid low-score allow can now allow, and a low-score deny retains its reason. Legacy `confidence` response values and `reviewer_min_confidence` configuration are ignored. JSON syntax, allowed outcomes, explicit manual/deny reasons, and final Host validation remain enforced.
+
+Complete normalized call arguments and trusted user intent share a 64 KiB UTF-8 JSON budget, checked before and after secret-value redaction. Oversized evidence requires manual review without truncation. This budget does not increase the retained intent window; longer accepted requests can add model cost and latency.
 
 ## What you will see
 

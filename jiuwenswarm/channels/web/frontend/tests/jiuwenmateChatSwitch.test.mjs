@@ -193,11 +193,23 @@ test('group replies animate even when delivered as a complete message, while his
 });
 
 const workspaceBundle = 'node_modules/.cache/jiuwenmate-chat-switch/GroupChatWorkspace.mjs';
+const modelRuntime = { selectedModelSelection: null, selectedModelName: null };
+const sessionStore = {
+  ensureRuntime: () => modelRuntime,
+  getRuntime: () => modelRuntime,
+  initializeDefaultModel: () => {},
+  setSelectedModelSelection: (_sessionId, selection) => { modelRuntime.selectedModelSelection = selection; },
+  setSelectedModelName: (_sessionId, name) => { modelRuntime.selectedModelName = name; },
+  getOutgoingModelParams: () => ({ model_name: 'test' }),
+};
 const workspaceMocks = {
-  'services/webClient': `export const webClient = globalThis.groupTest.client;`,
+  'services/webClient': `export const webClient = globalThis.groupTest.client;
+    export const webRequest = async () => ({ model: 'test' });`,
   'services/teamAttach': `export const attachTeamSession = async () => {};`,
-  'stores/sessionStore': `export const useSessionStore = (select) => select({ defaultModelName: 'test' });`,
+  'stores/sessionStore': `export const useSessionStore = (select) => select({ defaultModelName: 'test' });
+    useSessionStore.getState = () => globalThis.groupTest.sessionStore;`,
   'stores/workspaceStore': `export const useWorkspaceStore = {};`,
+  '/ChatPanel/ChatModelSelector': `export default () => null;`,
   '/ModelPicker': `export default () => null;`,
   '/TeamMemberAvatar': `export const TeamMemberAvatar = () => null;`,
   '/Dialog/Dialog': `export const Dialog = () => null;`,
@@ -231,6 +243,7 @@ test('group WebSocket delivery triggers typing and follows resized replies until
   const listeners = new Map();
   const history = [{ message_id: 'old', sender: 'team', content: '已有消息', timestamp: 1, attachments: [] }];
   globalThis.groupTest = {
+    sessionStore,
     client: { getState: () => 'ready', on: (name, callback) => {
       listeners.set(name, callback); return () => listeners.delete(name);
     }, onStateChange: () => () => {} },

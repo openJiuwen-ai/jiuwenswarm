@@ -295,6 +295,28 @@ def test_skill_rejects_missing_relative_markdown_reference(tmp_path):
     assert error.value.code == "MISSING_REFERENCE"
 
 
+
+def test_skill_accepts_existing_directory_markdown_reference(tmp_path):
+    """AI-generated skills commonly link a folder, e.g. ``[templates/](templates/)``."""
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "SKILL.md.template").write_text("# template")
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\n"
+        "Files live in [templates/](templates/) and [one](templates/SKILL.md.template)."
+    )
+
+    run(tmp_path, "skill")
+
+
+def test_skill_rejects_missing_directory_markdown_reference(tmp_path):
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\nFiles live in [templates/](templates/)."
+    )
+    with pytest.raises(PublishValidationError) as error:
+        run(tmp_path, "skill")
+    assert error.value.code == "MISSING_REFERENCE"
+
+
 @pytest.mark.parametrize("kind", ["plugin", "agent_template"])
 def test_embedded_mcp_directory_rejects_nested_credentials(tmp_path, kind):
     root = package(tmp_path, kind, mcps=[{"dir": "mcps"}])

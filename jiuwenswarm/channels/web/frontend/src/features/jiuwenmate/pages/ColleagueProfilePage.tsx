@@ -974,7 +974,7 @@ function ProfileOverview({
           ) : null}
           {!welinkConfigured ? (
             <div className="jiuwenmate-profile__im-row">
-              <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />
+              <img src={welinkIcon} alt="" aria-hidden />
               <span>
                 <strong>{t('jiuwenmate.im.welink')}</strong>
                 <small>{t('jiuwenmate.profile.welinkHint')}</small>
@@ -1582,14 +1582,10 @@ function ProfileSectionDetail({
             );
           })}
         </div>
-        <small className="jiuwenmate-profile__connections-hint" data-testid="jiuwenmate-profile-im-isolation-hint">
-          {t('jiuwenmate.im.isolationHint')}
-        </small>
         <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
-          <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />
+          <img src={welinkIcon} alt="" aria-hidden />
           <span>
             <strong>{t('jiuwenmate.im.welink')}</strong>
-            <small>{t('jiuwenmate.profile.welinkHint')}</small>
           </span>
           <ImBindingAction
             platform="welink"
@@ -1599,6 +1595,9 @@ function ProfileSectionDetail({
             onRevoke={onRevokeChannel}
           />
         </div>
+        <small className="jiuwenmate-profile__connections-hint" data-testid="jiuwenmate-profile-im-isolation-hint">
+          {t('jiuwenmate.im.isolationHint')}
+        </small>
       </section>
     );
   }

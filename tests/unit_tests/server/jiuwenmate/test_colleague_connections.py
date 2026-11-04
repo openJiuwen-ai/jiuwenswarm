@@ -1140,9 +1140,11 @@ async def test_welink_cli_login_stages_credentials_outside_runtime_workspaces(co
 
 
 @pytest.mark.asyncio
-async def test_welink_pending_login_reuses_its_session_but_a_completed_login_does_not(colleague_gateway, monkeypatch):
+async def test_welink_pending_login_reuses_its_session_but_a_completed_login_does_not(colleague_gateway, monkeypatch, tmp_path):
     from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+    from jiuwenswarm.server.jiuwenmate import welink_inbound
 
+    monkeypatch.setattr(welink_inbound.Path, "home", lambda: tmp_path)
     gateway = colleague_gateway
     manager = welink_login.WelinkLoginManager()
     spawned = []
@@ -1165,13 +1167,19 @@ async def test_welink_pending_login_reuses_its_session_but_a_completed_login_doe
     assert restarted["payload"]["session_id"] != first["payload"]["session_id"]
     assert len(spawned) == 2
     assert spawned[0].credential_dir != spawned[1].credential_dir
-    assert len(list(spawned[0].credential_dir.parent.iterdir())) == 2
+    live = welink_inbound.credential_dir_for(gateway.config_id)
+    assert {item.credential_dir.name.startswith("pending-") for item in spawned} == {True}
+    assert live not in {item.credential_dir for item in spawned}
 
 
 @pytest.mark.asyncio
-async def test_welink_completed_login_does_not_copy_another_accounts_credentials(colleague_gateway, monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+async def test_welink_completed_login_does_not_copy_another_accounts_credentials(colleague_gateway, monkeypatch, tmp_path):
+    from pathlib import Path
 
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+    from jiuwenswarm.server.jiuwenmate import welink_inbound
+
+    monkeypatch.setattr(welink_inbound.Path, "home", lambda: tmp_path)
     gateway = colleague_gateway
     manager = welink_login.WelinkLoginManager()
     spawned = []
@@ -1467,7 +1475,8 @@ async def test_welink_two_colleagues_share_reader_and_reject_duplicate_ak_before
     rejected = await save(gateway.other_id, 'ak1')
     assert rejected['ok'] is False
     assert rejected['code'] == 'BAD_REQUEST'
-    assert len(gateway.calls) == before_calls
+    assert all(call == 'jiuwenmate.colleague.connections' for call in gateway.calls[before_calls:])
+    assert gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink'] == current
     assert gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink'] == current
     updated = await save(gateway.config_id, 'ak1')
     assert updated['ok'] is True

@@ -22,13 +22,30 @@ from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.organization_execution import active_turns, is_stopping, stopping_teams
 
 
+@pytest.fixture(autouse=True)
+def isolate_owner_inbox(tmp_path, monkeypatch):
+    monkeypatch.setattr("jiuwenswarm.server.runtime.organization_owner_inbox.get_agent_root_dir", lambda: tmp_path)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop_owner,cancel_raises", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("stop_owner,cancel_raises,owner_only", [
+    (False, False, False), (True, False, False), (True, True, False),
+    (True, False, True), (True, True, True),
+])
 @pytest.mark.parametrize("intent", ["cancel", None, "missing"])
 async def test_stop_cancels_running_turns_and_real_core_queued_wakes(
-    monkeypatch, stop_owner, cancel_raises, intent,
+    monkeypatch, stop_owner, cancel_raises, owner_only, intent,
 ):
     runtime = TeamRuntimeManager()
+    stopped_owners = set()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.organization_execution.set_owner_stopped",
+        lambda sid, stopped: stopped_owners.add(sid) if stopped else stopped_owners.discard(sid),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.organization_execution.owner_is_stopped",
+        lambda sid, team="": sid in stopped_owners and team == "owner",
+    )
     organization = runtime.organization_runtime_manager
     monkeypatch.setattr(GLOBAL_RUNNER, "_team_runtime_manager", runtime, raising=False)
     monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
@@ -87,7 +104,7 @@ async def test_stop_cancels_running_turns_and_real_core_queued_wakes(
     monkeypatch.setattr(server, "_resolve_team_backend", lambda sid, team: agents.get(team).team_backend if team in agents else None)
     async def cancel_owner(*args, **kwargs):
         for name in ("owner", "expert", "summary"):
-            assert is_stopping("session", name)
+            assert is_stopping("session", name) is (not owner_only or name == "owner")
         if cancel_raises:
             raise RuntimeError("owner cancel failed")
         return AgentResponse(request_id="stop", channel_id="web", ok=True)
@@ -97,7 +114,8 @@ async def test_stop_cancels_running_turns_and_real_core_queued_wakes(
     request = AgentRequest(
         request_id="stop", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_CANCEL,
         params={"mode": "team", "intent": "cancel", "target_team_id": "owner" if stop_owner else "expert",
-                **({"organization_stop": True} if stop_owner else {})},
+                **({"organization_stop": True} if stop_owner else {}),
+                **({"organization_owner_stop": True} if owner_only else {})},
     )
     if intent == "missing":
         request.params.pop("intent")
@@ -111,6 +129,15 @@ async def test_stop_cancels_running_turns_and_real_core_queued_wakes(
             assert response.payload["event_type"] == "chat.interrupt_result"
             assert response.payload["error"] == "owner cancel failed"
         stopped = {"owner", "expert", "summary"} if stop_owner else {"expert"}
+        if owner_only:
+            from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+            enabled_at = owner_inbox().enabled_at("session", "owner")
+            assert (enabled_at is not None) is not cancel_raises
+            stopped = {"owner"}
+            assert response.payload.get("organization_owner_stopped", False) is not cancel_raises
+            assert ("session" in stopped_owners) is not cancel_raises
+            assert response.payload["source"] == "org_owner_stop"
         for index, name in enumerate(agents):
             if name in stopped:
                 assert tasks[index].cancelled()
@@ -128,7 +155,8 @@ async def test_stop_cancels_running_turns_and_real_core_queued_wakes(
             else:
                 assert not tasks[index].done()
                 agents[name].stop_coordination.assert_not_awaited()
-        assert {item["team_id"] for item in active_turns("session")} == ({"foreign"} if stop_owner else {"owner", "summary", "foreign"})
+        expected_active = {"owner", "expert", "summary", "foreign"} - stopped
+        assert {item["team_id"] for item in active_turns("session")} == expected_active
         if stop_owner:
             owner_request = execution.cancel_request.call_args.args[0]
             assert "target_team_id" not in owner_request.params
@@ -153,6 +181,84 @@ async def test_stop_gate_rejects_a_new_background_turn_before_activation():
         assert not await launcher.run_organization_turn("expert", "session", {})
     assert not is_stopping("session", "expert")
     runtime.activate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent", ["resume", "supplement"])
+@pytest.mark.parametrize("success", [True, False])
+async def test_explicit_owner_resume_clears_stop_before_execution_and_restores_on_failure(
+    monkeypatch, intent, success,
+):
+    from jiuwenswarm.server.runtime import organization_execution
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    metadata = {"team_name": "owner", "organization_owner_stopped": True}
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **kwargs: metadata.update(kwargs))
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(server, "_is_targeted_expert_request", lambda request: False)
+
+    async def resume(request, **kwargs):
+        assert not organization_execution.owner_is_stopped("session")
+        return AgentResponse(request_id="resume", channel_id="web", ok=True, payload={"success": success})
+
+    monkeypatch.setattr(server, "_execution_runtime", lambda: SimpleNamespace(cancel_request=resume))
+    request = AgentRequest(request_id="resume", session_id="session", params={"mode": "team", "intent": intent})
+    await server._handle_cancel(None, request, asyncio.Lock(), send_response=False)
+    assert organization_execution.owner_is_stopped("session") is not success
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_root_background", "org_root_delivery"])
+async def test_stopped_owner_ignores_followup_before_runtime_activation(monkeypatch, source):
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda _: {
+        "team_name": "owner", "organization_owner_stopped": True,
+    })
+    runtime = SimpleNamespace(pool=SimpleNamespace(get=AsyncMock()), activate=AsyncMock())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+    assert await launcher.run_organization_turn("owner", "session", {"_org_relay_source": source})
+    runtime.pool.get.assert_not_awaited()
+    runtime.activate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target,attach,expected", [
+    ("", False, True), ("expert", False, False), ("", True, False),
+])
+async def test_only_fresh_owner_input_clears_stopped_owner(monkeypatch, target, attach, expected):
+    from jiuwenswarm.server.runtime import organization_execution
+    from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    metadata = {"mode": "team", "team_name": "owner", "organization_owner_stopped": True}
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **kwargs: metadata.update(kwargs))
+    assert owner_inbox().enabled_at("session", "owner") is None
+    changed = []
+    real_set_stopped = organization_execution.set_owner_stopped
+
+    def record_stopped(sid, stopped):
+        changed.append((sid, stopped))
+        real_set_stopped(sid, stopped)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.organization_execution.set_owner_stopped",
+        record_stopped,
+    )
+    server = object.__new__(AgentWebSocketServer)
+    request = AgentRequest(
+        request_id="next", session_id="session", channel_id="web", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "team", "content": "continue", "target_team_id": target, "attach_only": attach},
+    )
+    await server._ensure_auto_team_binding_for_chat(request)
+    assert changed == ([("session", False)] if expected else [])
+    assert metadata["organization_owner_stopped"] is not expected
+    if expected:
+        assert owner_inbox().enabled_at("session", "owner") == 0.0
 
 
 @pytest.mark.asyncio

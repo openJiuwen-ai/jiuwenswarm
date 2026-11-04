@@ -236,11 +236,11 @@ class AutoPermissionReviewerExecutionMixin:
             "evidence_summary": assessment.reason_summary,
             "final_reviewer_status": assessment.status,
             "policy_level": policy_level,
-            "reviewer_called": True,
+            "reviewer_called": not bool(request.payload_error),
             **_reviewer_route_audit_extra(
                 route,
                 policy_level=policy_level,
-                reviewer_called=True,
+                reviewer_called=not bool(request.payload_error),
             ),
             "reviewer_lifecycle": assessment.status,
             "reviewer_outcome": assessment.outcome,

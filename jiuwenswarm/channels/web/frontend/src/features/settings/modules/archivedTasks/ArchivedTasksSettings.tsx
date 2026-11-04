@@ -286,6 +286,11 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
       <p className="archived-tasks__description" data-testid="archived-tasks-description">
         {t('settingsPanel.archivedTasks.description')}
       </p>
+      {workMode === 'design' ? (
+        <p className="archived-tasks__mode-note" role="note" data-testid="archived-tasks-design-mode-note">
+          {t('settingsPanel.archivedTasks.designModeNote')}
+        </p>
+      ) : null}
       <div className="archived-tasks__search">
         <Input
           value={searchInput}

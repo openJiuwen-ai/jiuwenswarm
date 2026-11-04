@@ -910,8 +910,13 @@ class ExecutionRepository(SQLiteStore):
         """Registered group files for host-only Session-aware tool preflight."""
         with self._transaction() as conn:
             rows = conn.execute(
-                "SELECT * FROM session_artifacts WHERE namespace_id=? AND agent_id=? AND artifact_kind='file' "
-                "ORDER BY created_at, artifact_id LIMIT 10001", (namespace_id, agent_id),
+                "SELECT a.*, o.request_id, EXISTS (SELECT 1 FROM result_deliveries d "
+                "WHERE d.namespace_id=a.namespace_id AND d.output_id=a.output_id "
+                "AND d.status='delivered' AND d.notice_text IS NULL) AS published "
+                "FROM session_artifacts a LEFT JOIN candidate_outputs o "
+                "ON o.namespace_id=a.namespace_id AND o.output_id=a.output_id "
+                "WHERE a.namespace_id=? AND a.agent_id=? AND a.artifact_kind='file' "
+                "ORDER BY a.created_at, a.artifact_id LIMIT 10001", (namespace_id, agent_id),
             ).fetchall()
         if len(rows) > 10_000:
             raise PersistentAgentError("artifact provenance index is too large", code="ARTIFACT_SEARCH_UNAVAILABLE")

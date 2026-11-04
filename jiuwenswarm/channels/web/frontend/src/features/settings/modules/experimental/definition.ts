@@ -142,5 +142,16 @@ export const experimentalModule: SettingsModuleDefinition = {
       titleKey: 'settingsPanel.experimental.computerControl',
       items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
     },
+    {
+      id: 'design-mode',
+      titleKey: 'settingsPanel.experimental.designMode',
+      items: [
+        {
+          id: 'comfyui-workflow-enabled',
+          component: 'switch',
+          key: 'comfyui_workflow_enabled',
+        },
+      ],
+    },
   ],
 };

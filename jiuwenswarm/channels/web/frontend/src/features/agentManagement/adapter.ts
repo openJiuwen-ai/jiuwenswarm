@@ -1,4 +1,3 @@
-import { assetSearchNames } from '../assetNameSearch';
 import type {
   AgentCapability,
   AgentCatalogItem,
@@ -128,7 +127,6 @@ export function normalizeAgentGroupListItem(raw: RawAgentGroupListItem, locale: 
     id: raw.id,
     name: raw.name?.trim() || raw.id,
     displayName: resolveLocalizedText(raw.displayName, locale) || raw.name || raw.id,
-    searchNames: assetSearchNames(raw.displayName, raw.name || raw.id),
     description: resolveLocalizedText(raw.displayDescription, locale),
     category: raw.category || '',
     source,
@@ -164,7 +162,6 @@ export function normalizeAgentTemplateListItem(raw: RawAgentTemplateListItem, lo
   const identity = normalizeEquipmentIdentity(raw);
   return {
     ...identity,
-    searchNames: assetSearchNames(raw.displayName, raw.id),
     displayName: resolveLocalizedText(raw.displayName, locale) || raw.id,
     description: resolveLocalizedText(raw.displayDescription, locale),
     category: raw.category || '',

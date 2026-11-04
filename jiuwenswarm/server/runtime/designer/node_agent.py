@@ -1034,6 +1034,15 @@ class DesignerGraphToolkit:
         except Exception:  # noqa: BLE001
             pass
         cfg["prompt"] = text
+        # Per-node check before the model call, so a Settings gap names this node
+        # on the canvas for a first run and a regenerate alike (#5266).
+        from jiuwenswarm.server.runtime.designer.handlers.common import (
+            note_media_settings_gap,
+        )
+
+        note_media_settings_gap(
+            self.ctx, "image", f"designer_image_{self.ctx.run_id}_{self.ctx.node_id}"
+        )
         beat = asyncio.create_task(
             _heartbeat_while(self.ctx, "call_image_model", "image model running")
         )
@@ -1334,6 +1343,7 @@ class DesignerGraphToolkit:
                 force_reference_mode=overrides["force_reference_mode"],
                 aspect_ratio=video.aspect_ratio,
                 resolution=video.resolution,
+                node_label=f"designer_video_{self.ctx.run_id}_{self.ctx.node_id}",
             )
         except Exception as exc:  # noqa: BLE001
             self.fail_media(exc)

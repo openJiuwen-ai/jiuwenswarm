@@ -35,7 +35,9 @@ from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, Me
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from openjiuwen.harness import persistent_agent as core
-from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
+from jiuwenswarm.server.jiuwenmate.bash_runtime import (
+    bind_bash_runtime, close_bash_runtime, shell_environment_guidance,
+)
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
 from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
@@ -182,6 +184,12 @@ class ExecutionDriver:
         record = state.record
         context = None
         try:
+            window_generation = ''
+            if self._group_sharing is not None:
+                window_generation = await asyncio.to_thread(
+                    self._group_sharing.repository.bind_request_window,
+                    record.namespace_id, record.agent_id, record.session_id, record.request_id,
+                )
             session_workspace = self._workspaces.ensure_session(
                 record.namespace_id, record.agent_id, record.session_id
             )
@@ -221,7 +229,9 @@ class ExecutionDriver:
             ports = core.PersistentPorts(
                 commit=dingtalk_commit_guard,
                 budget=self._budget_port,
-                window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                window_backend=self._windows.bind(
+                    record.namespace_id, record.agent_id, record.session_id, generation=window_generation,
+                ),
                 workspace_access=workspace,
                 workspace_write_access=workspace,
                 group_chat=group_chat_port,
@@ -252,6 +262,7 @@ class ExecutionDriver:
                     guidance = build_group_execution_guidance(roster)
             addenda = [
                 item for item in (
+                    await shell_environment_guidance(getattr(published_spec, "language", None) or "cn"),
                     guidance,
                     dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
                     welink_execution_guidance(record.route_snapshot),
@@ -375,8 +386,15 @@ class ExecutionDriver:
                     self._permission_approvals.resume_reply, record.namespace_id, record.request_id,
                 )
                 if approval is not None:
+                    window_generation = ''
+                    if self._group_sharing is not None:
+                        window_generation = await asyncio.to_thread(
+                            self._group_sharing.repository.saved_request_window,
+                            record.namespace_id, record.request_id,
+                        )
                     await core.discard_persistent_confirmation(
-                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id,
+                                           generation=window_generation),
                         agent_id=record.agent_id, session_id=record.session_id,
                         request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
                     )

@@ -13,6 +13,7 @@ import {
   selectedNodeCount,
   selectionCoversInterval,
   selectionRanges,
+  shouldShowIncludeToggle,
   toggleAgent,
   toggleSelectAllOnLane,
   isAgentFullySelected,
@@ -259,4 +260,18 @@ test('select-all toggles the same agent full span off on a second click', () => 
   assert.equal(isAgentFullySelected(state, 'a', intervals), false);
   assert.equal(state.mode, 'none');
   assert.equal(laneRangeOf(state, 'a'), null);
+});
+
+test('include toggle appears for axis picks and for a lane that already has a window, not for full-scope', () => {
+  assert.equal(shouldShowIncludeToggle(EMPTY_DIAGNOSIS_SELECTION, false, 'a'), false);
+  assert.equal(shouldShowIncludeToggle(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1), false, 'a'), true);
+  // Whole-trajectory pick keeps lane checkboxes hidden.
+  assert.equal(shouldShowIncludeToggle(EMPTY_DIAGNOSIS_SELECTION, true, 'a'), false);
+  const laneOnly = toggleSelectAllOnLane(EMPTY_DIAGNOSIS_SELECTION, 'a', [window1]);
+  assert.equal(laneOnly.mode, 'lanes');
+  // The selected lane can uncheck to clear; other lanes stay without a box.
+  assert.equal(shouldShowIncludeToggle(laneOnly, false, 'a'), true);
+  assert.equal(shouldShowIncludeToggle(laneOnly, false, 'b'), false);
+  // Without a subject id, lane mode does not show a generic toggle.
+  assert.equal(shouldShowIncludeToggle(laneOnly, false), false);
 });

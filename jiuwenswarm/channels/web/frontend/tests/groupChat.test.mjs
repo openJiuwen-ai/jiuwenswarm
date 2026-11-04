@@ -445,3 +445,47 @@ test('subtasks keep the team name while the assigned teammate arrives and change
   assert.match(render('in_progress', 'strategy-planner'), /商业策划顾问团｜strategy-planner<\/small>/);
   assert.match(render('completed', 'bp-editor'), /商业策划顾问团｜bp-editor<\/small>/);
 });
+
+test('switching groups preserves sent-message eligibility for pending mention bubbles', async () => {
+  const { groupSessionSentIds } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const firstMount = groupSessionSentIds('pending-group-a');
+  firstMount.add('awaiting-reply');
+  assert.equal(groupSessionSentIds('pending-group-b').has('awaiting-reply'), false);
+  const remount = groupSessionSentIds('pending-group-a');
+  assert.equal(remount.has('awaiting-reply'), true);
+  remount.clear();
+  assert.equal(groupSessionSentIds('pending-group-a').has('awaiting-reply'), false);
+});
+
+test('pending mention bubbles recover from unfinished executions after a refresh', async () => {
+  const { pendingMentionReplies } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = [{ member_name: 'alice', display_name: 'Alice' }, { member_name: 'bob', display_name: 'Bob' }];
+  const ask = (id, at, mentions) => ({
+    message_id: id, client_message_id: `client-${id}`, sender: 'user', content: 'question', timestamp: at, mentions,
+  });
+  const run = (id, member, createdAt, status) => ({ execution_id: id, member_name: member, created_at: createdAt, status });
+  const waiting = (pending) => Object.fromEntries([...pending].map(([id, items]) =>
+    [id, items.map((item) => `${item.memberName}:${item.execution?.execution_id ?? '-'}`)]));
+  const fresh = new Set();
+
+  // After a refresh nothing was sent from this page: unfinished executions restore the bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice', 'bob'])], [run('e1', 'alice', 2, 'running')], members, fresh,
+  )), { m1: ['alice:e1'] });
+  // A finished execution or a member reply clears it; an old ask with no execution never reappears.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice'])], [run('e1', 'alice', 2, 'completed')], members, fresh,
+  )), {});
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
+    [run('e1', 'alice', 2, 'running')], members, fresh,
+  )), {});
+  // One execution belongs only to the latest ask before it, so older asks do not duplicate the bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), ask('m2', 5000, ['alice'])], [run('e1', 'alice', 6, 'running')], members, fresh,
+  )), { m2: ['alice:e1'] });
+  // A message sent from this page waits even before its execution exists.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice'])], [], members, new Set(['client-m1']),
+  )), { m1: ['alice:-'] });
+});

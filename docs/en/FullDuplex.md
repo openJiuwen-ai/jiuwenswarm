@@ -1,9 +1,24 @@
 # Full-duplex conversation continuity
 
+The frontend currently exposes only Qwen Omni Realtime. JoyAI configuration and startup are hidden. Users with saved JoyAI settings must configure Qwen in Settings; the backend integration and saved settings are retained.
+
 Enable Full-duplex in the experimental settings and start it from a saved Work or Code chat, or a Design project.
 The blue controller stays available when you switch chats or open Settings. Voice and
 Core Agent results remain attached to the chat where you started the session. Starting
 Full-duplex in another chat replaces the previous media session. Use Exit to stop it.
+
+Starting Full-duplex recovers unfinished tasks only for the current user and conversation.
+Historical queued tasks in other conversations are not started, probed or changed by this action.
+Conversations already activated in this process can still finish their tasks. Executions with
+unknown outcomes are reconciled without automatically replaying dispatched operations.
+
+After normal output ends or Core emits a confirmation card, Full-duplex waits for actual
+execution settlement without an additional duplex deadline. Waiting beyond 20 seconds alone
+does not make a task unknown. The card stays valid; resumption still waits for the old invocation
+to settle. Explicit cancellation retains its separate stop-confirmation mechanism.
+Repeating the same recorded answer to the same card returns
+its recorded state without resuming execution again. Consent does not transfer to another card
+or a different answer.
 
 With screen sharing enabled, starting Full-duplex opens the system screen or window picker directly.
 This entry point supports screen sharing only.
@@ -85,6 +100,13 @@ still require the UI; both providers retain explicit voice approval answers thro
 New tasks still use `jiuwen_delegate`. The realtime model must initiate the management call: spoken promises
 without a tool call are not automatically executed.
 
+Invalid model output, tool arguments, unqueried task IDs and stale observed revisions receive
+up to three silent correction attempts in addition to the six normal decisions. Duplicate
+write proposals reuse their recorded receipts without executing again. The management model
+can query and correct queue or task revision conflicts. Provider and network errors are
+returned directly; writes are not automatically replayed. If correction fails or an outcome
+is uncertain, the incomplete state and earlier receipts remain available.
+
 Scheduled jobs go to that same text model instead of a fixed "query scheduled jobs" delegation.
 The manager reads the user's real cron jobs, next runs and timezones with `jiuwen_cron_query`,
 changes name, cron expression, timezone, description, enabled state, push channel, mode or
@@ -100,8 +122,11 @@ the current project, so project binding and credential resolution stay unchanged
 
 The manager reuses the first configured text model by default. Set `DUPLEX_QUEUE_MANAGER_MODEL`
 in `.env` to an existing model ID, alias or unique name, then restart. It receives instructions
-and task records, without audio or images. Each request allows six model decisions within
-40 seconds. Errors preserve earlier receipts and do not imply success or rollback. Duplicate
+and task records, without audio or images. Each request allows six model decisions without
+a management deadline or an additional per-step deadline. Model requests retain the selected
+model's network timeout configuration. Qwen management requests and JoyAI user requests that
+may include management have no frontend waiting deadline. Errors preserve earlier receipts
+and do not imply success or rollback. Duplicate
 command IDs share execution while cached in the current process. Approval cards retain explicit voice consent and on-screen controls.
 
 JoyAI refreshes an expired context token in the same authorized chat and retries the

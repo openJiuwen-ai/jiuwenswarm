@@ -191,6 +191,8 @@ interface ChatPanelProps {
   composerCollapsed?: boolean;
   /** 切换停靠模式下的输入区收起状态；缺省时不渲染收起按钮。 */
   onToggleComposerCollapsed?: () => void;
+  /** 诊断选区或诊断页打开时，输入区保持收起且不能点开。 */
+  composerToggleDisabled?: boolean;
   /**
    * 上报输入区实测高度，供轨迹视图留出底部空白，避免末尾记录被输入区遮住。
    * 仅在停靠模式下回调；收起时上报 0。
@@ -1092,6 +1094,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   composerDocked = false,
   composerCollapsed = false,
   onToggleComposerCollapsed,
+  composerToggleDisabled = false,
   onComposerHeightChange,
   diagnosisEntryAvailable = false,
   diagnosisActive = false,
@@ -1809,8 +1812,13 @@ export const ChatPanel = React.memo(function ChatPanel({
                 data-testid="chat-panel-header-composer-toggle"
                 data-variant={composerCollapsed ? 'expand' : 'collapse'}
                 aria-expanded={!composerCollapsed}
-                title={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
-                aria-label={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                title={composerToggleDisabled
+                  ? t('trajectory.composer.unavailable')
+                  : composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                aria-label={composerToggleDisabled
+                  ? t('trajectory.composer.unavailable')
+                  : composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                disabled={composerToggleDisabled}
                 onClick={onToggleComposerCollapsed}
               >
                 {composerCollapsed

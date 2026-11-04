@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  artifactCauseGroups,
+  mergedCauseReason,
   artifactSuggestion,
   artifactSuggestionItems,
   causeNodeLabel,
@@ -28,11 +30,13 @@ import {
   splitLeadParagraph,
   splitRewardSignalText,
   splitStageOutput,
+  stageOutputBlocks,
   stageViews,
   stripLeadingHeading,
   suggestionsState,
   truncateText,
   skillSuggestionText,
+  skillBatchFillText,
   unixNanoToMs,
   usesLegacyFindings,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisView.mjs';
@@ -143,8 +147,23 @@ test('unix nanoseconds convert to milliseconds without losing precision', () => 
   assert.equal(unixNanoToMs(''), null);
 });
 
-test('a full-scope record has no window to show', () => {
-  assert.deepEqual(diagnosisTarget({ input: { scope: { kind: 'full' } } }), { full: true, groups: [] });
+test('a full-scope record shows the span of its resolved ranges', () => {
+  assert.deepEqual(diagnosisTarget({ input: { scope: { kind: 'full' } } }), {
+    full: true,
+    window: null,
+    groups: [],
+  });
+  const target = diagnosisTarget({
+    input: {
+      scope: { kind: 'full' },
+      resolved_ranges: [
+        { subject_id: 'main', start_unix_nano: nano(1_000), end_unix_nano: nano(4_000) },
+        { subject_id: 'worker', start_unix_nano: nano(2_000), end_unix_nano: nano(8_000) },
+        { subject_id: 'bad', start_unix_nano: 'x', end_unix_nano: nano(9_000) },
+      ],
+    },
+  });
+  assert.deepEqual(target, { full: true, window: { startMs: 1_000, endMs: 8_000 }, groups: [] });
 });
 
 test('selected ranges with the same window collapse into one group', () => {
@@ -162,6 +181,7 @@ test('selected ranges with the same window collapse into one group', () => {
     },
   });
   assert.equal(target.full, false);
+  assert.equal(target.window, null);
   assert.deepEqual(target.groups, [
     { startMs: 1000, endMs: 2000, subjectIds: ['main', 'worker'] },
     { startMs: 3000, endMs: 4000, subjectIds: ['solo'] },
@@ -248,13 +268,32 @@ test('a heading the suggestion opens with is dropped, but never the only content
   assert.equal(stripLeadingHeading('  正文  '), '正文');
 });
 
-test('the node label joins the evidence refs of a failure cause', () => {
+test('the node label keeps gaps and collapses only adjacent steps', () => {
   const ref = (spanId, nodeId) => ({ trace_id: 't', span_id: spanId, subject_id: 'main', node_id: nodeId });
   assert.equal(
     evidenceNodeLabel({ evidence: [ref('1', 'main:23'), ref('2', 'main:30'), ref('3', 'main:23')] }),
-    'main:23 → main:30',
+    'main:23; main:30',
   );
+  assert.equal(
+    evidenceNodeLabel({ evidence: [ref('1', 'main:16'), ref('2', 'main:17'), ref('3', 'main:15')] }),
+    'main:15 → main:17',
+  );
+  assert.equal(
+    evidenceNodeLabel({
+      evidence: [ref('1', 'main:20'), ref('2', 'main:18'), ref('3', 'main:19'), ref('4', 'main:15')],
+    }),
+    'main:15; main:18 → main:20',
+  );
+  assert.equal(evidenceNodeLabel({ evidence: [ref('1', 'main:14')] }), 'main:14');
   assert.equal(evidenceNodeLabel({ evidence: [] }), '');
+  const team = 'team-member:web_1:jiuwen_team_web_1:team-leader';
+  assert.equal(evidenceNodeLabel({ evidence: [ref('1', `${team}:14`)] }), 'team-leader:14');
+  assert.equal(
+    evidenceNodeLabel({
+      evidence: [ref('1', `${team}:16`), ref('2', `${team}:14`), ref('3', `${team}:15`)],
+    }),
+    'team-leader:14 → team-leader:16',
+  );
 });
 
 test('findingCounts separates reward causes, skill suggestions and experience verdicts', () => {
@@ -275,6 +314,42 @@ test('findingCounts separates reward causes, skill suggestions and experience ve
     findingCounts({ root_causes: [cause('a'), cause('b', { category: 'ttse_fail' })], reward_failure_causes: [], evolution_judge: [] }),
     { causes: 1, skill: 0, experience: 1, legacy: true },
   );
+});
+
+test('mergedCauseReason joins the summaries of one problem into a single reason', () => {
+  assert.equal(mergedCauseReason([
+    { summary: '最终回复未列技能，因此也没有为每个技能附一句用途说明。' },
+    { summary: '首轮清单只给 blog-post-team 写了用途。' },
+    { summary: '首轮清单只给 blog-post-team 写了用途。' },
+    { summary: '   ' },
+  ]), '1. 最终回复未列技能，因此也没有为每个技能附一句用途说明。\n2. 首轮清单只给 blog-post-team 写了用途。');
+  assert.equal(mergedCauseReason([{ summary: '派发时放宽了章节数' }, { summary: '提纲铺成五个小标题' }]), '1. 派发时放宽了章节数\n2. 提纲铺成五个小标题');
+  assert.equal(mergedCauseReason([{ summary: '只有一条' }]), '只有一条');
+});
+
+test('artifact causes of one signal share a group and keep their own reasons', () => {
+  const signal = { id: 'sig-1', source: 'reward', text: '篇幅简洁：[要求] 短篇\n终稿仍被切成多节。' };
+  const groups = artifactCauseGroups([
+    { id: 'rfc-1', dimension: '篇幅简洁', summary: '派发时放宽了章节数', signal, evidence: [] },
+    { id: 'rfc-2', dimension: '篇幅简洁', summary: '提纲铺成五个小标题', signal, evidence: [] },
+    { id: 'rfc-3', dimension: '技能清单', summary: '最终回复未列技能', signal: { id: 'sig-2', source: 'reward', text: '未列技能' }, evidence: [] },
+    { id: 'rfc-4', dimension: '孤立', summary: '没有信号正文', evidence: [] },
+    { id: 'rfc-5', dimension: '孤立', summary: '另一条没有信号正文', evidence: [] },
+  ]);
+  assert.deepEqual(groups.map(group => [group.id, group.causes.map(cause => cause.id)]), [
+    ['rfc-1', ['rfc-1', 'rfc-2']],
+    ['rfc-3', ['rfc-3']],
+    ['rfc-4', ['rfc-4']],
+    ['rfc-5', ['rfc-5']],
+  ]);
+  assert.equal(findingCounts({
+    reward_failure_causes: [
+      { id: 'rfc-1', dimension: '篇幅简洁', summary: '派发', signal },
+      { id: 'rfc-2', dimension: '篇幅简洁', summary: '提纲', signal },
+      { id: 'rfc-3', dimension: '技能清单', summary: '未列技能', signal: { id: 'sig-2', source: 'reward', text: '未列技能' } },
+    ],
+    evolution_judge: [],
+  }).causes, 2);
 });
 
 test('findingItems puts artifact causes first, then skill, then experience', () => {
@@ -311,7 +386,7 @@ test('artifactSuggestion joins cause suggestions, or uses the experimental whole
     ],
     artifact_improvement: 'legacy block',
   };
-  assert.equal(artifactSuggestion(record, false), 'first\n\nsecond');
+  assert.equal(artifactSuggestion(record, false), '1. first\n2. second');
   assert.equal(artifactSuggestion(record, true), 'legacy block');
 });
 
@@ -343,20 +418,22 @@ test('artifactSuggestionItems keeps cause order and the full attribution fields'
   });
   assert.deepEqual(items.map(item => item.id), ['rfc-1', 'rfc-2']);
   assert.equal(items[0].text, '先修 A\n\n再修 B');
+  assert.deepEqual(items[0].parts, ['先修 A', '再修 B']);
   assert.equal(items[0].dimension, '正确性');
   assert.equal(items[0].summary, '问题一');
   assert.equal(items[0].signal.id, 'diag-1');
   assert.equal(items[1].text, '问题二'); // defensive: an empty suggestion shows the summary
 });
 
-test('skillSuggestionText keeps the whole md_string block', () => {
+test('skillSuggestionText keeps one block and numbers several entries', () => {
   assert.equal(skillSuggestionText({ suggestion: ['# a\n\n- b'] }), '# a\n\n- b');
   assert.equal(skillSuggestionText({ suggestion: [] }), '');
+  assert.equal(skillSuggestionText({ suggestion: ['先改提示词', '再加自检'] }), '1. 先改提示词\n\n2. 再加自检');
 });
 
 test('the node label joins distinct node ids with an arrow', () => {
   const ref = nodeId => ({ trace_id: 't', span_id: 's', subject_id: 'main', ...(nodeId === undefined ? {} : { node_id: nodeId }) });
-  assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:30')] }), 'main:23 → main:30');
+  assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:30')] }), 'main:23; main:30');
   assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:23')] }), 'main:23');
   assert.equal(causeNodeLabel({ refs: [ref(undefined)] }), '');
   assert.equal(causeNodeLabel({ refs: [] }), '');
@@ -399,6 +476,74 @@ test('model request lines are split from the rest of a stage output', () => {
   assert.equal(view.requestLines.length, 3);
   assert.equal(view.body, '任务描述：装好依赖\n消息产物 main:0：先看 README');
   assert.deepEqual(splitStageOutput(''), { body: '', requestLines: [], requestCount: 0 });
+});
+
+test('one chosen skill fills as itself and several are headed by the skill name', () => {
+  const image = { id: 'evo-1', target: 'baoyu-image-gen', suggestion: ['## 交付前质量校验\n\n- 先自检'] };
+  const other = { id: 'evo-2', target: 'writer', suggestion: ['补上引用'] };
+  const prefix = '根据以下优化建议对相应skill进行演进：';
+  assert.equal(skillBatchFillText([image], prefix), `${prefix}\n\n## 交付前质量校验\n\n- 先自检`);
+  assert.equal(
+    skillBatchFillText([image, other], prefix),
+    [
+      prefix,
+      '',
+      '## baoyu-image-gen',
+      '',
+      '## 交付前质量校验',
+      '',
+      '- 先自检',
+      '',
+      '## writer',
+      '',
+      '补上引用',
+    ].join('\n'),
+  );
+  assert.equal(skillBatchFillText([], prefix), prefix);
+});
+
+test('a running stage keeps arrival order and a finished stage puts the body first', () => {
+  const output = [
+    'llm-1 · task_parse · 请求中 · m',
+    'llm-1 · task_parse · iter 1 · 成功 · m',
+    '任务描述：装好依赖',
+    'llm-2 · diagnose · 成功 · m',
+    '消息产物 main:0：先看 README',
+  ].join('\n');
+  assert.deepEqual(stageOutputBlocks(output, true), [
+    {
+      kind: 'requests',
+      lines: ['llm-1 · task_parse · 请求中 · m', 'llm-1 · task_parse · iter 1 · 成功 · m'],
+      count: 1,
+    },
+    { kind: 'body', text: '任务描述：装好依赖' },
+    { kind: 'requests', lines: ['llm-2 · diagnose · 成功 · m'], count: 1 },
+    { kind: 'body', text: '消息产物 main:0：先看 README' },
+  ]);
+  assert.deepEqual(
+    stageOutputBlocks('llm-1 · task_parse · 请求中 · m\n\nllm-1 · task_parse · 成功 · m', true),
+    [{
+      kind: 'requests',
+      lines: ['llm-1 · task_parse · 请求中 · m', 'llm-1 · task_parse · 成功 · m'],
+      count: 1,
+    }],
+  );
+  assert.deepEqual(stageOutputBlocks(output, false), [
+    { kind: 'body', text: '任务描述：装好依赖\n消息产物 main:0：先看 README' },
+    {
+      kind: 'requests',
+      lines: [
+        'llm-1 · task_parse · 请求中 · m',
+        'llm-1 · task_parse · iter 1 · 成功 · m',
+        'llm-2 · diagnose · 成功 · m',
+      ],
+      count: 2,
+    },
+  ]);
+  assert.deepEqual(stageOutputBlocks('', true), []);
+  assert.deepEqual(stageOutputBlocks('llm-1 · task_parse · 请求中 · m', true), [
+    { kind: 'requests', lines: ['llm-1 · task_parse · 请求中 · m'], count: 1 },
+  ]);
 });
 
 test('processSummary counts stages and adds their durations', () => {

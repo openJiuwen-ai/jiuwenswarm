@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   AtSign, Bot, ChevronLeft, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { webClient, type WsEvent } from '../../services/webClient';
+import { webClient, webRequest, type WsEvent } from '../../services/webClient';
 import { attachTeamSession } from '../../services/teamAttach';
-import ModelPicker from '../../components/ModelPicker';
+import ChatModelSelector from '../../components/ChatPanel/ChatModelSelector';
 import { TeamMemberAvatar } from '../../components/TeamMemberAvatar';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import type { ModelSelection, UserAnswer } from '../../types';
+import type { UserAnswer } from '../../types';
+import { parseModelSelection } from '../settings/modules/models/modelGroupAdapters';
 import { GroupMessageContent } from './GroupMessageContent';
 import { Dialog } from '../../components/ui/Dialog/Dialog';
 import type { GroupDirectory } from './useGroupDirectory';
@@ -23,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { executionResult, groupTimeline, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, groupSessionSentIds, executionResult, groupTimeline, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -38,8 +39,6 @@ function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: Gr
     }]} onPreview={() => onPreview(file)} />
   </div>;
 }
-
-const FINISHED_EXECUTIONS = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'timed_out', 'stopped']);
 
 /** One open group conversation with its member and file panels; the group list lives in the chat sidebar. */
 export function GroupChatWorkspace({ groupId, directory, onBack }: {
@@ -114,9 +113,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     }
   }, [mentionMenu, mentionIndex]);
   const [sending, setSending] = useState(false);
-  const defaultModel = useSessionStore((state) => state.defaultModelName);
-  const [modelName, setModelName] = useState<string | null>(null);
-  const [modelSelection, setModelSelection] = useState<ModelSelection | null>(null);
+  const [modelReady, setModelReady] = useState(false);
   const [fileAction, setFileAction] = useState<{ kind: 'rename' | 'delete'; path: string; name: string } | null>(null);
   const [fileName, setFileName] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
@@ -135,6 +132,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const atBottom = useRef(true);
   const knownMessages = useRef(new Set<string>());
   const animatedMessages = useRef(new Set<string>());
+  // Preserve sent-message eligibility when switching conversations remounts this workspace.
+  const sessionSentIds = groupSessionSentIds(groupId);
   const trackMessages = useCallback((incoming: GroupMessage[], animate: boolean) => {
     for (const message of incoming) {
       if (animate && !knownMessages.current.has(message.message_id) && message.sender !== 'user') {
@@ -148,6 +147,37 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const report = useCallback((reason: unknown) => {
     if (alive.current) setError(reason instanceof Error ? reason.message : String(reason));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelReady(false);
+    if (!connected) return;
+    const store = useSessionStore.getState();
+    const runtime = store.ensureRuntime(groupId);
+    // Keep unsent choices when the workspace is remounted for another group.
+    if (runtime.selectedModelSelection || runtime.selectedModelName) {
+      setModelReady(true);
+      return;
+    }
+    void webRequest<{ model_selection?: unknown; model?: string }>('session.get_metadata', {
+      session_id: groupId,
+    }).then((metadata) => {
+      if (cancelled) return;
+      const current = useSessionStore.getState();
+      const latest = current.getRuntime(groupId);
+      // A late restore must not replace a newer local choice.
+      if (!latest?.selectedModelSelection && !latest?.selectedModelName) {
+        const selection = parseModelSelection(metadata.model_selection);
+        if (selection) current.setSelectedModelSelection(groupId, selection);
+        else if (metadata.model) current.setSelectedModelName(groupId, metadata.model);
+        else current.initializeDefaultModel(groupId);
+      }
+      setModelReady(true);
+    }).catch((reason: unknown) => {
+      if (!cancelled) report(reason);
+    });
+    return () => { cancelled = true; };
+  }, [groupId, connected, report]);
 
   const refresh = useCallback(async () => {
     if (!groupId || refreshing.current) return;
@@ -312,16 +342,16 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
 
   async function send() {
-    if (!group || !input.trim() || sending || !connected) return;
+    if (!group || !input.trim() || sending || !connected || !modelReady) return;
     const recipients = selectedMentions(input, mentions, group.members);
     const body = {
       query: input.trim(), mentions: recipients, intent: 'chat' as const,
-      ...(modelName ? { model_name: modelName } : {}),
-      ...(modelSelection ? { model_selection: modelSelection } : {}),
+      ...useSessionStore.getState().getOutgoingModelParams(groupId),
     };
     const signature = JSON.stringify(body);
     if (request.current?.signature !== signature) request.current = { signature, token: crypto.randomUUID() };
     const token = request.current.token;
+    sessionSentIds.add(token);
     const draft = input;
     const draftMentions = mentions;
     const pendingId = `pending-${token}`;
@@ -398,6 +428,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       historyTotal.current = null;
       historyStart.current = null;
       setOlderOffset(0);
+      sessionSentIds.clear();
       setMessages([]);
       setExecutions((current) => current.filter((item) => !FINISHED_EXECUTIONS.has(item.status)));
       setPreview(null);
@@ -421,6 +452,14 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
+
+  // 每条带 @ 的用户消息，各自记录尚未回音的被 @ 成员：
+  // 消息下方独立挂「弹动三点」占位气泡（文案随成员当前执行阶段实时变化），谁回复谁的占位消失，
+  // 多条提问互不顶替。本页面发出的消息立即占位（切换会话保留）；被 @ 成员有未完成执行时也占位，
+  // 刷新后据服务端执行恢复；乐观 pending 阶段不弹。
+  const pendingMentionsByMessage = group
+    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds)
+    : new Map<string, PendingMentionReply[]>();
 
   return <section className="group-chat-workspace has-conversation" data-testid="group-chat-workspace">
     <div className="group-chat-main" data-testid="group-chat-main">
@@ -469,19 +508,42 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           </div>}
           {timeline.map((item) => item.execution ? <ExecutionCard key={item.id} execution={item.execution}
             result={executionResult(item.execution, messages)} renderAvatar={memberAvatar} /> : item.message && (
-            <article key={item.id} id={`group-chat-message-${item.id}`} className={`group-chat-message${item.message.sender === 'user' ? ' is-user' : ''}`}
-              data-testid="group-chat-message" data-variant={item.id}>
-              {item.message.sender !== 'user' && <header data-testid="group-chat-message-header">
-                <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
-                <strong>{item.message.sender_name || item.message.sender}</strong>
-                <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-              </header>}
-              <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} />
-              {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
-                {t('groupChat.sending')}
-              </small>}
-              {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
-            </article>
+            <Fragment key={item.id}>
+              <article id={`group-chat-message-${item.id}`} className={`group-chat-message${item.message.sender === 'user' ? ' is-user' : ''}`}
+                data-testid="group-chat-message" data-variant={item.id}>
+                {item.message.sender !== 'user' && <header data-testid="group-chat-message-header">
+                  <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
+                  <strong>{item.message.sender_name || item.message.sender}</strong>
+                  <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+                </header>}
+                <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} members={group.members} />
+                {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
+                  {t('groupChat.sending')}
+                </small>}
+                {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
+              </article>
+              {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution }) => {
+                const member = group.members.find((item2) => item2.member_name === memberName);
+                const phase = mentionExecutionPhase(execution);
+                const phaseLabel = phase.key === 'executing' && phase.total
+                  ? t('groupChat.mentionPhase.executingProgress', { completed: phase.completed ?? 0, total: phase.total })
+                  : t(`groupChat.mentionPhase.${phase.key}`);
+                return <article key={`mention-pending-${item.id}-${memberName}`}
+                  className="group-chat-message group-chat-mention-pending"
+                  data-testid="group-chat-mention-pending" data-variant={memberName}>
+                  <header data-testid="group-chat-mention-pending-header">
+                    <TeamMemberAvatar member={memberName} className="group-chat-message-avatar" alt="" />
+                    <strong>{member?.display_name || memberName}</strong>
+                  </header>
+                  <div className="group-chat-mention-pending__bubble">
+                    <span className="group-chat-mention-pending__dots" aria-hidden="true"><i /><i /><i /></span>
+                    <span className="group-chat-mention-pending__stack">
+                      <span>{phaseLabel}</span>
+                    </span>
+                  </div>
+                </article>;
+              })}
+            </Fragment>
           ))}
         </div>
         <div className="group-chat-composer-area">
@@ -543,10 +605,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 aria-label={t('groupChat.mention')} title={t('groupChat.mention')} aria-expanded={mentionMenu}
                 data-testid="group-chat-mention"><AtSign size={17} /></button>
               <span className="group-chat-muted" data-testid="group-chat-send-hint">{t('groupChat.sendHint')}</span>
-              <ModelPicker value={modelName ?? defaultModel} selection={modelSelection} includeModelGroups={false}
-                disabled={sending} onChange={setModelName} onSelectionChange={setModelSelection}
-                testIdPrefix="group-chat-model" />
-              <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected}
+              {modelReady && <ChatModelSelector sessionId={groupId} includeModelGroups={false}
+                disabled={sending || !connected} testIdPrefix="group-chat-model" />}
+              <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected || !modelReady}
                 aria-label={t('groupChat.send')} data-testid="group-chat-send"><Send size={16} /></button>
             </footer>
           </form>}

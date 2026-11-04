@@ -123,6 +123,11 @@ async def _require_image(
     except Exception:  # noqa: BLE001
         pass
 
+    # Per-node check, before the call: a Settings gap is logged and shown on
+    # this node whether it is a first run or a regenerate. The generator still
+    # runs so its own error (which carries the same text) reaches the canvas.
+    handler_io.note_media_settings_gap(ctx, "image", stem)
+
     save_dir = None
     if ctx is not None:
         save_dir = str(handler_io.canvas_output_dir(ctx.graph if isinstance(ctx.graph, dict) else None))
@@ -154,9 +159,13 @@ async def _require_image(
             message="image generated",
         )
     error = str((generated or {}).get("error") or "").strip()
-    raise RuntimeError(
-        f"image_gen required but failed for {stem}: {error or 'no image_path'}"
-    )
+    # A monkeypatched / future generator can still hand back nothing useful; fall
+    # back to the Settings reason so the failure never reads as "no image_path"
+    # while image generation is simply switched off or unconfigured (#5266).
+    from jiuwenswarm.server.runtime.designer.media_generation import generation_problem
+
+    reason = error or (generation_problem("image") or "") or "no image_path"
+    raise RuntimeError(f"image_gen required but failed for {stem}: {reason}")
 
 
 def _aligned_source(ctx: NodeExecutionContext, node: DesignerGraphNode) -> str:

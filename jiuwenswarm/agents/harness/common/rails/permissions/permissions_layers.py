@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
@@ -155,6 +157,71 @@ def _override_ids(raw: Any) -> set[str]:
     return ids
 
 
+def _normalized_tool_names(item: dict[str, Any]) -> list[str]:
+    tools = item.get("tools") or []
+    if isinstance(tools, str):
+        tools = [tools]
+    elif not isinstance(tools, (list, tuple, set)):
+        tools = []
+    names: list[str] = []
+    for tool in tools:
+        name = str(tool).strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _override_key(item: dict[str, Any]) -> tuple[str, Any]:
+    tools_key = tuple(sorted(_normalized_tool_names(item)))
+    match_type = str(item.get("match_type") or "").strip().lower()
+    pattern = str(item.get("pattern") or "")
+    action = str(item.get("action") or "").strip().lower()
+    if tools_key or match_type or pattern:
+        return ("signature", (tools_key, match_type, pattern, action))
+    return ("id", str(item.get("id") or "").strip())
+
+
+def _override_keys(raw: Any) -> set[tuple[str, Any]]:
+    keys: set[tuple[str, Any]] = set()
+    if not isinstance(raw, list):
+        return keys
+    for item in raw:
+        if isinstance(item, dict):
+            keys.add(_override_key(item))
+    return keys
+
+
+def _stable_override_id(item: dict[str, Any]) -> str:
+    tool_part = "_".join(sorted(_normalized_tool_names(item))) or "tool"
+    match_type = str(item.get("match_type") or "").strip().lower() or "rule"
+    pattern = str(item.get("pattern") or "")
+    action = str(item.get("action") or "").strip().lower() or "allow"
+    raw = f"user_{action}_{tool_part}_{match_type}_{pattern}"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", raw).strip("_").lower() or "user_override"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return f"{slug[:111]}_{digest}"[:120]
+
+
+def _unique_override_ids(
+    overrides: list[dict[str, Any]], reserved_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    seen: set[str] = set(reserved_ids or ())
+    result: list[dict[str, Any]] = []
+    for item in overrides:
+        override_id = str(item.get("id") or "").strip()
+        if not override_id:
+            result.append(item)
+            continue
+        candidate = override_id
+        suffix = 2
+        while candidate in seen:
+            candidate = f"{override_id}_{suffix}"
+            suffix += 1
+        seen.add(candidate)
+        result.append(item if candidate == override_id else {**item, "id": candidate})
+    return result
+
+
 def _path_key(item: dict[str, Any]) -> tuple[str, str]:
     path = str(item.get("path") or "").replace("\\", "/").rstrip("/").casefold()
     match = str(item.get("match") or "prefix").strip().lower() or "prefix"
@@ -259,6 +326,11 @@ def overlay_from_effective(
     ) | _tool_names_at_level(skip_layer, "allow")
     base_ask = _tool_names_at_level(global_layer, "ask")
     base_deny = _tool_names_at_level(global_layer, "deny")
+    base_override_keys = (
+        _override_keys(global_layer.get("approval_overrides"))
+        | _override_keys(user_layer.get("approval_overrides"))
+        | _override_keys(skip_layer.get("approval_overrides"))
+    )
     base_override_ids = (
         _override_ids(global_layer.get("approval_overrides"))
         | _override_ids(user_layer.get("approval_overrides"))
@@ -294,11 +366,23 @@ def overlay_from_effective(
         if not isinstance(item, dict):
             continue
         override_id = str(item.get("id") or "").strip()
-        if not override_id or override_id in base_override_ids:
+        if not override_id or _override_key(item) in base_override_keys:
             continue
         overrides.append(item)
     if overrides:
-        out["approval_overrides"] = overrides
+        output_ids = [str(item.get("id") or "").strip() for item in overrides]
+        colliding_ids = {
+            oid
+            for oid in output_ids
+            if oid in base_override_ids or output_ids.count(oid) > 1
+        }
+        renamed: list[dict[str, Any]] = []
+        for item in overrides:
+            override_id = str(item.get("id") or "").strip()
+            if override_id in colliding_ids:
+                item = {**item, "id": _stable_override_id(item)}
+            renamed.append(item)
+        out["approval_overrides"] = _unique_override_ids(renamed, base_override_ids)
 
     fg = src.get("file_guard")
     if isinstance(fg, dict):

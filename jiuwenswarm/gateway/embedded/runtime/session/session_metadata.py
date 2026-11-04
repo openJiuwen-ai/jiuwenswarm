@@ -224,6 +224,8 @@ def _apply_metadata_defaults_with_inference(
     if not isinstance(metadata, dict) or not metadata:
         return metadata
     original = metadata.copy() if background_writeback else None
+    if not metadata.get("session_id"):
+        metadata["session_id"] = session_id
 
     # 标题清理(原三处入口都有,统一到此处)
     if metadata.get("title"):
@@ -1382,7 +1384,10 @@ def get_session_metadata(
     """
     from jiuwenswarm.gateway.embedded.runtime.session import lifecycle as lc
     if lc.state("session", session_id).get("write_blocked") or lc.session_paths(session_id)[1].exists():
-        return lc.raw_metadata(session_id)
+        metadata = lc.raw_metadata(session_id)
+        if isinstance(metadata, dict) and metadata and not metadata.get("session_id"):
+            metadata = {**metadata, "session_id": session_id}
+        return metadata
     metadata = _read_metadata(session_id, cache_bust)
     if isinstance(metadata, dict) and metadata:
         metadata = _apply_metadata_defaults_with_inference(

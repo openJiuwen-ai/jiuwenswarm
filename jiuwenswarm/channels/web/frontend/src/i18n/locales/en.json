@@ -47,7 +47,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "experiments": "Experiments",
+    "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -347,6 +347,7 @@
       "welinkSwitchAccount": "Switch account",
       "welinkAccountMissing": "No WeLink account yet. Finish the first scan first.",
       "welinkQr": "WeLink login QR code",
+      "welinkRedEditionHint": "WeLink setup is unavailable in this environment. Please switch to the red edition of WeLink.",
       "welinkFailed": "WeLink login failed",
       "appId": "API ID",
       "appIdPlaceholder": "Enter API ID",
@@ -482,7 +483,7 @@
         "fullAccessConfirm": "Full access opens all files available to the host OS account and permits network commands. Enable it for this employee?"
       },
       "feishuHint": "Authorize the agent and monitor its activity.",
-      "welinkHint": "Setup takes two steps: bind WeLink first, then create the assistant.",
+      "welinkHint": "Connect WeLink to assign tasks by mentioning this colleague in a group chat.",
       "authorize": "Authorize",
       "authorized": "Authorized",
       "cancelAuthorization": "Revoke",
@@ -600,7 +601,7 @@
       "deleteConversation": "Delete conversation",
       "rename": "Rename",
       "viewTrace": "View trace",
-      "composerPlaceholder": "What can I help with? Type \"/\" to reference skills and commands",
+      "composerPlaceholder": "What can I help with?",
       "defaultPermission": "Default permission",
       "autoMode": "Auto",
       "attach": "Add attachment",
@@ -858,10 +859,14 @@
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
       "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
+      "notSelected": "No model",
+      "openModelSettings": "Open Settings"
     },
     "activity": {
       "thinking": "Thinking",
@@ -882,6 +887,8 @@
       "bootstrapError": "Failed to build the workflow. Please try again later.",
       "notImplemented": "Not implemented",
       "send": "Send",
+      "stop": "Stop",
+      "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
@@ -1014,6 +1021,7 @@
       "preview": "Preview",
       "previewOrEdit": "Preview or edit",
       "download": "Download",
+      "downloadFailed": "Could not download “{{name}}”. Check your connection and save location, then try again.",
       "delete": "Delete",
       "replace": "Upload & Replace",
       "replaceHint": "Upload a new file to replace this node's content.",
@@ -1108,6 +1116,7 @@
     }
   },
   "videoLive": {
+    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {
@@ -1242,6 +1251,7 @@
       "archivedSessionsDeleted": "Deleted {{count}} archived conversations",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed.",
       "removedProjectNote": "This project was removed, so its conversations stay hidden from the workspace. Restoring any conversation restores the project too.",
+      "designModeNote": "Design mode doesn't support archiving yet.",
       "errors": {
         "forbidden": "This operation is not supported for this resource",
         "notFound": "The resource no longer exists or has changed. Refresh and try again.",
@@ -1554,7 +1564,8 @@
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "multiModelCollaboration": "Multi-model collaboration",
-      "toolOptimize": "Tool retrieval optimization"
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -1726,7 +1737,7 @@
       "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
       "rsi_enabled": {
         "title": "Enable RSI",
-        "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
+        "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
@@ -1739,6 +1750,10 @@
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
       },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
@@ -1901,8 +1916,9 @@
       "noteLabel": "User feedback: describe issues in the selected range (optional)",
       "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
       "cancel": "Cancel diagnosis",
-      "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
-      "includeAgent": "Diagnose {{name}}",
+      "selectionHint": "Drag a range on the time axis, or use Select all for one agent's whole lane. When selected, uncheck the box to clear that agent's pick.",
+      "includeAgent": "Selected: {{name}}",
+      "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
       "timeAxis": "Time axis",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
@@ -1920,6 +1936,7 @@
         "interrupted": "Interrupted"
       },
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
         "pending": "Waiting",
         "running": "Running",
@@ -1943,8 +1960,10 @@
       "suggestions": "Diagnosis suggestions",
       "noSuggestions": "This diagnosis has no actionable suggestions",
       "details": "Diagnosis details",
+      "resultTabs": "Diagnosis details and suggestions",
+      "suggestionsReady": "Suggestions ready",
       "dismiss": "Dismiss",
-      "note": "Diagnosis note",
+      "note": "User feedback",
       "object": "Diagnosis target",
       "objectAgents": "Agents",
       "objectFull": "Entire trajectory",
@@ -1966,6 +1985,7 @@
         "cancelDelete": "Cancel",
         "deleteRunning": "A diagnosis in progress cannot be deleted"
       },
+      "rewardResult": "Artifact evaluation",
       "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
       "rewardTotal": "Total {{score}}",
       "artifactFix": "Artifact fix",
@@ -1987,7 +2007,11 @@
         "user": "User note"
       },
       "signalSourceLabel": "Source: {{source}}",
-      "attributionLabel": "Attribution: {{kind}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
       "attributionKind": {
         "artifact": "Artifact",
         "skill": "Skill",
@@ -2004,6 +2028,8 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
+      "sectionExpand": "Expand",
+      "sectionCollapse": "Collapse",
       "findingCauses": "{{count}} artifact finding(s)",
       "findingSkill": "{{count}} skill finding(s)",
       "findingExperience": "{{count}} experience finding(s)",
@@ -2022,10 +2048,15 @@
         "partial": "Task partly completed"
       },
       "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
       "ttseReady": "Experience available",
       "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "skillSelectAll": "Select all",
+      "skillSelectOne": "Select {{name}}",
+      "skillFillSelected": "Fill selected ({{count}})",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
       "ttseResult": {
-        "triggered": "Triggered; TTSE is generating and saving the experience in the background",
+        "triggered": "Triggered",
         "failed": "Trigger failed"
       },
       "blocked": "Unavailable: {{reason}}",
@@ -2045,7 +2076,8 @@
     },
     "composer": {
       "collapse": "Collapse composer",
-      "expand": "Expand composer"
+      "expand": "Expand composer",
+      "unavailable": "The composer is unavailable during diagnosis"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -2323,6 +2355,7 @@
       "unmuteMic": "Unmute microphone",
       "muteSpeaker": "Mute model audio",
       "unmuteSpeaker": "Unmute model audio",
+      "startSharing": "Share screen",
       "stopSharing": "Stop screen sharing",
       "listening": "Listening",
       "connecting": "Connecting",
@@ -2440,6 +2473,12 @@
       "tools": "Tools & Connectors",
       "skills": "Skills",
       "notReported": "Not reported",
+      "cumulativeTitle": "Cumulative tokens",
+      "mainAgentTokens": "Main Agent",
+      "otherAgentTokens": "Subagents / team members",
+      "inputTokens": "Input",
+      "outputTokens": "Output",
+      "partialReported": "Some calls did not report usage",
       "close": "Close context details",
       "noBreakdown": "No category details returned by the backend"
     },
@@ -3031,7 +3070,6 @@
       "builtinPathPlaceholder": "Built-in CLI (managed)",
       "installNow": "Install",
       "notInstalledHint": "No SDK detected yet. Click",
-      "removePath": "Remove this path from history",
       "savedHint": "Saved",
       "detectSucceeded": "Detection passed",
       "editPath": "Edit",
@@ -4476,7 +4514,7 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
-      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
+      "installOutcomeUnknown": "The connection dropped before the install result was confirmed. The package is kept — retry the install from My Experts later.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
@@ -5784,17 +5822,17 @@
     }
   },
   "rsi": {
-    "title": "Experiments",
-    "createExperiment": "Create Experiment",
+    "title": "RSI",
+    "createExperiment": "Create RSI Task",
     "empty": {
-      "title": "No experiment tasks",
-      "hint": "We support creating Harness, paper, and program optimization experiments"
+      "title": "No RSI tasks",
+      "hint": "Create RSI tasks for Harness, paper, and program optimization"
     },
     "intro": {
       "title": "RSI · Recursive Self-Improvement",
       "lead": "Make AI stronger with use—from simply working to working better",
       "stepsTitle": "How it works",
-      "step1Title": "Step 1: Create an experiment",
+      "step1Title": "Step 1: Create an RSI task",
       "step1Body": "Choose Harness Optimization or Artifact Optimization (paper or program), fill in the required parameters, and click Create to start automatic optimization.",
       "step2Title": "Step 2: Visualize the optimization",
       "step2Body": "Track training progress and score curves in real time. Explore the RSI tree search and let the process iterate automatically without manual intervention.",
@@ -5807,15 +5845,15 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI experiments",
+      "title": "RSI Tasks",
       "loading": "Loading…",
-      "error": "Failed to load experiments"
+      "error": "Failed to load RSI tasks"
     },
     "createDialog": {
-      "title": "Create Experiment",
-      "nameLabel": "Experiment name",
-      "namePlaceholder": "Enter experiment name",
-      "typeLabel": "Experiment type",
+      "title": "Create RSI Task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "Enter task name",
+      "typeLabel": "Task type",
       "typeHarness": "Harness Optimization",
       "typeArtifact": "Artifact Optimization",
       "artifactSubtypeLabel": "Artifact subtype",
@@ -5860,7 +5898,7 @@
       "cancel": "Cancel",
       "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
       "validation": {
-        "nameRequired": "Please enter experiment name",
+        "nameRequired": "Please enter task name",
         "datasetRequired": "Please select dataset file",
         "optimizerRequired": "Please select optimizer model",
         "testerRequired": "Please select tester model",
@@ -5953,7 +5991,7 @@
       "failureReason": "Failure reason",
       "rejectionReason": "Why it was not adopted",
       "inheritFrom": "Inherited from",
-      "baselineDescription": "This is the starting version for the experiment.",
+      "baselineDescription": "This is the starting version for the optimization.",
       "noChangeSummary": "Inherited from the parent; no structured change summary is available.",
       "nodeArtifact": "Node artifact",
       "processing": "Processing…",
@@ -5961,13 +5999,13 @@
       "nodeId": "Node ID",
       "nodeType": "Lifecycle",
       "close": "Close",
-      "deleteTitle": "Delete experiment",
-      "deleteBody": "Experiment data cannot be restored after deletion. Delete this experiment?",
-      "pauseTitle": "Pause experiment",
-      "pauseBody": "The current optimization will stop. Pause this experiment?",
-      "stopTitle": "Stop task",
-      "stopBody": "Stopping will terminate the current optimization task. Stop this experiment?",
-      "queuedTitle": "This experiment is queued",
+      "deleteTitle": "Delete RSI task",
+      "deleteBody": "RSI task data cannot be restored after deletion. Delete this task?",
+      "pauseTitle": "Pause RSI task",
+      "pauseBody": "The current optimization will stop. Pause this RSI task?",
+      "stopTitle": "Stop RSI task",
+      "stopBody": "Stopping will terminate the current optimization task. Stop this RSI task?",
+      "queuedTitle": "This RSI task is queued",
       "queuedHint": "1 more task is optimizing. Please wait."
     },
     "stage": {
@@ -6111,6 +6149,16 @@
     "viewResult": "View task result",
     "sendFailed": "Unable to process this message. Please retry.",
     "sending": "Sending…",
+    "processing": "Processing…",
+    "mentionPhase": {
+      "dispatching": "Received, processing…",
+      "planning": "Planning tasks…",
+      "generating": "Generating task plan…",
+      "executing": "Executing tasks…",
+      "executingProgress": "Running subtasks ({{completed}}/{{total}})…",
+      "reviewing": "Reviewing results…",
+      "processing": "Processing…"
+    },
     "open": "Chat",
     "create": "New group chat",
     "defaultName": "New group",

@@ -1175,3 +1175,71 @@ async def test_permission_ack_callback_failure_closes_stream_and_releases_contro
     events = await _collect(harness.runtime.stream(request, trigger_hook=False))
     assert [event.event_type for event in events] == ["runtime.accepted"]
     assert harness.admission.end_control.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("invalid", ["empty", "missing", "null", "object", "tuple", "member"])
+async def test_malformed_permission_answer_keeps_original_execution(harness, streaming, invalid):
+    from jiuwenswarm.runtime.interaction import InteractionAnswerError
+
+    await _seed_waiting(harness)
+    before = harness.coordinator.snapshot_session(SESSION_ID)
+    clears = harness.admission.clear_interaction_pending.await_count
+    delivered = Mock(wraps=harness.agent.deliver_control_input)
+    harness.agent.deliver_control_input = delivered
+    request = _answer(source="permission_interrupt").to_agent_request()
+    values = {"empty": [], "null": None, "object": {}, "tuple": ({},), "member": [None]}
+    if invalid == "missing":
+        request.params.pop("answers")
+    else:
+        request.params["answers"] = values[invalid]
+    with pytest.raises(InteractionAnswerError):
+        if streaming:
+            await _collect(harness.runtime.stream(request, trigger_hook=False))
+        else:
+            await harness.runtime.invoke(request, trigger_hook=False)
+    after = harness.coordinator.snapshot_session(SESSION_ID)
+    assert after.generation == before.generation
+    assert after.executions == before.executions
+    assert harness.admission.clear_interaction_pending.await_count == clears
+    assert harness.coordinator.has_control_target(SESSION_ID, "question_1")
+    delivered.assert_not_called()
+    await _collect(harness.runtime.stream(
+        _answer(source="permission_interrupt").to_agent_request(), trigger_hook=False,
+    ))
+    assert delivered.call_count == 1
+    assert not harness.coordinator.has_control_target(SESSION_ID, "question_1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminated", [False, True])
+async def test_typed_permission_prepare_rejection_restores_only_live_pending(harness, terminated):
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueueError
+
+    await _seed_waiting(harness)
+    pending = {"question_1"}
+    harness.admission.mark_interaction_pending.side_effect = lambda _sid, rid: pending.add(rid)
+    harness.admission.clear_interaction_pending.side_effect = lambda _sid, rid: pending.discard(rid)
+    parent = _execution(harness.coordinator.snapshot_session(SESSION_ID), "root-request")
+
+    async def delivered(request):
+        if len(request.params["answers"]) != 1:
+            if terminated:
+                handle = harness.coordinator._registry.get(parent.execution_id)
+                harness.coordinator._registry.mark_terminal(handle, SessionExecutionState.CANCELLED)
+            raise RootPermissionQueueError("permission_queue_one_answer_required")
+        yield _chunk(request, "chat.final", content="valid retry")
+
+    harness.agent.deliver_control_input = delivered
+    answer = _answer(source="permission_interrupt")
+    invalid = replace(answer, answers=answer.answers * 2)
+    with pytest.raises(RootPermissionQueueError, match="permission_queue_one_answer_required"):
+        await _collect(harness.runtime.stream_interaction_answer(invalid, trigger_hook=False))
+    assert pending == (set() if terminated else {"question_1"})
+    assert harness.coordinator.has_control_target(SESSION_ID, "question_1") is not terminated
+    if not terminated:
+        events = await _collect(harness.runtime.stream_interaction_answer(answer, trigger_hook=False))
+        assert [event.payload.get("content") for event in events] == ["valid retry"]
+        assert pending == set()
+        assert not harness.coordinator.has_control_target(SESSION_ID, "question_1")
