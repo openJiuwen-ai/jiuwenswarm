@@ -179,6 +179,7 @@
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
       "duration": "Video duration",
+      "audioDuration": "Audio duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -195,8 +196,15 @@
     "mediaSettings": {
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
+      "audioTitle": "Audio settings",
       "durationValue": "{{seconds}}s",
       "durationUnit": "s",
+      "minuteUnit": "min",
+      "secondUnit": "sec",
+      "audioDurationDefault": "Film default duration",
+      "audioDurationMinutes": "{{count}} min",
+      "audioDurationSeconds": "{{count}} sec",
+      "audioDurationBoth": "{{minutes}} min {{seconds}} sec",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -276,7 +284,9 @@
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
       "resize": "Resize",
-      "resizeHint": "Drag the bottom-right corner to resize this node"
+      "resizeHint": "Drag the bottom-right corner to resize this node",
+      "playAudio": "Play audio",
+      "pauseAudio": "Pause audio"
     },
     "edge": {
       "delete": "Delete connection"

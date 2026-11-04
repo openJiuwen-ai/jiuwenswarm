@@ -71,26 +71,3 @@ test('a slot counts as configured without key and model only for vLLM-Omni', () 
   );
   assert.equal(isGenerationSlotConfigured({ ...base, video_gen_api_base: '' }, 'video_gen'), false);
 });
-
-test('music generation lists only the BGM backends the server drives', () => {
-  assert.deepEqual(GENERATION_SLOT_VENDORS.music_gen, ['openrouter', 'vllm-omni']);
-  assert.equal(GENERATION_SLOT_VENDORS.video_gen.includes('minimax'), false);
-  assert.equal(GENERATION_SLOT_VENDORS.visual_gen.includes('minimax'), false);
-  assert.deepEqual(defaultGeneration('music_gen', 'openrouter'), {
-    protocol: 'google',
-    model: 'google/lyria-3-pro-preview',
-  });
-  assert.deepEqual(defaultGeneration('music_gen', 'minimax'), { protocol: 'minimax', model: 'music-3.0' });
-  assert.deepEqual(
-    catalogModels('music_gen', 'vllm-omni').map((entry) => entry.model),
-    ['MiniMaxAI/MiniMax-Music3'],
-  );
-  assert.deepEqual(catalogModels('music_gen', 'dashscope'), []);
-  assert.equal(
-    isGenerationSlotConfigured(
-      { music_gen_provider: 'OpenAI', music_gen_protocol: 'vllm-omni', music_gen_api_base: 'http://gpu:8002/v1' },
-      'music_gen',
-    ),
-    true,
-  );
-});

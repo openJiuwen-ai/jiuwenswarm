@@ -105,7 +105,7 @@ const DASHSCOPE_MODELS: Record<GenerationSlot, readonly string[]> = {
 const VLLM_OMNI_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['MiniMaxAI/MiniMax-H3'],
   visual_gen: ['Qwen/Qwen-Image-2512', 'black-forest-labs/FLUX.2-dev'],
-  music_gen: ['MiniMaxAI/MiniMax-Music3'],
+  music_gen: ['MiniMaxAI/MiniMax-Music3', 'm-a-p/YuE2-3B'],
 };
 
 function openRouterModelProtocol(modelId: string): string {

@@ -179,6 +179,7 @@
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
       "duration": "视频时长",
+      "audioDuration": "音频时长",
       "count": "生成数量",
       "browseFiles": "浏览文件",
       "dropHint": "或者拖拽到区域内",
@@ -195,8 +196,15 @@
     "mediaSettings": {
       "videoTitle": "视频参数",
       "imageTitle": "图片参数",
+      "audioTitle": "音频参数",
       "durationValue": "{{seconds}} 秒",
       "durationUnit": "秒",
+      "minuteUnit": "分",
+      "secondUnit": "秒",
+      "audioDurationDefault": "影片默认时长",
+      "audioDurationMinutes": "{{count}}分",
+      "audioDurationSeconds": "{{count}}秒",
+      "audioDurationBoth": "{{minutes}}分{{seconds}}秒",
       "loading": "正在读取生成参数…",
       "loadError": "无法读取生成参数：{{message}}",
       "saveError": "参数未保存：{{message}}"
@@ -276,7 +284,9 @@
       "deleteConfirmCancel": "取消",
       "deleteConfirmOk": "确定",
       "resize": "调整大小",
-      "resizeHint": "拖动右下角调整节点大小"
+      "resizeHint": "拖动右下角调整节点大小",
+      "playAudio": "播放音频",
+      "pauseAudio": "暂停音频"
     },
     "edge": {
       "delete": "删除连线"

@@ -14,6 +14,7 @@ import {
   writeMediaGeneratePatch,
 } from '../../mediaNodeConfig';
 import { DESIGNER_NODE_ROLE_MUSIC, type DesignerComfyuiConfig } from '../../executionGraphTypes';
+import { DesignerAudioSettingsMenu } from './DesignerAudioSettingsMenu';
 import { DesignerComfyuiParamsForm } from './DesignerComfyuiParamsForm';
 import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 import { DesignerMediaSettingsMenu } from './DesignerMediaSettingsMenu';
@@ -152,6 +153,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
               {!comfyui && (nodeType === 'image' || nodeType === 'video') ? (
                 <DesignerMediaSettingsMenu nodeId={nodeId} nodeType={nodeType} />
               ) : null}
+              {!comfyui && nodeType === 'audio' ? <DesignerAudioSettingsMenu nodeId={nodeId} /> : null}
               <button
                 type="button"
                 className={`designer-node-toolbar__send${editingLocked ? ' designer-edit-control' : ''}`}
