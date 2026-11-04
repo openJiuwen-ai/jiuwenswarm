@@ -109,6 +109,13 @@ def _kill_browser_by_user_data_dir(user_data_dir: str) -> int:
         taskkill = shutil.which("taskkill") or "taskkill"
         for proc_name in ("chrome.exe", "msedge.exe"):
             ps_script = (
+                # Pin the encoding of the redirected output on the PowerShell
+                # side too. Otherwise the bytes follow the console output code
+                # page inherited by the child -- OEM 936 on a default Windows
+                # console, but 65001 once `chcp 65001` ran or the CLI called
+                # SetConsoleOutputCP(65001) -- so no single Python-side codec is
+                # correct in every case.
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
                 f"Get-WmiObject Win32_Process -Filter \"name='{proc_name}'\" "
                 "| Select-Object -Property CommandLine,ProcessId "
                 "| ConvertTo-Json -Depth 1"
@@ -117,18 +124,23 @@ def _kill_browser_by_user_data_dir(user_data_dir: str) -> int:
                 result = subprocess.run(
                     [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_script],
                     capture_output=True, text=True, timeout=15,
-                    # PowerShell writes redirected output in the console output
-                    # code page (the OEM code page), which is neither the ANSI
-                    # code page nor UTF-8. `locale.getpreferredencoding()` cannot
-                    # be used here: under `PYTHONUTF8=1` (what `uv run` sets) it
-                    # reports "UTF-8", so non-ASCII paths in CommandLine would
-                    # decode to U+FFFD and the match below would never fire.
-                    # "oem" is the Windows-only alias for that code page.
-                    encoding="oem",
+                    # The script above makes the child write UTF-8 whatever the
+                    # console code page is, so the decode is UTF-8 here.
+                    # `errors="replace"` stays as a safety net, and a U+FFFD in
+                    # the payload is reported below instead of failing silently:
+                    # a mangled CommandLine never matches `normalized`, taskkill
+                    # is skipped and `killed` quietly stays 0.
+                    encoding="utf-8",
                     errors="replace",
                 )
                 if result.returncode == 0 and result.stdout.strip():
-                    items = json.loads(result.stdout.strip())
+                    output = result.stdout.lstrip("\ufeff")
+                    if "\ufffd" in output:
+                        logging.warning(
+                            "PowerShell 输出含无法解码的字节，"
+                            "残留浏览器进程可能无法按 user-data-dir 匹配"
+                        )
+                    items = json.loads(output.strip())
                     if isinstance(items, dict):
                         items = [items]
                     for item in items or []:
