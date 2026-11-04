@@ -128,6 +128,27 @@ def test_a2ui_prompt_forbids_reset_and_clear_form_buttons():
     assert "dataModelUpdate 初始化的值" in zh
 
 
+def test_a2ui_prompt_title_usage_hint_structure():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert 'usageHint "h1"' in en
+    assert 'usageHint "h2"' in en
+    assert 'usageHint "h3"' in en
+    assert "no section grouping" in en
+    assert 'inside the section MUST use usageHint "h3"' in en
+    assert "MUST always use" not in en
+    assert "exactly one input component" not in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert 'usageHint "h1"' in zh
+    assert 'usageHint "h2"' in zh
+    assert 'usageHint "h3"' in zh
+    assert "没有分组" in zh
+    assert "分组内每个输入组件正上方的标题必须用 usageHint \"h3\"" in zh
+    assert "只有一个输入组件" not in zh
+
+
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
     en = build_a2ui_autonomy_instruction("en")
 
