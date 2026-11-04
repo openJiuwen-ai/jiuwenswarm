@@ -121,6 +121,11 @@ import {
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
 import { buildExtensionSendPayload } from '../utils/enabledExtensions';
+import {
+  clearMemberCompressionEntriesForSession,
+  memberCompressionKey,
+  nextMemberCompressionSummary,
+} from '../utils/contextCompression';
 import { makeEventDedupKey } from '../utils/wsEventDedup';
 import {
   normalizeToolCallPayload,
@@ -1169,12 +1174,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const lastGoalGetAttemptAtRef = useRef<Map<string, number>>(new Map());
   const wasConnectedRef = useRef(false);
   const contextCompressionSummaryRef = useRef<Map<string, ContextCompressionSummary>>(new Map());
-  // 成员「本 turn 完成次数」的计数基数。成员的 store summary 兼任展示
-  // （完成汇总详情），不能当基数用——finish 后展示保留到下一条消息，若
-  // completed 继续以它累加，成员条会跨 turn 越滚越大（CR-002）。基数与
-  // 展示分离：基数在这里按 turn 清零，store summary 只在 turn 收尾时随
-  // 记录一起清。
-  const memberCompressionCountRef = useRef<Map<string, number>>(new Map());
+  // 成员「本 turn 压缩完成汇总」的累加基数（count 与详情列表同步起算）。
+  // 成员的 store summary 兼任展示（完成徽标与汇总详情），不能当基数用——
+  // finish 后展示保留到下一条消息，若 completed 继续以它续接，成员条会
+  // 跨 turn 越滚越大（CR-002）。基数与展示分离：基数在这里按 turn 清零，
+  // store 里保留的 summary 只是下一条消息前的展示快照。
+  const memberCompressionSummaryRef = useRef<Map<string, ContextCompressionSummary>>(new Map());
   const pendingContextCompressionStartRef =
     useRef<Map<string, PendingContextCompressionStart>>(new Map());
   const pendingTeamMemberContextCompressionStartRef =
@@ -1569,18 +1574,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, []);
 
-  const getTeamMemberContextCompressionKey = useCallback(
-    (sessionId: string, memberId: string) => `${sessionId}\u0000${memberId}`,
-    []
-  );
-
   const clearPendingTeamMemberContextCompressionStart = useCallback((sessionId: string, memberId: string) => {
-    const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+    const key = memberCompressionKey(sessionId, memberId);
     const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
     if (!pending) return;
     window.clearTimeout(pending.timer);
     pendingTeamMemberContextCompressionStartRef.current.delete(key);
-  }, [getTeamMemberContextCompressionKey]);
+  }, []);
 
   const clearAllPendingTeamMemberContextCompressionStarts = useCallback(() => {
     for (const pending of pendingTeamMemberContextCompressionStartRef.current.values()) {
@@ -1594,13 +1594,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     contextCompressionSummaryRef.current.delete(sessionId);
     useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
     // 防御性对称：流未正常收尾（断连等）就发新消息时，reset 是唯一的 turn
-    // 边界——成员的基数与展示记录一并清掉，不让上一 turn 泄漏进来。
+    // 边界——成员的基数按会话前缀清（含 turn 内被 X 关闭、store 已无记录
+    // 的成员），展示记录随 store 一并清，不让上一 turn 泄漏进来。
+    clearMemberCompressionEntriesForSession(memberCompressionSummaryRef.current, sessionId);
     const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
     for (const memberId of Object.keys(memberStates ?? {})) {
-      memberCompressionCountRef.current.delete(getTeamMemberContextCompressionKey(sessionId, memberId));
       setTeamMemberContextCompressionStatus(sessionId, memberId, undefined, undefined);
     }
-  }, [clearPendingContextCompressionStart, getTeamMemberContextCompressionKey, setTeamMemberContextCompressionStatus]);
+  }, [clearPendingContextCompressionStart, setTeamMemberContextCompressionStatus]);
 
   const finishContextCompressionTurn = useCallback((sessionId: string) => {
     clearPendingContextCompressionStart(sessionId);
@@ -1620,14 +1621,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     // 不清会把本 turn 的计数泄漏进下一个 turn 的徽标。
     contextCompressionSummaryRef.current.delete(sessionId);
 
-    // 成员侧对齐同一 turn 边界：计数基数无条件清（新 turn 从 0 重新累计），
-    // 展示（完成汇总详情）按中断抑制保留到下一条消息——与主会话的
-    // ref.delete + summary 展示位完全对称。基数在 ref、展示在 store，
-    // 二者分离后 store 里保留的 summary 不会再被当作下一 turn 的累加起点。
+    // 成员侧对齐同一 turn 边界：turn 级汇总按会话前缀无条件清（含 turn 内
+    // 被 X 关闭、store 已无记录的成员——按 store 枚举会漏掉它们），新 turn
+    // 从 0 重新累计；展示（完成汇总详情）按中断抑制保留到下一条消息——与
+    // 主会话的 ref.delete + summary 展示位完全对称。基数在 ref、展示在
+    // store，二者分离后 store 里保留的 summary 不会再被当作下一 turn 的累加起点。
+    clearMemberCompressionEntriesForSession(memberCompressionSummaryRef.current, sessionId);
     const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
     for (const memberId of Object.keys(memberStates ?? {})) {
-      const key = getTeamMemberContextCompressionKey(sessionId, memberId);
-      memberCompressionCountRef.current.delete(key);
       const memberRuntime = memberStates?.[memberId]?.runtime;
       const memberInterrupted =
         memberRuntime?.status === 'cancelled' || memberRuntime?.status === 'paused';
@@ -1639,7 +1640,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         !memberInterrupted && memberSummary && memberSummary.count > 0 ? memberSummary : undefined,
       );
     }
-  }, [clearPendingContextCompressionStart, getTeamMemberContextCompressionKey, setTeamMemberContextCompressionStatus]);
+  }, [clearPendingContextCompressionStart, setTeamMemberContextCompressionStatus]);
 
   const buildContextCompressionRuntimeState = useCallback(
     (payload: ContextCompressionStatePayload): Omit<ContextCompressionRuntime, 'status'> | null => {
@@ -1769,18 +1770,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'completed') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
-        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        const key = memberCompressionKey(sessionId, memberId);
         // 基数取 turn 级 ref 而非 store summary：store summary 在 turn 收尾后
-        // 会保留展示（与主会话徽标对称），若以它累加，成员计数跨 turn 越滚越大
-        // （CR-002）。ref 在 finishContextCompressionTurn 按 turn 清零。
-        const currentCount = memberCompressionCountRef.current.get(key) ?? 0;
-        const currentSummary =
-          useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression[memberId]?.summary;
-        memberCompressionCountRef.current.set(key, currentCount + 1);
-        const nextSummary = {
-          count: currentCount + 1,
-          summaries: [...(currentSummary?.summaries ?? []), runtimeState.summary],
-        };
+        // 会保留展示（与主会话徽标对称），若以它续接，成员计数与详情跨 turn
+        // 越滚越大（CR-002）。count 与详情列表同步从 ref 起算，ref 在
+        // finishContextCompressionTurn 按会话前缀清零。
+        const nextSummary = nextMemberCompressionSummary(
+          memberCompressionSummaryRef.current.get(key),
+          runtimeState.summary,
+        );
+        memberCompressionSummaryRef.current.set(key, nextSummary);
         setTeamMemberContextCompressionStatus(sessionId, memberId, {
           ...runtimeState,
           status: 'completed',
@@ -1792,7 +1791,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
         // 计数保留：成员的「完成 N 次」与主会话同理按 turn 累计，
         // started 不清（理由同主会话分支）；中断轮由收尾抑制负责。
-        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        const key = memberCompressionKey(sessionId, memberId);
         const pending: PendingContextCompressionStart = {
           // 成员压缩与 leader 压缩各自独立计时，同样每轮 started 重新开始。
           runtimeState: { ...runtimeState, startedAt: Date.now() },
@@ -1811,7 +1810,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       if (status === 'noop' || status === 'skipped') {
-        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        const key = memberCompressionKey(sessionId, memberId);
         const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
         if (pending && !pending.shown) {
           clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
@@ -1828,7 +1827,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       if (status === 'cancelled' || status === 'paused') {
-        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        const key = memberCompressionKey(sessionId, memberId);
         const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
         if (pending && !pending.shown) {
           // 与主会话分支对称：提示未亮出就收到终态时静默丢弃。
@@ -1854,7 +1853,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     [
       buildContextCompressionRuntimeState,
       clearPendingTeamMemberContextCompressionStart,
-      getTeamMemberContextCompressionKey,
       setTeamMemberContextCompressionStatus,
     ]
   );
@@ -1866,9 +1864,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       });
       pendingContextCompressionStartRef.current.clear();
       clearAllPendingTeamMemberContextCompressionStarts();
-      // hook 卸载（页面级）时计数基数一并作废；残留条目只占内存，不会
+      // hook 卸载（页面级）时 turn 级基数一并作废；残留条目只占内存，不会
       // 再被读（成员 read 点都伴随同 key 的 delete/set）。
-      memberCompressionCountRef.current.clear();
+      memberCompressionSummaryRef.current.clear();
       contextCompressionSummaryRef.current.clear();
     };
   }, [clearAllPendingTeamMemberContextCompressionStarts]);
