@@ -5195,6 +5195,36 @@ class SkillManager:
                 f"上传文件不存在: {path_str}",
             ) from exc
 
+        session_id = str(
+            params.get("_session_id") or params.get("session_id") or ""
+        ).strip()
+        if is_enterprise():
+            from gateway.common.attachment_safety import safe_session_dirname
+            from jiuwenswarm.common.utils import get_agent_sessions_dir
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            if (
+                not session_id
+                or session_id in {".", ".."}
+                or safe_session_dirname(session_id) != session_id
+            ):
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "会话标识非法")
+            if Path(path_str).expanduser().is_symlink():
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "上传内容不能是符号链接")
+            tenant_root = TenantContext.current_tenant_root()
+            uploads = get_agent_sessions_dir() / session_id / "uploads"
+            try:
+                uploads_resolved = uploads.resolve()
+                tenant_resolved = tenant_root.resolve() if tenant_root is not None else None
+            except (OSError, RuntimeError) as exc:
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, f"上传目录无效: {exc}") from exc
+            if tenant_resolved is None or not uploads_resolved.is_relative_to(tenant_resolved):
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "上传路径不在当前租户内")
+            if src.parent != uploads_resolved:
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "仅支持当前会话 uploads 下的文件")
+            if not src.is_file() or src.is_symlink():
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "上传内容必须是普通文件")
+
         if not src.is_file():
             raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
         name_lower = src.name.lower()

@@ -45,6 +45,17 @@ def _get_header(headers: dict[str, str], name: str) -> str:
     return ""
 
 
+def _cookie_value(headers: dict[str, str], name: str) -> str:
+    raw = _get_header(headers, "cookie")
+    if not raw:
+        return ""
+    for chunk in raw.split(";"):
+        key, _, value = chunk.strip().partition("=")
+        if key == name and value:
+            return value.strip().strip('"')
+    return ""
+
+
 def _trust_client_tenant_headers(client_host: str | None) -> bool:
     explicit = os.getenv("GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS", "").strip().lower()
     if explicit in {"1", "true", "yes"}:
@@ -224,5 +235,7 @@ async def dispatch_http_request(
         outbound=outbound,
         session_id=session_id,
         user_message=user_message,
+        authorization=_get_header(hdrs, "authorization") or None,
+        jiuwenclaw_id=_cookie_value(hdrs, "jiuwenclaw_id") or None,
     )
     return outbound, req_id, session_id
