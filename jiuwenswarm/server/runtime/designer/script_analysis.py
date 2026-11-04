@@ -1083,12 +1083,18 @@ _CAST_PLURAL_PERSON_RE = re.compile(
 )
 
 # Collectives that are groups by definition, in either authoring language.
+# Chinese is matched by whole compound words only: a bare 群/队/组/班/帮/众
+# would also match inside 排队, 组织, 上班, 帮忙 and 观众-shaped words that are
+# not a group, so each cue carries its own disambiguating characters.
 _CAST_GROUP_NOUN_RE = re.compile(
     r"(?i)(\bcrowd\b|\bgroup\b|\bteam\b|\bensemble\b|\bpack\b|\bflock\b|\bherd\b"
     r"|\baudience\b|\bcongregation\b|\bfamily\b|\bcouple\b|\bduo\b|\btrio\b|\btwins?\b"
     r"|\bcrew\b|\bextras\b|\btownsfolk\b|\bprocession\b"
-    r"|群|队|组|批|伙|帮|众|班|团队|群体|人群|群众|市民|居民|观众|路人|行人"
-    r"|众人|大家|家族|同事|工人们|孩子们)"
+    r"|团队|群体|人群|群众|群众演员|众人|大家|家族|家族成员|同事|工人们|孩子们"
+    r"|市民|居民|观众|听众|路人|行人|游客|旅客|乘客|顾客"
+    r"|队伍|小队|大队|车队|球队|乐队|舞队|合唱团|仪仗队|方阵|列队"
+    r"|上班族|学生|学生们|年轻人|老人们|老年人|居民们|顾客们|朋友们"
+    r"|一族|一伙|一帮|一班|一批|成群)"
 )
 
 _CAST_CN_COUNT_RE = re.compile(r"[两二三四五六七八九十百千数几]+\s*[个位名人群队组批伙帮]")
@@ -1110,8 +1116,8 @@ def _cast_group_size(text: str) -> str:
     for match in _CAST_COUNT_WORD_RE.finditer(text):
         # A bare number is only a headcount when people follow it, or when it
         # counts the collective just named ("a family of four").
-        tail = text[match.end() : match.end() + 48]
-        head = text[max(0, match.start() - 8) : match.start()]
+        tail = text[match.end():match.end() + 48]
+        head = text[max(0, match.start() - 8):match.start()]
         if _CAST_PLURAL_PERSON_RE.search(tail) or _CAST_OF_RE.search(head):
             return re.sub(r"\s+", " ", match.group(0)).strip()
     return ""
