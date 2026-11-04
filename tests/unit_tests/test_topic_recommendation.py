@@ -547,6 +547,7 @@ def test_deleting_dedicated_topic_model_persists_disabled_state_on_disk(chat_con
     assert controls.save_recommendation_model_configuration({
         "provider": "OpenAI", "model": "dedicated-topic-model",
         "api_base": "https://topics.example/v1", "api_key": "test-topic-key",
+        "context_window_tokens": "128k",
     })
     switches.save_recommendation_switches(topic_enabled=True, now=1234.0)
     assert controls.save_recommendation_model("")
@@ -594,17 +595,28 @@ async def test_delete_topic_model_rpc_disables_runtime_and_notifies_clients(sett
 def test_dedicated_topic_configuration_does_not_add_chat_models(settings):
     settings["models"] = [{"model_id": "original-chat-model"}]
     values = {"model": "topic-only", "provider": "OpenAI", "api_base": "https://topics.example/v1",
-              "api_key": "test-key", "vendor_key": "", "plan": ""}
+              "api_key": "test-key", "vendor_key": "", "plan": "",
+              "context_window_tokens": "256k"}
     assert controls.save_recommendation_model_configuration(values)
     assert settings["models"] == [{"model_id": "original-chat-model"}]
-    assert controls.recommendation_model_config(environ={}).model == "topic-only"
+    config = controls.recommendation_model_config(environ={})
+    assert config.model == "topic-only"
+    assert config.context_window_tokens == 256 * 1024
     public = controls.recommendation_model_configuration()
     assert public["has_api_key"] is True
+    assert public["context_window_tokens"] == 256 * 1024
     assert "api_key" not in public
     assert controls.recommendation_model_configuration(include_api_key=True)["api_key"] == "test-key"
-    assert controls.save_recommendation_model_configuration({**values, "model": "edited", "api_key": ""})
+    assert controls.save_recommendation_model_configuration({
+        **values, "model": "edited", "api_key": "", "context_window_tokens": "512K",
+    })
     assert settings["recommendation"]["model_config"]["api_key"] == "test-key"
+    assert settings["recommendation"]["model_config"]["context_window_tokens"] == 512 * 1024
+    assert controls.recommendation_model_config(environ={}).context_window_tokens == 512 * 1024
     assert not controls.save_recommendation_model_configuration({**values, "api_key": "", "api_base": "https://other.example"})
+    assert not controls.save_recommendation_model_configuration({
+        **{key: value for key, value in values.items() if key != "context_window_tokens"},
+    })
     assert controls.save_recommendation_model("")
     assert controls.recommendation_model_configuration() == {}
     assert settings["recommendation"]["topic_enabled"] is False
@@ -622,15 +634,29 @@ async def test_dedicated_model_rpc_saves_without_disabling_an_enabled_switch(set
     monkeypatch.setattr(recommendation_rpc, "_status_payload", AsyncMock(return_value={"enabled": True}))
     result = await recommendation_rpc.dispatch_recommendation(
         host, action="select_model", params={"model": "", "configuration": {
-            "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1", "api_key": "test-key",
+            "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1",
+            "api_key": "test-key", "context_window_tokens": "128k",
         }}, session_id="test", request_id="configure-model",
     )
     assert result.ok is True
     assert settings["recommendation"]["model_config"]["model"] == "topics"
+    assert settings["recommendation"]["model_config"]["context_window_tokens"] == 128 * 1024
     assert settings["recommendation"]["topic_enabled"] is True
     service.reload_config.assert_awaited_once()
     service.set_enabled.assert_not_awaited()
     assert result.events == []
+
+
+def test_legacy_dedicated_topic_model_gets_default_context_window(settings):
+    settings["recommendation"] = {"model_config": {
+        "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1",
+        "api_key": "saved-test-key",
+    }}
+    config = controls.recommendation_model_config(environ={})
+    assert config is not None
+    assert config.context_window_tokens == controls.RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+    public = controls.recommendation_model_configuration()
+    assert public["context_window_tokens"] == controls.RECOMMENDATION_CONTEXT_WINDOW_TOKENS
 
 
 @pytest.mark.asyncio
@@ -652,6 +678,7 @@ async def test_status_returns_saved_key_only_when_explicitly_requested(settings,
         )
         assert result.ok
         assert ("api_key" in result.payload["model_config"]) is includes_key
+        assert result.payload["model_config"]["context_window_tokens"] == controls.RECOMMENDATION_CONTEXT_WINDOW_TOKENS
         if includes_key:
             assert result.payload["model_config"]["api_key"] == "saved-test-key"
 
@@ -1953,6 +1980,133 @@ def test_cold_start_serve_shows_corpus_cards_without_history(tmp_path):
         assert all(topic["title"] and topic["prompt"] for topic in response["topics"])
     finally:
         pass
+
+
+def test_empty_personalized_pool_still_serves_presets_when_provider_refused(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        PROVIDER_INVOCATION_EVENT_TYPE,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        POLICY_ID,
+    )
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    store.record_event({
+        "session_id": "usage",
+        "slate_id": "usage",
+        "event_type": PROVIDER_INVOCATION_EVENT_TYPE,
+        "topic_id": "request_failed",
+        "policy_id": "topic-starter-provider-invocation-v1",
+        "selection_mode": "provider_invocation",
+        "propensity_reason": "not_estimated",
+        "payload": {
+            "request_id": "req-1",
+            "attempt_id": "attempt-1",
+            "status": "request_failed",
+            "model": "test",
+            "failure_reason": "invalid_key",
+        },
+        "created_at": 1_700_000_000.0,
+    })
+    store.record_event({
+        "session_id": "topic-starter-background",
+        "slate_id": "attempt",
+        "event_type": "background_generation_failed",
+        "topic_id": "attempt",
+        "policy_id": POLICY_ID,
+        "selection_mode": "background_generation",
+        "propensity_reason": "not_estimated",
+        "payload": {
+            "reason": "provider_request_failed",
+            "generation_trigger_key": {
+                "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                "model": "test",
+            },
+        },
+        "created_at": 1_700_000_000.0,
+    })
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 1_700_000_000.0,
+    )
+    assert service.configuration_status()["provider_refused"] is True
+    assert service.preparation_state(GLOBAL_NEW_CHAT_SCOPE) == "provider_unavailable"
+    response = service.serve(
+        "session-new",
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        project_id=None,
+    )
+    assert response["available"] is True
+    assert 1 <= len(response["topics"]) <= 4
+    assert response["selection_mode"] == "generic_dynamic"
+    assert response["preparation_state"] == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_no_content_stand_in_presets_mark_preparing(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        POLICY_ID,
+    )
+
+    started = asyncio.Event()
+
+    async def generate(_trigger, _config, _scope, _project_id, _visit_id):
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("stand-in seed should stay cancelled")
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    store.record_event({
+        "session_id": "topic-starter-background",
+        "slate_id": "attempt",
+        "event_type": "background_generation_abstained",
+        "topic_id": "attempt",
+        "policy_id": POLICY_ID,
+        "selection_mode": "background_generation",
+        "propensity_reason": "not_estimated",
+        "payload": {
+            "reason": "no_eligible_history",
+            "generation_trigger_key": {
+                "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                "model": "test",
+            },
+        },
+        "created_at": 1_700_000_000.0,
+    })
+    service = TopicService(
+        store,
+        generate=generate,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 1_700_000_001.0,
+    )
+    try:
+        assert service.preparation_state(GLOBAL_NEW_CHAT_SCOPE) == "no_content"
+        response = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert response["available"] is True
+        assert response["topics"]
+        assert response["selection_mode"] == "generic_dynamic"
+        assert response["preparation_state"] == "preparing"
+        await asyncio.wait_for(started.wait(), timeout=5)
+    finally:
+        await service.shutdown()
 
 
 def test_disabled_serve_still_returns_preset_cards(tmp_path):

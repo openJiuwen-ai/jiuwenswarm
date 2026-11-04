@@ -3725,9 +3725,15 @@ def _recent_rid_summaries(
 def _rid_request_estimate_payload(rid_inputs: Mapping[str, Any]) -> str:
     """The serialized RID request, for its context-window preflight."""
 
+    binding = rid_inputs["binding"]
+    binding_payload = (
+        binding.as_provenance()
+        if hasattr(binding, "as_provenance")
+        else binding
+    )
     return json.dumps(
         {
-            "binding": rid_inputs["binding"].as_provenance(),
+            "binding": binding_payload,
             "input_snapshot_id": rid_inputs["input_snapshot_id"],
             "user_profile": rid_inputs["user_profile"],
             "long_term_profile_interests": [
@@ -3748,6 +3754,138 @@ def _rid_request_estimate_payload(rid_inputs: Mapping[str, Any]) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _fit_rid_inputs_to_budget(
+    rid_inputs: dict[str, Any],
+    *,
+    counter: history.StageTokenCounter,
+    limit: int,
+    required_summary_ids: Iterable[str] = (),
+) -> bool:
+    """Drop oldest optional RID inputs until the one call fits.
+
+    Short-delta summaries stay until every optional summary is gone, then the
+    oldest required summary, then the oldest long-term profile interest. Returns
+    False only when the fixed envelope itself still exceeds ``limit``.
+    """
+
+    required = {str(item) for item in required_summary_ids}
+
+    def estimate() -> int:
+        return counter.estimate_stage_tokens(
+            _RID_API_SYSTEM_PROMPT,
+            _rid_request_estimate_payload(rid_inputs),
+            _RID_RESERVED_OUTPUT_TOKENS,
+        )
+
+    while True:
+        if estimate() <= limit:
+            return True
+        summaries = list(rid_inputs.get("session_summaries") or ())
+        droppable = sorted(
+            (
+                summary
+                for summary in summaries
+                if str(summary.session_summary_id) not in required
+            ),
+            key=lambda item: (float(item.completed_at), str(item.session_summary_id)),
+        )
+        if droppable:
+            drop_id = droppable[0].session_summary_id
+            rid_inputs["session_summaries"] = tuple(
+                summary
+                for summary in summaries
+                if summary.session_summary_id != drop_id
+            )
+            continue
+        if summaries:
+            oldest = min(
+                summaries,
+                key=lambda item: (float(item.completed_at), str(item.session_summary_id)),
+            )
+            rid_inputs["session_summaries"] = tuple(
+                summary
+                for summary in summaries
+                if summary.session_summary_id != oldest.session_summary_id
+            )
+            continue
+        interests = list(rid_inputs.get("long_term_profile_interests") or ())
+        if interests:
+            oldest_interest = min(
+                interests,
+                key=lambda item: (
+                    int(getattr(item, "profile_semantic_version", 0) or 0),
+                    str(item.interest_summary_id),
+                ),
+            )
+            rid_inputs["long_term_profile_interests"] = tuple(
+                interest
+                for interest in interests
+                if interest.interest_summary_id != oldest_interest.interest_summary_id
+            )
+            continue
+        return False
+
+
+def _recent_finalizer_estimate_payload(
+    *,
+    input_snapshot_id: str,
+    discussion_coverage: Any,
+    previously_offered: Any,
+    candidates: Sequence[Mapping[str, Any]],
+) -> str:
+    return json.dumps(
+        {
+            "input_snapshot_id": input_snapshot_id,
+            "discussion_coverage": discussion_coverage,
+            "previously_offered": previously_offered,
+            "candidates": list(candidates),
+            "request_id": f"v6-finalize-{'0' * 32}",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _fit_recent_finalizer_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    counter: history.StageTokenCounter,
+    limit: int,
+    input_snapshot_id: str,
+    discussion_coverage: Any,
+    previously_offered: Any,
+    reserved_output: int = 4096,
+) -> list[dict[str, Any]] | None:
+    """Drop trailing documents, then trailing candidates, until the call fits."""
+
+    fitted = [dict(item) for item in candidates]
+    for item in fitted:
+        item["documents"] = list(item.get("documents") or [])
+
+    def estimate(current: Sequence[Mapping[str, Any]]) -> int:
+        return counter.estimate_stage_tokens(
+            _RECENT_FINALIZER_PROMPT,
+            _recent_finalizer_estimate_payload(
+                input_snapshot_id=input_snapshot_id,
+                discussion_coverage=discussion_coverage,
+                previously_offered=previously_offered,
+                candidates=current,
+            ),
+            reserved_output,
+        )
+
+    while fitted:
+        if estimate(fitted) <= limit:
+            return fitted
+        last = fitted[-1]
+        documents = list(last.get("documents") or [])
+        if len(documents) > 1:
+            # Keep the first document as the lead; drop older extras from the tail.
+            last["documents"] = documents[:-1]
+            continue
+        fitted.pop()
+    return None
 
 
 def _completed_answers(
@@ -5411,11 +5549,13 @@ class TopicPipeline:
         return counter, int(config.context_window_tokens)
 
     @staticmethod
-    def _preflight_rid_inputs(
+    def _fit_rid_inputs(
         config: ArkBackgroundConfig,
-        rid_inputs: Mapping[str, Any],
+        rid_inputs: dict[str, Any],
+        *,
+        required_summary_ids: Iterable[str] = (),
     ) -> None:
-        """Bound the one RID call by the provider's context window (fail closed)."""
+        """Shrink the one RID call to the provider window by dropping oldest inputs."""
 
         if config.context_window_tokens is None:
             raise TerminalGenerationRejection("rid_context_limit_unverified")
@@ -5425,17 +5565,18 @@ class TopicPipeline:
             raise TerminalGenerationRejection(
                 "rid_context_limit_unverified"
             ) from exc
-        preflight = history.preflight_stage(
-            counter,
-            history.ContextLimitInfo(
-                value=int(config.context_window_tokens),
-                source="ARK_CONTEXT_WINDOW_TOKENS",
-            ),
-            _RID_API_SYSTEM_PROMPT,
-            _rid_request_estimate_payload(rid_inputs),
-            _RID_RESERVED_OUTPUT_TOKENS,
-        )
-        if preflight.status != "fit":
+        try:
+            fitted = _fit_rid_inputs_to_budget(
+                rid_inputs,
+                counter=counter,
+                limit=int(config.context_window_tokens),
+                required_summary_ids=required_summary_ids,
+            )
+        except history.ContextCountingUnverified as exc:
+            raise TerminalGenerationRejection(
+                "rid_context_limit_unverified"
+            ) from exc
+        if not fitted:
             raise TerminalGenerationRejection("rid_context_limit")
 
     async def _summarize_sessions(
@@ -6060,7 +6201,13 @@ class TopicPipeline:
         )
         if reused is not None:
             return reused
-        self._preflight_rid_inputs(config, rid_inputs)
+        self._fit_rid_inputs(
+            config,
+            rid_inputs,
+            required_summary_ids=_short_delta_summary_ids(
+                snapshot, eligible_summaries
+            ),
+        )
         frozen_request: dict[str, Any] = {}
         rid_response: Any = None
 
@@ -8060,6 +8207,29 @@ class TopicPipeline:
         ]
         if not candidates:
             return {}
+        if config.context_window_tokens is None:
+            raise TerminalGenerationRejection("recent_finalization_context_limit")
+        try:
+            counter = history.StageTokenCounter(config.model)
+            fitted_candidates = _fit_recent_finalizer_candidates(
+                candidates,
+                counter=counter,
+                limit=int(config.context_window_tokens),
+                input_snapshot_id=snapshot.input_snapshot_id,
+                discussion_coverage=plans[0].get("discussion_coverage", []),
+                previously_offered=plans[0].get("previously_offered", []),
+            )
+        except history.ContextCountingUnverified as exc:
+            raise TerminalGenerationRejection(
+                "recent_finalization_context_limit"
+            ) from exc
+        if not fitted_candidates:
+            raise TerminalGenerationRejection("recent_finalization_context_limit")
+        candidates = fitted_candidates
+        kept_ids = {str(item["candidate_id"]) for item in candidates}
+        finalized = [
+            plan for plan in finalized if str(plan["candidate_id"]) in kept_ids
+        ]
         payload = json.dumps({
             "input_snapshot_id": snapshot.input_snapshot_id,
             "discussion_coverage": plans[0].get("discussion_coverage", []),
@@ -8067,11 +8237,6 @@ class TopicPipeline:
             "candidates": candidates,
             "request_id": f"v6-finalize-{uuid.uuid4().hex}",
         }, ensure_ascii=False)
-        counter = history.StageTokenCounter(config.model)
-        if config.context_window_tokens is None or counter.estimate_stage_tokens(
-            _RECENT_FINALIZER_PROMPT, payload, 4096
-        ) > config.context_window_tokens:
-            raise TerminalGenerationRejection("recent_finalization_context_limit")
         response = await lanes.within(
             lambda: invoke_stage("v6_recent_finalizer", _RECENT_FINALIZER_PROMPT, payload),
             *{_optional_lane(plan) for plan in finalized},

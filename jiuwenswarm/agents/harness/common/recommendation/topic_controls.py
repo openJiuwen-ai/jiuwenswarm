@@ -337,9 +337,18 @@ def recommendation_model_configuration(*, include_api_key: bool = False) -> dict
     stored = section.get("model_config") if isinstance(section, dict) else None
     if not isinstance(stored, dict):
         return {}
-    return {key: value for key, value in stored.items() if key != "api_key" or include_api_key} | {
-        "has_api_key": bool(stored.get("api_key")),
+    payload = {
+        key: value
+        for key, value in stored.items()
+        if key != "api_key" or include_api_key
     }
+    payload["has_api_key"] = bool(stored.get("api_key"))
+    # Settings always edits an explicit window; legacy rows fall back here.
+    payload["context_window_tokens"] = (
+        parse_positive_int(stored.get("context_window_tokens"))
+        or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+    )
+    return payload
 
 
 def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
@@ -352,6 +361,9 @@ def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
         return False
     if not clean["api_base"].startswith(("http://", "https://")) or len(clean["api_base"]) > 512:
         return False
+    context_window_tokens = parse_positive_int(values.get("context_window_tokens"))
+    if context_window_tokens is None:
+        return False
     section = get_config().get("recommendation") or {}
     previous = (section.get("model_config") or {}) if isinstance(section, dict) else {}
     if not clean["api_key"] and isinstance(previous, dict):
@@ -359,6 +371,7 @@ def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
             clean["api_key"] = str(previous.get("api_key") or "")
     if not clean["api_key"] or len(clean["api_key"]) > 2048:
         return False
+    clean["context_window_tokens"] = context_window_tokens
 
     def mutate(config: dict[str, Any]) -> dict[str, Any]:
         target = config.get("recommendation")
@@ -391,8 +404,13 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
         if not all(dedicated.get(key) for key in ("api_key", "api_base", "model")):
             return None
         return ArkBackgroundConfig(
-            api_key=dedicated["api_key"], model=dedicated["model"], base_url=dedicated["api_base"],
-            context_window_tokens=131072,
+            api_key=dedicated["api_key"],
+            model=dedicated["model"],
+            base_url=dedicated["api_base"],
+            context_window_tokens=(
+                parse_positive_int(dedicated.get("context_window_tokens"))
+                or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+            ),
         )
     entries = [entry for entry in get_default_models(config) if _model_name(entry)]
     entry = _chosen_entry(config, entries)

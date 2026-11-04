@@ -561,6 +561,7 @@ test('General renders and persists the topic switch through config while keeping
     const savedModel = requests.findLast(request => request.method === 'topic_starters.select_model');
     assert.equal(savedModel.params.configuration.api_key, 'saved-topic-key');
     assert.equal(savedModel.params.configuration.model, 'topic-chat');
+    assert.ok(Number(savedModel.params.configuration.context_window_tokens) > 0);
     assert.equal('model' in savedModel.params, false, 'configuration saves must not also carry a clear-model sentinel');
     assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
     await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
