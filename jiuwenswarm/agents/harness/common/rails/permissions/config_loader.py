@@ -109,6 +109,12 @@ def _load_permissions_from_yaml() -> dict[str, Any]:
             merged_tools = dict(result.get("tools") or {})
             merged_tools.update(copy.deepcopy(user_tools))
             result["tools"] = merged_tools
+        # shell_allowlist: missing key = engine default-30; null/[] = disabled.
+        # Template deep-merge drops null overrides — restore from user yaml.
+        if "shell_allowlist" in user_permissions:
+            result["shell_allowlist"] = copy.deepcopy(
+                user_permissions.get("shell_allowlist")
+            )
     return result
 
 
@@ -788,6 +794,12 @@ def _persist_global_permissions_to_yaml(permissions: dict[str, Any]) -> None:
 
     section = copy.deepcopy(permissions)
     section.pop(PERMISSIONS_AGENTS_KEY, None)
+    # Preserve keys that deep-merge / sparse mutate often drop.
+    # shell_allowlist: null/[] = disabled; missing key re-enables default-30.
+    if isinstance(existing, dict):
+        for keep_key in ("shell_allowlist", "host_guard", "package_builtin_rules"):
+            if keep_key in existing and keep_key not in section:
+                section[keep_key] = copy.deepcopy(existing.get(keep_key))
     if agents_table is not None:
         section[PERMISSIONS_AGENTS_KEY] = agents_table
         if not is_enterprise():
