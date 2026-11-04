@@ -35,7 +35,9 @@ from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, Me
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from openjiuwen.harness import persistent_agent as core
-from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
+from jiuwenswarm.server.jiuwenmate.bash_runtime import (
+    bind_bash_runtime, close_bash_runtime, shell_environment_guidance,
+)
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
 from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
@@ -260,6 +262,7 @@ class ExecutionDriver:
                     guidance = build_group_execution_guidance(roster)
             addenda = [
                 item for item in (
+                    await shell_environment_guidance(getattr(published_spec, "language", None) or "cn"),
                     guidance,
                     dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
                     welink_execution_guidance(record.route_snapshot),
