@@ -87,10 +87,14 @@ def extract_finished_events(
             }
         )
 
-    exited_ids = _norm_ids(
-        ended.get("exited")
-        or state.get("exiting_character_ids")
-        or state.get("exited_ids")
+    # Merge every declared source: an `or` chain would let a truthy non-list
+    # (a bare "char_1, char_2" string) win and silently drop the other two.
+    exited_ids = list(
+        dict.fromkeys(
+            _norm_ids(ended.get("exited"))
+            + _norm_ids(state.get("exiting_character_ids"))
+            + _norm_ids(state.get("exited_ids"))
+        )
     )
     for cid in exited_ids:
         who = names.get(cid, cid)
@@ -125,7 +129,10 @@ def extract_finished_events(
 
 
 def _norm_ids(raw: Any) -> list[str]:
-    if not isinstance(raw, (list, tuple)):
+    """Normalize an id list, tolerating a bare id or a comma-separated string."""
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[,;、\s]+", raw) if part]
+    if not isinstance(raw, (list, tuple, set)):
         return []
     return [str(x).strip() for x in raw if str(x).strip()]
 
