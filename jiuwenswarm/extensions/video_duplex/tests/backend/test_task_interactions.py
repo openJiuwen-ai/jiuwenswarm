@@ -362,7 +362,10 @@ def test_projected_questions_keep_the_interrupt_id_of_the_event():
     assert legacy["interrupt_id"] == ""
 
 
-async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path):
+@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt"])
+@pytest.mark.parametrize("answer_extra", [{}, {"card_id": None}, {"card_id": ""},
+                                         {"card_id": " \t"}, {"card_id": 123}, {"card_id": "c" * 513}])
+async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path, source, answer_extra):
     store = TaskStore(tmp_path / "approval.sqlite")
     calls = []
 
@@ -371,11 +374,11 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
             calls.append(task["request_id"])
             if task.get("resume_answer"):
                 assert task["interaction"]["answers"] == [{
-                    "question": "允许执行？", "answer": "", "selected_options": ["allow"],
+                    "question": "允许执行？", "answer": "", "selected_options": ["allow_once"],
                 }]
                 return {"answer": "approved"}
             await progress(dict(stage="interaction", interaction=native_approval_question({
-                "request_id": "core-approval", "source": "permission_interrupt",
+                "request_id": "core-approval", "source": source,
                 "questions": [{"question": "允许执行？"}],
             })))
             store.update(task["id"], lambda row: row.update(execution_settled=True))
@@ -386,7 +389,7 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
         task = submit(service, "native-permission")
         await until(lambda: store.read(task["id"])["status"] == "waiting_user"
                     and store.read(task["id"])["output_closed"])
-        answer = [{"question": "允许执行？", "custom_input": "", "selected_options": ["allow"]}]
+        answer = [{"selected_options": ["allow_once"], **answer_extra}]
         with pytest.raises(ValueError, match="native user interface"):
             await service.answer("user", "voice", task["id"], "voice-answer", token(service, task), answers=answer)
         with pytest.raises(ValueError):
@@ -418,12 +421,12 @@ async def test_native_permission_rejects_invalid_alias_without_accepting_interac
                     "question": "允许执行？",
                     "answer": "",
                     "selected_options": ["allow_once"],
-                    "card_id": "card-1",
+                    "card_id": "core-approval",
                 }]
                 return {"answer": "approved"}
             await progress(dict(stage="interaction", interaction=native_approval_question({
                 "request_id": "core-approval", "source": "permission_interrupt",
-                "questions": [{"question": "允许执行？", "card_id": "card-1"}],
+                "questions": [{"question": "允许执行？", "card_id": "core-approval"}],
             })))
             store.update(task["id"], lambda row: row.update(execution_settled=True))
             raise InteractionPending()
@@ -447,11 +450,55 @@ async def test_native_permission_rejects_invalid_alias_without_accepting_interac
             task["id"],
             "ui-answer",
             token(service, task),
-            answers=[{"selected_options": ["allow_once"], "card_id": "card-1"}],
+            answers=[{"selected_options": ["allow_once"], "card_id": "core-approval"}],
             native_ui=True,
         )
         await until(lambda: store.read(task["id"])["status"] == "completed")
         assert store.read(task["id"])["result"]["answer"] == "approved"
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("size", [128, 129, 512])
+@pytest.mark.parametrize("decision", ["allow_once", "reject"])
+async def test_native_smart_long_alias_reaches_runtime_by_request_id(tmp_path, size, decision):
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+
+    call_id = "c" * size
+    store = TaskStore(tmp_path / "smart-alias.sqlite")
+    resumed = []
+
+    class ApprovalExecutor:
+        async def run(self, task, progress):
+            if task.get("resume_answer"):
+                request = AgentTaskExecutor.answer_input(task).to_agent_request()
+                assert request.params["request_id"] == call_id
+                assert request.params["answers"][0]["card_id"] == call_id
+                interactive = JiuWenSwarm._build_interactive_input_from_answers(
+                    call_id, request.params["answers"], source=request.params["source"],
+                )
+                assert list(interactive.user_inputs) == [call_id]
+                assert interactive.user_inputs[call_id]["approved"] is (decision == "allow_once")
+                resumed.append(task["id"])
+                return {"answer": "settled"}
+            await progress(dict(stage="interaction", interaction=native_approval_question({
+                "request_id": call_id, "source": "permission_interrupt",
+                "questions": [{"question": "Continue?", "card_id": call_id}],
+            })))
+            store.update(task["id"], lambda row: row.update(execution_settled=True))
+            raise InteractionPending()
+
+    service = TaskService(store, ApprovalExecutor())
+    try:
+        task = submit(service, "smart-alias")
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user"
+                    and store.read(task["id"])["output_closed"])
+        await service.answer(
+            "user", "voice", task["id"], "smart-answer", token(service, task),
+            answers=[{"selected_options": [decision], "card_id": f" {call_id} "}], native_ui=True,
+        )
+        await until(lambda: store.read(task["id"])["status"] == "completed")
+        assert resumed == [task["id"]]
     finally:
         await service.close()
 

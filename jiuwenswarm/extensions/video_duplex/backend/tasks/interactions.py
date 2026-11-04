@@ -86,13 +86,12 @@ def validate_native_approval_answers(interaction, answers):
             question=question["question"], answer=text, selected_options=options
         )
         if "card_id" in answer:
-            card_id = answer["card_id"]
-            if not isinstance(card_id, str):
+            raw_card_id = answer["card_id"]
+            card_id = raw_card_id.strip() if isinstance(raw_card_id, str) else ""
+            if card_id and len(card_id) <= 512:
+                item["card_id"] = card_id
+            elif interaction["source"] == "permission_interrupt" and "card_id" in question:
                 raise ValueError("Invalid approval card ID")
-            card_id = card_id.strip()
-            if not card_id or len(card_id) > 512:
-                raise ValueError("Invalid approval card ID")
-            item["card_id"] = card_id
         result.append(item)
     return result
 
