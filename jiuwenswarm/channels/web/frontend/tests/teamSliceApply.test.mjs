@@ -119,6 +119,31 @@ test('snapshot replacement keeps departed mirrored workers missing from the snap
   assert.equal(departed[0].name, '工作流执行员');
 });
 
+test('a mirrored worker departed locally but in-service in the snapshot appears in only one projection', () => {
+  seedOwnerTeam();
+  // The mirrored worker shut down locally, so its identity record lives in the
+  // departed projection; the snapshot then reports it as in-service.
+  useSessionStore.getState().setTeamDepartedMembers(SESSION_ID, [
+    { ...mirroredWorker('a'), status: 'shut_down' },
+  ]);
+
+  applyTeamSnapshotToSession(SESSION_ID, 'owner-team', {
+    members: [
+      { member_id: 'researcher', status: 'ready' },
+      { member_id: 'wf_a', status: 'completed', workflow_run_id: 'wf_a' },
+    ],
+    tasks: [],
+  });
+
+  const members = currentMembers().map((m) => m.member_id);
+  const departed = useSessionStore
+    .getState().runtimes[SESSION_ID].teamDepartedMembers.map((m) => m.member_id);
+  // The snapshot's in-service entry wins; the stale local departed mirror is
+  // dropped instead of surviving beside it in both projections.
+  assert.ok(members.includes('wf_a'));
+  assert.ok(!departed.includes('wf_a'));
+});
+
 test('a member_id present in both sides resolves to the snapshot version', () => {
   seedOwnerTeam();
   useSessionStore.getState().setTeamMembers(SESSION_ID, [
