@@ -33,8 +33,15 @@ class TestResolveSkillTurboThinkingKwargs:
 
     def test_none_no_inject_for_non_glm53_allowlisted(self):
         client = MagicMock()
-        client.model_config = MagicMock(model_name="glm-5.2")
+        client.model_config = MagicMock(model_name="glm-5.1")
         assert resolve_skill_turbo_thinking_kwargs(None, client) == {}
+
+    def test_none_glm52_injects_tool_stream_only(self):
+        # GLM-5.2 default 档不改思考配置，但仍需 tool_stream=True（20261023 流式超时）
+        client = MagicMock()
+        client.model_config = MagicMock(model_name="glm-5.2")
+        kwargs = resolve_skill_turbo_thinking_kwargs(None, client)
+        assert kwargs == {"extra_body": {"tool_stream": True}}
 
     def test_none_unsupported_empty(self):
         client = MagicMock()

@@ -116,7 +116,12 @@ def kwargs_digest(kwargs: Mapping[str, Any] | None) -> str:
         if isinstance(extra_body, dict):
             thinking = extra_body.get("thinking")
             if isinstance(thinking, dict) and "type" in thinking:
-                return f"extra_body.thinking.type={thinking.get('type')!r}"
+                digest = f"extra_body.thinking.type={thinking.get('type')!r}"
+                if "tool_stream" in extra_body:
+                    digest += f",tool_stream={extra_body.get('tool_stream')!r}"
+                return digest
+            if "tool_stream" in extra_body:
+                return f"extra_body.tool_stream={extra_body.get('tool_stream')!r}"
             if "enable_thinking" in extra_body:
                 return f"extra_body.enable_thinking={extra_body.get('enable_thinking')!r}"
             if "reasoning_effort" in extra_body:

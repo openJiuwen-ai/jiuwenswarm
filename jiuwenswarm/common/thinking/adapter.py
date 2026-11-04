@@ -13,6 +13,7 @@ from jiuwenswarm.common.thinking.types import (
 )
 from jiuwenswarm.common.thinking.vendor_map import (
     DEFAULT_THINKING_DEPTH,
+    default_tool_stream_kwargs,
     depth_to_kwargs,
     match_vendor_style,
 )
@@ -91,6 +92,20 @@ def adapt_thinking(
 
         if level == "default":
             if style not in _AUTO_DEFAULT_DEPTH_STYLES:
+                # GLM-5.2 等 default 档不注入 thinking（保持 default 语义），
+                # 但仍需 tool_stream=True：工具参数缓冲与思考开关无关，
+                # 漏注入会让 default 档的大参数生成期照样撞 idle 超时。
+                stream_only = default_tool_stream_kwargs(style)
+                if stream_only is not None:
+                    return ThinkingProfile(
+                        thinking="default",
+                        llm_call_kwargs=freeze_llm_call_kwargs(stream_only),
+                        injected=True,
+                        degraded=False,
+                        reason=None,
+                        vendor_style=style,
+                        model_name=name,
+                    )
                 return ThinkingProfile.empty(thinking="default", model_name=name)
             effective = DEFAULT_THINKING_DEPTH
         else:

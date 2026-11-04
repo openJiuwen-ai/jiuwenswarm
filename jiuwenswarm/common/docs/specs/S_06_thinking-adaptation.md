@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / thinking-adaptation |
 | 关联模块 | jiuwenswarm/common/thinking/（6 文件） |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -35,12 +35,20 @@ medium/high 的推理力度）是**另一条独立管线**，归 [[S_10]]；两�
   `freeze_llm_call_kwargs` 深拷贝后冻结，`thaw_llm_call_kwargs` 解冻出可变副本——
   **注入模型调用时必须用 thaw 副本**（KV-cache 友好 + 不污染冻结源）。
 - **N3 厂商白名单有序窄匹配**：`_VENDOR_PATTERNS` 有序表——GLM-5.3 →
-  `glm53_reasoning_effort`；Kimi K3 → `effort_only`（仅 `reasoning_effort`，禁带
-  `thinking`）；GLM-5 / 5.1 / 5.2 + DeepSeek → `extra_body_thinking_type`；Qwen 的
-  `extra_body_enable_thinking` 预留未启用。`match_vendor_style` 未命中返回 None；
-  `depth_to_kwargs` / `style_to_kwargs` 遇未知 style **抛 ValueError**（表内穷尽，禁宽匹配）。
+  `glm53_reasoning_effort`；GLM-5.2 → `glm52_tool_stream`；Kimi K3 → `effort_only`
+  （仅 `reasoning_effort`，禁带 `thinking`）；GLM-5 / 5.1 + DeepSeek →
+  `extra_body_thinking_type`；Qwen 的 `extra_body_enable_thinking` 预留未启用。
+  `match_vendor_style` 未命中返回 None；`depth_to_kwargs` / `style_to_kwargs`
+  遇未知 style **抛 ValueError**（表内穷尽，禁宽匹配）。
+- **N3a GLM tool_stream 随档位注入**：GLM-5.2 / 5.3 的工具参数流式输出默认 False
+  （服务端缓冲，生成完 arguments 才整包下发，大参数生成期零帧撞 idle 超时——
+  20261023 流式超时根因），`depth_to_kwargs` 对这两个 style 的**所有档位**在
+  extra_body 附带 `tool_stream: true`；`default_tool_stream_kwargs` 让 GLM-5.2 在
+  `default` 档仅注入 `tool_stream`（不携带 thinking，default 不改思考配置）。
+  DeepSeek / Kimi / GLM-5 / 5.1 **禁止携带**该参数（厂商无此参数或未经确认）。
 - **N4 default → 产品默认深度（窄集合）**：仅 GLM-5.3 / Kimi K3 在 `default` 时自动注入
-  `DEFAULT_THINKING_DEPTH`（当前 `"low"`）；其余白名单 `default` 为空操作。
+  `DEFAULT_THINKING_DEPTH`（当前 `"low"`）；其余白名单 `default` 为空操作
+  （GLM-5.2 例外见 N3a：仅注入 tool_stream）。
 - **N5 adapt_thinking 永不抛异常**：invalid_value / unsupported_model / adapter_error
   三种情况统一降级，`degraded=True` + `reason` 可追溯。**降级不是错误**——thinking 是
   增强项，失败不得影响主调用。

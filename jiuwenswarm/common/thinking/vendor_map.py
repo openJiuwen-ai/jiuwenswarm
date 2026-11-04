@@ -7,10 +7,18 @@ Allowlisted families participate in thinking toggle / depth injection.
 Styles:
 - ``glm53_reasoning_effort``: GLM-5.3（始终思考）— ``reasoning_effort``
   ``low|high|max`` + ``thinking.type=enabled``（禁止 disabled）。
+- ``glm52_tool_stream``: GLM-5.2 — ``thinking.type`` 开关 + ``tool_stream=True``；
+  default 档仅注入 ``tool_stream``（不携带 thinking，保持 default 不改思考配置）。
 - ``effort_only``: Kimi K3（始终思考）— **仅**顶层 ``reasoning_effort``
   ``low|high|max``，禁止携带 ``thinking``（厂商会拒参）。
-- ``extra_body_thinking_type``: GLM-5 / 5.1 / 5.2 / DeepSeek — ``thinking.type``
+- ``extra_body_thinking_type``: GLM-5 / 5.1 / DeepSeek — ``thinking.type``
   开关；深度档可附带 ``reasoning_effort``。
+
+``tool_stream=True``（GLM 专属，随 extra_body 注入）：GLM-5.2 / 5.3 的工具调用
+参数流式输出默认 **False（服务端缓冲，生成完 arguments 才一次性下发）**，大参数
+生成期零帧会撞应用层 idle 超时（issue 20261023 流式超时）；必须显式开启才会以
+增量 delta 逐帧下发。DeepSeek / Kimi / Qwen 等厂商无此参数、默认即增量，禁止
+跟随注入。GLM-5 / 5.1 是否支持该参数未经官方文档确认，保守不注入。
 
 Product depth semantics (``low|medium|high``) are mapped per style.
 
@@ -28,7 +36,8 @@ from typing import Any
 # Future: user-configurable depth; keep a single module-level knob for now.
 DEFAULT_THINKING_DEPTH = "low"
 
-# Ordered: first match wins. GLM-5.3 must precede the broader GLM-5 pattern.
+# Ordered: first match wins. GLM-5.3 must precede the broader GLM-5 pattern;
+# GLM-5.2 likewise precedes it (it needs tool_stream, GLM-5 / 5.1 do not).
 _VENDOR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
@@ -39,14 +48,22 @@ _VENDOR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
+            r"(?:^|[^a-z0-9])glm[-_]?5\.2(?:$|[^0-9.])",
+            re.IGNORECASE,
+        ),
+        "glm52_tool_stream",
+    ),
+    (
+        re.compile(
             r"(?:^|[^a-z0-9])kimi[-_]?k3(?:$|[^0-9])",
             re.IGNORECASE,
         ),
         "effort_only",
     ),
+    # GLM-5 / 5.1 only: 5.2 / 5.3 are intercepted by the earlier entries.
     (
         re.compile(
-            r"(?:^|[^a-z0-9])glm[-_]?5(?:\.(?:1|2))?(?:$|[^0-9.])",
+            r"(?:^|[^a-z0-9])glm[-_]?5(?:\.1)?(?:$|[^0-9.])",
             re.IGNORECASE,
         ),
         "extra_body_thinking_type",
@@ -84,29 +101,58 @@ def depth_to_kwargs(style: str, depth: str) -> dict[str, Any]:
     if style == "glm53_reasoning_effort":
         effort = _ALWAYS_ON_EFFORT.get(level, "low")
         return {
-            "extra_body": {"thinking": {"type": "enabled"}},
+            "extra_body": {
+                "thinking": {"type": "enabled"},
+                # GLM-5.3 默认 False：工具参数由服务端缓冲生成完才整包下发，
+                # 大参数生成期零帧会撞应用层 idle 超时（20261023 流式超时根因）。
+                "tool_stream": True,
+            },
             "reasoning_effort": effort,
         }
+    if style == "glm52_tool_stream":
+        kwargs = _extra_body_thinking_kwargs(level)
+        kwargs["extra_body"]["tool_stream"] = True
+        return kwargs
     if style == "effort_only":
         # Kimi K3: never send thinking.* — only top-level reasoning_effort.
         effort = _ALWAYS_ON_EFFORT.get(level, "low")
         return {"reasoning_effort": effort}
     if style == "extra_body_thinking_type":
-        if level == "off":
-            return {"extra_body": {"thinking": {"type": "disabled"}}}
-        kwargs: dict[str, Any] = {
-            "extra_body": {"thinking": {"type": "enabled"}},
-        }
-        if level == "low":
-            kwargs["reasoning_effort"] = "low"
-        elif level == "high":
-            kwargs["reasoning_effort"] = "high"
-        # medium / on → enabled without effort (vendor default depth while on)
-        return kwargs
+        return _extra_body_thinking_kwargs(level)
     if style == "extra_body_enable_thinking":
         # Forward-compat / tests; not matched by current allowlist.
         return {"extra_body": {"enable_thinking": level != "off"}}
     raise ValueError(f"unknown thinking vendor style: {style}")
+
+
+def _extra_body_thinking_kwargs(level: str) -> dict[str, Any]:
+    """Shared ``thinking.type`` switch kwargs (GLM-5.x base, no tool_stream).
+
+    DeepSeek shares this shape; callers must NOT bolt on GLM-only params here.
+    """
+    if level == "off":
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    kwargs: dict[str, Any] = {
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+    if level == "low":
+        kwargs["reasoning_effort"] = "low"
+    elif level == "high":
+        kwargs["reasoning_effort"] = "high"
+    # medium / on → enabled without effort (vendor default depth while on)
+    return kwargs
+
+
+def default_tool_stream_kwargs(style: str) -> dict[str, Any] | None:
+    """Kwargs injected on ``default`` for styles needing tool_stream.
+
+    ``default`` semantics = leave vendor thinking config untouched; GLM-5.2
+    still needs ``tool_stream=True`` on that tier (its large-argument buffering
+    is independent of the thinking switch). Return ``None`` for non-GLM styles.
+    """
+    if style == "glm52_tool_stream":
+        return {"extra_body": {"tool_stream": True}}
+    return None
 
 
 def style_to_kwargs(style: str, *, enabled: bool) -> dict[str, Any]:

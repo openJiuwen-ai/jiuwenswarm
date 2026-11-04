@@ -41,8 +41,10 @@ class TestVendorMap:
     def test_match_glm_allowlist(self):
         assert match_vendor_style("glm-5") == "extra_body_thinking_type"
         assert match_vendor_style("GLM-5.1") == "extra_body_thinking_type"
-        assert match_vendor_style("glm-5.2") == "extra_body_thinking_type"
         assert match_vendor_style("provider/glm_5.1") == "extra_body_thinking_type"
+
+    def test_match_glm52_tool_stream_style(self):
+        assert match_vendor_style("glm-5.2") == "glm52_tool_stream"
 
     def test_match_glm53_effort_style(self):
         assert match_vendor_style("glm-5.3") == "glm53_reasoning_effort"
@@ -92,11 +94,22 @@ class TestVendorMap:
         assert medium["reasoning_effort"] == "high"
         high = depth_to_kwargs("glm53_reasoning_effort", "high")
         assert high["reasoning_effort"] == "max"
+        # 所有档位都必须带 tool_stream=True（20261023 流式超时根因）
+        for kwargs in (off, low, medium, high):
+            assert kwargs["extra_body"]["tool_stream"] is True
 
     def test_thinking_type_low_includes_effort(self):
         low = depth_to_kwargs("extra_body_thinking_type", "low")
         assert low["extra_body"]["thinking"]["type"] == "enabled"
         assert low["reasoning_effort"] == "low"
+
+    def test_glm_styles_always_send_tool_stream(self):
+        # GLM-5.2 / 5.3 所有档位必须带 tool_stream=True（20261023 流式超时根因）；
+        # DeepSeek 共用 style 时禁止跟随注入；GLM-5/5.1（未确认支持）不注入。
+        assert depth_to_kwargs("glm53_reasoning_effort", "low")["extra_body"]["tool_stream"] is True
+        assert depth_to_kwargs("glm52_tool_stream", "off")["extra_body"]["tool_stream"] is True
+        assert depth_to_kwargs("glm52_tool_stream", "low")["extra_body"]["tool_stream"] is True
+        assert "tool_stream" not in depth_to_kwargs("extra_body_thinking_type", "low")["extra_body"]
 
     def test_effort_only_never_sends_thinking(self):
         low = depth_to_kwargs("effort_only", "low")
@@ -120,9 +133,21 @@ class TestAdaptThinking:
         assert deepseek.injected is False
         assert deepseek.thinking == "default"
 
-        glm52 = adapt_thinking("default", model_name="glm-5.2")
-        assert glm52.injected is False
-        assert glm52.thinking == "default"
+        # GLM-5 / 5.1（未确认 tool_stream 支持）：default 维持 no-op
+        glm51 = adapt_thinking("default", model_name="glm-5.1")
+        assert glm51.injected is False
+        assert dict(glm51.llm_call_kwargs) == {}
+
+    def test_default_glm52_injects_tool_stream_only(self):
+        # default 档不改思考配置，但 GLM-5.2 必须带 tool_stream=True，
+        # 否则大参数生成期照样零帧撞 idle 超时（20261023）
+        profile = adapt_thinking("default", model_name="glm-5.2")
+        assert profile.thinking == "default"
+        assert profile.injected is True
+        assert profile.vendor_style == "glm52_tool_stream"
+        assert profile.degraded is False
+        assert dict(profile.llm_call_kwargs) == {"extra_body": {"tool_stream": True}}
+        assert "thinking" not in profile.llm_call_kwargs["extra_body"]
 
     def test_default_glm53_uses_effort_low(self):
         assert DEFAULT_THINKING_DEPTH == "low"
@@ -131,6 +156,7 @@ class TestAdaptThinking:
         assert profile.vendor_style == "glm53_reasoning_effort"
         assert profile.thinking == "low"
         assert profile.llm_call_kwargs["extra_body"]["thinking"]["type"] == "enabled"
+        assert profile.llm_call_kwargs["extra_body"]["tool_stream"] is True
         assert profile.llm_call_kwargs["reasoning_effort"] == "low"
 
         bare = adapt_thinking("", model_name="glm-5.3")

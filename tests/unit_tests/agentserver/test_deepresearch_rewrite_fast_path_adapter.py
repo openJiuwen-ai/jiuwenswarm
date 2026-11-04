@@ -688,8 +688,10 @@ async def test_adapter_disables_thinking_for_glm_rewrite_model():
     ) as run_fast_path:
         await adapter._try_deepresearch_rewrite_fast_path(_query())
 
+    # GLM-5.2 关思考的同时必须保留 tool_stream=True：工具参数缓冲与思考开关无关，
+    # 关掉 thinking 不能丢掉流式下发（20261023 流式超时）
     assert run_fast_path.await_args.kwargs["model_call_kwargs"] == {
-        "extra_body": {"thinking": {"type": "disabled"}}
+        "extra_body": {"thinking": {"type": "disabled"}, "tool_stream": True}
     }
 
 
