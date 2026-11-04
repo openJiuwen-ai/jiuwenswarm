@@ -76,10 +76,9 @@ async def test_handle_swarmflow_reply_skip_maps_to_sentinel_without_answer():
     try:
         from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
     except ImportError:
-        # The pinned agent-core predates the sentinel; keep this value in sync
-        # with avatar_session_backend.py and drop the fallback once the pin
-        # moves past the commit that introduced it.
-        HUMAN_REPLY_SKIP = "__swarmflow_skip__"
+        # Only runs where the installed core has the sentinel; the pinned-core
+        # behavior is covered by the fail-fast test below.
+        pytest.skip("installed agent-core predates HUMAN_REPLY_SKIP")
 
     handler = _make_handler()
     tm = _FakeTeamManager()
@@ -96,3 +95,31 @@ async def test_handle_swarmflow_reply_skip_maps_to_sentinel_without_answer():
     assert len(tm.calls) == 1
     _session, msg = tm.calls[0]
     assert msg.body == HUMAN_REPLY_SKIP
+
+
+@pytest.mark.anyio
+async def test_handle_swarmflow_reply_skip_fails_when_core_lacks_sentinel(monkeypatch):
+    """skip=true on a core without HUMAN_REPLY_SKIP fails fast instead of
+    delivering a literal the old core would render as the person's words."""
+    backend = pytest.importorskip(
+        "openjiuwen.agent_teams.workflow.backends.avatar_session_backend"
+    )
+    if hasattr(backend, "HUMAN_REPLY_SKIP"):
+        # Modern core: hide the sentinel to emulate the pinned one. A pinned
+        # core already lacks it and fails the import naturally.
+        monkeypatch.delattr(backend, "HUMAN_REPLY_SKIP")
+
+    handler = _make_handler()
+    tm = _FakeTeamManager()
+    with patch(
+        "jiuwenswarm.agents.harness.team.get_team_manager", return_value=tm
+    ):
+        resp = await handler.handle_swarmflow_reply(_req(
+            session_id="sess-1",
+            run_id="run-1",
+            correlation_id="review:host:0",
+            skip=True,
+        ))
+    assert resp.ok is False
+    assert resp.payload == {"ok": False, "error": "agent-core pin predates HUMAN_REPLY_SKIP"}
+    assert tm.calls == []

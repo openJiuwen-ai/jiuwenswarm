@@ -17043,10 +17043,22 @@ class JiuWenSwarmDeepAdapter:
             try:
                 from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
             except ImportError:
-                # The pinned agent-core predates the sentinel. Keep this value
-                # in sync with avatar_session_backend.py and drop the fallback
-                # once the pin moves past the commit that introduced it.
-                HUMAN_REPLY_SKIP = "__swarmflow_skip__"
+                # A pinned core without the sentinel would render the skip
+                # literal as the person's own words; fail instead. This branch
+                # disappears once the pin moves past the sentinel.
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] swarmflow skip reply rejected: "
+                    "pinned agent-core lacks HUMAN_REPLY_SKIP, skip cannot take "
+                    "effect; session_id=%s corr=%s",
+                    session_id, corr,
+                )
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload={"ok": False, "error": "agent-core pin predates HUMAN_REPLY_SKIP"},
+                    metadata=request.metadata,
+                )
             answer = HUMAN_REPLY_SKIP
 
         target = format_swarmflow_human_reply_target(corr, run_id)
