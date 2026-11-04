@@ -21,7 +21,7 @@ entry/footer 交互进入 BUILTIN 浏览器分派器，再触发对应 `ui.*` �
 不属于本 Gateway 客户端能力包的目标继续已有请求链。
 
 匿名交互是否允许由插件决定。宿主不根据字段名、按钮标识或页面内容识别登录行为。
-已合入的认证门禁、CORE 默认行为和 WebSocket 异常处理策略保持原有契约。
+鉴权职责由 [运行时规约](S_01_gateway-extension-runtime.md#6-扩展鉴权职责) 约束，由 USER 请求策略负责；CORE 默认行为和 WebSocket 异常处理策略保持原有契约。
 
 HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原接口，包含 CORE 默认返回的
 `handled=false, route=forward`；插件无须接管每条请求。显式 `deny` 和 `consume` 保留插件决定。

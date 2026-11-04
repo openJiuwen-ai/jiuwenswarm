@@ -33,7 +33,7 @@
 - [特性开发计划](docs/designs/extensions-v2-development-plan.md)：`EXTV2-GW-NN` 条目、依赖、验证要求与进度台账。
 - [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：新增事件、CORE/BUILTIN Handler、Ops 与触发点的完整步骤。
 - [启动装配与运行时](docs/features/F_01_assembly-and-runtime.md)：单例装配、顺序约束、零扩展快路径、渠道钩子与停机。
-- [`gateway.request` 与认证门禁](docs/features/F_02_gateway-request-and-auth-gate.md)：四路由语义、门禁放行条件与本地方法表。
+- [`gateway.request` 与扩展鉴权](docs/features/F_02_gateway-request-and-auth-gate.md)：四路由语义、USER 鉴权职责与本地方法表。
 - [运行时规约](docs/specs/S_01_gateway-extension-runtime.md)：入口、配置、包、事件、路由、错误码与不变量的唯一维护位置。
 - [渲染服务](docs/features/F_03_render-service.md)与[渲染规约](docs/specs/S_02_ui-render.md)：应用级树、组件规则、实例版本与下行传输。
 - [浏览器桥接](docs/specs/S_06_local-browser-bridge.md)：声明、客户端操作、应用级交互与资源接入。
@@ -45,9 +45,9 @@
 
 - [assembly.py](assembly.py)：Gateway 进程内唯一装配入口。
 - [bootstrap.py](bootstrap.py)：事件类型、CORE Handler 与 BUILTIN Handler 的汇总注册。
-- [runtime.py](runtime.py)：总线与各子系统的持有者，实现帧拦截与点击拦截触发点。
+- [runtime.py](runtime.py)：总线与各子系统的持有者，实现请求拦截与断线触发点。
 - [models.py](models.py)：全部事件输入输出与路由枚举。
-- [builtin/](builtin/)：平台规则（认证门禁、本地方法表）。
+- [builtin/](builtin/)：宿主本地方法表。
 - [event_types/](event_types/)：事件类型注册与匹配函数。
 - [core_handlers/](core_handlers/)：各事件的 CORE Handler。
 - [handler_ops/](handler_ops/)：`ops.build` 能力注册。

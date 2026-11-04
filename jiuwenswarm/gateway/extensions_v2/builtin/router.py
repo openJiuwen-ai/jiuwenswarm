@@ -15,12 +15,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Final
 
-from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import has_authorization
-
 CODE_ROUTE_UNSUPPORTED: Final[str] = "ROUTE_UNSUPPORTED"
-
-#: Returns the authentication state of the calling connection.
-METHOD_AUTH_STATUS: Final[str] = "auth.status"
 
 LocalHandler = Callable[["LocalRequest"], Awaitable["LocalResponse"]]
 
@@ -55,7 +50,6 @@ class GatewayLocalRouter:
 
     def __init__(self) -> None:
         self._methods: dict[str, LocalHandler] = {}
-        self.register(METHOD_AUTH_STATUS, self._auth_status)
 
     def register(self, method: str, handler: LocalHandler) -> None:
         """Add one builtin method; the last registration wins."""
@@ -83,11 +77,3 @@ class GatewayLocalRouter:
                 },
             )
         return await handler(request)
-
-    async def _auth_status(self, request: LocalRequest) -> LocalResponse:
-        # Token validity belongs to the login package; the Gateway only reports
-        # whether this frame carried one.
-        return LocalResponse(
-            ok=True,
-            payload={"authenticated": has_authorization(request.headers)},
-        )

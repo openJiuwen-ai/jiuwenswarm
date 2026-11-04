@@ -59,9 +59,6 @@ def test_dropdown_rejects_icon_properties():
     assert not report.ok
     assert report.message == "props not allowed for Dropdown: ['icon']"
 
-#: Header every authenticated frame carries; the gate only checks presence.
-AUTH_HEADERS = {"authorization": "Bearer tk_1"}
-
 
 class RenderChannel:
     """Stand-in for WebChannel that records downstream frames per socket."""
@@ -123,7 +120,6 @@ def _package(handler) -> LoadedPackage:
         version="1.0.0",
         root=Path("/tmp/demo"),
         handlers=(HandlerDeclaration(EVENT_GATEWAY_REQUEST, handler, {}, "local-1"),),
-        auth_provider=True,
     )
 
 
@@ -167,7 +163,7 @@ async def test_ops_ui_render_delivers_a_frame(tmp_path):
     runtime.publish(_package(_render_handler(record)))
     ws = _ws()
 
-    await runtime.intercept(ws, "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(ws, "r1", "chat.send", {})
 
     output = record["output"]
     assert isinstance(output, UiRenderOutput)
@@ -192,8 +188,8 @@ async def test_revision_increases_per_instance(tmp_path):
     runtime.publish(_package(_render_handler(record)))
     ws = _ws()
 
-    await runtime.intercept(ws, "r1", "chat.send", {}, AUTH_HEADERS)
-    await runtime.intercept(ws, "r2", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(ws, "r1", "chat.send", {})
+    await runtime.intercept(ws, "r2", "chat.send", {})
 
     revisions = [payload["revision"] for _, payload in runtime.channel.events]
     assert revisions == [1, 2]
@@ -204,7 +200,7 @@ async def test_unknown_component_is_rejected(tmp_path):
     record: dict = {"request": _render_request(root=RenderNode(component="Script", props={"src": "x"}))}
     runtime.publish(_package(_render_handler(record)))
 
-    await runtime.intercept(_ws(), "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(_ws(), "r1", "chat.send", {})
 
     assert record["output"].status == "rejected"
     event, payload = runtime.channel.events[0]
@@ -248,7 +244,7 @@ async def test_form_form_item_and_dropdown_are_in_the_catalog(tmp_path):
     record: dict = {"request": _render_request(root=root)}
     runtime.publish(_package(_render_handler(record)))
 
-    await runtime.intercept(_ws(), "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(_ws(), "r1", "chat.send", {})
 
     assert record["output"].status == "delivered"
 
@@ -268,7 +264,7 @@ async def test_button_form_must_reference_a_form_in_the_tree(tmp_path):
     record: dict = {"request": _render_request(root=root)}
     runtime.publish(_package(_render_handler(record)))
 
-    await runtime.intercept(_ws(), "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(_ws(), "r1", "chat.send", {})
 
     assert record["output"].status == "rejected"
     assert runtime.channel.events[0][1]["code"] == "SCHEMA_ERROR"
@@ -279,7 +275,7 @@ async def test_slot_outside_the_gateway_catalog_is_rejected(tmp_path):
     record: dict = {"request": _render_request(slot="conversation.panel.right")}
     runtime.publish(_package(_render_handler(record)))
 
-    await runtime.intercept(_ws(), "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(_ws(), "r1", "chat.send", {})
 
     assert record["output"].status == "rejected"
     assert record["output"].revision == 0
@@ -291,12 +287,12 @@ async def test_clear_mode_delivers_a_clear_frame_and_drops_the_instance(tmp_path
     runtime.publish(_package(_render_handler(record)))
     ws = _ws()
 
-    await runtime.intercept(ws, "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(ws, "r1", "chat.send", {})
     record["request"] = UiRenderInput(
         target=RenderTarget("", "application.entry", "demo", "panel"),
         mode=RenderMode.CLEAR,
     )
-    await runtime.intercept(ws, "r2", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(ws, "r2", "chat.send", {})
 
     event, payload = runtime.channel.events[1]
     assert event == "webui.render.clear"
@@ -309,7 +305,7 @@ async def test_only_the_target_connection_receives_the_frame(tmp_path):
     record: dict = {"request": _render_request()}
     runtime.publish(_package(_render_handler(record)))
 
-    await runtime.intercept(_ws(), "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(_ws(), "r1", "chat.send", {})
 
     assert runtime.channel.ws_by_id("ws-1") is not None
     assert runtime.channel.ws_by_id("ws-2") is None
@@ -322,16 +318,16 @@ async def test_entry_can_reopen_after_clear_with_a_monotonic_revision(tmp_path):
     runtime.publish(_package(_render_handler(record)))
     ws = _ws()
     try:
-        await runtime.intercept(ws, "open", "config.get", {}, AUTH_HEADERS)
+        await runtime.intercept(ws, "open", "config.get", {})
         record["request"] = _render_request(mode=RenderMode.CLEAR)
-        await runtime.intercept(ws, "clear", "config.get", {}, AUTH_HEADERS)
+        await runtime.intercept(ws, "clear", "config.get", {})
         assert runtime.registry.snapshot() == ()
         record["request"] = _render_request()
-        await runtime.intercept(ws, "reopen", "config.get", {}, AUTH_HEADERS)
+        await runtime.intercept(ws, "reopen", "config.get", {})
         assert [payload["revision"] for _, payload in runtime.channel.events] == [1, 2, 3]
         await runtime.on_disconnect(ws)
         assert runtime.registry.snapshot() == ()
-        await runtime.intercept(ws, "new-lifecycle", "config.get", {}, AUTH_HEADERS)
+        await runtime.intercept(ws, "new-lifecycle", "config.get", {})
         assert runtime.channel.events[-1][1]["revision"] == 1
     finally:
         await runtime.shutdown()
@@ -343,7 +339,7 @@ async def test_disconnect_drops_application_instances(tmp_path):
     runtime.publish(_package(_render_handler(record)))
     ws = _ws()
 
-    await runtime.intercept(ws, "r1", "chat.send", {}, AUTH_HEADERS)
+    await runtime.intercept(ws, "r1", "chat.send", {})
     assert len(runtime.registry.snapshot()) == 1
 
     await runtime.on_disconnect(ws)

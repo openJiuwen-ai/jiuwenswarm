@@ -5,7 +5,7 @@
 | 项 | 说明 |
 | --- | --- |
 | 类型 | 设计基线 |
-| 最近一次修订日期 | 2026-11-01 |
+| 最近一次修订日期 | 2026-11-04 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 上游依据 | agent-core `openjiuwen.core.events`；AgentServer [详细架构](../../../../extensions_v2/docs/designs/extensions-v2-architecture.md) |
 | 关联文档 | [设计概览](extensions-v2-overview.md)、[开发模板](builtin-event-development-guide.md)、[运行时规约](../specs/S_01_gateway-extension-runtime.md) |
@@ -33,8 +33,8 @@
 | 共享包目录 `extension_pkgs`，按 `domain` 过滤 | 两侧各取自己归属的包，互不扫描对方的 Handler |
 | `domain` 过滤为 `gateway` | 同一目录可同时容纳两侧包，由 manifest 声明归属 |
 | `gateway.request` 是帧准入事件而非业务事件 | Gateway 只出现在接入路径上 |
-| 认证门禁作为 BUILTIN | Gateway 在 AgentServer 之前就要拒绝未登录连接 |
-| `local` 路由可完全在 Gateway 应答 | 登录状态查询等无需 AgentServer 参与 |
+| 鉴权由 USER 请求策略负责 | 扩展包在原生分发和 UI 动作执行前校验凭据并决定是否拒绝 |
+| `local` 路由可完全在 Gateway 应答 | 宿主登记的本地方法无需 AgentServer 参与 |
 | 包管理门面按 `domain` 本地分流 | Gateway 自有的包不经过 AgentServer 安装与激活 |
 | `ui.render`/`ui.store`/`ui.click` 子集 | 只实现登录鉴权用例需要的三个事件，其余上行事件不注册 |
 
@@ -78,7 +78,7 @@ flowchart LR
 | --- | --- |
 | `__init__.py` | 面向渠道的稳定入口：`init_gateway_extensions` / `intercept_gateway_frame` / `notify_gateway_disconnect` |
 | `assembly.py` | 进程内单例装配、配置读取、启动失败降级、停机编排、断线回调订阅 |
-| `runtime.py` | 持有总线与各子系统；发布包；实现 `gateway.request` 与 `ui.click` 两个触发点 |
+| `runtime.py` | 持有总线与各子系统；发布包；实现 `gateway.request` 与断线触发点，委托浏览器分派器处理应用交互 |
 | `bootstrap.py` | 汇总事件类型、CORE Handler 与 BUILTIN Handler 的注册；返回需注销的 handler id |
 | `config.py` | `extensions.gateway` 配置与 `HttpPolicy` |
 | `loader.py` | 扫描安装目录、解析 manifest、执行入口文件、产出 `LoadedPackage` |
@@ -87,7 +87,7 @@ flowchart LR
 | `state.py` | `ui.store` 的作用域 KV 存储 |
 | `event_types/` | 每个事件类型一个注册函数，绑定匹配函数与 CORE Handler |
 | `core_handlers/` | CORE Handler 实现；`gateway.request` 在 `request_core.py` |
-| `builtin/` | BUILTIN 层平台规则：`auth_gate.py` 门禁、`router.py` 本地方法表 |
+| `builtin/` | `router.py` 宿主本地方法表 |
 | `handler_ops/` | `ops.build` 的 BUILTIN Handler，向 Builder 添加能力 |
 | `webui/` | 渲染协议模型、校验、实例登记、下行传输、上行适配 |
 | `examples/` | 示例扩展包，不作为产品内置包 |
@@ -150,8 +150,8 @@ sequenceDiagram
 
 | 事件 | 触发点 | 层级使用者 | CORE 默认动作 |
 | --- | --- | --- | --- |
-| `gateway.request` | `WebChannel` 原生分发前 | USER 包、BUILTIN 门禁 | 校验 method，默认 `forward` |
-| `ui.render` | `ops.ui.render` 或运行时 | USER 包、BUILTIN（门禁渲染登录框） | 校验渲染树并下发 |
+| `gateway.request` | `WebChannel` 原生分发前 | USER 请求策略、BUILTIN 浏览器分派器 | 校验 method，默认 `forward` |
+| `ui.render` | `ops.ui.render` 或运行时 | USER 包、BUILTIN 渲染归属校验 | 校验渲染树并下发 |
 | `ui.store` | `ops.ui.store` | USER 包 | 写入存储并立即下发 |
 | `ui.click` | `webui.dispatch` 上行帧 | USER 包 | 校验实例登记并回执 |
 | `ops.build` | 装配期一次 | BUILTIN | 无 CORE，由 Events 内置定义 |
@@ -192,31 +192,17 @@ class GatewayRequestOutput:
 | `deny` | 以 `error` 失败应答，跳过原生分发 |
 | 未知值 | 等同于 `forward` |
 
-### 5.4 认证门禁
+### 5.4 扩展鉴权
 
-`builtin/auth_gate.py` 是 BUILTIN 层 Handler。放行条件按顺序判断：
-
-1. `connection_id` 为空：宿主内部触发，无浏览器连接可认证；
-2. `method` 为空：交给 CORE 返回 `BAD_REQUEST`；
-3. `method` 属于 `LOCKED_ALLOWED_METHODS`（`webui.dispatch`、`ping`）：浏览器需要能挂载登录框并保活；
-4. 连接作用域存在 `auth.session`。
-
-否则调用 `on_locked(connection_id)` 提示宿主展示登录框（失败只告警，不开门），返回 `route=deny`、`error={"code": "AUTH_REQUIRED", "message": "login required"}`。
-
-门禁不实现登录。登录由 USER 包 Handler 处理：校验账号 → 通过 `ops.http.fetch` 调第三方 → 成功后 `ops.ui.store(scope="connection", key="auth.session", value=...)`。
-
-层级后果：USER Handler 若不调用 `next_handler`，门禁不会执行。这是与 AgentServer 一致的契约——包可以替换平台行为，平台规则只作用于继续内传的帧。
+登录、凭据校验与撤销、匿名访问范围和拒绝应答由扩展包的 `gateway.request` USER handler 实现。
+宿主不再提供 BUILTIN 认证门禁，也不根据包标记维护登录要求；headers 仅是提供给包的请求上下文。
+USER handler 在允许请求后调用 `next_handler`，独立浏览器分派器才会处理 application 槽位交互。
+具体职责和迁移边界见 [S_01](../specs/S_01_gateway-extension-runtime.md#6-扩展鉴权职责) 与 [F_02](../features/F_02_gateway-request-and-auth-gate.md)。
 
 ### 5.5 本地路由
 
-`builtin/router.py` 维护闭合方法表：
-
-| 方法 | 返回 |
-| --- | --- |
-| `auth.status` | `{"authenticated": bool}` |
-| 其他 | `ok=false`、`error.code=ROUTE_UNSUPPORTED`、`error.message="no gateway builtin for method: <method>"` |
-
-未知方法显式拒绝而不是静默转发，使声明 `local` 的包立即发现没有内置执行器。
+`builtin/router.py` 维护宿主登记的本地方法表，初始为空。未登记的方法返回 `ROUTE_UNSUPPORTED`，不静默转发。
+原内置 `auth.status` 已移除；请求头存在不能代表凭据有效。
 
 ## 6. Ops 能力
 
@@ -287,16 +273,16 @@ class GatewayRequestOutput:
 
 校验通过后转成 `ui.click` 事件，`session_context` 沿用连接合成的 session。
 
-### 7.5 认证门禁与登录框的配合
+### 7.5 扩展鉴权与登录视图
 
-门禁的 `on_locked` 回调由 `bootstrap` 注入，实际动作是调用一次 `ui.render` 渲染 `application.gate` 槽位的登录框。这样门禁本身不持有渲染逻辑，C2 引入 `ui.render` 后只需在装配处接线。
+包自行在 `gateway.request` 中校验凭据，必要时调用 `ops.ui.render` 提交登录树并返回 `deny`。
+宿主不预置登录视图，也不通过认证回调渲染；允许匿名的登录交互由包继续内传给浏览器分派器。
 
 ## 8. 状态与资源归属
 
 | 状态 | 作用域 | 创建 | 释放 |
 | --- | --- | --- | --- |
 | 包注册与 handler | 进程 | `runtime.start()` | `runtime.shutdown()` |
-| `auth.session` | connection | 包 Handler 写入 | socket 关闭 / `shutdown` |
 | 其他 store 键 | connection / session / global | 包 Handler 写入 | TTL 到期 / 显式撤销 / 停机 |
 | 渲染登记 | connection | `ui.render` CORE | `ui.render` 清除 / 断线 / 停机 |
 | Ops 实例 | 单次 Handler 调用 | 总线 | Handler 退出即失效 |
@@ -309,7 +295,6 @@ class GatewayRequestOutput:
 | --- | --- |
 | 事件链超时（5s） | 记录告警，帧按 `forward` 继续原生分发 |
 | 事件链抛异常 | 记录告警，帧按 `forward` 继续 |
-| `on_locked` 渲染失败 | 记录告警，仍按 `deny` 拒绝 |
 | 传输发送失败 | CORE 返回 `delivery_failed`，不回滚存储写入 |
 | 包入口文件异常 | 跳过该包，其他包继续加载 |
 | 配置读取异常 | 使用默认配置 |

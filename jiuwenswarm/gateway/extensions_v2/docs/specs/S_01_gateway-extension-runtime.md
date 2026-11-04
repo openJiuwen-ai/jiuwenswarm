@@ -35,7 +35,6 @@
 | `http.timeout_ms` | int | `3000` | 上限 `5000`；非法值回落默认 |
 | `http.max_body_bytes` | int | `1048576` | 上限 `4194304`；非法值回落默认 |
 | `http.follow_redirects` | bool | `false` | 非布尔值回落 `false` |
-| `auth.enabled` | bool | `true` | `false` 时门禁不生效，等价于无准入 |
 
 配置读取异常时不抛错，等价于空配置。
 客户端浏览器能力随包安装激活直接可用，无需额外授权配置；详见 [浏览器接入规约](S_06_local-browser-bridge.md)。
@@ -49,7 +48,6 @@
 | `package.id` | 非空标识符 |
 | `package.version` | 非空字符串 |
 | `domain` | `gateway` 才由 Gateway 加载；缺省视为 `agent`，只允许 `agent` / `gateway` |
-| `auth_provider` | 可选布尔，缺省 `false`。声明 `true` 表示该包拥有登录流程，门禁仅在有此类包时生效；**该包必须至少注册一个 handler**——平台只按此声明决定门禁，不校验 handler 数量，声明了却一个都没注册会导致门禁打开但无登录动作 |
 | `modules` | 入口模块列表，执行后调用 `create_extension(registrar)` |
 | `ui` / `client` | 可选映射，缺省为空；声明贡献和请求绑定，详见 [浏览器接入规约](S_06_local-browser-bridge.md) |
 | Handler 层级 | 只能是 USER；登记按包事务化，任一声明失败则整包回滚并报 `FAILED`，不会半注册 |
@@ -83,51 +81,29 @@
 继续处理的客户端能力包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
 HTTP 接入将合法的默认 `forward` 结果继续交给原接口，不要求 `handled=true`。具体范围见 [浏览器接入规约](S_06_local-browser-bridge.md)。
 
-## 6. 认证门禁契约
+## 6. 扩展鉴权职责
 
-门禁行为由 `extensions.gateway.auth` 的策略驱动（见第 2 节）。认证事实由浏览器 `localStorage` 持有：登录成功后扩展包让浏览器写入 token，之后每帧在 `request_context.headers.authorization` 携带；Gateway 不保存、不解析、不校验 token，只判断该头是否存在且非空，token 有效性由 USER handler 决定。
+鉴权由 `gateway.request` 的 USER handler 完整负责，包括凭据校验、匿名请求范围、拒绝结果和登录视图。
+宿主提供规范化 `headers` 和完整 `request_context`，不把 Authorization 头存在视作认证成功。
+没有鉴权扩展时按原生访问流程继续；普通包的安装与卸载不切换登录要求。
 
-不生效条件（任一成立）：`auth.enabled=false`；无 `auth_provider` 包；无 `connection_id`（宿主内部触发，没有浏览器连接可认证）；`method` 为空或非字符串（交给 CORE 返回 `BAD_REQUEST`）。
-
-生效时按以下顺序处理：
-
-| 顺序 | 条件 | 结果 |
-| --- | --- | --- |
-| 1 | `method="webui.dispatch"` 且目标槽在 `SLOT_SPECS` 中登记为 `application` 作用域，且 `params.event == "ui.ready"` | `route="consume"`，`response={"event": "ui.ready", "accepted": true}` |
-| 2 | 同上但 `params.event == "ui.change"` | `route="consume"`，`response={}` |
-| 3 | `headers.authorization` 存在且非空 | 继续内传 |
-| 4 | `method="ping"` | 继续内传 |
-| 5 | 其他命中 Gateway 自有 application 槽位的 `webui.dispatch` | `route="consume"`，`response={}` |
-| 6 | 其他 | `route="deny"` |
-
-application 槽位帧由门禁本地应答，因为这些槽位没有 AgentServer 视图：
-
-- `ui.ready` 表示前端已挂载该槽位，无需转发；
-- `ui.change` 是表单草稿变化，字段值随 `ui.click` 上行，草稿直接丢弃；
-- 其他事件（含未被包接管的 `ui.click`）回空载荷，避免落到原生分发的未知方法错误。
-
-拒绝结果：`route="deny"`，`error={"code": "AUTH_REQUIRED", "message": "login required"}`。
-
-不变量：
-
-- 门禁不保存任何服务端会话，不渲染任何视图；由扩展包自行渲染登录界面；
-- 门禁只判断 `authorization` 头是否存在且非空，不解析、不缓存、不撤销凭据；
-- 门禁位于 BUILTIN 层，USER handler 不调用 `next_handler` 时不会执行；
-- 门禁不计入 `runtime.active`。
+USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均不执行；
+调用 `next_handler` 时，客户端能力包的 application 交互仍由独立的 BUILTIN 浏览器分派器校验和消费。
+平台不提供内置认证门禁、专属认证配置、包鉴权标记或登录状态查询方法。
+删除与迁移记录见 [F_02](../features/F_02_gateway-request-and-auth-gate.md)。
 
 ## 7. 本地方法契约
 
-| 方法 | 成功返回 |
-| --- | --- |
-| `auth.status` | `ok=true`，`payload={"authenticated": bool}` |
+`GatewayLocalRouter` 初始方法表为空，宿主可通过 `register(method, handler)` 登记本地方法。
+`local` 路由只执行已登记的方法；扩展包可直接用 `consume` 返回自身业务应答。
 
-未知方法：`ok=false`，`error={"code": "ROUTE_UNSUPPORTED", "message": "no gateway builtin for method: <method>"}`。
+未知方法（包括已移除的 `auth.status`）：`ok=false`，
+`error={"code": "ROUTE_UNSUPPORTED", "message": "no gateway builtin for method: <method>"}`。
 
 ## 8. 错误码
 
 | 码 | 产生位置 | 含义 |
 | --- | --- | --- |
-| `AUTH_REQUIRED` | 认证门禁 | 连接未携带 `authorization` 头且不属于豁免帧 |
 | `BAD_REQUEST` | `gateway.request` CORE | `method` 缺失或非字符串 |
 | `ROUTE_UNSUPPORTED` | 本地方法表 | 声明 `local` 但无对应内置方法 |
 | `EVENTS_REGISTRATION_INVALID` | agent-core Events | 事件类型非法或重复注册 |
@@ -151,8 +127,8 @@ application 槽位帧由门禁本地应答，因为这些槽位没有 AgentServe
 | --- | --- |
 | 入口幂等与降级 | `test_gateway_request.py` |
 | 四路由 | `test_gateway_request.py` |
-| 门禁放行与拒绝 | `test_gateway_auth_gate.py`、`test_gateway_ui_render.py` |
-| application 槽位 `ui.ready` / `ui.change` | `test_gateway_auth_gate.py` |
-| 本地方法表 | `test_gateway_auth_gate.py`、`test_gateway_request.py` |
+| 扩展鉴权与匿名请求内传 | `test_gateway_request.py`、`test_gateway_package_management.py` |
+| application 槽位交互与请求策略 | `test_gateway_browser_bridge.py` |
+| 本地方法表 | `test_gateway_request.py` |
 | 渲染与槽位契约 | `test_gateway_ui_render.py`（契约细节见 [S_02](S_02_ui-render.md)） |
 | 出站 HTTP 白名单与预算 | `test_gateway_http_fetch.py`（契约细节见 [S_05](S_05_http-fetch.md)） |

@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 
 from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, ExtensionEventBus, HandlerLevel
 
-from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import build_auth_gate_handler
 from jiuwenswarm.gateway.extensions_v2.core_handlers.request_core import build_request_core_handler
 from jiuwenswarm.gateway.extensions_v2.event_types.gateway import register_gateway_request_events
 from jiuwenswarm.gateway.extensions_v2.handler_ops.gateway_ops import build_gateway_ops_build_handler
@@ -79,17 +78,6 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
         bus.register_event_handler(
             EVENT_GATEWAY_REQUEST,
             runtime.browser.build_request_dispatch_handler(),
-            {},
-            HandlerLevel.BUILTIN,
-        )
-    )
-    handler_ids.append(
-        bus.register_event_handler(
-            EVENT_GATEWAY_REQUEST,
-            build_auth_gate_handler(
-                policy=runtime.config.auth,
-                enforce=lambda: runtime.has_auth_provider,
-            ),
             {},
             HandlerLevel.BUILTIN,
         )

@@ -8,10 +8,6 @@ extension_pkgs``); a package declares its host with the manifest top-level
 unknown to the Core manifest parser and is therefore ignored when AgentServer
 loads the same package.
 
-``auth_provider: true`` marks the package that owns the login flow. The
-authentication gate stays inert until one is published, so installing any
-other Gateway package never puts a login form in front of the user.
-
 Loading follows the Core loader: every entry file is executed inside a fresh
 package module, then ``create_extension()`` hands a registrar to the package.
 A broken package is skipped with a warning; it never blocks startup.
@@ -50,9 +46,6 @@ class LoadedPackage:
     version: str
     root: Path
     handlers: tuple[HandlerDeclaration, ...]
-    #: ``auth_provider`` marks the package that owns the login flow. The
-    #: authentication gate stays inert until such a package is published.
-    auth_provider: bool = False
     ui: Mapping[str, Any] = field(default_factory=dict)
     client: Mapping[str, Any] = field(default_factory=dict)
 
@@ -94,7 +87,6 @@ def _package_from(
         version=manifest["version"],
         root=root,
         handlers=tuple(handlers),
-        auth_provider=manifest["auth_provider"],
         ui=manifest["ui"],
         client=manifest["client"],
     )
@@ -144,7 +136,6 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         "package_id": package_id,
         "version": version.strip(),
         "domain": _domain(raw.get("domain")),
-        "auth_provider": _auth_provider(raw.get("auth_provider")),
         "modules": _modules(raw.get("extensions"), root),
         "ui": _optional_mapping(raw.get("ui"), "ui"),
         "client": _optional_mapping(raw.get("client"), "client"),
@@ -180,16 +171,6 @@ def _domain(value: object) -> str:
     if not isinstance(value, str) or value.strip().lower() not in KNOWN_DOMAINS:
         raise ValueError(f"domain must be one of {sorted(KNOWN_DOMAINS)}")
     return value.strip().lower()
-
-
-def _auth_provider(value: object) -> bool:
-    """Read the optional login-owner flag; only a real bool counts."""
-
-    if value is None:
-        return False
-    if not isinstance(value, bool):
-        raise ValueError("auth_provider must be a boolean")
-    return value
 
 
 def _modules(value: object, root: Path) -> tuple[str, ...]:

@@ -44,7 +44,7 @@ def _channel():
     )
 
 
-async def _runtime(tmp_path: Path, policy=None, action=None, *, auth_provider=False):
+async def _runtime(tmp_path: Path, policy=None, action=None):
     runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
     await runtime.start()
 
@@ -58,7 +58,7 @@ async def _runtime(tmp_path: Path, policy=None, action=None, *, auth_provider=Fa
         handlers.append(HandlerDeclaration("ui.click", action, {"target.package_id": PACKAGE}, "action"))
     runtime.publish(LoadedPackage(
         package_id=PACKAGE, version="1.0.0", root=tmp_path, handlers=tuple(handlers),
-        auth_provider=auth_provider, client={"requestBindings": []},
+        client={"requestBindings": []},
         ui={"apiVersion": 1, "items": [
             {"type": "web.slot.contribution", "slot": "application.entry"},
             {"type": "web.slot.contribution", "slot": "application.sidebar.footer"},
@@ -176,7 +176,7 @@ async def test_plugin_can_allow_anonymous_entry_and_deny_footer(tmp_path):
         actions.append(event.event_input)
         return UiActionOutput(accepted=True, status="applied")
 
-    runtime = await _runtime(tmp_path, policy, action, auth_provider=True)
+    runtime = await _runtime(tmp_path, policy, action)
     try:
         ws = SimpleNamespace(closed=False)
         entry = await _click_params(runtime, ws, "application.entry")
