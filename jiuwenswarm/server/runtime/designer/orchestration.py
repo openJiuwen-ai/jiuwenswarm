@@ -1321,6 +1321,7 @@ class Director:
                 code=LLM_API_ERROR,
             )
         from jiuwenswarm.server.runtime.designer.media_model_playbook import (
+            ensure_audio_statement,
             ensure_visual_style_statement,
             synchronize_graph_style_from_brief,
         )
@@ -1329,6 +1330,7 @@ class Director:
             brief_md,
             analysis.get("style_lock") if isinstance(analysis.get("style_lock"), dict) else {},
         )
+        brief_md = ensure_audio_statement(brief_md, meta.get("audio_plan"))
 
         stamped = False
         for node in graph.get("nodes") or []:
@@ -2644,8 +2646,12 @@ class Director:
                 include_speech=include_speech,
                 include_music=bool(flags.get("include_music")),
                 clip_embedded=bool(flags.get("clip_embedded")),
+                can_music=bool(routing.get("can_music")),
+                sfx=list(cfg.get("sfx") or []),
             )
-            missing_lock = any(lock not in prompt for lock in ("LANGUAGE LOCK", "SPEECH LOCK", "BGM LOCK"))
+            missing_lock = any(
+                lock not in prompt for lock in ("LANGUAGE LOCK", "SPEECH LOCK", "BGM LOCK")
+            )
             if block and missing_lock:
                 # Replace soft fragments with full lock block once.
                 if "LANGUAGE LOCK" not in prompt:
@@ -3258,6 +3264,7 @@ class Director:
             ) from exc
 
         from jiuwenswarm.server.runtime.designer.media_model_playbook import (
+            ensure_audio_statement,
             ensure_visual_style_statement,
             synchronize_graph_style_from_brief,
         )
@@ -3266,6 +3273,7 @@ class Director:
             brief,
             analysis.get("style_lock") if isinstance(analysis.get("style_lock"), dict) else {},
         )
+        brief = ensure_audio_statement(brief, meta.get("audio_plan"))
         meta["approved_brief"] = brief
         graph["metadata"] = meta
         synchronize_graph_style_from_brief(graph, brief)

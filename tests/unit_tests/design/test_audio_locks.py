@@ -273,9 +273,20 @@ def test_clip_audio_is_dialogue_only() -> None:
         bgm_lock={"mood": "tender romantic"},
         clip_embedded=True,
     )
-    assert "Do NOT generate music" in block
-    assert "NATIVE DIALOGUE only" in block
+    # No music backend in this call: the clip must never be asked for a score.
+    assert "no music backend" in block
+    assert "Never synthesize music inside this clip" in block
+    assert "NATIVE DIALOGUE and DIEGETIC SOUND only" in block
     assert "speech + BGM" not in block
+    scored = audio_lock_prompt_block(
+        include_speech=True,
+        include_music=True,
+        speech_line="hello",
+        bgm_lock={"mood": "tender romantic"},
+        clip_embedded=True,
+        can_music=True,
+    )
+    assert "Do NOT generate music" in scored
 
 
 def test_speech_is_default_unless_mime_or_silence() -> None:
@@ -287,13 +298,15 @@ def test_speech_is_default_unless_mime_or_silence() -> None:
 
     crosstalk = detect_audio_intent("生成一段15秒的相声，两个人在舞台上身着长袍，气氛轻松愉快")
     assert crosstalk["include_speech"] is True
-    assert crosstalk["policy"] == "speech_and_music"
+    # Music is opt-in: a film the user did not score stays unscored.
+    assert crosstalk["policy"] == "speech"
+    assert crosstalk["include_music"] is False
     assert crosstalk["language_lock"] == "zh"
 
     mime = detect_audio_intent("一段默剧，两个人在舞台上")
     assert mime["include_speech"] is False
     assert mime["policy"] != "silent"
-    assert mime["include_music"] is True
+    assert mime["include_music"] is False
 
     silent = detect_audio_intent("请做一支无声短片")
     assert silent["include_speech"] is False

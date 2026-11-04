@@ -1598,15 +1598,38 @@ def build_smart_video_graph(
     backends = detect_audio_backends()
     can_speech = bool(backends.get("can_speech"))
     can_music = bool(backends.get("can_music"))
+    # Three separate audio dimensions: speech and diegetic sound are rendered by
+    # the clips themselves, music is opt-in and only a film-level score.
+    audio_plan = {
+        "speech": dict(audio.get("speech_intent") or {}) or {
+            "include": bool(audio.get("include_speech")),
+            "kind": "dialogue" if audio.get("include_speech") else "none",
+        },
+        "sfx": dict(audio.get("sfx_intent") or {}) or {"include": True},
+        "music": {
+            "requested": bool(audio.get("include_music")),
+            "supported": can_music,
+            "rendered": bool(audio.get("include_music")) and can_music,
+            "notes": "",
+        },
+        "clip_audio": "dialogue + diegetic sound only; a clip never carries music",
+    }
+    audio_support_note = ""
+    if audio_plan["music"]["requested"] and not can_music:
+        audio_support_note = (
+            "BGM 配乐未接入：本次不生成背景音乐，成片为旁白/对白 + 现场音效，不含配乐。 "
+            "(Music/BGM is not available in this build: the film will have narration, "
+            "dialogue and diegetic sound only — no score.)"
+        )
+        audio_plan["music"]["notes"] = audio_support_note
+    audio_plan["note"] = audio_support_note
     # Keep requested sound in clip-native prompts. Audio generation is not
     # implemented, so generated graphs must never add speech/music canvas nodes.
     clip_embedded = False
     if audio.get("policy") != "silent":
         want_speech = bool(audio.get("include_speech"))
-        want_music = bool(
-            audio.get("include_music")
-            or audio.get("policy") in {"optional_music", "music", "speech_and_music"}
-        )
+        # Music is opt-in and, without a backend, never rendered at all.
+        want_music = bool(audio.get("include_music"))
         clip_embedded = want_speech or want_music
         if clip_embedded:
             from jiuwenswarm.server.runtime.designer.audio_locks import stamp_audio_fields_on_clip_config
@@ -1690,7 +1713,11 @@ def build_smart_video_graph(
                 "video_audio_model": str(backends.get("video_audio_model") or ""),
                 "speech_nodes": False,
                 "music_nodes": False,
+                "music_requested": bool(audio.get("include_music")),
+                "music_supported": bool(can_music),
             },
+            "audio_plan": audio_plan,
+            "audio_support_note": audio_support_note,
             "language_lock": str(
                 analysis.get("language_lock") or audio.get("language_lock") or "en"
             ),

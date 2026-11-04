@@ -33,6 +33,8 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
         "voice_says": 'A voice says: "{line}".',
         "audio": "Audio: {bits}.",
+        "sound_cues": "Sound: {cues} — diegetic only, no music.",
+        "sound_natural": "Sound: natural diegetic sound of the place and action only — no music.",
         "dialogue_language": "Spoken dialogue is in {name}.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
@@ -67,6 +69,8 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says_offscreen": "{who}在画外说：“{line}”。",
         "voice_says": "画外音说：“{line}”。",
         "audio": "音乐：{bits}。",
+        "sound_cues": "声音：{cues}，仅现场声，不要配乐。",
+        "sound_natural": "声音：仅保留场景与动作的现场环境声，不要配乐。",
         "dialogue_language": "对白使用{name}。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
@@ -272,19 +276,17 @@ def _speech_lines(
     return [phrase(_PHRASES, lang, "voice_says", line=line)]
 
 
-def _music_line(cfg: dict[str, Any], lang: str = "en") -> str:
-    """One positive score phrase. Lock rules and generic defaults stay off the call."""
-    bgm = cfg.get("bgm_lock") if isinstance(cfg.get("bgm_lock"), dict) else {}
-    generic = {"cinematic", "soft underscore", "tasteful non-vocal", "same bed across clips"}
-    bits: list[str] = []
-    for key in ("instruments", "style", "mood"):
-        value = str(bgm.get(key) or "").strip().rstrip(".")
-        if not value or value.casefold() in generic or _BAD_DIRECTIVE.search(value):
-            continue
-        bits.append(value)
-    if not bits:
-        return ""
-    return phrase(_PHRASES, lang, "audio", bits=list_separator(lang).join(bits[:3]))
+def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
+    """Diegetic sound only — a clip never renders the film score."""
+    cues = cfg.get("sfx") if isinstance(cfg.get("sfx"), list) else []
+    cues = [
+        str(c).strip()
+        for c in cues[:3]
+        if str(c).strip() and not _BAD_DIRECTIVE.search(str(c))
+    ]
+    if cues:
+        return phrase(_PHRASES, lang, "sound_cues", cues=list_separator(lang).join(cues))
+    return phrase(_PHRASES, lang, "sound_natural")
 
 
 def exited_ids(cfg: dict[str, Any] | None) -> list[str]:
@@ -1027,9 +1029,7 @@ def compose_practice_prompt(
     lang_sent = _language_sentence(cfg, lang)
     if lang_sent:
         sentences.append(lang_sent)
-    music = _music_line(cfg, lang)
-    if music:
-        sentences.append(music)
+    sentences.append(_sound_line(cfg, lang))
     look = _style_phrase(cfg)
     if look and not _BAD_DIRECTIVE.search(look):
         sentences.append(sentence(look, lang))
