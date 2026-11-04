@@ -213,8 +213,8 @@ def test_a2ui_prompt_defines_hotel_booking_actions():
 def test_a2ui_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("en")
 
-    assert "Modal IS supported" in instruction
-    assert "floating-overlay" in instruction
+    assert "does not support Modal" in instruction
+    assert "floating overlay" in instruction
     assert "inline status" in instruction
     assert "plain text" in instruction
 
@@ -222,7 +222,7 @@ def test_a2ui_prompt_discourages_unsupported_popup_components():
 def test_a2ui_zh_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("zh")
 
-    assert "Modal 是支持的" in instruction
+    assert "不支持 Modal" in instruction
     assert "浮层" in instruction
     assert "行内状态" in instruction
     assert "纯文本" in instruction
