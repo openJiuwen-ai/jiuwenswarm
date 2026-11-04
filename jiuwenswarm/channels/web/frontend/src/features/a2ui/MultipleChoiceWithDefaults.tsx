@@ -2,6 +2,7 @@
 
 import { useCallback, useId, useMemo, useState } from 'react';
 import type { CSSProperties, ChangeEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   classMapToString,
   stylesToObject,
@@ -64,6 +65,7 @@ export function MultipleChoiceWithDefaults({
   surfaceId,
 }: A2UIComponentProps<MultipleChoiceNodeLike>) {
   const { theme, resolveString, setValue, getValue } = useA2UIComponent(node, surfaceId);
+  const { t } = useTranslation();
   const props = node.properties;
   const id = useId();
   const selectionsPath = props.selections?.path;
@@ -141,18 +143,26 @@ export function MultipleChoiceWithDefaults({
     node.weight !== undefined ? { '--weight': node.weight } : {}
   ) as CSSProperties;
 
-  // Build label text with multi-select hint；description 为空则整体不显标题（含多选计数提示）
+  // Build label text with multi-select hint；上限提示与 description 解耦——
+  // 无 label 时仍显「最多选 N 项」，超限才有可见反馈（检视意见 CR-8：旧实现 description 空则上限提示一并丢）
+  const maxHint = !isSingleSelect && maxAllowedSelections !== undefined
+    ? t('a2ui.multipleChoice.maxSelections', { count: maxAllowedSelections })
+    : '';
   const labelText = useMemo(() => {
-    if (!description) return '';
-    if (isSingleSelect || maxAllowedSelections === undefined) return description;
-    return `${description}（最多选 ${maxAllowedSelections} 项）`;
-  }, [description, isSingleSelect, maxAllowedSelections]);
+    if (description && maxHint) return `${description} ${maxHint}`;
+    if (description) return description;
+    return maxHint;
+  }, [description, maxHint]);
 
   // Render chips UI
   if (type === 'chips') {
     return (
       <div className="a2ui-multiplechoice" style={hostStyle}>
-        <section className={classMapToString(theme.components.MultipleChoice.container)}>
+        <section
+          className={classMapToString(theme.components.MultipleChoice.container)}
+          role="group"
+          aria-label={labelText || t('a2ui.multipleChoice.groupAria')}
+        >
           {labelText && (
             <label
               className={classMapToString(theme.components.MultipleChoice.label)}
@@ -206,7 +216,11 @@ export function MultipleChoiceWithDefaults({
   if (isMultiSelect) {
     return (
       <div className="a2ui-multiplechoice" style={hostStyle}>
-        <section className={classMapToString(theme.components.MultipleChoice.container)}>
+        <section
+          className={classMapToString(theme.components.MultipleChoice.container)}
+          role="group"
+          aria-label={labelText || t('a2ui.multipleChoice.groupAria')}
+        >
           {labelText && (
             <label
               className={classMapToString(theme.components.MultipleChoice.label)}
@@ -266,6 +280,7 @@ export function MultipleChoiceWithDefaults({
           name="data"
           id={id}
           value={selectedValue}
+          aria-label={labelText || t('a2ui.multipleChoice.selectAria')}
           className={classMapToString(theme.components.MultipleChoice.element)}
           style={stylesToObject(theme.additionalStyles?.MultipleChoice)}
           onChange={handleSingleChange}
