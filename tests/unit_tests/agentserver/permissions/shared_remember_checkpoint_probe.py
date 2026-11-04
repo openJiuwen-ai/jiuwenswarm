@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 async def run(root: Path, permanent: bool, phase: str) -> None:
     os.environ["JIUWENSWARM_DATA_DIR"] = str(root / "data")
-    global_path = root / "data" / "config" / "config.yaml"
+    global_path = root / "data" / "infra" / "config" / "config.yaml"
     global_path.parent.mkdir(parents=True, exist_ok=True)
     if not global_path.exists():
         global_path.write_text("permissions:\n  enabled: true\n  mode: auto\n  defaults: {'*': allow}\n  tools: {unknown_lookup: allow}\n  file_guard: {enabled: false}\n")

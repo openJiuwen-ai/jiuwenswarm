@@ -51,7 +51,7 @@ from gateway.common.reasoning_config import (
     resolve_endpoint_profile_override,
     validate_reasoning_level_for_model,
 )
-from gateway.common.paths import get_user_workspace_dir
+from gateway.common.paths import get_infra_data_dir, get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def _get_crypto_provider() -> Any:
 # Auto-Harness 配置（~/.jiuwenswarm/auto-harness/config.yaml，TUI config 域专属）
 # --------------------------------------------------------------------------- #
 _DEFAULT_REPO_URL = "https://gitcode.com/openJiuwen/agent-core.git"
-_AUTO_HARNESS_CONFIG_DIR = get_user_workspace_dir() / "auto-harness"
+_AUTO_HARNESS_CONFIG_DIR = get_infra_data_dir() / "auto-harness"
 _AUTO_HARNESS_CONFIG_FILE = _AUTO_HARNESS_CONFIG_DIR / "config.yaml"
 _AUTO_HARNESS_LOCAL_REPO = _AUTO_HARNESS_CONFIG_DIR / "repo" / "openJiuwen--agent-core"
 

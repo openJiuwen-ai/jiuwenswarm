@@ -104,7 +104,7 @@ class ExtensionManager:
 
     def _setup_search_paths(self) -> None:
         seen: set[str] = set()
-        user_plugin_dir = get_root_dir() / _USER_APPLICATION_PLUGIN_DIR
+        user_plugin_dir = get_root_dir() / "domain" / _USER_APPLICATION_PLUGIN_DIR
         user_plugin_dir.mkdir(parents=True, exist_ok=True)
         extension_dirs = _extension_dir_paths_from_config(get_config())
         for path in [str(user_plugin_dir), *extension_dirs]:

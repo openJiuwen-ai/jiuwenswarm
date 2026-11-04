@@ -66,6 +66,17 @@ from gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-gateway")
 _mark_startup_import_phase("dotenv_parsed")
 
+# 日志引导：须先于任何可能创建 openjiwen logger 的导入执行。
+from gateway.common.openjiuwen_logging import (
+    configure_openjiuwen_core_logging,
+    configure_openjiuwen_runtime_logging,
+)
+
+configure_openjiuwen_runtime_logging()
+# 未自管 yaml 时压制 openjiwen 内部日志（保留 Gateway 自身日志）。
+configure_openjiuwen_core_logging(suppress_level=logging.CRITICAL)
+_mark_startup_import_phase("third_party_logging_pinned")
+
 # Gateway 自带日志初始化：共同安装时母仓已配置则复用，独立安装时按同一路径自建
 from gateway.common.logging_setup import setup_gateway_logger
 
@@ -84,10 +95,6 @@ if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
     prepare_runtime_workspace(cleanup_stale_descs=False)
 _mark_startup_import_phase("runtime_workspace_ready")
 
-from openjiuwen.core.common.logging import (
-    LogManager,  # pylint: disable=wrong-import-order
-)
-
 from gateway.channel_manager.base import BaseWebChannel
 
 _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
@@ -104,8 +111,7 @@ from gateway.common.debug_dump import (
 from gateway.common.paths import (
     apply_free_search_runtime_defaults,
     get_env_file,
-    get_root_dir,
-    get_user_workspace_dir,
+    get_infra_data_dir,
 )
 from gateway.common.process_supervision import (
     GATEWAY_RESTART_EXIT_CODE,
@@ -122,15 +128,6 @@ from gateway.telemetry import configure_gateway_telemetry, shutdown_gateway_tele
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
-_logging_yaml = get_root_dir() / "config" / "logging.yaml"
-if _logging_yaml.exists():
-    from openjiuwen.core.common.logging.log_config import configure_log
-
-    configure_log(str(_logging_yaml))
-else:
-    # Reduce openjiuwen internal logs (keep Gateway logs)
-    for _lg in LogManager.get_all_loggers().values():
-        _lg.set_level(logging.CRITICAL)
 _mark_startup_import_phase("logging_configured")
 
 _env_file = get_env_file()
@@ -2275,7 +2272,7 @@ async def _run(
             # 时 faas 拿不到 sessionCtxID，acquire lease 走 init 路径失败
             # （"connect runtime failed"），invocation 60s 超时，首登 config.set 后前端卡死+1001。
             # user_id 还必须是 faas 沙箱配置了可工作区的真实用户：faas 沙箱按 user_id
-            # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（system/root）建沙箱失败
+            # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（infra/root）建沙箱失败
             # （code 80004 "Failed to create sandbox"）。agentos_test 是 agentos 部署的默认
             # 用户（gateway-config.yaml ssh username），有完整工作区，复用其 warm instance。
             reload_env = e2a_from_agent_fields(
@@ -3997,7 +3994,7 @@ def main() -> None:
     # cron_jobs.json => duplicate cron executions).
     from gateway.gateway_lock import GatewayLock
 
-    gateway_lock = GatewayLock(get_user_workspace_dir())
+    gateway_lock = GatewayLock(get_infra_data_dir())
     if not gateway_lock.acquire():
         logger.error(
             "[App] Another Gateway is already serving this workspace; "

@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from gateway.common.paths import get_user_workspace_dir
+from gateway.common.paths import get_infra_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class CustomAgent:
 
 def custom_agents_root() -> Path:
     """Return the directory holding every custom agent and the registry."""
-    return get_user_workspace_dir() / "runtime" / "custom-agents"
+    return get_infra_data_dir() / "runtime" / "custom-agents"
 
 
 def custom_agent_site_packages(name: str) -> Path:

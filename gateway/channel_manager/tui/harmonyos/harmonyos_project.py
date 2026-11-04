@@ -21,7 +21,7 @@ from typing import Any
 
 from json_repair import loads as json_repair_loads
 
-from gateway.common.paths import get_user_workspace_dir
+from gateway.common.paths import get_workspace_dir
 
 SCHEMA_VERSION = 1
 MAX_DESCRIPTOR_BYTES = 2 * 1024 * 1024
@@ -718,7 +718,7 @@ def _select_ability(
 
 
 def _state_dir() -> Path:
-    return get_user_workspace_dir() / "agent" / "workspace" / "harmonyos-projects"
+    return get_workspace_dir() / "harmonyos-projects"
 
 
 def _ensure_state_dir(state_dir: Path) -> None:

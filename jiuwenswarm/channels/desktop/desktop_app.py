@@ -52,6 +52,8 @@ from jiuwenswarm.common.startup_diagnostics import (
 )
 from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
+    get_config_dir,
+    get_infra_data_dir,
     get_logs_dir,
     prepare_runtime_workspace,
     wait_for_pid_exit,
@@ -91,7 +93,7 @@ VALID_CLOSE_ACTIONS = frozenset(
 
 
 def _desktop_window_preferences_path() -> Path:
-    return get_user_workspace_dir() / "config" / DESKTOP_WINDOW_PREFERENCES_FILENAME
+    return get_config_dir() / DESKTOP_WINDOW_PREFERENCES_FILENAME
 
 
 def _load_close_action() -> str | None:
@@ -395,7 +397,7 @@ def resolve_desktop_ports(
 
 
 def _cleanup_stale_update_artifacts() -> None:
-    updates_dir = get_user_workspace_dir() / ".updates"
+    updates_dir = get_infra_data_dir() / ".updates"
     if not updates_dir.is_dir():
         return
 
@@ -2935,7 +2937,7 @@ class DesktopRuntime:
 
     def _launch_macos_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_user_workspace_dir() / ".updates"
+        updates_dir = get_infra_data_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3097,7 +3099,7 @@ echo "=== install helper finished: $(date) ==="
     @staticmethod
     def _launch_linux_install_helper(target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_user_workspace_dir() / ".updates"
+        updates_dir = get_infra_data_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3266,7 +3268,7 @@ nohup {q_executable} >/dev/null 2>&1 &
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
         self._clear_wkwebview_system_cache()
 
-        storage_path = get_user_workspace_dir() / "tmp" / "webview"
+        storage_path = get_infra_data_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
 

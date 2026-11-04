@@ -27,7 +27,7 @@ from typing import Any
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from gateway.auth.account_kit import Credential, LoginOutcome, mask
-from gateway.common.paths import get_user_workspace_dir
+from gateway.common.paths import get_infra_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ DEFAULT_SESSION_TTL_S = 30 * 24 * 60 * 60.0
 
 
 def auth_dir() -> Path:
-    path = Path(get_user_workspace_dir()) / "auth"
+    path = get_infra_data_dir() / "auth"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
