@@ -34,9 +34,10 @@ Run from the repository root:
 .venv/bin/python jiuwenswarm/extensions_v2/examples/auth_login_demo/pack.py --output /tmp/webui-login-demo.zip
 ```
 
-Grant local_storage.write and request.bind.gateway to webui.login-demo under
-extensions.gateway.client_grants in an isolated test instance. Install through the existing
-/extension install command or GatewayPackageManager.install before the login gate becomes active.
+Use a Gateway that includes this browser bridge. Installed active packages can store login state, bind request
+credentials and reload the page without additional permission declarations, configuration edits or authorization.
+Update Gateway and frontend together to use this browser protocol.
+Install through the existing /extension install command or GatewayPackageManager.install before the login gate becomes active.
 The manifest uses domain: gateway and does not enable the old auth_provider/auth.session gate.
 The explicit package allowlist excludes databases, caches and logs.
 
@@ -64,6 +65,6 @@ There is no ui.submit, browser-storage read API, operation receipt or host-coded
 with_client_ops composes the public two-level Core Ops API into the selected three-level local_storage API.
 Verification and remaining limits are recorded in F_07; mock acceptance is not production identity-service acceptance.
 
-After a successful sign-in or sign-out, the plugin queues the storage change followed by `ops.client.page.reload()`. This requires the separate `page.reload` deployment grant. Storage changes do not reload the page automatically. Rendering uses the merged `UiRenderInput` API and typed targets; menu actions use `ui.select`.
+After a successful sign-in or sign-out, the plugin queues the storage change followed by `ops.client.page.reload()`. No separate grant is required. Storage changes do not reload the page automatically. Rendering uses the merged `UiRenderInput` API and typed targets; menu actions use `ui.select`.
 
 Sign-out queues deletion followed by page.reload. The new page request renders the sign-in view; the plugin does not render an intermediate sign-in tree before reloading.

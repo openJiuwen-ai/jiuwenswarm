@@ -23,6 +23,7 @@ PACKAGE = "test.browser-controls"
 
 def _channel():
     responses = []
+    events = []
     sockets = {}
 
     async def ensure_ws_id(ws):
@@ -31,19 +32,19 @@ def _channel():
         return ws._jiuwen_ws_id
 
     async def send_event(ws, event, payload):
-        pass
+        events.append({"event": event, "payload": payload})
 
     async def send_response(ws, req_id, *, ok, payload=None, error=None, code=None):
         responses.append({"ok": ok, "payload": payload, "error": error, "code": code})
 
     return SimpleNamespace(
-        channel_id="web", responses=responses, ensure_ws_id=ensure_ws_id,
+        channel_id="web", responses=responses, events=events, ensure_ws_id=ensure_ws_id,
         connection_user_id=lambda ws: None, ws_by_id=sockets.get,
         send_event=send_event, send_response=send_response,
     )
 
 
-async def _runtime(tmp_path: Path, policy=None, action=None, *, auth_provider=False):
+async def _runtime(tmp_path: Path, policy=None, action=None):
     runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
     await runtime.start()
 
@@ -57,7 +58,7 @@ async def _runtime(tmp_path: Path, policy=None, action=None, *, auth_provider=Fa
         handlers.append(HandlerDeclaration("ui.click", action, {"target.package_id": PACKAGE}, "action"))
     runtime.publish(LoadedPackage(
         package_id=PACKAGE, version="1.0.0", root=tmp_path, handlers=tuple(handlers),
-        auth_provider=auth_provider, client={"requestBindings": []},
+        client={"requestBindings": []},
         ui={"apiVersion": 1, "items": [
             {"type": "web.slot.contribution", "slot": "application.entry"},
             {"type": "web.slot.contribution", "slot": "application.sidebar.footer"},
@@ -66,21 +67,72 @@ async def _runtime(tmp_path: Path, policy=None, action=None, *, auth_provider=Fa
     return runtime
 
 
-async def _click_params(runtime, ws, slot):
+async def _click_params(runtime, ws, slot, *, props=None):
     connection_id = await runtime.connection_id(ws)
     target = RenderTarget(
         session_id="", slot_id=slot, package_id=PACKAGE, instance_key="controls",
         scope="application", connection_id=connection_id,
     )
+    button_props = {"value": "Apply"}
+    if props is not None:
+        button_props.update(props)
     await runtime.bus.trigger(Event("ui.render", UiRenderInput(
         target=target,
-        root=RenderNode(component="Button", props={"value": "Apply"}, events={"ui.click": {"id": "apply"}}),
+        root=RenderNode(component="Button", props=button_props, events={"ui.click": {"id": "apply"}}),
     )), SessionContext("gateway:" + connection_id, None, {"connection_id": connection_id}))
     record = runtime.registry.get(target)
     assert record is not None and record.root is not None
     return {"event": "ui.click", "target": target.to_payload(), "payload": {
         "node_key": "0", "revision": record.revision, "action_id": "apply", "args": {}, "data": {},
     }}
+
+
+@pytest.mark.parametrize("method", ["local_storage.set", "local_storage.delete", "page.reload"])
+async def test_active_client_package_can_use_browser_operations_without_grants(tmp_path, method):
+    async def action(event, ops, next_handler):
+        if method == "local_storage.set":
+            await ops.client.local_storage_set("record", {"value": "example"})
+        elif method == "local_storage.delete":
+            await ops.client.local_storage_delete("record")
+        else:
+            await ops.client.page_reload()
+        return UiActionOutput(accepted=True, status="applied")
+
+    runtime = await _runtime(tmp_path, action=action)
+    try:
+        ws = SimpleNamespace(closed=False)
+        params = await _click_params(runtime, ws, "application.entry")
+        await runtime.intercept(ws, "action", "webui.dispatch", params)
+        assert runtime.channel.responses[-1]["payload"] == {"accepted": True, "status": "applied"}
+        operations = [item["payload"] for item in runtime.channel.events if item["event"] == "client.operation"]
+        assert len(operations) == 1
+        assert operations[0]["method"] == method
+        assert operations[0]["package_id"] == PACKAGE
+        assert operations[0]["activation_generation"] == runtime.browser.generations[PACKAGE]
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("props,data", [
+    ({"disabled": True}, {}), ({}, []), ({}, None), ({}, {"extra": "value"}),
+])
+async def test_invalid_button_actions_do_not_reach_the_handler(tmp_path, props, data):
+    actions = []
+
+    async def action(event, ops, next_handler):
+        actions.append(event.event_input)
+        return UiActionOutput(accepted=True, status="applied")
+
+    runtime = await _runtime(tmp_path, action=action)
+    try:
+        ws = SimpleNamespace(closed=False)
+        params = await _click_params(runtime, ws, "application.entry", props=props)
+        params["payload"]["data"] = data
+        await runtime.intercept(ws, "action", "webui.dispatch", params)
+        assert actions == []
+        assert runtime.channel.responses[-1]["payload"]["status"] == "invalid_action"
+    finally:
+        await runtime.shutdown()
 
 
 async def test_request_policy_denies_before_application_action(tmp_path):
@@ -124,7 +176,7 @@ async def test_plugin_can_allow_anonymous_entry_and_deny_footer(tmp_path):
         actions.append(event.event_input)
         return UiActionOutput(accepted=True, status="applied")
 
-    runtime = await _runtime(tmp_path, policy, action, auth_provider=True)
+    runtime = await _runtime(tmp_path, policy, action)
     try:
         ws = SimpleNamespace(closed=False)
         entry = await _click_params(runtime, ws, "application.entry")

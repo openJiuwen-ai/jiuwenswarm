@@ -132,11 +132,10 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
       const packageIds = new Set<string>();
       const targets: { type: string; parts: string[] }[] = [];
       for (const pkg of input.packages) {
-        requireValue(plain(pkg)); keys(pkg, ['packageId', 'activationGeneration', 'grants', 'requestBindings']);
+        requireValue(plain(pkg)); keys(pkg, ['packageId', 'activationGeneration', 'requestBindings']);
         requireValue(nonEmpty(pkg.packageId) && !packageIds.has(pkg.packageId) && nonEmpty(pkg.activationGeneration)
-          && Array.isArray(pkg.grants) && pkg.grants.every(nonEmpty) && Array.isArray(pkg.requestBindings));
+          && Array.isArray(pkg.requestBindings));
         packageIds.add(pkg.packageId);
-        requireValue(pkg.requestBindings.length === 0 || pkg.grants.includes('request.bind.gateway'), 'CAPABILITY_DENIED');
         for (const binding of pkg.requestBindings) {
           validateBinding(binding);
           const parts = binding.target.location === 'header' ? [binding.target.name.toLowerCase()] : binding.target.path;
@@ -164,15 +163,14 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     let failureCode = 'LOCAL_STORAGE_UNAVAILABLE';
     try {
       requireValue(plain(input));
-      keys(input, ['clientProtocolVersion', 'operation_id', 'invocation_id', 'connection_epoch', 'package_id',
+      keys(input, ['clientProtocolVersion', 'invocation_id', 'connection_epoch', 'package_id',
         'activation_generation', 'method', 'params', 'deadline']);
-      requireValue(input.clientProtocolVersion === 1 && nonEmpty(input.operation_id) && nonEmpty(input.invocation_id));
+      requireValue(input.clientProtocolVersion === 1 && nonEmpty(input.invocation_id));
       requireValue(declarations && input.connection_epoch === declarations.connectionEpoch, 'STALE_CONTEXT');
       const pkg = declarations.packages.find((item) => item.packageId === input.package_id);
       requireValue(pkg && input.activation_generation === pkg.activationGeneration, 'PACKAGE_INACTIVE');
       requireValue(typeof input.deadline === 'number' && Number.isFinite(input.deadline) && input.deadline > Date.now(), 'DEADLINE_EXCEEDED');
       if (input.method === 'page.reload') {
-        requireValue(pkg.grants.includes('page.reload'), 'CAPABILITY_DENIED');
         requireValue(plain(input.params)); keys(input.params, []);
         requireValue(options.reloadPage, 'CAPABILITY_UNAVAILABLE');
         failureCode = 'PAGE_RELOAD_FAILED';
@@ -181,7 +179,6 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
         return true;
       }
       requireValue(input.method === 'local_storage.set' || input.method === 'local_storage.delete', 'UNKNOWN_METHOD');
-      requireValue(pkg.grants.includes('local_storage.write'), 'CAPABILITY_DENIED');
       requireValue(plain(input.params)); keys(input.params, input.method === 'local_storage.set' ? ['key', 'value'] : ['key']);
       requireValue(nonEmpty(input.params.key) && bytes(input.params.key) <= 128);
       const key = keyFor(pkg.packageId, input.params.key);
@@ -195,7 +192,6 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
         storage.setItem(key, encoded);
         next = encoded;
       } else {
-        requireValue(input.method === 'local_storage.delete', 'UNKNOWN_METHOD');
         storage.removeItem(key);
         next = null;
       }
