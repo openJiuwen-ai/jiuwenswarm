@@ -60,7 +60,7 @@ flowchart LR
 | 类型 | 字段 | 说明 |
 | --- | --- | --- |
 | `RenderTarget` | `session_id`、`slot_id`、`package_id`、`instance_key`、`scope`、`connection_id` | 按槽位范围确定实例归属，字段与实例键见下文 |
-| `RenderNode` | `component`、`props`、`children`、`action` | 渲染树节点，组件名区分大小写 |
+| `RenderNode` | `component`、`props`、`children`、`events` | 渲染树节点，组件名区分大小写 |
 | `UiRenderInput` | `target`、`root`、`mode` | `mode` 为 `replace` 或 `clear` |
 | `UiRenderOutput` | `status`、`revision` | `delivered`、`rejected` 或 `delivery_failed` |
 | `RenderFrame` | `target`、`revision`、`mode`、`root`、`schema_version` | 下行 `webui.render` 载荷 |

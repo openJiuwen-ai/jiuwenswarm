@@ -4,35 +4,44 @@ import type { ClientCapabilityHost } from '../features/webui/client/createClient
 /** Explicit Gateway transport; external URLs retain native fetch behavior. */
 export function createGatewayFetch(host: ClientCapabilityHost, fetcher: typeof fetch = (...args) => fetch(...args)): typeof fetch {
   return async (input, init) => {
-    if (!host.hasDeclarations() || !host.isGateway(input)) return fetcher(input, init);
-    host.refresh();
-    if (host.isChanging()) throw new DOMException('Request context changed', 'AbortError');
+    const asset = host.getPackageAssetState(input);
+    if (!asset && (!host.hasDeclarations() || !host.isGateway(input))) return fetcher(input, init);
+    if (asset?.status === 'inactive') throw new DOMException('Package asset is inactive', 'AbortError');
+    if (!asset) host.refresh();
+    if (!asset && host.isChanging()) throw new DOMException('Request context changed', 'AbortError');
     const epoch = host.getEpoch();
-    const contextSignal = host.getSignal();
+    const contextSignal = asset ? undefined : host.getSignal();
     const original = input instanceof Request ? input : null;
     const signal = init && 'signal' in init ? init.signal : original?.signal;
     const controller = new AbortController();
     let abortBody: (() => void) | undefined;
     const abort = () => controller.abort();
-    contextSignal.addEventListener('abort', abort, { once: true });
+    const isCurrent = () => {
+      if (!asset) return epoch === host.getEpoch();
+      const current = host.getPackageAssetState(input);
+      return current?.status === 'active' && current.version === asset.version;
+    };
+    const releaseAsset = asset ? host.subscribe(() => { if (!isCurrent()) abort(); }) : undefined;
+    contextSignal?.addEventListener('abort', abort, { once: true });
     signal?.addEventListener('abort', abort, { once: true });
     const release = () => {
-      contextSignal.removeEventListener('abort', abort);
+      releaseAsset?.();
+      contextSignal?.removeEventListener('abort', abort);
       signal?.removeEventListener('abort', abort);
       if (abortBody) controller.signal.removeEventListener('abort', abortBody);
     };
-    if (contextSignal.aborted || signal?.aborted) abort();
+    if (contextSignal?.aborted || signal?.aborted) abort();
     const check = () => {
-      if (epoch !== host.getEpoch() || controller.signal.aborted) throw new DOMException('Request context changed', 'AbortError');
+      if (!isCurrent() || controller.signal.aborted) throw new DOMException('Resource context changed', 'AbortError');
     };
     try {
       const originalHeaders = new Headers(init?.headers ?? original?.headers);
-      const headers = host.bindHTTP(input, originalHeaders);
+      const headers = asset ? originalHeaders : host.bindHTTP(input, originalHeaders);
       const injected = [...headers].some(([name, value]) => originalHeaders.get(name) !== value);
       const response = await fetcher(input, {
         ...init,
         headers,
-        ...(injected ? { redirect: (init?.redirect ?? original?.redirect) === 'manual' ? 'manual' : 'error' } : {}),
+        ...(injected || asset ? { redirect: (init?.redirect ?? original?.redirect) === 'manual' ? 'manual' : 'error' } : {}),
         signal: controller.signal,
       });
       check();

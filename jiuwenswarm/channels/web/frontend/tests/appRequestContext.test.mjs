@@ -22,6 +22,8 @@ const metadataDependencies = [
   'request', 'sessionIdRef', 'useChatStore', 'useSessionStore', 'useWorkspaceStore',
   'navigate', 'upsertSessionMetadata', 'setProcessing', 'setThinking', 'restoreSessionEquipment',
   'setMissingSessionId', 'parseModelSelection', 'normalizeTeamLeaderIdentity', 'normalizeTeamDispatchMode', 'console',
+  'organizationOwnerStateRevision', 'isOrganizationOwnerStopped', 'setOrganizationOwnerStopped',
+  'restoreSessionModelSelection',
 ];
 await build({
   stdin: {
@@ -94,11 +96,13 @@ async function fixture() {
     sessionIdRef: { current: 'saved-session' },
     useChatStore: { getState: () => ({ beginQueuedSessionMessageSnapshot: () => ({}),
       setCanContinueQueuedSessionMessages: () => {} }) },
-    useSessionStore: { getState: () => ({ setTeamLeaderIdentity: () => {} }) },
+    useSessionStore: { getState: () => ({ setTeamLeaderIdentity: () => {}, setTeamGroupIdentity: () => {} }) },
     useWorkspaceStore: { getState: () => ({ upsertSession: (session) => writes.push(session) }) },
     navigate: () => {}, upsertSessionMetadata: () => {}, setProcessing: () => {}, setThinking: () => {},
     restoreSessionEquipment: () => {}, setMissingSessionId, parseModelSelection: () => null,
     normalizeTeamLeaderIdentity: (value) => value, normalizeTeamDispatchMode: () => null,
+    organizationOwnerStateRevision: () => 0, isOrganizationOwnerStopped: () => false,
+    setOrganizationOwnerStopped: () => {}, restoreSessionModelSelection: () => {},
     console: { warn: () => {} },
   };
   const fetch = createMetadataFetch(dependencies);

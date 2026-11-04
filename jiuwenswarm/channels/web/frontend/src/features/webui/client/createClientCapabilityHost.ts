@@ -61,6 +61,8 @@ export interface ClientCapabilityHostOptions {
   reloadPage?: () => void;
 }
 
+export type PackageAssetState = { status: 'active'; version: string } | { status: 'inactive' };
+
 export function createClientCapabilityHost(options: ClientCapabilityHostOptions) {
   let declarations: ClientDeclarationSnapshot | null = null;
   let epoch = 0;
@@ -123,6 +125,25 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     const url = new URL(input instanceof Request ? input.url : String(input), base);
     return ['http:', 'https:'].includes(url.protocol) && url.origin === base.origin
       && (base.pathname === '/' || url.pathname === base.pathname || url.pathname.startsWith(base.pathname.replace(/\/$/, '') + '/'));
+  }
+  function getPackageAssetState(input: string | URL | Request): PackageAssetState | null {
+    if (!declarations && !invalidConfiguration && !awaitingDeclarations) return null;
+    if (!isGateway(input)) return null;
+    const base = new URL(options.gatewayUrl());
+    const url = new URL(input instanceof Request ? input.url : String(input), base);
+    const prefix = base.pathname.replace(/\/$/, '') + '/extension-assets/';
+    if (!url.pathname.startsWith(prefix)) return null;
+    const parts = url.pathname.slice(prefix.length).split('/');
+    if (!declarations || parts.length < 3 || !parts.slice(2).join('/')) return { status: 'inactive' };
+    let packageId: string;
+    let generation: string;
+    try {
+      packageId = decodeURIComponent(parts[0]);
+      generation = decodeURIComponent(parts[1]);
+    } catch { return { status: 'inactive' }; }
+    const pkg = declarations.packages.find((item) => item.packageId === packageId && item.activationGeneration === generation);
+    return pkg ? { status: 'active', version: JSON.stringify([declarations.gatewayInstanceId, packageId, generation]) }
+      : { status: 'inactive' };
   }
   function configure(input: unknown): void {
     try {
@@ -232,7 +253,7 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     requireValue(!awaitingDeclarations, 'CLIENT_DECLARATIONS_REQUIRED');
     requireValue(!invalidConfiguration, 'CONFIGURATION_ERROR');
     const result = new Headers(headers);
-    if (!declarations || !isGateway(input)) return result;
+    if (!declarations || !isGateway(input) || getPackageAssetState(input)) return result;
     const current = capture();
     allBindings().forEach(({ binding }, index) => {
       if (binding.type !== 'http' || binding.target.location !== 'header' || current[index] === undefined) return;
@@ -242,7 +263,7 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     return result;
   }
   return {
-    configure, acceptOperation, bindWebSocket, bindHTTP, isGateway,
+    configure, acceptOperation, bindWebSocket, bindHTTP, isGateway, getPackageAssetState,
     refresh: () => { if (declarations) capture(); },
     getEpoch: () => epoch,
     isChanging: () => changing,

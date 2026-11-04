@@ -23,4 +23,4 @@ SessionEndOutput(sessionId="demo-session-a")
 
 例如插件在 A 的每次用量更新后保存活跃摘要。平台真正清理 A 的运行或正常关闭 Worker 时，on_end 按 sessionId 清理 A 的活跃缓存，记录 reason 与 resume.id；B 的缓存不受影响。示例包记录真实清理日志；若需要跨进程持久保存摘要，应使用用户自己的存储能力，不能把普通内存字典当作已落盘。
 
-具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_24](../../docs/features/F_24_session-end.md)，公共契约见 [S_13](../../docs/specs/S_13_session-end.md)。示例不介入 ui.render，日志与实际结果参数用于观察。
+具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_22](../../docs/features/F_22_session-end.md)，公共契约见 [S_10](../../docs/specs/S_10_session-end.md)。示例不介入 ui.render，日志与实际结果参数用于观察。

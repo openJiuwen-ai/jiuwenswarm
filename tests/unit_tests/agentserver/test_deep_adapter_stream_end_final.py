@@ -275,7 +275,8 @@ async def test_native_session_start_waits_for_binding_and_precedes_agent_input(m
     assert context.cwd == "D:/trusted-project/src" and context.metadata["project_root"] == "D:/trusted-project"
     assert context.metadata[SESSION_MODEL_INFO_KEY]["model_name"] == "bound-model"
     assert "not-public" not in str(context.metadata)
-    assert facts == {"request_id": request.request_id, "channel_id": "web", "is_interactive": True}
+    assert facts == {"request_id": request.request_id, "channel_id": "web", "is_interactive": True,
+                     "surface": "desktop"}
 
 
 async def test_control_request_does_not_enter_native_start_gate(monkeypatch):

@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | S_14 / session-attach |
+| 编号 | S_11 / session-attach |
 | 最近修订日期 | 2026-11-02 |
-| 特性与验收 | [F_25](../features/F_25_session-attach.md) |
+| 特性与验收 | [F_23](../features/F_23_session-attach.md) |
 
 ## 1. 范围与公共契约
 
@@ -81,7 +81,7 @@ USER 不修改这些资料。Server 显式解除请求仍使用原有 `session_i
 
 - SA-08：宿主 foreground 观察者与 KVC 动态参与者组合；其他 activity 事件和输入意图返回语义不变，KVC 配置启停/lease release 不移除宿主关联观察；EventBus 只在 Worker，Core 无变化。
 
-- SA-09：关联表为一个 Runtime 的内存事实；按视图替换旧关联，不写会话文件，不提供 surfaces Ops；解除与替换通知由 [S_15](S_15_session-detach.md) 维护。Team/子 Agent 不发本事件；视图转入未跟踪的 Team 目标会清除其旧主会话关联记录。
+- SA-09：关联表为一个 Runtime 的内存事实；按视图替换旧关联，不写会话文件，不提供 surfaces Ops；解除与替换通知由 [S_12](S_12_session-detach.md) 维护。Team/子 Agent 不发本事件；视图转入未跟踪的 Team 目标会清除其旧主会话关联记录。
 
 ## 3. 平台入口、结果和兼容
 
@@ -91,8 +91,8 @@ USER 不修改这些资料。Server 显式解除请求仍使用原有 `session_i
 
 等待预算默认 2 秒。USER 错误或通知超时不恢复已提交关联；原调用取消继续传播。超时使作用域失效并请求取消，忽略取消的任务不能产生迟到有效 CORE 回执，在途计数直到实际退出才归零。USER 外部副作用不自动回滚，按 attachment_id 清理自己的资源。
 
-本次输入/输出的旧字段迁移唯一解释入口为 [F_25 第 4.2 节](../features/F_25_session-attach.md#42-旧-handler--回执迁移)。平台方法与 SessionContext 的 session_id 保持 snake_case，不将公开 camelCase 修改扩大到全部内部接口。
+本次输入/输出的旧字段迁移唯一解释入口为 [F_23 第 4.2 节](../features/F_23_session-attach.md#42-旧-handler--回执迁移)。平台方法与 SessionContext 的 session_id 保持 snake_case，不将公开 camelCase 修改扩大到全部内部接口。
 
 ## 4. 验证与关联
 
-运行验证、环境和证据范围在 [关联特性第 6 节](../features/F_25_session-attach.md#6-验收与未决问题) 维护。定向入口为 tests/unit_tests/extensions_v2/test_session_attach.py 和 test_session_lifecycle_contracts.py；Server/Runtime 原生接线与真实进程按 feature 的实际记录核对。
+运行验证、环境和证据范围在 [关联特性第 6 节](../features/F_23_session-attach.md#6-验收与未决问题) 维护。定向入口为 tests/unit_tests/extensions_v2/test_session_attach.py 和 test_session_lifecycle_contracts.py；Server/Runtime 原生接线与真实进程按 feature 的实际记录核对。

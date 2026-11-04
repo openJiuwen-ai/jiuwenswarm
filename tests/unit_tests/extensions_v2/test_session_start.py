@@ -120,7 +120,7 @@ async def test_real_packages_start_once_and_read_bound_ops_with_history_and_usag
         assert row["session"] == "s1"
         assert row["input"] == {"cwd": "D:/project/src", "surface": "desktop", "isInteractive": True}
         assert row["cwd"] == "D:/project/src" and row["root"] == "D:/project"
-        assert row["model"]["model_name"] == "active-model" and row["model"]["source"] == "runtime"
+        assert row["model"] == "active-model"
         assert row["history_ops"] and row["statistics_ops"]
 
 

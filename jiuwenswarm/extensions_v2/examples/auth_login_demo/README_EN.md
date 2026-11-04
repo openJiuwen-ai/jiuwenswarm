@@ -10,7 +10,7 @@ Layout uses generic components and existing gap tokens; menu placement uses nati
 Form.requiredMark=false hides label asterisks while preserving required validation.
 The plugin computes the account initial and sends it as Avatar.props.children. It chooses a stable background from the full name and declares native style values for the background, white text and font size.
 Unicode grapheme segmentation uses regex \X, currently supplied through Core → tiktoken. The host does not derive account initials or colors.
-Set Avatar.url for a custom image, which takes priority; omit url when no image is configured.
+Set Avatar.src for a custom image, which takes priority; omit src when no image is configured.
 Both inputs declare autoComplete=off. This native attribute expresses a browser preference; Chrome password management
 can ignore it, so the page cannot guarantee suppression of password-save prompts or saved-account suggestions.
 

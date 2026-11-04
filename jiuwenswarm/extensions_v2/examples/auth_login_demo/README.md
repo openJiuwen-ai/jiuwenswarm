@@ -11,7 +11,7 @@ Box.gap 仅使用现有 `lg` 档位；菜单位置直接声明 AntD placement/al
 Form.requiredMark=false 隐藏用户名和密码标签前的星号，必填校验保留。
 插件从账号名生成大写首字素并通过 Avatar.props.children 下发；完整账号名确定背景色，插件通过原生 style 声明背景、白字和字号，刷新及侧栏/菜单之间保持一致。
 Unicode 字素分割使用 regex 的 \X；当前运行环境通过 Core → tiktoken 依赖链提供 regex。宿主不生成账号首字母或配色。
-需要自定义头像时传入 Avatar.url，图片优先于首字母；不设置图片时省略 url。
+需要自定义头像时传入 Avatar.src，图片优先于首字母；不设置图片时省略 src。
 两个输入框声明 autoComplete=off，表示不使用浏览器自动填充。该原生属性是浏览器偏好提示，
 Chrome 密码管理器可以忽略它；保存密码和已保存账号建议仍由浏览器控制，页面不能保证彻底关闭。
 

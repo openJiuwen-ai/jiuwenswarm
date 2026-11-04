@@ -203,6 +203,7 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 普通交互的 payload 只接受 `node_key`、`revision`、`action_id`、`args`、`data` 五个字段，
 其中 revision 为正整数。宿主从已显示的实例与节点获取定位字段和动作声明。
+
 会话级请求从 `params.session_id` 或请求封套取得会话 ID，两者同时存在且不一致时拒绝。
 应用级请求省略 `params.session_id`，目标不带会话 ID 和连接 ID；连接由 Gateway 补充。
 `target.scope` 可以省略，省略时使用槽位表的范围；显式值与槽位定义不一致时拒绝。
@@ -305,8 +306,8 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 ## 5. 异常与边界
 
 - 事件名必须在 `UPSTREAM_EVENTS` 内；节点只能绑定自身组件声明的事件。
-- 请求带 `session_id` 且与目标不一致时返回 `SESSION_MISMATCH`。
-- 目录校验目标包是否声明了该槽位；广播 ready 的空包目标只检查槽位贡献。实例由四元组定位，未登记实例返回 `inactive`。
+- 会话级请求带 `session_id` 且与目标或封套不一致时返回 `SESSION_MISMATCH`；应用级请求不把封套中的会话 ID 当成聊天会话使用。
+- 目录校验目标包是否声明了该槽位；广播 ready 的空包目标只检查槽位贡献。实例键按槽位范围确定，见 [F_06 第 3.2.2 节](F_06_render-service.md#322-实例标识)；未登记实例返回 `inactive`。
 - revision 与当前实例不符时返回 `stale/TARGET_INACTIVE`；动作或数据非法时返回 `invalid_action/SCHEMA_ERROR`。
 - 校验保证进入事件链时请求有效，不锁住 Handler 的整个执行期；Handler 等待期间视图可能被其他任务替换。
 - 语言资源只校验路径存在且不逃逸包根；文本解析与按语言选择尚未实现。
@@ -334,7 +335,11 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 
 - `tests/unit_tests/extensions_v2/webui/test_webui_adapter.py`
 - `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`
+- `tests/unit_tests/extensions_v2/webui/test_webui_events.py`
+- `tests/unit_tests/extensions_v2/webui/test_webui_input.py`
 - `tests/unit_tests/extensions_v2/webui/test_application_slots.py`
+- `tests/unit_tests/extensions_v2/test_session_files.py`
+- 前端 `npm run test:webui-events`
 
 覆盖内容：
 
@@ -343,10 +348,10 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 - 槽位、会话和目标字段校验。
 - 正常交互、非法事件数据、过期 revision、伪造动作与参数，以及拒绝请求不触发业务 Handler。
 - 包卸载、会话与实例隔离，以及目录外组件与旧组件属性的拒绝。
+- 应用槽位缺少连接或来自非 Web 渠道时拒绝；同一个包在两个连接上分别渲染，目标不携带聊天会话 ID。
 
 组件属性测试共用前端测试目录下的 `webuiComponentCases.json`。Python 测试覆盖进程内的
 render → Handler → replace；前端测试使用 jsdom 验证页面点击产生的请求。
-- 应用槽位缺少连接或来自非 Web 渠道时拒绝；同一个包在两个连接上分别渲染，目标不携带聊天会话 ID。
 
 当前执行结果：上述用例通过。
 2026-10-30 的后端定向复核见 [F_06 第 8 节](F_06_render-service.md#8-验证)，前端宿主与交互验证见

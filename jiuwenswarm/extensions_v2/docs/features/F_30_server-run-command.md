@@ -258,9 +258,9 @@ async def on_list(event, ops, next_handler):
 
 ## 6. 验收与未决问题
 
-2026-11-04 合并当前 Server 目标 `415d91a65`，使用实际 Core `31fee3a86` 重新验证。命令事件/适配 52、compact 15、authorize 35、session.start 18、既有命令 99，共 219 个不同定向用例通过。原有 5 项 compact 私有接口测试已改为真实用户包注册，全部通过，见 [F_28 第 6.5 节](F_28_session-compact.md#65-当前-core-的受管-handler-测试适配)。
+2026-11-04 合并当前 Server 目标 `a439a6c54`，使用实际 Core `31fee3a86` 重新验证。命令事件/适配 52、compact 15、authorize 35、session.start 18、既有命令 99，共 219 个不同定向用例通过。原有 5 项 compact 私有接口测试已改为真实用户包注册，全部通过，见 [F_28 第 6.5 节](F_28_session-compact.md#65-当前-core-的受管-handler-测试适配)。
 
-扩展全组 990 通过、2 跳过、2 失败；剩余 Store Probe 与 Workbench 的失败在未修改的 Server 415d91a65 / 同一 Core 基线复现，测试 ID 和首行原因一致。最终追加 USER 完成校验后重跑 compact 15 项通过。独立 ZIP、原生命令和隐藏备注恢复也在合并后的代码重新验证通过。
+扩展全组 990 通过、2 跳过、2 失败；剩余 Store Probe 与 Workbench 的失败在未修改的 Server a439a6c54 / 同一 Core 基线复现，测试 ID 和首行原因一致。五项受管 Handler 测试均包含 USER 完成校验。独立 ZIP、原生命令和隐藏备注恢复也在合并后的代码重新验证通过。
 
 | 场景 | 已验证的实际结果 |
 | --- | --- |

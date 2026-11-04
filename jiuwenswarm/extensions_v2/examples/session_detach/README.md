@@ -22,4 +22,4 @@ SessionDetachOutput(clientId="web:view-main")
 
 例如窗口 V 从 A 切到 B：旧 detach 绑定 A、clientId 仍为 web:V，插件按旧 attachment_id 取消 A 的刷新任务；随后新 attach 绑定 B，同一个 clientId 对应新的 attachment_id。迟到的 A 清理只能删旧键，不会误删 B 的资源。若只是关停 A 的运行，则对仍看 A 的窗口发送 reason=end，B 的窗口继续保留。
 
-具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_26](../../docs/features/F_26_session-detach.md)，公共契约见 [S_15](../../docs/specs/S_15_session-detach.md)。示例不介入 ui.render，日志与实际结果参数用于观察。
+具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_24](../../docs/features/F_24_session-detach.md)，公共契约见 [S_12](../../docs/specs/S_12_session-detach.md)。示例不介入 ui.render，日志与实际结果参数用于观察。

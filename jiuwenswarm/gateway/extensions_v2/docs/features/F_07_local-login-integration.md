@@ -184,7 +184,14 @@ invocation_id 仍供上下文变更等待原请求结束，不能与无消费者
 
 Gateway 只为参与客户端能力的包生成激活标记。渲染始终使用发起调用的激活归属；包重载后，旧调用不得修改当前活动树。
 AgentServer 等普通插件的帧继续走既有 WebUI 协议，无需为展示 UI 声明浏览器存储能力。
-登录和退出时的存储变化会使资源上下文更新，前端在资源未就绪期间不挂载图片。
+登录和退出时的存储变化会使依赖凭据的资源上下文更新，前端在该类资源未就绪期间不挂载图片。
+插件静态素材按 Gateway、包 ID 和激活代次管理，不随凭据变化失效；具体契约及本轮宿主验证见
+[前端资源作用域](../../../../channels/web/frontend/src/features/webui/docs/specs/S_02_client-capabilities.md#资源作用域)和
+[实现记录](../../../../channels/web/frontend/src/features/webui/docs/features/F_02_client-capabilities.md#插件静态素材的生命周期)。
+
+Plugin static assets follow Gateway and package activation lifetimes rather than credentials. Credential-protected
+resources retain request-context invalidation; the frontend contract and implementation record above own this behavior.
+
 新请求上下文就绪后，已挂载的非 entry 插槽重新上报 ui.ready，恢复此前被失效处理的贡献。
 真实 Chrome 回归已验证登录后自动恢复侧栏菜单、任务入口、标题、操作按钮和输入区贡献，
 展开右侧区域可打开工作区文件及网页预览页签；工作台刷新动作正常返回更新结果。
