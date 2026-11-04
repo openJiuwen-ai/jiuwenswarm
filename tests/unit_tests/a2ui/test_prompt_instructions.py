@@ -26,21 +26,29 @@ def test_a2ui_prompt_discourages_nested_templates():
 
     assert "Do not nest templates" in instruction
     assert "indexed valueMap" in instruction
+    assert "keys must not repeat" in instruction
+    assert "Do not use collection absolute paths" in instruction
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "不要在模板渲染出的组件内部嵌套 template" in zh
+    assert "key 不能重复" in zh
+    assert "不要在模板内使用集合绝对路径" in zh
 
 
 def test_a2ui_prompt_titles_input_components_with_text():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert 'TextField\'s "label" MUST be empty.' in en
-    assert '{"literalString": ""}' not in en
+    assert 'TextField\'s "label" MUST be present but empty' in en
+    assert '{"literalString": ""}' in en
     assert "avoiding a doubled label" not in en
     assert "Wrap each Text title and its input component together in a Column." in en
     assert "(title first, input second)" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert '"label" 置空；' in zh
-    assert '{"literalString": ""}' not in zh
+    assert '"label" 必须存在但置空' in zh
+    assert '{"literalString": ""}' in zh
     assert "避免双重标签" not in zh
     assert "共同包在一个 Column 里。" in zh
     assert "标题在前、输入在后" not in zh
@@ -111,17 +119,21 @@ def test_a2ui_prompt_multiplechoice_single_select_max_one():
 def test_a2ui_prompt_action_button_row_order():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "single horizontal Row" in en
-    assert "secondary buttons come before primary ones" in en
-    assert "only one primary button" in en
+    assert "MUST go into a horizontal Row" in en
+    assert "the primary button goes first" in en
+    assert "Do not add a Divider above the button row" in en
+    assert "only one primary button" not in en
+    assert "bottom of the Card" not in en
     assert 'distribution to "end"' not in en
     assert "aligned" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "同一个 Row" in zh
-    assert "次要在前、主要在后" in zh
-    assert "主要按钮只设一个" in zh
+    assert "必须放进一个 Row" in zh
+    assert "主要按钮放第一位" in zh
+    assert "不要在表单底部按钮行上方添加 Divider" in zh
+    assert "主要按钮只设一个" not in zh
+    assert "放在 Card 底部" not in zh
     assert 'distribution="end"' not in zh
     assert "右对齐" not in zh
 
@@ -205,8 +217,8 @@ def test_a2ui_prompt_defines_hotel_booking_actions():
 def test_a2ui_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("en")
 
-    assert "modal" in instruction
-    assert "floating overlay" in instruction
+    assert "Modal IS supported" in instruction
+    assert "floating-overlay" in instruction
     assert "inline status" in instruction
     assert "plain text" in instruction
 
@@ -214,7 +226,7 @@ def test_a2ui_prompt_discourages_unsupported_popup_components():
 def test_a2ui_zh_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("zh")
 
-    assert "弹窗" in instruction
+    assert "Modal 是支持的" in instruction
     assert "浮层" in instruction
     assert "行内状态" in instruction
     assert "纯文本" in instruction
