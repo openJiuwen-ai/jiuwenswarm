@@ -17,6 +17,7 @@ from typing import Any
 
 EVENT_GATEWAY_REQUEST = "gateway.request"
 EVENT_UI_RENDER = "ui.render"
+EVENT_GATEWAY_DISCONNECT = "gateway.disconnect"
 
 #: The single upstream WebUI method that carries browser ui.* events.
 WEBUI_DISPATCH_METHOD = "webui.dispatch"
@@ -78,6 +79,17 @@ class GatewayRequestInput:
     user_id: str | None = None
     channel_id: str = "web"
     headers: Mapping[str, str] = field(default_factory=_empty_headers)
+    request_context: Mapping[str, Any] = field(default_factory=_empty_mapping)
+    transport: str = "websocket"
+    path: str = ""
+    request_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayDisconnectInput:
+    """Lifecycle notification before a browser connection is discarded."""
+
+    connection_id: str
 
 
 @dataclass(frozen=True, slots=True)

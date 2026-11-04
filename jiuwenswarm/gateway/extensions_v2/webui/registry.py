@@ -54,6 +54,7 @@ class ActiveRenderRegistry:
 
     def __init__(self, max_instances_per_session: int = MAX_INSTANCES_PER_SESSION) -> None:
         self._instances: dict[str, RenderInstance] = {}
+        self._revisions: dict[str, tuple[RenderTarget, int]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_users: dict[str, int] = {}
         self._max_per_session = max_instances_per_session
@@ -67,6 +68,14 @@ class ActiveRenderRegistry:
     def snapshot(self) -> tuple[RenderInstance, ...]:
         return tuple(self._instances.values())
 
+    def clear(self) -> None:
+        """Release active instances and revision history when the runtime stops."""
+        self._instances.clear()
+        self._revisions.clear()
+        for key in list(self._locks):
+            if self._lock_users.get(key, 0) == 0:
+                self._locks.pop(key, None)
+
     @asynccontextmanager
     async def claim(self, target: RenderTarget) -> AsyncIterator[RenderClaim]:
         """Claim one instance exclusively; independent instances may run concurrently."""
@@ -76,7 +85,7 @@ class ActiveRenderRegistry:
             instance = self._instances.get(target.key)
             created = instance is None
             if instance is None:
-                instance = RenderInstance(target=target)
+                instance = RenderInstance(target=target, revision=self._revisions.get(target.key, (target, 0))[1])
                 self._instances[target.key] = instance
             instance.updated_at = time.monotonic()
             yield RenderClaim(instance=instance, evicted=evicted, created=created)
@@ -85,6 +94,7 @@ class ActiveRenderRegistry:
         """Commit a delivered update and return its next revision frame."""
 
         instance.revision += 1
+        self._revisions[instance.target.key] = (instance.target, instance.revision)
         instance.mode = request.mode
         instance.root = _snapshot_content(request.root) if request.mode is RenderMode.REPLACE else None
         instance.updated_at = time.monotonic()
@@ -99,6 +109,7 @@ class ActiveRenderRegistry:
         """Restore the previous state after a failed delivery without skipping revisions."""
 
         instance.revision = previous.revision
+        self._revisions[instance.target.key] = (instance.target, instance.revision)
         instance.mode = previous.mode
         instance.root = previous.root
         instance.updated_at = previous.updated_at
@@ -125,7 +136,8 @@ class ActiveRenderRegistry:
         return self._drop_matching(
             lambda target: (
                 target.resolved_scope != SlotScope.APPLICATION.value and target.session_id == session_id
-            )
+            ),
+            forget_revisions=True,
         )
 
     def drop_package(self, package_id: str) -> tuple[RenderInstance, ...]:
@@ -140,7 +152,8 @@ class ActiveRenderRegistry:
             lambda target: (
                 target.resolved_scope == SlotScope.APPLICATION.value
                 and target.connection_id == connection_id
-            )
+            ),
+            forget_revisions=True,
         )
 
     @asynccontextmanager
@@ -164,7 +177,11 @@ class ActiveRenderRegistry:
                 if key not in self._instances and self._locks.get(key) is lock:
                     self._locks.pop(key, None)
 
-    def _drop_matching(self, predicate) -> tuple[RenderInstance, ...]:
+    def _drop_matching(self, predicate, *, forget_revisions: bool = False) -> tuple[RenderInstance, ...]:
+        if forget_revisions:
+            for key, (target, _) in list(self._revisions.items()):
+                if predicate(target):
+                    self._revisions.pop(key, None)
         dropped: list[RenderInstance] = []
         for key, instance in list(self._instances.items()):
             if not predicate(instance.target):

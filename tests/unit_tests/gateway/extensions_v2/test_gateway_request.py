@@ -89,6 +89,26 @@ async def test_no_user_handler_keeps_the_frame_untouched(tmp_path):
     assert channel.responses == []
 
 
+async def test_request_context_preserves_plugin_fields_without_changing_params(tmp_path):
+    runtime = await _runtime(tmp_path)
+    observed = []
+
+    async def capture(event, ops, next_handler):
+        observed.append(event.event_input)
+        return await next_handler(event)
+
+    runtime.publish(_package(capture))
+    try:
+        visited, params = await runtime.intercept(_ws(), "context", "chat.send", {"message": "hello"},
+            request_context={"tenant_id": "tenant-a", "headers": {"Authorization": "Bearer example"}})
+        assert visited is False
+        assert params == {"message": "hello"}
+        assert observed[0].request_context["tenant_id"] == "tenant-a"
+        assert observed[0].headers == {"authorization": "Bearer example"}
+    finally:
+        await runtime.shutdown()
+
+
 async def test_core_defaults_to_forward(tmp_path):
     runtime = await _runtime(tmp_path)
 
@@ -255,11 +275,14 @@ async def test_broken_handler_does_not_break_the_frame(tmp_path):
 
     runtime.publish(_package(handler))
 
-    visited, params = await runtime.intercept(_ws(), "r5", "chat.send", {"a": 1})
+    try:
+        visited, params = await runtime.intercept(_ws(), "r5", "chat.send", {"a": 1}, AUTH_HEADERS)
 
-    assert visited is False
-    assert params == {"a": 1}
-    assert channel.responses == []
+        assert visited is False
+        assert params == {"a": 1}
+        assert channel.responses == []
+    finally:
+        await runtime.shutdown()
 
 
 async def test_shutdown_unregisters_every_handler(tmp_path):

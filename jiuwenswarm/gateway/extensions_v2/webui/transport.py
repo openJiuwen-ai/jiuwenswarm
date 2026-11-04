@@ -9,7 +9,7 @@ sent with ``WebChannel.send_event``; it never travels through AgentServer.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import (
@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 class GatewayTransport:
     """Send frames to one browser connection; failure is returned, not raised."""
 
-    def __init__(self, channel: Any | None = None) -> None:
+    def __init__(self, channel: Any | None = None, *, generation: Callable[[str], str | None] | None = None) -> None:
         self._channel = channel
+        self._generation = generation
 
     def bind(self, channel: Any) -> None:
         """Point the transport at the channel that accepted the connection."""
@@ -65,8 +66,14 @@ class GatewayTransport:
         ws = lookup(connection_id) if callable(lookup) else None
         if ws is None:
             return False
+        body = dict(payload)
+        if self._generation is not None:
+            package_id = body.get("target", {}).get("package_id", "")
+            generation = self._generation(package_id)
+            if generation:
+                body["activation_generation"] = generation
         try:
-            await channel.send_event(ws, event, dict(payload))
+            await channel.send_event(ws, event, body)
         except Exception as exc:  # noqa: BLE001 - a delivery failure must not break the chain
             logger.warning("[GatewayExtensions] failed to send %s: %s", event, exc)
             return False

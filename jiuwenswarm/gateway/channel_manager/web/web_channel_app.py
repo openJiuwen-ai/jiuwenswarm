@@ -56,6 +56,9 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
         openapi_url=None,
     )
     app.state.web_channel = channel
+    from jiuwenswarm.gateway.extensions_v2.webui.http import attach_browser_routes
+
+    attach_browser_routes(app)
     plugin_registry = getattr(channel, "application_plugin_registry", None)
 
     register_http_routes(app, channel)

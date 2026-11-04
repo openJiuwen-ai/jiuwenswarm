@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from openjiuwen.core.events import (
     Event,
     EventHandler,
@@ -22,6 +24,11 @@ def build_ui_ops_build_handler(bus: ExtensionEventBus) -> EventHandler:
 
     async def ui_render(ops_view: EventHandlerOps, request: UiRenderInput) -> object:
         # Verb: start a new ui.render chain. The current chain is not advanced.
+        owner = ops_view.package_metadata.package_id if ops_view.package_metadata else ""
+        if owner:
+            if request.target.package_id and request.target.package_id != owner:
+                raise ValueError("render target does not belong to the calling package")
+            request = replace(request, target=replace(request.target, package_id=owner))
         return await bus.trigger(Event(EVENT_UI_RENDER, request), ops_view.session_context)
 
     async def ui_ops_build(

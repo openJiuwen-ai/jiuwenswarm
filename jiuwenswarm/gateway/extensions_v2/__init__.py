@@ -41,6 +41,8 @@ async def intercept_gateway_frame(
     method: str,
     params: Mapping[str, Any],
     headers: Mapping[str, str] | None = None,
+    *,
+    request_context: Mapping[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Run one frame through ``gateway.request``.
 
@@ -57,7 +59,7 @@ async def intercept_gateway_frame(
     if runtime is None or not isinstance(params, Mapping):
         return False, dict(params) if isinstance(params, Mapping) else {}
     try:
-        return await runtime.intercept(ws, req_id, method, dict(params), headers)
+        return await runtime.intercept(ws, req_id, method, dict(params), headers, request_context=request_context)
     except Exception as exc:  # noqa: BLE001 - fail open to the native path
         logger.warning("[GatewayExtensions] frame interception failed, forwarding: %s", exc)
         return False, dict(params)

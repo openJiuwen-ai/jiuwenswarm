@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-GW-03 `ui.render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 7 节](../designs/extensions-v2-architecture.md)、[渲染规约](../specs/S_02_ui-render.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-04 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
@@ -26,13 +26,13 @@ Gateway 自有的 application 槽位在 AgentServer 里没有对应视图：未�
 - 新增 `GatewayWebUIRuntime`：注册 `ui.render`、发布 `ops.ui.render`、提供 `render` / `drop_connection` / `shutdown`。
 - `webui/transport.py`：按 `ws_id` 经 `WebChannel.send_event` 下发 `webui.render`、`webui.render.clear`、`webui.render.error`。
 - application 槽位表：`application.entry`（single）与 `application.sidebar.footer`（list）。
-- 组件目录补齐前端已登记的 `Form` / `FormItem` / `Dropdown`，并为 `Button` 增加 `form` 引用。
+- 组件目录补齐前端已登记的 `Form` / `Form.Item` / `Dropdown`，并为 `Button` 增加 `form` 引用。
 - 认证门禁对 Gateway 自有 application 槽位帧的通用豁免（`ui.ready` / `ui.change` / 未接管的其他事件）。
 
 ### 2.2 非目标
 
 - 不提供任何内置业务视图；登录、设置面板等界面由包通过 `ops.ui.render` 自行提交。
-- 不实现 `ui.click` 事件，由 F_05 维护。
+- 应用级交互分派由 [浏览器桥接规约](../specs/S_06_local-browser-bridge.md) 维护。
 - 不渲染会话槽位，不实现重连重发与离线补帧。
 - 不实现前端槽位宿主与表单取值，前端改动不在本批。
 
@@ -77,17 +77,17 @@ flowchart LR
 | `application.entry` | `single` | 首屏整页宿主，适合登录页、全屏设置等 |
 | `application.sidebar.footer` | `list` | 侧边栏底部列表，多个包可并存 |
 
-`package_id` 与 `instance_key` 由包自行决定，同一 `(slot_id, package_id, instance_key)` 只对应一个实例，重复渲染只增加 revision。
+`package_id` 由可信调用包归属注入，包不得指定其他包；`instance_key` 由包决定，同一 `(slot_id, package_id, instance_key)` 只对应一个实例，重复渲染只增加 revision。
 
-组件目录在本批次补齐前端已登记的 `Form`、`FormItem`、`Dropdown`，并给 `Button` 增加 `form`：
+组件目录在本批次补齐前端已登记的 `Form`、`Form.Item`、`Dropdown`，并给 `Button` 增加 `form`：
 
 | 组件 | 约束 |
 | --- | --- |
-| `Form` | 必须有唯一 `name`；子节点只能是 `FormItem` |
-| `FormItem` | 必须有 `name`；子节点只能是 `Input`；`rules` 支持 `required` / `min` / `max` / `pattern` / `message` |
+| `Form` | 必须有唯一 `name` 和非空字段；同表单字段名唯一 |
+| `Form.Item` | 必须有合法 `name`；只有一个不声明远程事件的 `Input`；`rules` 支持 `required` / `min` / `max` / `pattern` / `message` |
 | `Button` | `form` 必须引用同一棵树中的 `Form.name`；点击时前端按该表单组装 `ui.click.data` |
-| `Input` | 不再接受 `name`，字段名由所属 `FormItem.name` 表达 |
-| `Dropdown` | `items` 为 `[{key, label}]`，点击时把选中 `key` 放进 `ui.click.data` |
+| `Input` | 不再接受 `name`，字段名由所属 `Form.Item.name` 表达 |
+| `Dropdown` | `items` 通过 key/label 定义菜单项，点击时把选中 `key` 放进 `ui.select.data` |
 
 AgentServer 副本暂不引入表单三件套规则，两份 `component_rules.py` 在表单契约上有意分歧。
 
@@ -148,6 +148,13 @@ sequenceDiagram
 
 包在需要展示界面时主动渲染；平台不会在拒绝帧时替包渲染。登出等状态变化由包按需重绘或清空实例。
 
+### 4.3 客户端能力包的上行接入
+
+浏览器接入复用已合入的 `gateway.request` 和 `ui.render`，不建立第二套请求策略或活动渲染树。
+`webui.dispatch` 先经过 USER 请求策略，继续后由 BUILTIN 浏览器分派器校验目标和动作，触发对应 `ui.*` 事件。
+插件可以拒绝请求或自行应答；允许哪些匿名交互同样属于插件策略。原认证门禁和非接入目标的处理保持原有行为。
+浏览器操作、请求绑定、资源及生命周期的通用契约见 [S_06](../specs/S_06_local-browser-bridge.md)。
+
 ## 5. 异常与边界
 
 | 情况 | 行为 |
@@ -165,7 +172,7 @@ sequenceDiagram
 - **平台零预置视图**：任何界面都来自包；平台缺省安装时浏览器看不到额外内容，行为与未启用渲染一致。
 - **只保留可寻址槽位**：槽位表只含 application 槽位，从源头杜绝 Gateway 与 AgentServer 双写同一会话实例。
 - **传输按 socket 直发**：Gateway 拥有 WebSocket，不需要 AgentServer 的推送通道与 `ws_id` 元数据转换。
-- **表单契约跟着前端走**：用 `Form.name` + `FormItem.name` + `Button.form` 表达"点击时带上哪些字段"，`Input` 不再重复声明字段名。
+- **表单契约跟着前端走**：用 `Form.name` + `Form.Item.name` + `Button.form` 表达"点击时带上哪些字段"，`Input` 不再重复声明字段名。
 - **门禁只做通用豁免**：application 槽位帧本地应答，不判断槽位里画的是什么，也不触发任何渲染。
 
 ## 7. 实施影响
@@ -176,7 +183,7 @@ sequenceDiagram
 - `auth_gate.py` 由固定白名单改为策略驱动，并按 application 槽位做通用豁免。
 - `GatewayRuntime.on_disconnect` 同时清理状态存储与渲染实例。
 - 删除 C1 预留的 `core_handlers/context.py`，连接事实统一由 `webui/call_context.py` 读取。
-- Gateway 副本 `component_rules.py` 增加 `Form` / `FormItem` / `Dropdown` 与 `Button.form` 校验。
+- Gateway 副本 `component_rules.py` 增加 `Form` / `Form.Item` / `Dropdown` 与 `Button.form` 校验。
 
 ## 8. 验证
 
@@ -191,7 +198,7 @@ sequenceDiagram
 | `clear` 模式下发清除帧并移除实例 | 通过 |
 | 只有目标连接收到帧 | 通过 |
 | 断线清除 application 实例 | 通过 |
-| 组件目录接受 `Form` / `FormItem` / `Dropdown` | 通过 |
+| 组件目录接受 `Form` / `Form.Item` / `Dropdown` | 通过 |
 | `Button.form` 指向树外 Form 时整树拒绝 | 通过 |
 | 拒绝帧不渲染任何平台视图 | 通过 |
 | application 槽位 `ui.ready` 本地接受 | 通过 |
@@ -200,7 +207,14 @@ sequenceDiagram
 ## 9. 风险与遗留
 
 - 前端需要常驻挂载 `application.entry` 与 `application.sidebar.footer` 两个宿主槽位。
-- 表单取值依赖前端实现 `Form.name` / `FormItem.name` / `Button.form` 与 `Dropdown.items`；未适配前 `ui.click.data` 为空。
+- 表单取值依赖前端实现 `Form.name` / `Form.Item.name` / `Button.form` 与 `Dropdown.items`；未适配前 `ui.click.data` 为空。
 - 包自行决定凭据存放方式；若使用浏览器本地存储，应通过 `ops.client_local_storage` 下发（见 F_05）。
 - 活跃实例只在进程内保存，重连后需包重新渲染。
 - `webui.render` 帧格式需与 AgentServer 前端运行时保持一致，协议变更需两侧同步。
+
+## 2026-11-04 契约对齐验证
+
+Box 数值 gap、Dropdown 图标触发源与可访问标签、重复表单字段及本地输入事件约束与前端统一。
+图标白名单由同一 JSON 分别生成到 AgentServer 和 Gateway 模块，不跨宿主导入。
+前端与 Gateway 共同执行 30 组契约向量；Gateway extensions_v2 当前 110 项测试通过，包含 10 项登录示例安装测试。
+认证门禁实现未修改；异常处理回归测试补充有效 header，避免把门禁拒绝与异常处理混为一项断言。

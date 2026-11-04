@@ -108,4 +108,12 @@ def _hook_disconnect(channel: Any) -> None:
     from jiuwenswarm.gateway.extensions_v2 import notify_gateway_disconnect
 
     register(notify_gateway_disconnect)
+    connect = getattr(channel, "on_connect", None)
+    if callable(connect):
+        async def browser_connected(ws):
+            runtime = get_gateway_runtime()
+            if runtime is not None and runtime.browser.enabled:
+                connection_id = await runtime.connection_id(ws)
+                await runtime.browser.connect(ws, connection_id)
+        connect(browser_connected)
     setattr(channel, "_gateway_extensions_hooked", True)

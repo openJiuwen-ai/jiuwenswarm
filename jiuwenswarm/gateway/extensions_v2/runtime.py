@@ -17,9 +17,11 @@ import asyncio
 import functools
 import inspect
 import logging
+from contextlib import nullcontext
 from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
 from typing import Any
+from uuid import uuid4
 
 from openjiuwen.core.events import (
     OPS_BUILD_EVENT_TYPE,
@@ -37,6 +39,8 @@ from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages
 from jiuwenswarm.gateway.extensions_v2.models import (
     EVENT_GATEWAY_REQUEST,
+    EVENT_GATEWAY_DISCONNECT,
+    GatewayDisconnectInput,
     GatewayRequestInput,
     GatewayRequestOutput,
     GatewayRoute,
@@ -46,6 +50,7 @@ from jiuwenswarm.gateway.extensions_v2.state import UiStateStore
 from jiuwenswarm.gateway.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
+from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +69,7 @@ class GatewayRuntime:
         self.router = GatewayLocalRouter()
         self.webui = GatewayWebUIRuntime(
             bus=self.bus,
-            transport=GatewayTransport(channel),
+            transport=GatewayTransport(channel, generation=lambda package_id: self.browser.frame_generation(package_id)),
         )
         self._handler_ids: list[str] = []
         self._builtin_ids: list[str] = []
@@ -75,6 +80,7 @@ class GatewayRuntime:
         self._auth_providers = 0
         self._management: Any = None
         self._started = False
+        self.browser = BrowserBridge(self)
 
     @property
     def registry(self) -> ActiveRenderRegistry:
@@ -126,6 +132,8 @@ class GatewayRuntime:
         self._auth_providers = 0
         await self.webui.shutdown()
         self.store.clear()
+        self.browser.connections.clear()
+        self.browser.generations.clear()
         self._started = False
 
     @property
@@ -190,6 +198,7 @@ class GatewayRuntime:
         failed package never counts as an ``auth_provider``.
         """
 
+        self.browser.validate_package(package)
         self.unpublish(package.package_id)
         metadata = PackageMetadata(
             package_id=package.package_id,
@@ -197,11 +206,17 @@ class GatewayRuntime:
             root=package.root,
         )
         registered: list[tuple[str, str]] = []
+        generation = uuid4().hex
         for declaration in package.handlers:
             try:
                 handler_id = self.bus.register_event_handler(
                     declaration.event_type,
-                    _async_handler(declaration.handler),
+                    _async_handler(
+                        declaration.handler,
+                        browser=self.browser if package.client else None,
+                        package_id=package.package_id,
+                        generation=generation,
+                    ),
                     declaration.match_pattern,
                     HandlerLevel.USER,
                     package_metadata=metadata,
@@ -222,6 +237,7 @@ class GatewayRuntime:
             )
         self._package_handlers[package.package_id] = registered
         self._packages.append(package)
+        self.browser.published(package.package_id, generation)
         if package.auth_provider:
             self._auth_providers += 1
             self._auth_provider_ids.add(package.package_id)
@@ -237,6 +253,7 @@ class GatewayRuntime:
             self._auth_provider_ids.discard(package_id)
             self._auth_providers = max(0, self._auth_providers - 1)
         self._packages = [package for package in self._packages if package.package_id != package_id]
+        self.browser.released(package_id)
         return True
 
     def _drop_handlers(self, registered: list[tuple[str, str]]) -> None:
@@ -269,6 +286,8 @@ class GatewayRuntime:
         method: str,
         params: Mapping[str, Any],
         headers: Mapping[str, str] | None = None,
+        *,
+        request_context: Mapping[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Run one inbound frame through ``gateway.request``.
 
@@ -292,9 +311,13 @@ class GatewayRuntime:
             connection_id=connection_id,
             user_id=self._user_id(ws),
             channel_id=self._channel_id(),
-            headers=_normalized_headers(headers),
+            headers=_normalized_headers(headers if headers is not None else (request_context or {}).get("headers")),
+            request_context=MappingProxyType(dict(request_context or {})),
+            request_id=req_id,
         )
         try:
+            if self.browser.enabled:
+                await self.browser.connect(ws, connection_id)
             result = await asyncio.wait_for(
                 self.bus.trigger(
                     Event(EVENT_GATEWAY_REQUEST, request),
@@ -397,8 +420,15 @@ class GatewayRuntime:
         connection_id = str(getattr(ws, "_jiuwen_ws_id", "") or "")
         if not connection_id:
             return
-        self.store.drop_connection(connection_id)
-        await self.webui.drop_connection(connection_id)
+        try:
+            await asyncio.wait_for(self.bus.trigger(
+                Event(EVENT_GATEWAY_DISCONNECT, GatewayDisconnectInput(connection_id)),
+                SessionContext(gateway_session_id(connection_id), None, {"connection_id": connection_id}),
+            ), timeout=REQUEST_TIMEOUT_S)
+        finally:
+            self.browser.drop_connection(connection_id)
+            self.store.drop_connection(connection_id)
+            await self.webui.drop_connection(connection_id)
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -428,6 +458,7 @@ class GatewayRuntime:
             "connection_id": request.connection_id,
             "channel_id": request.channel_id,
             "method": request.method,
+            "request_id": request.request_id,
         }
         if request.user_id:
             metadata["user_id"] = request.user_id
@@ -455,17 +486,22 @@ def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
     return MappingProxyType(normalized)
 
 
-def _async_handler(handler: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+def _async_handler(
+    handler: Callable[..., Any], *, browser: BrowserBridge | None = None,
+    package_id: str = "", generation: str = "",
+) -> Callable[..., Awaitable[Any]]:
     """Return a handler the event bus can await (same adapter as Core)."""
 
-    if inspect.iscoroutinefunction(handler):
+    if browser is None and inspect.iscoroutinefunction(handler):
         return handler
 
     @functools.wraps(handler)
     async def adapter(event: Any, ops: Any, event_next: Any) -> Any:
-        result = handler(event, ops, event_next)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+        scope = browser.caller_scope(package_id, generation) if browser is not None else nullcontext()
+        with scope:
+            result = handler(event, ops, event_next)
+            if inspect.isawaitable(result):
+                return await result
+            return result
 
     return adapter

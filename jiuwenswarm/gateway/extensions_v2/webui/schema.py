@@ -2,8 +2,8 @@
 
 """Validate render slots, components, properties and budgets without I/O.
 
-Copied from ``jiuwenswarm/extensions_v2/webui/schema.py``. Both copies must
-change together; the Gateway runtime never imports the AgentServer package.
+The Gateway owns this application-slot contract and never imports the
+AgentServer package. Component properties follow the browser catalog.
 """
 
 from __future__ import annotations
@@ -167,7 +167,7 @@ def validate_root(root: RenderNode) -> ValidationReport:
 
 
 def _validate_form_links(root: RenderNode) -> ValidationReport:
-    """Check Form/FormItem placement and every Button.form reference in one tree."""
+    """Check Form/Form.Item placement and every Button.form reference in one tree."""
 
     names: list[str] = []
     references: list[str] = []
@@ -177,7 +177,7 @@ def _validate_form_links(root: RenderNode) -> ValidationReport:
         nonlocal misplaced
         if node.component == "Form":
             names.append(node.props["name"])
-        elif node.component == "FormItem" and parent != "Form":
+        elif node.component == "Form.Item" and parent != "Form":
             misplaced = True
         if node.component == "Button" and "form" in node.props:
             references.append(node.props["form"])
@@ -190,7 +190,7 @@ def _validate_form_links(root: RenderNode) -> ValidationReport:
 
     walk(root, "")
     if misplaced:
-        return _fail("FormItem must be a direct child of Form")
+        return _fail("Form.Item must be a direct child of Form")
     if len(set(names)) != len(names):
         return _fail("Form.name must be unique within one tree")
     unknown = sorted({name for name in references if name not in names})
@@ -253,9 +253,24 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")
     if node.component == "Form" and not node.children:
-        return _fail("Form requires FormItem children")
-    if node.component == "FormItem" and not node.children:
-        return _fail("FormItem requires an Input child")
+        return _fail("Form requires Form.Item children")
+    if node.component == "Form.Item" and len(node.children) != 1:
+        return _fail("Form.Item requires one Input child")
+    if node.component == "Dropdown":
+        if len(node.children) != (0 if node.props.get("icon") else 1):
+            return _fail("Dropdown requires exactly one trigger source")
+        display_nodes = list(node.children)
+        for item in node.props["items"]:
+            label = item.get("label")
+            if isinstance(label, (list, tuple)):
+                display_nodes.extend(label)
+                for child in label:
+                    report = _validate_node(child, depth=depth + 1, counter=counter)
+                    if not report.ok:
+                        return report
+        for child in display_nodes:
+            if not _display_only(child):
+                return _fail("Dropdown content must contain only display components")
     if node.component == "Tabs":
         for item in node.props["items"]:
             for child in item.get("children", ()):
@@ -273,7 +288,19 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
             report = _validate_node(child, depth=depth + 1, counter=counter)
             if not report.ok:
                 return report
+    if node.component == "Form":
+        fields = [child.props["name"] for child in node.children]
+        if len(set(fields)) != len(fields):
+            return _fail("Form.Item names must be unique within one Form")
+    if node.component == "Form.Item" and node.children[0].events:
+        return _fail("Form inputs use local events only")
     return _OK
+
+
+def _display_only(node: RenderNode) -> bool:
+    return (isinstance(node, RenderNode) and node.component in {"Box", "Text", "Avatar", "Image", "Tag"}
+            and not node.events and (node.component != "Image" or node.props.get("preview") is False)
+            and all(_display_only(child) for child in node.children))
 
 
 def _validate_value(name: str, value: Any, *, depth: int = 0) -> ValidationReport:
