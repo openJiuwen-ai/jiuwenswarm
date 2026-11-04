@@ -40,7 +40,7 @@ iframe 内部网页、HTML 相对资源、直接导航及桌面原生打开仍�
 Form 使用 AntD 本地状态与校验，Button.form 在实例内关联表单并通过 ui.click.data 发送字段。
 隐藏页签及暂时停用保留草稿，断连和销毁清理字段。Form.Item 使用正式协议名，不接受旧 FormItem 名称。
 Dropdown 只接受一个触发源：图标加可访问标签，或一棵展示子树。菜单标签允许展示节点、禁用项及分隔线，
-拒绝交互子树及未显式关闭预览的 Image。前端与 Gateway 共用契约用例校验这些结构。
+拒绝交互子树及未显式关闭预览的 Image。Gateway 仅开放展示子树触发器；共享用例校验两端共同支持的结构，图标触发器由前端单独验证。
 
 entry 使用原生 modal dialog 管理焦点与底层交互阻断，可在 clear 后重新打开；错误实例仍保留阻断。
 非 entry 插槽在新上下文就绪后重新上报 ui.ready，恢复失效处理移除的贡献。
@@ -52,8 +52,9 @@ Node 测试入口为 package.json 中 test:webui-*、test:app-request-context �
 真实浏览器协议测试入口为 tests/webuiBrowserServer.mjs 与 tests/webuiBrowser.test.mjs；其 WebSocket 为协议桩，
 不能替代真实 Gateway 或身份服务验收。
 
-2026-11-04 本轮结果：前端 418 项 Node 测试全部通过（contracts 119、components 117、protocol 14、runtime 17、
+2026-11-04 精简前的回归结果：前端 418 项 Node 测试全部通过（contracts 119、components 117、protocol 14、runtime 17、
 events 93、transport 7、renderer 17、client 22、App request context 4、WebClient runtime ACK 8）。
+Gateway 移除图标触发能力后，共享用例保留 28 项共同契约；图标和别名仍在前端单独验证。重新执行 contracts 119 项和 components 115 项，全部通过。
 Chrome 157.0.8103.38 协议浏览器测试通过，覆盖表单与键盘菜单、modal 焦点、clear 重入、跨标签页存储、
 HTTP/WS 绑定、显式刷新、双语错误提示、宽窄布局与日志脱敏。Vite 生产构建通过。
 手工核对本次样式引用的语义主题变量均已在主题中声明，未引入新产品颜色。
@@ -74,5 +75,5 @@ local forms, menu composition, protected resource loading and application slots.
 example are separate commits. The host does not interpret authentication fields or reset business stores individually.
 Context changes cancel old requests and streams; ready contexts resume initialization and unfinished conversation reads.
 Only explicit NOT_FOUND metadata errors establish a missing conversation. Independent pushes and embedded resource
-navigation still require their owning server contracts. Shared vectors verify frontend/Gateway component acceptance;
+navigation still require their owning server contracts. Shared vectors verify the common frontend/Gateway component subset;
 browser protocol fixtures do not establish real identity-service acceptance. Authentication policy is unchanged.

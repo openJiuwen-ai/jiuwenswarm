@@ -38,7 +38,6 @@ const backend = '# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights 
 const outputs = [
   [new URL('../src/features/webui/icons/registry.generated.ts', import.meta.url), registry],
   [new URL('../../../../extensions_v2/webui/icon_whitelist_generated.py', import.meta.url), backend],
-  [new URL('../../../../gateway/extensions_v2/webui/icon_whitelist_generated.py', import.meta.url), backend],
 ];
 for (const [target, content] of outputs) {
   let current;

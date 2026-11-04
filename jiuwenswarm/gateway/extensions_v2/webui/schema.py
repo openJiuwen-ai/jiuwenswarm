@@ -257,8 +257,8 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
     if node.component == "Form.Item" and len(node.children) != 1:
         return _fail("Form.Item requires one Input child")
     if node.component == "Dropdown":
-        if len(node.children) != (0 if node.props.get("icon") else 1):
-            return _fail("Dropdown requires exactly one trigger source")
+        if len(node.children) != 1:
+            return _fail("Dropdown requires exactly one display trigger child")
         display_nodes = list(node.children)
         for item in node.props["items"]:
             label = item.get("label")
