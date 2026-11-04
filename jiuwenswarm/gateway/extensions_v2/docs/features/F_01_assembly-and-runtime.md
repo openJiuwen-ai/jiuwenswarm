@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-GW-01 装配与运行时骨架 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/{assembly,bootstrap,runtime,config,loader,registry}.py`、`channel_manager/web/web_connect.py`、`routing/base_ws_channel.py` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md)、[运行时规约](../specs/S_01_gateway-extension-runtime.md)、AgentServer [F_01](../../../../extensions_v2/docs/features/F_01_assembly-and-source.md) |
-| 最近一次修订日期 | 2026-11-01 |
+| 最近一次修订日期 | 2026-11-04 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
@@ -94,11 +94,11 @@ manifest 的 `domain` 字段决定归属：只有 `gateway` 由 Gateway 加载�
 
 ### 4.4 发布
 
-`GatewayRuntime.publish` 把每条 `HandlerDeclaration` 登记为 USER handler，包身份通过 `PackageMetadata` 注入。登记按包整体事务化：任一声明失败即撤销本次已登记的 handler 并抛出异常，调用方（安装 / 重载）据此返回 `FAILED` 并回滚落盘副本；失败的包不计入 `auth_provider`。启动扫描阶段对单个包做兜底，`publish` 抛异常只告警跳过，不阻塞通道启动。
+`GatewayRuntime.publish` 把每条 `HandlerDeclaration` 登记为 USER handler，包身份通过 `PackageMetadata` 注入。登记按包整体事务化：任一声明失败即撤销本次已登记的 handler 并抛出异常，调用方（安装 / 重载）据此返回 `FAILED` 并回滚落盘副本。启动扫描阶段对单个包做兜底，`publish` 抛异常只告警跳过，不阻塞通道启动。
 
 ## 5. 零扩展快路径
 
-`runtime.active` 的计算为：已启动 且 配置启用 且 USER handler 数大于 0。BUILTIN handler（门禁、`ops.build`）不计入。因此：
+`runtime.active` 的计算为：已启动 且 配置启用 且 USER handler 数大于 0。BUILTIN handler（浏览器分派器、`ops.build`）不计入。因此：
 
 - 未安装任何 Gateway 包时，`intercept_gateway_frame` 立即返回 `(False, params)`，不触发事件链；
 - 新增 BUILTIN 规则不会破坏该快路径；
@@ -134,7 +134,7 @@ manifest 的 `domain` 字段决定归属：只有 `gateway` 由 Gateway 加载�
 
 ## 9. 验证
 
-验证入口：`tests/unit_tests/gateway/extensions_v2/test_gateway_request.py`、`test_gateway_auth_gate.py`。
+验证入口：`tests/unit_tests/gateway/extensions_v2/test_gateway_request.py`。
 
 | 场景 | 结果 |
 | --- | --- |

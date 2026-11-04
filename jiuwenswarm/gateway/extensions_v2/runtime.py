@@ -33,7 +33,6 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.gateway.extensions_v2 import bootstrap
-from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import has_authorization
 from jiuwenswarm.gateway.extensions_v2.builtin.router import GatewayLocalRouter, LocalRequest
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages
@@ -76,8 +75,6 @@ class GatewayRuntime:
         self._user_handlers: dict[str, int] = {}
         self._package_handlers: dict[str, list[tuple[str, str]]] = {}
         self._packages: list[LoadedPackage] = []
-        self._auth_provider_ids: set[str] = set()
-        self._auth_providers = 0
         self._management: Any = None
         self._started = False
         self.browser = BrowserBridge(self)
@@ -128,8 +125,6 @@ class GatewayRuntime:
         self._user_handlers.clear()
         self._package_handlers.clear()
         self._packages.clear()
-        self._auth_provider_ids.clear()
-        self._auth_providers = 0
         await self.webui.shutdown()
         self.store.clear()
         self.browser.connections.clear()
@@ -141,12 +136,6 @@ class GatewayRuntime:
         """True when at least one USER handler may observe a frame."""
 
         return self._started and self.config.enabled and self.user_handler_count > 0
-
-    @property
-    def has_auth_provider(self) -> bool:
-        """True when a package declared ``auth_provider``; the gate stays inert otherwise."""
-
-        return self._auth_providers > 0
 
     @property
     def user_handler_count(self) -> int:
@@ -164,24 +153,6 @@ class GatewayRuntime:
             self._management = GatewayPackageManager(self, self.config.install_dir)
         return self._management
 
-    @property
-    def auth_required(self) -> bool:
-        """True when the gate is on: policy enabled and a login owner exists."""
-
-        policy = getattr(self.config, "auth", None)
-        enabled = policy.enabled if policy is not None else True
-        return enabled and self.has_auth_provider
-
-    def is_authenticated(self, headers: Mapping[str, str] | None) -> bool:
-        """Whether the frame carried an authorization header.
-
-        The Gateway never validates the token; a USER handler owns that. Callers
-        that already went through ``gateway.request`` should read the gate's
-        decision instead of calling this.
-        """
-
-        return has_authorization(headers)
-
     async def connection_id(self, ws: Any) -> str:
         """Public connection id used by package-management frames."""
 
@@ -194,8 +165,7 @@ class GatewayRuntime:
 
         Registration is all-or-nothing: when any declaration fails, the handlers
         registered so far are released and the failure is re-raised. Callers can
-        therefore never report success for a half-registered package, and a
-        failed package never counts as an ``auth_provider``.
+        therefore never report success for a half-registered package.
         """
 
         self.browser.validate_package(package)
@@ -238,9 +208,6 @@ class GatewayRuntime:
         self._package_handlers[package.package_id] = registered
         self._packages.append(package)
         self.browser.published(package.package_id, generation)
-        if package.auth_provider:
-            self._auth_providers += 1
-            self._auth_provider_ids.add(package.package_id)
 
     def unpublish(self, package_id: str) -> bool:
         """Release every handler of one package and drop its active record."""
@@ -249,9 +216,6 @@ class GatewayRuntime:
         if registered is None:
             return False
         self._drop_handlers(registered)
-        if package_id in self._auth_provider_ids:
-            self._auth_provider_ids.discard(package_id)
-            self._auth_providers = max(0, self._auth_providers - 1)
         self._packages = [package for package in self._packages if package.package_id != package_id]
         self.browser.released(package_id)
         return True
@@ -292,7 +256,7 @@ class GatewayRuntime:
         """Run one inbound frame through ``gateway.request``.
 
         ``headers`` mirrors ``request_context.headers`` of the browser frame:
-        the login gate and USER handlers read ``authorization`` from it.
+        USER handlers validate credentials from it.
 
         Returns ``(visited, params)``. ``visited=True`` means the frame was
         answered locally and the native dispatch must be skipped; otherwise the

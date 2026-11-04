@@ -4,7 +4,7 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 类型 | 设计基线；Gateway 装配、`gateway.request`、认证门禁、本地路由、`ops.http.fetch` 已实现；`ui.render`、entry/footer 浏览器交互与 [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 已实现；`ui.store` 尚未接入浏览器 |
+| 类型 | 设计基线；Gateway 装配、`gateway.request`、扩展鉴权接入、本地路由、`ops.http.fetch` 已实现；`ui.render`、entry/footer 浏览器交互与 [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 已实现；`ui.store` 尚未接入浏览器 |
 | 最近一次修订日期 | 2026-11-04 |
 | 维护责任 | Gateway Extensions V2 模块维护者；与 AgentServer `extensions_v2` 的契约差异由两侧维护者共同确认 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
@@ -30,7 +30,7 @@ Gateway Extensions V2 因此在 Gateway 进程内建立**一套独立的扩展�
 | 维度 | AgentServer `extensions_v2` | Gateway `extensions_v2` |
 | --- | --- | --- |
 | 包目录 | `~/.jiuwenswarm/extension_pkgs` | `~/.jiuwenswarm/extension_pkgs`（共享，按 `domain` 过滤） |
-| 事件用途 | 业务参与点（会话、用量、渲染、上行交互） | 接入层参与点（帧准入、登录门禁、本地应答） |
+| 事件用途 | 业务参与点（会话、用量、渲染、上行交互） | 接入层参与点（帧准入、扩展鉴权、本地应答） |
 | Handler 执行位置 | AgentServer 业务进程 | Gateway 接入进程 |
 | 依赖方向 | → `openjiuwen.core.events` | → `openjiuwen.core.events`（不依赖 `jiuwenswarm.extensions_v2`） |
 | 代码复用 | 不引用 Gateway 模块 | 复用 `openjiuwen.core.events` 与自身 models，不 import AgentServer 适配层 |
@@ -41,8 +41,8 @@ Gateway Extensions V2 因此在 Gateway 进程内建立**一套独立的扩展�
 
 - Gateway 装配单例、事件总线、运行时与停机。
 - `gateway.request` 事件：WebSocket 上行帧在原生分发前的拦截点。
-- 认证门禁：BUILTIN 层，未登录连接只允许登录与保活方法。
-- `local` 路由与 Gateway 内置方法表（当前为 `auth.status`）。
+- 扩展鉴权：由 USER 请求策略负责凭据校验、匿名范围和拒绝应答。
+- `local` 路由与宿主本地方法表（初始为空）。
 - `ui.render` / `ui.store` / `ui.click` 三个 WebUI 事件与对应 `ops`。
 - `ops.http.fetch`：受白名单约束的出站 HTTP。
 - 共享 `extension_pkgs` 下的包管理：`domain: gateway` 包本地安装/卸载/热重载，`/extension` 指令按归属分流。
@@ -70,7 +70,7 @@ flowchart TB
         RT --> REG["ActiveRenderRegistry<br/>渲染实例登记"]
         RT --> TR["GatewayTransport<br/>下行帧发送"]
         BUS -->|"USER"| PKG["extension_pkgs 中 domain=gateway 的扩展包"]
-        BUS -->|"BUILTIN"| GATE["认证门禁 / ops.build"]
+        BUS -->|"BUILTIN"| BUILTIN["浏览器分派器 / ops.build"]
         BUS -->|"CORE"| CORE["各事件 CORE Handler"]
         TR -->|"webui.render / webui.store"| WS
     end
@@ -82,20 +82,20 @@ flowchart TB
 | `WebChannel` | 收发帧、分配连接标识、在原生分发前调用 `gateway.request` |
 | `GatewayRuntime` | 持有总线、存储、路由、渲染登记与传输；执行 `gateway.request` 并落实处置结果 |
 | `ExtensionEventBus` | 保存事件类型与 Handler 注册，按 USER → BUILTIN → CORE 执行链 |
-| `UiStateStore` | 承载 `ui.store` 写入与认证事实，按作用域隔离 |
+| `UiStateStore` | 承载包的进程内状态，按作用域隔离 |
 | `GatewayLocalRouter` | `local` 路由的闭合方法表，未知方法返回 `ROUTE_UNSUPPORTED` |
 | 扩展包 | 注册 Handler、调用 Ops、维护自身业务状态 |
 | 第三方服务 | 由扩展包通过 `ops.http.fetch` 访问，Gateway 不感知其协议 |
 
-### 2.2 三层 Handler 与门禁位置
+### 2.2 三层 Handler 与鉴权职责
 
-`ExtensionEventBus` 的 USER（200）在最外层，BUILTIN（100）在中国，CORE 在链尾。每个 Handler 决定是否调用 `next_handler(event)`：
+`ExtensionEventBus` 的 USER（200）在最外层，BUILTIN（100）在中间，CORE 在链尾。每个 Handler 决定是否调用 `next_handler(event)`：
 
-- USER 层包 Handler 可观察、改写或直接短路整帧；不调用 next 即绕过门禁与 CORE。
-- BUILTIN 层承载平台规则（认证门禁、`ops.build`），在包之后、CORE 之前执行。
+- USER 层包 Handler 可观察、改写或直接短路整帧；不调用 next 即结束内层链。
+- BUILTIN 层承载平台规则（浏览器协议分派、`ops.build`），在包之后、CORE 之前执行。
 - CORE 层给出该事件不干预时的默认动作。
 
-认证门禁放在 BUILTIN，与 AgentServer 的层级契约一致：包可以替换平台行为，平台规则只约束真正继续内传的帧。
+鉴权由 USER 请求策略负责；独立的 BUILTIN 浏览器分派器只在请求策略继续后校验并分派 UI 动作。
 
 ### 2.3 零扩展快路径
 
@@ -123,20 +123,20 @@ sequenceDiagram
     participant R as GatewayRuntime
     participant S as EventBus
     participant P as 包 Handler
-    participant G as 认证门禁 BUILTIN
+    participant G as 浏览器分派器 BUILTIN
     participant K as CORE Handler
     B->>C: WS 帧(method, params)
     C->>R: intercept(ws, req_id, method, params)
     R->>S: trigger(gateway.request, GatewayRequestInput)
     S->>P: USER 层
     P->>G: next_handler(event)
-    G->>K: 已认证 / 白名单 → next_handler
+    G->>K: 非 application 交互 → next_handler
     K-->>R: GatewayRequestOutput(forward)
     R-->>C: (False, params)
     C->>C: 原生分发
 ```
 
-未登录且方法不在白名单时，门禁在 BUILTIN 层返回 `route=deny` 与 `AUTH_REQUIRED`，`GatewayRuntime` 直接回错误帧，原生分发被跳过。
+扩展包可在 USER 层校验凭据并返回 `route=deny`，运行时直接回错误帧并跳过原生分发。宿主不因 Authorization 头存在而判定已认证。
 
 ### 3.3 WebUI 链路
 
@@ -152,14 +152,14 @@ sequenceDiagram
 | 包可用 | `load_gateway_packages` 返回的 `LoadedPackage` | 该包 Handler 已发布为 USER 层 |
 | 帧被处置 | `gateway.request` 返回 `GatewayRequestOutput` | 路由决定帧去往原生分发、本地应答或直接拒绝 |
 | 界面交付 | `GatewayTransport` 发送成功 | 帧已交给渠道，浏览器是否应用另计 |
-| 门禁放行 | 已有门禁检查当前帧 authorization header | Token 有效性仍由 USER 包判定，不以 header 存在代替 Token 校验 |
+| 扩展鉴权 | USER 包校验当前请求凭据 | 凭据格式、有效性、撤销与匿名范围由包负责 |
 
 ## 4. 持续状态与约束
 
 - 包注册、`UiStateStore`、渲染登记均属于当前 Gateway 进程；停机时全部释放。
 - connection 作用域状态在 socket 关闭时清除；session 与 global 作用域由写入方与停机清理。
 - WebSocket 帧拦截沿用已有 5 秒超时与异常转发行为；HTTP 接入的失败语义见 [S_06](../specs/S_06_local-browser-bridge.md)。
-- 门禁不实现登录逻辑，沿用既有 header 判定。登录、Token 校验与撤销由 USER 示例包完成，不新增 auth.session 协议。
+- 登录、Token 校验与撤销由 USER 包完成；平台不提供内置认证门禁或认证状态协议。
 - 扩展包不得被信任为沙箱代码；`ops.http.fetch` 的白名单为空时拒绝一切出站请求。
 
 ## 5. 落地边界与文档索引
@@ -170,4 +170,4 @@ sequenceDiagram
 | 按模板新增事件、CORE Handler 与 Ops | [内置事件开发模板](builtin-event-development-guide.md) |
 | 查阅特性拆分、进度与验收要求 | [特性开发计划](extensions-v2-development-plan.md) |
 | 查阅当前对外契约与错误码 | [运行时规约](../specs/S_01_gateway-extension-runtime.md) |
-| 查阅装配与门禁实现记录 | [F_01](../features/F_01_assembly-and-runtime.md)、[F_02](../features/F_02_gateway-request-and-auth-gate.md) |
+| 查阅装配、请求路由与鉴权职责演进 | [F_01](../features/F_01_assembly-and-runtime.md)、[F_02](../features/F_02_gateway-request-and-auth-gate.md) |

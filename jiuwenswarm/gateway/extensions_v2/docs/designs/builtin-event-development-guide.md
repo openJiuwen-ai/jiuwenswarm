@@ -8,7 +8,7 @@
 | 适用对象 | 在 Gateway 侧新增事件类型、CORE Handler、BUILTIN Handler 或 Ops 能力的开发者 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 关联文档 | [详细架构](extensions-v2-architecture.md)、AgentServer [内置事件开发模板](../../../../extensions_v2/docs/designs/builtin-event-development-guide.md) |
-| 最近一次修订日期 | 2026-11-01 |
+| 最近一次修订日期 | 2026-11-04 |
 
 本文按顺序说明一次完整的接入：定义输入输出 → 写 CORE Handler → 注册事件类型 → 按需加 BUILTIN → 开放 Ops → 接触发点 → 补测试与文档。示例中的代码是示意，落地时以实际实现为准。
 
@@ -98,15 +98,15 @@ def register_note_events(bus: ExtensionEventBus, core_handler: EventHandler) -> 
 
 ## 6. 增加 BUILTIN Handler
 
-BUILTIN 承载平台规则，例如认证门禁。它在包之后、CORE 之前执行：
+BUILTIN 承载浏览器协议分派、输入约束等平台规则，在包之后、CORE 之前执行。登录鉴权属于 USER 请求策略。以下为长度限制的示意实现：
 
 ```python
-def build_note_guard(store: UiStateStore) -> EventHandler:
+def build_note_guard() -> EventHandler:
     async def note_guard(event: Event, ops, next_handler) -> NoteOutput:
         del ops
         payload = event.event_input
-        if not is_authenticated(store, payload.connection_id):
-            return NoteOutput(handled=True, status="rejected", code="AUTH_REQUIRED")
+        if len(payload.text) > 4096:
+            return NoteOutput(handled=True, status="rejected", code="NOTE_TOO_LONG")
         return await next_handler(event)
     return note_guard
 ```
@@ -146,7 +146,7 @@ def build_note_ops_build_handler(bus: ExtensionEventBus) -> EventHandler:
 | 触发点位置 | 说明 |
 | --- | --- |
 | `runtime.intercept` | 每帧原生分发前；已接入 `gateway.request` |
-| `runtime.intercept_click` | `webui.dispatch` 上行帧；已接入 `ui.click` |
+| `BrowserBridge.build_request_dispatch_handler` | 在 `gateway.request` 的 USER 策略继续后分派 application 槽位的 `webui.dispatch`，触发 `ui.*` |
 | `runtime.on_disconnect` | socket 关闭；用于清理 connection 作用域 |
 | `channel` 生命周期 | 启动装配与停机，分别由 `web_connect.py` 调用 |
 

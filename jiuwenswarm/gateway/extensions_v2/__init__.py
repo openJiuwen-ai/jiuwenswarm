@@ -47,7 +47,7 @@ async def intercept_gateway_frame(
     """Run one frame through ``gateway.request``.
 
     ``headers`` carries ``request_context.headers`` from the browser frame so the
-    authentication gate and USER handlers can read ``authorization``.
+    USER handlers can validate credentials.
     ``visited=True`` means the frame was answered by the extension runtime and
     the native dispatch must be skipped. Any failure fails open: the frame
     continues on the path it would have taken without extensions.

@@ -8,7 +8,7 @@
 示例与其他 V2 插件统一归档在 `jiuwenswarm/extensions_v2/examples/`，由 manifest 的 `domain: gateway` 选择 Gateway 宿主。
 多账号注册、Mock token 签发与校验、退出登录、双语渲染树、页面布局和素材由插件提供。
 Gateway 提供通用的声明下发、客户端操作、资源服务与应用级交互接入，不解释登录字段。
-认证门禁和请求异常语义沿用已合入的 Gateway 逻辑，本次不修改其鉴权判定。
+鉴权统一由插件的 gateway.request USER handler 负责，Gateway 不提供内置认证门禁；请求异常语义仍沿用现有逻辑。职责演进见 [F_02](F_02_gateway-request-and-auth-gate.md)。
 
 前端保持通用组件与请求绑定能力，不识别 auth、accessToken、username 或 logout。
 使用独立测试配置与安装目录，复用现有 AgentServer；Gateway 接入和 Mock 包独立于前端提交，使用独立测试配置和安装目录验证。
@@ -90,7 +90,7 @@ token 不自动过期。退出登录撤销当前 token，成功后按顺序下�
 - 隔离网络联调使用临时安装目录和真实示例 ZIP，由临时 HTTP/WebSocket 适配器承载 GatewayRuntime、浏览器桥接及 HTTP 中间件。
   真实 Chrome 验证匿名业务请求拒绝、注册直接登录、错误密码、两个账号切换、旧账号重登录、HTTP 凭据绑定和刷新恢复，页面脚本错误为零。
   测试账号只写入临时目录；该适配器不包含生产 WebChannel 原生业务分发或完整 AgentServer。
-- 异常处理测试补充有效认证 header，隔离门禁拒绝与扩展异常处理，认证门禁实现和异常放行策略未修改。
+- 上述先前接入验证曾用认证 header 隔离门禁拒绝与扩展异常处理。后续旧门禁已移除，当前测试不再依赖该 header；本次清理仍未改变异常放行策略。
 
 此前本地工程联调曾验证真实项目和会话历史读取，模型调用存在 reasoning_level 参数兼容问题。
 该记录属于先前工程环境，本轮隔离验证不重新证明模型推理、生产身份服务或账号数据隔离。
@@ -221,3 +221,14 @@ The built frontend server proxies extension assets through the existing same-ori
 in isolated source snapshots: 146 initially and 153 on the final branch baseline. Real HTTP/WS services verified disconnect cleanup and asset delivery; Chrome
 decoded all three images. AgentServer/model execution and the colleague's original 404 conditions were not reproduced.
 Backend asset checks and delivery-failure rollback remain authoritative.
+
+## 2026-11-04 旧认证门禁清理
+
+移除 BUILTIN 认证门禁、auth_provider 标记、专属配置、运行时鉴权状态与内置 auth.status。
+登录示例原已通过 USER handler 校验 token 并拒绝未登录请求，无需修改业务实现；UI 分派器继续在请求策略允许后执行。
+Gateway 扩展回归更新后 130 项通过，包含 10 项登录示例测试；本次未重复 Chrome 或完整工程联调。
+
+The legacy built-in authentication gate, provider flag, dedicated configuration, runtime authentication helpers and
+built-in auth.status method have been removed. The example continues to validate tokens and reject requests in its
+USER handler. All 130 Gateway extension tests passed, including the 10 installed-example cases; Chrome and full
+application integration were not rerun for this cleanup. See [F_02](F_02_gateway-request-and-auth-gate.md).

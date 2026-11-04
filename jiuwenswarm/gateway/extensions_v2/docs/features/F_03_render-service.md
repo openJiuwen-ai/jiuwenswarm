@@ -14,7 +14,7 @@
 
 ## 1. 问题与目标
 
-Gateway 自有的 application 槽位在 AgentServer 里没有对应视图：未登录连接被门禁拒绝时 AgentServer 尚未参与，浏览器上也没有任何可操作内容。Gateway 因此需要一条自己的下行渲染通道，让扩展包能把受控组件树直接推到浏览器 socket。
+Gateway 自有的 application 槽位在 AgentServer 里没有对应视图：未登录请求被扩展包拒绝时 AgentServer 尚未参与，浏览器上也没有任何可操作内容。Gateway 因此需要一条自己的下行渲染通道，让扩展包能把受控组件树直接推到浏览器 socket。
 
 一句话概括：**Gateway 在自己的运行时里镜像 AgentServer 的渲染服务，把 `ui.render` 校验成受控帧后按 socket 直接下发；平台不预置任何视图，所有树都由扩展包提交。**
 
@@ -27,7 +27,6 @@ Gateway 自有的 application 槽位在 AgentServer 里没有对应视图：未�
 - `webui/transport.py`：按 `ws_id` 经 `WebChannel.send_event` 下发 `webui.render`、`webui.render.clear`、`webui.render.error`。
 - application 槽位表：`application.entry`（single）与 `application.sidebar.footer`（list）。
 - 组件目录补齐前端已登记的 `Form` / `Form.Item` / `Dropdown`，并为 `Button` 增加 `form` 引用。
-- 认证门禁对 Gateway 自有 application 槽位帧的通用豁免（`ui.ready` / `ui.change` / 未接管的其他事件）。
 
 ### 2.2 非目标
 
@@ -57,14 +56,14 @@ flowchart LR
 | `render_core` | 校验、分配 revision、登记实例、下发帧、投递失败回滚 |
 | `ActiveRenderRegistry` | 实例键、revision、同实例串行、按连接限容与清理 |
 | `GatewayTransport` | 按 `ws_id` 找 socket 并发送帧；失败返回 `False` 而不抛异常 |
-| 认证门禁 | 只对 application 槽位帧做通用本地应答，不构造渲染帧 |
+| 浏览器分派器 | 在 USER 请求策略继续后校验 application 交互并分派 ui.*，不校验身份 |
 
 ### 3.2 运行时接线
 
 `GatewayRuntime` 构造时创建 `GatewayWebUIRuntime(bus=..., transport=GatewayTransport(channel))`：
 
 - `bootstrap.register_event_types` 先调用 `runtime.webui.register_event_types(bus)`，再注册 `gateway.request`；
-- `bootstrap.register_handlers` 收集 `ops.build`、`ui` 命名空间与认证门禁等 BUILTIN handler 的 id；
+- `bootstrap.register_handlers` 收集 `ops.build`、`ui` 命名空间与浏览器分派器等 BUILTIN handler 的 id；
 - `GatewayRuntime.registry` 是 `webui.registry` 的只读别名，供断线清理与测试使用；
 - `shutdown` 先注销 handler，再让 WebUI 运行时对每个活跃实例下发清除帧。
 
@@ -91,19 +90,12 @@ flowchart LR
 
 AgentServer 副本暂不引入表单三件套规则，两份 `component_rules.py` 在表单契约上有意分歧。
 
-### 3.4 门禁与 application 槽位
+### 3.4 请求策略与 application 槽位
 
-门禁不渲染任何东西，只保证锁定态下 application 槽位的前端交互仍可到达包：
-
-| 帧 | 处理 |
-| --- | --- |
-| application 槽位 `ui.ready` | 本地 `consume`，回 `{"event":"ui.ready","accepted":true}` |
-| application 槽位 `ui.change` | 本地 `consume`，回空载荷 |
-| application 槽位其他事件（含未被包接管的 `ui.click`） | 本地 `consume`，回空载荷 |
-| `ping` | 继续内传 |
-| 其他方法 | 无 `authorization` 头时 `deny` + `AUTH_REQUIRED` |
-
-这些槽位没有 AgentServer 视图，本地应答可以避免"前端已挂载槽位却收到未知方法错误"。门禁不认识具体业务，也不区分是哪一种视图。
+客户端能力包的 `webui.dispatch` 先经过 `gateway.request` USER 请求策略。
+包自行决定匿名范围或拒绝请求；继续处理后，独立浏览器分派器校验活动实例、包归属、版本与动作并触发 `ui.*`。
+这些 application 槽位没有 AgentServer 视图，接管的交互在 Gateway 本地应答。
+渲染不依赖认证门禁，非接入目标按通用请求链继续；完整规则见 [S_06](../specs/S_06_local-browser-bridge.md)。
 
 ## 4. 处理流程
 
@@ -131,7 +123,7 @@ sequenceDiagram
 
 投递失败时 `restore` 旧 revision 与旧树；新建实例直接移除。容量淘汰在投递成功之后执行。
 
-### 4.2 锁定态下的包界面
+### 4.2 登录前的包界面
 
 ```mermaid
 sequenceDiagram
@@ -141,9 +133,9 @@ sequenceDiagram
     P->>O: ui.render(application.entry)
     O->>F: webui.render
     F->>F: 挂载槽位并发送 ui.ready
-    Note over F: 门禁本地应答 ui.ready，不进入原生分发
+    Note over F: 先经 USER 请求策略，再由浏览器分派器处理 ui.ready
     F->>F: 用户操作触发 ui.click
-    F->>P: 点击先进入 ui.click 链（见 F_05）
+    F->>P: webui.dispatch 先经 USER 请求策略，允许后触发 ui.click
 ```
 
 包在需要展示界面时主动渲染；平台不会在拒绝帧时替包渲染。登出等状态变化由包按需重绘或清空实例。
@@ -152,7 +144,7 @@ sequenceDiagram
 
 浏览器接入复用已合入的 `gateway.request` 和 `ui.render`，不建立第二套请求策略或活动渲染树。
 `webui.dispatch` 先经过 USER 请求策略，继续后由 BUILTIN 浏览器分派器校验目标和动作，触发对应 `ui.*` 事件。
-插件可以拒绝请求或自行应答；允许哪些匿名交互同样属于插件策略。原认证门禁和非接入目标的处理保持原有行为。
+插件可以拒绝请求或自行应答；凭据校验与允许哪些匿名交互均属于插件策略。旧认证门禁已移除，非接入目标继续沿通用请求链处理。
 浏览器操作、请求绑定、资源及生命周期的通用契约见 [S_06](../specs/S_06_local-browser-bridge.md)。
 
 ## 5. 异常与边界
@@ -173,21 +165,20 @@ sequenceDiagram
 - **只保留可寻址槽位**：槽位表只含 application 槽位，从源头杜绝 Gateway 与 AgentServer 双写同一会话实例。
 - **传输按 socket 直发**：Gateway 拥有 WebSocket，不需要 AgentServer 的推送通道与 `ws_id` 元数据转换。
 - **表单契约跟着前端走**：用 `Form.name` + `Form.Item.name` + `Button.form` 表达"点击时带上哪些字段"，`Input` 不再重复声明字段名。
-- **门禁只做通用豁免**：application 槽位帧本地应答，不判断槽位里画的是什么，也不触发任何渲染。
+- **分派与鉴权分工明确**：浏览器分派器校验活动实例与动作；鉴权由 USER 请求策略负责。
 
 ## 7. 实施影响
 
 - 新增 `webui/runtime.py`、`webui/transport.py`、`webui/core_handlers/render_core.py`、`webui/call_context.py`。
-- `models.py` 增加 `EVENT_UI_RENDER`；`config.py` 增加 `AuthPolicy`。
+- `models.py` 增加 `EVENT_UI_RENDER`。
 - `bootstrap.py` 改为委托 `GatewayWebUIRuntime` 注册 `ui.*`，与 AgentServer 的装配形状一致。
-- `auth_gate.py` 由固定白名单改为策略驱动，并按 application 槽位做通用豁免。
 - `GatewayRuntime.on_disconnect` 同时清理状态存储与渲染实例。
 - 删除 C1 预留的 `core_handlers/context.py`，连接事实统一由 `webui/call_context.py` 读取。
 - Gateway 副本 `component_rules.py` 增加 `Form` / `Form.Item` / `Dropdown` 与 `Button.form` 校验。
 
 ## 8. 验证
 
-验证入口：`tests/unit_tests/gateway/extensions_v2/test_gateway_ui_render.py`、`test_gateway_auth_gate.py`。
+验证入口：`tests/unit_tests/gateway/extensions_v2/test_gateway_ui_render.py`、`test_gateway_browser_bridge.py`。
 
 | 场景 | 结果 |
 | --- | --- |
@@ -200,9 +191,7 @@ sequenceDiagram
 | 断线清除 application 实例 | 通过 |
 | 组件目录接受 `Form` / `Form.Item` / `Dropdown` | 通过 |
 | `Button.form` 指向树外 Form 时整树拒绝 | 通过 |
-| 拒绝帧不渲染任何平台视图 | 通过 |
-| application 槽位 `ui.ready` 本地接受 | 通过 |
-| application 槽位 `ui.change` 本地消费且不触发渲染 | 通过 |
+| USER 请求策略拒绝时不触发 UI 动作 | 通过 |
 
 ## 9. 风险与遗留
 
@@ -217,4 +206,4 @@ sequenceDiagram
 Box 数值 gap、Dropdown 展示触发器、重复表单字段及本地输入事件约束与前端统一。
 Gateway 不开放 Dropdown.icon，不生成图标白名单；前端与 AgentServer 原有图标能力保持不变。
 前端与 Gateway 共同执行 28 组契约向量；Gateway 另验证 icon 属性被拒绝。精简后 Gateway extensions_v2 的 108 项测试通过，包含 10 项登录示例安装测试。
-认证门禁实现未修改；异常处理回归测试补充有效 header，避免把门禁拒绝与异常处理混为一项断言。
+此前契约对齐时未修改认证门禁，异常处理测试使用有效 header。后续旧门禁清理已移除这一依赖，当前渲染测试无需认证 header；变更与本次验证见 [F_02](F_02_gateway-request-and-auth-gate.md)。
