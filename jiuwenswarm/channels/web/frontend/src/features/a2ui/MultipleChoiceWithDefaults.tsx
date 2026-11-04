@@ -68,11 +68,12 @@ export function MultipleChoiceWithDefaults({
   const id = useId();
   const selectionsPath = props.selections?.path;
 
-  // Read label from schema: try 'label' first, then 'description', then fallback
+  // Read label from schema: try 'label' first, then 'description'; no fallback
+  // node 既无 label 又无 description 时返回空串：chips 等变体不该硬塞英文占位标题
   const rawLabel = (props as unknown as Record<string, unknown>).label;
   const rawDescription = (props as unknown as Record<string, unknown>).description;
   const descriptionValue = rawLabel ?? rawDescription;
-  const description = resolveString(descriptionValue as Parameters<typeof resolveString>[0]) ?? 'Select an item';
+  const description = resolveString(descriptionValue as Parameters<typeof resolveString>[0]) ?? '';
 
   const rawProps = props as unknown as Record<string, unknown>;
   const isMultiSelect = isMultiSelectChoice(rawProps);
@@ -140,8 +141,9 @@ export function MultipleChoiceWithDefaults({
     node.weight !== undefined ? { '--weight': node.weight } : {}
   ) as CSSProperties;
 
-  // Build label text with multi-select hint
+  // Build label text with multi-select hint；description 为空则整体不显标题（含多选计数提示）
   const labelText = useMemo(() => {
+    if (!description) return '';
     if (isSingleSelect || maxAllowedSelections === undefined) return description;
     return `${description}（最多选 ${maxAllowedSelections} 项）`;
   }, [description, isSingleSelect, maxAllowedSelections]);
@@ -151,11 +153,13 @@ export function MultipleChoiceWithDefaults({
     return (
       <div className="a2ui-multiplechoice" style={hostStyle}>
         <section className={classMapToString(theme.components.MultipleChoice.container)}>
-          <label
-            className={classMapToString(theme.components.MultipleChoice.label)}
-          >
-            {labelText}
-          </label>
+          {labelText && (
+            <label
+              className={classMapToString(theme.components.MultipleChoice.label)}
+            >
+              {labelText}
+            </label>
+          )}
           {shouldShowFilter && (
             <input
               type="search"
@@ -203,11 +207,13 @@ export function MultipleChoiceWithDefaults({
     return (
       <div className="a2ui-multiplechoice" style={hostStyle}>
         <section className={classMapToString(theme.components.MultipleChoice.container)}>
-          <label
-            className={classMapToString(theme.components.MultipleChoice.label)}
-          >
-            {labelText}
-          </label>
+          {labelText && (
+            <label
+              className={classMapToString(theme.components.MultipleChoice.label)}
+            >
+              {labelText}
+            </label>
+          )}
           {shouldShowFilter && (
             <input
               type="search"
@@ -248,12 +254,14 @@ export function MultipleChoiceWithDefaults({
   return (
     <div className="a2ui-multiplechoice" style={hostStyle}>
       <section className={classMapToString(theme.components.MultipleChoice.container)}>
-        <label
-          htmlFor={id}
-          className={classMapToString(theme.components.MultipleChoice.label)}
-        >
-          {labelText}
-        </label>
+        {labelText && (
+          <label
+            htmlFor={id}
+            className={classMapToString(theme.components.MultipleChoice.label)}
+          >
+            {labelText}
+          </label>
+        )}
         <select
           name="data"
           id={id}

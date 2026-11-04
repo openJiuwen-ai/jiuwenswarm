@@ -20,9 +20,10 @@ function dateInputKind(enableDate: boolean, enableTime: boolean): DateInputKind 
   return enableTime ? 'time' : 'date';
 }
 
-function dateInputLabel(enableDate: boolean, enableTime: boolean): string {
-  if (enableDate && enableTime) return 'Date & Time';
-  return enableTime ? 'Time' : 'Date';
+// 可见标题由提示词要求的上方 Text 组件提供；这里只给 input 一个无障碍名（不渲染可见 <label>，避免双标签）
+function dateTimeAriaLabel(enableDate: boolean, enableTime: boolean): string {
+  if (enableDate && enableTime) return '日期时间';
+  return enableTime ? '时间' : '日期';
 }
 
 export function DateTimeInputWithDefaults({
@@ -55,15 +56,10 @@ export function DateTimeInputWithDefaults({
   return (
     <div className="a2ui-datetime-input" style={hostWeightStyle(node.weight)}>
       <section className={classMapToString(theme.components.DateTimeInput.container)}>
-        <label
-          htmlFor={id}
-          className={classMapToString(theme.components.DateTimeInput.label)}
-        >
-          {dateInputLabel(enableDate, enableTime)}
-        </label>
         <input
           type={dateInputKind(enableDate, enableTime)}
           id={id}
+          aria-label={dateTimeAriaLabel(enableDate, enableTime)}
           value={value}
           onChange={updateFromInput}
           className={classMapToString(theme.components.DateTimeInput.element)}
