@@ -790,6 +790,10 @@ def _long_path(path: Path | str) -> Path:
     # join 遇到带盘符的组件会把整个前缀重置丢弃（设备命名空间前缀只能先与盘符
     # 合成基路径，剩余部分交给 pathlib 追加）。
     drive, tail = os.path.splitdrive(p.replace("/", "\\"))
+    if drive.startswith("\\\\"):
+        # UNC（\\server\share）须转成 \\?\UNC\server\share 设备命名空间形式；
+        # 走盘符分支会拼出非法的 \\?\\\server\share，兜底在网络共享上失效。
+        return Path(PureWindowsPath("\\\\?\\UNC" + drive[1:]) / tail.lstrip("\\"))
     # PureWindowsPath 只是词法对象（无 mkdir/write_bytes 等文件系统方法），转回具体 Path
     return Path(PureWindowsPath(f"\\\\?\\{drive}\\") / tail.lstrip("\\"))
 
@@ -802,7 +806,7 @@ def _mkdir_long(p: Path) -> None:
     """
     try:
         p.mkdir(parents=True, exist_ok=True)
-    except (FileNotFoundError, OSError):
+    except OSError:
         if os.name != "nt":
             raise
         _long_path(p).mkdir(parents=True, exist_ok=True)
@@ -812,7 +816,7 @@ def _write_bytes_long(p: Path, data: bytes) -> None:
     r"""write_bytes，超长路径用 \\?\ 兜底（仅 Windows）。"""
     try:
         p.write_bytes(data)
-    except (FileNotFoundError, OSError):
+    except OSError:
         if os.name != "nt":
             raise
         _long_path(p).write_bytes(data)
@@ -844,7 +848,16 @@ def _copytree_long(src: Path, dst: Path, **kwargs: Any) -> None:
 def _safe_rmtree(path: Path) -> bool:
     """安全地删除目录树，处理 Windows 上的 git 文件锁定问题."""
     if not path.exists():
-        return True
+        # Windows 上顶层路径本身超过 MAX_PATH(260) 时 exists() 同样返回 False，
+        # 不能据此当作"目录已不存在"报成功。用长路径形式复查，仍在则继续走
+        # 下方 rmtree 流程：普通路径删除失败后由 \\?\ 前缀兜底接管。
+        if os.name != "nt":
+            return True
+        try:
+            if not _long_path(path).exists():
+                return True
+        except OSError:
+            return True
 
     import time
 

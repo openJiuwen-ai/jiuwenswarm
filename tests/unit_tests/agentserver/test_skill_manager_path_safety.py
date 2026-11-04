@@ -4,7 +4,7 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -15,6 +15,7 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     _mkdir_long,
     _safe_child_path,
     _safe_path_name,
+    _safe_rmtree,
     _write_bytes_long,
 )
 
@@ -590,14 +591,6 @@ async def test_team_skills_hub_validate_rejects_missing_description(tmp_path):
     assert "description" in result["detail"]
 
 
-def _zip_bytes(entries: dict[str, str | bytes]) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, content in entries.items():
-            zf.writestr(name, content)
-    return buf.getvalue()
-
-
 def _deep_member_rel() -> str:
     """构造解压后总长必超 Windows MAX_PATH(260) 的成员相对路径。
 
@@ -737,3 +730,25 @@ def test_safe_extract_tar_to_dir_survives_long_paths(tmp_path):
     dest = tmp_path / "dest"
     SkillManager._safe_extract_tar_to_dir(tar_path, dest)
     assert _long_path(dest / rel / "SKILL.md").read_text(encoding="utf-8") == content
+
+
+def test_long_path_converts_unc_to_device_namespace():
+    r"""UNC 路径须转成 \\?\UNC\server\share 设备命名空间，而非非法的 \\?\\\server\share."""
+    unc = PureWindowsPath(r"\\server\share\skills\x")
+    result = _long_path(unc)
+    if os.name == "nt":
+        assert str(result).lower() == r"\\?\unc\server\share\skills\x"
+    else:
+        # 非 Windows 不触达 UNC 分支，原样返回
+        assert result == Path(unc)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_safe_rmtree_handles_over_max_path_top_level(tmp_path):
+    r"""顶层路径本身超 MAX_PATH 时 exists() 返回 False，_safe_rmtree 不得假报成功."""
+    target = tmp_path / _deep_member_rel()
+    _mkdir_long(target)
+    _write_bytes_long(target / "SKILL.md", b"x")
+    assert _long_path(target).exists()
+    assert _safe_rmtree(target) is True
+    assert not _long_path(target).exists()
