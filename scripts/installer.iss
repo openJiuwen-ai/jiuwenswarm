@@ -235,6 +235,7 @@ begin
     RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
   if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\{#MyAppExeName}')) then
     RaiseException('External CLI configuration recovery failed.');
+  FinishCliProgress;
 end;
 
 const
@@ -250,15 +251,22 @@ const
 var
   WebView2DownloadPage: TDownloadWizardPage;
 
+function WebView2DownloadProgress(const Url, FileName: String;
+  const Progress, ProgressMax: Int64): Boolean;
+begin
+  UpdateCliPrerequisiteProgress(Progress, ProgressMax);
+  Result := True;
+end;
+
 procedure InitializeWizard;
 begin
   WebView2DownloadPage := CreateDownloadPage(
-    '正在下载 Microsoft Edge WebView2 Runtime',
-    '桌面 App 需要此运行环境。下载期间可以取消，WorkSwarm 主体安装仍可继续。',
-    nil
+    'Downloading Microsoft Edge WebView2 Runtime',
+    'You can cancel the download. WorkSwarm installation can still continue.',
+    @WebView2DownloadProgress
   );
   WebView2DownloadPage.ShowBaseNameInsteadOfUrl := True;
-  WebView2DownloadPage.AbortButton.Caption := '取消下载';
+  WebView2DownloadPage.AbortButton.Caption := 'Cancel download';
 end;
 
 function GetWebView2RuntimeVersion(var Version: String): Boolean;
@@ -308,6 +316,8 @@ begin
     ''
   );
   WebView2DownloadPage.Show;
+  ShowCliPrerequisiteStatus('Downloading Microsoft Edge WebView2 Runtime...',
+    'You can cancel the download using the button below.');
   try
     try
       WebView2DownloadPage.Download;
@@ -394,11 +404,13 @@ begin
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
   begin
     Result := 'External CLI preservation failed; installation stopped before cleanup.';
+    AbortCliProgress;
     exit;
   end;
   if not MigrateLegacyAdminInstall() then
   begin
     Result := 'Legacy administrator installation migration failed.';
+    AbortCliProgress;
     exit;
   end;
 
@@ -427,8 +439,10 @@ begin
   end;
 
   WebView2DownloadPage.AbortButton.Enabled := False;
-  WebView2DownloadPage.Caption := '正在验证 Microsoft Edge WebView2 Runtime';
-  WebView2DownloadPage.Description := '正在校验微软数字签名，请稍候…';
+  WebView2DownloadPage.Caption := 'Verifying Microsoft Edge WebView2 Runtime';
+  WebView2DownloadPage.Description := 'Checking the Microsoft digital signature. Please wait...';
+  ShowCliPrerequisiteStatus('Verifying Microsoft Edge WebView2 Runtime...',
+    'Checking the Microsoft digital signature. Please wait...');
   try
     if not VerifyDownloadedWebView2Installer(RuntimeInstaller) then
     begin
@@ -439,9 +453,11 @@ begin
       exit;
     end;
 
-    WebView2DownloadPage.Caption := '正在打开 Microsoft Edge WebView2 Runtime 安装程序';
+    WebView2DownloadPage.Caption := 'Starting Microsoft Edge WebView2 Runtime setup';
     WebView2DownloadPage.Description :=
-      '请在即将弹出的微软安装窗口中查看进度或取消安装。';
+      'Use the Microsoft setup window to view progress or cancel setup.';
+    ShowCliPrerequisiteStatus('Installing Microsoft Edge WebView2 Runtime...',
+      'Use the Microsoft setup window to view progress or cancel setup.');
     ResultCode := -1;
     if WizardSilent then
     begin

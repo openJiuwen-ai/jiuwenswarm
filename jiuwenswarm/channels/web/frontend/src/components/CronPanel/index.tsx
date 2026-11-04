@@ -11,6 +11,7 @@ import type { Session } from '../../types';
 import type { CronJobDTO, CronTaskUI, CronTemplateUI } from '../../types/cron';
 import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './constants';
 import { isTeamCronModeValue } from './cronMode';
+import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
@@ -153,6 +154,9 @@ const PROACTIVE_AUTO_JOB_ID = 'proactive-tick-auto';
 // 把这个开关打开即可，不用再重写 UI
 const CRON_HISTORY_UI_ENABLED = false;
 
+// "执行记录"弹层首屏条数；点击"查看更多"按此步长向后端追加请求（offset 递增）
+const TRIGGERED_SESSIONS_PAGE_SIZE = 10;
+
 interface CronPanelProps {
   sessionId: string;
   onCreateViaChat: (initialInputValue: string) => void;
@@ -161,7 +165,7 @@ interface CronPanelProps {
    * 传 Session 对象（如"触发的会话"列表里已有完整数据）或直接传 session_id 字符串
    * （如立即执行返回的 session_id，还没有完整 Session 数据）。
    */
-  onSelectSession: (session: Session | string) => void;
+  onSelectSession: (session: Session | string, seedUserMessage?: string) => void | Promise<void>;
 }
 
 type TabKey = 'list' | 'template' | 'history';
@@ -287,6 +291,7 @@ function cronJobToUI(job: CronJobDTO, projects: ProjectInfo[]): CronTaskUI {
     projectName,
     description: job.description,
     modelName: job.model_name ?? null,
+    modelSelection: job.model_selection ?? null,
     // 统一识别后端规范模式和历史别名，表单只展示 agent / team 两态。
     mode: isTeamCronModeValue(job.mode) ? 'team' : 'agent',
     cronExpr: job.cron_expr,
@@ -419,6 +424,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }, [previewPopoverJobId, closePreviewPopover]);
   const [triggeredSessions, setTriggeredSessions] = useState<Record<string, Session[]>>({});
   const [triggeredSessionsLoading, setTriggeredSessionsLoading] = useState<Record<string, boolean>>({});
+  // 执行记录分页：首屏只取最近 10 条，"查看更多"按 offset 追加（后端 get_cron_sessions
+  // 原生支持 limit/offset 并返回 total，按 last_user_message_at 倒序即"最近在前"）
+  const [triggeredSessionsTotal, setTriggeredSessionsTotal] = useState<Record<string, number>>({});
+  const [triggeredSessionsLoadingMore, setTriggeredSessionsLoadingMore] = useState<Record<string, boolean>>({});
+  // 已向后端拉取过的行数(含追加时被去重丢弃的重复行)，作为下一页 offset 与"查看更多"
+  // 按钮的判定依据：列表按 last_user_message_at 倒序，弹层打开期间的新触发会把列表整体
+  // 右移，若用去重后的展示条数当 offset，会反复拉到重复页甚至停滞
+  const [triggeredSessionsFetched, setTriggeredSessionsFetched] = useState<Record<string, number>>({});
 
   // "预览"（接下来几次触发时间）弹层：功能在旧版 CronPanel 里有、阶段4重写时漏做了，
   // 后端 cron.job.preview 接口一直都在，这次顺手加回来，跟"触发的会话"同一套弹层模式
@@ -519,7 +532,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const scheduleLabel = useCallback(
     (cronExpr: string) => {
       const parsed = cronExprToSchedule(cronExpr);
-      return parsed ? summarizeSchedule(parsed, t) : <span className="mono">{cronExpr}</span>;
+      const text = parsed ? summarizeSchedule(parsed, t) : cronExpr;
+      return {
+        node: parsed ? text : <span className="mono">{cronExpr}</span>,
+        text,
+      };
     },
     [t],
   );
@@ -767,7 +784,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
         // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
         ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
-        ...(value.modelName ? { model_name: value.modelName } : {}),
+        ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
+        // 模型字段：稳定选择存在时随 model_name 一并下发——执行会话按 model_id
+        // 定位模型，仅靠 model_name 反查在目录出现重名模型（多条目同 model_name）
+        // 时会报 "ambiguous legacy model name"，任务创建成功但到点秒败且无输出
+        ...cronModelPayloadFields(value),
         mode: value.mode,
         session_id: sessionId,
       });
@@ -808,7 +829,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             targets: value.targets.trim() || 'web',
             enabled: value.enabled,
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
-            ...(value.modelName ? { model_name: value.modelName } : {}),
+            // 同 handleCreateSubmit：稳定选择随名称一并下发，避免重名模型执行期反查失败
+            ...cronModelPayloadFields(value),
             mode: value.mode,
           };
       await webRequest<{ job: CronJobDTO }>('cron.job.update', {
@@ -868,28 +890,33 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   async function handleRunNowConfirm() {
     if (!confirmState || confirmBusy) return;
     setConfirmBusy(true);
+    const job = confirmState.job;
+    const isProactiveJob = job.id === PROACTIVE_AUTO_JOB_ID;
     try {
-      const result = await webRequest<{ accepted: boolean; run_id: string; session_id?: string }>('cron.job.run_now', {
-        id: confirmState.job.id,
+      const result = await webRequest<{
+        accepted: boolean;
+        run_id: string;
+        session_id?: string;
+        awaiting_approval?: boolean;
+        reused_pending_session?: boolean;
+      }>('cron.job.run_now', {
+        id: job.id,
       });
       // proactive.tick 的"立即执行"不跳转：后端返回的 session_id 是 cron 执行会话
       // （cron_<ts>_<jobid>，空的），而推荐消息实际投递到 most_recent_active_session
       // （用户当前会话）。跳过去看到的是空欢迎页，推荐却在原会话——跳转无意义且打断用户。
       // 推荐消息会自然出现在用户当前会话里，无需主动跳转。
-      const isProactiveJob = confirmState.job.id === PROACTIVE_AUTO_JOB_ID;
       if (result.session_id && !isProactiveJob) {
         // 跳转会卸载 CronPanel，面板内 success state 活不到下一次渲染，用户看不到
-        // 「任务已触发立即执行」反馈。改由 App 根部常驻的命令式 toast 承载：ToastStack
-        // 通过 portal 挂在 body 上，不随 CronPanel 卸载，跳转后提示仍在目标会话顶部可见。
-        // 固定 id 去重，连续触发多个任务时不会叠出一排提示。testId 保持既有自动化锚点不变。
-        // proactive 分支不跳转、面板不卸载，继续用面板内 setSuccess（既有用例预期）。
-        // 视觉风格与位置均与「任务更新成功」等面板内提示保持一致：实心绿底、白字、无图标、
-        // 无关闭按钮、2s 自动消失。通过 panelRef.getBoundingClientRect() 取 CronPanel 容器
-        // 顶部居中坐标，用 position:fixed + transform 让 toast 精确落在面板内提示的同一位置
-        // （面板内提示是 absolute top-3 left-1/2 -translate-x-1/2，受左侧 ConversationSidebar
-        // 影响，其水平中心不是视口中心；toast 默认 fixed 视口居中会与面板内提示错位）。
-        // animation:none 禁用 toast 默认入场/退场动画，避免其 transform 覆盖 translateX(-50%)。
+        // 「任务已触发立即执行」反馈。改由 App 根部常驻的命令式 toast 承载。
         const panelRect = panelRef.current?.getBoundingClientRect();
+        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
+        try {
+          const reused = result.reused_pending_session || result.awaiting_approval;
+          await onSelectSession(result.session_id, reused ? undefined : job.description || job.name);
+        } catch {
+          throw new Error(t('cron.errors.sessionOpenFailed'));
+        }
         toast.open({
           id: 'cron-run-now-success',
           content: t('cron.success.runNow'),
@@ -912,16 +939,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             borderRadius: 'var(--radius-lg)',
           },
         });
-        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
-        onSelectSession(result.session_id);
       } else {
         // proactive 或后端未返回 session_id：面板不卸载，local state 提示生命周期足够
         setSuccess(t(isProactiveJob ? 'cron.success.proactiveRunNow' : 'cron.success.runNow'));
       }
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
-      const { id: cronId, projectId } = confirmState.job;
-      if (cronId && projectId) {
-        void loadCronSessions(projectId, cronId);
+      // 没绑项目的任务也挂在默认项目下，空 projectId 时用 default。
+      if (job.id) {
+        void loadCronSessions(job.projectId || 'default', job.id);
       }
     } catch (runNowError) {
       const message = runNowError instanceof Error ? runNowError.message : t('cron.errors.runNowFailed');
@@ -976,12 +1001,48 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     setSessionsPopoverJobId(job.id);
     setTriggeredSessionsLoading((prev) => ({ ...prev, [job.id]: true }));
     try {
-      const payload = await projectRegistryClient.getCronSessions(job.projectId || 'default', job.id);
-      setTriggeredSessions((prev) => ({ ...prev, [job.id]: payload.sessions || [] }));
+      // 首屏只取最近 10 条（后端按 last_user_message_at 倒序）
+      const payload = await projectRegistryClient.getCronSessions(
+        job.projectId || 'default', job.id, TRIGGERED_SESSIONS_PAGE_SIZE, 0,
+      );
+      const firstPage = payload.sessions || [];
+      setTriggeredSessions((prev) => ({ ...prev, [job.id]: firstPage }));
+      setTriggeredSessionsFetched((prev) => ({ ...prev, [job.id]: firstPage.length }));
+      setTriggeredSessionsTotal((prev) => ({ ...prev, [job.id]: payload.total ?? firstPage.length }));
     } catch {
       setTriggeredSessions((prev) => ({ ...prev, [job.id]: [] }));
+      setTriggeredSessionsFetched((prev) => ({ ...prev, [job.id]: 0 }));
+      setTriggeredSessionsTotal((prev) => ({ ...prev, [job.id]: 0 }));
     } finally {
       setTriggeredSessionsLoading((prev) => ({ ...prev, [job.id]: false }));
+    }
+  }
+
+  async function loadMoreTriggeredSessions(job: CronTaskUI) {
+    const fetched = triggeredSessionsFetched[job.id] ?? 0;
+    if (triggeredSessionsLoadingMore[job.id] || fetched >= (triggeredSessionsTotal[job.id] ?? 0)) {
+      return;
+    }
+    setTriggeredSessionsLoadingMore((prev) => ({ ...prev, [job.id]: true }));
+    try {
+      const payload = await projectRegistryClient.getCronSessions(
+        job.projectId || 'default', job.id, TRIGGERED_SESSIONS_PAGE_SIZE, fetched,
+      );
+      const more = payload.sessions || [];
+      setTriggeredSessionsFetched((prev) => ({ ...prev, [job.id]: fetched + more.length }));
+      // 排序键(last_user_message_at)可能在弹层打开期间被更新，offset 页整体右移时会
+      // 返回已加载过的行：按 session_id 去重追加，避免重复 React key 与重复条目
+      setTriggeredSessions((prev) => {
+        const existing = prev[job.id] ?? [];
+        const seen = new Set(existing.map((item) => item.session_id));
+        return { ...prev, [job.id]: [...existing, ...more.filter((item) => !seen.has(item.session_id))] };
+      });
+      // 响应缺 total 时保留已知值，避免把按钮误藏、分页卡死
+      setTriggeredSessionsTotal((prev) => ({ ...prev, [job.id]: payload.total ?? prev[job.id] ?? 0 }));
+    } catch {
+      // 追加失败保留已加载部分，按钮仍在，可重试
+    } finally {
+      setTriggeredSessionsLoadingMore((prev) => ({ ...prev, [job.id]: false }));
     }
   }
 
@@ -1008,8 +1069,23 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }
 
   function formatPreviewTime(value: string): string {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+    return formatRunTime(value) ?? value;
+  }
+
+  // 「执行记录」条目时间：后端返回 Unix 秒(历史数据可能是毫秒)或 ISO 字符串，统一归一后
+  // 走 toLocaleString()，与「未来执行计划」的时间显示格式保持一致。字段缺失/为 0/非法时
+  // 返回 null，由调用方兜底只显示标题。
+  function formatRunTime(value: number | string | null | undefined): string | null {
+    if (value === null || value === undefined || value === '' || value === 0) return null;
+    let ms: number;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || value <= 0) return null;
+      ms = value < 1e11 ? value * 1000 : value;
+    } else {
+      ms = Date.parse(value);
+      if (Number.isNaN(ms)) return null;
+    }
+    return new Date(ms).toLocaleString();
   }
 
   // 列配置（antd columns 式，单一数据源）：colgroup / 表头 / 单元格全部由它 map 出来
@@ -1061,8 +1137,16 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       width: DEFAULT_COL_WIDTH,
       minWidth: MIN_COL_WIDTH,
       tdTestId: 'cron-job-schedule',
-      tdClassName: 'overflow-hidden truncate px-4 py-3 text-text',
-      render: (job) => scheduleLabel(job.cronExpr),
+      tdClassName: 'overflow-hidden px-4 py-3 text-text',
+      render: (job) => {
+        const schedule = scheduleLabel(job.cronExpr);
+        // 与名称列一致：单行省略，title 悬停看全文
+        return (
+          <span className="block truncate" title={schedule.text}>
+            {schedule.node}
+          </span>
+        );
+      },
     },
     {
       key: 'status',
@@ -1324,22 +1408,46 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   )}
                   {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) > 0 && (
                     <div className="max-h-64 overflow-y-auto">
-                      {triggeredSessions[job.id].map((s) => (
-                        <button
-                          key={s.session_id}
-                          onClick={() => {
-                            closeSessionsPopover();
-                            onSelectSession(s);
-                          }}
-                          className="block w-full truncate px-3 py-2 text-left text-sm text-text hover:bg-bg-hover"
-                          title={s.title}
-                          data-testid="cron-sessions-popover-item"
-                          data-variant={s.session_id}
-                        >
-                          {s.title || s.session_id}
-                        </button>
-                      ))}
+                      {triggeredSessions[job.id].map((s) => {
+                        // 实际执行时间：按 last_user_message_at → last_message_at → created_at
+                        // 优先级取第一个能格式化的字段。不能用 ?? 链——后端把缺失的
+                        // last_message_at/created_at 兜底成 0、last_user_message_at 可为 null，
+                        // ?? 只跳过 null/undefined，会停在 0 上漏掉后面有效的时间。
+                        const runTime = [s.last_user_message_at, s.last_message_at, s.created_at]
+                          .map((value) => formatRunTime(value))
+                          .find((formatted): formatted is string => formatted !== null) ?? null;
+                        const label = s.title || s.session_id;
+                        return (
+                          <button
+                            key={s.session_id}
+                            onClick={() => {
+                              closeSessionsPopover();
+                              onSelectSession(s);
+                            }}
+                            className="block w-full truncate px-3 py-2 text-left text-xs text-text hover:bg-bg-hover"
+                            title={runTime ? `${runTime} · ${label}` : label}
+                            data-testid="cron-sessions-popover-item"
+                            data-variant={s.session_id}
+                          >
+                            {runTime ? `${runTime} · ${label}` : label}
+                          </button>
+                        );
+                      })}
                     </div>
+                  )}
+                  {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) > 0
+                    && (triggeredSessionsFetched[job.id] ?? 0) < (triggeredSessionsTotal[job.id] ?? 0) && (
+                    <button
+                      type="button"
+                      onClick={() => void loadMoreTriggeredSessions(job)}
+                      disabled={triggeredSessionsLoadingMore[job.id]}
+                      className="block w-full border-t border-border/60 px-3 py-2 text-center text-xs text-cron-action-link hover:bg-bg-hover disabled:opacity-50"
+                      data-testid="cron-sessions-popover-load-more"
+                    >
+                      {triggeredSessionsLoadingMore[job.id]
+                        ? t('common.loading')
+                        : t('cron.table.viewMore', { count: (triggeredSessionsTotal[job.id] ?? 0) - (triggeredSessionsFetched[job.id] ?? 0) })}
+                    </button>
                   )}
                   {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) === 0 && (
                     <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-empty">

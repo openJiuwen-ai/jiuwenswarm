@@ -191,3 +191,33 @@ async def test_model_usage_uses_agent_build_context_session_id(tmp_path, monkeyp
     await record_model_token_usage(ctx)
 
     assert SessionTokenUsageLedger(tmp_path / "sess_usage", "sess_usage").snapshot()["revision"] == 1
+
+
+@pytest.mark.parametrize("mode", ["WAL", "DELETE"])
+def test_usage_journal_preserves_totals_on_reopen(tmp_path, mode):
+    import sqlite3
+    ledger = SessionTokenUsageLedger(tmp_path, "session", journal_mode=mode)
+    ledger.record("call", "main", 11, 3)
+    assert SessionTokenUsageLedger(tmp_path, "session", journal_mode=mode).snapshot()["main"]["input_tokens"] == 11
+    with sqlite3.connect(tmp_path / "session_token_usage.sqlite3") as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].upper() == mode
+
+
+def test_usage_snapshot_converts_existing_wal_without_losing_totals(tmp_path):
+    import sqlite3
+    SessionTokenUsageLedger(tmp_path, "session").record("call", "others", 9, 2)
+    assert SessionTokenUsageLedger(tmp_path, "session", journal_mode="DELETE").snapshot()["others"]["input_tokens"] == 9
+    with sqlite3.connect(tmp_path / "session_token_usage.sqlite3") as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+def test_public_usage_read_and_write_follow_workspace_journal(tmp_path, monkeypatch):
+    import sqlite3
+    from jiuwenswarm.server.runtime.session import session_token_usage as usage, session_history, lifecycle
+    monkeypatch.setattr(usage, "get_config", lambda: {"workspace_sqlite": {"journal_mode": "DELETE"}})
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    usage.record_session_token_usage(session_id="session", request_id="call", attribution=None, input_tokens=7, output_tokens=2)
+    assert usage.get_session_token_usage("session")["main"]["input_tokens"] == 7
+    with sqlite3.connect(tmp_path / "session" / "session_token_usage.sqlite3") as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"

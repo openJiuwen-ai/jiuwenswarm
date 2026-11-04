@@ -87,7 +87,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(panelSource, /active=\{active && selected\}/);
   assert.match(panelSource, /deferredPublishRef\.current = true/);
   assert.match(panelSource, /setPublishedWindow\(\{/);
-  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
+  assert.match(panelSource, /headerItems\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
   assert.match(panelSource, /role="progressbar"/);
   assert.match(panelSource, /initialLoadProgress\.loaded \/ initialLoadProgress\.total/);
   assert.match(panelSource, /error\.code === 'UNSUPPORTED_SESSION_MODE'/);
@@ -114,6 +114,15 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(teamWorkspaceStyles, /border-radius: 0\.5rem/);
   assert.match(teamWorkspaceStyles, /\.lanes[\s\S]*?overflow-y: auto/);
   assert.match(teamWorkspaceStyles, /\.laneRowExpanded[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceSource,
+    /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
+  );
+  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceStyles,
+    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+  );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(
@@ -685,7 +694,10 @@ test('trajectory analysis page hosts the raw trajectory and diagnosis as sub-pag
   assert.match(pageSource, /highlightStepKeys: focused\.keys/);
   // The header button enters selection mode instead of starting a run by itself.
   assert.match(pageSource, /onClick=\{enterSelection\}/);
-  assert.match(pageSource, /\{\.\.\.\(selecting \? \{ selection: \{ state: selectionState, onChange: setSelectionState \} \} : \{\}\)\}/);
+  assert.match(
+    pageSource,
+    /\{\.\.\.\(selecting\s*\?\s*\{\s*selection: \{ state: selectionState, onChange: setSelectionState \},\s*fullScopeSelection: fullScope,\s*onFullScopeChange: setFullScope,\s*\}\s*:\s*\{\}\)\}/,
+  );
   assert.match(pageSource, /<DiagnosisSelectionBar/);
   // Sub-pages stay put while a pick is open, and Esc, hiding the page or a new session end it.
   assert.match(pageSource, /disabled=\{selecting\}/);
@@ -707,6 +719,8 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   // Without the selection prop the lanes stay read-only; with it they pick per agent.
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
   assert.match(panelSource, /spanSelectsRange: selecting/);
+  // Browse/zoom uses grab-to-pan; diagnosis selection locks the viewport for brush drag.
+  assert.match(panelSource, /lockTimelineViewport: selecting/);
   assert.match(panelSource, /agentSelection: \{/);
   // Include checkbox only while a shared brush / full-scope pick is active.
   assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
