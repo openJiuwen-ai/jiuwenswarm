@@ -872,6 +872,8 @@ class _WindowApi:
 
         Only plain http(s) URLs without embedded credentials are accepted.
         """
+        from urllib.parse import urlsplit
+
         parsed = urlsplit(str(url))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
@@ -2080,7 +2082,12 @@ class DesktopRuntime:
             if isinstance(url, str) and url.startswith("data:"):
                 temp_path.write_bytes(self._bytes_from_download_data_url(url))
             else:
-                urllib.request.urlretrieve(url, temp_path)
+                # urllib 的 HTTP 请求行只接受 ASCII：中文文件名/空格等非 ASCII 字符
+                # 必须先百分号编码，否则抛 UnicodeEncodeError，表现为桌面端下载失败。
+                # safe 保留 URL 结构字符与已有的 %xx 转义，避免二次编码。
+                urllib.request.urlretrieve(
+                    quote(url, safe=":/?#[]@!$&'()*+,;=%"), temp_path
+                )
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)
@@ -3280,7 +3287,6 @@ nohup {q_executable} >/dev/null 2>&1 &
             processes = list(self.processes.values())
 
         self._abort_all_blob_saves()
-        shutdown_ok = True
         deadline = time.monotonic() + 30.0
         logger.info("[desktop] shutting down child processes")
 
@@ -3304,6 +3310,15 @@ nohup {q_executable} >/dev/null 2>&1 &
         except Exception:
             shutdown_ok = False
             logger.exception("[desktop] resident Worker final shutdown incomplete")
+
+        if processes:
+            # Front restarts detach. The desktop application owns final exit
+            # and upgrade, so it explicitly drains the resident Worker here.
+            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+            try:
+                asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
+            except Exception:
+                logger.exception("[desktop] resident Worker final shutdown incomplete")
 
         while time.monotonic() < deadline:
             if all(process.poll() is not None for process in processes):
@@ -3728,7 +3743,52 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
     """Signal owned services while preserving resident Worker branches."""
     from jiuwenswarm.common.process_supervision import signal_service_tree
 
-    signal_service_tree(pid, force=force)
+    Unlike ``taskkill.exe``, this is a pure-Python operation that does not
+    spawn an external console process, avoiding console window flashes on
+    Windows (console=False builds).
+    """
+    try:
+        import psutil
+
+        parent = psutil.Process(pid)
+        # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
+        children = parent.children(recursive=True)
+        # Runtime lives in a separate process session on POSIX. On Windows a
+        # recursive psutil termination must similarly preserve that subtree
+        # during Front/Gateway restart; final exit uses explicit Worker IPC.
+        retained = set()
+        by_pid = {child.pid: child for child in children}
+        for child in children:
+            try:
+                argv = child.cmdline()
+                if "-m" in argv and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
+                    retained.add(child.pid)
+            except psutil.NoSuchProcess:
+                pass
+        for child in children:
+            try:
+                ancestor = child.ppid()
+                while ancestor in by_pid and ancestor not in retained:
+                    ancestor = by_pid[ancestor].ppid()
+                if ancestor in retained:
+                    retained.add(child.pid)
+            except psutil.NoSuchProcess:
+                pass
+        kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
+        # 先杀子孙，再杀父进程，避免子孙变成孤儿
+        for child in reversed(children):
+            if child.pid in retained:
+                continue
+            try:
+                kill_fn(child)
+            except psutil.NoSuchProcess:
+                pass
+        try:
+            kill_fn(parent)
+        except psutil.NoSuchProcess:
+            pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:

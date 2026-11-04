@@ -19,13 +19,14 @@ from contextlib import aclosing, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from jiuwenswarm.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
@@ -87,43 +88,7 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
-from agent_gateway.common.interrupt_resume import is_client_tool_resume
-from jiuwenswarm.runtime.client_tools import client_tool_answers
-from jiuwenswarm.runtime.interaction import asked_interaction_ids, interaction_ids
-from jiuwenswarm.runtime.session import (
-    RuntimeSessionCoordinator,
-    RuntimeSessionState,
-    SessionCloseTimeoutError,
-    SessionPersistencePolicy,
-    SessionWorkKind,
-)
-from jiuwenswarm.runtime.session_delete import TeamDeleteResult
-from jiuwenswarm.runtime.session_lifecycle import (
-    RuntimeParticipantRegistry,
-    RuntimeResourceLease,
-    SessionDescriptor as LifecycleSessionDescriptor,
-    SessionExecutionEvent,
-    SessionExecutionFinishedEvent,
-    SessionInactiveEvent,
-    SessionInputIntentDisposition,
-    SessionInputIntentEvent,
-    SessionKind,
-    SessionLifecycleTarget,
-    SessionRuntimeLifecyclePort,
-)
-from jiuwenswarm.runtime.session.model import (
-    TEAM_ATTACH_ONLY_PARAM,
-    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-    ExecutionCancelCause,
-    ExecutionLifecycleContext,
-    SessionExecutionSnapshot,
-    SessionExecutionState,
-    SessionLifecycleContext,
-    TeamExecutionContext,
-    TeamExecutionDetails,
-    TeamWaiterKind,
-)
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
+from jiuwenswarm.server.middleware.chat import trigger_before_chat_request
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -1119,12 +1084,7 @@ class AgentRuntime:
             target.session_id,
             message_request_id,
             SessionWorkKind.SESSION_MESSAGE,
-            lambda: self._invoke_started(
-                request,
-                trigger_hook=True,
-                on_control_event=None,
-                agent_execution=None,
-            ),
+            _run_session_message,
             interaction_ids=asked_interaction_ids,
         )
 
@@ -1395,6 +1355,90 @@ class AgentRuntime:
         )
         is_team_request = self._request_targets_team(request)
         team_paused = False
+        target_request_id = str(params.get("target_request_id") or "").strip()
+        # Only the web cron path fences a specific execution. Other transports
+        # (for example process-cli request-scoped cancels) must keep the
+        # adapter's semantic-interrupt path before the coordinator cancel.
+        if target_request_id and request.channel_id == "web":
+            from jiuwenswarm.common.schema.agent import AgentResponse
+            from jiuwenswarm.runtime.session.model import CancelExecutionResult
+
+            expected_id = str(params.get("expected_execution_id") or "").strip()
+            executions = snapshot.executions if snapshot is not None else ()
+            owners = []
+            for item in executions:
+                if item.request_id != target_request_id:
+                    continue
+                if expected_id and item.execution_id != expected_id:
+                    continue
+                owners.append(item)
+            owned_ids = {item.execution_id for item in owners}
+            if snapshot is not None:
+                # A completed response owner may still have live control or
+                # supplement children. Keep the execution fence while tracing
+                # those children, rather than treating an absent live root as stopped.
+                if not expected_id:
+                    owned_ids.update(item.execution_id for item in snapshot.executions
+                                     if item.root_request_id == target_request_id)
+                while True:
+                    descendants = {item.execution_id for item in snapshot.executions
+                                   if item.parent_execution_id in owned_ids}
+                    if descendants.issubset(owned_ids):
+                        break
+                    owned_ids.update(descendants)
+            targets = [item for item in (snapshot.executions if snapshot is not None else ())
+                       if item.execution_id in owned_ids and not item.state.terminal]
+            producer_stopped = True
+            if targets and is_team_request:
+                from jiuwenswarm.server.runtime.agent_manager import get_team_manager
+
+                producer_stopped = await get_team_manager(request.channel_id).stop_session_runtime(
+                    request.session_id, reason="cron request cancellation",
+                    generation=snapshot.generation, expected_request_id=target_request_id,
+                )
+            result = None
+            if targets:
+                results = []
+                for target in targets:
+                    results.append(await self._session_coordinator.cancel_execution(
+                        request.session_id, execution_id=target.execution_id,
+                        generation=snapshot.generation,
+                    ))
+                result = CancelExecutionResult(
+                    matched=sum(item.matched for item in results),
+                    cancelled=sum(item.cancelled for item in results),
+                    timed_out=tuple(eid for item in results for eid in item.timed_out),
+                )
+            # Admission tracks control IDs, not the enclosing chat request ID.
+            # Capture them from the pre-cancel snapshot: cancellation clears the
+            # handles, and a late/mismatched cancel must leave newer prompts alone.
+            # A timed-out execution is still live, so its prompt stays valid;
+            # skip only those, rather than keeping every cleared prompt around.
+            if targets and result is not None:
+                timed_out_ids = set(result.timed_out)
+                for execution in snapshot.executions:
+                    if (
+                        execution.waiting_control_ids
+                        and execution.execution_id in owned_ids
+                        and execution.execution_id not in timed_out_ids
+                    ):
+                        for control_id in execution.waiting_control_ids:
+                            await self._clear_pending_interaction(
+                                request.session_id, control_id,
+                            )
+            stop_confirmed = (
+                producer_stopped and not result.timed_out
+                if result is not None else bool(owners)
+            )
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                payload={
+                    "event_type": "chat.interrupt_result", "success": stop_confirmed,
+                    "matched": result.matched if result is not None else 0,
+                    "stop_confirmed": stop_confirmed,
+                    "target_request_id": target_request_id,
+                },
+            )
         if is_team_request and snapshot is not None:
             context = SessionLifecycleContext(
                 session_id=snapshot.session_id,
@@ -1687,7 +1731,10 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self._normalize_runtime_request(request)
+        request = self.normalize_request(request)
+        attachment_completion = self._non_team_attachment_completion(request)
+        if attachment_completion is not None:
+            return [attachment_completion]
         self._validate_permission_answer(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
@@ -1700,47 +1747,58 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        token = set_runtime_context(self, self._agent_manager)
-        try:
-            work_kind = self.session_work_kind(request)
-            if (
-                work_kind is SessionWorkKind.CONTROL_INPUT
-                and self._defer_stale_ask_user_to_chat(request)
-            ):
-                work_kind = (
-                    SessionWorkKind.CHAT_STREAM
-                    if request.is_stream
-                    else SessionWorkKind.CHAT_UNARY
-                )
-            if work_kind is not None:
-                await self._ensure_session_registered(request)
-                if work_kind is SessionWorkKind.CONTROL_INPUT:
-                    return await self._deliver_control(
-                        request, on_control_event=on_control_event,
+        async with self._tenant.scoped_manager(request) as manager:
+            token = set_runtime_context(self, manager)
+            try:
+                work_kind = self.session_work_kind(request)
+                if (
+                    work_kind is SessionWorkKind.CONTROL_INPUT
+                    and self._defer_stale_ask_user_to_chat(request)
+                ):
+                    work_kind = (
+                        SessionWorkKind.CHAT_STREAM
+                        if request.is_stream
+                        else SessionWorkKind.CHAT_UNARY
                     )
-                refusal = self._voice_task_card_refusal(request)
-                if refusal:
-                    return refusal
-                # Team work kinds require matching execution details (the
-                # coordinator rejects a Team execution without them); mirror
-                # the streaming path's classification for unary Team calls.
-                team_details = None
-                if work_kind in {
-                    SessionWorkKind.TEAM_REQUEST,
-                    SessionWorkKind.TEAM_CONTROL,
-                    SessionWorkKind.TEAM_BACKGROUND,
-                }:
-                    self._team_lifecycle()
-                    team_details = TeamExecutionDetails(
-                        observation_only=self._is_attach_only_request(request),
-                        control_id=(
-                            self._team_control_id(request)
-                            if work_kind is SessionWorkKind.TEAM_CONTROL
-                            else None
-                        ),
-                        background_trigger=self._team_background_trigger(request),
-                        session_message_id=self._team_session_message_id(request),
-                        waiter_kind=self._team_waiter_kind(
+                if work_kind is not None:
+                    await self._ensure_session_registered(request)
+                    if work_kind is SessionWorkKind.CONTROL_INPUT:
+                        return await self._deliver_control(
+                            request, on_control_event=on_control_event,
+                        )
+                    refusal = self._voice_task_card_refusal(request)
+                    if refusal:
+                        return refusal
+                    # Team work kinds require matching execution details (the
+                    # coordinator rejects a Team execution without them); mirror
+                    # the streaming path's classification for unary Team calls.
+                    team_details = None
+                    if work_kind in {
+                        SessionWorkKind.TEAM_REQUEST,
+                        SessionWorkKind.TEAM_CONTROL,
+                        SessionWorkKind.TEAM_BACKGROUND,
+                    }:
+                        self._team_lifecycle()
+                        team_details = TeamExecutionDetails(
+                            observation_only=self._is_attach_only_request(request),
+                            control_id=(
+                                self._team_control_id(request)
+                                if work_kind is SessionWorkKind.TEAM_CONTROL
+                                else None
+                            ),
+                            background_trigger=self._team_background_trigger(request),
+                            session_message_id=self._team_session_message_id(request),
+                            waiter_kind=self._team_waiter_kind(
+                                request,
+                                work_kind=work_kind,
+                                background=False,
+                            ),
+                        )
+                    return await self._session_coordinator.run_unary(
+                        request.session_id or "default",
+                        request.request_id,
+                        work_kind,
+                        lambda: self._invoke_started(
                             request,
                             trigger_hook=trigger_hook,
                             on_control_event=on_control_event,
@@ -1749,30 +1807,14 @@ class AgentRuntime:
                         interaction_ids=asked_interaction_ids,
                         team=team_details,
                     )
-                return await self._session_coordinator.run_unary(
-                    request.session_id or "default",
-                    request.request_id,
-                    work_kind,
-                    lambda: self._invoke_started(
-                        request,
-                        trigger_hook=trigger_hook,
-                        on_control_event=on_control_event,
-                        agent_execution=_agent_execution,
-                    ),
-                    interaction_ids=asked_interaction_ids,
-                    team=team_details,
+                return await self._invoke_started(
+                    request,
+                    trigger_hook=trigger_hook,
+                    on_control_event=on_control_event,
+                    agent_execution=_agent_execution,
                 )
-            return await self._invoke_started(
-                request,
-                trigger_hook=trigger_hook,
-                on_control_event=on_control_event,
-                agent_execution=_agent_execution,
-            )
-        finally:
-            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import finish_request
-
-            finish_request(request)
-            reset_runtime_context(token)
+            finally:
+                reset_runtime_context(token)
 
     async def _invoke_started(
         self,
@@ -2057,6 +2099,12 @@ class AgentRuntime:
             for event in events:
                 yield event
             return
+        execution_id = None
+
+        def remember_execution(execution: SessionExecutionSnapshot) -> None:
+            nonlocal execution_id
+            execution_id = execution.execution_id
+
         if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT and not (
             self._defer_stale_ask_user_to_chat(request)
         ):
@@ -2066,7 +2114,8 @@ class AgentRuntime:
                 self._control_ids(request),
                 lambda: self._stream_control_started(request),
                 interaction_ids=interaction_ids,
-            )
+                on_execution=remember_execution,
+            ))
         else:
             stream = self.stream(
                 request,
@@ -2074,16 +2123,16 @@ class AgentRuntime:
                 on_control_event=on_control_event,
                 _agent_execution=self._agent_execution_owner(request),
             )
-        try:
-            async with aclosing(self._stream_with_runtime_context(stream)) as events:
-                async for event in events:
-                    yield event
-        except BaseException:
-            session_id = request.session_id or "default"
-            request_id = self._control_request_id(request)
-            if self._session_coordinator.has_control_target(session_id, request_id):
-                await self._mark_pending_interaction_id(session_id, request_id)
-            raise
+        async with aclosing(
+            self._stream_with_runtime_context(stream, request=request)
+        ) as events:
+            async for event in events:
+                if (
+                    execution_id is not None and isinstance(event.payload, dict)
+                    and event.event_type != "chat.moa_status"
+                ):
+                    event.payload["execution_id"] = execution_id
+                yield event
 
     async def _stream_with_runtime_context(
         self,
@@ -2218,7 +2267,11 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        request = self._normalize_runtime_request(request)
+        request = self.normalize_request(request)
+        attachment_completion = self._non_team_attachment_completion(request)
+        if attachment_completion is not None:
+            yield attachment_completion
+            return
         self._validate_permission_answer(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
@@ -2252,18 +2305,27 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
+                # Stream Web answers while the resumed turn runs. Unary invoke
+                # still buffers via _deliver_control; Heartbeat keeps that path.
                 if (
                     request.params.get("source") in {
-                        "ask_user_interrupt", "confirm_interrupt", "permission_interrupt",
+                        "ask_user_interrupt",
+                        "confirm_interrupt",
+                        "permission_interrupt",
+                        CLIENT_TOOL_INTERRUPT_SOURCE,
                     }
-                    and self._session_coordinator.control_target_work_kind(
-                        request.session_id or "default", self._control_request_id(request)
-                    ) is not SessionWorkKind.HEARTBEAT
+                    and all(
+                        self._session_coordinator.control_target_work_kind(
+                            request.session_id or "default", control_id
+                        ) is not SessionWorkKind.HEARTBEAT
+                        for control_id in self._control_ids(request)
+                    )
                 ):
                     async with aclosing(self._stream_with_runtime_context(
                         self._stream_question_answer(
                             request, on_control_event=on_control_event,
-                        )
+                        ),
+                        request=request,
                     )) as events:
                         async for event in events:
                             yield event
@@ -2271,7 +2333,9 @@ class AgentRuntime:
                 # The resumed turn runs inside this await, before the loop
                 # below binds the Runtime. Bind it here as ``invoke`` does so
                 # the turn can reach host services such as Session messaging.
-                token = set_runtime_context(self, self._agent_manager)
+                # Use the tenant-scoped ``manager`` from the caller — AgentRuntime
+                # no longer keeps a parallel ``_agent_manager`` attribute.
+                token = set_runtime_context(self, manager)
                 try:
                     events = await self._deliver_control(
                         request, on_control_event=on_control_event,
@@ -2445,7 +2509,10 @@ class AgentRuntime:
                             if execution.work_kind is SessionWorkKind.SESSION_INPUT
                             else execution.execution_id
                         )
-                if execution_id is not None and isinstance(event.payload, dict):
+                if (
+                    execution_id is not None and isinstance(event.payload, dict)
+                    and event.event_type != "chat.moa_status"
+                ):
                     event.payload["execution_id"] = execution_id
                 from jiuwenswarm.extensions.video_duplex.backend.session_receipts import publish_result
 
@@ -2614,7 +2681,8 @@ class AgentRuntime:
                             and not self._session_coordinator.record_interaction(
                                 request.session_id or "default",
                                 request.request_id,
-                                frozenset({control_id}),
+                                control_ids,
+                                on_execution=remember_heartbeat,
                             )
                         ):
                             # No live Heartbeat execution owns this question, so
@@ -2626,7 +2694,7 @@ class AgentRuntime:
                                 "control_ids=%s",
                                 request.session_id or "default",
                                 request.request_id,
-                                frozenset({control_id}),
+                                sorted(control_ids),
                             )
                             continue
                     else:
@@ -2787,36 +2855,45 @@ class AgentRuntime:
         *,
         on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        """Stream question, confirmation or permission replies under control admission.
+        """Stream ask_user / confirm / permission / client tool answers under control admission.
 
         The unary control API deliberately collects a complete turn. WebSocket
-        chat.send answers must instead expose each event while the turn runs.
-        Heartbeat controls retain their existing owner and completion policy.
+        chat.send / chat.user_answer resumes must instead expose each event
+        while the turn runs (including permission_interrupt). Heartbeat
+        controls retain their existing owner and completion policy.
         """
         session_id = request.session_id or "default"
-        request_id = self._control_request_id(request)
         begin_control = getattr(self._admission_controller, "begin_control", None)
         end_control = getattr(self._admission_controller, "end_control", None)
         admitted = callable(begin_control) and callable(end_control)
         if admitted:
             await begin_control(session_id)
+        execution_id = None
+
+        def remember_execution(execution: SessionExecutionSnapshot) -> None:
+            nonlocal execution_id
+            execution_id = execution.execution_id
+
         try:
-            stream = self._session_coordinator.deliver_control_stream(
+            stream = self._released_after(request, self._session_coordinator.deliver_control_stream(
                 session_id,
                 self._control_ids(request),
                 lambda: self._stream_control_started(request),
                 interaction_ids=interaction_ids,
-            )
-            async with aclosing(stream):
-                async for event in stream:
-                    if on_control_event is not None and self._is_permission_control_ack(request, event):
-                        await on_control_event(event)
-                    else:
-                        yield event
-        except BaseException:
-            if self._session_coordinator.has_control_target(session_id, request_id):
-                await self._mark_pending_interaction_id(session_id, request_id)
-            raise
+                on_execution=remember_execution,
+            ))
+            with _client_tool_answer_mismatch(request):
+                async with aclosing(stream):
+                    async for event in stream:
+                        if (
+                            execution_id is not None and isinstance(event.payload, dict)
+                            and event.event_type != "chat.moa_status"
+                        ):
+                            event.payload["execution_id"] = execution_id
+                        if on_control_event is not None and self._is_permission_control_ack(request, event):
+                            await on_control_event(event)
+                        else:
+                            yield event
         finally:
             if admitted:
                 await end_control(session_id)
@@ -2856,14 +2933,22 @@ class AgentRuntime:
             execution_id = execution.execution_id
 
         try:
-            events = await self._session_coordinator.deliver_control(
-                session_id,
-                self._control_ids(request),
-                lambda: self._deliver_control_started(
-                    request, on_control_event=on_control_event,
-                ),
-                interaction_ids=asked_interaction_ids,
-            )
+            with _client_tool_answer_mismatch(request):
+                events = await self._session_coordinator.deliver_control(
+                    session_id,
+                    control_ids,
+                    lambda: self._deliver_control_started(
+                        request, on_control_event=on_control_event, cleared=cleared,
+                    ),
+                    interaction_ids=asked_interaction_ids,
+                    on_execution=remember_execution,
+                )
+                for event in events:
+                    if (
+                        execution_id is not None and isinstance(event.payload, dict)
+                        and event.event_type != "chat.moa_status"
+                    ):
+                        event.payload["execution_id"] = execution_id
             if not heartbeat_control:
                 for event in events:
                     if self._has_control_target(session_id, tuple(interaction_ids(event))):
@@ -2884,14 +2969,14 @@ class AgentRuntime:
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot is None or snapshot.session_id != session_id:
             return None
-        control_id = self._control_request_id(request)
+        control_ids = self._control_ids(request)
         candidates = [
             execution for execution in snapshot.executions
             if execution.session_id == session_id
             and execution.generation == snapshot.generation
             and execution.work_kind is SessionWorkKind.CONTROL_INPUT
             and execution.state is SessionExecutionState.RUNNING
-            and execution.request_id == control_id
+            and execution.request_id in control_ids
         ]
         if len(candidates) != 1 or not candidates[0].parent_execution_id:
             return None
@@ -2921,22 +3006,6 @@ class AgentRuntime:
         if not isinstance(current, str) or not current.strip():
             event.payload["execution_id"] = execution_id
 
-    def _control_owner_agent(self, request: AgentRequest) -> Any:
-        """Borrow the Agent whose turn waits for this control input.
-
-        A voice task resumes on the ``video_tool`` ingress, but it runs on its
-        chat's own agent (#9603); look the waiting turn up where admission put it.
-        """
-        from jiuwenswarm.runtime.request import resolve_request_owner_channel
-
-        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
-        if not callable(lookup):
-            return None
-        return lookup(
-            resolve_request_owner_channel(request) or "default",
-            request.session_id or "",
-        )
-
     async def _deliver_control_started(
         self,
         request: AgentRequest,
@@ -2950,18 +3019,11 @@ class AgentRuntime:
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
         moa_execution_id = self._moa_control_execution_id(request)
-        await self._clear_pending_interaction(
-            request.session_id or "default",
-            self._control_request_id(request),
-        )
-        agent = self._control_owner_agent(request)
-        if agent is None:
-            raise RuntimeError(
-                f"session has no active agent: {request.session_id or 'default'}"
-            )
+        agent = self._control_agent(request, manager)
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
+        cleared.extend(await self._clear_answered_interactions(request))
         events: list[RuntimeEvent] = []
         response_stream = deliver(request)
         try:
@@ -3005,6 +3067,43 @@ class AgentRuntime:
             and event.payload.get("session_id", event.session_id) == request.session_id
         )
 
+    def _borrow_paused_agent(
+        self, session_id: str, control_ids: tuple[str, ...], managers: Iterable[AgentManager]
+    ) -> Any:
+        agent = self._session_coordinator.control_target_agent(session_id, control_ids)
+        if agent is None:
+            return None
+        for manager in managers:
+            borrowed = manager.borrow_agent_nowait(agent)
+            if borrowed is not None:
+                return borrowed
+        return None
+
+    def _control_agent(self, request: AgentRequest, manager: AgentManager) -> Any:
+        """Borrow the agent the paused execution ran on, though its Session was evicted from it since."""
+        session_id = request.session_id or "default"
+        agent = self._borrow_paused_agent(session_id, self._control_ids(request), (manager,))
+        if agent is None:
+            raise RuntimeError(f"session has no active agent: {session_id}")
+        return agent
+
+    async def _released_after(
+        self, request: AgentRequest, stream: AsyncIterator[RuntimeEvent]
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Relay a delivered answer, then release the questions of its pause nobody waits on any more."""
+        paused = self.resumed_interactions(request)
+        session_id = request.session_id or "default"
+        try:
+            async with aclosing(stream):
+                async for event in stream:
+                    yield event
+        except BaseException:
+            for control_id in self._control_ids(request):
+                if self._session_coordinator.has_control_target(session_id, control_id):
+                    await self._mark_pending_interaction_id(session_id, control_id)
+            raise
+        await self._release_unawaited_interactions(session_id, paused)
+
     async def _stream_control_started(
         self,
         request: AgentRequest,
@@ -3014,14 +3113,9 @@ class AgentRuntime:
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
+        session_id = request.session_id or "default"
         moa_execution_id = self._moa_control_execution_id(request)
-        await self._clear_pending_interaction(
-            request.session_id or "default",
-            self._control_request_id(request),
-        )
-        agent = self._control_owner_agent(request)
-        if agent is None:
-            raise RuntimeError(f"session has no active agent: {request.session_id or 'default'}")
+        agent = self._control_agent(request, manager)
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
@@ -3277,6 +3371,7 @@ class AgentRuntime:
         session_id: str,
         generation: int | None = None,
         stop_runner: bool = False,
+        request: AgentRequest | None = None,
     ) -> None:
         """Drain runtime writers for a lifecycle action.
 
@@ -3667,10 +3762,7 @@ class AgentRuntime:
         if not self._is_stale_ask_user_answer(request.params):
             return False
         session_id = request.session_id or "default"
-        if self._session_coordinator.has_control_target(
-            session_id,
-            self._control_request_id(request),
-        ):
+        if self._has_control_target(session_id, self._control_ids(request)):
             return False
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot is None:
@@ -3817,7 +3909,7 @@ class AgentRuntime:
         return is_team_mode(canonical)
 
     @staticmethod
-    def _normalize_runtime_request(request: AgentRequest) -> AgentRequest:
+    def normalize_request(request: AgentRequest) -> AgentRequest:
         """Resolve the effective mode before Runtime classification and dispatch."""
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
@@ -4036,6 +4128,25 @@ class AgentRuntime:
         params = request.params if isinstance(request.params, dict) else {}
         return params.get(TEAM_ATTACH_ONLY_PARAM) is True
 
+    @classmethod
+    def _non_team_attachment_completion(cls, request: AgentRequest) -> RuntimeEvent | None:
+        """End a stale Team subscription before it can enter user admission."""
+        if (
+            request.req_method is not ReqMethod.CHAT_SEND
+            or not cls._is_attach_only_request(request)
+            or cls._request_targets_team(request)
+        ):
+            return None
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        return RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id or "default",
+            session_id=request.session_id,
+            payload=None,
+            is_complete=True,
+        )
+
     def _team_lifecycle(self) -> SessionRuntimeLifecyclePort:
         if self._session_runtime_lifecycle is None:
             from jiuwenswarm.runtime.team_session_lifecycle import (
@@ -4104,13 +4215,6 @@ class AgentRuntime:
 
     @staticmethod
     def _control_ids(request: AgentRequest) -> tuple[str, ...]:
-        params = request.params if isinstance(request.params, dict) else {}
-        if is_client_tool_resume(params):
-            return tuple(answer.request_id for answer in client_tool_answers(params.get("answers") or ()))
-        return (str(params.get("request_id") or request.request_id or ""),)
-
-    @staticmethod
-    def _control_request_id(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         if is_client_tool_resume(params):
             return tuple(answer.request_id for answer in client_tool_answers(params.get("answers") or ()))

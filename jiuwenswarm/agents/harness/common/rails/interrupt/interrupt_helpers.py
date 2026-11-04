@@ -791,6 +791,23 @@ def build_permission_rail(
                 auto_mode=enable_auto_permission,
             )
 
+        def _get_written_permissions() -> dict[str, Any]:
+            """The composed rules before Smart normalization, for the calls its reviewer cannot judge."""
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                permission_storage_lock, read_permission_layers_locked,
+            )
+            sid = _effective_session_id()
+            with permission_storage_lock(sid):
+                _, user, session = read_permission_layers_locked(
+                    sid, global_permissions=installed_global_permissions[0],
+                )
+            return compose_host_effective_permissions(
+                global_permissions=installed_global_permissions[0],
+                user_permissions=user,
+                session_permissions=session,
+                session_id=sid,
+            )
+
         def _permission_scene_config() -> dict[str, Any]:
             if enable_auto_permission:
                 return deepcopy(installed_global_permissions[0])

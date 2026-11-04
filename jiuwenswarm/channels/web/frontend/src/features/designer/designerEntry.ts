@@ -1,13 +1,13 @@
 import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
-import { webClient } from '../../services/webClient';
 import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { webClient } from '../../services/webClient';
 import { buildConversationModelPayload } from '../../multi-session/state/conversationModelSelection';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
-import { findDesignModelsProblem } from './designModelsReadiness';
+import { findDesignModelsProblem } from './designPromptReadiness';
 import {
   mediaItemsToBootstrapReferences,
   type DesignerBootstrapReference,
@@ -19,42 +19,6 @@ export const DESIGNER_TEAM_MODE = 'team.design' as const;
 interface DesignerModelChoice {
   name: string | undefined;
   selection: ModelSelection | null;
-}
-
-/**
- * Resolve the chat model picked for ``sessionId``; without one, the shared
- * composer draft (the design landing) is the source of truth.
- */
-function resolveDesignerModelChoice(sessionId?: string): DesignerModelChoice {
-  const activeSessionId = useChatStore.getState().activeSessionId;
-  const sessionState = useSessionStore.getState();
-  const sourceId = sessionId ?? activeSessionId ?? '';
-  const runtime = sessionState.runtimes[sourceId];
-  const selected = resolveChatModelSelection(
-    sessionState.chatAvailableModels,
-    runtime?.selectedModelName ?? null,
-    sessionState.defaultModelName,
-  );
-  return {
-    name: selected?.model_name,
-    selection: runtime?.selectedModelSelection ?? null,
-  };
-}
-
-/**
- * Carry the landing composer's model choice onto the session it just created.
- * Team rounds resolve their model from the session runtime, so without this the
- * canvas silently falls back to the configured default even though the graph
- * metadata already carries the chosen model.
- */
-function inheritDesignerModelChoice(sessionId: string, choice: DesignerModelChoice): void {
-  const sessionState = useSessionStore.getState();
-  sessionState.ensureRuntime(sessionId);
-  if (choice.selection) {
-    sessionState.setSelectedModelSelection(sessionId, choice.selection);
-  } else if (choice.name) {
-    sessionState.setSelectedModelName(sessionId, choice.name);
-  }
 }
 
 /**

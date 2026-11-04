@@ -259,9 +259,10 @@ The full script authoring constraint list lives only in [templates/scripts/workf
 Do **not** skip this stage. Validation alone is not completion.
 
 1. Confirm the Skill root is still under a temp/draft directory (not `workspace/skills/<name>`).
-2. Zip the Skill directory into a **`.zip` or `.skill`** (zip format) package. The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
-3. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
-4. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
+2. Confirm `skill_display.md` exists next to `SKILL.md` with non-empty `display_name_zh`, `description_zh`, `display_name_en`, and `description_en`.
+3. Zip the Skill directory into a **`.zip` or `.skill`** (zip format) package. The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
+4. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
+5. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
 
 Without `send_file_to_user`, the task is incomplete — even if the directory validates.
 

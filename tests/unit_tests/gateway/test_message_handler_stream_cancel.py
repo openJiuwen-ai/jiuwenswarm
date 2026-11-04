@@ -537,9 +537,13 @@ async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(
 @pytest.mark.parametrize("owner_flag", [None, "organization_owner_stop", "organization_stop"])
 async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent, owner_flag):
     handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": "owner"}
+
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
-        lambda *args, **kwargs: {"team_name": "owner"},
+        "agent_gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
     msg.req_method = ReqMethod.CHAT_CANCEL
@@ -591,19 +595,51 @@ async def test_org_root_terminal_is_the_stream_terminal(source):
 
 
 @pytest.mark.parametrize("mode,target,owner,expected", [
+    # owner 未知（metadata 里没有 team_name）时保守判为「定向」：替代路径是会话级中断，
+    # 会把 owner 团队正在跑的 turn 一起取消。交 AgentServer 裁决，由它明确报错。
     ("agent", "expert", "owner", False), ("team", "owner", "owner", False),
-    ("team", "expert", "", False), ("team", "", "owner", False),
+    ("team", "expert", "", True), ("team", "", "owner", False),
     ("team", "expert", "owner", True),
 ])
-def test_targeted_cancel_requires_team_mode_and_non_owner(monkeypatch, mode, target, owner, expected):
+@pytest.mark.asyncio
+async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_known_owner(
+    monkeypatch, mode, target, owner, expected
+):
     handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": owner}
+
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
-        lambda *args, **kwargs: {"team_name": owner},
+        "agent_gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
     msg.params["target_team_id"] = target
-    assert handler._is_targeted_expert_cancel(msg) is expected
+    assert await handler._is_targeted_expert_cancel(msg) is expected
+
+
+@pytest.mark.asyncio
+async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypatch):
+    """元数据传输失败（非"读为空"）时，定向取消不被放大成会话级取消。"""
+    from agent_gateway.routing.session_metadata_remote import SessionMetadataRemoteUnavailable
+
+    handler = _TestMessageHandler.create()
+
+    async def _unavailable(*args, **kwargs):
+        raise SessionMetadataRemoteUnavailable("session metadata read failed")
+
+    monkeypatch.setattr(
+        "agent_gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.is_stream = False
+    msg.params.update({"target_team_id": "expert", "intent": "cancel"})
+
+    # owner 未知 → 照常按定向取消转发（成员校验由 AgentServer 权威执行）
+    assert await handler._is_targeted_expert_cancel(msg) is True
 
 
 @pytest.mark.asyncio
@@ -1447,3 +1483,66 @@ async def test_group_chat_send_preserves_running_expert_stream(mode: str) -> Non
     assert not travel_task.cancelled()
     await asyncio.sleep(0)
     assert not _FakeAgentClient.sent_requests
+
+
+@pytest.mark.asyncio
+async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-replica gateway delete must interrupt AgentServer by session.
+
+    Local stream task cancel alone leaves AgentServer running until
+    output_detached; stop_forwarding must CHAT_CANCEL first (hard stop, not
+    client_disconnect pause).
+    """
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+    handler = _TestMessageHandler.create()
+    task_a = _seed_stream_task(
+        handler, rid="rid-a", channel_id="web", session_id="sess_a",
+    )
+    task_b = _seed_stream_task(
+        handler, rid="rid-b", channel_id="web", session_id="sess_b",
+    )
+    # Same session twice → one interrupt only.
+    _seed_stream_task(
+        handler, rid="rid-a2", channel_id="web", session_id="sess_a",
+    )
+
+    await handler.stop_forwarding()
+
+    assert len(_FakeAgentClient.sent_requests) == 2
+    session_ids = {
+        str(getattr(env, "session_id", "") or "").strip()
+        for env in _FakeAgentClient.sent_requests
+    }
+    assert session_ids == {"sess_a", "sess_b"}
+    for env in _FakeAgentClient.sent_requests:
+        assert getattr(env, "method", None) == "chat.interrupt"
+        params = getattr(env, "params", None) or {}
+        assert params.get("intent") == "cancel"
+        ctx = getattr(env, "channel_context", None) or {}
+        assert ctx.get("_jiuwenswarm_cancel_source") != "client_disconnect"
+    assert task_a.done()
+    assert task_b.done()
+    assert not handler._stream_tasks
+
+
+@pytest.mark.asyncio
+async def test_stop_forwarding_with_no_in_flight_skips_interrupt() -> None:
+    handler = _TestMessageHandler.create()
+    await handler.stop_forwarding()
+    assert _FakeAgentClient.sent_requests == []
+
+
+def test_client_tool_results_keep_the_existing_stream_and_an_empty_list_is_no_answer() -> None:
+    should_cancel = getattr(MessageHandler, "_should_cancel_existing_stream_before_chat_send")
+    msg = _chat_send_message(channel_id="web", session_id="sess_doc", mode="agent.plan")
+    msg.params.update({"query": "", "source": "client_tool_interrupt", "answers": [
+        {"interrupt_id": "interrupt-1", "request_id": "call-1", "result": {"status": "ok"}}]})
+    assert not should_cancel(msg)
+
+    msg.params["answers"] = []
+    assert should_cancel(msg)

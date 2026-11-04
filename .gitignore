@@ -125,3 +125,6 @@ report/index.html
 /local-only/
 /outputs/
 /%SystemDrive%/
+
+# Local testing handoff documents are not versioned.
+/.agents/agent-docs/designs/testing/

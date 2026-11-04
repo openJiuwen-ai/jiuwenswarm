@@ -1203,15 +1203,9 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
-    # Synchronous, single-field merge. The queued whole-file write this used to
-    # be raced the runtime worker's round-end snapshot: another process could
-    # land a whole-file replace between our pre-read and the queue flush, and
-    # whichever wrote last erased the other's key. Merging only the owned key
-    # under the cross-process write locks keeps both sides' fields alive.
     _enqueue_write(
         session_id,
         metadata,
-        sync_write=True,
         merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
     )
 
@@ -1259,13 +1253,9 @@ def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) ->
         )
         return
     metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
-    # Same sync single-field merge as persist_session_team_dispatch_mode: the
-    # queued whole-file write raced concurrent writers and could erase (or be
-    # erased by) their keys.
     _enqueue_write(
         session_id,
         metadata,
-        sync_write=True,
         merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
     )
 
@@ -3675,7 +3665,7 @@ async def _process_team_message_stream(
                     stored.model_dump(exclude_none=True) if stored is not None else None
                 )
             if isinstance(stored_selection, dict):
-                from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+                from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                 selected = SwarmModelSelection.model_validate(stored_selection)
@@ -3718,6 +3708,9 @@ async def _process_team_message_stream(
             bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(team_spec, deep_agent)
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",

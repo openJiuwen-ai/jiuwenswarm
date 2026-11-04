@@ -210,7 +210,7 @@ async def test_moa_resumes_keep_root_identity_only_on_progress(
         assert [event.payload["status"] for event in notices] == ["started", terminal]
         assert all(event.payload["execution_id"] == root.execution_id for event in notices)
         assert all(not harness.runtime._event_confirms_user_turn(event) for event in notices)
-        assert all("execution_id" not in event.payload for event in events if event.event_type != "chat.moa_status")
+        assert all(event.payload.get("execution_id") != root.execution_id for event in events if event.event_type != "chat.moa_status")
 
 
 @pytest.mark.asyncio
@@ -240,9 +240,10 @@ async def test_moa_control_identity_is_captured_once_and_preserves_existing_ids(
         events = await _collect(harness.runtime.stream(request, trigger_hook=False))
     else:
         events = await harness.runtime._deliver_control(request, on_control_event=None)
-    assert [event.payload["execution_id"] for event in events] == [
-        root.execution_id, root.execution_id, root.execution_id, root.execution_id, "already-bound", "unchanged",
+    assert [event.payload["execution_id"] for event in events[:-1]] == [
+        root.execution_id, root.execution_id, root.execution_id, root.execution_id, "already-bound",
     ]
+    assert events[-1].payload["execution_id"] != root.execution_id
 
 
 @pytest.mark.parametrize("invalid", [
@@ -297,8 +298,8 @@ async def test_overlapping_moa_resume_matches_web_progress_contract(
     harness: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.runtime.moa_progress import MoaProgress
     from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 
@@ -947,7 +948,10 @@ async def test_awaitable_stream_factory_and_waiting_terminal_semantics(harness) 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["ask_user_interrupt", "confirm_interrupt", "permission_interrupt"])
+@pytest.mark.parametrize(
+    "source",
+    ["ask_user_interrupt", "confirm_interrupt", "permission_interrupt"],
+)
 async def test_chat_send_question_answer_streams_before_resumed_turn_finishes(harness, source):
     """The WebSocket/mobile compatibility entry must not collect the whole turn."""
     await _seed_waiting(harness)
@@ -1141,7 +1145,12 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
         finally:
             closed.append(get_current_runtime())
 
+    def assert_control_owner(event):
+        owner = _execution(harness.coordinator.snapshot_session(SESSION_ID), "question_1")
+        assert event.payload["execution_id"] == owner.execution_id
+
     async def accepted(event):
+        assert_control_owner(event)
         assert get_current_runtime() is harness.runtime
         acknowledgements.append(event)
 
@@ -1150,9 +1159,12 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
     async with aclosing(stream):
         async with asyncio.timeout(1):
             if not smart:
-                assert (await anext(stream)).event_type == "runtime.accepted"
+                acknowledgement = await anext(stream)
+                assert acknowledgement.event_type == "runtime.accepted"
+                assert_control_owner(acknowledgement)
             for index in range(300):
                 event = await anext(stream)
+                assert_control_owner(event)
                 assert event.event_type == ("chat.reasoning" if index % 2 == 0 else "chat.delta")
                 assert event.payload["content"] == str(index)
                 assert get_current_runtime() is None
@@ -1161,7 +1173,9 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
         assert len(acknowledgements) == int(smart)
         harness.admission.end_control.assert_not_awaited()
         finish.set()
-        assert [event.event_type async for event in stream] == ["chat.final"]
+        remaining = [event async for event in stream]
+        assert [event.event_type for event in remaining] == ["chat.final"]
+        assert_control_owner(remaining[0])
     assert closed == [harness.runtime]
     harness.admission.begin_control.assert_awaited_once_with(SESSION_ID)
     harness.admission.end_control.assert_awaited_once_with(SESSION_ID)

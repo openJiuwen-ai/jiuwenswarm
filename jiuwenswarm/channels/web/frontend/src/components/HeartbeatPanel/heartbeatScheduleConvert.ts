@@ -56,7 +56,6 @@ export function scheduleDtoToForm(schedule: HeartbeatScheduleDTO, fallbackTimezo
   if (schedule.type === 'cron') {
     return { kind: 'cron', intervalSeconds: 1800, cronExpr: schedule.cron_expr, timezone: schedule.timezone || tz, onceDate: '', onceTime: '' };
   }
-  const tz = fallbackTimezone || DEFAULT_ONCE_TIMEZONE;
   const { date, time } = epochSecondsToOnceLocal(schedule.run_at, tz);
   return { kind: 'once', intervalSeconds: 1800, cronExpr: '', timezone: tz, onceDate: date, onceTime: time };
 }

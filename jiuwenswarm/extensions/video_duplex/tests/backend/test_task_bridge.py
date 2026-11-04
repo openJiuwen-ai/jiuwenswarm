@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from agent_gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
+from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -118,7 +118,7 @@ async def test_cancel_settlement_closes_and_settles_in_one_checkpoint(routed_tas
 
 
 async def test_cancel_during_normal_output_cleanup_preserves_settlement(routed_task, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
 
     r = routed_task
     rail = SimpleNamespace(managed_tasks={})
@@ -484,9 +484,8 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
 
     executor.run = run
     service = TaskService(r.store, executor, concurrency=1)
-    service.started = True
     try:
-        service.kick()
+        service.start("alice", "voice")
         assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
         waiting = service.submit("alice", "voice", "next", "Next task")
         await service.cancel("alice", "voice", r.task["id"], "stop-starting")

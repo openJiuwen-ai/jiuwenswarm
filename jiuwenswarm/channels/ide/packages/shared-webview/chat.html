@@ -3267,7 +3267,7 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
-      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value));
+      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value), interruptId);
     });
   });
 
@@ -3289,8 +3289,7 @@ function mapInterruptAnswerValue(pt, value) {
   return value;
 }
 
-function sendAnswerForInterrupt(pt, rid, source, optionValue) {
-  // Ignore clicks from a card whose turn was already stopped/finalized.
+function sendAnswerForInterrupt(pt, rid, source, optionValue, interruptId) {
   if (!pt || state.pendingTurns[rid] !== pt) return;
   pt.questionAnswered = true;
   // The user chose to continue this turn, so a previous stop click no longer
@@ -4266,14 +4265,14 @@ sendBtn.addEventListener('click', function() {
     Object.keys(state.pendingTurns).forEach(function(rid) {
       var pt = state.pendingTurns[rid];
       if (pt) {
-        pt.stopRequested = true;
-        pt.questionAnswered = true;
         if (pt.pendingQuestion) {
           pt.pendingQuestion.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
           pt.pendingQuestion.classList.add('answered');
           var qStatus = pt.pendingQuestion.querySelector('.question-status');
           if (qStatus) qStatus.textContent = 'Stopped';
         }
+        pt.stopRequested = true;
+        pt.questionAnswered = true;
       }
       finalizeTurn(rid, { stopped: true });
     });

@@ -3004,6 +3004,9 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+_RECORD_BYTE_LIMIT = 64 * 1024
+
+
 def _sanitize_record_text(text: str) -> str:
     """Bound regex/JSON work per log record without truncating a credential.
 
@@ -3012,14 +3015,18 @@ def _sanitize_record_text(text: str) -> str:
     a partial credential at a truncation boundary. Public mask_sensitive keeps
     its full-text behavior.
     """
-    if len(text) > 64 * 1024:
+    # Short-circuit on characters to avoid encoding unbounded input.
+    if len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    ):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
                 "original_characters": len(text),
-                "character_limit": 64 * 1024,
+                "character_limit": _RECORD_BYTE_LIMIT,  # Retain the previous summary field.
+                "byte_limit": _RECORD_BYTE_LIMIT,
             }, separators=(",", ":"))
-        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+        return f"[log payload omitted: exceeds {_RECORD_BYTE_LIMIT} UTF-8 bytes]"
     return _sanitize_log_text(text)
 
 

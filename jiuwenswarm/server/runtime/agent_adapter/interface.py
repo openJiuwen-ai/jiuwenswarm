@@ -376,6 +376,104 @@ def _complete_history_request(
     return completion_receipt
 
 
+def _session_message_owns_completion(request: AgentRequest) -> bool:
+    """Session-message turns get their terminal row from AgentWebSocketServer."""
+
+    params = request.params if isinstance(request.params, dict) else {}
+    return isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) or bool(
+        getattr(request, "trusted_session_message_route", None)
+    )
+
+
+_COMPLETION_ANNOUNCEMENTS: set[asyncio.Task[None]] = set()
+
+# A writer that died (or a saturated history queue) must not hold the turn open forever.
+_HISTORY_RECEIPT_WAIT_SECONDS = 30.0
+
+
+async def _await_history_receipt(completion_receipt: Future[None]) -> None:
+    """Wait for the terminal row to reach disk, bounded, without cancelling the writer.
+
+    Shielded: cancelling this wait must not cancel the writer's receipt. A wait that times
+    out leaves the receipt to resolve on its own and lets the turn finish.
+    """
+
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(completion_receipt)),
+            timeout=_HISTORY_RECEIPT_WAIT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "history completion receipt not confirmed within %.0fs",
+            _HISTORY_RECEIPT_WAIT_SECONDS,
+        )
+
+
+def _announce_durable_completion(
+    session_id: str,
+    request_id: str,
+    completion_receipt: Future[None],
+) -> None:
+    """Tell the gateway once the request's terminal row is on disk.
+
+    A gateway that stopped waiting for the request (cancel, transport error)
+    has no other way to learn when AgentServer finishes unwinding it.
+    """
+
+    loop = asyncio.get_running_loop()
+
+    def announce() -> None:
+        task = loop.create_task(WebSocketGatewayPushTransport().send_push({
+            "channel_id": "",
+            "session_id": session_id,
+            "request_id": request_id,
+            "payload": {"event_type": SESSION_REQUEST_COMPLETED_EVENT},
+        }))
+        _COMPLETION_ANNOUNCEMENTS.add(task)
+        task.add_done_callback(_COMPLETION_ANNOUNCEMENTS.discard)
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            active_recommendation_host,
+        )
+
+        host = active_recommendation_host()
+        if host is not None:
+            try:
+                host.on_chat_completed(session_id, request_id)
+            except Exception:  # noqa: BLE001 - replenishment must not block the receipt
+                logger.warning(
+                    "topic replenishment after completion failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+
+    # Observe the receipt with a done callback so no cancelled waiter can
+    # cancel the receipt the history writer still has to resolve.
+    def on_written(receipt: Future[None]) -> None:
+        if not receipt.cancelled() and receipt.exception() is None:
+            loop.call_soon_threadsafe(announce)
+
+    completion_receipt.add_done_callback(on_written)
+
+
+def _complete_history_request(
+    session_id: str,
+    request_id: str,
+    *,
+    terminal_status: str = "success",
+) -> Future[None] | None:
+    """Persist the request boundary, then announce it to the gateway once durable."""
+
+    completion_receipt = enqueue_history_request_completion(
+        session_id,
+        request_id,
+        terminal_status=terminal_status,
+    )
+    if completion_receipt is not None:
+        _announce_durable_completion(session_id, request_id, completion_receipt)
+    return completion_receipt
+
+
 def _history_user_content(params: Any, query: Any) -> Any:
     """返回写入历史记录的用户消息内容.
 
@@ -2329,10 +2427,81 @@ class JiuWenSwarm:
 
         interactive_input = InteractiveInput()
 
-        if source == "ask_user_interrupt":
-            from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
+        def address(value: Any) -> None:
+            if interrupt_id:
+                interactive_input.answer(interrupt_id, value)
+            else:
+                interactive_input.update(request_id, value)
 
-            return build_ask_user_interactive_input(request_id, answers)
+        if source == CLIENT_TOOL_INTERRUPT_SOURCE:
+            # One result per paused client tool call, by its interrupt id; a call left unanswered stays paused.
+            for answer in client_tool_answers(answers):
+                interactive_input.answer(answer.interrupt_id, answer.result)
+            return interactive_input
+
+        if source == "ask_user_interrupt":
+            if not interrupt_id:
+                from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
+
+                return build_ask_user_interactive_input(request_id, answers)
+            answers_dict = {}
+            free_text_answer: str | None = None
+            for answer in answers:
+                if isinstance(answer, dict):
+                    question_text = str(answer.get("question", "") or "").strip()
+                    selected_options = answer.get("selected_options", [])
+                    custom_input = str(answer.get("custom_input", "") or "").strip()
+                    if selected_options and isinstance(selected_options, list):
+                        # Normalize each option to a stripped string, drop empties.
+                        cleaned_options = [
+                            str(raw_option or "").strip()
+                            for raw_option in selected_options
+                            if str(raw_option or "").strip()
+                        ]
+                        if custom_input:
+                            # "Other" is only a UI placeholder. Preserve normal
+                            # multi-select choices and append the user's text.
+                            normal_options = [
+                                option for option in cleaned_options if option != "Other"
+                            ]
+                            if normal_options:
+                                answer_value: Any = [*normal_options, custom_input]
+                            else:
+                                answer_value = custom_input
+                        elif len(cleaned_options) == 1:
+                            # Bare "Other" without custom text is incomplete (#2330).
+                            sole = cleaned_options[0]
+                            answer_value = "" if sole == "Other" else sole
+                        elif cleaned_options:
+                            # Multi-select: preserve real choices; drop placeholder-only Other.
+                            normal_options = [
+                                option for option in cleaned_options if option != "Other"
+                            ]
+                            answer_value = normal_options if normal_options else ""
+                        else:
+                            answer_value = ""
+                    elif custom_input:
+                        answer_value = custom_input
+                    else:
+                        answer_value = ""
+                    if question_text and answer_value:
+                        answers_dict[question_text] = answer_value
+                    elif answer_value:
+                        free_text_answer = (
+                            answer_value
+                            if isinstance(answer_value, str)
+                            else ", ".join(answer_value)
+                        )
+            if not answers_dict and free_text_answer:
+                answers_dict["__free_text__"] = free_text_answer
+            address({"answers": answers_dict})
+            logger.info(
+                "[JiuWenSwarm] AskUserRail InteractiveInput.update: request_id=%s "
+                "answer_count=%s",
+                request_id,
+                len(answers_dict),
+            )
+            return interactive_input
 
         if source == "ask_user_interrupt":
             from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
@@ -2460,11 +2629,21 @@ class JiuWenSwarm:
             )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
-        if source == "permission_interrupt" and _validate_permission_card_alias(request_id, answers):
-            # The Smart queue reserves its head by tool call id.
-            interactive_input.update(request_id, confirm_payload)
-        else:
+        card_ids = (
+            _permission_card_ids_from_answers(answers)
+            if source == "permission_interrupt" else []
+        )
+        if not card_ids:
             address(confirm_payload)
+            return interactive_input
+        # A Smart queue card is answered by its own id; the queue re-keys it.
+        interactive_input.update(card_ids[0], confirm_payload)
+        logger.info(
+            "[JiuWenSwarm] PermissionRail card InteractiveInput.update: "
+            "request_id=%s card_id=%s",
+            request_id,
+            card_ids[0],
+        )
         return interactive_input
 
     async def _handle_skilldev_request(self, request: AgentRequest) -> AgentResponse | None:
@@ -2995,7 +3174,9 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+                from jiuwenswarm.server.runtime.organization_packages import (
+                    uninstall_organization_agent_group,
+                )
 
                 await uninstall_organization_agent_group(params)
                 payload = {}
@@ -4397,21 +4578,29 @@ class JiuWenSwarm:
         moa_access = getattr(adapter, "moa_access_kwargs", None)
         if callable(moa_access):
             reconcile_kwargs.update(moa_access(request))
+        reconcile_kwargs["execution_request"] = request
         try:
             await self.reconcile_session_mcp(
                 request.session_id,
                 compute_chat_send_mcp_needed(params),
                 **reconcile_kwargs,
             )
+            # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
+            # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
+            await _persist_ask_user_answer_history(request, session_id, params)
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
         except RuntimeError as exc:
+            _schedule_feedback_once("error")
             if not is_team_mode:
                 raise
             async for chunk in _team_preflight_failure_chunks(rid, cid, session_id, exc):
                 yield chunk
             return
-        # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
-        # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
-        await _persist_ask_user_answer_history(request, session_id, params)
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
 
         # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
         # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此

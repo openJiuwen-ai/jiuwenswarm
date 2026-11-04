@@ -120,10 +120,13 @@ def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, 
     assert catalog_state["models"]["defaults"][0]["model_config_obj"]["reasoning_level"] is level
 
 
-@pytest.mark.parametrize("runtime", ["server", "gateway.embedded"])
+# A5：gateway.embedded 副本已删除（gateway 生产统一用 common.model_routing_registry）。
+@pytest.mark.parametrize("runtime", ["server"])
 @pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
 def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
-    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+    from jiuwenswarm.server.runtime.model_compiler_adapter import (
+        compile_model_selection,
+    )
 
     entry = catalog_state["models"]["defaults"][0]
     entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example.com/v1"})
@@ -151,7 +154,9 @@ def test_stable_selection_translates_reasoning_before_core_compilation(catalog_s
 @pytest.mark.parametrize("source", ["defaults", "agentos", "source", "model_source"])
 async def test_model_get_returns_plaintext_key_only_for_user_configured_models(catalog_state, monkeypatch, source):
     from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
-    from jiuwenswarm.common.config_panel.model_resource_handlers import _resource_payload
+    from jiuwenswarm.common.config_panel.model_resource_handlers import (
+        _resource_payload,
+    )
 
     crypto = SimpleNamespace(decrypt=lambda value: value.removeprefix("enc:"))
     monkeypatch.setattr(config_module, "get_crypto_provider", lambda: crypto)
@@ -493,7 +498,9 @@ def test_delete_model_prunes_group_routes_instead_of_failing(catalog_state):
 
 def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     catalog_state["models"]["defaults"] = [catalog_state["models"]["defaults"][1]]
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -510,7 +517,9 @@ def test_deleted_session_selection_uses_current_default(catalog_state, monkeypat
 @pytest.mark.parametrize("cron", [True, False])
 def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._is_cron_execution = cron
@@ -522,7 +531,9 @@ def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron
 
 def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a", "routes": [{"route_id": "current", "model_id": "mdl_a"}],

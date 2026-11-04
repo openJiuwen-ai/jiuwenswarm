@@ -2734,7 +2734,7 @@ def disabled_agent_group_runtimes(package: Any) -> list[str]:
     """Read current switches before selecting an expert team."""
     from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.config_panel.config_set_handlers import flatten_external_cli_agents_for_config_panel
+    from jiuwenswarm.common.config_panel.external_cli_read import flatten_external_cli_agents_for_config_panel
 
     switches = flatten_external_cli_agents_for_config_panel(get_config())
     disabled: list[str] = []
@@ -2768,7 +2768,7 @@ def show_agent_group(name: str) -> dict | None:
     )
 
     if card is not None:
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+        from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
 
         package = load_agent_group_package_bundle(package_dir)
         card["disabledRuntimes"] = disabled_agent_group_runtimes(package)
@@ -4375,6 +4375,11 @@ def _validate_manifest_import_skill_paths(
         raw_dir = skill.get("dir") if isinstance(skill, dict) else skill
         if not isinstance(raw_dir, str) or not raw_dir.strip():
             continue
+        if Path(raw_dir).expanduser().is_absolute():
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
+        windows_path = PureWindowsPath(raw_dir)
+        if windows_path.drive or windows_path.root:
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
         rel = raw_dir.strip().replace("\\", "/")
         posix = PurePosixPath(rel)
         if posix.is_absolute() or ".." in rel.split("/") or PureWindowsPath(raw_dir).is_absolute():
@@ -4707,11 +4712,7 @@ async def install_agent_group_with_hub(
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
             package_id_resolver=_hub_package_id_resolver(_AGENT_GROUP_KIND),
-            conflict_validator=lambda value: _assert_package_id_available(
-                value, local_root=_local_root(_AGENT_GROUP_KIND),
-                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
-                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
-            ),
+            conflict_validator=reject_conflict,
             on_committed=lambda value: upsert_agent_group_marketplace_entry(
                 value.package_id, installed=False, source="hub"
             ),

@@ -518,10 +518,7 @@ async def test_native_read_remember_reloads_exact_file_axis(storage, native, per
     following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["other-call"] = {"reviewer_status": "denied"}
     stream = JiuSwarmStreamEventRail()
     await stream.before_tool_call(following)
-    tool_args = following.inputs.tool_args
-    if isinstance(tool_args, str):
-        tool_args = json.loads(tool_args)
-    following.inputs.tool_result = await native.tools["read_file"].invoke(tool_args)
+    following.inputs.tool_result = await native.tools["read_file"].invoke(following.inputs.tool_args)
     assert following.inputs.tool_result.success
     await stream.after_tool_call(following)
     progress = [

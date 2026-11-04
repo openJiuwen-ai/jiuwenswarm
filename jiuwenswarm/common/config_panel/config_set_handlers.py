@@ -43,7 +43,6 @@ from jiuwenswarm.common.config import (
     DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
-    EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
@@ -244,13 +243,7 @@ class ConfigChangeSet:
             elif key_text == "trajectory_ui_diagnosis_enabled":
                 # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
-            elif key_text in {
-                "task_full_duplex_enabled",
-                "team_organization_ui_enabled",
-                "comfyui_workflow_enabled",
-            }:
-                scopes.add("web_ui")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
+            elif key_text in WEB_UI_YAML_KEYS or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -690,55 +683,6 @@ def custom_external_cli_config_keys() -> tuple[str, ...]:
 def is_external_cli_agent_config_key(key: str) -> bool:
     """Return whether ``key`` is a settings key of a built-in or custom agent."""
     return key in EXTERNAL_CLI_AGENT_CONFIG_KEYS or key in custom_external_cli_config_keys()
-
-
-def _uploaded_cli_path(cli_agent: str) -> str:
-    """Return the CLI executable uploaded with custom agent ``cli_agent``, if any."""
-    if cli_agent in EXTERNAL_CLI_AGENT_KINDS:
-        return ""
-    from jiuwenswarm.common.custom_agent_runtime import get_custom_agent
-
-    agent = get_custom_agent(cli_agent)
-    return agent.cli_path if agent is not None else ""
-
-
-def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    agents = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
-    configured: dict[str, dict[str, str]] = {}
-    if isinstance(agents, list):
-        for item in agents:
-            if isinstance(item, str):
-                cli_agent = item.strip()
-                cli_path = ""
-            elif isinstance(item, dict):
-                cli_agent = str(item.get("cli_agent") or "").strip()
-                cli_path = str(item.get("cli_path") or item.get("codex_bin") or "").strip()
-            else:
-                continue
-            if cli_agent:
-                configured[cli_agent] = {"cli_path": cli_path}
-    # Per-kind path histories persisted under their own config node so pure
-    # history writes do not rebuild agent entries.
-    histories = get_nested_config_value(raw, EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH, {})
-    flat: dict[str, str] = {}
-    for cli_agent in external_cli_agent_kinds():
-        entry = configured.get(cli_agent)
-        cli_path = entry.get("cli_path", "") if entry is not None else ""
-        # A custom agent running its uploaded CLI uses the "built-in CLI" choice.
-        builtin = entry is not None and cli_path in {"", _uploaded_cli_path(cli_agent)}
-        # Keep the first occurrence so a hand-edited config cannot show
-        # duplicate dropdown options.
-        history_paths: list[str] = []
-        history = histories.get(cli_agent) if isinstance(histories, dict) else None
-        if isinstance(history, list):
-            for path in history:
-                if isinstance(path, str) and path.strip() and path not in history_paths:
-                    history_paths.append(path)
-        flat[external_cli_agent_key(cli_agent, "enabled")] = "true" if entry is not None else "false"
-        flat[external_cli_agent_key(cli_agent, "use_builtin")] = "true" if builtin else "false"
-        flat[external_cli_agent_key(cli_agent, "cli_path")] = "" if builtin else cli_path
-        flat[external_cli_agent_key(cli_agent, "path_histories")] = json.dumps(history_paths, ensure_ascii=False)
-    return flat
 
 
 def parse_config_switch_bool(value: Any) -> bool:
@@ -1298,7 +1242,27 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     return merged
 
 
-def refresh_external_cli_builtin_models(external_cli_agents: list[dict[str, str]]) -> None:
+def newly_enabled_external_cli_agents(raw: dict[str, Any], external_cli_agents: list[dict[str, Any]]) -> list[str]:
+    """Return the kinds enabled by this save: absent before it, present after."""
+    persisted = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
+    before: set[str] = set()
+    if isinstance(persisted, list):
+        for item in persisted:
+            name = item.get("cli_agent") if isinstance(item, dict) else item
+            if isinstance(name, str) and name.strip():
+                before.add(name.strip())
+    return [
+        str(item.get("cli_agent"))
+        for item in external_cli_agents
+        if isinstance(item, dict) and item.get("cli_agent") and item.get("cli_agent") not in before
+    ]
+
+
+def refresh_external_cli_builtin_models(
+    external_cli_agents: list[dict[str, str]],
+    *,
+    enabled_now: list[str] | None = None,
+) -> None:
     """Check the configured built-in model catalogs against the enabled CLIs.
 
     Runs after the dependency check, so the SDK of every enabled kind is
@@ -1687,7 +1651,10 @@ def apply_config_payload(
                     update_external_cli_path_histories_in_config(
                         external_cli_path_histories_from_switches(raw, params)
                     )
-                    refresh_external_cli_builtin_models(external_cli_agents)
+                    refresh_external_cli_builtin_models(
+                        external_cli_agents,
+                        enabled_now=newly_enabled_external_cli_agents(raw, external_cli_agents),
+                    )
                     external_cli_agents_updated = True
             elif param_key == "skill_evolution":
                 update_skill_evolution_enabled_in_config(parsed)

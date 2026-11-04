@@ -279,7 +279,6 @@ function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null
   return null;
 }
 
-
 export function collectDesignerMaterials(
   graph: DesignerExecutionGraph | null | undefined,
   run: DesignerExecutionRun | null | undefined,

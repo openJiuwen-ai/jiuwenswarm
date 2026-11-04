@@ -6,7 +6,6 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { toast } from '../ui/Toast/toastStore';
 import {
   Activity,
   CheckCircle2,
@@ -91,6 +90,7 @@ import {
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
 import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { toast } from '../ui/Toast/toastStore';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
@@ -104,7 +104,8 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   buildTopicStarterRequest,
-  topicStarterShowsSettingsAction,
+  topicStarterShowsProviderRefusal,
+  topicStarterShowsRetryAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
   type TopicStarterEvent,
@@ -241,14 +242,10 @@ const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 function SuggestionCard({
   topic,
   onClick,
-  onMouseEnter,
-  onMouseLeave,
   disabled = false,
 }: {
   topic: TopicStarterTopic;
   onClick: () => void;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
@@ -287,8 +284,6 @@ function SuggestionCard({
       className={`chat-suggestion-card${sourceBadge ? ' chat-suggestion-card--sourced' : ''}${hotList ? ' chat-suggestion-card--hot-list' : ''}`}
       data-testid="chat-panel-welcome-suggestion"
       data-variant={topic.title}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
     >
       {sourceBadge && (
         <div data-testid="chat-panel-topic-sources" data-variant={topic.title} className="chat-suggestion-card__sources">
@@ -1333,6 +1328,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   } | null>(null);
   const [recommendationState, setRecommendationState] = useState("");
   const [recommendationRefresh, setRecommendationRefresh] = useState(0);
+  const manualRecommendationRetry = useRef(false);
   const keepSlateOnRefreshRef = useRef(false);
   // The switch event lands before the re-read. Hold that state across the refresh so the
   // prompt changes at once and the effect does not blank it while the request is in flight.
@@ -1342,8 +1338,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
-  // Disabled still shows packaged cold-start cards; personalized generation waits on the switch.
-  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId
+  const visibleTopicSlate = recommendationState !== 'disabled' && dynamicSlate?.visitId === topicStarterVisitId
     ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
@@ -1400,7 +1395,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
-  const shouldShowShareExport = Boolean(onExportShare);
+  const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
@@ -1444,7 +1439,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     };
   }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
-  const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
+  const heartbeatAvailable = !isEnterprise() && Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const {
     turnsByMessageId: codeTurnsByMessageId,
     turnCardAnchors: codeTurnCardAnchors,
@@ -1843,18 +1838,30 @@ export const ChatPanel = React.memo(function ChatPanel({
   ]);
 
   // 包装发送消息函数，添加滚动逻辑
-  const handleSendMessage = useCallback(
-    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
-      try {
-        if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
-      } catch (error) {
-        toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
-        return;
-      }
-      setIsSending(true);
-      onSendMessage(content, mediaItems, options);
+  const sendTopicStarterEvent = useCallback(async (event: TopicStarterEvent) => {
+    const response = await webRequest<{ recorded?: boolean }>('topic_starters.event', { ...event });
+    if (response.recorded !== true) {
+      throw new Error(`topic_starters.event was not recorded: ${event.event_type}`);
+    }
+    return response;
+  }, []);
+
+  const ensureTopicStarterExposureAcknowledged = useCallback(
+    (slate: TopicStarterVisibleSlate) => {
+      const acknowledgements = topicStarterExposureAcknowledgementsRef.current;
+      const slateKey = `${slate.sessionId}\u0000${slate.slateId}`;
+      const existing = acknowledgements.get(slateKey);
+      if (existing) return existing;
+      const acknowledgement = sendTopicStarterEvent(buildExposureEvent(slate));
+      acknowledgements.set(slateKey, acknowledgement);
+      void acknowledgement.catch(() => {
+        if (acknowledgements.get(slateKey) === acknowledgement) {
+          acknowledgements.delete(slateKey);
+        }
+      });
+      return acknowledgement;
     },
-    [activeSessionId, onSendMessage, t],
+    [sendTopicStarterEvent],
   );
 
   useEffect(() => useChatStore.subscribe((state, previous) => {
@@ -1907,12 +1914,14 @@ export const ChatPanel = React.memo(function ChatPanel({
         return;
       }
       acceptingDynamicRef.current = true;
-      // Keep whatever is on screen across the switch: presets while off, personalized while on.
-      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      if (payload.enabled && visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      if (!payload.enabled) setDynamicSlate(null);
       recommendationSwitchStateRef.current = payload.enabled ? 'preparing' : 'disabled';
       setRecommendationState(recommendationSwitchStateRef.current);
       setRecommendationRefresh(value => value + 1);
     });
+    const manualRetry = manualRecommendationRetry.current;
+    manualRecommendationRetry.current = false;
     const heldSwitchState = recommendationSwitchStateRef.current;
     recommendationSwitchStateRef.current = null;
     const refillSlateId = refillSlateIdRef.current;
@@ -1921,11 +1930,11 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
     keepSlateOnRefreshRef.current = false;
     setTopicStarterErrorKey(null);
-    setRecommendationState(heldSwitchState ?? "");
+    setRecommendationState(manualRetry ? "preparing" : (heldSwitchState ?? ""));
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {
-      ...requestParams, visit_id: topicStarterVisitId, manual_retry: false,
+      ...requestParams, visit_id: topicStarterVisitId, manual_retry: manualRetry,
       ...(refillSlateId ? { slate_id: refillSlateId } : {}),
     }, { timeoutMs: 60_000 })
       .then(response => {
@@ -2043,15 +2052,21 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   const handleSendMessage = useCallback(
     async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions | ChatInputProvenance) => {
-      if (options && 'queuedTaskId' in options) {
+      const queued = options && 'queuedTaskId' in options;
+      // Capture submission provenance before awaiting the history flush.
+      const nextInput = queued ? null : takeNextInputSubmission(content);
+      try {
         if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      } catch (error) {
+        nextInput?.settle(false);
+        toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
+        return;
+      }
+      if (queued || !nextInput) {
         setIsSending(true);
         onSendMessage(content, mediaItems, options);
         return;
       }
-      // Capture before the composer clears the draft; InputArea submits then empties the store.
-      const nextInput = takeNextInputSubmission(content);
-      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
       const slate = visibleTopicSlateRef.current;
       acceptingDynamicRef.current = false;
       const directInputRecorded =
@@ -2071,7 +2086,7 @@ export const ChatPanel = React.memo(function ChatPanel({
         console.error('topic_starters direct-input lineage was not recorded:', error);
       });
     },
-    [activeSessionId, ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent, takeNextInputSubmission],
+    [activeSessionId, ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent, takeNextInputSubmission, t],
   );
 
   const handleEmptyComposerTab = useCallback(() => acceptNextInputSuggestion('tab'), [acceptNextInputSuggestion]);
@@ -2600,29 +2615,25 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
-                  <div
-                    className="chat-suggestions__title"
-                    role="status"
-                    data-testid={
-                      recommendationState === 'missing_configuration'
-                        ? 'chat-panel-topic-configuration-hint'
-                        : 'chat-panel-recommendation-preparation-state'
-                    }
-                  >
-                    {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
-                    {topicStarterShowsSettingsAction(recommendationState) ? (
-                      <button
-                        type="button"
-                        className="ml-2 text-text-link underline"
-                        data-testid="chat-panel-topic-settings"
-                        onClick={() => onOpenGeneralSettings?.()}
-                      >
-                        {t('chat.topicStarter.openSettings')}
-                      </button>
-                    ) : null}
+                {recommendationState === 'disabled' ? (
+                  <p className="w-full text-sm text-text-muted" data-testid="chat-panel-topic-disabled-hint">
+                    {t('chat.topicStarter.disabledHint')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </p>
+                ) : recommendationState === 'missing_configuration' ? (
+                  <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-topic-configuration-hint">
+                    {t('chat.topicStarter.statusMissingConfiguration')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
                   </div>
-                ) : null}
+                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
+                  {recommendationState !== 'provider_unavailable' ? t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate))) : null}
+                  {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}
+                  {topicStarterShowsRetryAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-retry" onClick={() => { manualRecommendationRetry.current = true; if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true; setRecommendationRefresh(value => value + 1); }} className="ml-2 text-text-link underline">{t('chat.topicStarter.retryPreparation')}</button> : null}
+                </div> : null}
                 {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (
                   <p role="alert" data-testid="chat-panel-welcome-topic-starter-error">
                     {t(topicStarterErrorKey)}
@@ -2640,15 +2651,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                       topic={topic}
                       onClick={() => handleSuggestion(topic)}
                       disabled={topicStarterSuggestionsDisabled}
-                      onMouseEnter={recommendationState === 'disabled' ? () => {
-                        if (bubbleHideTimerRef.current) {
-                          clearTimeout(bubbleHideTimerRef.current);
-                          bubbleHideTimerRef.current = null;
-                        }
-                        setTopicBubbleActive(true);
-                        setBubbleVisible(true);
-                      } : undefined}
-                      onMouseLeave={recommendationState === 'disabled' ? handleBubbleLeave : undefined}
                     />
                   );
                 })}

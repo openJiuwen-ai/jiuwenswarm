@@ -13,13 +13,16 @@ await build({
   stdin: { contents: `export { DesignerChatPanel } from './src/features/designer/components/DesignerChatPanel.tsx';
     export * from ${JSON.stringify(`${pluginRoot}/taskFullDuplexRuntimeStore.ts`)};`, resolveDir: process.cwd(), loader: 'tsx' },
   outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic',
-  loader: { '.css': 'empty' }, define: { 'import.meta.env.DEV': 'false' },
+  loader: { '.css': 'empty', '.svg': 'dataurl' }, define: { 'import.meta.env.DEV': 'false' },
   plugins: [{ name: 'designer-duplex-ports', setup(builder) {
-    builder.onResolve({ filter: /(?:designerStore|designerUiStore|designerEntry|stores\/chatStore|stores\/sessionStore|ApplicationPluginOutlet|services\/webClient|taskFullDuplex\/featureFlag|components\/form|components\/ModelProviderIcon|components\/ChatPanel\/(?:MessageList|InlineQuestionCard)|components\/InteractionSlot)$/ }, ({ path }) => ({ path, namespace: 'ports' }));
+    builder.onResolve({ filter: /(?:components\/ui|designerRunStore|designModelsReadiness|designerStore|designerUiStore|designerEntry|stores\/chatStore|stores\/sessionStore|ApplicationPluginOutlet|services\/webClient|taskFullDuplex\/featureFlag|components\/form|components\/ModelProviderIcon|components\/ChatPanel\/(?:MessageList|InlineQuestionCard)|components\/InteractionSlot)$/ }, ({ path }) => ({ path, namespace: 'ports' }));
     builder.onResolve({ filter: /\.svg\?react$/ }, () => ({ path: 'svg', namespace: 'ports' }));
     builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => {
       let contents;
       if (path.endsWith('ApplicationPluginOutlet')) contents = `export { TaskFullDuplexAction as ApplicationPluginTaskInputActions } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};`;
+      else if (path.endsWith('components/ui')) contents = 'export const toast = { open() {} };';
+      else if (path.endsWith('designerRunStore')) contents = 'export const useDesignerRunStore = { getState: () => ({ applyLeaderActivity() {} }) };';
+      else if (path.endsWith('designModelsReadiness')) contents = 'export const findDesignModelsProblem = async () => null; export const loadedDesignChatAnthropicProblem = () => null;';
       else if (path.endsWith('designerStore')) contents = 'export const useDesignerStore = selector => selector(globalThis.designerDuplex.state); useDesignerStore.getState = () => globalThis.designerDuplex.state;';
       else if (path.endsWith('designerUiStore')) contents = 'export const useDesignerUiStore = selector => selector({toggleChatSidebar() {}});';
       else if (path.endsWith('designerEntry')) contents = 'export const DESIGNER_TEAM_MODE = "team.design"; export const bindDesignerChatSession = id => globalThis.designerDuplex.bindings.push(id); export const composeDesignerSession = async () => {}; export const sendDesignerLeaderMessage = async () => {};';

@@ -14,6 +14,8 @@ Worker 在构造 Server、加载扩展和初始化智能体之前，为当前 `R
 
 注册表归属与 Worker 进程生命周期一致。Server 停止、SDK 清理结束后，Worker 先同步关闭转发入口并释放等待者，再保护异步收尾不被调用方取消。0.2.8 的启动入口在加载扩展前建立归属，由 `WorkerRuntime` 持有；启动失败时给予已构造的 Server 和后台任务最多 5 秒的清理时间，期间再次取消不会替换原始启动异常。宽限期结束仍未清理完成时，取消清理任务并关闭注册表入口，不再让启动错误等待清理结束才返回。Server 尚未构造时直接清理入口。
 
+注册表归属与 Worker 进程生命周期一致。Server 停止、SDK 清理结束后，Worker 关闭转发入口，取消尚未完成的转发任务，释放等待中的线程，并拒绝迟到的注册。构造失败时，尚未交给 Runtime 的入口由启动代码关闭；已经构造的 Server 由原有 Runtime 清理流程负责。
+
 本修复不调整 Core 源码、依赖版本或 SDK 私有锁，也不修改 Gateway 的重试策略。入口只在 Server Worker 启动时安装，不能作为 SDK 在任意进程、任意事件循环之间共享对象的通用支持。每个新 Worker 应使用新的进程和注册表实例；不要在一个进程中将同一实例重新绑定到另一个事件循环，也不要从初始化线程直接修改 SDK 暴露的底层注册表字典。
 
 英文说明：[Runtime Worker callback registry ownership](../en/Runtime_Worker_Callback_Registry.md)。

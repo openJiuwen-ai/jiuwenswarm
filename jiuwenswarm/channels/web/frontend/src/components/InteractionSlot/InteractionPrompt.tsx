@@ -64,7 +64,7 @@ function emptyPage(): PageState {
   return { selected: [], custom: '', customActive: false };
 }
 
-export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, variant }: InteractionPromptProps) {
+export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, variant, legacyCardAnchors = false }: InteractionPromptProps) {
   const { t } = useTranslation();
   const addMessage = useChatStore((s) => s.addMessage);
   const isSwarmflowHuman = pending.source === 'swarmflow_human';

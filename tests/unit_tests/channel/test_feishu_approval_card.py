@@ -20,10 +20,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
-from jiuwenswarm.common.schema.message import EventType, Message
+from openjiuwen_protocol.message import EventType, Message
 
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
     _ApprovalCardContext,
@@ -305,6 +305,31 @@ async def test_send_card_renders_every_question_and_saves_context(channel):
 
 
 @pytest.mark.asyncio
+async def test_send_card_saves_interrupt_id_for_echo(channel):
+    """发卡时落下的 interrupt_id 要随回执回传，服务端按它定位中断。"""
+    channel._create_and_send_message = AsyncMock()
+    msg = _event_message("call_6", "ask_user_interrupt", [_question("选颜色", [{"label": "蓝", "value": "blue"}])])
+    msg.payload["interrupt_id"] = "intr_6"
+
+    await channel._send_ask_user_question_card(msg)
+
+    assert channel._card_contexts["call_6"].interrupt_id == "intr_6"
+
+
+def test_resume_params_echo_interrupt_id(channel):
+    params = channel._build_resume_params(_ctx(interrupt_id="intr_1"))
+
+    assert params["interrupt_id"] == "intr_1"
+
+
+def test_resume_params_omit_missing_interrupt_id(channel):
+    """升级前挂起的中断没有 interrupt_id，回执不带该键，服务端按 request_id 兜底。"""
+    params = channel._build_resume_params(_ctx())
+
+    assert "interrupt_id" not in params
+
+
+@pytest.mark.asyncio
 async def test_other_option_is_not_rendered_as_button(channel):
     """卡片没有输入框，"Other" 只能当占位，不能渲染成按钮。"""
     channel._create_and_send_message = AsyncMock()
@@ -353,14 +378,15 @@ def test_other_placeholder_click_is_rejected(channel):
 
 
 @pytest.mark.asyncio
-async def test_permission_card_shows_redacted_tool_preview(channel):
+async def test_permission_card_shows_tool_preview(channel):
+    """权限题展示参数预览；脱敏由 agents 侧保证，网关只做序列化与截断。"""
     channel._create_and_send_message = AsyncMock()
     questions = [
         _question(
             "执行 bash",
             [ALLOW_ONCE, REJECT],
             card_id="card-1",
-            tool_payload={"command": "rm -rf /tmp/x", "api_key": "super-secret"},
+            tool_payload={"command": "rm -rf /tmp/x", "api_key": "[REDACTED]"},
         )
     ]
 
@@ -371,7 +397,7 @@ async def test_permission_card_shows_redacted_tool_preview(channel):
     card = json.loads(channel._create_and_send_message.await_args.args[0].content)
     rendered = json.dumps(card, ensure_ascii=False)
     assert "参数：" in rendered
-    assert "super-secret" not in rendered
+    assert "rm -rf /tmp/x" in rendered
 
 
 @pytest.mark.asyncio

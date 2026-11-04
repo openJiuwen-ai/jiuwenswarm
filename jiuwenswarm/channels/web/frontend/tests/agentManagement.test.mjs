@@ -599,40 +599,6 @@ test('My Experts keeps its own capability descriptions across catalog refreshes'
   }
 });
 
-test('My Experts keeps its own capability descriptions across catalog refreshes', () => {
-  for (const locale of ['zh', 'en']) {
-    const catalog = [normalizeAgentTemplateListItem({
-      id: 'hub-expert',
-      source: 'hub',
-      installed: false,
-      displayDescription: { zh: '广场介绍', en: 'Marketplace capability' },
-    }, locale)];
-    let state = createInitialAgentManagementState();
-    for (const displayDescription of [
-      { zh: '本地介绍', en: 'Installed capability' },
-      {},
-      undefined,
-    ]) {
-      const mineCatalog = [normalizeAgentTemplateListItem({
-        id: 'hub-expert',
-        source: 'hub',
-        installed: true,
-        displayDescription,
-      }, locale)];
-      state = agentManagementReducer(state, { type: 'catalog.loaded', catalog, mineCatalog });
-      const mine = buildCatalogViewModel(state.mineCatalog, { scope: 'mine', category: '', query: '' });
-      const marketplace = buildCatalogViewModel(state.catalog, { scope: 'catalog', category: '', query: '' });
-      assert.equal(mine.items.length, 1);
-      assert.equal(mine.items[0].description, displayDescription?.[locale] || '');
-      assert.equal(mine.items[0].installed, true);
-      assert.equal(marketplace.items[0].description, catalog[0].description);
-    }
-    state = agentManagementReducer(state, { type: 'catalog.loaded', catalog, mineCatalog: [] });
-    assert.deepEqual(state.mineCatalog, []);
-    assert.equal(state.catalog.length, 1);
-  }
-});
-
 test('canonical reducer keeps file selection and content status separate from source DTOs', () => {
   const loading = agentManagementReducer(initialAgentManagementState, {
     type: 'file.loading',
@@ -812,12 +778,10 @@ test('mine search excludes hidden English names from Chinese cards (#4473)', () 
   assert.equal(buildCatalogViewModel([fallback], { scope: 'mine', category: '', query: 'Casework' }).items.length, 1);
 });
 test('in-flight transport deaths are the only uncertain install outcomes', () => {
-  // webClient raises these codes itself when a request dies after being
-  // sent but before the backend could answer (timeout, dropped socket —
-  // including WS_CLOSED, which disconnect() uses to reject in-flight
-  // requests). The backend may still complete the install, so the
-  // just-imported package must be kept. WS_NOT_READY is deliberately
-  // excluded: the request never left the client, so rollback is safe.
+  // webClient raises these codes itself when a request dies before the
+  // backend could answer (timeout, dropped socket — including WS_CLOSED,
+  // which disconnect() uses to reject in-flight requests). The backend may
+  // still complete the install, so the just-imported package must be kept.
   for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
     assert.equal(isUncertainInstallError({ code }), true, code);
   }
@@ -834,7 +798,8 @@ test('backend verdicts without a code stay definite so the upload rollback fires
   assert.equal(isUncertainInstallError({ code: 'agent_management_request_failed' }), false);
   // A rejection that carries a backend code stays definite as well.
   assert.equal(isUncertainInstallError({ code: 'HUB_ASSET_NOT_FOUND' }), false);
-  // Codeless plain Error throws on this path are definite too.
+  // Codeless plain Error throws on this path are definite too — handleInstall
+  // raises one itself for the backend's auth_required answer.
   assert.equal(isUncertainInstallError(new Error('auth required')), false);
   assert.equal(isUncertainInstallError({ code: '' }), false);
   assert.equal(isUncertainInstallError(null), false);

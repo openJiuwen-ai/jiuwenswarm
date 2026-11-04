@@ -618,9 +618,28 @@ export function ExternalCliAgentsSection({
     [onCommitAgent, setAgentError],
   );
 
-  // One-click install/repair: commits the built-in choice with force so the
-  // backend re-runs its dependency repair even when nothing else changed
-  // (e.g. the managed CLI binary was deleted manually).
+  // Preserve explicit choices and prefer PATH when no executable was selected.
+  const resolveEnabledChoice = useCallback(
+    async (
+      cliAgent: ExternalCliAgentKind,
+      useBuiltin: boolean,
+      cliPath: string,
+    ): Promise<ExternalCliAgentChoice> => {
+      if (useBuiltin || cliPath.trim()) {
+        return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+      }
+      const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
+        ? await onDetect?.(cliAgent, '', false)
+        : undefined;
+      if (probe?.path && isInstalledStatus(probe)) {
+        return { enabled: true, useBuiltin: false, cliPath: probe.path };
+      }
+      return { enabled: true, useBuiltin: true, cliPath: '' };
+    },
+    [onDetect],
+  );
+
+  // Force dependency repair even when the executable choice is unchanged.
   // Installs started by the user in this session. The initial status poll can
   // return a historical 'succeeded' for a past install, which must not toast.
   const userInitiatedInstallRef = useRef<Set<ExternalCliAgentKind>>(new Set());
@@ -641,19 +660,31 @@ export function ExternalCliAgentsSection({
       const prevCliPath = draftValues[cliPathKey];
       let committed = false;
       try {
-        // Reflect the user's intent in draftValues immediately so the card
-        // switches to built-in CLI mode right away. Without this, deferred
+        // Resolve the install choice first: preserve the user's explicit
+        // selection, prefer PATH, and fall back to the built-in CLI.
+        const choice = await resolveEnabledChoice(
+          cliAgent,
+          draftValues[useBuiltinKey] === 'true',
+          draftValues[cliPathKey] || '',
+        );
+        const nextCliPath = choice.useBuiltin ? '' : choice.cliPath;
+        // Reflect the resolved intent in draftValues immediately so the card
+        // switches to the chosen mode right away. Without this, deferred
         // agents (install still running) keep showing the old external-CLI
         // state until the replay save settles after install success.
-        // Exempt the path clear from the detect-result wipe so the card
+        // Exempt the path rewrite from the detect-result wipe so the card
         // does not flash "not installed" before the install status lands.
-        if (prevCliPath) {
+        // Only when the previous path is non-empty: an empty-to-nonempty
+        // transition never reaches the wipe (treated as a reload, not a
+        // user edit), so the one-shot marker would never be consumed and
+        // would wrongly skip a later real path change.
+        if (prevCliPath && prevCliPath !== nextCliPath) {
           commitEchoAgentsRef.current.add(cliAgent);
         }
         onChange(enabledKey, 'true');
-        onChange(useBuiltinKey, 'true');
-        onChange(cliPathKey, '');
-        await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '', force: true });
+        onChange(useBuiltinKey, choice.useBuiltin ? 'true' : 'false');
+        onChange(cliPathKey, nextCliPath);
+        await commit(cliAgent, { ...choice, force: true });
         committed = true;
         userInitiatedInstallRef.current.add(cliAgent);
         postInstallDetectRanRef.current[cliAgent] = false;
@@ -680,7 +711,7 @@ export function ExternalCliAgentsSection({
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
       }
     },
-    [commit, draftValues, onChange, onInstallStatusChange, onInstallStatusGet, setAgentError],
+    [commit, draftValues, onChange, onInstallStatusChange, onInstallStatusGet, resolveEnabledChoice, setAgentError],
   );
 
   /**
@@ -698,11 +729,12 @@ export function ExternalCliAgentsSection({
     async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
       if (onDetect) {
         try {
+          // Snapshot the previous result before detect() overwrites it.
+          const previousResult = resultsRef.current[cliAgent];
           // Use `detect` (not raw `onDetect`) so the card's result object is
           // refreshed alongside the validation probe — otherwise enabling
           // after a page reload leaves the card showing "not installed" until
           // the next auto-detect tick.
-          const previousResult = resultsRef.current[cliAgent];
           const probe = await detect(cliAgent, requestedPath, false);
           if (!probe || (probe.status !== 'ok' && probe.status !== 'warning')) {
             if (probe) {
@@ -780,9 +812,8 @@ export function ExternalCliAgentsSection({
    * the agent: no validation, no wipe, no uninstall. Enabling restores the
    * agent's previous choice: built-in CLI delegates to the install flow; a
    * custom path is re-probed first (validateAndCommitPath) so a broken path
-   * never gets persisted. With no path configured (e.g. right after a reload
-   * of a disabled agent) the built-in CLI is used as fallback so the switch
-   * can always re-enable the agent.
+   * never gets persisted. With no path configured, probe PATH before falling
+   * back to the built-in CLI.
    */
   const toggleAgentEnabled = useCallback(
     async (
@@ -800,17 +831,8 @@ export function ExternalCliAgentsSection({
           return;
         }
         if (useBuiltin || !requestedPath.trim()) {
-          // Pre-set detecting so the card shows "检测中" during the enable
-          // transition — without this, there's a brief "未安装" flash between
-          // commit success (enabled=true) and the detect result landing.
-          // `detect` will set detecting=false when it resolves.
-          setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
-          try {
-            await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
-          } catch (error) {
-            setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
-            throw error;
-          }
+          const choice = await resolveEnabledChoice(cliAgent, useBuiltin, requestedPath);
+          await commit(cliAgent, choice);
           showHint(t('config.externalCli.savedHint'));
           // Refresh the detect result synchronously so the card never flashes
           // "not installed" after enabling (e.g. right after a page reload,
@@ -825,7 +847,7 @@ export function ExternalCliAgentsSection({
         setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [commit, detect, setAgentError, setDetecting, showHint, t, validateAndCommitPath],
+    [commit, detect, resolveEnabledChoice, setAgentError, showHint, t, validateAndCommitPath],
   );
 
   const startEdit = useCallback(

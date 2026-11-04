@@ -83,6 +83,7 @@ export function SettingsServicesProvider({
       services.onTrackExternalCliDependencyInstalls,
       services.onValidateExternalCliPaths,
       services.onPruneExternalCliPathHistories,
+      services.onRecommendationEnabledChange,
       services.request,
     ],
   );

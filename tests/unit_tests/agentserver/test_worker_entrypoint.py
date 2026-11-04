@@ -23,7 +23,14 @@ def restore_process_state():
     without restoration, later tests in the same process would inherit them.
     """
     policy = asyncio.get_event_loop_policy()
-    previous_loop = policy.get_event_loop()
+    try:
+        previous_loop = policy.get_event_loop()
+    except RuntimeError:
+        # A previous asyncio.run() (any earlier test in this xdist worker)
+        # leaves the thread with no current loop; capturing None here keeps
+        # teardown's set_event_loop(previous_loop) restoring that exact state
+        # instead of blowing up the same way get_event_loop() just did.
+        previous_loop = None
     previous_handlers = {
         sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
     }
@@ -35,6 +42,7 @@ def restore_process_state():
 
 def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
     """Silence the entrypoint's logging and diagnostics side effects."""
+    from jiuwenswarm.common import background_logging
     from jiuwenswarm.server.worker import diagnostics
 
     monkeypatch.setattr(
@@ -42,6 +50,8 @@ def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
         "argv",
         ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock"],
     )
+    monkeypatch.setattr(background_logging, "enable_background_logging", lambda: None)
+    monkeypatch.setattr(background_logging, "stop_background_logging", lambda *args, **kwargs: True)
     monkeypatch.setattr(diagnostics, "enable_worker_diagnostics", lambda: None)
 
 

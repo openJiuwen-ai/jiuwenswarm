@@ -14,8 +14,7 @@ from agent_gateway.common.mode_matrix import (
     NEW_TEAM_CODE_PLAN,
     deprecate_mode,
 )
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.models import (
+from agent_gateway.cron.models import (
     CRON_DEFAULT_TIMEOUT_SECONDS,
     CRON_JOB_DEFAULT_MODE,
     CRON_JOB_MODES,

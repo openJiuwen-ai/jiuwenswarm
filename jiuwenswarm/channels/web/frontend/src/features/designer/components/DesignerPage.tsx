@@ -7,8 +7,8 @@ import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
+import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerAssetUrl';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
-import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerNodeUpload';
 import {
   ArrangeNodesIcon,
   HideEdgesIcon,

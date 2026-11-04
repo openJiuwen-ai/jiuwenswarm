@@ -92,9 +92,8 @@ def browser_decision_updates(
             return {}, "decision_display_name must be a non-empty string"
         display_name = display_name.strip()
         # Clearing metadata accompanies disabling Jev, never editing its connection.
-        if not display_name and (
-            mode != "llm" or model is not None or api_base is not None or "provider" in updates
-        ):
+        has_connection_edit = model is not None or api_base is not None or "provider" in updates
+        if not display_name and (mode != "llm" or has_connection_edit):
             return {}, "decision_display_name must be a non-empty string"
         if len(display_name) > 100:
             return {}, "decision_display_name must not exceed 100 characters"

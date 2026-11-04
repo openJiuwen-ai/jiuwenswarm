@@ -4,9 +4,9 @@ import test from 'node:test';
 
 import {
   DESIGNER_UPLOAD_TOO_LARGE,
+  isDesignerUploadTooLarge,
   buildUploadedDesignerNode,
   canReplaceUploadedNode,
-  isDesignerUploadTooLarge,
   storeDesignerUpload,
   uploadAcceptForNodeType,
   uploadKindFromMime,

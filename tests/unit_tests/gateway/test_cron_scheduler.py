@@ -798,7 +798,9 @@ class TestCronLastSessionId:
         assert [request.method for request in agent.unary_requests].count("session.create") == 1
 
     @pytest.mark.asyncio
-    async def test_run_now_rejects_xiaoyi_target(self, tmp_path):
+    @pytest.mark.parametrize("edition", ["personal", "enterprise"])
+    async def test_run_now_rejects_xiaoyi_target(self, tmp_path, monkeypatch, edition):
+        monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="xiaoyi")
         agent = FakeAgentClient()
@@ -1438,7 +1440,9 @@ class TestReloadKeepsDueUnconsumedEvents:
         assert all(ev.run_id != stale_run_id for _, _, ev in svc.events)
 
     @pytest.mark.asyncio
-    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path):
+    @pytest.mark.parametrize("edition", ["personal", "enterprise"])
+    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path, monkeypatch, edition):
+        monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="xiaoyi")
         svc = _make_scheduler(store)

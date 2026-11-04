@@ -42,9 +42,9 @@ export function parseChatRoute(pathname: string): ChatRoute | null {
 }
 
 export function chatRoutePath(route: ChatRoute): string {
-  if (route.kind === 'chat-new') return '/chat/new';
-  if (route.kind === 'group-chat') return route.groupId ? `/groups/${encodeURIComponent(route.groupId)}` : '/groups';
-  if (route.kind === 'chat-session') return `/chat/${encodeURIComponent(route.sessionId)}`;
+  if (route.kind === 'chat-new') return withBasePath('/chat/new');
+  if (route.kind === 'chat-session') return withBasePath(`/chat/${encodeURIComponent(route.sessionId)}`);
+  if (route.kind === 'group-chat') return withBasePath(route.groupId ? `/groups/${encodeURIComponent(route.groupId)}` : '/groups');
   if (route.kind === 'design-project') {
     const projectPath = `/design/${encodeURIComponent(route.projectId)}`;
     return route.sessionId

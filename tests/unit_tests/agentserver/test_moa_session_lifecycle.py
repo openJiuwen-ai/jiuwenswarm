@@ -187,7 +187,11 @@ async def test_busy_ordinary_session_accepts_its_applied_stable_model(router, ki
     child.busy = True
     before = deepcopy(metadata)
 
-    assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
+    if kind == "cron" and selection["type"] == "model_group":
+        with pytest.raises(ValueError, match="only support a single model"):
+            await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
+    else:
+        assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
     assert child._collaboration_model_selection is None
     assert metadata == before
     assert len(built) == 1

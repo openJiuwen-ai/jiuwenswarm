@@ -12,7 +12,7 @@ import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
-import { modelNameForSelection, resolveCronDefaultHint } from './cronModelSelection';
+import { modelNameForSelection } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
@@ -200,6 +200,12 @@ export default function CronTaskDrawer({
 }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
+  const models = useSessionStore((state) => state.chatAvailableModels);
+  const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
+  // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
+  const modelUnavailable = modelsLoaded && (form.modelSelection
+    ? !models.some((model) => model.model_id === form.modelSelection?.id)
+    : Boolean(form.modelName) && !models.some((model) => model.model_name === form.modelName));
   // 修复"在名称/描述输入框里选中文字、拖动选区移出抽屉后松开鼠标，抽屉被误关"：
   // 该手势的 mousedown 在抽屉内、mouseup 在遮罩上，浏览器会把产生的 click 派发到
   // 两者的最近公共祖先（即遮罩层本身），click 不经过抽屉冒泡，抽屉上的
@@ -465,20 +471,6 @@ export default function CronTaskDrawer({
                       disabled={proactiveLocked}
                     />
                   </div>
-                  {defaultModelHint && (
-                    <p
-                      className={`min-w-0 break-words text-xs ${defaultModelHint.kind === 'empty' ? 'text-warn' : 'text-text-muted'}`}
-                      role="status"
-                      data-testid="cron-drawer-model-default-hint"
-                      data-kind={defaultModelHint.kind}
-                    >
-                      {defaultModelHint.kind === 'named'
-                        ? t('cron.drawer.modelDefaultHintNamed', { model: defaultModelHint.modelName })
-                        : defaultModelHint.kind === 'generic'
-                          ? t('cron.drawer.modelDefaultHintGeneric')
-                          : t('cron.drawer.modelDefaultHintEmpty')}
-                    </p>
-                  )}
                   {modelUnavailable && (
                     <p
                       className="min-w-0 break-words text-xs text-warn"

@@ -906,8 +906,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         result = ctx.inputs.result
         if not isinstance(result, dict) or result.get("result_type") != "interrupt":
             return
+        state = result.get("state") or []
+        if state and not question_interactions(state):
+            return
         payload = convert_interactions_to_ask_user_question(
-            result.get("state") or [], root_permission_queue=self._root_permission_queue,
+            state, root_permission_queue=self._root_permission_queue,
         )
         interrupt_ids = result.get("interrupt_ids")
         if payload is None or not isinstance(interrupt_ids, list) or (
@@ -1070,6 +1073,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        await self._emit_llm_call_signal(ctx, "llm_call_end")
         build_context = getattr(self._deep_agent, "_build_context", None)
         usage_role = self._role or getattr(build_context, "role", None)
         await record_model_token_usage(
@@ -1345,13 +1349,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 tc,
                 tool_result,
             )
-        if not self.project_interruption_snapshots:
-            await self._emit_ask_user_question_if_interrupted(
+        if interrupt is not None:
+            await self._emit_interrupted_team_leader_ask_user(
                 session,
+                ctx,
                 tc,
-                ctx.inputs.tool_name,
-                tool_result,
-                ctx.exception,
             )
 
         tool_name = ctx.inputs.tool_name

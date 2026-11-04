@@ -26,6 +26,12 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_clip_index,
     video_concat_source_ids,
 )
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
+    ENCODE_TIMEOUT_S,
+    PROBE_TIMEOUT_S,
+    run_ffmpeg,
+    run_off_loop,
+)
 from jiuwenswarm.server.runtime.designer.handlers import common as handler_io
 from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
     is_silent_music_placeholder,
@@ -44,7 +50,6 @@ _STREAM_SIZE = re.compile(r"Stream #0:\d+.*.*?Video:.*?(\d{2,5})x(\d{2,5})")
 _MEDIA_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _VIDEO_STREAM = re.compile(r"Video:\s*(\w+).*?(\d{2,5}x\d{2,5}).*?(\d+(?:\.\d+)?) fps")
 _AUDIO_STREAM = re.compile(r"Audio:\s*(\w+)")
-_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 def _find_ffmpeg() -> str:
@@ -263,8 +268,7 @@ def concatenate_clip_videos(paths: list[Path], dest: Path) -> Path:
 
 def _stream_signature(ffmpeg: str, path: Path) -> tuple[str, str, str, str] | None:
     """Video codec / size / fps and audio codec, as printed by ``ffmpeg -i``; None when unreadable."""
-    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
-    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
+    text = _probe_text(ffmpeg, path)
     video = _VIDEO_STREAM.search(text)
     audio = _AUDIO_STREAM.search(text)
     if video is None:
@@ -990,40 +994,9 @@ class ComposeNodeHandler:
             ctx.graph if isinstance(ctx.graph, dict) else None
         ) / f"{stem}.mp4"
         brief = role_output_text(ctx, NODE_ROLE_BRIEF) or ""
-        with tempfile.TemporaryDirectory(
-            prefix="designer_compose_", ignore_cleanup_errors=True
-        ) as scratch:
-            inputs = _clips_for_supplied_music(ctx, paths, Path(scratch))
-            merged = concatenate_clip_videos(inputs, dest)
-        scored = Path(
-            mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+        scored = await run_off_loop(
+            _assemble_film, thread_snapshot(ctx), paths, dest, stem, brief
         )
-        # The prepared clips gave up their own audio for the supplied score; without the score, keep it.
-        if inputs != paths and scored.resolve() == Path(merged).resolve():
-            logger.warning("compose could not lay the supplied music on; keeping the clips' own audio")
-            merged = concatenate_clip_videos(paths, dest)
-            scored = Path(
-                mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
-            )
-        if (
-            not scored.is_file()
-            or scored.suffix.lower() != ".mp4"
-            or scored.stat().st_size < 512
-        ):
-            raise RuntimeError(
-                f"Compose failed to produce a real mp4 film (got {scored})"
-            )
-        try:
-            ffmpeg = _find_ffmpeg()
-            film_dur = _media_duration_seconds(ffmpeg, scored)
-            if film_dur is not None and film_dur < _MIN_CLIP_DURATION_SEC:
-                raise RuntimeError(
-                    f"Compose produced empty/0:00 film ({film_dur:.3f}s) — clips not ready"
-                )
-        except RuntimeError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.debug("compose duration probe skipped", exc_info=True)
         output_ref: AssetRef = {
             "kind": NODE_TYPE_VIDEO,
             "uri": scored.resolve().as_uri(),

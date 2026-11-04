@@ -882,7 +882,7 @@ export function ConversationSidebar({
     return () => window.clearInterval(timer);
   }, []);
 
-  const viewedSessionId = getViewedSessionId(workMode, activeSessionId, activeDesignSessionId);
+  const viewedSessionId = getViewedSessionId(designCanvasOpen, activeSessionId, activeDesignSessionId);
 
   useEffect(() => {
     if (!viewedSessionId) return;

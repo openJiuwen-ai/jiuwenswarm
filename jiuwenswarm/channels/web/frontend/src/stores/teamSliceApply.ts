@@ -10,6 +10,7 @@ import { useTeamSelectorStore } from './teamSelectorStore';
 import type { TeamTask, TeamTaskStatus } from './sessionStore';
 import type { TeamSnapshotPayload } from './teamSelectorStore';
 import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
+import { isDepartedTeamMemberStatus } from '../features/teamMemberDeparture';
 
 const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'pending',
@@ -44,6 +45,20 @@ function str(value: unknown): string {
 function normalizeTaskStatus(value: unknown): TeamTaskStatus {
   const status = str(value).toLowerCase() as TeamTaskStatus;
   return TEAM_TASK_STATUSES.has(status) ? status : 'pending';
+}
+
+/** 切换 Team 时先清空 session 级投影，避免请求期间继续展示上一个 Team。 */
+export function clearTeamSnapshotProjection(sessionId: string): void {
+  if (!sessionId) return;
+  const store = useSessionStore.getState();
+  if (!store.getRuntime(sessionId)) return;
+  store.setTeamMembers(sessionId, []);
+  store.setTeamDepartedMembers(sessionId, []);
+  store.setTeamTasks(sessionId, []);
+  store.setTeamTaskEvents(sessionId, []);
+  store.setTeamTaskTimeline(sessionId, []);
+  store.setTeamMemberExecutionEvents(sessionId, []);
+  store.setTeamLeaderMemberIds(sessionId, []);
 }
 
 export function applyTeamSnapshotToSession(
@@ -111,23 +126,7 @@ export function applyTeamSnapshotToSession(
   // team_id 是 workflow 名、不会被 expertTeamId 认领——镜像 worker 只存在于 owner
   // 主投影，各专家投影互不相通，切换 Team 不会读到上一个 Team 的镜像成员。
   const currentStore = useSessionStore.getState();
-  // In-service plus departed is the full set the snapshot already knows. A
-  // mirrored worker can sit in one projection locally while the snapshot
-  // reports it on the other side; both mirrors must exclude by the union or
-  // the same member_id survives in both projections.
-  const snapshotAllIds = new Set(
-    [...members, ...departedMembers].map((member) => member.member_id)
-  );
-  const mirroredMembers = (currentStore.getRuntime(sessionId)?.teamMembers ?? []).filter(
-    (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
-  );
-  currentStore.setTeamMembers(sessionId, [...mirroredMembers, ...members]);
-  // teamDepartedMembers 同样不能全量替换：镜像 worker 离队后只活在这条投影里
-  // （shutdown 事件写入，见 rememberDepartedTeamMember），快照不带它的身份记录，
-  // 清掉后任务卡与 @ 提及会退化为裸 member_id。
-  const mirroredDeparted = (currentStore.getRuntime(sessionId)?.teamDepartedMembers ?? []).filter(
-    (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
-  );
-  currentStore.setTeamDepartedMembers(sessionId, [...mirroredDeparted, ...departedMembers]);
+  currentStore.setTeamMembers(sessionId, members);
+  currentStore.setTeamDepartedMembers(sessionId, departedMembers);
   currentStore.setTeamTasks(sessionId, tasks);
 }

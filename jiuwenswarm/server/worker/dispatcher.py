@@ -380,13 +380,6 @@ class WorkerDispatcher:
         if not dispatch_id:
             dispatch_id = uuid.uuid4().hex
             self._bridge.events.register(request, dispatch_id)
-        if request.req_method == ReqMethod.CHAT_CANCEL:
-            # A session interrupt ends the round it targets. Its pending
-            # interactions (an ask_user popup waiting for input, a permission
-            # card) are no longer answerable, and the snapshot must not report
-            # the paused session as busy — otherwise every later metadata query
-            # triggers a forced after:0 replay that resurrects the popup.
-            self._bridge.events.retire_session_interactions(request)
         async with self._state_lock:
             if self._draining:
                 self._release_startup_priority(dispatch_id)
@@ -421,6 +414,8 @@ class WorkerDispatcher:
             )
             self._bridge.events.complete(dispatch_id, state="failed", error=self._failure or "worker queue is full")
             return
+        if request.req_method == ReqMethod.CHAT_CANCEL:
+            await self._cancel_target_dispatch(request)
         # A resident worker outlives SDK installs made from the settings panel
         # (the gateway process), so refresh the managed paths before this turn;
         # team members backed by external CLIs probe and import them here.

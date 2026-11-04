@@ -1511,6 +1511,7 @@ async def warmup_session_context(
     deep_agent: "DeepAgent",
     session_id: str,
     history_before_request_id: str | None = None,
+    history_snapshot: SessionHistorySnapshot | None = None,
     refresh_existing: bool = False,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
@@ -1530,6 +1531,10 @@ async def warmup_session_context(
 
     ``refresh_existing`` replaces the cached Web context on its first follow-up
     to a cron run, retaining completed prior-round outputs after queued input.
+
+    ``history_snapshot`` is an optional request-local pre-read. Reuse requires
+    the same owner, lifecycle generation, cutoff and unchanged history file;
+    otherwise this function keeps its original on-disk read and filtering.
     """
     react_agent = getattr(deep_agent, "react_agent", None)
     if react_agent is None:

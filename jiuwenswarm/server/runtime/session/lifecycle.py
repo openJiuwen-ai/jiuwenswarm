@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
+from agent_gateway.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.session.project_store import file_lock
 
 _HELD_LOCKS = threading.local()
