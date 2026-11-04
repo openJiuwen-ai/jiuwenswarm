@@ -377,7 +377,9 @@ async def test_real_controller_changes_only_owned_jobs_in_another_project():
     records["mine"].project_id = "project-A"
 
     async def update_record(job_id, patch):
-        record = records[job_id]
+        record = records.get(job_id)
+        if record is None:
+            raise KeyError(job_id)
         for key, value in patch.items():
             setattr(record, key, value)
         return record
