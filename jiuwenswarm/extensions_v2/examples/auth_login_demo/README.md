@@ -19,6 +19,7 @@ Chrome 密码管理器可以忽略它；保存密码和已保存账号建议仍�
 
 需要工作区中的本地 Gateway 浏览器接入，见 [本地接入说明](../../../gateway/extensions_v2/docs/features/F_07_local-login-integration.md)。
 前端、Gateway 接入和本示例分别提交；本示例由安装包显式启用，不作为平台内置认证。
+鉴权由本包的 gateway.request USER handler 完整负责，包括 token 校验与未登录请求的 deny；宿主没有内置认证门禁或 auth.status。
 前端使用本次通用组件、client.declarations 接入和 localStorage/requestBindings 能力。
 仅安装 ZIP 到未补接入的旧 Gateway，不能运行本包。
 

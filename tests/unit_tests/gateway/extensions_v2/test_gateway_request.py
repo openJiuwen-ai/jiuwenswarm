@@ -8,8 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from openjiuwen.core.events import Event, SessionContext
 
+from jiuwenswarm.gateway.extensions_v2.builtin.router import LocalResponse
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
 from jiuwenswarm.gateway.extensions_v2.models import (
@@ -61,7 +64,6 @@ def _package(handler, event_type: str = EVENT_GATEWAY_REQUEST) -> LoadedPackage:
         version="1.0.0",
         root=Path("/tmp/demo"),
         handlers=(HandlerDeclaration(event_type, handler, {}, "local-1"),),
-        auth_provider=True,
     )
 
 
@@ -72,10 +74,6 @@ async def _runtime(tmp_path: Path, channel: FakeChannel | None = None) -> Gatewa
     )
     await runtime.start()
     return runtime
-
-
-#: Header that keeps the login gate open; the gate only checks presence.
-AUTH_HEADERS = {"authorization": "Bearer tk_1"}
 
 
 async def test_no_user_handler_keeps_the_frame_untouched(tmp_path):
@@ -108,6 +106,47 @@ async def test_request_context_preserves_plugin_fields_without_changing_params(t
         assert params == {"message": "hello"}
         assert observed[0].request_context["tenant_id"] == "tenant-a"
         assert observed[0].headers == {"authorization": "Bearer example"}
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("headers", [None, {}, {"Authorization": "Bearer arbitrary"}, {"authorization": "   "}])
+async def test_delegating_package_does_not_require_credentials(tmp_path, headers):
+    runtime = await _runtime(tmp_path)
+
+    async def delegate(event, ops, next_handler):
+        return await next_handler(event)
+
+    runtime.publish(_package(delegate))
+    try:
+        visited, params = await runtime.intercept(_ws(), "r1", "chat.send", {"message": "hello"}, headers)
+
+        assert visited is False
+        assert params == {"message": "hello"}
+        assert runtime.channel.responses == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("credential", [None, "", "Bearer forged", "Bearer valid"])
+async def test_user_handler_owns_credential_validation(tmp_path, credential):
+    runtime = await _runtime(tmp_path)
+
+    async def authenticate(event, ops, next_handler):
+        if event.event_input.headers.get("authorization") != "Bearer valid":
+            return GatewayRequestOutput(handled=True, route="deny", error={"code": "AUTH_REQUIRED"})
+        return await next_handler(event)
+
+    runtime.publish(_package(authenticate))
+    try:
+        headers = {} if credential is None else {"Authorization": credential}
+        visited, _ = await runtime.intercept(_ws(), "r1", "chat.send", {}, headers)
+
+        assert visited is (credential != "Bearer valid")
+        if visited:
+            assert runtime.channel.responses[0]["code"] == "AUTH_REQUIRED"
+        else:
+            assert runtime.channel.responses == []
     finally:
         await runtime.shutdown()
 
@@ -205,17 +244,22 @@ async def test_local_route_is_answered_by_the_builtin_router(tmp_path):
     async def handler(event, ops, next_handler):
         return GatewayRequestOutput(handled=True, route="local")
 
+    async def echo(request):
+        return LocalResponse(ok=True, payload=dict(request.params))
+
+    runtime.router.register("demo.echo", echo)
     runtime.publish(_package(handler))
 
-    visited, _ = await runtime.intercept(_ws(), "r3", "auth.status", {}, AUTH_HEADERS)
+    visited, _ = await runtime.intercept(_ws(), "r3", "demo.echo", {"value": "hello"})
 
     assert visited is True
     assert channel.responses == [
-        {"id": "r3", "ok": True, "payload": {"authenticated": True}, "error": None, "code": None}
+        {"id": "r3", "ok": True, "payload": {"value": "hello"}, "error": None, "code": None}
     ]
 
 
-async def test_local_route_rejects_an_unknown_method(tmp_path):
+@pytest.mark.parametrize("method", ["chat.send", "auth.status"])
+async def test_local_route_rejects_an_unknown_method(tmp_path, method):
     channel = FakeChannel()
     runtime = await _runtime(tmp_path, channel)
 
@@ -224,12 +268,12 @@ async def test_local_route_rejects_an_unknown_method(tmp_path):
 
     runtime.publish(_package(handler))
 
-    visited, _ = await runtime.intercept(_ws(), "r3", "chat.send", {}, AUTH_HEADERS)
+    visited, _ = await runtime.intercept(_ws(), "r3", method, {}, {"authorization": "Bearer tk_1"})
 
     assert visited is True
     assert channel.responses[0]["ok"] is False
     assert channel.responses[0]["code"] == "ROUTE_UNSUPPORTED"
-    assert channel.responses[0]["error"] == "no gateway builtin for method: chat.send"
+    assert channel.responses[0]["error"] == f"no gateway builtin for method: {method}"
 
 
 async def test_ops_gateway_request_triggers_a_nested_event(tmp_path):
@@ -254,7 +298,7 @@ async def test_ops_gateway_request_triggers_a_nested_event(tmp_path):
     runtime.publish(_package(handler))
     channel = runtime.channel
 
-    visited, _ = await runtime.intercept(_ws(), "r4", "chat.send", {}, AUTH_HEADERS)
+    visited, _ = await runtime.intercept(_ws(), "r4", "chat.send", {})
 
     assert visited is True
     assert channel.responses[0]["payload"] == {"nested_route": "forward"}
@@ -348,7 +392,7 @@ async def test_broken_handler_does_not_break_the_frame(tmp_path):
     runtime.publish(_package(handler))
 
     try:
-        visited, params = await runtime.intercept(_ws(), "r5", "chat.send", {"a": 1}, AUTH_HEADERS)
+        visited, params = await runtime.intercept(_ws(), "r5", "chat.send", {"a": 1})
 
         assert visited is False
         assert params == {"a": 1}

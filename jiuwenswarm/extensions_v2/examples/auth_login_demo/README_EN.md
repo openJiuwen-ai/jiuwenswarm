@@ -37,8 +37,9 @@ Run from the repository root:
 Use a Gateway that includes this browser bridge. Installed active packages can store login state, bind request
 credentials and reload the page without additional permission declarations, configuration edits or authorization.
 Update Gateway and frontend together to use this browser protocol.
-Install through the existing /extension install command or GatewayPackageManager.install before the login gate becomes active.
-The manifest uses domain: gateway and does not enable the old auth_provider/auth.session gate.
+Install through the existing /extension install command or GatewayPackageManager.install before enabling the example's request policy.
+The manifest uses domain: gateway. Its gateway.request USER handler owns token validation and denies unauthenticated requests.
+The host has no built-in authentication gate or auth.status method.
 The explicit package allowlist excludes databases, caches and logs.
 
 settings.json selects language zh/en and layout split/center. Reload after changing these settings.
