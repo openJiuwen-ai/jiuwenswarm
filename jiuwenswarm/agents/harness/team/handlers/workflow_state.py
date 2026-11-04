@@ -1473,6 +1473,12 @@ class WorkflowRunState(BaseModel):
     def _on_agent_started(self, progress: WorkflowProgress) -> dict[str, Any]:
         """Add a new agent, entering its phase and sealing the previous one."""
         self._apply_nested_phase(progress, "agent_started")
+        # Agent cards follow the run's liveness like phase cards do: an
+        # agent_started landing after the run was parked enters paused, so a
+        # paused run never shows a running agent. A resume re-emits
+        # workflow_started first (it flips the run back to running), so the
+        # relaunch path still enters running.
+        agent_status = "running" if self._phase_may_run() else "paused"
 
         def _label() -> str:
             if progress.label:
@@ -1492,7 +1498,7 @@ class WorkflowRunState(BaseModel):
 
         def _make_state(aid: str, label: str) -> WorkflowAgentState:
             return WorkflowAgentState(
-                id=aid, name=label, status="running",
+                id=aid, name=label, status=agent_status,
                 prompt=progress.prompt, model=progress.model,
                 started_at=WorkflowRunState._now_iso(),
                 kind="human" if progress.node_type in ("human", "human_session") else "agent",
@@ -1515,7 +1521,7 @@ class WorkflowRunState(BaseModel):
             stamps are cleared so a running node does not carry stale terminal
             timestamps.
             """
-            existing.status = "running"
+            existing.status = agent_status
             existing.prompt = progress.prompt
             existing.model = progress.model
             existing.agent_type = progress.agent_type
@@ -1553,8 +1559,8 @@ class WorkflowRunState(BaseModel):
                     logger.debug("[WF_DBG parent] parent=%s agent_count=%s (refreshed after child=%s start)",
                                 parent.name, parent.agent_count, child_phase.name)
             self._refresh_run_agent_counts()
-            logger.debug("[WF_DBG WorkflowRunState] agent %s -> running, child_phase=%s",
-                         label, child_phase.name)
+            logger.debug("[WF_DBG WorkflowRunState] agent %s -> %s, child_phase=%s",
+                         label, agent_status, child_phase.name)
             if parent is not None:
                 return self._build_phases_delta([parent, child_phase])
             return self._build_phase_delta(child_phase)
@@ -1579,7 +1585,7 @@ class WorkflowRunState(BaseModel):
         if sealed_phase is not None:
             self._refresh_phase_counts(sealed_phase)
         self._refresh_run_agent_counts()
-        logger.info("[WF_DBG WorkflowRunState] agent %s -> running, phase=%s", label, target_phase.name)
+        logger.info("[WF_DBG WorkflowRunState] agent %s -> %s, phase=%s", label, agent_status, target_phase.name)
         if sealed_phase is not None:
             return self._build_phases_delta([sealed_phase, target_phase])
         return self._build_phase_delta(target_phase)
