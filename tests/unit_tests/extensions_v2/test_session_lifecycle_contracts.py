@@ -29,7 +29,7 @@ async def test_claude_camel_case_matcher_and_cwd_receipt_preserve_ops_identity(h
     row, = _entered(host)
     assert row["input"] == {"cwd": "D:/project/src", "surface": "desktop", "isInteractive": True}
     assert row["session"] == "s1" and row["package"] == "start.a"
-    assert row["root"] == "D:/project" and row["model"]["model_name"] == "active-model"
+    assert row["root"] == "D:/project" and row["model"] == "active-model"
 
 
 @pytest.mark.asyncio

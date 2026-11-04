@@ -2,12 +2,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | F_26 / session-detach |
+| 编号 | F_24 / session-detach |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
+| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录；同日接续查询文档基线统一编号、验收标识和引用，契约不变 |
 | 计划与进度 | [EXTV2-21 / Server PR11](../designs/extensions-v2-development-plan.md#extv2-21-界面与主会话关联解除通知) |
-| 主责规约 | [S_15](../specs/S_15_session-detach.md) |
+| 主责规约 | [S_12](../specs/S_12_session-detach.md) |
 
 ## 1. 范围、状态与依据
 
@@ -189,7 +189,7 @@ USER 处理本包资源，通过 `return await next_handler(event)` 继续本条
 
 普通解除通知等待预算默认 2 秒；运行结束产生的 detach 与 session.end 共用宿主 1.5 秒结束预算。某个 USER 消耗预算时，后续通知可能没有执行机会；平台事实已解除，原 Runtime 继续释放，不伪造 CORE 回执。原调用取消传播，忽略取消的代码不能取得迟到有效回执；外部副作用不自动回滚。
 
-字段范围以 [S_15](../specs/S_15_session-detach.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
+字段范围以 [S_12](../specs/S_12_session-detach.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
 
@@ -249,7 +249,7 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 tests/unit_tests/
 ## 7. 参考资料
 
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionDetachInput/Result；参照小写 Mods 事件。
-- [主责规约 S_15](../specs/S_15_session-detach.md)。
+- [主责规约 S_12](../specs/S_12_session-detach.md)。
 - [事件定义与校验](../../event_types/session_detach.py)、[默认 CORE](../../event_handlers/session_detach.py)。
 - [示例包说明](../../examples/session_detach/README.md)。
-- [session.append 文档格式基准](F_16_session-history-ops.md)。
+- [session.append 文档格式基准](F_16_session-append.md)。

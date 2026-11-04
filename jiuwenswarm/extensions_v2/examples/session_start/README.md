@@ -22,4 +22,4 @@ SessionStartOutput(cwd="D:/projects/demo/src")
 
 例如插件读取 rules.json 到自己的 self._rules，后续同一对象的 on_usage 使用这份规则。start CORE 不保存规则；同一实例的成员状态使两个回调能复用。示例包先保存首个工作区观察值，后续用量 Handler 记录初始化是否完成；跨会话状态必须另外按 session_id 管理，不把首个工作区当成所有会话的目录。
 
-具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_22](../../docs/features/F_22_session-start.md)，公共契约见 [S_12](../../docs/specs/S_12_session-start.md)。示例不介入 ui.render，日志与实际结果参数用于观察。
+具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_21](../../docs/features/F_21_session-start.md)，公共契约见 [S_09](../../docs/specs/S_09_session-start.md)。示例不介入 ui.render，日志与实际结果参数用于观察。

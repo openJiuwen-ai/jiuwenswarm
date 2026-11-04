@@ -62,8 +62,8 @@ context 是 Adapter 已收集的可信资料；request_id/channel_id 仍为原�
 
 USER 普通异常沿 Core 隔离；框架错误和原输入取消传播，不自动重放已经开始的初始化尝试。调用开始即标记已尝试，外部副作用不自动回滚。门拒绝重入，重载仍沿 Core 热切换并重新核对真实实例；在途计数成对保护卸载。
 
-本次输入/输出的旧字段迁移唯一解释入口为 [F_22 第 4.2 节](../features/F_22_session-start.md#42-旧-handler--回执迁移)。平台方法与 SessionContext 的 session_id 保持 snake_case，不将公开 camelCase 修改扩大到全部内部接口。
+本次输入/输出的旧字段迁移唯一解释入口为 [F_21 第 4.2 节](../features/F_21_session-start.md#42-旧-handler--回执迁移)。平台方法与 SessionContext 的 session_id 保持 snake_case，不将公开 camelCase 修改扩大到全部内部接口。
 
 ## 4. 验证与关联
 
-运行验证、环境和证据范围在 [关联特性第 6 节](../features/F_22_session-start.md#6-验收与未决问题) 维护。定向入口为 tests/unit_tests/extensions_v2/test_session_start.py 和 test_session_lifecycle_contracts.py；Server/Runtime 原生接线与真实进程按 feature 的实际记录核对。
+运行验证、环境和证据范围在 [关联特性第 6 节](../features/F_21_session-start.md#6-验收与未决问题) 维护。定向入口为 tests/unit_tests/extensions_v2/test_session_start.py 和 test_session_lifecycle_contracts.py；Server/Runtime 原生接线与真实进程按 feature 的实际记录核对。

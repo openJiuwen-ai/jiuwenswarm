@@ -359,13 +359,13 @@ Runtime 包装负责当前 Ops 对象、嵌套层、任务及活动期；compact
 
 ### 6.5 当前 Core 的受管 Handler 测试适配
 
-2026-11-04 在 [PR !119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119) 中，合并 Server 目标 `415d91a65`，使用实际 Core 目标 `31fee3a86` 重新验证。原有测试直接调用私有 `_tracked_handler(package_id, handler)`；当前 Core 需要激活代次，原 5 项测试在 Handler 注册阶段失败。
+2026-11-04 在 [PR !119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119) 中，合并 Server 目标 `a439a6c54`，使用实际 Core 目标 `31fee3a86` 重新验证。原有测试直接调用私有 `_tracked_handler(package_id, handler)`；当前 Core 需要激活代次，原 5 项测试在 Handler 注册阶段失败。
 
 本轮将公共 fixture 改为通过 ExtensionManager/Registry 真实安装测试用户包，由 Core 自动发布受管 Handler、注入包身份和 generation。测试仅登记自己的回调 Ops；每次回调验证公开 is_active_invocation 与 invocation_generation，并保持原压缩、skip、重入、子 Task/失效 Ops 和提交次数断言。五项受管 Handler 测试均显式检查 USER 回调正常完成，避免 USER 故障隔离造成误通过。卸载场景使用真实 manager.uninstall，fixture 统一清理服务和用户包。
 
 compact 文件 15 项全部通过，原 5 项均真正执行到功能断言；连同命令事件、authorize、session.start 和既有命令回归，共 219 个不同定向用例通过。扩展全组 990 通过、2 跳过，另 2 项 Store Probe/Workbench 失败已在干净同版本目标复现，不计为通过。
 
-本次修改限测试适配和冲突合并；原生压缩绑定仍仅由测试显式建立，生产手动/自动压缩保持原有路径。模型使用原有受控测试模型，不扩大为真实模型服务验收。测试入口：[test_session_compact.py](../../../../tests/unit_tests/extensions_v2/test_session_compact.py)。
+本次 compact 修改限测试适配和冲突合并；原生压缩绑定仍仅由测试显式建立，生产手动/自动压缩保持原有路径。模型使用原有受控测试模型，不扩大为真实模型服务验收。测试入口：[test_session_compact.py](../../../../tests/unit_tests/extensions_v2/test_session_compact.py)。
 
 ## 7. 参考资料
 

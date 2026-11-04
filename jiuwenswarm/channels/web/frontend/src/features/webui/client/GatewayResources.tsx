@@ -4,20 +4,27 @@ import { downloadBlob } from '../../../utils/desktopSave';
 import { browserClientCapabilities as host } from './browserClient.ts';
 
 export function needsGatewayResource(url: string): boolean {
-  return (host.hasHTTPBindings() || host.isUnavailable()) && host.isGateway(url);
+  return host.getPackageAssetState(url) !== null
+    || ((host.hasHTTPBindings() || host.isUnavailable()) && host.isGateway(url));
 }
 
-/** Native media elements cannot attach headers; retain the fetched Blob only for this context and mount. */
+/** Retain each Blob only for its package activation or request context and component mount. */
 export function useGatewayResourceState(url?: string): { url?: string; pending: boolean } {
+  const getRevision = () => {
+    const asset = url ? host.getPackageAssetState(url) : null;
+    if (asset) return asset.status === 'active' ? `package:${asset.version}` : 'package:inactive';
+    return `request:${host.getEpoch()}:${host.isChanging()}`;
+  };
   const revision = useSyncExternalStore(
     (listener) => host.subscribe(() => listener()),
-    () => `${host.getEpoch()}:${host.isChanging()}`,
-    () => `${host.getEpoch()}:${host.isChanging()}`,
+    getRevision,
+    getRevision,
   );
   const bound = Boolean(url && needsGatewayResource(url));
   const [resource, setResource] = useState<{ url: string; revision: string; objectUrl?: string } | null>(null);
   useEffect(() => {
-    if (!url || !bound || host.isChanging()) return;
+    const asset = url ? host.getPackageAssetState(url) : null;
+    if (!url || !bound || asset?.status === 'inactive' || (!asset && host.isChanging())) return;
     const controller = new AbortController();
     let objectUrl: string | undefined;
     let active = true;
