@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_30 / server-run-command |
 | 归档日期 | 2026-11-04 |
+| 后续修订 | 2026-11-04：按 session.append 的字段表写法区分含义、填写方式和权限，补充 query 识别及自定义命令接管规则 |
 | 交付 PR | [!119](https://gitcode.com/huenrui_/jiuwenswarm/pull/119) |
 | 关联计划 | [EXTV2-29](../designs/extensions-v2-development-plan.md#extv2-29-server-斜杠命令执行扩展) |
 | 主责规约 | [S_17](../specs/S_17_server-run-command.md) |
@@ -37,6 +38,10 @@
 ### 3.1 触发点、前后流程与粒度
 
 当前真实调用点是 `JiuWenSwarmDeepAdapter._handle_slash_command()`。它由原来的 unary/stream 请求处理调用；每次进入该位置的一条 `/name args` 触发一次。原先的命令代码保存在 `_handle_native_slash_command()`，只有事件链继续到 CORE 时才执行。
+
+**query 如何进入事件链：**请求先通过原有的实例、会话和来源检查，再由 [run_adapter_slash_command](../../../server/runtime/commands/adapter_commands.py) 统一识别。query 必须是字符串；忽略开头空白后，整条输入须符合 `/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?`。命令名只接受 ASCII 字母、数字、下划线和短横线，至少一个字符；后面可以没有参数，或用空白分隔参数。解析后去掉 `/`，命令名转为小写，余下内容作为一个 args 字符串，不按 shell 规则拆词。例如 `/PROJECT_status demo` 得到 command="project_status"、args="demo"；`请执行 /project_status`、`/` 和 `/项目检查` 不符合该格式，继续原处理，不触发本事件。
+
+**自定义命令如何生效：**新增的是统一解析和进入扩展事件链的适配；开头空白处理延续原有入口习惯。命令不要求已被原生平台实现。`/project_status demo` 可由匹配的 USER Handler 直接返回合法结果，完成用户自己的命令；如果它继续调用 next，最终原生平台仍不认识，则返回 COMMAND_UNKNOWN。触发资格仍受下表中的原有路由限制，不能用自定义命令绕过来源检查。
 
 | 输入场景 | 当前行为 |
 | --- | --- |
@@ -73,30 +78,30 @@
 
 ### 3.2 输入类型与字段
 
-定义位于 [server_run_command.py](../../event_types/server_run_command.py)：
+实际导入位置为 `jiuwenswarm.extensions_v2.event_types.server_run_command`，定义见 [server_run_command.py](../../event_types/server_run_command.py)。Handler 通过 event.event_input 读取 ServerRunCommandInput 对象，不接收任意 JSON 字典变体。以 Web 原生文本入口收到 `/project_status demo` 为例，平台构造的公开输入如下：
 
 ```python
-@dataclass(frozen=True, slots=True)
-class ServerRunCommandInput:
-    command: str
-    args: str
-    origin: CommandOrigin
-    presentation: CommandPresentation | None = None
+ServerRunCommandInput(
+    command="project_status",
+    args="demo",
+    origin=CommandOrigin(kind="bridge"),
+    presentation=CommandPresentation(isFullscreen=False, columns=80),
+)
 ```
 
 第一次触发时四个字段都由宿主提供。presentation 的 None 仅用于 Handler 改写时表达继承，后续 Handler 仍会得到完整的平台展示事实。
 
-| 字段 | 类型 / 是否必有 | 代表什么、应填写什么、作用与例子 | 用户权限 |
-| --- | --- | --- | --- |
-| command | str，必有 | 规范命令名，不带 /，例如用户输入 /evolve_list demo 时为 evolve_list。用于 matcher 和选择原生函数；Worker 会折叠大小写，宿主入口负责别名解析 | 只读，不得改成另一条命令 |
-| args | str，必有 | 名称之后的参数文字；裸命令为 ""，例如 "demo"；名称后的分隔空白不算参数，参数内部和末尾空白保留。这是命令参数，不是整个 /command 行，也不是 JSON 参数字典；默认不进行 shell 拆词 | 可通过 replace(input, args="demo") 改写，允许空字符串 |
-| origin | CommandOrigin，必有 | 平台已确认的来源分类，不是用户自行提交的身份声明。用于按来源制定策略 | 只读，须保留原对象的值 |
-| origin.kind | str，必有 | 下表列出的来源字面值，例如 bridge。它不代表会话 ID，也不代表权限等级 | 只读，可用于 origin.kind matcher |
-| origin.name | str 或 None | 仅 kind=plugin 时填写发起插件的真实名字；其余来源为 None。当前原生文本入口不会伪造 plugin 来源 | 只读 |
-| origin.server | str 或 None | 仅 kind=channel 时填写渠道服务名称，例如 feishu；不是 HTTP URL 或 MCP 凭据 | 只读 |
-| presentation | CommandPresentation，进入链时必有 | 运行时输出所在布局和宽度。它帮助扩展决定如何组织文字，不代表前端已经挂载 | 只读；改写时省略/None 继承原值 |
-| presentation.isFullscreen | bool，默认 False | 是否使用终端全屏布局。Worker 没有终端布局事实时填 False，不能根据是否为 Web 自行填 True | 只读 |
-| presentation.columns | int，默认 80，必须大于 0 | 终端字符单元的宽度，例如 120；没有终端测量时为 80。不是浏览器像素宽度 | 只读 |
+| 字段 | 类型 / 是否必有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
+| --- | --- | --- | --- | --- |
+| command | str，必有 | 不带 / 的规范命令名，用于 matcher 和选择原生处理路径 | **平台填写**；从 query 拆出并转为小写，例如 /PROJECT_status demo 对应 project_status。宿主入口负责别名解析，用户不在此填另一条命令 | 只读，不得改成另一条命令 |
+| args | str，必有；无参数时为 "" | 命令名之后的整段参数文字，不是整个 /command 行，也不是 JSON 参数字典 | **平台先填写**；例如 /project_status demo 对应 "demo"。名称后的分隔空白不算参数，参数内部和末尾空白保留；默认不进行 shell 拆词。用户可填写修订后的参数字符串 | 可通过 replace(input, args="demo") 改写，允许空字符串 |
+| origin | CommandOrigin，必有 | 平台确认的输入来源分类，用于按来源制定策略，不是用户提交的身份声明 | **平台填写**；例如 CommandOrigin(kind="bridge") 表示当前 Web 桥接输入。用户通过 input.origin 读取 | 只读，须保留原对象的值 |
+| origin.kind | str，必有 | 下表列出的来源字面值；不代表会话 ID，也不代表权限等级 | **平台填写**；当前 Web 原生文本入口为 "bridge"，SDK 通道为 "sdk"。用户可写 matcher={"origin.kind": "bridge"} 筛选 | 只读，可用于点路径 matcher |
+| origin.name | str 或 None；默认 None | kind=plugin 时的真实发起插件名称；不是任意用户昵称或目标会话 | **平台填写**；只有可信插件来源才能提供非空名称，其余来源填 None。当前原生文本入口不会构造 plugin 来源，因此为 None | 只读 |
+| origin.server | str 或 None；默认 None | kind=channel 时的渠道服务名称，不是 HTTP URL 或 MCP 凭据 | **平台填写**；如 CommandOrigin(kind="channel", server="feishu")；其他来源填 None | 只读 |
+| presentation | CommandPresentation，进入链时必有；构造器默认 None | 运行时输出的布局与宽度事实，供扩展组织文字；不代表前端已经挂载 | **平台首次填写完整对象**，例如 CommandPresentation(isFullscreen=False, columns=80)。Handler 重建输入时可省略或传 None，表示继承本次平台值 | 有效值只读；省略/None 不会清除原值 |
+| presentation.isFullscreen | bool，默认 False | 输出是否使用终端全屏布局 | **平台填写**；Worker 没有终端布局事实时使用 False。不能只根据渠道为 Web 就填写 True | 只读 |
+| presentation.columns | int，默认 80，必须大于 0 | 终端字符单元宽度，供扩展决定文字排版；不是浏览器像素宽度 | **平台填写**；有实际测量时可为 120，没有终端测量时使用 80 | 只读 |
 
 `CommandOrigin` 对照 PromptOrigin 全部来源变体，字段组合需要符合下表。仅声明一种来源不会让平台自动产生那种来源。
 
@@ -130,11 +135,11 @@ class ServerRunCommandResult:
 
 事件直接返回 ServerRunCommandResult，不包 value/deny，也不能直接返回 dict 或 None。
 
-| 字段 | 类型 / 默认 | 含义、应返回什么、用途与例子 | 修改规则 |
-| --- | --- | --- | --- |
-| text | str 或 None；默认 None | 要作为命令输出显示的文字，例如 "项目检查完成"；空字符串表示空文字。None 表示这次没有文字输出，例如原生命令打开面板 | USER 可返回自己的文字；替换原生文字时省略 ref |
-| context | tuple[str, ...] 或 None；默认 None | 模型备注，每个元素是一条隐藏用户消息，例如 ("后续修改只限 src 目录",)。可包含换行，每个元素须为非空字符串。它不显示在命令响应里 | 省略/None 自动继承下游已有备注；显式提供时须保留完整原前缀，再追加新元素 |
-| ref | int 或 None；默认 None | CORE 产生的本次原生执行引用。原生面板、审批块、follow-up 等完整结果由平台保存，ref 让平台使用该真实结果 | USER 只能保留本次真实 ref，不能构造编号；带 ref 时不能伪造 text |
+| 字段 | 类型 / 默认 | 准确含义 | 应返回什么、例子和用途 | 修改规则 |
+| --- | --- | --- | --- | --- |
+| text | str 或 None；默认 None | 原命令响应中要显示的文字，不是模型的新 query | USER 接管时可返回 "项目检查完成"；"" 表示空文字；None 表示没有文字输出，例如原生命令打开面板。平台沿既有命令响应返回 | USER 可填写自己的文字；替换原生文字时省略 ref |
+| context | tuple[str, ...] 或 None；默认 None | 模型可见的备注，每个元素作为一条隐藏 UserMessage 保存，不显示在命令响应里 | 例如 ("后续修改只限 src 目录",)。每个元素须为非空字符串，可包含换行；不填 dict、消息对象或整个会话历史。无需追加备注时省略；追加时使用 (result.context or ()) + ("新备注",) | 省略/None 自动继承下游已有备注；显式提供时须保留完整原前缀，再追加新元素 |
+| ref | int 或 None；默认 None | CORE 为本次原生执行产生的引用，让平台保留并使用真实面板、审批块、follow-up 等完整结果；不是可跨调用查询的 ID | USER 原样返回 next 结果时保留 result.ref；直接接管或改写打印文字时省略，保持 None。用户不自行填写 1、2 等编号 | 只能保留本次真实 ref；带 ref 时不能伪造 text |
 
 - `return await next_handler(event)` 使用原生命令结果。CORE 可以打印文字，也可以产生带特殊状态的原生结果。
 - `return ServerRunCommandResult(text="已接管")` 且没有调用 next 时，原生命令执行次数为 0。
@@ -268,6 +273,8 @@ async def on_list(event, ops, next_handler):
 | 原生案例 | 同一独立进程的 /evolve_list 执行真实演进列表代码；Session checkpoint 重建后仍读到隐藏备注 |
 
 独立验收使用 Core 默认 in-memory checkpointer，不把同进程重建恢复扩大成磁盘持久化或进程重启验证。未执行真实模型调用、前端渲染、Gateway 网络往返或未接入的 command.* RPC；ui.render 调用为 0。后续接入其它入口时，需要为该入口补充可信来源、参数适配和结果消费验证。
+
+2026-11-04 文档复核以仓库现有 [F_16 session.append](F_16_session-append.md) 为格式基准，七个主章节保持一致；输入输出表分别写明类型、含义、填写方式/示例和权限。编号对照最新目标 `0c6263bc1`：目标已有 F_01～F_29、S_01～S_16，本 PR 继续使用 F_30 / S_17，文件名、正文、规约、计划和示例引用一致。此轮仅补充文档说明，业务验证仍为本节记录的 a439a6c54 / 31fee3a86，不将文档检查记为重新执行业务测试。
 
 ## 7. 参考资料
 
