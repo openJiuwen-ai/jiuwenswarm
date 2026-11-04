@@ -1547,6 +1547,9 @@ def node_pipeline(node: DesignerGraphNode) -> str:
 
 
 def node_delegate(node: DesignerGraphNode) -> str:
+    # A worker agent has no music tool and only scripts a stand-in bed.
+    if node_pipeline(node) == PIPELINE_MUSIC:
+        return CONFIG_DELEGATE_HANDLER
     delegate = str(node_config(node).get("delegate") or CONFIG_DELEGATE_AGENT).strip()
     if delegate == CONFIG_DELEGATE_SUBAGENT:
         return CONFIG_DELEGATE_AGENT

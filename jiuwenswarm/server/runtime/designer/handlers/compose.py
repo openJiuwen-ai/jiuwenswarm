@@ -42,6 +42,13 @@ from jiuwenswarm.server.runtime.designer.handlers.types import (
     NodeResult,
     thread_snapshot,
 )
+from jiuwenswarm.server.runtime.designer.music_align import align_music
+from jiuwenswarm.server.runtime.designer.music_cues import (
+    CueSheet,
+    bpm_range,
+    build_cue_sheet,
+    storyboard_emotions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -670,12 +677,58 @@ def _mix_audio_tracks(
     return dest.resolve()
 
 
+def _edit_cue_sheet(ffmpeg: str, ctx: NodeExecutionContext, clip_paths: list[Path]) -> CueSheet | None:
+    """Cue sheet of the actual edit: rendered clip lengths with the storyboard's story curve."""
+    from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import film_bgm_lock
+
+    durations = [_media_duration_seconds(ffmpeg, path) or 0.0 for path in clip_paths]
+    emotions = storyboard_emotions(ctx.graph)
+    clips = sorted(
+        (n for n in (ctx.graph.get("nodes") or []) if isinstance(n, dict) and node_pipeline(n) == NODE_ROLE_CLIP),
+        key=node_clip_index,
+    )
+    return build_cue_sheet(
+        durations,
+        [emotions.get(node_clip_index(clip), "") for clip in clips],
+        tempo=bpm_range(film_bgm_lock(ctx.graph)),
+    )
+
+
+def _align_music_tracks(
+    ffmpeg: str, ctx: NodeExecutionContext, tracks: list[Path], clip_paths: list[Path], work_dir: Path
+) -> list[Path]:
+    """Re-time generated BGM so its climax and ending land on the edit's cuts."""
+    from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import is_generated_music
+
+    music = {path for path in _collect_role_audio_paths(ctx, {"music"}) if is_generated_music(path)}
+    if not music or not clip_paths:
+        return tracks
+    sheet = _edit_cue_sheet(ffmpeg, ctx, clip_paths)
+    if sheet is None:
+        return tracks
+    aligned_tracks: list[Path] = []
+    for track in tracks:
+        if track not in music:
+            aligned_tracks.append(track)
+            continue
+        try:
+            aligned, notes = align_music(ffmpeg, track, sheet, work_dir / f"{track.stem}_aligned")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("compose BGM alignment failed for %s: %s", track.name, exc)
+            aligned, notes = None, []
+        if aligned is not None:
+            logger.info("compose aligned BGM %s: %s", track.name, "; ".join(notes))
+        aligned_tracks.append(aligned or track)
+    return aligned_tracks
+
+
 def mix_compose_soundtrack(
     video: Path,
     dest: Path,
     *,
     ctx: NodeExecutionContext | None = None,
     brief: str = "",
+    clip_paths: list[Path] | None = None,
 ) -> Path:
     """Mux soundtrack without destroying in-clip audio.
 
@@ -716,6 +769,8 @@ def mix_compose_soundtrack(
 
     score: Path | None = None
     if upstream:
+        if ctx is not None:
+            upstream = _align_music_tracks(ffmpeg, ctx, upstream, clip_paths or [], dest.parent)
         score = _mix_audio_tracks(
             ffmpeg, upstream, dest.parent / f"{dest.stem}_mix", duration
         )
@@ -894,14 +949,18 @@ def _assemble_film(
         inputs = _clips_for_supplied_music(ctx, paths, Path(scratch))
         merged = concatenate_clip_videos(inputs, dest)
     scored = Path(
-        mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+        mix_compose_soundtrack(
+            merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief, clip_paths=paths
+        )
     )
     # The prepared clips gave up their own audio for the supplied score; without the score, keep it.
     if inputs != paths and scored.resolve() == Path(merged).resolve():
         logger.warning("compose could not lay the supplied music on; keeping the clips' own audio")
         merged = concatenate_clip_videos(paths, dest)
         scored = Path(
-            mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+            mix_compose_soundtrack(
+                merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief, clip_paths=paths
+            )
         )
     if (
         not scored.is_file()

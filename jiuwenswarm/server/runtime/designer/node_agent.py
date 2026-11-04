@@ -1409,6 +1409,24 @@ class DesignerGraphToolkit:
         )
         return f"video_ready uri={path.resolve().as_uri()} path={path} audio={want_audio}"
 
+    async def call_music_model(self, *, instructions: str = "") -> str:
+        """One instrumental BGM bed for the whole film; silence plus a warning on failure."""
+        from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
+            is_silent_music_placeholder,
+            render_bgm,
+        )
+
+        node = _node_from_ctx(self.ctx)
+        beat = asyncio.create_task(_heartbeat_while(self.ctx, "call_music_model", "BGM generation running"))
+        try:
+            result = await render_bgm(node, self.ctx, instructions=str(instructions or ""))
+        finally:
+            beat.cancel()
+        self.completed = result
+        ref = result.output_ref or {}
+        state = "music_placeholder" if is_silent_music_placeholder(ref.get("label")) else "music_ready"
+        return f"{state} uri={ref.get('uri') or ''} message={result.message}"
+
     async def ffmpeg_compose(self, *, prompt: str = "") -> str:
         """Run the compose handler for this node (ffmpeg assemble)."""
         from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
@@ -1694,6 +1712,12 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
             first_frame=str(payload.get("first_frame") or payload.get("firstFrame") or ""),
         )
 
+    async def call_music_model(**kwargs: Any) -> str:
+        payload = _payload(**kwargs)
+        return await toolkit.call_music_model(
+            instructions=str(payload.get("instructions") or payload.get("prompt") or ""),
+        )
+
     async def ffmpeg_compose(**kwargs: Any) -> str:
         payload = _payload(**kwargs)
         return await toolkit.ffmpeg_compose(prompt=str(payload.get("prompt") or ""))
@@ -1881,6 +1905,39 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 },
                 call_video_model,
                 properties={"resilience": {"timeout_s": video_tool_timeout_seconds()}},
+            )
+        )
+    if "call_music_model" in wanted:
+        from jiuwenswarm.server.runtime.designer.music_generation import music_tool_timeout_seconds
+
+        tools.append(
+            make_tool(
+                "call_music_model",
+                (
+                    "Generate the ONE instrumental BGM bed for the whole concatenated film. "
+                    "The user's own music words, the film-wide bgm_lock and a timed cue sheet "
+                    "(film length, BPM chosen so the clip cuts land on bar lines, setup/rise/"
+                    "climax/release sections at the clip cuts) are merged in for you, vocals are "
+                    "always off, and compose re-times the result onto the edit. Call once; the "
+                    "node completes with the audio file (or a silent placeholder plus a warning "
+                    "when the music backend fails)."
+                ),
+                {
+                    "type": "object",
+                    "properties": {
+                        "instructions": {
+                            "type": "string",
+                            "description": (
+                                "Concrete English sound spec expanding the user's style words: "
+                                "genre, lead and supporting instruments, key, texture, how the "
+                                "energy builds. No lyrics, no timestamps, no negations."
+                            ),
+                        },
+                    },
+                    "required": ["instructions"],
+                },
+                call_music_model,
+                properties={"resilience": {"timeout_s": music_tool_timeout_seconds()}},
             )
         )
     if "ffmpeg_compose" in wanted:

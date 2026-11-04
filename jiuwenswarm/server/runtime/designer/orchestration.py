@@ -34,6 +34,13 @@ from jiuwenswarm.server.runtime.designer.user_references import carry_user_refer
 
 logger = logging.getLogger(__name__)
 
+_BGM_LOCK_RULE = (
+    "bgm_lock.user_request copies the user's own music words verbatim (empty when they "
+    "gave none). Expand vague style words into concrete English fields: style = genre, "
+    "instruments = lead + supporting instruments, tempo_bpm = a range such as 110-128 that "
+    "fits the energy, key = a tonal center. "
+)
+
 
 def _llm_character_card(
     raw: dict[str, Any],
@@ -662,9 +669,11 @@ def assign_audio_node_agents(graph: DesignerExecutionGraph) -> dict[str, Any]:
                 cfg["delegate"] = "agent"
                 cfg["director_task"] = (
                     cfg.get("director_task")
-                    or "Compose ONE non-vocal BGM bed from the Brief / bgm_lock for the "
-                    "full concatenated film. call_music_model. Never generate per-shot scores. "
-                    "Keep headroom so shot dialogue stays intelligible."
+                    or "Compose ONE BGM bed for the full concatenated film: expand the user's "
+                    "style words and bgm_lock into a concrete English sound spec (genre, lead and "
+                    "supporting instruments, key, texture, energy build) and pass it to "
+                    "call_music_model once. Film length, tempo and the setup/rise/climax/release "
+                    "timing at the clip cuts are added by the tool. Never generate per-shot scores."
                 )
                 cfg["placeholder_until_api"] = False
                 embedded_assigned.append(f"{nid}:music_agent")
@@ -674,7 +683,7 @@ def assign_audio_node_agents(graph: DesignerExecutionGraph) -> dict[str, Any]:
                 cfg["placeholder_until_api"] = True
                 cfg["director_task"] = (
                     "No music API yet. Output a silent/empty placeholder file only. "
-                    "Do not invent a score. When MUSIC_API_KEY / models.music is "
+                    "Do not invent a score. When the MUSIC_GEN_* slot is "
                     "configured, this node will call_music_model instead."
                 )
                 embedded_assigned.append(f"{nid}:music_placeholder")
@@ -1438,9 +1447,10 @@ class Director:
                 "Shots are self-contained continuity windows — do not rely on prior "
                 "clip media. "
                 + "Film-wide locks: language_lock (e.g. en/zh — ALL dialogue in that "
-                "language), bgm_lock {mood,style,instruments,continuity,rule}, "
-                "include_speech, include_music. "
-                "Respond JSON only: "
+                "language), bgm_lock {user_request,mood,style,instruments,tempo_bpm,key,"
+                "continuity,rule}, include_speech, include_music. "
+                + _BGM_LOCK_RULE
+                + "Respond JSON only: "
                 '{"style_lock":{"look":"...","medium":"..."},'
                 '"characters":[{"id":"char_1","name":"...","description":"...",'
                 '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
@@ -1457,8 +1467,9 @@ class Director:
                 '"exiting_character_ids":[],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"language_lock":"<spoken language code, e.g. zh or en>",'
-                '"bgm_lock":{"mood":"...","style":"...","instruments":"...",'
-                '"continuity":"same bed","rule":"non-vocal underscore"},'
+                '"bgm_lock":{"user_request":"<user\'s music words verbatim, or empty>",'
+                '"mood":"...","style":"...","instruments":"...","tempo_bpm":"110-128",'
+                '"key":"D minor","continuity":"same bed","rule":"non-vocal underscore"},'
                 '"include_speech":true,"include_music":true,'
                 '"notes":"...","target_clip_count":N}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
@@ -3364,6 +3375,7 @@ class Director:
                 "speech), per-shot speech_by_character (exact lines for every speaking shot; "
                 "{} only when that shot has no speaker or the user asked for mime or no dialogue), and "
                 "film-wide bgm_lock. "
+                + _BGM_LOCK_RULE
                 + "Respond JSON only: "
                 '{"ok":true,"shot_fixes":[{"clip_index":1,"action":"...","camera":"...",'
                 '"timeline":"<copy this shot timeline from the approved brief>",'
@@ -3371,7 +3383,8 @@ class Director:
                 '"character_ids":["char_1"],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"language_lock":"<spoken language code, e.g. zh or en>",'
-                '"bgm_lock":{"mood":"...","style":"...","rule":"..."},'
+                '"bgm_lock":{"user_request":"...","mood":"...","style":"...","instruments":"...",'
+                '"tempo_bpm":"...","key":"...","rule":"..."},'
                 '"include_speech":true,"include_music":true,"notes":"..."}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
             parsed = await _model_json_object(

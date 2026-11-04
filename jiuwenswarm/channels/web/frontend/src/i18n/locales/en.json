@@ -751,6 +751,7 @@
       "videoConfigTitle": "Configure video understanding model",
       "videoGenConfigTitle": "Configure video generation model",
       "visualGenConfigTitle": "Configure visual generation model",
+      "musicGenConfigTitle": "Configure audio generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -1064,6 +1065,10 @@
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
         "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "music_gen_enabled": {
+        "title": "Audio generation",
+        "description": "Generate background music (BGM) for the design canvas: planning adds a BGM node and compose mixes it in; disabling it keeps the saved model configuration."
       },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",

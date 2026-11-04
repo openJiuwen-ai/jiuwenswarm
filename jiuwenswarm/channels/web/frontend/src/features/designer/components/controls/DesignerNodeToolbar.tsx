@@ -13,7 +13,7 @@ import {
   readMediaConfig,
   writeMediaGeneratePatch,
 } from '../../mediaNodeConfig';
-import type { DesignerComfyuiConfig } from '../../executionGraphTypes';
+import { DESIGNER_NODE_ROLE_MUSIC, type DesignerComfyuiConfig } from '../../executionGraphTypes';
 import { DesignerComfyuiParamsForm } from './DesignerComfyuiParamsForm';
 import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 import { DesignerMediaSettingsMenu } from './DesignerMediaSettingsMenu';
@@ -30,7 +30,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     const node = state.domainGraph?.nodes.find((item) => item.id === nodeId);
     return isMedia && Boolean(node && isUploadedMediaNode(node));
   });
-  const canGenerate = nodeType !== 'audio' && !uploadedMedia;
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
   const rerunNode = useDesignerRunStore((state) => state.rerunNode);
   const isRunning = useDesignerRunStore((state) => state.isRunning);
@@ -39,6 +38,8 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
+  const generatesMusic = (config as { pipeline?: unknown }).pipeline === DESIGNER_NODE_ROLE_MUSIC;
+  const canGenerate = (nodeType !== 'audio' || generatesMusic) && !uploadedMedia;
   const media = readMediaConfig(config, nodeType);
   const comfyui =
     isMedia && isComfyuiNodeConfig(config)

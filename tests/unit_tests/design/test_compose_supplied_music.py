@@ -249,7 +249,13 @@ async def test_failed_score_falls_back_to_the_clips_own_audio(
     monkeypatch.setattr(compose_mod, "concatenate_clip_videos", fake_concat)
     monkeypatch.setattr(compose_mod.handler_io, "canvas_output_dir", lambda graph: tmp_path)
 
-    def fake_mix(video: Path, dest: Path, ctx: object = None, brief: str = "") -> Path:
+    def fake_mix(
+        video: Path,
+        dest: Path,
+        ctx: object = None,
+        brief: str = "",
+        clip_paths: list[Path] | None = None,
+    ) -> Path:
         if len(joined) == 1:
             return video
         Path(dest).write_bytes(b"scored " + Path(video).read_bytes())

@@ -270,6 +270,17 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "系统已创建并连好线：不要删除、不要重建、不要改它们的连线。只有图片参考可以被角色/场景节点引用"
     "（参考图是视觉权威，从中提取可兼容的可见特征）；音频和视频参考只连创意简报（brief），不要把它们连到分镜或其他节点。"
     "\nuser_canvas_edits 是用户的画布操作日志（add/remove/connect/disconnect/replace）——把这些当作已发生的事实，不要恢复被删除的节点或被断开的边。"
+    "\n7. 背景音乐（BGM）：整部片最多一个 BGM 节点，即 type=\"audio\"、config.pipeline=\"music\" 的节点（规划生成的 id 是 n_music）。"
+    "用户用自然语言要求加 BGM / 配乐 / 背景音乐时：已有 BGM 节点就只改它；没有就 upsert 一个"
+    "{\"id\":\"n_music\",\"type\":\"audio\",\"label\":\"BGM\",\"config\":{\"role\":\"audio\",\"pipeline\":\"music\",\"inputs\":[\"n_brief\"]}}，"
+    "加 n_brief→n_music 和 n_music→成片节点（config.pipeline=compose）两条边，并把 n_music 加进成片节点的 config.inputs。"
+    "用户对音乐的描述（风格、情绪、乐器、节奏、调性）原样写进 BGM 节点的 config.prompt，不要写成片时长或镜头时间点，工具会按剪辑点自动对齐。"
+    "BGM 以创意简报为先：用户要求生成或重新生成 BGM 时，先用 designer_graph_get 看 BGM 的上游（n_brief）是否已有产出；"
+    "还没有产出就只 patch 不运行，告诉用户 BGM 要等创意简报生成后才能生成，请先运行画布等简报生成完再来生成 BGM；"
+    "designer_node_run 返回 upstream not ready 也按这条如实告诉用户，不要说已启动。"
+    "上游已有产出时，patch 完直接 designer_node_run 这个 BGM 节点（只跑它，不必再问）；"
+    "BGM 要混进成片还需重跑成片节点，跑完 BGM 后询问用户是否重跑成片。"
+    "节点结果是静音占位（placeholder / no music API）说明音频生成没开，提示用户在 设置→实验功能→设计模式 打开「音频生成」并配置模型。"
     "\n详细创作规则见你的成员设定（team-context）。"
 )
 

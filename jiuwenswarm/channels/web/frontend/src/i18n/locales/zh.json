@@ -744,6 +744,7 @@
       "videoConfigTitle": "配置视频理解模型",
       "videoGenConfigTitle": "配置视频生成模型",
       "visualGenConfigTitle": "配置图像生成模型",
+      "musicGenConfigTitle": "配置音频生成模型",
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
@@ -1004,6 +1005,10 @@
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
         "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
+      },
+      "music_gen_enabled": {
+        "title": "音频生成",
+        "description": "为设计画布生成背景音乐（BGM）：规划时自动加入 BGM 节点，成片时混入；关闭后仍保留已保存的模型配置。"
       },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",
