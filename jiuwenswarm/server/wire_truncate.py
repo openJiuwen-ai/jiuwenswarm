@@ -90,6 +90,23 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
     }
 )
 
+# 人数上限通知要在刷新后读回来。其它 chat.notice（例如图片工具降级）不进历史。
+_HISTORY_RESTORABLE_TEAM_NOTICE_TYPES = frozenset({
+    "requested_team_size",
+    "team_quota",
+    "team_teammate_quota",
+})
+
+
+def history_assistant_event_is_restorable(record: dict) -> bool:
+    """True when an assistant history row should survive a session refresh."""
+    event_type = record.get("event_type")
+    if event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES:
+        return True
+    if event_type != "chat.notice":
+        return False
+    return record.get("notice_type") in _HISTORY_RESTORABLE_TEAM_NOTICE_TYPES
+
 _HISTORY_COLLAPSE_KEEP_KEYS = {
     "id",
     "role",
@@ -763,6 +780,7 @@ __all__ = [
     "_WORKFLOW_AGENT_MAX_LIMIT",
     "_SPLITTABLE_AGENT_FIELDS",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
+    "history_assistant_event_is_restorable",
     "_json_wire_size",
     "_coerce_int",
     "_truncate_string_by_bytes",

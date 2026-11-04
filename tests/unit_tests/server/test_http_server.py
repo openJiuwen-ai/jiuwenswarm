@@ -643,20 +643,17 @@ async def test_events_stream_stays_open_until_the_client_leaves(monkeypatch) -> 
 
     state = {"ticks": 0}
 
-    async def _wait_for(awaitable, timeout=None):
-        _ = timeout
+    async def _wait(aws, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+        _ = timeout, return_when
         state["ticks"] += 1
-        close = getattr(awaitable, "close", None)
-        if callable(close):
-            close()
-        raise asyncio.TimeoutError
+        return set(), set(aws)
 
     async def _gone() -> bool:
         return state["ticks"] >= 2
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_http_routes.asyncio.wait_for",
-        _wait_for,
+        "jiuwenswarm.server.agent_http_routes.asyncio.wait",
+        _wait,
     )
     request = SimpleNamespace(is_disconnected=_gone)
     frames = [frame async for frame in _event_frames(request)]
