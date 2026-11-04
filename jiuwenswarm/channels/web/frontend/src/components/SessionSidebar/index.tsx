@@ -4,7 +4,7 @@
  * Redesigned sidebar with logo and navigation.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
@@ -18,12 +18,6 @@ import PluginIcon from '../../assets/agent-management/extension.svg?react';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
 import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
-
-const userMenuStyles: WebUIStyleOverrides = {
-  Dropdown: { className: 'icon-rail-user-trigger' },
-  Avatar: { className: 'icon-rail-user-avatar' },
-  Button: { className: 'icon-rail-user-signin' },
-};
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {
@@ -40,6 +34,7 @@ const pluginNavigationStyles: WebUIStyleOverrides = {
 type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
 interface SessionSidebarProps {
+  webUIReady?: boolean;
   activeNav: MainNavKey;
   onNavigate: (nav: MainNavKey) => void;
   onNewSession?: () => void;
@@ -114,6 +109,7 @@ const mainNavItems: NavItem[] = [
 ];
 
 export function SessionSidebar({
+  webUIReady = true,
   activeNav,
   onNavigate,
   onNewSession,
@@ -124,6 +120,7 @@ export function SessionSidebar({
   onNavItemPointerDownCapture,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
+  const footerMountOptions = useMemo(() => ({ notifyReady: webUIReady }), [webUIReady]);
 
   const handleNewSession = useCallback(() => {
     onNavigate('chat');
@@ -200,13 +197,9 @@ export function SessionSidebar({
         styles={pluginNavigationStyles}
       />
       <div className="icon-rail-spacer" />
-
-      {/* Application-scope user entry mounted at the bottom of the icon rail. */}
-      <WebUIHost
-        slotId="application.sidebar.footer"
-        className="icon-rail-user-slot w-full items-center"
-        instanceClassName="flex w-full justify-center"
-        styles={userMenuStyles}
+      <WebUIHost slotId="application.sidebar.footer" sessionId=""
+        mountOptions={footerMountOptions}
+        className="w-full shrink-0 items-center pb-3" instanceClassName="flex justify-center"
       />
     </aside>
   );

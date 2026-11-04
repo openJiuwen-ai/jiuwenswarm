@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 /**
  * ReadOnlyFileModal Component
  *
@@ -75,7 +76,7 @@ export function ReadOnlyFileModal({ open, filePath, fileName, onClose }: ReadOnl
       try {
         const encodedPath = encodeURIComponent(filePath);
         const url = `/file-api/file-content?path=${encodedPath}&encoding=${fileEncoding}`;
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await gatewayFetch(url, { cache: 'no-store' });
 
         if (!response.ok) {
           const errorData = await response.text();

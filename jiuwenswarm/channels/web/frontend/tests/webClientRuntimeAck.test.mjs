@@ -83,6 +83,19 @@ test('request without a deadline accepts delayed receipts and remains abortable'
   await assert.rejects(aborted, error => error.code === 'REQUEST_ABORTED');
 });
 
+test('connection retainers keep a shared socket alive until its final owner releases it', async () => {
+  const shell = webClient.retainConnection();
+  const view = webClient.retainConnection();
+  const original = FakeWebSocket.instance;
+  view(); view();
+  assert.equal(webClient.getState(), 'ready');
+  assert.equal(FakeWebSocket.instance, original);
+  shell();
+  assert.equal(webClient.getState(), 'closed');
+  await webClient.connect();
+  assert.equal(webClient.getState(), 'ready');
+});
+
 test('runtime-ack request stays pending after gateway response and resolves exact ack', async () => {
   let settled = false;
   const result = webClient.request(

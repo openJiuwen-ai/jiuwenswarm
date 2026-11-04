@@ -8,6 +8,7 @@ import type { WebUIInteractionResult } from '../contracts/interaction.ts';
 import { findNormalizedNode, webUIInstanceKey, webUISlotKey } from '../contracts/normalized.ts';
 import type { WebUIComponentEvent } from '../contracts/wire.ts';
 import { checkPropValue } from '../protocol/checkPropValue.ts';
+import { formFields } from '../protocol/formStructure.ts';
 import { DEFAULT_WEBUI_LIMITS } from '../protocol/limits.ts';
 import { isJSONData, isRecord, jsonByteLength } from '../protocol/utils.ts';
 import type {
@@ -55,6 +56,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   const protocol: WebUIProtocol = options.protocol ?? createProtocolPipeline(catalog, options.limits);
 
   const records = new Map<string, InstanceRecord>();
+  const clearedEntries = new Map<string, number>();
+  let entryContextChanged = false;
   /** 挂载区 -> 实例键集合，范围订阅只关心成员变化。 */
   const scopeIndex = new Map<string, Set<string>>();
   const scopeOwners = new Map<string, Set<number>>();
@@ -179,7 +182,9 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   function commitRenderFrame(frame: WebUINormalizedRenderFrame): void {
+    adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
+    if (frame.target.slotId === 'application.entry' && frame.revision <= (clearedEntries.get(key) ?? -1)) return;
     const existing = records.get(key);
     if (existing && frame.revision <= existing.lastRenderRevision) {
       return;
@@ -215,12 +220,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (existing && frame.revision < existing.lastRenderRevision) {
       return;
     }
-    if (frame.target.scope === 'application') {
-      for (const owner of owners.values()) {
-        if (owner.sessionId === frame.target.sessionId && owner.slotId === frame.target.slotId) {
-          owner.closed = true;
-        }
-      }
+    if (frame.target.slotId === 'application.entry') {
+      clearedEntries.set(key, Math.max(frame.revision, clearedEntries.get(key) ?? -1));
     }
     if (!existing) {
       if (frame.target.scope === 'application') {
@@ -229,6 +230,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       return;
     }
     const target = existing.target;
+    if (target.slotId === 'application.entry') entryContextChanged = false;
     invalidateBindings(key);
     records.delete(key);
     unindexInstance(target);
@@ -237,6 +239,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   function commitErrorFrame(frame: WebUINormalizedErrorFrame): void {
+    adoptEntryContext(frame.target);
     const key = webUIInstanceKey(frame.target);
     const existing = records.get(key);
     const error = { code: frame.code, message: frame.message };
@@ -273,6 +276,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   function acceptsTarget(target: WebUINormalizedTarget): boolean {
+    if (!entryContextChanged && target.slotId === 'application.entry' && [...records.values()].some((record) =>
+      record.target.slotId === target.slotId && record.key !== webUIInstanceKey(target))) return false;
     if (target.scope !== 'application') {
       return true;
     }
@@ -336,7 +341,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   };
 
   async function sendReady(owner: MountedOwner, instanceKey: string): Promise<void> {
-    if (disposed || connectionState !== 'connected' || owner.closed || (owner.readyOnce && owner.readySent)) {
+    if (disposed || connectionState !== 'connected' || owner.closed || owner.notifyReady === false || (owner.readyOnce && owner.readySent)) {
       return;
     }
     owner.readySent = true;
@@ -528,6 +533,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       return { status: 'invalid_action' };
     }
     if (rule?.validateEvent?.(event, data, node.props)) return { status: 'invalid_action' };
+    if (node.component === 'Button' && typeof node.props.form === 'string') {
+      const fields = formFields(frame.tree, node.props.form);
+      if (Object.keys(data).length !== fields.length || fields.some((name) => typeof data[name] !== 'string')) {
+        return { status: 'invalid_action' };
+      }
+    }
     const payload = {
       action_id: action.id, args: action.args, data: JSON.parse(JSON.stringify(data)),
       node_key: request.nodeKey, revision: frame.revision,
@@ -636,6 +647,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       unsubscribeTransport = null;
     }
     records.clear();
+    clearedEntries.clear();
     scopeIndex.clear();
     scopeOwners.clear();
     owners.clear();
@@ -646,6 +658,35 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     globalListeners.clear();
     nodeBindings.clear();
     version += 1;
+  }
+
+  function resetRequestContext(): void {
+    nodeBindings.clear();
+    clearedEntries.clear();
+    entryContextChanged = true;
+    for (const record of [...records.values()]) {
+      if (record.target.slotId === 'application.entry') continue;
+      records.delete(record.key);
+      unindexInstance(record.target);
+    }
+    notifyAll();
+  }
+
+  function adoptEntryContext(target: WebUINormalizedTarget): void {
+    if (!entryContextChanged || target.slotId !== 'application.entry') return;
+    for (const record of [...records.values()]) {
+      if (record.target.slotId !== 'application.entry') continue;
+      records.delete(record.key);
+      unindexInstance(record.target);
+      notifyInstance(record.key);
+    }
+    entryContextChanged = false;
+    notifyScope(webUISlotKey('', 'application.entry'));
+  }
+
+  async function refreshContributions(): Promise<void> {
+    await Promise.all([...owners.values()].filter((owner) => owner.slotId !== 'application.entry')
+      .map((owner) => { owner.readySent = false; return sendReady(owner, owner.instanceKey ?? ''); }));
   }
 
   function subscribe(listener: Listener): () => void {
@@ -693,6 +734,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     reportDisplayed,
     reportRenderFailure,
     clearSession,
+    resetRequestContext,
+    refreshContributions,
     getConnectionState: () => connectionState,
   };
 }

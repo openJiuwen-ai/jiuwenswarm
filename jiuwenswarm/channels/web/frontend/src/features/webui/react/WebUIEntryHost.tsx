@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { WebUIContentActivity } from '../renderer/ContentActivity.tsx';
 import type { WebUIRendererRegistry } from '../renderer/types.ts';
@@ -15,6 +15,7 @@ const noopSubscribe = (): (() => void) => () => undefined;
 const noopVersion = (): number => 0;
 
 export interface WebUIEntryHostProps {
+  notice?: ReactNode;
   children?: ReactNode;
   runtime?: WebUIRuntime;
   registry?: WebUIRendererRegistry;
@@ -46,6 +47,7 @@ function markVisited(): void {
 
 export function WebUIEntryHost({
   children,
+  notice,
   runtime: runtimeOverride,
   registry: registryOverride,
 }: WebUIEntryHostProps) {
@@ -53,9 +55,10 @@ export function WebUIEntryHost({
   const context = useOptionalWebUIAppContext();
   const runtime = runtimeOverride ?? context?.runtime;
   const registry = registryOverride ?? context?.registry;
-  const [dismissed, setDismissed] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
   const firstVisit = useMemo(() => isFirstVisit(), []);
   const mountOptions = useMemo(() => ({
+    notifyReady: firstVisit,
     readyOnce: true,
     readyPayload: { reason: 'first_visit' },
     onReadySettled: (receipt: WebUIDispatchReceipt | null) => {
@@ -100,26 +103,28 @@ export function WebUIEntryHost({
     latestInstance && latestInstance.state === 'active' && latestInstance.frame && !latestInstance.error && !latestInstance.renderFailure,
   );
 
-  useEffect(() => {
-    if (scope?.closed || hasFailedInstance) {
-      setDismissed(true);
-    }
-  }, [scope?.closed, hasFailedInstance]);
-
-  const entryMounted = Boolean(firstVisit && runtime && registry && !dismissed && !scope?.closed && !hasFailedInstance);
-  const entryOpen = Boolean(entryMounted && hasActiveTree);
+  const entryMounted = Boolean(runtime && registry);
+  const entryOpen = Boolean(entryMounted && (hasActiveTree || hasFailedInstance));
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    if (!element) return;
+    if (entryOpen && !element.open) element.showModal();
+    else if (!entryOpen && element.open) element.close();
+  }, [entryOpen]);
 
   return (
     <>
       {entryMounted && (
         <dialog
-          open={entryOpen}
+          ref={dialog}
           aria-modal={entryOpen ? 'true' : undefined}
           aria-label={t('webui.entryLabel', 'Welcome')}
           className="webui-entry-host"
           data-testid="webui-entry-host"
           onCancel={(event) => event.preventDefault()}
+          onKeyDown={(event) => event.stopPropagation()}
         >
+          {entryOpen && notice}
           <WebUIHost
             slotId={ENTRY_SLOT_ID}
             sessionId={ENTRY_SESSION_ID}
@@ -132,7 +137,11 @@ export function WebUIEntryHost({
         </dialog>
       )}
       {children === undefined ? null : (
-        <WebUIContentActivity active={!entryOpen}>{children}</WebUIContentActivity>
+        <div style={{ display: 'contents' }} aria-hidden={entryOpen || undefined}
+          {...(entryOpen ? { inert: '' } : {})} data-testid="webui-entry-content">
+          {!entryOpen && notice}
+          <WebUIContentActivity active={!entryOpen}>{children}</WebUIContentActivity>
+        </div>
       )}
     </>
   );

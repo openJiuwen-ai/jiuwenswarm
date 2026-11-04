@@ -5,9 +5,15 @@
  * 是插件渲染树里唯一的多方向布局容器（direction 决定行/列）。
  */
 
-import { Flex } from 'antd';
+import { useMemo, useSyncExternalStore, type CSSProperties } from 'react';
+import { Flex, theme } from 'antd';
 import type { FlexProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
+import { WebUIContentActivity } from '../../ContentActivity.tsx';
+import { useGatewayResource } from '../../../client/GatewayResources.tsx';
+import './WebUIBox.css';
+
+const BREAKPOINTS: Readonly<Record<string, number>> = { sm: 576, md: 768, lg: 992 };
 
 /** 布局 token 解析结果：抽成纯函数，便于单独覆盖 token → 属性映射与缺省兜底。 */
 export interface WebUIBoxLayout {
@@ -60,13 +66,13 @@ function readToken(value: unknown): string {
  */
 export function resolveBoxLayout(props: Readonly<Record<string, unknown>>): WebUIBoxLayout {
   const direction = readToken(props.direction);
-  const gap = readToken(props.gap);
+  const gap = props.gap;
   const align = readToken(props.align);
   const justify = readToken(props.justify);
   const flex = props.flex;
   return {
     vertical: direction === 'column',
-    gap: GAP_MAP[gap] ?? DEFAULT_GAP,
+    gap: typeof gap === 'number' ? gap : GAP_MAP[readToken(gap)] ?? DEFAULT_GAP,
     align: ALIGN_MAP[align] ?? DEFAULT_ALIGN,
     justify: JUSTIFY_MAP[justify] ?? DEFAULT_JUSTIFY,
     wrap: props.wrap === true,
@@ -76,14 +82,35 @@ export function resolveBoxLayout(props: Readonly<Record<string, unknown>>): WebU
 
 export function WebUIBox({ node, children, appearance }: WebUIAdapterProps) {
   const layout = resolveBoxLayout(node.props);
+  const { token } = theme.useToken();
+  const p = node.props;
+  const background = useGatewayResource(p.backgroundImage as string | undefined);
+  const media = useMemo(() => typeof p.visibleFrom === 'string' && typeof window !== 'undefined'
+    ? window.matchMedia(`(min-width: ${BREAKPOINTS[p.visibleFrom]}px)`) : undefined, [p.visibleFrom]);
+  const visible = useSyncExternalStore(
+    (listener) => { media?.addEventListener('change', listener); return () => media?.removeEventListener('change', listener); },
+    () => media?.matches ?? true, () => true,
+  );
+  const padding = { none: 0, sm: token.paddingSM, md: token.padding, lg: token.paddingLG };
+  const style: CSSProperties = {
+    minWidth: 0, boxSizing: 'border-box', width: p.width as CSSProperties['width'], height: p.height as CSSProperties['height'],
+    minHeight: p.minHeight as CSSProperties['minHeight'], maxWidth: p.maxWidth as CSSProperties['maxWidth'],
+    marginInline: p.marginInline as CSSProperties['marginInline'],
+    padding: padding[p.padding as keyof typeof padding],
+    ...(background ? { backgroundImage: `url(${JSON.stringify(background)})`, backgroundSize: (p.backgroundFit ?? 'cover') as string,
+      backgroundRepeat: 'no-repeat', backgroundPosition: 'center' } : {}),
+    ...appearance?.style,
+  };
+  const className = ['webui-box', p.visibleFrom ? `webui-box--from-${p.visibleFrom}` : '', appearance?.className].filter(Boolean).join(' ');
+  const content = <WebUIContentActivity active={visible}>{children}</WebUIContentActivity>;
   if (appearance?.unstyled) {
-    return <div className={appearance.className} style={appearance.style} data-testid="webui-box">{children}</div>;
+    return <div className={className} style={style} data-testid="webui-box">{content}</div>;
   }
   return (
     <Flex
       data-testid="webui-box"
-      className={appearance?.className}
-      style={{ minWidth: 0, ...appearance?.style }}
+      className={className}
+      style={style}
       vertical={layout.vertical}
       gap={layout.gap}
       align={layout.align}
@@ -91,7 +118,7 @@ export function WebUIBox({ node, children, appearance }: WebUIAdapterProps) {
       wrap={layout.wrap}
       flex={layout.flex}
     >
-      {children}
+      {content}
     </Flex>
   );
 }

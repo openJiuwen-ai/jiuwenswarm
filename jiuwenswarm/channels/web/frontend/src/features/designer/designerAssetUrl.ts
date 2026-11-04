@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 /** Turn a Designer output_ref.uri into a browser-playable /file-api URL. */
 
 import { webRequest } from '../../services/webClient';
@@ -59,7 +60,7 @@ export function designerAssetPreviewUrl(uri: string | null | undefined): string 
 export async function saveDesignerTextFile(uri: string, content: string): Promise<void> {
   const filePath = fileUriToLocalPath(uri);
   if (!filePath) throw new Error('missing_file_path');
-  const response = await fetch('/file-api/file-content', {
+  const response = await gatewayFetch('/file-api/file-content', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ path: filePath, content }),

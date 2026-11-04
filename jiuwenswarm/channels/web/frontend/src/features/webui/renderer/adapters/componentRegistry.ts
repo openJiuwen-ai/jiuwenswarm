@@ -18,6 +18,7 @@ import { WebUIFileTree } from './webuiFileTree/WebUIFileTree.tsx';
 import { WebUIFilePreview } from './webuiFilePreview/WebUIFilePreview.tsx';
 import { WebUIIframe } from './webuiIframe/WebUIIframe.tsx';
 import { WebUIAvatar } from './webuiAvatar/WebUIAvatar.tsx';
+import { WebUIForm, WebUIFormItem } from './webuiForm/WebUIForm.tsx';
 import { WebUIDropdown } from './webuiDropdown/WebUIDropdown.tsx';
 
 export function createComponentRendererRegistry() {
@@ -41,6 +42,8 @@ export function createComponentRendererRegistry() {
     FilePreview: WebUIFilePreview,
     Iframe: WebUIIframe,
     Avatar: WebUIAvatar,
+    Form: WebUIForm,
+    'Form.Item': WebUIFormItem,
     Dropdown: WebUIDropdown,
   });
 }

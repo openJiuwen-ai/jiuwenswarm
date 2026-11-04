@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../../../services/gatewayFetch';
 import { Loader2, Sheet } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -261,11 +262,10 @@ function useDesignerAssetText(uri: string | null | undefined, producedAt: number
       return;
     }
     let cancelled = false;
-    // Keep the current text on screen while the same file reloads.
     if (loadedUrl.current !== url) setText(null);
     loadedUrl.current = url;
     const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadKey}`;
-    void fetch(fetchUrl)
+    void gatewayFetch(fetchUrl)
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
         return response.text();

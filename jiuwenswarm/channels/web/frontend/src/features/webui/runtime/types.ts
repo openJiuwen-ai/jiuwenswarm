@@ -50,6 +50,8 @@ export interface WebUIScopeSnapshot {
 }
 
 export interface WebUIMountOptions {
+  /** Keep a consumer mounted without sending a ready notification. */
+  notifyReady?: boolean;
   /** 指定实例级消费者；不传表示覆盖整个挂载区。 */
   instanceKey?: string;
   /** Limit this consumer to instances from one package. */
@@ -112,5 +114,7 @@ export interface WebUIRuntime {
   /** 渲染失败反馈；revision 与 localFrameId 都必须匹配当前实例。 */
   reportRenderFailure(instanceKey: string, revision: number, message: string, localFrameId: number): void;
   clearSession(sessionId: string): void;
+  resetRequestContext(): void;
+  refreshContributions(): Promise<void>;
   getConnectionState(): WebUIConnectionState;
 }

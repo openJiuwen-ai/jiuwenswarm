@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../../../services/gatewayFetch';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 import { useMemo, useState } from 'react';
@@ -33,7 +34,7 @@ async function uploadCustomAgent(wheel: File, cli: File | null): Promise<Externa
   const form = new FormData();
   form.append('wheel', wheel);
   if (cli) form.append('cli', cli);
-  const response = await fetch(CUSTOM_AGENT_UPLOAD_URL, { method: 'POST', body: form });
+  const response = await gatewayFetch(CUSTOM_AGENT_UPLOAD_URL, { method: 'POST', body: form });
   const payload = (await response.json().catch(() => ({}))) as { agent?: ExternalCliCustomAgent; error?: string };
   if (!response.ok || !payload.agent) throw new Error(payload.error || `HTTP ${response.status}`);
   return payload.agent;

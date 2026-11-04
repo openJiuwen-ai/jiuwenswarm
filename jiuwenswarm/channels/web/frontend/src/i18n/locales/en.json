@@ -78,7 +78,10 @@
     "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
   },
   "webui": {
-    "entryLabel": "Welcome"
+    "entryLabel": "Application view",
+    "menuLabel": "Open actions menu",
+    "clientOperationError": "Unable to execute the browser operation.",
+    "clientConfigurationError": "Unable to activate browser extension capabilities."
   },
   "nav": {
     "chat": "Chat",

@@ -4,6 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -14,6 +15,13 @@ import {
 } from '../node_modules/.cache/webui-components/components.mjs';
 
 const pipeline = createProtocolPipeline(componentCatalog);
+
+const gatewayCases = JSON.parse(readFileSync(new URL('./fixtures/webuiGatewayCases.json', import.meta.url), 'utf8'));
+for (const { name, root, valid } of gatewayCases) {
+  test(`Gateway component contract: ${name}`, () => {
+    assert.equal(pipeline.processRenderFrame(renderFrame(root)).ok, valid);
+  });
+}
 
 test('Dropdown requires exactly one trigger source, including inside Tabs', () => {
   const props = { items: [{ key: 'action', label: 'Action' }] };
@@ -38,6 +46,107 @@ test('menu main accepts native component trees while keeping root-only restricti
   assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Panel', props: { title: 'Panel' },
     children: [{ component: 'Text' }],
   }, { target })).ok, false);
+});
+
+test('Form and Dropdown reject invalid structure and declarations before mounting', () => {
+  const field = (props = {}) => ({ component: 'Form.Item', props: { name: 'value', ...props }, children: [{ component: 'Input' }] });
+  const form = (children = [field()]) => ({ component: 'Form', props: { name: 'named' }, children });
+  const invalid = [
+    field(), form([field(), field()]), form([form()]),
+    { component: 'Box', children: [form(), form()] },
+    { component: 'Button', props: { form: 'missing' }, events: { 'ui.click': { id: 'test' } } },
+    form([field({ rules: [{ min: 8, max: 2 }] })]),
+    form([field({ rules: [{ pattern: '[' }] })]),
+    form([field({ rules: [{ validator: 'function' }] })]),
+    { component: 'Dropdown', props: { items: [{ key: 'same', label: 'One' }, { key: 'same', label: 'Two' }] }, children: [{ component: 'Avatar', props: { url: '/logo.svg' } }] },
+    { component: 'Dropdown', props: { items: [{ key: 'one', label: 'One' }] }, children: [{ component: 'Button', props: { label: 'Nested control' } }] },
+    { component: 'Dropdown', props: { items: [{ key: 'one', label: 'One' }], align: { points: ['bl'] } }, children: [{ component: 'Text', props: { value: 'Menu' } }] },
+    { component: 'Dropdown', props: { items: [{ key: 'one', label: 'One' }], align: { points: ['bl', 'tr'], offset: [129, 0] } }, children: [{ component: 'Text', props: { value: 'Menu' } }] },
+  ];
+  for (const tree of invalid) assert.equal(pipeline.processRenderFrame(renderFrame(tree)).ok, false, JSON.stringify(tree));
+  for (const item of [{ type: 'divider', label: 'extra' }, { type: 'divider', disabled: true },
+    { key: 'invalid', label: 'Invalid', disabled: 'true' }]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Dropdown', props: { items: [item] },
+      children: [{ component: 'Avatar', props: { url: '/logo.svg' } }] })).ok, false);
+  }
+  assert.equal(typeof componentCatalog.getComponent('Button').validateEvent('ui.click', { extra: 'value' }, {}), 'string');
+  assert.equal(typeof componentCatalog.getComponent('Dropdown').validateEvent('ui.select', { key: 'unknown' }, { items: [{ key: 'valid' }] }), 'string');
+  const menu = { items: [{ key: 'account', label: 'Alice', disabled: true },
+    { type: 'divider', key: 'separator' }, { type: 'item', key: 'exit', label: 'Exit' }] };
+  const validateMenu = componentCatalog.getComponent('Dropdown').validateEvent;
+  assert.equal(typeof validateMenu('ui.select', { key: 'account' }, menu), 'string');
+  assert.equal(typeof validateMenu('ui.select', { key: 'separator' }, menu), 'string');
+  assert.equal(validateMenu('ui.select', { key: 'exit' }, menu), null);
+});
+
+test('Dropdown image triggers require explicit preview=false throughout the trigger subtree', () => {
+  const image = (preview) => ({ component: 'Image', props: {
+    src: '/logo.svg', ...(preview === undefined ? {} : { preview }),
+  } });
+  const dropdown = (child) => ({
+    component: 'Dropdown', props: { items: [{ key: 'one', label: 'One' }] }, children: [child],
+  });
+  for (const preview of [undefined, true, { src: '/large.svg' }]) {
+    for (const child of [image(preview), { component: 'Box', children: [image(preview)] }]) {
+      const result = pipeline.processRenderFrame(renderFrame(dropdown(child)));
+      assert.equal(result.ok, false, JSON.stringify(child));
+      assert.equal(result.failure.code, 'SCHEMA_ERROR');
+      assert.match(result.failure.message, /Dropdown trigger must contain only display components/);
+    }
+    assert.equal(pipeline.processRenderFrame(renderFrame(image(preview))).ok, true);
+  }
+  for (const child of [image(false), { component: 'Box', children: [image(false)] }]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame(dropdown(child))).ok, true);
+  }
+});
+
+test('Dropdown rich labels use the node walker and retain display-only constraints', () => {
+  const dropdown = (label, props = {}) => ({ component: 'Dropdown', props: {
+    items: [{ key: 'account', label, disabled: true }, { key: 'exit', label: 'Exit' }],
+    autoFocus: false, styles: { root: { width: 200 } }, ...props,
+  }, children: [{ component: 'Avatar', props: { url: '/avatar.svg' } }] });
+  const label = [{ component: 'Box', children: [
+    { component: 'Avatar', props: { url: '/avatar.svg' } }, { component: 'Text', props: { value: 'Alice' } },
+  ] }];
+  const raw = dropdown(label);
+  const tree = processTree(raw).tree;
+  assert.equal(tree.contentGroups['0'][0].children[1].props.value, 'Alice');
+  assert.equal(tree.props.items[1].label, 'Exit', 'string labels remain unchanged');
+  assert.deepEqual(raw.props.items[0].label, label, 'normalization preserves the wire declaration');
+  for (const invalid of [[], [{ component: 'Unknown' }], [{ component: 'Button', props: { label: 'Nested control' } }],
+    [{ component: 'Text', props: { value: 'Action' }, events: { 'ui.click': { id: 'nested' } } }],
+    [{ component: 'Image', props: { src: '/image.svg', preview: true } }]]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame(dropdown(invalid))).ok, false);
+  }
+  for (const props of [{ autoFocus: 'false' }, { styles: { root: { width: -1 } } },
+    { styles: { root: { width: 4097 } } }, { styles: { root: { width: '200px' } } },
+    { styles: { root: { position: 'fixed' } } }]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame(dropdown(label, props))).ok, false);
+  }
+  let nested = { component: 'Text', props: { value: 'Deep label' } };
+  for (let i = 0; i < 8; i += 1) nested = { component: 'Box', children: [nested] };
+  assert.equal(pipeline.processRenderFrame(renderFrame(dropdown([nested]))).ok, false);
+  const items = Array.from({ length: 6 }, (_, index) => ({ key: String(index),
+    label: Array.from({ length: 100 }, () => ({ component: 'Text', props: { value: 'Label' } })),
+  }));
+  assert.equal(pipeline.processRenderFrame(renderFrame(dropdown(label, { items }))).ok, false);
+});
+
+test('Box exposes bounded page layout and background properties without arbitrary CSS', () => {
+  assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Box', props: {
+    width: '100%', minHeight: '100%', maxWidth: 1200, marginInline: 'auto', padding: 'lg',
+    backgroundImage: 'https://example.test/background.svg', backgroundFit: 'cover', visibleFrom: 'lg',
+  } })).ok, true);
+  for (const props of [{ width: 'calc(100% - 10px)' }, { height: -1 }, { maxWidth: 'auto' },
+    { backgroundImage: 'javascript:alert(1)' }, { visibleFrom: 'arbitrary' }, { style: { width: '100%' } },
+    { marginInline: -1 }, { marginInline: 'calc(100% - 20px)' }]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Box', props })).ok, false);
+  }
+  assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Image', props: { src: '/logo.svg', fit: 'contain', preview: false } })).ok, true);
+  for (const gap of [0, 12.5, 48]) {
+    const frame = processTree({ component: 'Box', props: { gap } });
+    assert.match(renderMarkup(frame), new RegExp(`gap:${gap === 0 ? '0' : `${gap}px`}`));
+  }
 });
 
 function renderFrame(root, options = {}) {
@@ -189,7 +298,9 @@ test('Box accepts children and receives catalog defaults', () => {
 test('Box rejects props that are not in the catalog rule', () => {
   const invalid = [
     [{ direction: 'diagonal' }, /invalid direction/],
-    [{ gap: 12 }, /invalid gap/],
+    [{ gap: -1 }, /invalid gap/],
+    [{ gap: NaN }, /plain JSON data/],
+    [{ gap: Infinity }, /plain JSON data/],
     [{ align: 'middle' }, /invalid align/],
     [{ justify: 'space-between' }, /invalid justify/],
     [{ wrap: 'yes' }, /invalid wrap/],

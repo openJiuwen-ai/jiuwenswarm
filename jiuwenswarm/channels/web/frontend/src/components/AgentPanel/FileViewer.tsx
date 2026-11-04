@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -179,7 +180,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
       try {
         const encodedPath = encodeURIComponent(filePath);
         const url = `/file-api/file-content?path=${encodedPath}&encoding=${fileEncoding}`;
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await gatewayFetch(url, { cache: 'no-store' });
 
         if (!response.ok) {
           const errorData = await response.text();
@@ -227,7 +228,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
     setSaving(true);
     setSaveError(null);
     try {
-      const response = await fetch('/file-api/file-content', {
+      const response = await gatewayFetch('/file-api/file-content', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

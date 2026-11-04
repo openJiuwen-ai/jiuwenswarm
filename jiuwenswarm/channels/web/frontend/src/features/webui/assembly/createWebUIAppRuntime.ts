@@ -12,8 +12,10 @@ import { createWebUIRuntime } from '../runtime/index.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 import { createWebClientTransport } from '../transport/index.ts';
 import type { WebUIClientLike } from '../transport/index.ts';
+import type { ClientCapabilityHost } from '../client/createClientCapabilityHost.ts';
 
 export interface WebUIAppRuntimeOptions {
+  clientCapabilities?: ClientCapabilityHost;
   client: WebUIClientLike;
   catalog: WebUICatalog;
   registry: WebUIRendererRegistry;
@@ -31,7 +33,7 @@ export interface WebUIAppRuntime {
 
 export function createWebUIAppRuntime(options: WebUIAppRuntimeOptions): WebUIAppRuntime {
   assertCatalogMatchesRegistry(options.catalog, options.registry);
-  const transport = createWebClientTransport(options.client);
+  const transport = createWebClientTransport(options.client, options.clientCapabilities);
   const runtime = createWebUIRuntime({
     transport,
     catalog: options.catalog,
@@ -41,6 +43,7 @@ export function createWebUIAppRuntime(options: WebUIAppRuntimeOptions): WebUIApp
 
   let started = false;
   let disposed = false;
+  let offContext: (() => void) | undefined;
   return {
     runtime,
     registry: options.registry,
@@ -53,6 +56,10 @@ export function createWebUIAppRuntime(options: WebUIAppRuntimeOptions): WebUIApp
       }
       started = true;
       runtime.start();
+      offContext = options.clientCapabilities?.subscribe(({ phase }) => {
+        if (phase === 'changing') runtime.resetRequestContext();
+        else void runtime.refreshContributions();
+      });
     },
     dispose() {
       if (disposed) {
@@ -60,6 +67,7 @@ export function createWebUIAppRuntime(options: WebUIAppRuntimeOptions): WebUIApp
       }
       disposed = true;
       started = false;
+      offContext?.();
       runtime.dispose();
     },
   };

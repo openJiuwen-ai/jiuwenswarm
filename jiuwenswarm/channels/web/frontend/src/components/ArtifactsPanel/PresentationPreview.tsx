@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { AlertCircle, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -86,7 +87,7 @@ export function PresentationPreview({
       }
       worker.terminate();
     };
-    void fetch(url, { cache: 'no-store', signal: controller.signal })
+    void gatewayFetch(url, { cache: 'no-store', signal: controller.signal })
       .then(async response => {
         const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
         const contentLength = Number(response.headers.get('content-length'));

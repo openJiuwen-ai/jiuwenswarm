@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -66,7 +67,7 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
     setLoading(true);
     try {
       const filePath = encodeURIComponent('agent/.logs/ws-dev.log');
-      const response = await fetch(`/file-api/file-content?path=${filePath}`);
+      const response = await gatewayFetch(`/file-api/file-content?path=${filePath}`);
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`${t('logsPanel.errors.readLogs')} (HTTP ${response.status})${detail ? `: ${detail.slice(0, 120)}` : ''}`);
@@ -85,7 +86,7 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
   const fetchWsDebugConfig = useCallback(async () => {
     setWsConfigLoading(true);
     try {
-      const response = await fetch('/file-api/ws-debug-config');
+      const response = await gatewayFetch('/file-api/ws-debug-config');
       if (!response.ok) {
         throw new Error(`${t('logsPanel.errors.readDebugConfig')} (HTTP ${response.status})`);
       }
@@ -102,7 +103,7 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
     const nextValue = !wsDisableCompress;
     setWsConfigLoading(true);
     try {
-      const response = await fetch('/file-api/ws-debug-config', {
+      const response = await gatewayFetch('/file-api/ws-debug-config', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

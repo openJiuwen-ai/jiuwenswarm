@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../../services/gatewayFetch';
 import { useEffect, useMemo, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +22,7 @@ export function RsiLatexPreview({ url }: RsiLatexPreviewProps) {
     setState('loading');
     setMode('preview');
 
-    void fetch(url, { cache: 'no-store' })
+    void gatewayFetch(url, { cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const text = await response.text();

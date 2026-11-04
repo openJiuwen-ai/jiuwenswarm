@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -42,7 +43,7 @@ export function DocxPreview({ url, title }: { url: string; title: string }) {
     };
     body.addEventListener('click', handleLinkClick);
 
-    void fetch(url, { cache: 'no-store', signal: abortController.signal })
+    void gatewayFetch(url, { cache: 'no-store', signal: abortController.signal })
       .then(async response => {
         const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
         if (!response.ok || contentType.includes('text/html')) {
