@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.reasoning_config import (
@@ -481,8 +481,6 @@ def _image_data_uri(raw: str) -> str | None:
         return value
     path = Path(value)
     if value.startswith("file:"):
-        from urllib.parse import unquote, urlparse
-
         parsed = urlparse(value)
         pathname = unquote(parsed.path)
         if len(pathname) >= 3 and pathname[0] == "/" and pathname[2] == ":":
