@@ -452,7 +452,8 @@ class ExecutionRepository(SQLiteStore):
             )
         return execution
 
-    def reopen_for_continuation(self, namespace_id: str, request_id: str, *, now: datetime) -> bool:
+    def reopen_for_continuation(self, namespace_id: str, request_id: str, *, now: datetime,
+                                expected_execution_id: str | None = None) -> bool:
         """Queue a paused Request again when its latest interruption has not been continued.
 
         A saved final, a stop or a cancel stays ended. The same interrupted Execution
@@ -462,7 +463,8 @@ class ExecutionRepository(SQLiteStore):
             row = self._require_request(conn, namespace_id, request_id)
             if row["status"] != "ended" or row["outcome"] != "paused":
                 return False
-            if self._pending_continuation(conn, namespace_id, request_id) is None:
+            predecessor = self._pending_continuation(conn, namespace_id, request_id)
+            if predecessor is None or (expected_execution_id is not None and predecessor != expected_execution_id):
                 return False
             conn.execute(
                 "UPDATE requests SET status = 'queued', outcome = NULL, updated_at = ? "

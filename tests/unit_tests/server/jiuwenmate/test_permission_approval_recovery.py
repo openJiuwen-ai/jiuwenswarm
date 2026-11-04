@@ -12,13 +12,14 @@ from jiuwenswarm.server.jiuwenmate.permission_approval_repository import Permiss
 from tests.unit_tests.server.jiuwenmate.test_commit_port import NS, NOW, accept_and_start
 
 
-def durable_pause(tmp_path, *, ended=True, reason="awaiting_confirmation"):
+def durable_pause(tmp_path, *, ended=True, reason="awaiting_confirmation", route=None, sharing=False):
     sessions = ExecutionRepository(tmp_path / "agents.sqlite3")
-    execution = accept_and_start(sessions, "conversation", "source")
+    execution = accept_and_start(sessions, "conversation", "source", route_snapshot=route)
     event = core.AgentEvent.create(
         execution, event_type=core.EventType.EXECUTION_PAUSED, local_seq=1, occurred_at=NOW,
         payload={"reason": reason, "intercepted": [
-            {"tool_call_id": "call", "tool_name": "read_file", "arguments": "file.txt"},
+            {"tool_call_id": "call", "tool_name": "read_file", "arguments": "file.txt",
+             **({"approval_ref": "share-original"} if sharing else {})},
         ] if reason == "awaiting_confirmation" else []},
     )
     sessions.record_events([event], now=NOW)
@@ -130,3 +131,37 @@ def test_registration_during_session_check_cannot_drop_the_barrier(tmp_path, mon
 
     monkeypatch.setattr(approvals, "_connect", connect_reader)
     assert approvals.has_pending_session(NS, execution.session_id)
+
+
+@pytest.mark.parametrize("change", ["cancelled", "new_execution", "call_changed", "control_claimed"])
+@pytest.mark.parametrize("sharing", [False, True])
+def test_decision_rechecks_original_durable_pause(tmp_path, change, sharing):
+    from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot
+    from jiuwenswarm.server.jiuwenmate.execution_control_service import ControlStore
+
+    sessions, execution, event, approvals = durable_pause(
+        tmp_path, route=RequestRouteSnapshot(channel="web", target_id="conversation"), sharing=sharing,
+    )
+    state = sessions.get_request(NS, execution.request_id)
+    approval = approvals.create(state, event, now=NOW)
+    if change == "control_claimed":
+        ControlStore(sessions.db_path).claim(NS, execution.request_id, reason="cancel",
+                                            principal_ref="user-1", now=NOW)
+    else:
+        with sessions._transaction() as conn:
+            if change == "cancelled":
+                conn.execute("UPDATE requests SET outcome='cancelled'")
+            elif change == "new_execution":
+                conn.execute("INSERT INTO executions VALUES (?,?,?,?,?)",
+                             (NS, "successor", execution.request_id, execution.execution_id, NOW.isoformat()))
+            else:
+                conn.execute("UPDATE execution_events SET event_json=json_set(event_json,"
+                             "'$.payload.intercepted[0].tool_call_id', 'another-call')")
+    with pytest.raises(PersistentAgentError) as error:
+        if sharing:
+            approvals.decide_sharing(approval.approval_id, decisions={"call": True}, now=NOW)
+        else:
+            approvals.decide(approval.approval_id, decision="approve", principal_ref="user-1", channel="web",
+                             target_id="conversation", app_id=None, tool_call_id="call", now=NOW)
+    assert error.value.code == "CONFLICT"
+    assert approvals.resume_reply(NS, execution.request_id) is None

@@ -48,8 +48,7 @@ class SessionExecutionRegistry:
         handle: SessionExecutionHandle, control_ids: frozenset[str]
     ) -> None:
         if not handle.state.terminal:
-            handle.waiting_control_id = control_id
-            handle.pending_control_ids.add(control_id)
+            handle.waiting_control_ids |= control_ids
 
     @staticmethod
     def mark_waiting(handle: SessionExecutionHandle) -> None:
@@ -77,8 +76,8 @@ class SessionExecutionRegistry:
             handle.terminal_event.set()
             return
         handle.state = state
-        handle.waiting_control_id = None
-        handle.pending_control_ids.clear()
+        handle.waiting_control_ids = frozenset()
+        handle.agent = None
         handle.finished_at = time.monotonic()
         if error is not None:
             handle.error = str(error)

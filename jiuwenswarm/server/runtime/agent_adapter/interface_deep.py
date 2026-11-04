@@ -69,12 +69,7 @@ from openjiuwen.core.single_agent import (
     ReActAgentConfig,
     create_agent_session,
 )
-from openjiuwen.core.single_agent.interrupt.state import (
-    INTERRUPTION_KEY,
-    ToolInterruptionState,
-    match_answers,
-    pending_interrupts,
-)
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, ToolInterruptionState
 from openjiuwen.core.sys_operation import (
     SysOperation,
     SysOperationCard,
@@ -164,9 +159,11 @@ from jiuwenswarm.server.runtime.session.history_io import (
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PERMISSION_RAIL_TYPES, PermissionRailGroup, build_permission_group,
 )
+from agent_gateway.common.interrupt_resume import is_client_tool_resume
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
+    has_live_pending_interrupt,
     discard_pending_permission_interrupt_for_target,
-    discard_permission_continuation, has_live_pending_interrupt, validate_manual_resume,
+    discard_permission_continuation, validate_client_tool_answers, validate_manual_resume,
     discard_restored_permission_batch, unanswered_permission_batch,
 )
 from jiuwenswarm.runtime.client_tools import client_tool_request_event
@@ -16133,6 +16130,8 @@ class JiuWenSwarmDeepAdapter:
                 and not (request.channel_id == "video_tool"
                          and isinstance(inputs.get("query"), InteractiveInput))):
             raise RuntimeError("全双工工具任务正在执行，请等待任务完成后再发送文字消息。")
+        if is_client_tool_resume(request.params):
+            validate_client_tool_answers(self._loop_session_of_instance(), inputs.get("query"))
         if (self._enable_auto_permission
                 and str(request.params.get("source") or "").strip() == "permission_interrupt"):
             answers = request.params.get("answers")
@@ -16176,8 +16175,6 @@ class JiuWenSwarmDeepAdapter:
         """Check whether the first Web follow-up can refresh an idle cron context."""
         if send_without_output or request.channel_id != "web":
             return False
-        if (request.metadata or {}).get("cron"):
-            return False
         if not request.session_id or getattr(self, "_cron_web_context_refreshed", False):
             return False
         session_id = request.session_id
@@ -16219,23 +16216,6 @@ class JiuWenSwarmDeepAdapter:
                 if event is not None:
                     events.append(event)
         return events
-
-    def _should_refresh_cron_web_context(
-        self, request: AgentRequest, *, send_without_output: bool,
-    ) -> bool:
-        """Check whether the first Web follow-up can refresh an idle cron context."""
-        if send_without_output or request.channel_id != "web":
-            return False
-        if not request.session_id or getattr(self, "_cron_web_context_refreshed", False):
-            return False
-        session_id = request.session_id
-        if not self._is_cron_execution_session(session_id):
-            return False
-        if self._session_has_other_running_agent_tasks(session_id):
-            return False
-        if self._is_deep_agent_executing_for_session(session_id):
-            return False
-        return getattr(self._instance, "active_round", None) is None
 
     async def _attach_and_send_inputs(
         self,

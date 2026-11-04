@@ -87,6 +87,9 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
+from agent_gateway.common.interrupt_resume import is_client_tool_resume
+from jiuwenswarm.runtime.client_tools import client_tool_answers
+from jiuwenswarm.runtime.interaction import asked_interaction_ids, interaction_ids
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
     RuntimeSessionState,
@@ -1116,7 +1119,12 @@ class AgentRuntime:
             target.session_id,
             message_request_id,
             SessionWorkKind.SESSION_MESSAGE,
-            _run_session_message,
+            lambda: self._invoke_started(
+                request,
+                trigger_hook=True,
+                on_control_event=None,
+                agent_execution=None,
+            ),
             interaction_ids=asked_interaction_ids,
         )
 
@@ -1741,11 +1749,18 @@ class AgentRuntime:
                         interaction_ids=asked_interaction_ids,
                         team=team_details,
                     )
-                return await self._invoke_started(
-                    request,
-                    trigger_hook=trigger_hook,
-                    on_control_event=on_control_event,
-                    agent_execution=_agent_execution,
+                return await self._session_coordinator.run_unary(
+                    request.session_id or "default",
+                    request.request_id,
+                    work_kind,
+                    lambda: self._invoke_started(
+                        request,
+                        trigger_hook=trigger_hook,
+                        on_control_event=on_control_event,
+                        agent_execution=_agent_execution,
+                    ),
+                    interaction_ids=asked_interaction_ids,
+                    team=team_details,
                 )
             return await self._invoke_started(
                 request,
@@ -2051,8 +2066,7 @@ class AgentRuntime:
                 self._control_ids(request),
                 lambda: self._stream_control_started(request),
                 interaction_ids=interaction_ids,
-                on_execution=remember_execution,
-            ))
+            )
         else:
             stream = self.stream(
                 request,
@@ -2600,8 +2614,7 @@ class AgentRuntime:
                             and not self._session_coordinator.record_interaction(
                                 request.session_id or "default",
                                 request.request_id,
-                                control_ids,
-                                on_execution=remember_heartbeat,
+                                frozenset({control_id}),
                             )
                         ):
                             # No live Heartbeat execution owns this question, so
@@ -2613,7 +2626,7 @@ class AgentRuntime:
                                 "control_ids=%s",
                                 request.session_id or "default",
                                 request.request_id,
-                                sorted(control_ids),
+                                frozenset({control_id}),
                             )
                             continue
                     else:
@@ -2790,9 +2803,9 @@ class AgentRuntime:
         try:
             stream = self._session_coordinator.deliver_control_stream(
                 session_id,
-                request_id,
+                self._control_ids(request),
                 lambda: self._stream_control_started(request),
-                suspension_key=self._waiting_control_id,
+                interaction_ids=interaction_ids,
             )
             async with aclosing(stream):
                 async for event in stream:
@@ -2843,19 +2856,14 @@ class AgentRuntime:
             execution_id = execution.execution_id
 
         try:
-            with _client_tool_answer_mismatch(request):
-                events = await self._session_coordinator.deliver_control(
-                    session_id,
-                    control_ids,
-                    lambda: self._deliver_control_started(
-                        request, on_control_event=on_control_event, cleared=cleared,
-                    ),
-                    interaction_ids=asked_interaction_ids,
-                    on_execution=remember_execution,
-                )
-                for event in events:
-                    if execution_id is not None and isinstance(event.payload, dict):
-                        event.payload["execution_id"] = execution_id
+            events = await self._session_coordinator.deliver_control(
+                session_id,
+                self._control_ids(request),
+                lambda: self._deliver_control_started(
+                    request, on_control_event=on_control_event,
+                ),
+                interaction_ids=asked_interaction_ids,
+            )
             if not heartbeat_control:
                 for event in events:
                     if self._has_control_target(session_id, tuple(interaction_ids(event))):
@@ -4096,6 +4104,13 @@ class AgentRuntime:
 
     @staticmethod
     def _control_ids(request: AgentRequest) -> tuple[str, ...]:
+        params = request.params if isinstance(request.params, dict) else {}
+        if is_client_tool_resume(params):
+            return tuple(answer.request_id for answer in client_tool_answers(params.get("answers") or ()))
+        return (str(params.get("request_id") or request.request_id or ""),)
+
+    @staticmethod
+    def _control_request_id(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         if is_client_tool_resume(params):
             return tuple(answer.request_id for answer in client_tool_answers(params.get("answers") or ()))

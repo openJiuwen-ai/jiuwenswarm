@@ -100,7 +100,7 @@ class SessionScheduler:
         await self._pump()
         return accepted
 
-    def resume(self, state: RequestState) -> None:
+    def resume(self, state: RequestState, *, expected_execution_id: str | None = None) -> None:
         """Queue one paused Request again when its interruption is still awaiting continuation.
 
         The caller pumps the scheduler afterwards. A stop, a cancel, a saved final
@@ -108,7 +108,9 @@ class SessionScheduler:
         """
         record = state.record
         self._require_open(record.namespace_id, record.agent_id)
-        opened = self._sessions.reopen_for_continuation(record.namespace_id, record.request_id, now=self._clock())
+        opened = self._sessions.reopen_for_continuation(
+            record.namespace_id, record.request_id, now=self._clock(), expected_execution_id=expected_execution_id,
+        )
         if not opened:
             raise PersistentAgentError("request is not awaiting continuation", code="CONTINUATION_NOT_READY")
 

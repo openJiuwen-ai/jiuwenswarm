@@ -943,7 +943,7 @@ async def test_awaitable_stream_factory_and_waiting_terminal_semantics(harness) 
     assert control.work_kind is SessionWorkKind.CONTROL_INPUT
     assert control.parent_execution_id == parent.execution_id
     assert control.state is SessionExecutionState.WAITING_FOR_CONTROL
-    assert control.waiting_control_id == "question_2"
+    assert control.waiting_control_ids == {"question_2"}
 
 
 @pytest.mark.asyncio

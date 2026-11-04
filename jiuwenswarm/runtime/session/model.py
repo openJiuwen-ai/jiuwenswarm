@@ -29,6 +29,18 @@ class AnswerInFlightError(NoControlTargetError):
     """The same answer is already being delivered; that delivery settles what it answers."""
 
 
+class NoControlTargetError(RuntimeError):
+    """No execution of the Session can take an answer.
+
+    None waits on the interactions it names, or the same answer is already
+    being delivered.
+    """
+
+
+class AnswerInFlightError(NoControlTargetError):
+    """The same answer is already being delivered; that delivery settles what it answers."""
+
+
 class SessionExecutionEndedError(RuntimeError):
     """Control input completed after the execution that asked for it was gone.
 
@@ -179,9 +191,9 @@ class SessionExecutionHandle:
     parent_execution_id: str | None = None
     root_work_kind: SessionWorkKind | None = None
     root_request_id: str | None = None
-    waiting_control_id: str | None = None
-    # Every card this execution still waits on; waiting_control_id is the latest.
-    pending_control_ids: set[str] = field(default_factory=set, repr=False)
+    # The interactions (questions, approvals, ...) this execution's pause emitted;
+    # an answer to any of them resumes it.
+    waiting_control_ids: frozenset[str] = frozenset()
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None

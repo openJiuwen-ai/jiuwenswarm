@@ -6,13 +6,18 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Collection, Iterator, Mapping
-from typing import Any, NamedTuple
+from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.foundation.tool import ClientToolResult, ClientToolStatus, default_client_output
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-from openjiuwen.core.single_agent.interrupt.response import InterruptKind
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind, interrupt_kind_of
+from openjiuwen.core.single_agent.interrupt.state import (
+    INTERRUPTION_KEY,
+    PendingInterrupt,
+    match_answers,
+    pending_interrupts,
+)
 
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
     JiuwenSwarmPermissionInterruptRail,
@@ -29,6 +34,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import ToolInvocationKeyV1
 from jiuwenswarm.common.tool_display import extract_call_goal
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 
 logger = logging.getLogger(__name__)
 
