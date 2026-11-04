@@ -662,7 +662,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     factory = MagicMock(return_value=(fanout, manager))
     monkeypatch.setattr(module, "configured_feishu_bindings", lambda: ())
     monkeypatch.setattr(dingtalk_inbound, "configured_dingtalk_bindings", lambda: ())
-    monkeypatch.setattr(welink_inbound, "configured_welink_binding", lambda: None)
+    monkeypatch.setattr(welink_inbound, "configured_welink_bindings", lambda: ())
     monkeypatch.setattr(module, "create_default_persistent_group_fanout", factory)
 
     server = object.__new__(AgentWebSocketServer)
@@ -680,7 +680,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     assert await server._ensure_persistent_group_fanout() is fanout
     manager.start.assert_awaited_once()
     manager.recover.assert_awaited_once_with(
-        "local", channels=frozenset({"feishu", "dingtalk"}), include_unrouted=False,
+        "local", channels=frozenset({"feishu"}), include_unrouted=False,
     )
     assert factory.call_args.kwargs["send_delivery"] == server._send_result_delivery
 
