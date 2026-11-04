@@ -1569,16 +1569,16 @@ def test_pause_if_running_returns_false_when_already_paused():
 def test_pause_if_running_reparks_stray_running_phase_of_paused_run():
     """A parked run whose phase was left running is healed by a re-park.
 
-    The restore-time park used to flip only the run-level status, leaving
-    run=paused / phase=running on disk (mixed UI state); the re-scan heals
-    the stray phase, and a park that changes nothing still returns False.
+    A legacy snapshot may carry run=paused / phase=running on disk (mixed UI
+    state); the re-scan heals the stray phase, and a park that changes
+    nothing still returns False.
     """
     state = WorkflowRunState()
     state.apply(_make_progress("workflow_started", workflow_name="test"))
     state.apply(_make_progress("phase", phase="P"))
     state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
     state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="k1", outcome="ok"))
-    # disk shape written by the old run-level-only park: run paused, phase running
+    # legacy snapshot shape: run paused at the run level only, phase left running
     state.status = "paused"
     state.phases[0].status = "running"
     changed = state.pause_if_running()
@@ -1593,7 +1593,8 @@ def test_agent_started_after_pause_does_not_resurrect_phase():
     """A stale agent event after the run was parked must not re-run its phase.
 
     A paused run card with a running phase reads as a mixed state; phase cards
-    may only enter running while the run itself is live.
+    may only enter running while the run itself is live. The landing agent
+    enters paused as well — the same liveness rule at agent level.
     """
     state = WorkflowRunState()
     state.apply(_make_progress("workflow_started", workflow_name="test"))
@@ -1606,10 +1607,13 @@ def test_agent_started_after_pause_does_not_resurrect_phase():
     state.apply(_make_progress("agent_started", phase="P", label="b", agent_id="k2"))
     assert state.status == "paused"
     assert state.phases[0].status == "paused"
+    agent_b = next(a for a in state.phases[0].agents if a.name == "b")
+    assert agent_b.status == "paused"
     # a stale event for an unknown phase creates that card parked, not running
     state.apply(_make_progress("agent_started", phase="Q", label="c", agent_id="k3"))
     q_phase = next(p for p in state.phases if p.name == "Q")
     assert q_phase.status == "paused"
+    assert q_phase.agents[0].status == "paused"
 
 
 def test_child_phase_declared_after_pause_does_not_resurrect_child_card():
@@ -1618,6 +1622,8 @@ def test_child_phase_declared_after_pause_does_not_resurrect_child_card():
     The child-declare path reuses and creates the same cards the agent-attach
     path already guards with _phase_may_run; without the guard a re-declared
     child flips back to running and the paused run shows a running phase.
+    Agents landing on the parked child phase enter paused too — the attach
+    path shares the agent-status rule.
     """
     state = WorkflowRunState()
     state.apply(_make_progress("workflow_started", workflow_name="test"))
@@ -1631,6 +1637,12 @@ def test_child_phase_declared_after_pause_does_not_resurrect_child_card():
     # a stale declaration of a new child creates that card parked, not running
     state.apply(WorkflowProgress(kind="phase", phase="review", phase_type="child", nested_phase="▸ review #0"))
     assert next(p for p in state.phases if p.name == "▸ review #0").status == "paused"
+    # a stale agent_started on the parked child phase lands paused as well
+    state.apply(WorkflowProgress(kind="agent_started", phase="greeter", label="greeter",
+                                 agent_id="k1", node_type="agent", nested_phase="▸ intro #0"))
+    intro = next(p for p in state.phases if p.name == "▸ intro #0")
+    assert intro.status == "paused"
+    assert intro.agents[0].status == "paused"
 
 
 def test_resume_started_then_agent_event_reactivates_phase():
