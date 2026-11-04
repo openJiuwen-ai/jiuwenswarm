@@ -4208,6 +4208,15 @@ def _lock_free_media_task(cfg: dict[str, Any]) -> str:
     )
 
 
+def _is_stale_char_edge(edge: dict[str, Any], *, sources: set[str], target: str) -> bool:
+    """True for a leftover ``e_char_*`` edge this clip no longer needs."""
+    return (
+        str(edge.get("source") or "") in sources
+        and str(edge.get("target") or "") == target
+        and str(edge.get("id") or "").startswith("e_char_")
+    )
+
+
 def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> list[str]:
     """Each clip waits for the character specs it actually shows.
 
@@ -4261,11 +4270,11 @@ def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> 
             gate_ids = [str(x) for x in declared_nodes if str(x) in character_spec_node_ids]
         elif isinstance(declared_nodes, list) or isinstance(declared_cast, list):
             # Declared, but nothing on screen: this shot draws no character.
-            gate_ids = [
-                spec_by_character_id[cid]
-                for cid in (declared_cast or [])
-                if str(cid).strip() in spec_by_character_id
-            ]
+            gate_ids = []
+            for cid in declared_cast or []:
+                node_id = spec_by_character_id.get(str(cid).strip())
+                if node_id:
+                    gate_ids.append(node_id)
         else:
             gate_ids = list(character_spec_node_ids)
         # A clip names its cast through several fields. Anyone the clip can draw
@@ -4304,17 +4313,14 @@ def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> 
             if sid not in gate_set and (sid, fid) in edge_pairs
         }
         if stale:
+            stale_sources = {s for s, _ in stale}
             graph["edges"] = [
                 e
                 for e in (graph.get("edges") or [])
-                if not (
-                    str(e.get("source") or "") in {s for s, _ in stale}
-                    and str(e.get("target") or "") == fid
-                    and str(e.get("id") or "").startswith("e_char_")
-                )
+                if not _is_stale_char_edge(e, sources=stale_sources, target=fid)
             ]
             edge_pairs -= stale
-            inputs = [x for x in inputs if x not in {s for s, _ in stale}]
+            inputs = [x for x in inputs if x not in stale_sources]
             notes.append(f"{fid}: character_spec_gate pruned {len(stale)}")
         changed = False
         for sid in gate_ids:
