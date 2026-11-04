@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from gateway.cron.controller import CronController
+from agent_gateway.cron.controller import CronController
 
 
 class _RecordingStore:
@@ -117,7 +117,7 @@ class _FrozenDateTime(_RealDateTime):
 @pytest.fixture
 def frozen_now():
     """冻结 controller 的 datetime.now，使 clamp 计算确定性化。"""
-    with patch("gateway.cron.controller.datetime", _FrozenDateTime):
+    with patch("agent_gateway.cron.controller.datetime", _FrozenDateTime):
         yield
 
 
@@ -184,7 +184,7 @@ class TestCreateJobClamp:
     @pytest.fixture(autouse=True)
     def personal_env(self, monkeypatch):
         """显式锁定个人版 edition，防止 CI 环境变量污染。"""
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: False)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: False)
 
     @pytest.mark.asyncio
     async def test_clamp_logs_to_store_create_call(self, frozen_now) -> None:
@@ -382,7 +382,7 @@ class TestUpdateJobClamp:
     @pytest.fixture(autouse=True)
     def personal_env(self, monkeypatch):
         """显式锁定个人版 edition，防止 CI 环境变量污染。"""
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: False)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: False)
 
     @pytest.mark.asyncio
     async def test_personal_update_keeps_mcp_alongside_clamp(
@@ -419,9 +419,9 @@ class TestEnterpriseCreateJobClamp:
     @pytest.fixture
     def enterprise_env(self, monkeypatch):
         """启用企业版 edition 并 mock 模型校验。"""
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: True)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: True)
         monkeypatch.setattr(
-            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
             AsyncMock(return_value="ent-model"),
         )
 
@@ -489,9 +489,9 @@ class TestEnterpriseCreateJobClamp:
         self, monkeypatch, frozen_now
     ) -> None:
         """企业版创建：resolve_enterprise_cron_model 抛 ValueError → clamp 不执行。"""
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: True)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: True)
         monkeypatch.setattr(
-            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
             AsyncMock(side_effect=ValueError("Unknown model 'bad-model'")),
         )
         cc = _make_controller()
@@ -521,9 +521,9 @@ class TestEnterpriseUpdateJobClamp:
     @pytest.fixture
     def enterprise_env(self, monkeypatch):
         """启用企业版 edition 并 mock 模型校验。"""
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: True)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: True)
         monkeypatch.setattr(
-            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
             AsyncMock(return_value="ent-model"),
         )
 
@@ -625,16 +625,16 @@ class TestClampEditionConsistency:
     async def test_same_clamp_across_editions(self, frozen_now, monkeypatch) -> None:
         """个人版和企业版对同一输入产生相同 wake_offset_seconds。"""
         # --- 个人版 ---
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: False)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: False)
         cc_personal = _make_controller()
         job_p = await cc_personal.create_job(_job_params(
             cron_expr="*/2 * * * *",
             wake_offset_seconds=999999,
         ))
         # --- 切换到企业版 ---
-        monkeypatch.setattr("gateway.cron.controller.is_enterprise", lambda: True)
+        monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: True)
         monkeypatch.setattr(
-            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
             AsyncMock(return_value="ent-model"),
         )
         cc_enterprise = _make_controller()

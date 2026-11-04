@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.common.model_selection import ModelSelection
+
 from jiuwenswarm.common.config import get_config, load_models_config
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, MODEL_SELECTION_NOT_FOUND, ModelSelectionError
-from gateway.common.model_selection import ModelSelection
 
 logger = logging.getLogger(__name__)
 

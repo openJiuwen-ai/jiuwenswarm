@@ -16,12 +16,12 @@ from typing import Any
 import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentRef
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from gateway.routing.keys import RoutingKey
+from agent_gateway.routing.keys import RoutingKey
 
 
 class _FakeWebSocket:

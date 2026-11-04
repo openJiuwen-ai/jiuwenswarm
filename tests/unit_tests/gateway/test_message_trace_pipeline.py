@@ -12,9 +12,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from openjiuwen_protocol.message import Message, ReqMethod
 
-from gateway import telemetry
-from gateway.channel_manager.channel_manager import ChannelManager
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway import telemetry
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 def message(request_id="request", channel="web", kind="event"):
@@ -532,9 +532,9 @@ async def test_supplement_stream_keeps_parent_until_producer_and_responses_finis
     assert any(item.id == seen["request_id"] for item in queued)
     assert not op.finished
 
-    from gateway.channel_manager.base import RobotMessageRouter
-    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-    from gateway.routing.keys import AgentRef, RoutingKey
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.routing.keys import AgentRef, RoutingKey
 
     class Socket:
         closed = False

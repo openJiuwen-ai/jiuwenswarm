@@ -11,6 +11,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from agent_gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_INTERNAL_KEY,
+)
 
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRouteRail,
@@ -22,7 +27,6 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     session_messaging_route_context,
     with_session_messaging_route,
 )
-from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
     SessionRunAdmission,
 )
@@ -63,10 +67,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
-)
-from gateway.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_INTERNAL_KEY,
 )
 
 

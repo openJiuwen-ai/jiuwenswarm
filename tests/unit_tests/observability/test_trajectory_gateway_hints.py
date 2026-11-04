@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.channel_manager.web.trace_update import (
+from agent_gateway.channel_manager.web.trace_update import (
     CommittedTraceUpdate as GatewayCommittedTraceUpdate,
 )
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.observability.gateway_hints import TrajectoryGatewayHintBridge
 from jiuwenswarm.observability.models import CommittedTraceUpdate
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire

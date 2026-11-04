@@ -8,15 +8,15 @@ import types
 
 import pytest
 
-from gateway.common import external_providers
-from gateway.enterprise.capabilities.audit import audit_emit
+from agent_gateway.common import external_providers
+from agent_gateway.enterprise.capabilities.audit import audit_emit
 
 
 @pytest.fixture(autouse=True)
 def _enterprise_audit_enabled(monkeypatch):
-    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     monkeypatch.setattr(
-        "gateway.enterprise.capabilities.audit.audit_gate.is_audit_config_enabled",
+        "agent_gateway.enterprise.capabilities.audit.audit_gate.is_audit_config_enabled",
         lambda: True,
     )
     monkeypatch.setattr(external_providers, "_providers", {}, raising=False)

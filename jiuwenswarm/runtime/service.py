@@ -19,14 +19,14 @@ from contextlib import aclosing, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
@@ -249,8 +249,8 @@ async def _acquire_process_runtime_extensions() -> bool:
 
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         try:
@@ -308,7 +308,7 @@ async def _release_process_runtime_extensions() -> None:
     global _PROCESS_RUNTIME_EXTENSION_REGISTRY
     global _PROCESS_RUNTIME_EXTENSION_USERS
 
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         if _PROCESS_RUNTIME_EXTENSION_USERS <= 0:
@@ -518,7 +518,7 @@ class AgentRuntime:
         )
 
     def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
-        from gateway.common.mode_matrix import is_plan_mode
+        from agent_gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
         if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
@@ -1248,7 +1248,7 @@ class AgentRuntime:
         work_mode: object = None,
     ) -> bool:
         """Return whether a mode uses the single-Agent Session Runtime."""
-        from gateway.common.mode_matrix import (
+        from agent_gateway.common.mode_matrix import (
             NEW_AGENT_CODE_NORMAL,
             NEW_AGENT_WORK_NORMAL,
         )

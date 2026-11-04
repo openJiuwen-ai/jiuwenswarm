@@ -15,10 +15,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from websockets.legacy.server import serve
 
-from gateway import telemetry
-from gateway.routing.agent_client import WebSocketAgentServerClient
-from gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig
-from gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
+from agent_gateway import telemetry
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig
+from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 def _setup_trace(monkeypatch, request_id="r", method="chat.send", connection_id="c"):
@@ -52,12 +52,12 @@ pytestmark = pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_gateway_startup_sweep_tracing_is_configured_before_connect(monkeypatch, enabled):
-    from gateway import app_gateway
-    from gateway.extensions.registry import ExtensionRegistry
-    from gateway.common import config
-    from gateway.extensions.agentos.agentos_router.registry_client import InstanceRecord
-    from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-    from gateway.extensions.manager import ExtensionManager
+    from agent_gateway import app_gateway
+    from agent_gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.common import config
+    from agent_gateway.extensions.agentos.agentos_router.registry_client import InstanceRecord
+    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+    from agent_gateway.extensions.manager import ExtensionManager
 
     class StopAfterSweep(Exception):
         pass

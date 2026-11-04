@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock
 import pytest
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError
+from agent_gateway.routing import agent_client
 
 from jiuwenswarm.common.e2a import wire_codec
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from gateway.routing import agent_client
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod

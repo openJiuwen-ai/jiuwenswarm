@@ -19,7 +19,7 @@ async def _usage_metadata_loader(
     }
 
 
-from gateway.channel_manager.web.trajectory_http import TrajectoryHttpService as _GatewayTrajectoryHttpService
+from agent_gateway.channel_manager.web.trajectory_http import TrajectoryHttpService as _GatewayTrajectoryHttpService
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
 from jiuwenswarm.server.trajectory.host import TrajectoryHost
 

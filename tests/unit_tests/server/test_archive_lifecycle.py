@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveSer
 
 
 def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
-    from gateway.cron.lifecycle_owners import LifecycleOwners
+    from agent_gateway.cron.lifecycle_owners import LifecycleOwners
 
     path = tmp_path / "cron_jobs.json"
     first = LifecycleOwners(path)
@@ -32,7 +32,7 @@ def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
-    from gateway.channel_manager.web import lifecycle_handlers
+    from agent_gateway.channel_manager.web import lifecycle_handlers
 
     service, create, root, _ = archive
     create()
@@ -92,7 +92,7 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
 @pytest.mark.asyncio
 async def test_session_delete_forwards_group_and_bot(monkeypatch):
     """删除会话时把网页上的群、机器人交给执行端，否则企业版会去默认目录里找。"""
-    from gateway.channel_manager.web import lifecycle_handlers
+    from agent_gateway.channel_manager.web import lifecycle_handlers
 
     seen: dict = {}
 

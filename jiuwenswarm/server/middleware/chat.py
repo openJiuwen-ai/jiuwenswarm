@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from gateway.common.mode_matrix import is_team_mode
+from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -40,7 +40,7 @@ async def trigger_before_chat_request(request: AgentRequest) -> None:
     """让扩展插件先看一眼聊天输入。插件可以改参数，这里不回包。"""
     if not should_trigger_before_chat_request(request):
         return
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     params = request.params if isinstance(request.params, dict) else {}
     if not isinstance(request.params, dict):

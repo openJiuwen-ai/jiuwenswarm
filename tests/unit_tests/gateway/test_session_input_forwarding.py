@@ -8,7 +8,7 @@ import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from openjiuwen_protocol.message import Message, ReqMethod
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 def message(rid, *, stream=False, mode=None, channel="web", **params):

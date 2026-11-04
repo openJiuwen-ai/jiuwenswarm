@@ -9,12 +9,13 @@ pause resumes the message.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import SessionRunAdmission
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from jiuwenswarm.runtime.events import RuntimeEvent
@@ -27,7 +28,6 @@ from jiuwenswarm.server.runtime.session.session_message_store import SessionMess
 from tests.unit_tests.agentserver.test_session_messaging import _enqueue, _metadata
 from tests.unit_tests.runtime.test_runtime_service import FakeAgent, FakeAgentManager, FakePlanController
 from jiuwenswarm.runtime.service import AgentRuntime
-from unittest.mock import AsyncMock
 
 QUESTIONS = ("question-1", "question-2")
 

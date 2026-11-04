@@ -64,7 +64,7 @@ def _wait_for_terminal_state(manager: ShareImageExportManager, job_id: str) -> d
 
 
 @pytest.mark.parametrize("module", [
-    "jiuwenswarm.channels.web.share_image_export", "gateway.channel_manager.web.share_image_export",
+    "jiuwenswarm.channels.web.share_image_export", "agent_gateway.channel_manager.web.share_image_export",
 ])
 def test_share_image_module_cli_is_executable(module, tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[4]

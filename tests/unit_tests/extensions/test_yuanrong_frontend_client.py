@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.extensions import yuanrong_frontend_client as yuanrong_mod
-from gateway.extensions.yuanrong_frontend_client import (
+from agent_gateway.extensions import yuanrong_frontend_client as yuanrong_mod
+from agent_gateway.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     TRACE_ID_HEADER,
@@ -671,7 +671,7 @@ async def test_wait_until_running_logs_trace_id_on_first_attempt(
             captured.append(record.getMessage())
 
     handler = _Mem()
-    yr_logger = logging.getLogger("gateway.extensions.yuanrong_frontend_client")
+    yr_logger = logging.getLogger("agent_gateway.extensions.yuanrong_frontend_client")
     yr_logger.addHandler(handler)
     yr_logger.setLevel(logging.INFO)
     get_bodies = [
@@ -1100,7 +1100,7 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
             logs.append(record.getMessage())
 
     handler = _Mem()
-    yr_logger = logging.getLogger("gateway.extensions.yuanrong_frontend_client")
+    yr_logger = logging.getLogger("agent_gateway.extensions.yuanrong_frontend_client")
     yr_logger.addHandler(handler)
     yr_logger.setLevel(logging.INFO)
 

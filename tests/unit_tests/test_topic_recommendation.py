@@ -1246,6 +1246,16 @@ def enabled_recommendation_consent(monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation import topic_controls
     monkeypatch.setattr(topic_controls, "load_recommendation_controls", lambda: {"enabled": True})
 
+from agent_gateway.channel_manager.base import RobotMessageRouter  # pylint: disable=wrong-import-order
+from agent_gateway.channel_manager.web.app_web_handlers import (  # pylint: disable=wrong-import-order
+    WebHandlersBindParams,
+    _register_web_handlers,
+)
+from agent_gateway.channel_manager.web.web_connect import (  # pylint: disable=wrong-import-order
+    WebChannel,
+    WebChannelConfig,
+)
+
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
@@ -1259,15 +1269,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
     TopicService,
-)
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.app_web_handlers import (
-    WebHandlersBindParams,
-    _register_web_handlers,
-)
-from gateway.channel_manager.web.web_connect import (
-    WebChannel,
-    WebChannelConfig,
 )
 
 CHANNEL_NOW = 1_700_000_000.0
@@ -2587,7 +2588,7 @@ def test_recommendation_stores_wait_the_same_for_a_write_lock(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_saved_topic_sync_logs_when_agent_server_rejects(monkeypatch) -> None:
-    from gateway.app_gateway import sync_saved_topic_recommendation
+    from agent_gateway.app_gateway import sync_saved_topic_recommendation
 
     warnings: list[str] = []
 
@@ -2597,8 +2598,8 @@ async def test_saved_topic_sync_logs_when_agent_server_rejects(monkeypatch) -> N
     async def reject(**_kwargs):
         return False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}
 
-    monkeypatch.setattr("gateway.routing.e2a_proxy.fetch_agent_unary", reject)
-    monkeypatch.setattr("gateway.app_gateway.logger.warning", record)
+    monkeypatch.setattr("agent_gateway.routing.e2a_proxy.fetch_agent_unary", reject)
+    monkeypatch.setattr("agent_gateway.app_gateway.logger.warning", record)
     await sync_saved_topic_recommendation(
         object(),
         updated_env_keys=["topic_recommendation_enabled"],

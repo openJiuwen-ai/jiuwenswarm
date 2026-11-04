@@ -13,7 +13,7 @@ import dataclasses
 
 from openjiuwen_protocol import cron_models as protocol
 
-from gateway.runtime.cron import models as gateway_models
+from agent_gateway.runtime.cron import models as gateway_models
 from jiuwenswarm.runtime.cron import models as jiuwenswarm_models
 
 

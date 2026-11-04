@@ -33,7 +33,7 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_search,
     video_voice,
 )
-from gateway.channel_manager.web.media.normalizer import (
+from agent_gateway.channel_manager.web.media.normalizer import (
     normalize_chat_media_attachments,
 )
 

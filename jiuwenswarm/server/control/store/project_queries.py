@@ -7,8 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
@@ -17,6 +16,8 @@ from gateway.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info

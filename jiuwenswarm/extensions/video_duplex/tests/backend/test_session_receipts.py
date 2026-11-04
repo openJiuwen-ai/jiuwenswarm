@@ -234,7 +234,7 @@ def test_lost_client_lease_removes_model_policy():
 
 
 def test_web_channel_preserves_structured_core_receipt():
-    from gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     payload = {"event_type": "video.core.result", "subscription_token": "current",
                "session_id": "chat", "realtime_brief": {"summary": "Still running"}}

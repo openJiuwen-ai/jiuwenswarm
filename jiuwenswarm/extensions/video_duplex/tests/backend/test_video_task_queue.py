@@ -735,7 +735,7 @@ async def test_5597_voice_query_sees_scheduled_jobs_created_in_another_conversat
     """
     from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
     from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
-    from gateway.cron.controller import CronController
+    from agent_gateway.cron.controller import CronController
     from jiuwenswarm.runtime.cron.store import CronJobStore
 
     cron_store = CronJobStore(tmp_path / "cron_jobs.json")

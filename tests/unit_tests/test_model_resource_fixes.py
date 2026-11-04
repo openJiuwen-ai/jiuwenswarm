@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.common.model_selection import ModelSelection
+from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_errors import ModelSelectionError

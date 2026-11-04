@@ -198,9 +198,9 @@ def test_posix_kill_pid_parsing(command: str, expected: set[int]) -> None:
 
 
 def test_backend_cmdline_detection() -> None:
-    assert _is_backend_cmdline(["python", "-m", "gateway.app_gateway"])
+    assert _is_backend_cmdline(["python", "-m", "agent_gateway.app_gateway"])
     assert _is_backend_cmdline(["C:\\env\\python.exe", "C:\\env\\Scripts\\jiuwenswarm-start.exe", "all"])
-    assert _is_backend_cmdline(["/usr/bin/python3", "/site-packages/gateway/app_gateway.py"])
+    assert _is_backend_cmdline(["/usr/bin/python3", "/site-packages/agent_gateway/app_gateway.py"])
     assert _is_backend_cmdline(["/usr/bin/python3", "-u", "/site-packages/jiuwenswarm/app.py"])
     assert _is_backend_cmdline(["JiuwenSwarm.exe", "--desktop-run-agent"])
     # Skill scripts live under ~/.jiuwenswarm but are the agent's own work, not the backend.

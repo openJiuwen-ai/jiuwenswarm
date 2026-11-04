@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from gateway.extensions.sdk.skill_source import (
+from agent_gateway.extensions.sdk.skill_source import (
     ArtifactDescriptor,
     ArtifactRef,
     DownloadPolicy,
