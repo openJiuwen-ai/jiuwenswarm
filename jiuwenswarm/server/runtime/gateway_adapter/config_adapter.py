@@ -269,7 +269,14 @@ class ConfigAdapter(GatewayAdapter):
                 channel,
                 on_config_saved=self._on_config_saved,
             )
-            register_models_handlers(channel, on_config_saved=self._on_config_saved, user_id=request.user_id)
+            # models/model_groups 域的写操作同样触发 server 侧 in-process reload
+            # （models.replace_all / upsert / delete 改动模型配置后 agent 需热生效；
+            # 原先只给 config.set/save_all 接回调，E2A 路径漏掉了模型域）
+            register_models_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+                user_id=request.user_id,
+            )
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
