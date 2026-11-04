@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
+from agent_gateway.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
