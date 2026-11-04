@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 from __future__ import annotations
 
 import asyncio
@@ -96,6 +98,7 @@ async def test_bound_sandbox_foreground_never_uses_host_subprocess(
             "printf ok",
             {
                 "cwd": str(tmp_path),
+                "environment": {},
                 "timeout": 17,
                 "shell_type": "bash",
             },
@@ -124,6 +127,7 @@ async def test_explicit_workspace_root_workdir_ignores_context_cwd(
             "pwd",
             {
                 "cwd": str(tmp_path),
+                "environment": {},
                 "timeout": 300,
                 "shell_type": "auto",
             },
