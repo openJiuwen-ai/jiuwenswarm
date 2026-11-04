@@ -102,16 +102,18 @@ def test_a2ui_prompt_multiplechoice_single_select_max_one():
     assert "maxAllowedSelections 必须设为 1" in zh
 
 
-def test_a2ui_prompt_ok_cancel_button_row_right_aligned():
+def test_a2ui_prompt_ok_cancel_button_row_not_right_aligned():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert 'distribution to "end"' in en
     assert "Cancel (secondary) before OK (primary)" in en
+    assert 'distribution to "end"' not in en
+    assert "aligned" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert 'distribution="end"' in zh
     assert "取消（次要）在前、确定（主要）在后" in zh
+    assert 'distribution="end"' not in zh
+    assert "右对齐" not in zh
 
 
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
