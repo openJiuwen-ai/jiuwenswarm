@@ -24,6 +24,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_clip_index,
     video_concat_source_ids,
 )
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     canvas_output_dir,
     node_output_image_paths,
@@ -685,7 +686,7 @@ class ClipNodeHandler:
         cfg = dict(cfg)
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             extract_last_frame,
-            resolve_gated_last_frame_chain,
+            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
             stamp_last_frame_onto_next_clips,
             stamp_scene_last_frame_chain,
@@ -699,7 +700,7 @@ class ClipNodeHandler:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_files = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=ctx)
+        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, ctx)
         if scene_chain:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg
@@ -839,7 +840,7 @@ class ClipNodeHandler:
             # Keep last-frame files for debug; do not attach them as next-clip refs.
             try:
                 frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-                extracted = extract_last_frame(path, dest=frame_out)
+                extracted = await run_off_loop(extract_last_frame, path, frame_out)
                 if extracted is not None:
                     stamp_last_frame_onto_next_clips(
                         graph,
