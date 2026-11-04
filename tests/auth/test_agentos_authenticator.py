@@ -3,10 +3,10 @@ import httpx
 import pytest
 
 # 然后再导入测试目标
-from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
+from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
-from gateway.extensions.auth.credential_authenticator import (
+from agent_gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,

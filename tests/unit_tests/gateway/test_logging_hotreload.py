@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import gateway.common.logging_setup as ls
-from gateway.common.logging_setup import (
+import agent_gateway.common.logging_setup as ls
+from agent_gateway.common.logging_setup import (
     apply_logging_config_payload,
     logging_config_row_to_dict,
     update_gateway_log_levels,

@@ -149,8 +149,8 @@ async def _ensure_server_initialized_async() -> None:
     # ---------- 扩展系统初始化（必须先执行）----------
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     callback_framework = Runner.callback_framework
     extension_registry = ExtensionRegistry.create_instance(

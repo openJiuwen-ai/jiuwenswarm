@@ -7,12 +7,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen_protocol.message import EventType, Message
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.message_handler import MessageHandler
 
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire, parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse
-from openjiuwen_protocol.message import EventType, Message
-from gateway.channel_manager.web.web_connect import WebChannel
-from gateway.message_handler import MessageHandler
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from tests.unit_tests.gateway.test_message_handler_stream_cancel import _drain_robot_messages, _TestMessageHandler
 

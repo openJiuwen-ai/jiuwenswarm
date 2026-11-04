@@ -67,7 +67,7 @@ class _BadRequestError(ValueError):
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
     """Forward to the gateway-owned singleton (shared job registry)."""
-    from gateway.channel_manager.web.share_image_export import (
+    from agent_gateway.channel_manager.web.share_image_export import (
         get_share_image_export_manager,
     )
 
@@ -114,13 +114,13 @@ def _format_ws_diagnostics(
     *parts: Mapping[str, Any] | None,
     **fields: Any,
 ) -> str:
-    from gateway.common.ws_diagnostics import format_ws_diagnostics
+    from agent_gateway.common.ws_diagnostics import format_ws_diagnostics
 
     return format_ws_diagnostics(*parts, **fields)
 
 
 def _describe_ws_exception(exc: BaseException) -> dict[str, Any]:
-    from gateway.common.ws_diagnostics import describe_ws_exception
+    from agent_gateway.common.ws_diagnostics import describe_ws_exception
 
     return describe_ws_exception(exc)
 

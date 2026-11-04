@@ -6,8 +6,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from gateway.common.obs_files import AttachmentStore, object_prefix
-from gateway.channel_manager.web.enterprise_files import (
+from agent_gateway.common.obs_files import AttachmentStore, object_prefix
+from agent_gateway.channel_manager.web.enterprise_files import (
     register_enterprise_file_routes,
 )
 

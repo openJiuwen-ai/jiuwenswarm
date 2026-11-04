@@ -17,9 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import portalocker
+from agent_gateway.common.work_mode import (
+    DEFAULT_PROJECT_ID_WORK,
+    DESIGN_WORK_MODE,
+    is_default_project_id,
+)
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-
 from jiuwenswarm.common.schema.designer_graph import (
     GRAPH_SOURCE_MANUAL,
     SCHEMA_VERSION,
@@ -31,11 +35,6 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir
-from gateway.common.work_mode import (
-    DEFAULT_PROJECT_ID_WORK,
-    DESIGN_WORK_MODE,
-    is_default_project_id,
-)
 from jiuwenswarm.server.runtime.design import RunCoordinator
 from jiuwenswarm.server.runtime.design.context import get_graph_coordinator
 from jiuwenswarm.server.runtime.designer.graph_store import DesignerGraphStore

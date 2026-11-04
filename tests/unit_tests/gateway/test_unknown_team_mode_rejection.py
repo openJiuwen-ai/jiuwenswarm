@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.common.mode_matrix import is_team_mode
+from agent_gateway.common.mode_matrix import is_team_mode
 from openjiuwen_protocol.message import EventType, Message, ReqMethod
-from gateway.message_handler.message_handler import (
+from agent_gateway.message_handler.message_handler import (
     _KNOWN_TEAM_MODE_INPUTS,
     MessageHandler,
 )

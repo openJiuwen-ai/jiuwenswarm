@@ -38,4 +38,4 @@ def test_agent_server_expert_dispatch_does_not_import_gateway_enterprise() -> No
         Path(__file__).resolve().parents[3]
         / "jiuwenswarm/enterprise/capabilities/experts/http_dispatch.py"
     ).read_text(encoding="utf-8")
-    assert "gateway.enterprise" not in source
+    assert "agent_gateway.enterprise" not in source

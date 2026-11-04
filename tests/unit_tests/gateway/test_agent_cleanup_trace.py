@@ -13,16 +13,16 @@ import pytest
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from gateway import telemetry
-from gateway.extensions.agentos.agentos_router import agent_manager
-from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
-from gateway.extensions.agentos.agentos_router import router_client
-from gateway.extensions.agentos.agentos_router.registry_client import (
+from agent_gateway import telemetry
+from agent_gateway.extensions.agentos.agentos_router import agent_manager
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.extensions.agentos.agentos_router import router_client
+from agent_gateway.extensions.agentos.agentos_router.registry_client import (
     InstanceRecord, RegistryClient, RegistryConfig, instance_service_id,
 )
-from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from gateway.extensions.agentos.agentos_router.stale_cleanup import cleanup_stale_sandboxes
-from gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
+from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from agent_gateway.extensions.agentos.agentos_router.stale_cleanup import cleanup_stale_sandboxes
+from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 def _setup_trace(monkeypatch, request_id="r", method="chat.send", connection_id="c"):
@@ -746,8 +746,8 @@ async def test_http_success_survives_sdk_attribute_failure(monkeypatch, transpor
 
 
 async def test_disabled_registry_unregister_agent_is_reported_by_router(monkeypatch):
-    from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
-    from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+    from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 
     runtime, exporter, parent = _setup_trace(monkeypatch)
     frontend = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')

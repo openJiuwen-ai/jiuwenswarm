@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock
 import pytest
 from openjiuwen_protocol.message import EventType
 
-from gateway.channel_manager.tui.tui_channel import TuiChannel
-from gateway.channel_manager.web.web_connect import WebChannel
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod

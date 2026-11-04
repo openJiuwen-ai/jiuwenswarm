@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from gateway.extensions.sdk.artifact_security import (
+from agent_gateway.extensions.sdk.artifact_security import (
     ArtifactVerificationError,
     EnvironmentSecretResolver,
     MappingSecretResolver,

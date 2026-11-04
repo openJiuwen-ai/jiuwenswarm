@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 
+from agent_gateway.common.work_mode import is_default_project_id
+
 from jiuwenswarm.common.schema.designer_graph import (
     EDGE_KIND_DATA,
     NODE_ROLE_BRIEF,
@@ -28,7 +30,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,  # re-exported; image/compose handlers call it on this module
     get_default_project_session_workspace_dir,
 )
-from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 from jiuwenswarm.server.runtime.designer.user_references import user_reference_image_paths
 from jiuwenswarm.server.runtime.session import project_store

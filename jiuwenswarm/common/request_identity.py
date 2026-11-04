@@ -4,6 +4,6 @@
 
 import sys
 
-import gateway.common.request_identity as _real
+import agent_gateway.common.request_identity as _real
 
 sys.modules[__name__] = _real

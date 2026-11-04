@@ -35,13 +35,13 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness_protocol.state import HarnessState
 
-from gateway.common.cron_team_completion import (
+from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
-from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -1471,7 +1471,7 @@ class TeamManager:
         selection: SwarmModelSelection,
     ) -> CompiledModelSelection:
         """Resolve a stable Team selection through the server-side boundary."""
-        from gateway.common.model_selection import ResolvedModelGroup
+        from agent_gateway.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.common.model_errors import (
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
@@ -2074,7 +2074,7 @@ class TeamManager:
         *,
         request_metadata: dict[str, Any] | None,
     ) -> None:
-        from gateway.common.mode_matrix import is_team_plan_mode
+        from agent_gateway.common.mode_matrix import is_team_plan_mode
 
         mode = (request_metadata or {}).get("mode")
         if is_team_plan_mode(mode):

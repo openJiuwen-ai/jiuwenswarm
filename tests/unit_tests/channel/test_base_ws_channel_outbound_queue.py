@@ -8,12 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from gateway.routing import base_ws_channel
+from agent_gateway.routing import base_ws_channel
 
 
 def _channel() -> WebChannel:
@@ -22,7 +22,7 @@ def _channel() -> WebChannel:
 
 @pytest.mark.asyncio
 async def test_register_ws_bounds_the_outbound_queue():
-    from gateway.routing.keys import AgentRef, RoutingKey
+    from agent_gateway.routing.keys import AgentRef, RoutingKey
 
     channel = _channel()
     ws = SimpleNamespace(closed=False)

@@ -7,7 +7,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from openjiuwen.core.foundation.llm import (
     CompiledModelSelection,
     ProviderType,
@@ -18,6 +17,12 @@ from openjiuwen.core.foundation.llm.routing.schema import (
     ResolvedModelGroup,
     ResolvedRoute,
 )
+from agent_gateway.common.model_selection import ModelSelection
+from agent_gateway.common.model_selection import (
+    ResolvedModel as SwarmResolvedModel,
+    ResolvedModelGroup as SwarmResolvedModelGroup,
+    ResolvedRoute as SwarmResolvedRoute,
+)
 
 from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 from jiuwenswarm.common.model_errors import (
@@ -26,12 +31,6 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_DISABLED,
     TEAM_MODEL_SELECTION_STALE,
     ModelSelectionError,
-)
-from gateway.common.model_selection import ModelSelection
-from gateway.common.model_selection import (
-    ResolvedModel as SwarmResolvedModel,
-    ResolvedModelGroup as SwarmResolvedModelGroup,
-    ResolvedRoute as SwarmResolvedRoute,
 )
 from jiuwenswarm.server.runtime.model_routing_registry import (
     ModelExecutionContext,

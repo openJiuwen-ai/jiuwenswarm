@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from gateway.extensions.agentos.agentos_router.agent_manager import (
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentCreateFailed,
     AgentCreatingTimeout,
     AgentDeleted,
@@ -12,7 +12,7 @@ from gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentRuntime,
     normalize_agent_key_fields,
 )
-from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 
 
 @pytest.mark.asyncio

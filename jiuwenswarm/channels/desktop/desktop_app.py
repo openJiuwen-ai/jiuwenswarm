@@ -441,7 +441,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "gateway.app_gateway"]
+        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -1255,7 +1255,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)

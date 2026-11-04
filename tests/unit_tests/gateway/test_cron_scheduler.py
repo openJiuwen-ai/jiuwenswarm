@@ -15,19 +15,19 @@ import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from openjiuwen_protocol.message import ReqMethod
-from gateway.cron.models import CronJob, CronRunState
-from gateway.cron.scheduler import (
+from agent_gateway.cron.models import CronJob, CronRunState
+from agent_gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
     CronSchedulerService,
     _Event,
 )
-from gateway.common.cron_team_completion import (
+from agent_gateway.common.cron_team_completion import (
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
-from gateway.cron import scheduler as cron_scheduler_module
-from gateway.cron.store import CronJobStore
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.cron import scheduler as cron_scheduler_module
+from agent_gateway.cron.store import CronJobStore
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -330,8 +330,8 @@ class FailingAgentClient(FakeAgentClient):
 async def test_web_cron_allocation_failure_publishes_no_notification(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 
-    from gateway.common.cron_events import cron_notification_scope
-    from gateway.cron import live_bus
+    from agent_gateway.common.cron_events import cron_notification_scope
+    from agent_gateway.cron import live_bus
 
     monkeypatch.setattr(live_bus, "_redis_client", lambda: None)
     bus = live_bus.CronLiveBus()
@@ -2674,7 +2674,7 @@ class TestUnaryCronJobTimeoutOverride:
 
     @pytest.mark.asyncio
     async def test_timeout_passed_through_and_cancel_invoked(self, tmp_path):
-        from gateway.routing.agent_client import AgentServerUnaryTimeout
+        from agent_gateway.routing.agent_client import AgentServerUnaryTimeout
 
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="web")
@@ -3096,7 +3096,7 @@ class TestExtractTextFromAgentPayload:
 
     @staticmethod
     def _call(payload):
-        from gateway.cron.scheduler import _extract_text_from_agent_payload
+        from agent_gateway.cron.scheduler import _extract_text_from_agent_payload
         return _extract_text_from_agent_payload(payload)
 
     def test_error_payload_returns_raw_error(self):
@@ -3398,7 +3398,7 @@ class _MemoryCronStore:
 class TestCrashRecoverySkip:
     @pytest.mark.asyncio
     async def test_skips_wake_when_offset_already_passed(self):
-        from gateway.runtime.cron.cron_job_mutations import build_new_cron_job
+        from agent_gateway.runtime.cron.cron_job_mutations import build_new_cron_job
 
         job = build_new_cron_job(
             name="past-wake",
@@ -3424,7 +3424,7 @@ class TestCrashRecoverySkip:
 
     @pytest.mark.asyncio
     async def test_future_wake_is_scheduled(self):
-        from gateway.runtime.cron.cron_job_mutations import build_new_cron_job
+        from agent_gateway.runtime.cron.cron_job_mutations import build_new_cron_job
 
         job = build_new_cron_job(
             name="future-wake",
@@ -3446,12 +3446,12 @@ class TestCrashRecoverySkip:
 
 @pytest.mark.asyncio
 async def test_crash_recovery_skip_after_etcd_full_load(tmp_path, monkeypatch):
-    from gateway.runtime.cron.etcd_store import EtcdCronJobStore
+    from agent_gateway.runtime.cron.etcd_store import EtcdCronJobStore
     from tests.unit_tests.gateway.test_cron_etcd_store import FakeEtcdJsonClient
 
     # etcd 后端没有本地 cron 文件，生命周期归属记录会退化到默认本地路径：
     # 这里改到 tmp_path，避免测试写用户主目录。
-    import gateway.common.paths as utils_module
+    import agent_gateway.common.paths as utils_module
 
     monkeypatch.setattr(
         utils_module, "get_cron_jobs_path", lambda: tmp_path / "cron_jobs.json"
@@ -3511,7 +3511,7 @@ async def test_disable_project_jobs_preserves_other_jobs(tmp_path):
 @pytest.mark.asyncio
 async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatch):
     import asyncio
-    from gateway.routing import e2a_proxy
+    from agent_gateway.routing import e2a_proxy
 
     svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
     entered, release = asyncio.Event(), asyncio.Event()
@@ -3544,13 +3544,13 @@ def _patch_login_credential_lookup(
     ``fresh`` 为 refreshed_credential_for_ref 的返回值（None=凭据已撤销/拿不到）。
     """
     monkeypatch.setattr(
-        "gateway.auth.passthrough.refreshed_credential_for_ref",
+        "agent_gateway.auth.passthrough.refreshed_credential_for_ref",
         lambda ref: fresh
         if fresh is not None
         else {"credential_ref": ref, "revoked": True},
     )
     monkeypatch.setattr(
-        "gateway.auth.apig.resolve_apig_config",
+        "agent_gateway.auth.apig.resolve_apig_config",
         lambda allow_refresh=True: SimpleNamespace(
             invoke_base_url="https://apig.example.com/v1"
         ),
@@ -3685,7 +3685,7 @@ async def test_personal_claim_wake_skips_database(tmp_path, monkeypatch):
         called.append(job.id)
         return False
 
-    monkeypatch.setattr("gateway.cron.db_schedule.claim_periodic_run", _claim)
+    monkeypatch.setattr("agent_gateway.cron.db_schedule.claim_periodic_run", _claim)
     store = CronJobStore(path=tmp_path / "jobs.json")
     svc = _make_scheduler(store)
     job = await _create_one_job(store, name="home")
@@ -3704,7 +3704,7 @@ async def test_enterprise_claim_miss_skips_wake_and_push(tmp_path, monkeypatch):
         claims.append(job.id)
         return False
 
-    monkeypatch.setattr("gateway.cron.db_schedule.claim_periodic_run", _claim)
+    monkeypatch.setattr("agent_gateway.cron.db_schedule.claim_periodic_run", _claim)
     store = CronJobStore(path=tmp_path / "jobs.json")
     svc = _make_scheduler(store)
     job = await _create_one_job(store, name="shared")
@@ -3727,7 +3727,7 @@ async def test_enterprise_manual_run_now_skips_claim(tmp_path, monkeypatch):
         called.append(job.id)
         return False
 
-    monkeypatch.setattr("gateway.cron.db_schedule.claim_periodic_run", _claim)
+    monkeypatch.setattr("agent_gateway.cron.db_schedule.claim_periodic_run", _claim)
     store = CronJobStore(path=tmp_path / "jobs.json")
     svc = _make_scheduler(store)
     job = await _create_one_job(store, name="now")
@@ -3765,7 +3765,7 @@ async def test_stream_cron_publishes_thinking_and_deltas_on_the_live_bus(tmp_pat
                     is_complete=payload["event_type"] == "chat.final",
                 )
 
-    from gateway.cron.live_bus import cron_live_bus
+    from agent_gateway.cron.live_bus import cron_live_bus
 
     session_id = "__cron___live_test"
     cron_live_bus.clear_session(session_id)
@@ -3987,7 +3987,7 @@ async def test_resume_success_clears_the_permission_hold(tmp_path):
 @pytest.mark.asyncio
 async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "gateway.extensions.redis.redis_runtime.get_declared_deployment_mode",
+        "agent_gateway.extensions.redis.redis_runtime.get_declared_deployment_mode",
         lambda: "distributed",
     )
     written = []
@@ -4001,7 +4001,7 @@ async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
             return True
 
     monkeypatch.setattr(
-        "gateway.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
+        "agent_gateway.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
         lambda: _Redis(),
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
@@ -4019,7 +4019,7 @@ async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
 async def test_missing_redis_hold_drops_a_stale_local_note(tmp_path, monkeypatch):
     """另一份网关已经把 Redis 纸条擦掉时，本机不能再拦着。"""
     monkeypatch.setattr(
-        "gateway.extensions.redis.redis_runtime.get_declared_deployment_mode",
+        "agent_gateway.extensions.redis.redis_runtime.get_declared_deployment_mode",
         lambda: "distributed",
     )
 
@@ -4034,7 +4034,7 @@ async def test_missing_redis_hold_drops_a_stale_local_note(tmp_path, monkeypatch
             return True
 
     monkeypatch.setattr(
-        "gateway.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
+        "agent_gateway.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
         lambda: _Redis(),
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
@@ -4048,13 +4048,13 @@ async def test_missing_redis_hold_drops_a_stale_local_note(tmp_path, monkeypatch
 
 def test_enterprise_db_label_does_not_create_a_folder(tmp_path, monkeypatch):
     """企业版的 db:// 只是「任务在库里」的记号，不能在当前目录生出名叫 db: 的文件夹。"""
-    from gateway.cron.lifecycle_owners import LifecycleOwners
-    from gateway.cron.scheduler import _cron_lifecycle_source
+    from agent_gateway.cron.lifecycle_owners import LifecycleOwners
+    from agent_gateway.cron.scheduler import _cron_lifecycle_source
 
     monkeypatch.chdir(tmp_path)
     home_jobs = tmp_path / "agent-home" / "cron_jobs.json"
     monkeypatch.setattr(
-        "gateway.common.paths.get_cron_jobs_path",
+        "agent_gateway.common.paths.get_cron_jobs_path",
         lambda: home_jobs,
     )
     source = _cron_lifecycle_source(SimpleNamespace(path=Path("db://cron_job")))
@@ -4067,14 +4067,14 @@ def test_enterprise_db_label_does_not_create_a_folder(tmp_path, monkeypatch):
 
 
 def test_real_cron_file_keeps_the_lifecycle_note_beside_it(tmp_path):
-    from gateway.cron.scheduler import _cron_lifecycle_source
+    from agent_gateway.cron.scheduler import _cron_lifecycle_source
 
     jobs = tmp_path / "cron_jobs.json"
     assert _cron_lifecycle_source(SimpleNamespace(path=jobs)) == jobs
     assert _cron_lifecycle_source(SimpleNamespace()) != jobs
 
 
-@pytest.mark.parametrize("package", ["gateway.runtime.cron", "jiuwenswarm.runtime.cron"])
+@pytest.mark.parametrize("package", ["agent_gateway.runtime.cron", "jiuwenswarm.runtime.cron"])
 def test_cron_store_rejects_groups_on_create_and_update(package):
     mutations = import_module(f"{package}.cron_job_mutations")
     params = {

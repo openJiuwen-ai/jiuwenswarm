@@ -24,7 +24,6 @@ import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_CONFIG_PATH = Path("jiuwenswarm/common/_build_config.py")
-GATEWAY_RUNTIME_CONFIG_PATH = Path("gateway/common/_build_config.py")
 
 
 def write_build_metadata(path: Path, version: str) -> None:
@@ -236,7 +235,6 @@ def expected_files(project_root: Path) -> dict[Path, str]:
     config = load_build_config(project_root)
     expected = _synchronized_pyprojects(project_root, config)
     expected[RUNTIME_CONFIG_PATH] = render_runtime_python(config)
-    expected[GATEWAY_RUNTIME_CONFIG_PATH] = render_runtime_python(config)
     return expected
 
 

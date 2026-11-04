@@ -19,7 +19,7 @@ import pytest
 
 # 母仓 agent_http_bridge 是 gateway 实现的转发别名，resolver 的模块级状态只在
 # gateway 模块内；patch 必须落在真正执行读取的模块上。
-from gateway.common.client import agent_http_bridge
+from agent_gateway.common.client import agent_http_bridge
 from jiuwenswarm.agents.harness.common.tools import web_file_download
 from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
     VerifiedDownloadAssetOwner,

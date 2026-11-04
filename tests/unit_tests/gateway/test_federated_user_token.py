@@ -1,6 +1,6 @@
 """Enterprise HTTP transports customer identity independently of platform auth."""
-from gateway.common import request_ext
-from gateway.channel_manager.web import web_http_dispatch
+from agent_gateway.common import request_ext
+from agent_gateway.channel_manager.web import web_http_dispatch
 
 
 def test_enterprise_customer_token_needs_no_additional_environment(monkeypatch):

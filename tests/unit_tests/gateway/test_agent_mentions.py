@@ -1,6 +1,6 @@
 """Tests for @agent-mention parsing and @file exclusion."""
 
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 class TestAtFileExcludesAgentPrefix:

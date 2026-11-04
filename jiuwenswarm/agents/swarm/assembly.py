@@ -47,6 +47,11 @@ from openjiuwen.agent_teams.schema.team import (
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_DESIGN,
+    is_code_profile_mode,
+    is_team_mode,
+)
 
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
@@ -62,11 +67,6 @@ from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
-)
-from gateway.common.mode_matrix import (
-    NEW_TEAM_DESIGN,
-    is_code_profile_mode,
-    is_team_mode,
 )
 from jiuwenswarm.common.utils import get_agent_skills_dir
 

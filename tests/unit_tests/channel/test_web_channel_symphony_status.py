@@ -6,23 +6,23 @@ import json
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message
-from gateway.common.session_message import (
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from gateway.routing.keys import RoutingKey
-from gateway.routing.session_sharing import RoutingTarget
+from agent_gateway.routing.keys import RoutingKey
+from agent_gateway.routing.session_sharing import RoutingTarget
 
 
 @pytest.mark.asyncio
 async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "gateway.channel_manager.web.web_connect.get_logs_dir",
+        "agent_gateway.channel_manager.web.web_connect.get_logs_dir",
         lambda: tmp_path,
     )
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -39,15 +39,15 @@ async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, mo
 
 def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "gateway.channel_manager.web.web_connect.get_logs_dir",
+        "agent_gateway.channel_manager.web.web_connect.get_logs_dir",
         lambda: tmp_path,
     )
     monkeypatch.setattr(
-        "gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
+        "agent_gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
         12,
     )
     monkeypatch.setattr(
-        "gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
+        "agent_gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
         2,
     )
 
@@ -75,7 +75,7 @@ async def test_web_channel_stream_callback_preserves_delivery_state_and_legacy_p
     from unittest.mock import AsyncMock
 
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
-    from gateway.message_handler.message_handler import MessageHandler
+    from agent_gateway.message_handler.message_handler import MessageHandler
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = _FakeClient()
