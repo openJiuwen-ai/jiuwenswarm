@@ -587,6 +587,10 @@ def _dispatch() -> int | None:
 
         restore_legacy_upgrade_config()
         return 0
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "extension":
+        from jiuwenswarm.channels.cli.extension import main as extension_main
+
+        return extension_main(sys.argv[2:])
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":
         sys.argv.pop(1)

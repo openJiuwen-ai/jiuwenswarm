@@ -72,6 +72,24 @@ class RenderTransport:
             logger.warning("[WebUI] failed to send %s: %s", event_type, exc)
             return False
 
+    async def notify_packages_installed(
+        self, connection_id: str, session_id: str, package_ids: list[str],
+    ) -> bool:
+        """Notify exactly the browser that previously declared ready ownership."""
+        message = {
+            "request_id": f"extension-installed-{uuid.uuid4().hex[:12]}",
+            "channel_id": self._channel_id,
+            "session_id": session_id,
+            "metadata": {"ws_id": connection_id},
+            "payload": {"event_type": "extensions.v2.installed", "package_ids": package_ids,
+                        "session_id": session_id},
+        }
+        try:
+            return bool(await self._resolve_push().send_push(message))
+        except Exception:  # noqa: BLE001 - UI notification does not undo installation
+            logger.warning("[WebUI] package installation notification failed")
+            return False
+
     def _resolve_push(self) -> PushTransport:
         if self._push is None:
             from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport

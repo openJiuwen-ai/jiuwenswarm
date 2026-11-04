@@ -14,11 +14,9 @@ from jiuwenswarm.extensions_v2.event_types.context_usage import (
     ContextUsageUpdate,
     register_context_usage_events,
 )
-from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
-from jiuwenswarm.server.runtime.session.session_statistics import SESSION_USAGE_INFO_KEY, build_usage_snapshot
 from jiuwenswarm.extensions_v2.examples.webui_workbench_v2.webui_workbench_v2.handlers import WorkbenchHandlers
 from jiuwenswarm.extensions_v2.examples.webui_workbench_v2.webui_workbench_v2.state import SessionState
 from jiuwenswarm.extensions_v2.examples.webui_workbench_v2.webui_workbench_v2.views import (
@@ -132,7 +130,7 @@ def test_workbench_round_selection_only_updates_the_addressed_round(key: str) ->
 async def test_workbench_ready_restores_snapshot_and_round_action_publishes_visible_result() -> None:
     handler = WorkbenchHandlers()
     render = AsyncMock(return_value=UiRenderOutput(status="delivered"))
-    ops = SimpleNamespace(ui=SimpleNamespace(render=render), session=SimpleNamespace(usage=AsyncMock(return_value=None)))
+    ops = SimpleNamespace(ui=SimpleNamespace(render=render), store=SimpleNamespace(get=AsyncMock(return_value=None)))
     next_handler = AsyncMock()
     target = RenderTarget("session-1", "conversation.session.content.after", "webui.workbench-v2", "request-1")
 
@@ -200,15 +198,15 @@ async def test_workbench_usage_notification_and_ready_order_preserves_round_isol
     render = AsyncMock(return_value=UiRenderOutput(status="delivered"))
     usage = AsyncMock(return_value=None)
     ops = SimpleNamespace(
-        ui=SimpleNamespace(render=render), session=SimpleNamespace(usage=usage),
+        ui=SimpleNamespace(render=render), store=SimpleNamespace(get=usage, set=AsyncMock(return_value=True)),
         session_context=SimpleNamespace(session_id="session-1"),
     )
     receipt = ContextUsageOutput(accepted=True, request_id="request-1")
     next_handler = AsyncMock(return_value=receipt)
     target = RenderTarget("session-1", "conversation.session.content.after", "webui.workbench-v2", "request-1")
     request = UiActionInput("ui.ready", target)
-    # Event counters deliberately differ: the public Ops snapshot is the source.
-    event = Event(CONTEXT_USAGE_EVENT, ContextUsageUpdate("session-1", "request-1", total_tokens=999))
+    # The notification owns the round total; session.usage exposes context occupancy.
+    event = Event(CONTEXT_USAGE_EVENT, ContextUsageUpdate("session-1", "request-1", total_tokens=22_800_000))
     handler._sessions["session-2"] = SessionState()
     handler._sessions["session-2"].turn("request-1").total_tokens = 55
     handler._sessions["session-1"] = SessionState()
@@ -248,29 +246,29 @@ async def test_workbench_usage_notification_and_ready_order_preserves_round_isol
     ({"session_id": "session-1", "turn": {"request_id": "request-1", "total_tokens": 0}}, 0),
     ({"session_id": "session-1", "turn": {"request_id": "request-1", "total_tokens": 42}}, 42),
 ])
-async def test_workbench_ready_recovers_only_matching_history_usage(snapshot, expected) -> None:
+async def test_workbench_ready_recovers_only_matching_stored_usage(snapshot, expected) -> None:
     handler = WorkbenchHandlers()
     render = AsyncMock(return_value=UiRenderOutput(status="delivered"))
     usage = AsyncMock(return_value=snapshot)
-    ops = SimpleNamespace(ui=SimpleNamespace(render=render), session=SimpleNamespace(usage=usage))
+    ops = SimpleNamespace(ui=SimpleNamespace(render=render), store=SimpleNamespace(get=usage, set=AsyncMock(return_value=True)))
     target = RenderTarget("session-1", "conversation.session.content.after", "webui.workbench-v2", "request-1")
     output = await handler.on_event(Event("ui.ready", UiActionInput("ui.ready", target)), ops, AsyncMock())
     assert output.accepted
-    usage.assert_awaited_once_with()
+    usage.assert_awaited_once_with(WorkbenchHandlers._usage_key("session-1", "request-1"))
     state = handler._sessions["session-1"]
     assert state.turn("request-1").total_tokens == expected
     assert render.call_args.args[0].root == build_view(target.slot_id, state, target.instance_key)
 
 
 @pytest.mark.asyncio
-async def test_workbench_refresh_requeries_usage_and_rejects_mismatched_notification_context() -> None:
+async def test_workbench_refresh_reads_stored_usage_and_rejects_mismatched_notification_context() -> None:
     handler = WorkbenchHandlers()
     render = AsyncMock(return_value=UiRenderOutput(status="delivered"))
     usage = AsyncMock(return_value={
         "session_id": "session-1", "turn": {"request_id": "request-1", "total_tokens": 800},
     })
     ops = SimpleNamespace(
-        ui=SimpleNamespace(render=render), session=SimpleNamespace(usage=usage),
+        ui=SimpleNamespace(render=render), store=SimpleNamespace(get=usage, set=AsyncMock(return_value=True)),
         session_context=SimpleNamespace(session_id="session-2"),
     )
     next_handler = AsyncMock(return_value=ContextUsageOutput(accepted=True))
@@ -284,7 +282,7 @@ async def test_workbench_refresh_requeries_usage_and_rejects_mismatched_notifica
     target = RenderTarget("session-1", "conversation.turn.footer.actions", "webui.workbench-v2", "request-1")
     request = UiActionInput("ui.select", target, {"action_id": TURN_SELECT_ACTION, "data": {"key": "refresh"}})
     assert (await handler.on_event(Event("ui.select", request), ops, next_handler)).accepted
-    usage.assert_awaited_once_with()
+    usage.assert_awaited_once_with(WorkbenchHandlers._usage_key("session-1", "request-1"))
     assert state.turn("request-1").total_tokens == 800
     root = render.call_args.args[0].root
     assert root.children[0].props["value"] == "用量：800 tokens"
@@ -292,9 +290,9 @@ async def test_workbench_refresh_requeries_usage_and_rejects_mismatched_notifica
 
 
 @pytest.mark.asyncio
-async def test_installed_workbench_reads_bound_usage_and_recovers_available_round_after_reload(tmp_path: Path) -> None:
+async def test_installed_workbench_persists_round_usage_and_recovers_after_reload(tmp_path: Path) -> None:
     bus = ExtensionEventBus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", store_dir=tmp_path / "package-data")
     transport = SimpleNamespace(
         send_frame=AsyncMock(return_value=True), send_clear=AsyncMock(return_value=True),
         send_error=AsyncMock(return_value=True),
@@ -308,7 +306,6 @@ async def test_installed_workbench_reads_bound_usage_and_recovers_available_roun
 
     def handlers(target):
         runtime.register_handlers(target)
-        register_session_ops(target)
 
     await manager.init(bus, host_event_types=event_types, host_handlers=handlers)
     source = Path(__file__).resolve().parents[4] / "jiuwenswarm/extensions_v2/examples/webui_workbench_v2"
@@ -316,14 +313,9 @@ async def test_installed_workbench_reads_bound_usage_and_recovers_available_roun
         assert (await manager.install([source]))[0].status == "SUCCESS"
         target = RenderTarget("s1", "conversation.session.content.after", "webui.workbench-v2", "r1")
         ready = Event("ui.ready", UiActionInput("ui.ready", target))
-        empty = SessionContext("s1", metadata={SESSION_USAGE_INFO_KEY: None})
-        assert (await bus.trigger(ready, empty)).accepted
-        snapshot = build_usage_snapshot("s1", turn_usage={
-            "request_id": "r1", "timestamp": 1,
-            "usage": {"input_tokens": 200, "output_tokens": 20, "total_tokens": 250},
-        })
-        context = SessionContext("s1", metadata={SESSION_USAGE_INFO_KEY: snapshot})
-        output = await bus.trigger(Event(CONTEXT_USAGE_EVENT, ContextUsageUpdate("s1", "r1")), context)
+        context = SessionContext("s1")
+        assert (await bus.trigger(ready, context)).accepted
+        output = await bus.trigger(Event(CONTEXT_USAGE_EVENT, ContextUsageUpdate("s1", "r1", total_tokens=250)), context)
         assert output.accepted
         frame = transport.send_frame.call_args.args[0]
         assert frame.target == replace(target, scope="session")

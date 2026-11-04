@@ -111,6 +111,8 @@ class WebUIDispatchAdapter(GatewayAdapter):
         if not report.ok:
             return build_error_response(request, report.message, code=report.code or CODE_SCHEMA_ERROR)
 
+        if event_name == "ui.ready":
+            runtime.remember_ready_client(trusted_connection, target.session_id)
         if not runtime.catalog().current().allows_target(target.slot_id, target.package_id):
             return AgentResponse(
                 request_id=request.request_id,

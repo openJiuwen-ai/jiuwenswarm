@@ -156,3 +156,15 @@ application 槽位帧由门禁本地应答，因为这些槽位没有 AgentServe
 | 本地方法表 | `test_gateway_auth_gate.py`、`test_gateway_request.py` |
 | 渲染与槽位契约 | `test_gateway_ui_render.py`（契约细节见 [S_02](S_02_ui-render.md)） |
 | 出站 HTTP 白名单与预算 | `test_gateway_http_fetch.py`（契约细节见 [S_05](S_05_http-fetch.md)） |
+
+
+## 本机扩展管理 CLI
+
+Gateway 装配完成后创建本机管理入口，关闭运行时时撤销入口。
+
+- **包管理：** `extensions_v2/management/local_cli.py` 调用当前 Gateway 的包管理门面，不导入 AgentServer 扩展模块。
+- **宿主归属：** install 校验 ZIP 的 domain 为 gateway；query/reload/uninstall 仅处理本宿主包。
+- **访问权限：** 访问密钥与实例标识由宿主生成，只供当前操作系统账号使用。Web 登录和认证继续使用原有规则。
+
+公共命令和退出码见[本机 CLI 契约](../../../../extensions_v2/docs/specs/S_02_backend-package-management.md#5-本机-cli)，
+实施与验证见 [F_31](../../../../extensions_v2/docs/features/F_31_extension-cli.md)。
