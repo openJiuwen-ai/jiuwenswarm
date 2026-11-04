@@ -22,7 +22,7 @@ function dateInputKind(enableDate: boolean, enableTime: boolean): DateInputKind 
 }
 
 // 可见标题由提示词要求的上方 Text 组件提供；这里只给 input 一个无障碍名（不渲染可见 <label>，避免双标签）
-// 走 i18n，不硬编码单一语言（检视意见 CR-9：原 dateTimeAriaLabel 写死中文，英文界面读屏为中文）
+// 走 i18n，不硬编码单一语言
 function dateTimeAriaKey(enableDate: boolean, enableTime: boolean): string {
   if (enableDate && enableTime) return 'a2ui.dateTimeAria.datetime';
   return enableTime ? 'a2ui.dateTimeAria.time' : 'a2ui.dateTimeAria.date';

@@ -144,7 +144,7 @@ export function MultipleChoiceWithDefaults({
   ) as CSSProperties;
 
   // Build label text with multi-select hint；上限提示与 description 解耦——
-  // 无 label 时仍显「最多选 N 项」，超限才有可见反馈（检视意见 CR-8：旧实现 description 空则上限提示一并丢）
+  // 无 label 时仍显「最多选 N 项」，超限才有可见反馈
   const maxHint = !isSingleSelect && maxAllowedSelections !== undefined
     ? t('a2ui.multipleChoice.maxSelections', { count: maxAllowedSelections })
     : '';
