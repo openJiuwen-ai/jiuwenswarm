@@ -459,17 +459,6 @@ def _tod_covered_in_text(text: str, cfg: dict[str, Any], lang: str = "en") -> bo
     return False
 
 
-_CROWD_EXIT_CUES = ("already left", "clear of", "empty of extras", "crowd gone", "人群已经离开")
-_CROWD_IN_FRAME_CUES = ("extras", "crowd", "colleagues", "background", "群众", "人群")
-_CROWD_COVER_CUES: dict[str, tuple[str, ...]] = {
-    "exited": _CROWD_EXIT_CUES,
-    "empty": ("empty", "没有群众"),
-    "in_frame": _CROWD_IN_FRAME_CUES,
-    "background_hold": _CROWD_IN_FRAME_CUES,
-    "off_camera": ("off-camera", "off camera", "不在镜头内"),
-}
-
-
 def ensure_story_lock_coverage(
     prompt: str,
     cfg: dict[str, Any] | None,
@@ -524,19 +513,13 @@ def ensure_story_lock_coverage(
             notes.append("story_cover_style")
 
     # Crowd disposition as positive prose (never CROWD LOCK banners).
+    # The agent's own hold text is authoritative; we only avoid repeating the
+    # exact same sentence, so nothing here classifies prose by keyword.
     crowd = _ensure_crowd_state(cfg)
     hold = _scrub_lock_phrase(str(crowd.get("hold") or ""))
     if hold and hold.lower() not in pl and not _BAD_DIRECTIVE.search(hold):
-        # Avoid restating if disposition words already present.
-        disp = str(crowd.get("disposition") or "").lower()
-        cues = _CROWD_COVER_CUES.get(disp, ())
-        covered = any(w in pl for w in cues)
-        # "crowd gone" / "人群已经离开" contain the in-frame cues but say the opposite.
-        if covered and disp in {"in_frame", "background_hold"}:
-            covered = not any(w in pl for w in _CROWD_EXIT_CUES)
-        if not covered:
-            additions.append(sentence(hold, content_lang))
-            notes.append("story_cover_crowd_state")
+        additions.append(sentence(hold, content_lang))
+        notes.append("story_cover_crowd_state")
 
     # Opening holds when prior shots exist but prose omitted them.
     for hold_line in (cfg.get("pose_holds") or [])[:3]:
