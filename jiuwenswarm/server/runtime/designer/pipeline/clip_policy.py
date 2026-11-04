@@ -83,25 +83,36 @@ def identity_ref_priority(
     return out
 
 
-_CROWD_WORDS = (
-    "crowd",
-    "audience",
-    "extras",
-    "spectators",
-    "onlookers",
-    "background people",
-    "bystanders",
-    "group of people",
+_CROWD_DISPOSITIONS = frozenset(
+    {"in_frame", "background_hold", "off_camera", "exited", "empty", "unspecified"}
 )
-_CROWD_EXIT_WORDS = (
-    "crowd leaves",
-    "crowd exits",
-    "audience leaves",
-    "extras leave",
-    "people file out",
-    "crowd disperses",
-    "empty the room",
+_CROWD_PLACEMENTS = frozenset({"in_frame", "background", "off_camera"})
+_PLACEMENT_DISPOSITION = {
+    "in_frame": "in_frame",
+    "background": "background_hold",
+    "off_camera": "off_camera",
+}
+_CROWD_RULE = (
+    "CROWD LOCK: keep the crowd the storyboard agent declared for this shot. "
+    "If the agent reported the first clip spec of this setting shows a crowd/extras/"
+    "congregation, EVERY later same-setting clip spec must keep that same group "
+    "(count, placement, wardrobe vibe) unless the storyboard says they exit/disperse. "
+    "NEVER invent a new crowd mid-setting; NEVER erase a locked crowd without an exit beat."
 )
+
+
+def _tri_state(value: Any) -> bool | None:
+    """Agent-declared presence; ``None`` means the agent did not decide."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"", "none", "null", "unknown", "unspecified"}:
+        return None
+    if text in {"true", "yes", "present", "1"}:
+        return True
+    if text in {"false", "no", "absent", "0"}:
+        return False
+    return None
 
 
 def _crowd_lock_for_setting(
@@ -110,33 +121,57 @@ def _crowd_lock_for_setting(
     is_first_of_set: bool,
     prev_crowd: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Anonymous extras / congregation must persist across same-setting clip specs."""
+    """Carry the crowd decision the storyboard agent already made for this shot.
+
+    Crowd presence is a semantic, language-dependent judgement, so it is decided
+    by the agent that authored the shot — never by scanning the prose here. This
+    function only normalizes that decision, and preserves the tri-state: when the
+    agent declares nothing, ``present`` stays ``None`` so downstream emits no
+    crowd sentence at all instead of asserting the setting is empty.
+
+    ``is_first_of_set`` is retained for call-site compatibility; the agent now
+    decides each shot explicitly, so no first-of-setting guessing remains.
+    """
     prev = prev_crowd if isinstance(prev_crowd, dict) else {}
-    blob = " ".join(
-        str(shot.get(k) or "")
-        for k in ("action", "clip_prompt", "scene_objects", "comment", "title")
-    ).lower()
-    mentions_crowd = any(k in blob for k in _CROWD_WORDS)
-    present = bool(prev.get("present")) or (is_first_of_set and mentions_crowd)
-    if not present and prev.get("present"):
-        present = True
-    exiting_crowd = any(k in blob for k in _CROWD_EXIT_WORDS)
-    if exiting_crowd:
-        present = False
-    count_hint = str(prev.get("density") or "").strip()
-    if is_first_of_set and mentions_crowd and not count_hint:
-        count_hint = "same anonymous background group as established"
-    return {
+    declared = shot.get("crowd_spec") if isinstance(shot.get("crowd_spec"), dict) else {}
+    if not declared and isinstance(shot.get("crowd_lock"), dict):
+        declared = shot["crowd_lock"]
+
+    present = _tri_state(declared.get("present"))
+    density = str(declared.get("density") or "").strip()
+    disposition = str(declared.get("disposition") or "").strip().lower()
+    if disposition not in _CROWD_DISPOSITIONS:
+        disposition = ""
+    placement = str(declared.get("placement") or "").strip().lower()
+    if placement not in _CROWD_PLACEMENTS:
+        placement = ""
+    if not disposition and placement:
+        disposition = _PLACEMENT_DISPOSITION[placement]
+    if present is None and disposition:
+        present = disposition not in {"empty", "exited", "unspecified"}
+
+    continues = _tri_state(declared.get("continue")) is True
+    if continues and prev:
+        if present is None:
+            present = prev.get("present")
+        if not density:
+            density = str(prev.get("density") or "")
+        if not disposition:
+            disposition = str(prev.get("disposition") or "")
+
+    lock: dict[str, Any] = {
         "present": present,
-        "density": count_hint or ("none" if not present else "locked_background_group"),
-        "rule": (
-            "CROWD LOCK: if the first clip spec of this setting shows a crowd/extras/"
-            "congregation, EVERY later same-setting clip spec must keep that "
-            "same group (count, placement, wardrobe vibe) unless the storyboard says "
-            "they exit/disperse. NEVER invent a new crowd mid-setting; NEVER erase a "
-            "locked crowd without an exit beat."
-        ),
+        "density": density,
+        "disposition": disposition,
+        "rule": _CROWD_RULE,
     }
+    hold = str(declared.get("hold") or "").strip()
+    if hold:
+        lock["hold"] = hold[:240]
+    note = str(declared.get("note") or "").strip()
+    if note:
+        lock["note"] = note[:240]
+    return lock
 
 
 def _cid_list(raw: Any, *, exclude: set[str] | None = None) -> list[str]:

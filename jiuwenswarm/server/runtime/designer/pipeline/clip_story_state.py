@@ -67,11 +67,20 @@ _BEAT_RE = re.compile(
     r")\b",
     re.I,
 )
-_CROWD_WORD_RE = re.compile(
-    r"\b(?:crowd|colleagues?|coworkers?|extras?|bystanders?|people|"
-    r"office\s+floor|staff|workers|passers[- ]?by)\b",
-    re.I,
-)
+
+
+def _tri_state(value: Any) -> bool | None:
+    """Agent-declared presence; ``None`` means the agent did not decide."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"", "none", "null", "unknown", "unspecified"}:
+        return None
+    if text in {"true", "yes", "present", "1"}:
+        return True
+    if text in {"false", "no", "absent", "0"}:
+        return False
+    return None
 
 
 def extract_finished_events(
@@ -131,11 +140,6 @@ def extract_finished_events(
             )
     if _EXIT_RE.search(blob) and not matched_exit:
         add("exit", "exit already happened — omit that cast from later same-setting prompts until returned")
-    if _CROWD_WORD_RE.search(blob) and _EXIT_RE.search(blob):
-        add(
-            "crowd_exit",
-            "crowd/extras exit already happened — keep them gone or off-camera unless storyboard returns them",
-        )
     if _BEAT_RE.search(blob) and not any(e["type"] == "beat" for e in events):
         # Generic beat without a matched name — still block restage.
         clause = next(
@@ -530,7 +534,13 @@ def infer_crowd_state(
     prior_text: str = "",
     events: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Per-shot crowd disposition for story-form prompts (domain-agnostic)."""
+    """Per-shot crowd disposition for story-form prompts (domain-agnostic).
+
+    The disposition comes from the shot's agent-authored crowd declaration, or
+    from structured ``crowd_exit`` events. ``prior_text`` is accepted for
+    call-site compatibility but is no longer scanned: reading prose here made
+    the decision language-dependent and was the root cause of #10377.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
     prior = prior_cfg if isinstance(prior_cfg, dict) else {}
     crowd = cfg.get("crowd_lock") if isinstance(cfg.get("crowd_lock"), dict) else {}
@@ -543,62 +553,53 @@ def infer_crowd_state(
 
     disposition = str(crowd.get("disposition") or "").strip().lower()
     present = crowd.get("present")
+    if isinstance(present, str):
+        present = _tri_state(present)
     density = str(crowd.get("density") or prior_lock.get("density") or "").strip()
-    rule = str(crowd.get("rule") or prior_lock.get("rule") or bible.get("crowd") or "").strip()
+    rule = str(crowd.get("rule") or prior_lock.get("rule") or "").strip()
+    if not rule and isinstance(bible.get("crowd"), dict):
+        rule = str(bible["crowd"].get("rule") or "").strip()
 
-    done_notes = " ".join(str(e.get("already_done") or "") for e in (events or []))
-    # Conditional lock rules constrain continuity; they do not describe past events.
-    story_history = " ".join(x for x in (prior_text, done_notes) if x)
-
+    # Structured events are agent-declared facts; never inferred from prose here.
     if any(str(e.get("type") or "") == "crowd_exit" for e in (events or [])):
-        disposition = "exited"
-        present = False
-    elif _CROWD_WORD_RE.search(story_history) and _EXIT_RE.search(story_history):
         disposition = "exited"
         present = False
     elif str(prior_crowd.get("disposition") or "").lower() == "exited":
         # Carry exited unless this shot's lock says they returned.
-        if present is True or str(crowd.get("disposition") or "").lower() in {
-            "in_frame",
-            "background_hold",
-            "returned",
-        }:
+        if present is True or disposition in {"in_frame", "background_hold", "returned"}:
             disposition = disposition or "in_frame"
         else:
             disposition = "exited"
             present = False
 
     if not disposition:
-        if present is False or (isinstance(present, str) and present.lower() in {"false", "0", "no", "none"}):
+        if present is False:
             disposition = "empty"
-        elif present is True or density or rule:
-            # Explicit off-camera rule wins.
-            if re.search(r"(?i)\b(?:off[- ]?camera|elsewhere|out of frame|corridor|hallway)\b", rule):
-                disposition = "off_camera"
-            elif re.search(r"(?i)\b(?:empty|cleared|deserted|no\s+crowd|nobody)\b", rule):
-                disposition = "empty"
-            elif re.search(r"(?i)\b(?:background|distant|far)\b", rule):
-                disposition = "background_hold"
-            else:
-                disposition = "in_frame"
-        elif str(bible.get("crowd") or "").strip():
+        elif present is True:
+            disposition = "in_frame"
+        elif isinstance(bible.get("crowd"), dict) and bible["crowd"].get("present") is True:
             disposition = "in_frame"
         else:
+            # Nothing decided by the agent: say nothing rather than assert "empty".
             disposition = "unspecified"
 
-    if present is None:
+    if present is None and disposition != "unspecified":
         present = disposition in {"in_frame", "background_hold", "off_camera"}
 
     lang = current_content_language()
     hold = str(crowd.get("hold") or "").strip()
-    if not hold and f"crowd_{disposition}" in _STORY_STATE_PHRASES[lang]:
+    if disposition == "unspecified":
+        # The agent did not decide whether a crowd is present — emit no crowd
+        # sentence at all instead of asserting the setting is empty.
+        hold = ""
+    elif not hold and f"crowd_{disposition}" in _STORY_STATE_PHRASES[lang]:
         hold = phrase(_STORY_STATE_PHRASES, lang, f"crowd_{disposition}")
-    if density and disposition in {"in_frame", "background_hold"} and density.lower() not in hold.lower():
+    if hold and density and disposition in {"in_frame", "background_hold"} and density.lower() not in hold.lower():
         hold = phrase(_STORY_STATE_PHRASES, lang, "crowd_density", hold=strip_phrase(hold), density=density)
 
     return {
         "disposition": disposition,
-        "present": bool(present),
+        "present": present,
         "density": density,
         "rule": rule,
         "hold": hold,
