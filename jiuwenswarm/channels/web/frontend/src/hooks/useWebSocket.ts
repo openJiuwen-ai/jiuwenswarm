@@ -1606,7 +1606,24 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     // turn 收尾即清计数（展示与否都已终局）：ref 的语义是"本 turn 累计"，
     // 不清会把本 turn 的计数泄漏进下一个 turn 的徽标。
     contextCompressionSummaryRef.current.delete(sessionId);
-  }, [clearPendingContextCompressionStart]);
+
+    // 成员侧对齐同一 turn 边界：清各成员的累计计数与运行态（pending 由
+    // 各成员分支自行清理）。中断抑制对成员同理——被暂停/取消的成员轮次
+    // 不该在下一 turn 的成员条上冒出累计完成的次数。
+    const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
+    for (const memberId of Object.keys(memberStates ?? {})) {
+      const memberRuntime = memberStates?.[memberId]?.runtime;
+      const memberInterrupted =
+        memberRuntime?.status === 'cancelled' || memberRuntime?.status === 'paused';
+      const memberSummary = memberStates?.[memberId]?.summary;
+      setTeamMemberContextCompressionStatus(
+        sessionId,
+        memberId,
+        undefined,
+        !memberInterrupted && memberSummary && memberSummary.count > 0 ? memberSummary : undefined,
+      );
+    }
+  }, [clearPendingContextCompressionStart, setTeamMemberContextCompressionStatus]);
 
   const buildContextCompressionRuntimeState = useCallback(
     (payload: ContextCompressionStatePayload): Omit<ContextCompressionRuntime, 'status'> | null => {
@@ -1689,6 +1706,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       if (status === 'cancelled' || status === 'paused') {
+        const pending = pendingContextCompressionStartRef.current.get(sessionId);
+        if (pending && !pending.shown) {
+          // 压缩提示尚未亮出（started 后 300ms 内就收到终态，或事件乱序）：
+          // 静默丢弃，与 noop/skipped 分支对称——用户没见过的"压缩中"不该
+          // 凭空闪成一条"已取消"。
+          clearPendingContextCompressionStart(sessionId);
+          return;
+        }
         clearPendingContextCompressionStart(sessionId);
         useChatStore.getState().setContextCompressionStatus(sessionId, {
           ...runtimeState,
@@ -1781,6 +1806,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       if (status === 'cancelled' || status === 'paused') {
+        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
+        if (pending && !pending.shown) {
+          // 与主会话分支对称：提示未亮出就收到终态时静默丢弃。
+          clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
+          return;
+        }
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
         setTeamMemberContextCompressionStatus(sessionId, memberId, {
           ...runtimeState,
