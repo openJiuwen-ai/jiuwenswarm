@@ -2244,6 +2244,12 @@ class TeamManager:
             from jiuwenswarm.agents.swarm.assembly import build_app_role_team_spec
 
             return build_app_role_team_spec(spec, metadata)
+        if dispatch_mode is not None:
+            spec.dispatch_mode = dispatch_mode
+            if dispatch_mode != "scheduled":
+                spec.enable_task_verification = False
+                spec.enable_member_messaging = False
+                spec.max_subtask_depth = 0
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
         enrich_team_spec_for_swarm(
             spec,
@@ -2276,12 +2282,6 @@ class TeamManager:
                     spec.worktree = spec.worktree.model_copy(update={"enabled": True})
             elif worktree_flag is False:
                 spec.worktree = None
-        if dispatch_mode is not None:
-            spec.dispatch_mode = dispatch_mode
-            if dispatch_mode != "scheduled":
-                spec.enable_task_verification = False
-                spec.enable_member_messaging = False
-                spec.max_subtask_depth = 0
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":

@@ -228,6 +228,10 @@ _TOOL_PARAM_BUILDERS: dict[name, (config) -> params]   # send_file / code_extra_
 
 `enrich_team_spec_for_swarm(spec, *, session_id, mode, project_dir, request_id, channel_id, request_metadata, agent_group_name)`（就地改写 `spec`）：
 
+有效分发模式为 `scheduled` 且 `spawn_mode: inprocess` 时，默认开启 `enable_fork`。模板可显式设置
+`enable_fork: false`。Leader 用 `spawn_expert(fork=true, fork_source="<成员名>")` 继承空闲原生队友最近
+完成的 Turn。
+
 1. `register_swarm_providers()`（幂等，把 manifest catalog 驱动注册进 openjiuwen 注册表）；
 2. 用 `get_config()` + 工作区路径 + 进程级 trajectory span processor 建 `SwarmBuildContext`；
 3. 对 `leader` / `teammate` 调 `build_member_deep_agent_spec`，把能力 spec（含烘焙好的 params）折叠到成员 `DeepAgentSpec`；再由组装好的 teammate spec 派生 `spec.reviewer_agent`（`build_reviewer_deep_agent_spec`）；
