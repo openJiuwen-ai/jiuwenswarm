@@ -8,6 +8,6 @@ SecretStore``）；子模块级 import 会被别名包解析为 gateway 侧实�
 
 import sys
 
-import gateway.common.secrets as _real
+import agent_gateway.common.secrets as _real
 
 sys.modules[__name__] = _real

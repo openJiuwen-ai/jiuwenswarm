@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple, Optional
@@ -22,31 +23,32 @@ from weakref import WeakValueDictionary
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from gateway.common.security.ws_origin import (
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from gateway.common.session_message import (
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from gateway.common.ws_diagnostics import (
+from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
-from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
@@ -134,6 +136,14 @@ from jiuwenswarm.runtime.host_services import (
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.runtime.session.model import AnswerInFlightError, NoControlTargetError
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
+from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS
+from jiuwenswarm.server.client_attachments import (
+    CLIENT_ATTACH_REQ_METHODS,
+    close_client_attachments,
+    handle_client_attach_request,
+    set_conversation_access,
+    start_client_attachment_sweep,
+)
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
 )
@@ -652,7 +662,7 @@ class TurnOutcomeTracker:
             "chat.processing_status_deferred",
         }:
             self.saw_team_input_accepted = True
-        elif event_type == "chat.ask_user_question":
+        elif event_type in USER_INTERACTION_EVENTS:
             self.waiting_user = True
         if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
             self.fail(self._event_error(event))
@@ -969,6 +979,12 @@ def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
         "work_mode": work_mode if isinstance(work_mode, str) else None,
         "mode": mode if isinstance(mode, str) else None,
     }
+
+
+def _conversation_route(session_id: str) -> tuple[str, str]:
+    """``(channel_id, owner_id)`` a client_gone resume of the conversation runs under."""
+    metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+    return str(metadata.get("channel_id") or ""), str(metadata.get("user_id") or "")
 
 
 def _harness_error_code(exc: BaseException) -> str:
@@ -1390,6 +1406,13 @@ class AgentWebSocketServer:
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
+        set_conversation_access(
+            lambda session_id: self._execution_runtime().pending_interactions(session_id),
+            lambda: self._execution_runtime().sessions_awaiting_answers(),
+            _conversation_route,
+            self._answer_calls_no_client_runs,
+            self.send_push,
+        )
 
     def _install_session_message_service(self) -> None:
         """Create the AgentServer-owned durable mailbox for this Runtime."""
@@ -1730,6 +1753,7 @@ class AgentWebSocketServer:
         else:
             self._server = None
         self._runtime_services_started = True
+        start_client_attachment_sweep()
         await self._start_recommendation_host()
         self._runtime_push_handler = self.send_push
         self._previous_runtime_push_handler = install_runtime_push_handler(
@@ -2183,6 +2207,7 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        close_client_attachments()
         await self._stop_recommendation_host()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:
@@ -2790,6 +2815,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
+                return
+            if request.req_method in CLIENT_ATTACH_REQ_METHODS:
+                await handle_client_attach_request(ws, request, send_lock, self.send_push)
                 return
             if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
                 preparation = getattr(self, "_personal_context_start_task", None)
@@ -4473,7 +4501,7 @@ class AgentWebSocketServer:
                     continue
                 if (
                     isinstance(payload, dict)
-                    and payload.get("event_type") == "chat.ask_user_question"
+                    and payload.get("event_type") in USER_INTERACTION_EVENTS
                 ):
                     interrupt_request_id = str(payload.get("request_id") or "").strip()
                     interrupt_source = str(payload.get("source") or "").strip()
@@ -4773,12 +4801,64 @@ class AgentWebSocketServer:
             chunk_count,
         )
 
+    async def _answer_calls_no_client_runs(
+        self, session_id: str, channel_id: str, owner_id: str, pending: list[dict[str, Any]],
+    ) -> None:
+        """Resume a conversation that no client stayed attached to, its client tool calls unanswerable.
+
+        Each pending call is answered ``{"status": "client_gone"}``, which
+        agent-core turns into a retryable tool error; the turn goes on in the
+        conversation's mode, and its output goes to the conversation's viewers.
+        """
+        from openjiuwen.core.foundation.tool import ClientToolStatus
+
+        answers = [
+            {"interrupt_id": payload["interrupt_id"], "request_id": payload["request_id"],
+             "result": {"status": ClientToolStatus.CLIENT_GONE.value}}
+            for payload in pending
+        ]
+        request = AgentRequest(
+            request_id=f"client-gone-{uuid.uuid4().hex[:12]}",
+            channel_id=channel_id,
+            session_id=session_id,
+            user_id=owner_id,
+            req_method=ReqMethod.CHAT_SEND,
+            is_stream=True,
+            params={"source": CLIENT_TOOL_INTERRUPT_SOURCE, "answers": answers},
+        )
+        logger.info("[AgentWebSocketServer] answering %d client tool call(s) no client runs: session_id=%s",
+                    len(answers), session_id)
+        resume_state = await self._open_session_message_resume(request)
+        outcome_tracker = _TurnOutcomeTracker()
+        outcome, error = "unknown", "resumed turn ended before its outcome was confirmed"
+        try:
+            async for event in self._execution_runtime().stream(request, trigger_hook=False):
+                outcome_tracker.observe(event)
+                await self._persist_repeated_session_question(event, resume_state)
+                message = build_server_push_message(
+                    session_id=session_id,
+                    request_id=event.request_id or request.request_id,
+                    payload=event.payload if isinstance(event.payload, dict) else {},
+                    fallback_channel_id=channel_id,
+                )
+                await self.send_push(message)
+            if resume_state is not None and resume_state.waiting_user:
+                outcome_tracker.waiting_user = True
+            outcome = outcome_tracker.outcome()
+            error = (outcome_tracker.error if outcome == "failed"
+                     else outcome_tracker.unconfirmed_error() if outcome == "unknown" else "")
+        except _UNDELIVERED_ANSWER_ERRORS as exc:
+            resume_state = await self._message_settled_by_refused_answer(request, resume_state, exc)
+            raise
+        finally:
+            await self._finalize_session_message_resume(request, resume_state, outcome=outcome, error=error)
+
     async def _persist_repeated_session_question(
         self,
         event: RuntimeEvent,
         resume_state: _SessionMessageResumeState | None,
     ) -> None:
-        if resume_state is None or event.event_type != "chat.ask_user_question":
+        if resume_state is None or event.event_type not in USER_INTERACTION_EVENTS:
             return
         service = getattr(self, "_session_message_service", None)
         if service is None:
@@ -7541,7 +7621,7 @@ class AgentWebSocketServer:
                 )
 
         team_manager = get_team_manager(channel_id)
-        metadata_team_name = ""
+        owner_team_name = ""
         live_team_name = ""
         if session_id:
             session_info = team_manager.get_runtime_team_snapshot().get(session_id)
@@ -7562,13 +7642,33 @@ class AgentWebSocketServer:
 
             metadata = get_session_metadata(session_id) or {}
             metadata_team_name = str(metadata.get("team_name") or "").strip()
-            if metadata_team_name:
+            owner_team_name = metadata_team_name or live_team_name
+            if owner_team_name:
                 _upsert(
-                    metadata_team_name,
+                    owner_team_name,
                     state="configured",
                     agent_group_name=metadata.get("agent_group_name"),
                     source="metadata",
                 )
+                owner = entries[owner_team_name]
+                group_name = str(owner.get("agent_group_name") or "").strip()
+                if group_name:
+                    from jiuwenswarm.server.runtime.extension_package_manager import (
+                        normalize_agent_group_display_identity,
+                    )
+
+                    # Restore display metadata only for this session's bound Team.
+                    identity = normalize_agent_group_display_identity(
+                        owner.get("team_group_identity"), binding_name=group_name,
+                    )
+                    if identity is None and group_name == str(metadata.get("agent_group_name") or "").strip():
+                        identity = normalize_agent_group_display_identity(
+                            metadata.get("team_group_identity"), binding_name=group_name,
+                        )
+                    if identity is not None:
+                        owner["team_group_identity"] = identity
+                    else:
+                        owner.pop("team_group_identity", None)
 
         from jiuwenswarm.server.runtime.team_organization_history import (
             organization_enabled,
@@ -7638,7 +7738,6 @@ class AgentWebSocketServer:
         # team would answer is_owner=false and the Web conversation view would
         # flip to the empty team panel until the next poll. Metadata stays
         # authoritative once it has been persisted.
-        owner_team_name = metadata_team_name or live_team_name
         for entry in entries.values():
             entry["is_owner"] = bool(
                 owner_team_name and entry["team_id"] == owner_team_name

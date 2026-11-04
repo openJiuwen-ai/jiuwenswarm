@@ -31,6 +31,7 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeHost, PluginRuntimeManager
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
     from jiuwenswarm.common.auth.login_credentials import LoginAuth
@@ -150,7 +151,7 @@ from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
 
-from gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
+from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
@@ -211,6 +212,70 @@ _TTSE_DREAM_INTERVAL = 50
 _TTSE_DREAM_MIN_HOURS = 24.0
 _TTSE_DREAM_TTL_DAYS = 90
 _TTSE_CONSULT_TOOL_NAME = "ttse_consult"
+# SDK EvolutionRail.cleanup_background_tasks hard-waits 120s then cancels; TTSE
+# detect+induce+classify often needs longer, so Host drains with a wider budget.
+_TTSE_CLEANUP_WAIT_SECS = 600.0
+# Default GENERATE_RECORDS_LLM_POLICY uses attempt=150; Host widens induce to 300s.
+_TTSE_INDUCE_ATTEMPT_TIMEOUT_SECS = 300.0
+_TTSE_INDUCE_TOTAL_BUDGET_SECS = 300.0
+
+
+def _ttse_induce_llm_policy() -> Any:
+    """Host-fixed LLM policy for TTSE induce/blame/synthesize/classify."""
+    from openjiuwen.agent_evolving.optimizer.llm_resilience import LLMInvokePolicy
+
+    return LLMInvokePolicy(
+        attempt_timeout_secs=_TTSE_INDUCE_ATTEMPT_TIMEOUT_SECS,
+        total_budget_secs=_TTSE_INDUCE_TOTAL_BUDGET_SECS,
+        max_attempts=2,
+    )
+
+
+async def _drain_ttse_rail_background_tasks(
+    rail: Any,
+    *,
+    timeout_secs: float = _TTSE_CLEANUP_WAIT_SECS,
+) -> None:
+    """Wait for TTSERail bg tasks, then force-cancel after ``timeout_secs``.
+
+    Mirrors ``EvolutionRail.cleanup_background_tasks`` but uses the Host budget
+    instead of the SDK's hardcoded 120s wait.
+    """
+    bg_tasks = getattr(rail, "_bg_tasks", None)
+    if bg_tasks is None:
+        cleanup = getattr(rail, "cleanup_background_tasks", None)
+        if callable(cleanup):
+            await cleanup()
+        return
+    pending = [task for task in list(bg_tasks) if not task.done()]
+    for task in pending:
+        try:
+            wait = getattr(task, "wait", None)
+            waiter = wait() if callable(wait) else asyncio.shield(task)
+            await asyncio.wait_for(waiter, timeout=timeout_secs)
+        except TimeoutError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSE background task still running after "
+                "%.0fs wait; cancelling",
+                timeout_secs,
+            )
+            cancel = getattr(task, "cancel", None)
+            if callable(cancel):
+                try:
+                    result = cancel(reason="ttse_host_cleanup_wait_timeout")
+                except TypeError:
+                    result = cancel()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSE background task wait failed: %s",
+                exc,
+            )
+        finally:
+            # A later equipment transition must still see surviving writers.
+            if isinstance(bg_tasks, set) and task.done():
+                bg_tasks.discard(task)
 
 
 async def _agent_template_version(pkg_dir: Path) -> str:
@@ -321,6 +386,8 @@ except ImportError:  # Compatibility with older agent-core versions.
             return False
 
 
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402  # pylint: disable=wrong-import-order
+
 from jiuwenswarm.server.runtime.tokenizer_service import (
     configured_tokenizer_profiles,
     resolve_tokenizer_cache_dir,
@@ -403,7 +470,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  #
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -447,7 +513,6 @@ from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
 )
-
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
@@ -497,6 +562,14 @@ from jiuwenswarm.server.runtime import extension_package_manager as equipment
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
 # 时间戳与 live「答完再入列」对齐。按 session 暂存，跨同 session 的并发 stream 共享。
 _pending_goal_objective_history: dict[str, dict[str, Any]] = {}
+from agent_gateway.common.mode_matrix import (  # pylint: disable=wrong-import-order
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    deprecate_mode,
+    is_code_profile_mode,
+    is_team_mode,
+)
+
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
@@ -562,7 +635,6 @@ from jiuwenswarm.agents.harness.common.tools.visual_gen_tools import (
     visual_gen_configured,
     visual_gen_enabled,
 )
-
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
     SkillRetrievalToolkit,
@@ -694,13 +766,6 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from gateway.common.mode_matrix import (
-    NEW_AGENT_WORK_NORMAL,
-    NEW_AGENT_WORK_PLAN,
-    deprecate_mode,
-    is_code_profile_mode,
-    is_team_mode,
-)
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 apply_free_search_runtime_defaults()
@@ -795,7 +860,7 @@ def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
         return "team_root"
     if normalized_mode == "code" and normalized_sub_mode == "team":
         return "team_root"
-    from gateway.common.mode_matrix import supports_single_agent_permission_profile
+    from agent_gateway.common.mode_matrix import supports_single_agent_permission_profile
 
     if supports_single_agent_permission_profile(mode, sub_mode):
         return "single_agent"
@@ -1821,6 +1886,8 @@ class JiuWenSwarmDeepAdapter:
     _subagent_progress_batches: dict[str, list[str]] = {}
     _subagent_progress_batches_lock = threading.Lock()
     _RUNTIME_STATE_WRITE_LIMIT = threading.BoundedSemaphore(2)
+    _PLUGIN_RUNTIME_PROFILE = "work"
+    _TTSE_BANK_PROFILE = "work"
     # Goal stream bookkeeping (see __init__ for what each one tracks). Declared
     # on the class as well so the goal helpers stay safe to call on an instance
     # that has not run through __init__.
@@ -1919,6 +1986,9 @@ class JiuWenSwarmDeepAdapter:
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
         self._last_resolved_model: Model | None = None
+        self._last_requested_model_ref: str = ""
+        # Model group id -> display name, memoized for the per-request state write.
+        self._model_group_label_cache: dict[str, str] = {}
         self._active_request_model: Model | None = None
         self._context_model_binding: tuple[Any, Model, tuple[Any, ...]] | None = None
         self._selected_model_context_window_tokens: int | None = None
@@ -1987,6 +2057,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_anomaly_detection_rail: ModelAnomalyDetectionRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
         self._heartbeat_service: Any | None = None
+        self._plugin_runtime_manager: PluginRuntimeManager | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
         self._ttse_rail: Any | None = None
@@ -2188,6 +2259,33 @@ class JiuWenSwarmDeepAdapter:
         self._rsi_default_harness: tuple[str, str] | None = None
         self._rsi_selected_plugin: tuple[str, str] | None = None
         self._rsi_selected_package_snapshot: TemporaryDirectory | None = None
+
+    def get_plugin_runtime_host(self) -> PluginRuntimeHost:
+        """Expose a fresh dependency snapshot without exposing adapter internals."""
+        from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeHost
+
+        active_config = getattr(self, "_active_code_config", None)
+        config = active_config() if callable(active_config) else self._config_base_cache or get_config()
+        return PluginRuntimeHost(
+            instance=self._instance,
+            loaded_plugins=self._loaded_plugins,
+            main_model=(self._model, self._default_model_name),
+            agent_data_workspace=Path(getattr(self, "_agent_workspace_dir", None) or get_agent_workspace_dir()),
+            profile=self._PLUGIN_RUNTIME_PROFILE,
+            config=config,
+            has_conflicting_turn=self._has_conflicting_inflight_turn,
+            wants_attach_goal=self._wants_attach_goal,
+        )
+
+    def get_plugin_runtime_manager(self) -> PluginRuntimeManager:
+        """Return this adapter's single native-plugin lifecycle manager."""
+        from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeManager
+
+        manager = getattr(self, "_plugin_runtime_manager", None)
+        if manager is None:
+            manager = PluginRuntimeManager(self)
+            self._plugin_runtime_manager = manager
+        return manager
 
     def set_heartbeat_service(self, service: Any | None) -> None:
         """Bind the one process-level Heartbeat runtime used by this rail."""
@@ -2835,11 +2933,18 @@ class JiuWenSwarmDeepAdapter:
                     request, f"equipment change rejected at non-fresh turn: {reason}"
                 )
 
+        from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import (
+            get_plugin_runtime_manager,
+        )
+
         try:
-            await self._unload_plugins_for_request(params)
-            await self._unload_agent_template_for_request(params)
-            await self._load_agent_template_for_request(params)
-            await self._load_plugins_for_request(params)
+            async with get_plugin_runtime_manager(self).transition(
+                params, request.session_id or self._parent_session_id or "default",
+            ):
+                await self._unload_plugins_for_request(params)
+                await self._unload_agent_template_for_request(params)
+                await self._load_agent_template_for_request(params)
+                await self._load_plugins_for_request(params)
         except (ValueError, RuntimeError, AgentError, OSError, RsiError) as exc:
             return self._equipment_error_response(request, str(exc))
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -2976,6 +3081,9 @@ class JiuWenSwarmDeepAdapter:
                 selected = getattr(self, "_rsi_selected_plugin", None)
                 if selected is not None and selected[0] == pid:
                     await self._select_rsi_harness_for_request(None)
+                runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+                if runtime_manager is not None:
+                    await runtime_manager.remove(pid)
                 entry = self._loaded_plugins.get(pid)
                 if entry is not None:
                     if self._instance is not None:
@@ -3037,6 +3145,13 @@ class JiuWenSwarmDeepAdapter:
             entry = self._loaded_plugins.get(name)
             if entry is None:
                 continue
+            runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+            bindings = runtime_manager.bindings if runtime_manager is not None else {}
+            if name in bindings:
+                # A prepared plugin transition already detached its old owner.
+                # Seeing it here means package/version observations drifted;
+                # never bypass its writer drain through the generic unloader.
+                raise RuntimeError("Plugin package changed after preflight; retry the equipment change")
             if self._instance is not None:
                 await self._instance.unload_extension(entry[0])
             self._loaded_plugins.pop(name, None)
@@ -3070,7 +3185,10 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("DeepAgent instance not ready for equipment load")
         for name, desired_version, pkg_dir in to_load:
-            record = await self._instance.load_plugin(str(pkg_dir))
+            runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+            record = await runtime_manager.load(name) if runtime_manager is not None else None
+            if record is None:
+                record = await self._instance.load_plugin(str(pkg_dir))
             self._loaded_plugins[name] = (record, desired_version)
 
     @staticmethod
@@ -3901,7 +4019,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 metadata = get_session_metadata(sid)
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
                 # Explicit stable selections win; legacy ordinary names are also an
@@ -4982,6 +5100,53 @@ class JiuWenSwarmDeepAdapter:
             return self._model_request_config.model_name or "unknown"
         return "unknown"
 
+    def _resolve_runtime_state_model(self, language: str) -> str:
+        """Name the session's model for the runtime state file.
+
+        A model-group selection compiles to the group's first model as a
+        direct client (single-agent sessions use a manual pool; only the Team
+        build compiles the real router), so the applied client config never
+        carries the group. The requested selection reference does: a plain
+        ``model_group:<id>`` means the conversation runs on that group, and
+        naming a concrete model here would read as a claim about the model
+        actually answering -- misleading to anyone who opens this file, the
+        leader included (it can read_file it).
+        """
+        ref = str(getattr(self, "_last_requested_model_ref", "") or "")
+        parts = ref.split(":") if ref else []
+        if len(parts) == 2 and parts[0] == "model_group":
+            return self._model_group_label(parts[1], language)
+        router = getattr(self._model_client_config, "intelli_router", None)
+        group_id = str(getattr(router, "model_group_id", "") or "").strip()
+        if group_id:
+            return self._model_group_label(group_id, language)
+        return self._resolve_model_name()
+
+    def _model_group_label(self, group_id: str, language: str) -> str:
+        """Name a model group the way the runtime prompt does, memoized.
+
+        The catalog load is not free and the runtime state file is written
+        per request, so the resolved name is cached per group id and dropped
+        with the rest of the model cache when the config changes.
+        """
+        # Bare instances (tests build them via __new__) skip the memo and
+        # simply resolve; real ones carry the cache from __init__.
+        cache = getattr(self, "_model_group_label_cache", None)
+        if cache is None:
+            cache = {}
+        name = cache.get(group_id)
+        if name is None:
+            try:
+                from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                name = ModelCatalog().group_display_name(group_id)
+            except Exception:  # noqa: BLE001 - naming must never fail the state write
+                name = group_id
+            cache[group_id] = name
+        if str(language).lower().startswith("en"):
+            return f"model group {name}"
+        return f"模型组 {name}"
+
     def _resolve_session_git_snapshot(
         self,
         project_dir: str,
@@ -5088,7 +5253,7 @@ class JiuWenSwarmDeepAdapter:
             mode_display = _MODE_DISPLAY_MAP.get(mode, {}).get(language, mode)
 
             state = {
-                "model": self._resolve_model_name(),
+                "model": self._resolve_runtime_state_model(language),
                 "moa_enabled": self._moa_enabled,
                 "available_models": get_model_names(),
                 "mode": mode_display,
@@ -8099,6 +8264,11 @@ class JiuWenSwarmDeepAdapter:
             return self._model
 
         self._model_cache.clear()
+        # Group display names come from the same config; drop the memo with
+        # the model cache so a rename shows up after a reload.
+        label_cache = getattr(self, "_model_group_label_cache", None)
+        if label_cache:
+            label_cache.clear()
         self._model_recipes = {}
         self._model_alias_to_key = {}
         self._model_name_to_keys.clear()
@@ -8203,7 +8373,7 @@ class JiuWenSwarmDeepAdapter:
         if group_id:
             cached = self._model_group_cache.get(group_id)
             if cached is None:
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.model_compiler_adapter import (
                     build_model_from_selection,
                 )
@@ -8407,7 +8577,7 @@ class JiuWenSwarmDeepAdapter:
         raw_selection = params.get("model_selection")
         if isinstance(raw_selection, dict):
             try:
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
                 suffix = f":{selection.route_id}" if selection.route_id else ""
                 return f"{selection.type}:{selection.id}{suffix}"
@@ -8441,7 +8611,7 @@ class JiuWenSwarmDeepAdapter:
         raw_selection = params.get("model_selection")
         if raw_selection is not None:
             try:
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
                 if self._is_cron_execution_session(getattr(request, "session_id", None)):
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -8481,7 +8651,7 @@ class JiuWenSwarmDeepAdapter:
             except ValueError:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
         from jiuwenswarm.common.model_catalog import ModelCatalog
-        from gateway.common.model_selection import ModelSelection
+        from agent_gateway.common.model_selection import ModelSelection
         from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
         catalog = ModelCatalog()
@@ -8514,7 +8684,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _resolve_stable_model(self, requested: str, can_access=None) -> Model:
         """Cache by resolved content, not only ID: edits take effect without restart."""
-        from gateway.common.model_selection import ModelSelection
+        from agent_gateway.common.model_selection import ModelSelection
         from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
         from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -8586,8 +8756,17 @@ class JiuWenSwarmDeepAdapter:
                     self._instance_overrides.get("moa_model_selection"),
                     can_access=access["moa_can_access"],
                 )
+            # The aggregator is the session's model now; a remembered group
+            # selection is stale and would keep naming the group in the
+            # runtime state file instead of the model actually answering.
+            self._last_requested_model_ref = ""
             return self._moa_runtime.aggregator
         requested = self._requested_model_name(request)
+        # Remember the selection reference: the runtime state file names the
+        # group from it, because the applied client config of a group
+        # selection is only the group's first model as a direct client.
+        if requested:
+            self._last_requested_model_ref = requested
         # 登录模型：Gateway 随请求带下凭据时优先构建，不进共享缓存（避免串号）。
         scoped = self._request_scoped_login_model(request, requested)
         if scoped is not None:
@@ -10081,10 +10260,17 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
+    def _ttse_bank_root(self) -> Path:
+        """Agent data root holding ``.ttse/``; must never be a user project dir."""
+        return Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
+
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob."""
-        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        """FACT/TIP bank is ``<root>/.ttse/<profile>/bank.json``; not a user knob.
+
+        Each profile (work / code) gets its own store path, so induce, consult
+        and dream never cross banks (``shared_store`` is keyed by path).
+        """
+        return str(self._ttse_bank_root() / ".ttse" / self._TTSE_BANK_PROFILE / "bank.json")
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins)."""
@@ -10181,6 +10367,7 @@ class JiuWenSwarmDeepAdapter:
                 "consult_top_k": consult_top_k,
                 "consult_retrieve_mode": consult_retrieve_mode,
                 "consult_rrf_k": consult_rrf_k,
+                "induce_llm_policy": _ttse_induce_llm_policy(),
             }
             try:
                 import inspect
@@ -10242,6 +10429,7 @@ class JiuWenSwarmDeepAdapter:
         cfg_obj = getattr(rail, "_ttse_config", None)
         if cfg_obj is not None:
             consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
+            induce_policy = _ttse_induce_llm_policy()
             for attr, value in (
                 ("dream_enabled", bool(dream_enabled)),
                 ("dream_interval", _TTSE_DREAM_INTERVAL),
@@ -10249,6 +10437,7 @@ class JiuWenSwarmDeepAdapter:
                 ("dream_ttl_days", _TTSE_DREAM_TTL_DAYS),
                 ("consult_top_k", consult_top_k),
                 ("consult_retrieve_mode", consult_retrieve_mode),
+                ("induce_llm_policy", induce_policy),
             ):
                 if hasattr(cfg_obj, attr):
                     setattr(cfg_obj, attr, value)
@@ -10294,9 +10483,8 @@ class JiuWenSwarmDeepAdapter:
         """
         if self._instance is None or self._ttse_rail is None:
             return
-        if not _ttse_consult_should_be_eager(
-            self._config_base_cache or self._config_cache
-        ):
+        inject_enabled = _ttse_consult_should_be_eager(self._config_base_cache or self._config_cache)
+        if not inject_enabled:
             return
         if not get_progressive_tool_enabled(
             self._config_base_cache or get_config()
@@ -10380,9 +10568,10 @@ class JiuWenSwarmDeepAdapter:
         if rail is None:
             return
         try:
-            cleanup = getattr(rail, "cleanup_background_tasks", None)
-            if cleanup is not None:
-                await cleanup()
+            await _drain_ttse_rail_background_tasks(
+                rail,
+                timeout_secs=_TTSE_CLEANUP_WAIT_SECS,
+            )
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] TTSE cleanup failed: request_id=%s "
@@ -14944,6 +15133,9 @@ class JiuWenSwarmDeepAdapter:
         )
 
         await stop_external_harness(self)
+        runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+        if runtime_manager is not None:
+            await runtime_manager.close()
         await self._cleanup_evolution_background_tasks()
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
@@ -15048,10 +15240,12 @@ class JiuWenSwarmDeepAdapter:
                 )
                 raise
         ttse_rail = getattr(self, "_ttse_rail", None)
-        ttse_cleanup = getattr(ttse_rail, "cleanup_background_tasks", None)
-        if callable(ttse_cleanup):
+        if ttse_rail is not None:
             try:
-                await ttse_cleanup()
+                await _drain_ttse_rail_background_tasks(
+                    ttse_rail,
+                    timeout_secs=_TTSE_CLEANUP_WAIT_SECS,
+                )
             except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] TTSE cleanup failed during "
@@ -18473,7 +18667,7 @@ class JiuWenSwarmDeepAdapter:
     def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
         """Refuse protected-mode steering before any SDK submission."""
         from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
-        from gateway.common.mode_matrix import is_plan_mode
+        from agent_gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.context import get_current_runtime
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 

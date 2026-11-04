@@ -433,7 +433,6 @@
       "browser": "浏览器",
       "channels": "频道",
       "personalContext": "知识",
-      "recommendation": "推荐",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
@@ -498,6 +497,11 @@
       "hideValue": "隐藏明文"
     },
     "general": {
+      "topicModelTitle": "配置话题推荐模型",
+      "topicModelDisconnected": "连接已断开，请恢复连接后重试。",
+      "topicModelSave": "保存并启用",
+      "topicModelProtocol": "话题推荐仅支持 OpenAI 兼容协议的模型。",
+      "topicModelDelete": "将删除话题推荐模型配置并关闭话题推荐。",
       "preferences": "界面与连接",
       "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",
@@ -738,42 +742,6 @@
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
     },
-    "recommendation": {
-      "title": "个性化推荐",
-      "description": "根据你的对话推荐话题和下一步提示词。",
-      "model": "话题推荐模型",
-      "modelDescription": "切换后会重新准备推荐。只使用这里选中的模型，不跟随输入框里的对话模型。",
-      "modelIncompatible": "接口不兼容",
-      "modelLoginRequired": "需要登录",
-      "modelFree": "免费模型",
-      "unusableModelOption": "{{name}}（{{reason}}）",
-      "modelUnusable": "话题推荐模型无法使用：请换一个模型，或在「设置 → 模型」补全它的接口地址与密钥。",
-      "data": "推荐数据",
-      "dataDescription": "画像和推荐记录只保存在本机。",
-      "view": "查看",
-      "hide": "收起",
-      "enableTitle": "开启个性化推荐",
-      "enableMessage": "开启后，相关对话会发给模型服务商，用来准备话题推荐和下一步建议；联网检索只使用公开主题词。调用费用由你自己的 API 账户承担，推荐数据存放在本机。",
-      "includeHistory": "同时读取已有聊天历史",
-      "enable": "开启",
-      "deleteTitle": "删除推荐数据",
-      "deleteMessage": "删除画像、摘要、卡池和相关推荐记录，并关闭推荐。原始聊天保留；重新开启默认不会重建旧画像。个人备份及服务端数据不在本地删除范围内。",
-      "blockedDirections": "已不再推荐的方向",
-      "blockedSince": "{{date}} 起不再推荐",
-      "restore": "恢复",
-      "profileEmpty": "尚无可核对来源的推荐画像。",
-      "correctionLabel": "用自然语言纠正画像",
-      "correctionPlaceholder": "说明哪些偏好需要纠正、暂停或保留",
-      "correct": "在新对话中纠正",
-      "correctionNote": "发送并完成这条对话后，下一次推荐会读取你的纠正；关闭推荐期间不整理画像。",
-      "unreachable": "无法读取推荐设置，请检查应用连接。",
-      "invalidKey": "模型服务商拒绝了密钥，请更换密钥后重新准备话题。",
-      "accessDenied": "模型服务商拒绝访问，请核对账号权限后重新准备话题。",
-      "accountOverdue": "模型服务账号欠费，请在服务商控制台充值后重新准备话题。",
-      "modelUnavailable": "话题推荐模型不可用，请核对模型名称和访问权限。",
-      "lastFailure": "最近一次准备话题没有完成。",
-      "retry": "重新准备话题"
-    },
     "browser": {
       "runtime": "浏览器运行配置",
       "runtimeDescription": "浏览器配置保存后会由现有后端逻辑重置运行时。",
@@ -934,7 +902,7 @@
       },
       "topic_recommendation_enabled": {
         "title": "话题推荐",
-        "description": "根据对话兴趣准备首页话题卡片。未设置时跟随程序默认。"
+        "description": "根据对话兴趣准备首页话题卡片。"
       },
       "prompt_suggestion_enabled": {
         "title": "提示词推荐",
@@ -1137,7 +1105,58 @@
     },
     "team": {
       "memberLanes": "成员轨迹泳道",
-      "members": "成员"
+      "members": "成员",
+      "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
+      "workflowGroupOperators": "{{count}} 个算子",
+      "schedule": {
+        "title": "调度控制",
+        "collapse": "收起调度控制",
+        "expand": "展开调度控制",
+        "summary": "{{tasks}} 个任务 · {{completed}} 个完成 · {{reviews}} 次 Review · {{reworks}} 次返工",
+        "controlRecords": "{{count}} 条调度记录",
+        "anomalies": "{{count}} 个调度异常",
+        "blockedLegend": "浅灰段：等待依赖",
+        "blockedLegendHint": "浅灰时间轴表示任务正在等待前置任务完成，依赖解除后会继续执行。",
+        "assignee": "承担者",
+        "unassigned": "未指派",
+        "unknownMember": "未知成员",
+        "closeTask": "关闭任务详情",
+        "noReviews": "暂无 Review 记录",
+        "reviewCount_one": "{{count}} 次评审",
+        "reviewCount_other": "{{count}} 次评审",
+        "phase": {
+          "pending": "待处理",
+          "blocked": "等待依赖",
+          "running": "执行中",
+          "in_review": "验收中",
+          "rework": "返工中",
+          "completed": "已完成",
+          "escalated": "已升级",
+          "cancelled": "已取消",
+          "unknown": "未知"
+        },
+        "decision": {
+          "pass": "通过",
+          "fail": "未通过",
+          "score": "得分 {{value}}",
+          "pending": "待投票",
+          "pendingScore": "待评分"
+        },
+        "event": {
+          "created": "任务创建",
+          "updated": "任务更新",
+          "unblocked": "依赖解除",
+          "started": "任务开工",
+          "submitted": "提交验收",
+          "vote": "Review 投票",
+          "revision": "要求返工",
+          "verified": "验收通过",
+          "cancelled": "任务取消",
+          "escalated": "验收升级",
+          "anomaly": "调度异常",
+          "team_completed": "团队完成"
+        }
+      }
     },
     "analysis": {
       "back": "返回对话",
@@ -1161,6 +1180,7 @@
         "replay": "只读复现中无法诊断，请先退出复现"
       },
       "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
+      "teamSummary": "{{members}} 名正式成员 · {{completed}}/{{tasks}} 个任务完成 · {{reviews}} 次 Review · {{spans}} 个 Span",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1543,25 +1563,64 @@
       }
     },
     "org": {
-      "tab": "组织信息",
-      "title": "Task Pool 与组织",
+      "tab": "组织",
+      "title": "组织",
+      "details": "详细信息",
+      "taskTree": "组织任务",
+      "treeProgress": "已完成 {{completed}} / {{total}}",
+      "descriptionExcerpt": "说明摘要",
+      "requiredCapabilities": "所需能力",
+      "capabilities": "团队能力",
+      "assignedBy": "分配团队",
+      "updatedAt": "最近更新",
+      "aggregationMode": "汇总方式",
+      "executionModel": "执行模型",
+      "failureReason": "失败原因",
+      "rootTask": "根任务",
+      "recreatedFrom": "重建来源",
+      "requiredChanges": "修改要求",
+      "aggregation": {
+        "HIERARCHICAL": "逐级汇总",
+        "SUMMARY_TEAM": "Summary Team 汇总"
+      },
+      "failure": {
+        "EXECUTION_FAILED": "执行失败",
+        "SOURCE_FAILED": "依赖任务失败",
+        "SUMMARY_PROVISION_FAILED": "汇总团队创建失败",
+        "CANCELLED": "已取消",
+        "EXPIRED": "已过期"
+      },
+      "ownerLabel": "主团",
+      "stateRunning": "运行中",
+      "stateIdle": "待命",
+      "status": {
+        "CANCELLED": "已取消",
+        "EXPIRED": "已过期",
+        "OPEN": "待认领",
+        "DELEGATED": "已委派",
+        "WAITING_SOURCES": "等待成果",
+        "CLAIMED": "已认领",
+        "IN_PROGRESS": "进行中",
+        "COMPLETED": "已完成",
+        "FAILED": "失败"
+      },
       "refresh": "刷新",
       "loading": "加载中…",
-      "empty": "当前 Team 未绑定 organization",
+      "empty": "暂未组建组织",
       "noOrganization": "未绑定组织",
       "noTeam": "当前会话暂无可查询的 Team",
-      "loadFailed": "组织信息加载失败",
-      "organizationId": "Organization ID",
+      "loadFailed": "组织加载失败",
+      "organizationId": "组织 ID",
       "displayName": "名称",
       "description": "描述",
-      "ownerTeam": "Owner Team",
-      "teams": "Team 列表",
+      "ownerTeam": "主团",
+      "teams": "团队",
       "leadTeam": "Team",
       "leadMember": "Leader",
       "metadata": "元数据",
-      "taskPool": "Task Pool",
+      "taskPool": "任务",
       "taskPoolEmpty": "任务池为空",
-      "taskId": "Task ID",
+      "taskId": "任务 ID",
       "taskTitle": "标题",
       "taskStatus": "状态",
       "taskAssignee": "执行者",
@@ -1711,6 +1770,8 @@
       "nextStep": "帮我把一个想法变成可执行的下一步。"
     },
     "topicStarter": {
+      "statusMissingConfiguration": "话题推荐模型未配置完整，请前往常规设置检查。",
+      "recommendedForYou": "为你推荐",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",
       "dateAndVersion": "看看这一天",
@@ -1726,17 +1787,18 @@
       "statusPreparing": "正在准备话题，你也可以直接开始聊。",
       "statusPreparingWithCards": "正在换一批更贴你的话题，这些还可以先点。",
       "statusUpdateIncomplete": "新话题还没就绪，先用这些也行。",
-      "statusNeedsSettings": "想让话题更贴你，可以去设置里打开。",
+      "statusNeedsSettings": "想让话题更懂你，可以去设置-常规里打开。",
       "statusNoCards": "这会儿没有合适的话题，直接打字开始也行。",
       "providerRefusal": "个性化这边暂时接不上，细节在设置里。",
       "openSettings": "去设置看看",
+      "disabledHint": "想让话题更懂你，可以去设置-常规里打开。",
       "retryPreparation": "再试试"
     },
     "promptSuggestionBox": {
       "label": "下一步：",
       "sendHint": "点击发送这条建议",
       "dismiss": "关闭建议「{{text}}」",
-      "placeholder": "{{label}}{{text}}（Tab 填入）"
+      "placeholder": "{{text}}（Tab 填入）"
     },
     "newSession": "新建会话",
     "sessionCreated": "已新建会话",
@@ -1898,6 +1960,11 @@
       "dialogue": "压缩过去轮消息中…",
       "currentRound": "压缩当前轮…",
       "roundLevel": "全量压缩…"
+    },
+    "contextCompressionElapsed": {
+      "seconds": "已等待 {{seconds}} 秒",
+      "minutesSeconds": "已等待 {{minutes}} 分 {{seconds}} 秒",
+      "hoursMinutes": "已等待 {{hours}} 小时 {{minutes}} 分"
     },
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
@@ -2525,7 +2592,8 @@
       "more": "更多",
       "history": "运行历史",
       "triggeredSessions": "执行记录",
-      "noTriggeredSessions": "暂无触发记录"
+      "noTriggeredSessions": "暂无触发记录",
+      "viewMore": "查看更多（剩余 {{count}} 条）"
     },
     "empty": {
       "createButton": "创建定时任务",
@@ -3845,8 +3913,7 @@
       "Communication": "通讯协作",
       "Engineering": "产品研发",
       "Life": "生活方式",
-      "Custom": "自定义",
-      "Other": "其他"
+      "Custom": "自定义"
     },
     "actions": {
       "working": "处理中",
@@ -4151,6 +4218,8 @@
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
   },
   "chatUi": {
+    "toggleOverview": "缩略栏",
+    "expandDetails": "详情面板",
     "copyMessage": "复制消息",
     "copied": "已复制",
     "usageInput": "输入",
@@ -4776,6 +4845,7 @@
   },
   "authPrompt": {
     "title": "操作授权",
+    "matchedRule": "匹配规则",
     "titleConfirm": "操作确认",
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
@@ -5314,6 +5384,7 @@
     },
     "artifact": {
       "empty": "暂无产物文件",
+      "noHarnessSnapshot": "该节点尚未生成 Harness 包",
       "loadFailed": "产物加载失败",
       "selectFile": "请选择文件",
       "copied": "已复制",
@@ -5482,6 +5553,7 @@
     "verifyReviewingShort": "评审中",
     "verifyPass": "✓ 通过",
     "expertIdentity": "专家：{{name}}（{{template}}）",
+    "turnDetailHint": "点击查看该轮输入 / 输出",
     "verifyFail": "✗ 不通过",
     "verifyUndecided": "? 未裁决",
     "verifyThreshold": "阈值 {{count}}",

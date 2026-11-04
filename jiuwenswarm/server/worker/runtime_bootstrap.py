@@ -62,8 +62,8 @@ async def _construct_runtime_server(
     """
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     extension_registry = ExtensionRegistry.create_instance(

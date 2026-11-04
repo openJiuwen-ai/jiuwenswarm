@@ -85,6 +85,10 @@ import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { getWebTransport } from '../utils/env';
+import {
+  applyCronSettleUnread,
+  shouldMarkCronUnreadFromFinal,
+} from '../features/cron/cronUnreadFallback';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -1632,7 +1636,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (status === 'started' || status === 'running') {
         clearPendingContextCompressionStart(sessionId);
         const pending: PendingContextCompressionStart = {
-          runtimeState,
+          // 记下这一轮压缩的起始时刻：界面在 300ms 后才显示提示，但计时要从
+          // 真正开始压缩算起；每轮 started 都会覆盖，因此计时自动从头开始。
+          runtimeState: { ...runtimeState, startedAt: Date.now() },
           shown: false,
           timer: window.setTimeout(() => {
             const current = pendingContextCompressionStartRef.current.get(sessionId);
@@ -1712,7 +1718,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
         const key = getTeamMemberContextCompressionKey(sessionId, memberId);
         const pending: PendingContextCompressionStart = {
-          runtimeState,
+          // 成员压缩与 leader 压缩各自独立计时，同样每轮 started 重新开始。
+          runtimeState: { ...runtimeState, startedAt: Date.now() },
           shown: false,
           timer: window.setTimeout(() => {
             if (pendingTeamMemberContextCompressionStartRef.current.get(key) !== pending) return;
@@ -3032,6 +3039,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     []
   );
 
+  const restoreForegroundProcessing = useCallback(
+    (sessionId: string, payload: Record<string, unknown>): void => {
+      // Organization output is rendered here, but its request lifecycle belongs
+      // to useOrganizationEvents. Never turn that output into foreground work.
+      if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+        payload.source !== 'org_expert_direct' && payload.team_id) return;
+      const runtime = useChatStore.getState().getRuntime(sessionId);
+      if (!isProactiveRecommendationPayload(payload) &&
+        !runtime?.isProcessing && !runtime?.isLoadingHistory && !runtime?.isPaused) {
+        useChatStore.getState().setProcessing(sessionId, true);
+      }
+    },
+    [isProactiveRecommendationPayload],
+  );
+
   const clearThinkingForVisibleOutput = useCallback((sessionId: string) => {
     const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
     const isProcessingNow = useChatStore.getState().getRuntime(sessionId)?.isProcessing;
@@ -3316,13 +3338,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (!sessionId) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !isProactiveRecommendationPayload(payload) &&
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-        ) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
 
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         const agentTemplateName =
@@ -3525,10 +3541,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (isProactiveRecommendationPayload(payload)) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (!activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
 
         const agentTemplateName =
           !isProactiveRecommendationPayload(payload)
@@ -3579,9 +3592,38 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const cronProjectId = cronJob?.project_id || 'default';
             void useCronStore.getState().loadCronSessions(cronProjectId, cronJobId);
           }
-          // 非占位（最终结果）广播到达时标记定时任务未读
-          if (cronJobId && !isPlaceholder) {
-            useCronStore.getState().markCronJobUnread(cronJobId);
+          // 只有整趟终态推送才亮蓝点。企业版直播中间段 chat.final 也会带上来，
+          // 见 final 就标会「会话还在跑、蓝点已经亮了」。
+          // 人正在看该执行会话时等同已读（与 cron.run.updated 一致），不要再亮蓝点。
+          if (
+            cronJobId &&
+            shouldMarkCronUnreadFromFinal({
+              is_placeholder: isPlaceholder,
+              status: cronStatus,
+            })
+          ) {
+            const execSid =
+              typeof cronMeta.exec_session_id === 'string'
+                ? cronMeta.exec_session_id.trim()
+                : '';
+            const targetSid =
+              resolveEventSessionId(payload)
+              || execSid
+              || useCronStore.getState().lastRunSessionId[cronJobId]
+              || '';
+            const viewing =
+              Boolean(targetSid)
+              && activeSessionVisibleRef.current
+              && targetSid === activeSessionIdRef.current
+              && document.visibilityState === 'visible';
+            const store = useCronStore.getState();
+            applyCronSettleUnread({
+              jobId: cronJobId,
+              sessionId: targetSid,
+              viewing,
+              mark: store.markCronJobUnread,
+              clear: store.clearCronJobUnread,
+            });
           }
         }
 
@@ -3609,6 +3651,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
         if (!sessionId) return;
+        // live 订约已把同一终稿画进执行会话后，web push / 回放再来一份会「到期两遍」
+        if (cronMeta && cronMeta.is_placeholder !== true) {
+          const existingContent = normalizeFinalContent(payload).trim();
+          if (existingContent) {
+            const runtime = useChatStore.getState().getRuntime(sessionId);
+            if (runtime?.messages.some(
+              (message) => message.role === 'assistant'
+                && String(message.content || '').trim() === existingContent,
+            )) {
+              return;
+            }
+          }
+        }
         // cron 最终结果（非占位）广播到达：自动跳转到执行会话，加载完整历史
         // （含用户消息、agent 回复、session 标题），避免用户手动点击左侧 session。
         // handleRestoreSession 通过队列异步执行，不会干扰当前消息处理。
@@ -4404,13 +4459,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !isProactiveRecommendationPayload(payload) &&
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-        ) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         if (!isProactiveRecommendationPayload(payload)) {
           clearThinkingForVisibleOutput(sessionId);
@@ -4848,6 +4897,43 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         };
         updateSession(sessionId, sessionPatch);
         useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
+        // 企业版 cron 整趟结束以 processing=false 为准（中间段 chat.final 不亮蓝点）
+        if (!isProcessingNow) {
+          const cronMeta = payload.cron as Record<string, unknown> | undefined;
+          let cronJobId =
+            cronMeta && typeof cronMeta.job_id === 'string' ? cronMeta.job_id.trim() : '';
+          if (!cronJobId) {
+            const lastRun = useCronStore.getState().lastRunSessionId;
+            for (const [jobId, sid] of Object.entries(lastRun)) {
+              if (sid === sessionId) {
+                cronJobId = jobId;
+                break;
+              }
+            }
+          }
+          if (!cronJobId) {
+            const matched = useCronStore.getState().jobs.find(
+              (job) => String(job.last_session_id || '').trim() === sessionId
+                || String(job.active_session_id || '').trim() === sessionId,
+            );
+            if (matched) cronJobId = matched.id;
+          }
+          if (cronJobId) {
+            // 正在看 = 已读；切走后 live 回放同一趟收尾时不要再亮蓝点。
+            const viewing =
+              activeSessionVisibleRef.current
+              && sessionId === activeSessionIdRef.current
+              && document.visibilityState === 'visible';
+            const store = useCronStore.getState();
+            applyCronSettleUnread({
+              jobId: cronJobId,
+              sessionId,
+              viewing,
+              mark: store.markCronJobUnread,
+              clear: store.clearCronJobUnread,
+            });
+          }
+        }
         if (!isProcessingNow) {
           useChatStore.getState().setThinking(sessionId, false);
           // 轮次终态兜底：思考段若因「思考后无文本增量/无工具调用」而未关闭，
@@ -5913,6 +5999,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     reconcileAgentGroupBinding,
     updateSession,
     resolveEventSessionId,
+    restoreForegroundProcessing,
     backfillOptimisticBubbleTimestamp,
     shouldDropDuplicatedEvent,
     t,

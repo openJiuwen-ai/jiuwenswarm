@@ -427,6 +427,7 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
         initialized: If True, skip cache reset (use when paths are already initialized elsewhere).
     """
     global _user_home, _initialized, _config_dir, _workspace_dir, _root_dir
+    global _workspace_base_dir
     _user_home = Path(path)
     if initialized:
         return
@@ -434,6 +435,13 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
     _config_dir = None
     _workspace_dir = None
     _root_dir = None
+    # _workspace_base_dir caches ``<home>/.jiuwenswarm`` and is filled on the first path
+    # lookup -- which happens at import time, from the *real* home, via setup_logger().
+    # Leaving it set made the promise above false: get_user_workspace_dir() returns the
+    # cached value before it ever consults get_user_home(), so a test that redirected the
+    # home still resolved to the developer's own workspace, and a force init deleted the
+    # real ~/.jiuwenswarm/config subdirectories.
+    _workspace_base_dir = None
 
 
 def get_user_workspace_dir() -> Path:
@@ -1769,15 +1777,6 @@ def get_root_dir() -> Path:
     return _root_dir
 
 
-def get_agent_workspace_dirname() -> str:
-    """Agent workspace directory name under ``agent/``.
-
-    - 个人版: ``workspace``
-    - 企业版: ``jiuwenclaw_workspace``
-    """
-    return "jiuwenclaw_workspace" if is_enterprise() else "workspace"
-
-
 def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
     """Get the agent workspace directory path.
 
@@ -1785,10 +1784,10 @@ def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
     It contains standard nodes like skills, memory, todo, messages, etc.
 
     - 个人版: ``~/.jiuwenswarm/agent/workspace``
-    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/jiuwenclaw_workspace``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/workspace``
 
     ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
-    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / dirname``。
+    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / "workspace"``。
     """
     if tenant_key is None:
         try:
@@ -1801,7 +1800,7 @@ def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
             logger.debug(
                 "tenant_context unavailable for workspace bind", exc_info=True
             )
-    return get_agent_root_dir(tenant_key) / get_agent_workspace_dirname()
+    return get_agent_root_dir(tenant_key) / "workspace"
 
 
 def get_default_project_workspace_dir() -> Path:
@@ -3048,14 +3047,14 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         handler.close()
         root.removeHandler(handler)
 
-    # M0-c：gateway 升为顶层包后，其模块 logger（``gateway.*``）不再位于
-    # ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式把
-    # ``gateway`` logger 挂回 ``jiuwenswarm`` 树，保持 gateway.log / 控制台
-    # 路由不变（否则 gateway 日志全部丢失）。
-    gateway_logger = logging.getLogger("gateway")
-    gateway_logger.setLevel(logging.NOTSET)
-    gateway_logger.propagate = True
-    gateway_logger.parent = root
+    # gateway 已拆为独立包 agent_gateway，其模块 logger（``agent_gateway.*``）
+    # 不在 ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式挂回
+    # ``jiuwenswarm`` 树，保持 gateway.log / 控制台路由不变（否则日志全部丢失）。
+    for gateway_logger_name in ("gateway", "agent_gateway"):
+        gateway_logger = logging.getLogger(gateway_logger_name)
+        gateway_logger.setLevel(logging.NOTSET)
+        gateway_logger.propagate = True
+        gateway_logger.parent = root
 
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",

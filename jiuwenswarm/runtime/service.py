@@ -19,14 +19,14 @@ from contextlib import aclosing, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
@@ -249,8 +249,8 @@ async def _acquire_process_runtime_extensions() -> bool:
 
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         try:
@@ -308,7 +308,7 @@ async def _release_process_runtime_extensions() -> None:
     global _PROCESS_RUNTIME_EXTENSION_REGISTRY
     global _PROCESS_RUNTIME_EXTENSION_USERS
 
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         if _PROCESS_RUNTIME_EXTENSION_USERS <= 0:
@@ -341,6 +341,10 @@ def _client_tool_answer_mismatch(request: AgentRequest) -> Iterator[None]:
         if not is_client_tool_resume(request.params):
             raise
         raise ClientToolAnswerMismatch("no paused execution waits on these client tool results") from exc
+
+
+def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
+    return bool(execution.waiting_control_ids) and not execution.state.terminal
 
 
 class AgentRuntime:
@@ -514,7 +518,7 @@ class AgentRuntime:
         )
 
     def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
-        from gateway.common.mode_matrix import is_plan_mode
+        from agent_gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
         if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
@@ -1065,6 +1069,14 @@ class AgentRuntime:
         """Read the authoritative execution state without attaching a consumer."""
         return self._session_coordinator.snapshot_session(session_id)
 
+    def sessions_awaiting_answers(self) -> tuple[str, ...]:
+        """The Sessions with an unfinished execution paused on interactions (questions, client tool calls)."""
+        return tuple(
+            snapshot.session_id
+            for snapshot in self._session_coordinator.snapshot_sessions()
+            if any(_awaits_answers(execution) for execution in snapshot.executions)
+        )
+
     def recoverable_control(
         self, session_id: str, request_id: str, execution_id: str,
     ) -> SessionExecutionSnapshot | None:
@@ -1236,7 +1248,7 @@ class AgentRuntime:
         work_mode: object = None,
     ) -> bool:
         """Return whether a mode uses the single-Agent Session Runtime."""
-        from gateway.common.mode_matrix import (
+        from agent_gateway.common.mode_matrix import (
             NEW_AGENT_CODE_NORMAL,
             NEW_AGENT_WORK_NORMAL,
         )
@@ -1690,6 +1702,9 @@ class AgentRuntime:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
         request = self.normalize_request(request)
+        attachment_completion = self._non_team_attachment_completion(request)
+        if attachment_completion is not None:
+            return [attachment_completion]
         self._validate_permission_answer(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
@@ -2209,6 +2224,10 @@ class AgentRuntime:
         )
 
         request = self.normalize_request(request)
+        attachment_completion = self._non_team_attachment_completion(request)
+        if attachment_completion is not None:
+            yield attachment_completion
+            return
         self._validate_permission_answer(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
@@ -3980,6 +3999,25 @@ class AgentRuntime:
     def _is_attach_only_request(request: AgentRequest) -> bool:
         params = request.params if isinstance(request.params, dict) else {}
         return params.get(TEAM_ATTACH_ONLY_PARAM) is True
+
+    @classmethod
+    def _non_team_attachment_completion(cls, request: AgentRequest) -> RuntimeEvent | None:
+        """End a stale Team subscription before it can enter user admission."""
+        if (
+            request.req_method is not ReqMethod.CHAT_SEND
+            or not cls._is_attach_only_request(request)
+            or cls._request_targets_team(request)
+        ):
+            return None
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        return RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id or "default",
+            session_id=request.session_id,
+            payload=None,
+            is_complete=True,
+        )
 
     def _team_lifecycle(self) -> SessionRuntimeLifecyclePort:
         if self._session_runtime_lifecycle is None:

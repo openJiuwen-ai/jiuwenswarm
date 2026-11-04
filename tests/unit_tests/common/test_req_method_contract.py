@@ -19,24 +19,25 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import agent_gateway
 import openjiuwen_protocol.message as protocol_message
+from agent_gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
+from agent_gateway.channel_manager.web.app_web_handlers import (
+    _FORWARD_REQ_METHODS,
+)
 
 from jiuwenswarm.common.schema import agent as schema_agent
 from jiuwenswarm.common.schema import message as schema_message
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
-from gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_REQ_METHODS,
-)
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
 _REQ_METHOD_VALUES = frozenset(method.value for method in ReqMethod)
 
 
 def _gateway_req_method_literals() -> set[str]:
     """收集 gateway 源码中 ``req_method="..."`` 关键字实参字面量。"""
     found: set[str] = set()
-    gateway_root = _REPO_ROOT / "gateway"
+    gateway_root = _GATEWAY_ROOT
     assert gateway_root.is_dir(), f"Gateway source directory does not exist: {gateway_root}"
     for path in gateway_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))

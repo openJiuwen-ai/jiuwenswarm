@@ -7,8 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
@@ -17,6 +16,8 @@ from gateway.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -231,9 +232,15 @@ def resolve_cron_binding(
     work_mode, error = resolve_request_work_mode(params, channel_id=channel_id or "web")
     if error is not None:
         return None, f"invalid work_mode: {params.get('work_mode')!r}", "BAD_REQUEST"
-    binding = project_store.resolve_cron_project_binding(
-        params.get("project_id"), params.get("project_dir"), work_mode,
-    )
+    try:
+        binding = project_store.resolve_cron_project_binding(
+            params.get("project_id"), params.get("project_dir"), work_mode,
+        )
+    except ValueError as exc:
+        # resolve_cron_project_id 对相对路径等非法入参抛 ValueError。这是参数
+        # 校验失败，必须在这里转成 BAD_REQUEST；否则会冒到 ProjectAdapter /
+        # project_repository 的通用异常兜底，被统一映射成 INTERNAL_ERROR。
+        return None, str(exc), "BAD_REQUEST"
     if binding.error is not None:
         return None, binding.error, binding.code or "BAD_REQUEST"
     return {

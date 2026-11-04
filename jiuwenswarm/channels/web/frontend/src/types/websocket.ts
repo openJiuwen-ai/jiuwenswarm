@@ -151,6 +151,7 @@ export interface Question {
   options: QuestionOption[];
   multi_select?: boolean;
   card_id?: string;
+  matched_rule?: string;
   tool_payload?: unknown;
   reviewer_metadata?: AutoReviewerMetadata;
 }

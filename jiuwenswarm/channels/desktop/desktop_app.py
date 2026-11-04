@@ -441,7 +441,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "gateway.app_gateway"]
+        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -1255,7 +1255,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)
@@ -1988,7 +1988,12 @@ class DesktopRuntime:
             if isinstance(url, str) and url.startswith("data:"):
                 temp_path.write_bytes(self._bytes_from_download_data_url(url))
             else:
-                urllib.request.urlretrieve(url, temp_path)
+                # urllib 的 HTTP 请求行只接受 ASCII：中文文件名/空格等非 ASCII 字符
+                # 必须先百分号编码，否则抛 UnicodeEncodeError，表现为桌面端下载失败。
+                # safe 保留 URL 结构字符与已有的 %xx 转义，避免二次编码。
+                urllib.request.urlretrieve(
+                    quote(url, safe=":/?#[]@!$&'()*+,;=%"), temp_path
+                )
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)

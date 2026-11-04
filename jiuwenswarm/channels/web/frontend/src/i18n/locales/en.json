@@ -440,7 +440,6 @@
       "browser": "Browser",
       "channels": "Channels",
       "personalContext": "Knowledge",
-      "recommendation": "Recommendations",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -505,6 +504,11 @@
       "hideValue": "Hide value"
     },
     "general": {
+      "topicModelTitle": "Configure topic recommendation model",
+      "topicModelDisconnected": "Disconnected. Reconnect and try again.",
+      "topicModelSave": "Save and enable",
+      "topicModelProtocol": "Topic recommendations require an OpenAI-compatible model.",
+      "topicModelDelete": "Delete the topic recommendation model configuration and turn off topic recommendations.",
       "preferences": "Interface and connection",
       "language": "Language",
       "languageDescription": "Set the display language for the application interface.",
@@ -745,42 +749,6 @@
       "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
     },
-    "recommendation": {
-      "title": "Personalized recommendations",
-      "description": "Suggests topics and next prompts from your conversations.",
-      "model": "Topic recommendation model",
-      "modelDescription": "Recommendations are prepared again after a switch. This uses the model selected here, not the model in the chat box.",
-      "modelIncompatible": "incompatible API",
-      "modelLoginRequired": "sign-in required",
-      "modelFree": "free model",
-      "unusableModelOption": "{{name}} ({{reason}})",
-      "modelUnusable": "The topic model cannot be used: choose another model, or complete its API address and key in Settings → Models.",
-      "data": "Recommendation data",
-      "dataDescription": "Your profile and recommendation records stay on this machine.",
-      "view": "View",
-      "hide": "Hide",
-      "enableTitle": "Turn on personalized recommendations",
-      "enableMessage": "Once on, related conversations are sent to the model provider to prepare topic recommendations and next-step suggestions; web searches use only public topic terms. Calls are billed to your own API account, and recommendation data stays on this machine.",
-      "includeHistory": "Also read existing chat history",
-      "enable": "Turn on",
-      "deleteTitle": "Delete recommendation data",
-      "deleteMessage": "Deletes the profile, summaries, card pools and related recommendation records, and turns recommendations off. Your chats are kept; turning recommendations back on does not rebuild the old profile by default. Personal backups and data held by the provider are outside this local deletion.",
-      "blockedDirections": "Directions no longer recommended",
-      "blockedSince": "Not recommended since {{date}}",
-      "restore": "Restore",
-      "profileEmpty": "No recommendation profile with verifiable sources yet.",
-      "correctionLabel": "Correct the profile in your own words",
-      "correctionPlaceholder": "Say which preferences to correct, pause or keep",
-      "correct": "Correct in a new chat",
-      "correctionNote": "After you send and finish that chat, the next recommendation reads your correction; the profile is not updated while recommendations are off.",
-      "unreachable": "Cannot read the recommendation settings. Check the app connection.",
-      "invalidKey": "The model provider rejected the API key. Replace the key, then prepare topics again.",
-      "accessDenied": "The model provider denied access. Check the account's permissions, then prepare topics again.",
-      "accountOverdue": "The model provider account is overdue. Top it up in the provider console, then prepare topics again.",
-      "modelUnavailable": "The topic recommendation model is unavailable. Check the model name and access.",
-      "lastFailure": "The latest topic preparation did not finish.",
-      "retry": "Prepare topics again"
-    },
     "browser": {
       "runtime": "Browser runtime",
       "runtimeDescription": "The existing backend resets the browser runtime after saving.",
@@ -941,7 +909,7 @@
       },
       "topic_recommendation_enabled": {
         "title": "Topic recommendations",
-        "description": "Prepare home-screen topic cards from conversation interests. Unset follows the code default."
+        "description": "Prepare home-screen topic cards from conversation interests."
       },
       "prompt_suggestion_enabled": {
         "title": "Prompt suggestions",
@@ -1197,7 +1165,58 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members"
+      "members": "Members",
+      "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
+      "workflowGroupOperators": "{{count}} operators",
+      "schedule": {
+        "title": "Dispatch control",
+        "collapse": "Collapse dispatch control",
+        "expand": "Expand dispatch control",
+        "summary": "{{tasks}} tasks · {{completed}} completed · {{reviews}} reviews · {{reworks}} reworks",
+        "controlRecords": "{{count}} control records",
+        "anomalies": "{{count}} dispatch anomalies",
+        "blockedLegend": "Light gray: waiting on dependencies",
+        "blockedLegendHint": "A light gray segment means the task is waiting for prerequisite tasks and will continue when its dependencies clear.",
+        "assignee": "Assignee",
+        "unassigned": "Unassigned",
+        "unknownMember": "Unknown member",
+        "closeTask": "Close task details",
+        "noReviews": "No reviews yet",
+        "reviewCount_one": "{{count}} Review",
+        "reviewCount_other": "{{count}} Reviews",
+        "phase": {
+          "pending": "Pending",
+          "blocked": "Waiting on dependencies",
+          "running": "Running",
+          "in_review": "In review",
+          "rework": "Rework",
+          "completed": "Completed",
+          "escalated": "Escalated",
+          "cancelled": "Cancelled",
+          "unknown": "Unknown"
+        },
+        "decision": {
+          "pass": "Pass",
+          "fail": "Fail",
+          "score": "Score {{value}}",
+          "pending": "Pending",
+          "pendingScore": "Pending score"
+        },
+        "event": {
+          "created": "Task created",
+          "updated": "Task updated",
+          "unblocked": "Dependencies unblocked",
+          "started": "Task started",
+          "submitted": "Submitted for review",
+          "vote": "Review vote",
+          "revision": "Rework requested",
+          "verified": "Review passed",
+          "cancelled": "Task cancelled",
+          "escalated": "Review escalated",
+          "anomaly": "Dispatch anomaly",
+          "team_completed": "Team completed"
+        }
+      }
     },
     "analysis": {
       "back": "Back to chat",
@@ -1221,6 +1240,7 @@
         "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
       "summary": "{{agents}} Agents · {{spans}} OTel spans",
+      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1604,13 +1624,52 @@
     },
     "org": {
       "tab": "Organization",
-      "title": "Task Pool & Organization",
+      "title": "Organization",
+      "details": "Details",
+      "taskTree": "Organization tasks",
+      "treeProgress": "Completed {{completed}} / {{total}}",
+      "descriptionExcerpt": "Task description (excerpt)",
+      "requiredCapabilities": "Required capabilities",
+      "capabilities": "Team capabilities",
+      "assignedBy": "Assigned by",
+      "updatedAt": "Last updated",
+      "aggregationMode": "Aggregation",
+      "executionModel": "Execution model",
+      "failureReason": "Failure reason",
+      "rootTask": "Root task",
+      "recreatedFrom": "Recreated from",
+      "requiredChanges": "Required changes",
+      "aggregation": {
+        "HIERARCHICAL": "Hierarchical",
+        "SUMMARY_TEAM": "Summary Team"
+      },
+      "failure": {
+        "EXECUTION_FAILED": "Execution failed",
+        "SOURCE_FAILED": "Source task failed",
+        "SUMMARY_PROVISION_FAILED": "Summary Team provisioning failed",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired"
+      },
+      "ownerLabel": "Owner",
+      "stateRunning": "Running",
+      "stateIdle": "Standby",
+      "status": {
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired",
+        "OPEN": "Unclaimed",
+        "DELEGATED": "Delegated",
+        "WAITING_SOURCES": "Awaiting results",
+        "CLAIMED": "Claimed",
+        "IN_PROGRESS": "In progress",
+        "COMPLETED": "Completed",
+        "FAILED": "Failed"
+      },
       "refresh": "Refresh",
       "loading": "Loading…",
-      "empty": "This Team is not bound to an organization",
+      "empty": "No organization yet",
       "noOrganization": "No organization bound",
       "noTeam": "No Team is available in this session",
-      "loadFailed": "Failed to load organization information",
+      "loadFailed": "Failed to load organization",
       "organizationId": "Organization ID",
       "displayName": "Name",
       "description": "Description",
@@ -1619,7 +1678,7 @@
       "leadTeam": "Team",
       "leadMember": "Leader",
       "metadata": "Metadata",
-      "taskPool": "Task Pool",
+      "taskPool": "Tasks",
       "taskPoolEmpty": "Task pool is empty",
       "taskId": "Task ID",
       "taskTitle": "Title",
@@ -1771,6 +1830,8 @@
       "nextStep": "Help me turn an idea into a practical next step."
     },
     "topicStarter": {
+      "statusMissingConfiguration": "The topic model configuration is incomplete. Check General settings.",
+      "recommendedForYou": "Recommended for you",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
       "dateAndVersion": "See this day",
@@ -1786,17 +1847,18 @@
       "statusPreparing": "Getting a few topics ready. You can start chatting now.",
       "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
       "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
-      "statusNeedsSettings": "Want topics that fit you better? You can turn that on in Settings.",
+      "statusNeedsSettings": "For topics that understand you better, turn on recommendations in Settings - General.",
       "statusNoCards": "Nothing to show right now. You can just start typing.",
       "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
       "openSettings": "Check settings",
+      "disabledHint": "For topics that understand you better, turn on recommendations in Settings - General.",
       "retryPreparation": "Try again"
     },
     "promptSuggestionBox": {
       "label": "Next: ",
       "sendHint": "Click to send this suggestion",
       "dismiss": "Dismiss suggestion “{{text}}”",
-      "placeholder": "{{label}}{{text}} (Tab to fill)"
+      "placeholder": "{{text}} (Tab to fill)"
     },
     "newSession": "New Session",
     "sessionCreated": "Session created",
@@ -1958,6 +2020,11 @@
       "dialogue": "Compacting earlier rounds…",
       "currentRound": "Compacting current round…",
       "roundLevel": "Full compaction…"
+    },
+    "contextCompressionElapsed": {
+      "seconds": "{{seconds}}s elapsed",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
+      "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
     },
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
@@ -2585,7 +2652,8 @@
       "more": "More",
       "history": "Run history",
       "triggeredSessions": "Run history",
-      "noTriggeredSessions": "No trigger records"
+      "noTriggeredSessions": "No trigger records",
+      "viewMore": "View more ({{count}} remaining)"
     },
     "empty": {
       "createButton": "Create scheduled task",
@@ -3908,8 +3976,7 @@
       "Communication": "Communication",
       "Engineering": "Engineering",
       "Life": "Life",
-      "Custom": "Custom",
-      "Other": "Other"
+      "Custom": "Custom"
     },
     "actions": {
       "working": "Working",
@@ -4214,6 +4281,8 @@
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
   },
   "chatUi": {
+    "toggleOverview": "Overview",
+    "expandDetails": "Details panel",
     "copyMessage": "Copy message",
     "copied": "Copied",
     "usageInput": "Input",
@@ -4839,6 +4908,7 @@
   },
   "authPrompt": {
     "title": "Authorization",
+    "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
@@ -5376,6 +5446,7 @@
       "readonly": "Read-only"
     },
     "artifact": {
+      "noHarnessSnapshot": "No Harness package has been generated for this node yet",
       "empty": "No artifact files",
       "loadFailed": "Failed to load artifacts",
       "selectFile": "Select a file",
@@ -5545,6 +5616,7 @@
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",
     "expertIdentity": "Expert: {{name}} ({{template}})",
+    "turnDetailHint": "Click to view this turn's input / output",
     "verifyFail": "✗ Fail",
     "verifyUndecided": "? Undecided",
     "verifyThreshold": "Threshold {{count}}",

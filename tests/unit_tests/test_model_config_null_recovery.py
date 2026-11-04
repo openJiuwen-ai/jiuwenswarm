@@ -362,7 +362,7 @@ async def test_existing_invalid_subfields_are_backed_up_on_save(config_file, sec
     "migration", "models.upsert", "models.delete", "groups.upsert", "groups.delete",
 ])
 async def test_invalid_old_group_items_do_not_block_model_configuration(config_file, invalid, operation):
-    from gateway.common.model_selection import ModelSelection
+    from agent_gateway.common.model_selection import ModelSelection
 
     healthy = {
         "model_group_id": "mgp_healthy", "display_name": "Healthy group", "enabled": True,

@@ -112,6 +112,15 @@ _ensure_req_method("MCP_APP_CALL_TOOL", "mcp_app.call_tool")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")
+# Client attachments (e.g. the Office add-in task pane): a client attaches the
+# resource it edits to a conversation, renews the attachment's lease, and reads
+# the other attachments and their conversations. The pinned protocol package
+# does not define these members yet.
+_ensure_req_method("CLIENT_ATTACH", "client.attach")
+_ensure_req_method("CLIENT_RENEW", "client.renew")
+_ensure_req_method("CLIENT_LIST", "client.list")
+_ensure_req_method("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages")
+_ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachments_changed")
 
 __all__ = [
     "PROMPT_SUGGESTION_READY_EVENT",

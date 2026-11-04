@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.controller import CronController
-from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
 
 
@@ -249,6 +249,48 @@ async def test_get_job_uses_the_same_identity_defaults() -> None:
     assert found["id"] == "job_a"
     assert await controller.get_job("job_a", project_id="proj_1", user_id="bob") is None
     assert await controller.get_job("missing") is None
+
+
+@pytest.mark.asyncio
+async def test_empty_project_filter_matches_materialized_default() -> None:
+    """读侧空串与写侧物化的 default 等价；存量空串任务同样命中。
+
+    回归场景：create 入口把未选项目物化为 ``default``，随后 run_now/delete
+    仍携带空串，若按空串精确比对会误判 NOT_FOUND。
+    """
+    jobs = {
+        "materialized": _listed_job(
+            "materialized", project_id="default", user_id="", group_id="", bot_id=""
+        ),
+        "legacy": _listed_job(
+            "legacy", project_id="", user_id="", group_id="", bot_id=""
+        ),
+        "code_default": _listed_job(
+            "code_default", project_id="default_code", user_id="", group_id="", bot_id=""
+        ),
+    }
+
+    async def list_jobs():
+        return list(jobs.values())
+
+    async def get_job(job_id):
+        return jobs.get(job_id)
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs, get_job=get_job),
+        scheduler=_FakeScheduler(),
+    )
+
+    listed = await controller.list_jobs(
+        project_id="", user_id="", group_id="", bot_id=""
+    )
+    assert [job["id"] for job in listed] == ["materialized", "legacy"]
+
+    found = await controller.get_job("materialized", project_id="")
+    assert found is not None and found["id"] == "materialized"
+    assert await controller.get_job("materialized", project_id="default") is not None
+    # default_code 是 code 模式的默认项目，不与 work 模式默认项目混同。
+    assert await controller.get_job("code_default", project_id="") is None
 
 
 @pytest.mark.asyncio
@@ -537,7 +579,7 @@ async def test_enterprise_create_job_keeps_identity_and_skips_login_binding(
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     monkeypatch.setattr(
-        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
         AsyncMock(return_value="some-model"),
     )
     cc = _make_controller()
@@ -697,7 +739,7 @@ async def test_personal_update_rejects_a_different_user() -> None:
 async def test_enterprise_update_requires_identity_and_drops_mcp(monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(
-        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
         AsyncMock(return_value="ok-model"),
     )
     cc = _make_controller()

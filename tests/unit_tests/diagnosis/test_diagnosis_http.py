@@ -16,6 +16,8 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from agent_gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
+from agent_gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -24,8 +26,6 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE, ModelInfo
 from jiuwenswarm.diagnosis.service import DiagnosisService
 from jiuwenswarm.diagnosis.store import DiagnosisStore
-from gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
-from gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 from jiuwenswarm.server.diagnosis.host import DiagnosisHost
 from tests.unit_tests.diagnosis.diagnosis_fixtures import (
     SESSION_ID,
@@ -365,7 +365,7 @@ def test_missing_status_is_logged_and_transport_codes_are_not() -> None:
             records.append(record)
 
     handler = _Capture()
-    target = logging.getLogger("gateway.channel_manager.web.diagnosis_http")
+    target = logging.getLogger("agent_gateway.channel_manager.web.diagnosis_http")
     target.addHandler(handler)
     try:
         assert error_status("SOMETHING_NEW") == 500

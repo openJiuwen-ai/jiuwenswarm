@@ -207,6 +207,8 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { CodeBranchSelector } from '../../features/code-mode/CodeBranchSelector';
 import { generateUuidV4 } from '../../utils/uuid';
 import { buildInstalledSkillNames, filterEnabledMySkills } from '../../utils/mySkills';
+import { contextCompressionElapsedText, resolveCompactStartedAt } from '../../utils/contextCompression';
+import { useElapsedSeconds } from '../../hooks/useCompressionElapsed';
 import {
   createAgentManagementClient,
   createAgentGroupManagementClient,
@@ -357,7 +359,7 @@ interface InputAreaProps {
   onInputIntent?: (sessionId: string) => void;
   /** Tab or → in the empty composer; returns true when it filled the composer, which then keeps focus. */
   onEmptyComposerTab?: () => boolean;
-  /** The next-input suggestion, shown in the empty composer while its chip after the reply is out of view. */
+    /** The next question shown in the empty composer after an answer, independent of timeline visibility. */
   suggestionPlaceholder?: string | null;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
@@ -943,6 +945,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const composerFrameRef = useRef<HTMLDivElement>(null);
   const composerSuggestionMenuRef = useRef<HTMLDivElement>(null);
   const compactingSessionIdsRef = useRef<Set<string>>(new Set());
+  const compactStartedAtRef = useRef<Map<string, number>>(new Map());
   const skillPanelRef = useRef<HTMLDivElement>(null);
   const swarmflowConfigBtnRef = useRef<HTMLButtonElement>(null);
   const swarmflowConfigPanelRef = useRef<HTMLDivElement>(null);
@@ -961,6 +964,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
   const hasPendingQuestion = useChatStore((s) => Boolean(s.runtimes[activeSessionId ?? '']?.pendingQuestions[0]));
   const isCompactRunning = Boolean(activeSessionId && compactingSessionIds.has(activeSessionId));
+  // 起始时刻按会话记录；这里按当前活跃会话取值，避免多会话并发压缩时读到别的会话的起点。
+  const compactStartedAt = resolveCompactStartedAt(compactStartedAtRef.current, activeSessionId);
+  const compactElapsedSeconds = useElapsedSeconds(compactStartedAt, isCompactRunning);
   // 并行场景：一个 agent 等人工、其它 agent 还在跑时开放输入以便 supplement，故要
   // pendingQuestion 且无 running agent 才锁（而不是有 pendingQuestion 即锁）。
   const hasRunningAgent = useSessionStore((s) => {
@@ -2787,11 +2793,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       if (compactingSessionIdsRef.current.has(sessionId)) return;
 
       compactingSessionIdsRef.current.add(sessionId);
+      compactStartedAtRef.current.set(sessionId, Date.now());
       setCompactingSessionIds(new Set(compactingSessionIdsRef.current));
       try {
         await command.execute(context, args);
       } finally {
         compactingSessionIdsRef.current.delete(sessionId);
+        compactStartedAtRef.current.delete(sessionId);
         setCompactingSessionIds(new Set(compactingSessionIdsRef.current));
       }
     },
@@ -3458,7 +3466,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
     // 提取纯文本
-    const text = extractPlainText();
+    let text = extractPlainText();
+    const editor = inputRef.current;
+    // Browsers leave empty line-break wrappers after deletion, preventing :empty placeholders.
+    if (editor && !isComposingRef.current && !text.trim()
+      && !editor.querySelector('[contenteditable="false"], img')) {
+      editor.replaceChildren();
+      text = '';
+    }
     useChatStore.getState().setInputValue(sid, text);
     if (text.trim() && sid !== NEW_CONVERSATION_ID) {
       notifyKVCInputIntent();
@@ -4070,6 +4085,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           >
             <Loader2 className="chat-input-compact-progress__spinner" size={16} strokeWidth={1.8} aria-hidden="true" />
             <span>{t('chat.contextCompressionCommandRunning')}</span>
+            {compactElapsedSeconds !== undefined && (
+              <span
+                className="chat-input-compact-progress__elapsed context-compression-elapsed"
+                data-testid="chat-panel-input-compact-elapsed"
+              >
+                {contextCompressionElapsedText(t, compactElapsedSeconds)}
+              </span>
+            )}
           </div>
         )}
         <div
@@ -4356,6 +4379,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       ? t('chat.placeholderVoice')
                       : designLandingSubmitting
                         ? t('chat.placeholder')
+                        : suggestionPlaceholder
+                          ? suggestionPlaceholder
                         : isTeamMode
                           ? (isInterruptible || ownerOrganizationIsProcessing) && !isPaused
                             ? t('chat.placeholderTeamModeProcessing')
@@ -4366,7 +4391,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             ? t('chat.placeholderProcessingQueue')
                             : isInterruptible
                               ? t('chat.placeholderProcessing')
-                              : suggestionPlaceholder || t('chat.placeholder')
+                              : t('chat.placeholder')
               }
               className={cx('chat-input-editor', composerDisabled && 'chat-input-editor--disabled')}
               data-testid="chat-panel-input"

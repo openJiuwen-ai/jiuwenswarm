@@ -228,8 +228,12 @@ async def test_user_approval_is_once_and_cannot_be_replaced_by_scene_allow(bound
     assert rail.installed_permission_config() == boundary.config
 
 
-async def test_unknown_command_prompt_shows_arguments_and_only_once_choices(boundary):
+async def test_unknown_command_prompt_shows_arguments_and_only_once_choices(
+    boundary, monkeypatch: pytest.MonkeyPatch
+):
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import _question_options_from_ui_options
+
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     rail = ProcessCliPermissionInterruptRail(
         config=boundary.config, tool_names=[], llm=None, model_name=None,
         host=ToolPermissionHost(resolve_workspace_dir=lambda: boundary.project),

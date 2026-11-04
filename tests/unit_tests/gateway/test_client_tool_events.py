@@ -1,18 +1,18 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway delivery of client tool requests."""
+"""Gateway delivery of client tool requests and of changes to the client attachments."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen_protocol.message import EventType, Message
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.message_handler import MessageHandler
 
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire, parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse
-from openjiuwen_protocol.message import EventType, Message
-from gateway.channel_manager.web.web_connect import WebChannel
-from gateway.message_handler import MessageHandler
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from tests.unit_tests.gateway.test_message_handler_stream_cancel import _drain_robot_messages, _TestMessageHandler
 
@@ -76,3 +76,16 @@ def test_web_channel_preserves_the_whole_client_tool_request() -> None:
     assert payload["interrupt_id"] == "intr_1"
     assert payload["source"] == "client_tool_interrupt"
     assert payload["client_tool"] == REQUEST["client_tool"]
+
+
+def test_web_channel_preserves_the_attachments_change_notice() -> None:
+    msg = Message(
+        id="client-directory-1", type="event", channel_id="web", session_id="session-1", params={},
+        timestamp=0.0, ok=True,
+        payload={"event_type": "client.attachments_changed", "request_id": "client_attachments_changed_1"},
+        event_type=EventType.CLIENT_ATTACHMENTS_CHANGED,
+    )
+
+    payload = WebChannel._build_event_payload(msg, "client.attachments_changed")
+
+    assert payload["request_id"] == "client_attachments_changed_1"

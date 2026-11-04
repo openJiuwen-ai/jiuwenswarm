@@ -36,8 +36,13 @@ export function getWsBase(): string {
   const raw = import.meta.env.VITE_WS_BASE as string | undefined;
   if (raw) return normalizeBase(raw);
   const apiBase = getApiBase();
-  if (!apiBase) return "";
-  return apiBase.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  if (apiBase) return apiBase.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  const prefix = getApiPrefix();
+  if (prefix && typeof window !== 'undefined') {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}${prefix}/ws`;
+  }
+  return "";
 }
 
 export type WebTransport = "websocket" | "http";
@@ -61,7 +66,9 @@ function parseWebTransportToken(raw: string): WebTransport | null {
  * 未指定时企业版默认 http，个人版默认 websocket。
  */
 export function getWebTransport(): WebTransport {
-  const injected = parseWebTransportToken(String(window.__JIUWEN_WEB_TRANSPORT__ ?? ""));
+  const injected = typeof window === 'undefined'
+    ? null
+    : parseWebTransportToken(String(window.__JIUWEN_WEB_TRANSPORT__ ?? ""));
   if (injected) {
     return injected;
   }
@@ -94,7 +101,8 @@ export function getGatewayApiRoot(): string {
     return `${origin}/api`;
   }
   const prefix = origin.startsWith("/") ? normalizeBase(origin) : "";
-  return `${prefix}${isEnterprise() ? "/gateway-api" : "/api"}`;
+  const root = `${prefix}${isEnterprise() ? "/gateway-api" : "/api"}`;
+  return origin ? root : resolveApiUrl(root);
 }
 
 /** Gateway `/api/v1` 在浏览器里的地址。 */

@@ -762,14 +762,26 @@ async def test_cancel_after_resume_targets_the_exact_session_not_original_operat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("after_answer", [False, True])
 async def test_deadline_covers_waiting_for_host_and_answer_continuation(
-    after_answer: bool, run_factory
+    after_answer: bool, run_factory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Expire the real command deadline after reaching the phase under test;
+    # CI scheduling must not consume the budget before the first card arrives.
+    deadline = asyncio.Timeout(None)
+    timeout_factory = asyncio.timeout
+
+    def controlled_timeout(delay: float | None) -> asyncio.Timeout:
+        return deadline if delay == 0.05 else timeout_factory(delay)
+
+    monkeypatch.setattr(machine.asyncio, "timeout", controlled_timeout)
     run = run_factory(run_input=OneShotRunInput(input="question", timeout_seconds=0.05))
     run.client.original.emit(_card())
     run.start()
     notice = await run.card()
     if after_answer:
-        await run.answer(notice)
+        _, continuation = await run.answer(notice)
+        await asyncio.wait_for(continuation.started.wait(), timeout=1)
+
+    deadline.reschedule(asyncio.get_running_loop().time())
 
     result = await run.finish()
 

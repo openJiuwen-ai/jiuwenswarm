@@ -132,6 +132,17 @@ async def test_a_resume_naming_no_question_answers_every_client_tool_call(path: 
 
 
 @pytest.mark.asyncio
+async def test_a_session_awaits_answers_while_its_pause_waits_and_no_longer_once_resumed() -> None:
+    runtime, _admission = await _paused("client-awaiting", _DocumentAgent())
+    assert runtime.sessions_awaiting_answers() == ("client-awaiting",)
+
+    await asyncio.wait_for(_collect_events(runtime.stream(_resume("client-awaiting", is_stream=True),
+                                                          trigger_hook=False)), 5)
+
+    assert runtime.sessions_awaiting_answers() == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["invoke", "interaction_answer"])
 async def test_a_refused_resume_keeps_every_call_it_answered_pending(path: str) -> None:
     session_id = f"client-refused-{path}"

@@ -17,14 +17,15 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
     deprecate_mode,
     is_new_canonical_mode,
     is_team_mode,
 )
+
+from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
@@ -249,7 +250,7 @@ def _build_project_lookup() -> tuple[
 
 def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
     """Keep an explicitly bound session's directory consistent with its project ID."""
-    from gateway.common.work_mode import is_default_project_id
+    from agent_gateway.common.work_mode import is_default_project_id
     from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
 
     project_id = str(metadata.get("project_id") or "").strip()
@@ -2038,9 +2039,17 @@ def set_session_delivery_context(
     source_request_id: str | None,
     route_metadata: dict[str, Any] | None,
     delivery_kind: str = _DELIVERY_KIND_SERVER_PUSH,
+    record_activity: bool = True,
 ) -> dict[str, Any]:
-    """刷新 session 级 delivery context，供异步 server_push 恢复路由上下文。"""
+    """刷新 session 级 delivery context，供异步 server_push 恢复路由上下文。
+
+    ``record_activity=False`` only reroutes the pushes (a client that attaches to the
+    session, not a message): ``last_message_at`` and ``channel_id`` stay, and a
+    session without metadata gets none.
+    """
     metadata = _read_metadata(session_id)
+    if not metadata and not record_activity:
+        return {}
     before = copy.deepcopy(metadata)
     current_context_raw = metadata.get("delivery_context")
     current_context = (
@@ -2088,7 +2097,7 @@ def set_session_delivery_context(
             "pin_order": 0,
             "status": "idle",
         }
-    else:
+    elif record_activity:
         # channel_id：首次锁定——会话归属通道稳定，不被联机场景下其他通道的
         # server_push 覆写；delivery_context.channel_id 仍保持动态更新，
         # 供 build_server_push_message 路由异步推送（evolution watcher 等）到

@@ -16,6 +16,7 @@ import { modelNameForSelection } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
+import { isEnterprise } from '../../edition';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentMode, ModelSelection } from '../../types';
 import '../ChatPanel/ChatPanel.css';
@@ -287,7 +288,7 @@ export default function CronTaskDrawer({
           workMode: matched?.work_mode ?? null,
         });
       },
-      condition: mode !== 'edit',
+      condition: !isEnterprise() && mode !== 'edit',
     },
     {
       testId: 'cron-simple-select-3',

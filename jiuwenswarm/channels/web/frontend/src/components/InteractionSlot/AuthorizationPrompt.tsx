@@ -22,6 +22,7 @@ import { classifyAuthOption, type AuthSemantic } from './promptRouting';
 import { AutoReviewerDetails } from '../ChatPanel/AutoReviewerStatus';
 import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
 import { translatePermissionText } from './permissionTextI18n';
+import { isEnterprise } from '../../edition';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
@@ -129,6 +130,18 @@ export function AuthorizationQuestionDetails({
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {translatePermissionText(question.question, i18n.language)}
           </ReactMarkdown>
+          {question.matched_rule && isEnterprise() && (
+            <p
+              className="mt-3 text-xs text-text-muted"
+              data-testid="interaction-slot-matched-rule"
+              data-variant={index}
+            >
+              <span data-testid="interaction-slot-matched-rule-label">
+                {t('authPrompt.matchedRule')}:{' '}
+              </span>
+              <code className="whitespace-pre-wrap break-words text-text">{question.matched_rule}</code>
+            </p>
+          )}
           {question.tool_payload !== undefined && (
             <details
               className="mt-3 rounded-lg border border-border bg-card p-3 text-xs"

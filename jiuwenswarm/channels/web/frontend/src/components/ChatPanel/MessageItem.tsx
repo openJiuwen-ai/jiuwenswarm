@@ -18,7 +18,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import {
   Message,
   FileDownloadItem,
@@ -59,7 +60,9 @@ import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownlo
 import { useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
-import { useChatStore } from '../../stores/chatStore';
+import { conversationKey, useChatStore } from '../../stores/chatStore';
+import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
 import {
   findReferencedAssets,
   normalizePath,
@@ -137,6 +140,7 @@ export function TeamMemberMessageFrame({
   contentClassName,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   showAvatar?: boolean;
@@ -144,9 +148,12 @@ export function TeamMemberMessageFrame({
   contentClassName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   const { i18n } = useTranslation();
-  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const selectedConversation = useOrganizationConversationKey(sessionId);
+  const activeSessionId = sourceTeamId ? conversationKey(sessionId ?? '', sourceTeamId) : selectedConversation;
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
   // 使用名册 display name，查不到退回 member_id。
@@ -205,6 +212,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction = false,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   content: string;
@@ -217,6 +225,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction?: boolean;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   return (
     <TeamMemberMessageFrame
@@ -224,6 +233,7 @@ function TeamLeaderPlainTextMessage({
       showAvatar={showAvatar}
       teamLeaderIdentity={teamLeaderIdentity}
       teamGroupIdentity={teamGroupIdentity}
+      sourceTeamId={sourceTeamId}
     >
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
@@ -265,6 +275,7 @@ export function ContextCompressionLines({
   showSummary?: boolean;
 }) {
   const { t } = useTranslation();
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const showRuntime = Boolean(runtime?.summary);
   const finalSummary = !runtime && showSummary && summary && summary.count > 0 ? summary : null;
   if (!showRuntime && !finalSummary) return null;
@@ -292,6 +303,14 @@ export function ContextCompressionLines({
               ? contextCompressionRunningText(t, runtime?.processor, runtime?.summary ?? '')
               : runtime?.summary}
           </span>
+          {isRunning && runningElapsedSeconds !== undefined && (
+            <span
+              className="context-compression-elapsed"
+              data-testid="chat-panel-context-compression-elapsed"
+            >
+              {contextCompressionElapsedText(t, runningElapsedSeconds)}
+            </span>
+          )}
         </div>
       )}
       {finalSummary && (
@@ -419,6 +438,14 @@ export const MessageItem = memo(function MessageItem({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const sourceTeam = useTeamSelectorStore((state) => state.runtimes[activeSessionId ?? '']?.teams
+    .find((team) => team.team_id === message.sourceTeamId));
+  const sourceGroupSnapshot = useSessionStore((state) => message.sourceTeamId
+    ? state.runtimes[conversationKey(activeSessionId ?? '', message.sourceTeamId)]?.teamGroupIdentity : null);
+  const sourceGroupIdentity = message.sourceTeamId
+    ? resolveOrganizationTeamIdentity(sourceTeam, [], sourceGroupSnapshot) : null;
+  const sourceTeamLabel = message.sourceTeamId
+    ? resolveOrganizationTeamLabel(sourceTeam, [], message.sourceTeamId) : '';
   // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
   // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
   const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
@@ -699,6 +726,13 @@ export const MessageItem = memo(function MessageItem({
 	           // 面向用户的团队消息直接展示在主会话
 	           if (event.isLeaderToUser || isTeamP2PMessageToUser(event)) {
 	             return (
+	               <div data-testid="chat-panel-user-directed-team-message" data-variant={message.sourceTeamId}>
+                     {message.sourceTeamId && (
+                       <div className="mb-1 text-xs font-medium text-text-muted"
+                         data-testid="chat-panel-message-source-team" data-variant={message.sourceTeamId}>
+                         {sourceTeamLabel}
+                       </div>
+                     )}
 	               <TeamLeaderPlainTextMessage
 	                 member={event.fromMember}
 	                 content={event.content}
@@ -707,9 +741,12 @@ export const MessageItem = memo(function MessageItem({
 	                 isStreaming={isStreaming}
 	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
-	                 teamLeaderIdentity={teamLeaderIdentity}
-	                 teamGroupIdentity={teamGroupIdentityOverride}
+	                 teamLeaderIdentity={message.sourceTeamId
+                       ? { agentTemplateId: '', displayName: sourceTeamLabel } : teamLeaderIdentity}
+	                 teamGroupIdentity={message.sourceTeamId ? sourceGroupIdentity : teamGroupIdentityOverride}
+                     sourceTeamId={message.sourceTeamId}
 	               />
+	               </div>
 	             );
 	           }
 	           

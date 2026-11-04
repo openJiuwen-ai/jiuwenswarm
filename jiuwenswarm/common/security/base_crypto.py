@@ -7,8 +7,8 @@ gateway 的 extensions 治理层；母仓消费方（config 凭据加解密、co
 agents memory rail）经本路径取用，B3 拆仓时随 shim 收敛退役。
 """
 
-from gateway.extensions.base_crypto import *  # noqa: F401,F403
-from gateway.extensions.base_crypto import (  # noqa: F401
+from agent_gateway.extensions.base_crypto import *  # noqa: F401,F403
+from agent_gateway.extensions.base_crypto import (  # noqa: F401
     CryptoProvider,
     get_crypto_provider,
     set_crypto_provider,

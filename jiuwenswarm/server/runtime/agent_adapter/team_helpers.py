@@ -31,11 +31,19 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.session_message import with_cross_session_history_metadata
+from agent_gateway.common.cron_team_completion import (
+    _cron_solo_harness_end_pending,
+    _drain_cron_delegation_grace_events,
+    apply_cron_team_round_event,
+    cron_team_round_should_end,
+    new_cron_team_round_state,
+)
 
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
 )
-
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
 from jiuwenswarm.agents.harness.team.member_status import is_departed_member
@@ -45,18 +53,9 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     with_session_messaging_route,
 )
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
-from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
 from jiuwenswarm.common.chat_final import FINAL_MODE_PATCH_SEGMENT
-from gateway.common.session_message import with_cross_session_history_metadata
-from gateway.common.cron_team_completion import (
-    _cron_solo_harness_end_pending,
-    _drain_cron_delegation_grace_events,
-    apply_cron_team_round_event,
-    cron_team_round_should_end,
-    new_cron_team_round_state,
-)
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import (
     BaseMonitorHandler,
     monitor_team_agent,
@@ -1202,7 +1201,11 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
-    _enqueue_write(session_id, metadata)
+    _enqueue_write(
+        session_id,
+        metadata,
+        merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_dispatch_mode(
@@ -1248,7 +1251,11 @@ def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) ->
         )
         return
     metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
-    _enqueue_write(session_id, metadata)
+    _enqueue_write(
+        session_id,
+        metadata,
+        merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_bootstrap_mode(
@@ -3134,7 +3141,7 @@ async def _process_team_message_stream(
     # i.e. wait for this very turn to finish (it is released only after the
     # stream ends), a self-deadlock. ``_begin_team_round`` routes such turns
     # through the mailbox-scoped admission instead.
-    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     request_params = getattr(request, "params", None)
     cross_session_marker = (
@@ -3448,7 +3455,7 @@ async def _process_team_message_stream(
         # caller-supplied compiled payload with runtime credentials is never
         # accepted).
         if model_selection is not None:
-            from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+            from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
             model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
             if get_session_metadata(session_id, cache_bust=True).get("cron_id"):
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -3480,7 +3487,7 @@ async def _process_team_message_stream(
                     stored.model_dump(exclude_none=True) if stored is not None else None
                 )
             if isinstance(stored_selection, dict):
-                from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+                from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                 selected = SwarmModelSelection.model_validate(stored_selection)
@@ -3523,12 +3530,15 @@ async def _process_team_message_stream(
             bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(team_spec, deep_agent)
         if group_input is not None and request_metadata.get("group_members") is not None:
             update_session_metadata(session_id=session_id,
                 group_members=request_metadata["group_members"],
                 touch_last_message_at=False, sync_write=True)
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
-            from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+            from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
             from jiuwenswarm.server.runtime.session.model_selection_store import (
                 get_session_model_selection,
                 set_session_model_selection,

@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message, ReqMethod
-from gateway.message_handler.message_handler import (
+from agent_gateway.message_handler.message_handler import (
     _NON_STREAM_TEAM_NOTICE,
     MessageHandler,
 )

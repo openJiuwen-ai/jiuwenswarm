@@ -87,12 +87,15 @@ KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
 # 母仓经 common/auth shim 受控消费）。base_crypto 为 CryptoProvider 注入点
 # 接口件，实现与装配（_RegistryCryptoBridge）在 extensions 治理层，
 # 母仓 config/config_panel 经 common/security shim 受控消费。
+# extensions.sdk 为第三方扩展 SPI/基类真源（含 skill source 与制品验签），
+# 母仓 server.runtime.skill 经转发别名单向消费，属拆仓期允许方向。
 ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
     "gateway.common",
     "gateway.extensions.registry",
     "gateway.extensions.manager",
     "gateway.extensions.loader",
     "gateway.extensions.base_crypto",
+    "gateway.extensions.sdk",
     "gateway.auth",
 )
 

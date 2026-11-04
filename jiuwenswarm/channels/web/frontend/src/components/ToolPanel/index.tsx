@@ -8,11 +8,14 @@ import { useOrganizationConversationKey } from '../../features/teamOrganization/
 import { useTranslation } from 'react-i18next';
 import { conversationKey, useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Info } from 'lucide-react';
+import { Building2, Info } from 'lucide-react';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { OrganizationTeamsList } from '../teamArea/OrganizationTeamsList';
 import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel';
 import { useTaskPlanningMetrics } from '../teamArea';
 import { ExpandedPanel } from '../teamArea/ExpandedPanel';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
+import { restoreOrganizationGroupHistory } from '../../features/teamOrganization/groupHistory';
 import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
@@ -151,6 +154,7 @@ export function ToolPanel({
   onCloseFloating,
 }: ToolPanelProps) {
   const { t } = useTranslation();
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
@@ -399,6 +403,7 @@ export function ToolPanel({
         if (controller.signal.aborted) return;
         loadingTeamHistorySessionRef.current = null;
         hydratedTeamHistorySessionRef.current = sessionId;
+        restoreOrganizationGroupHistory(sessionId, historyState);
         const current = useSessionStore.getState().runtimes[sessionId];
         const mergedMembers = mergeById(historyState.members, current?.teamMembers ?? [], member => member.member_id);
         if (mergedMembers.length > 0) {
@@ -538,6 +543,7 @@ export function ToolPanel({
                 <TeamMembersPanel
                   variant="expanded"
                   members={teamMembers}
+                  tasks={teamTasks}
                   connectionPresentation={teamConnectionPresentation}
                   selectedMemberId={teamAreaSelectedMemberId ?? ''}
                   selectedMember={teamMembers.find(m => m.member_id === teamAreaSelectedMemberId) ?? null}
@@ -706,6 +712,21 @@ export function ToolPanel({
               })}
             </>
           )}
+        </CollapsibleSection>
+      ),
+    },
+    isTeam && organizationUiEnabled && {
+      key: 'organization',
+      testId: 'tool-panel-organization-pane',
+      render: () => (
+        <CollapsibleSection
+          title={t('team.org.tab')}
+          icon={<Building2 size={16} aria-hidden="true" />}
+          onExpand={() => expandTo('organization')}
+          dataTestId="tool-panel-organization"
+          defaultCollapsed
+        >
+          <OrganizationTeamsList />
         </CollapsibleSection>
       ),
     },

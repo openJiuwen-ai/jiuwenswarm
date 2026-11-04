@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_team_mode as is_team_runtime_mode,
@@ -33,12 +33,12 @@ from gateway.common.mode_matrix import (
     is_web_composable_mode,
     read_request_work_mode,
 )
-from gateway.common.session_message import (
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
-from gateway.extensions.registry import ExtensionRegistry
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -77,6 +77,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
 from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
     USER_INTERACTION_EVENTS,
 )
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_keys import (
@@ -2371,6 +2372,9 @@ class JiuWenSwarm:
                     "SkillEvolutionApproval", source, request_id, value, "rejected_as_unknown_option"
                 )
                 action = "reject"
+            elif action == "allow_always" and is_enterprise():
+                # 企业版不提供「总是允许」；旧前端或伪造请求仍回传时降级为本次允许。
+                action = "allow_once"
             payload = {"action": action}
             if custom_input:
                 payload["feedback"] = custom_input
@@ -2407,10 +2411,12 @@ class JiuWenSwarm:
                 "feedback": "",
             }
         elif action == ALWAYS_ALLOW:
+            # 企业版权限卡不提供「永久记住」；若旧前端或伪造请求仍回传该动作，
+            # 降级为会话内记住，避免写回本地 user overlay / approval_overrides。
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,
-                "persist_allow": True,
+                "persist_allow": not is_enterprise(),
                 "feedback": "",
             }
         elif value in PLAN_EXECUTE_OPTION_VALUES:

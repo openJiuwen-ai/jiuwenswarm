@@ -8,13 +8,16 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import agent_gateway
+
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 _ROOT = Path(__file__).resolve().parents[3]
+_GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
 
 
 def _mapped_routes():
-    path = _ROOT / "gateway/channel_manager/web/http_routes/mapped.py"
+    path = _GATEWAY_ROOT / "channel_manager/web/http_routes/mapped.py"
     spec = importlib.util.spec_from_file_location("enterprise_skill_mapped_routes", path)
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
@@ -33,7 +36,7 @@ def _assigned_handler(source: Path, enum_name: str) -> str:
 
 
 def _forward_sets_contain(method: str) -> bool:
-    source = _ROOT / "gateway/channel_manager/web/app_web_handlers.py"
+    source = _GATEWAY_ROOT / "channel_manager/web/app_web_handlers.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     found = {name: False for name in ("_FORWARD_REQ_METHODS", "_FORWARD_NO_LOCAL_HANDLER_METHODS")}
     for node in ast.walk(tree):

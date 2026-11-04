@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway.channel_manager.tui.harmonyos import harmonyos_dev
-from gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
+from agent_gateway.channel_manager.tui.harmonyos import harmonyos_dev
+from agent_gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
     CommandResult,
     _parse_node_major,
     detect_executable,
@@ -41,6 +41,18 @@ def _write_base_skill(skills_dir: Path) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: deveco-cli\n---\n", encoding="utf-8"
+    )
+
+
+def _stub_builtin_suite(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """技能包资源尚未迁入 agent-gateway，用临时夹具替代内置目录。"""
+    suite = root / "harmonyos-dev-suite"
+    suite.mkdir(parents=True, exist_ok=True)
+    (suite / "SKILL.md").write_text(
+        "---\nname: harmonyos-dev-suite\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        harmonyos_dev, "_builtin_harmonyos_dev_suite_dir", lambda: suite
     )
 
 
@@ -80,7 +92,7 @@ async def test_project_init_returns_tui_context_without_shared_mcp_config(
 
     monkeypatch.setattr(harmonyos_dev, "detect_executable", fake_detect)
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
+        "agent_gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
         lambda: state_root,
     )
 
@@ -108,7 +120,7 @@ async def test_project_init_succeeds_when_devecocli_is_unavailable(
 
     monkeypatch.setattr(harmonyos_dev, "detect_executable", fake_detect)
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
+        "agent_gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
         lambda: tmp_path / "state",
     )
 
@@ -150,6 +162,7 @@ async def test_dev_init_installs_when_devecocli_missing_and_verifies_skills(
             _write_base_skill(tmp_path)
         return CommandResult(True, command, 0, "ok\n", "")
 
+    _stub_builtin_suite(monkeypatch, tmp_path / "builtin")
     monkeypatch.setattr(harmonyos_dev, "get_agent_skills_dir", lambda: tmp_path)
     monkeypatch.setattr(harmonyos_dev.shutil, "which", fake_which)
     monkeypatch.setattr(harmonyos_dev, "run_command", fake_run_command)
@@ -362,6 +375,7 @@ async def test_dev_init_updates_existing_cli_then_force_refreshes_skill(
             return CommandResult(True, command, 0, "installed\n", "")
         raise AssertionError(f"unexpected command: {command}")
 
+    _stub_builtin_suite(monkeypatch, tmp_path / "builtin")
     monkeypatch.setattr(harmonyos_dev, "get_agent_skills_dir", lambda: tmp_path)
     monkeypatch.setattr(harmonyos_dev.shutil, "which", fake_which)
     monkeypatch.setattr(harmonyos_dev, "run_command", fake_run_command)
@@ -534,6 +548,7 @@ async def test_dev_init_is_idempotent_for_existing_suite(
             _write_base_skill(tmp_path)
         return CommandResult(True, command, 0, "1.0.0\n", "")
 
+    _stub_builtin_suite(monkeypatch, tmp_path / "builtin")
     monkeypatch.setattr(harmonyos_dev, "get_agent_skills_dir", lambda: tmp_path)
     monkeypatch.setattr(harmonyos_dev.shutil, "which", fake_which)
     monkeypatch.setattr(harmonyos_dev, "run_command", fake_run_command)

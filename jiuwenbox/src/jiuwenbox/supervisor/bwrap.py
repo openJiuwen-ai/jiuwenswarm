@@ -254,17 +254,17 @@ class BwrapConfig:
 
     @staticmethod
     def _apply_process(cfg: BwrapConfig, proc: ProcessPolicy) -> None:
-        # Resolve user/group names to numeric IDs; fall back to 65534 (nobody)
-        import pwd
-        import grp
+        # Resolve user/group names to numeric IDs; fall back to 65534 (nobody).
+        # A digit string is the uid/gid itself.
+        from jiuwenbox.supervisor.posix_id import resolve_posix_id
 
         try:
-            cfg.uid = pwd.getpwnam(proc.run_as_user).pw_uid
-        except KeyError:
+            cfg.uid = resolve_posix_id(proc.run_as_user, kind="user")
+        except ValueError:
             cfg.uid = 65534
         try:
-            cfg.gid = grp.getgrnam(proc.run_as_group).gr_gid
-        except KeyError:
+            cfg.gid = resolve_posix_id(proc.run_as_group, kind="group")
+        except ValueError:
             cfg.gid = 65534
 
     @staticmethod

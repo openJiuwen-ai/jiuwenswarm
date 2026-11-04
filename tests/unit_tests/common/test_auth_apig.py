@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.auth import apig
+from agent_gateway.auth import apig
 
 
 class FakeResponse:
@@ -25,7 +25,7 @@ def apig_env(monkeypatch):
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",
             whitelist=None, blocklist=None, login=None, **apig_paths):
-    from gateway.auth import remote_config
+    from agent_gateway.auth import remote_config
 
     remote_config.set_config_for_test(remote_config.parse_config({
         "is_effective": effective,

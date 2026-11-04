@@ -18,11 +18,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-ROOT = Path(__file__).resolve().parents[2]
-OUTBOUND_PATH = ROOT / "gateway" / "channel_manager" / "web" / "outbound.py"
-HTTP_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_http_routes.py"
-TIMEOUTS_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_http_timeouts.py"
-ROUTES_PATH = ROOT / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
+import agent_gateway
+
+ROOT = Path(agent_gateway.__file__).resolve().parent
+OUTBOUND_PATH = ROOT / "channel_manager" / "web" / "outbound.py"
+HTTP_PATH = ROOT / "channel_manager" / "web" / "web_http_routes.py"
+TIMEOUTS_PATH = ROOT / "channel_manager" / "web" / "web_http_timeouts.py"
+ROUTES_PATH = ROOT / "channel_manager" / "web" / "http_routes" / "mapped.py"
 
 
 def _load_module(mod_name: str, path: Path) -> ModuleType:
@@ -59,7 +61,7 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     # Use monkeypatch.setitem so xdist workers restore the real module after
     # this fixture (otherwise later file-api tests ImportError on
     # ``_trust_client_tenant_headers`` from a leftover bare ModuleType stub).
-    dispatch_mod = ModuleType("gateway.channel_manager.web.web_http_dispatch")
+    dispatch_mod = ModuleType("agent_gateway.channel_manager.web.web_http_dispatch")
     dispatch_mock = AsyncMock()
     dispatch_mod.dispatch_http_request = dispatch_mock  # type: ignore[attr-defined]
     dispatch_mod._trust_client_tenant_headers = (  # type: ignore[attr-defined]
@@ -67,7 +69,7 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     )
     monkeypatch.setitem(
         sys.modules,
-        "gateway.channel_manager.web.web_http_dispatch",
+        "agent_gateway.channel_manager.web.web_http_dispatch",
         dispatch_mod,
     )
 
@@ -75,8 +77,8 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     for pkg in (
         "jiuwenswarm",
         "gateway",
-        "gateway.channel_manager",
-        "gateway.channel_manager.web",
+        "agent_gateway.channel_manager",
+        "agent_gateway.channel_manager.web",
     ):
         if pkg not in sys.modules:
             m = ModuleType(pkg)
@@ -84,35 +86,35 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
             monkeypatch.setitem(sys.modules, pkg, m)
 
     # http_routes package so the real mapped table can load as a submodule.
-    routes_pkg = ModuleType("gateway.channel_manager.web.http_routes")
+    routes_pkg = ModuleType("agent_gateway.channel_manager.web.http_routes")
     routes_pkg.__path__ = [str(ROUTES_PATH.parent)]  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gateway.channel_manager.web.http_routes", routes_pkg)
+    monkeypatch.setitem(sys.modules, "agent_gateway.channel_manager.web.http_routes", routes_pkg)
 
     # Real mapped table (no Gateway imports) so routes can be registered.
     _load_module(
-        "gateway.channel_manager.web.http_routes.mapped",
+        "agent_gateway.channel_manager.web.http_routes.mapped",
         ROUTES_PATH,
     )
 
     # web_http_routes also mounts trajectory routes; stub to avoid heavy imports.
-    trajectory = ModuleType("gateway.channel_manager.web.trajectory_http")
+    trajectory = ModuleType("agent_gateway.channel_manager.web.trajectory_http")
     trajectory.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
-        "gateway.channel_manager.web.trajectory_http",
+        "agent_gateway.channel_manager.web.trajectory_http",
         trajectory,
     )
-    diagnosis = ModuleType("gateway.channel_manager.web.diagnose_http")
+    diagnosis = ModuleType("agent_gateway.channel_manager.web.diagnose_http")
     diagnosis.attach_diagnose_routes = lambda app, channel, **kwargs: None
     monkeypatch.setitem(
         sys.modules,
-        "gateway.channel_manager.web.diagnose_http",
+        "agent_gateway.channel_manager.web.diagnose_http",
         diagnosis,
     )
 
     # web_http_routes imports timeout helpers from web_http_timeouts (stdlib-only).
     _load_module(
-        "gateway.channel_manager.web.web_http_timeouts",
+        "agent_gateway.channel_manager.web.web_http_timeouts",
         TIMEOUTS_PATH,
     )
 
@@ -322,9 +324,9 @@ def test_http_sse_outbound_iter_ends_on_history_done():
 
 def test_http_dispatch_registers_outbound_not_ws(monkeypatch: pytest.MonkeyPatch):
     """HTTP path must use request Outbound tables, not register_ws."""
-    from gateway.channel_manager.base import RobotMessageRouter
-    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-    from gateway.channel_manager.web import web_http_dispatch as disp
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.channel_manager.web import web_http_dispatch as disp
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
     register_calls: list[Any] = []
@@ -365,9 +367,9 @@ def test_http_dispatch_session_create_emits_resolve_identity(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """session.create + X-User-Id → http_resolve_identity UA。"""
-    from gateway.channel_manager.base import RobotMessageRouter
-    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-    from gateway.channel_manager.web import web_http_dispatch as disp
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.channel_manager.web import web_http_dispatch as disp
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
     audit_calls: list[dict[str, Any]] = []
@@ -376,7 +378,7 @@ def test_http_dispatch_session_create_emits_resolve_identity(
         audit_calls.append(kwargs)
 
     monkeypatch.setattr(
-        "gateway.enterprise.capabilities.audit.audit_emit.emit_audit_ua",
+        "agent_gateway.enterprise.capabilities.audit.audit_emit.emit_audit_ua",
         _capture_ua,
     )
     monkeypatch.setattr(disp, "is_enterprise", lambda: True)
@@ -439,9 +441,9 @@ def test_http_dispatch_session_create_emits_resolve_identity(
 
 def test_http_sse_unregister_on_cancel():
     """Client cancel / stop clears request outbound routing tables."""
-    from gateway.channel_manager.base import RobotMessageRouter
-    from gateway.channel_manager.web.outbound import HttpSseOutbound
-    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.outbound import HttpSseOutbound
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
 

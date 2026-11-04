@@ -34,7 +34,7 @@ import {
 } from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
-import { watchCronExecutionSession, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -133,6 +133,7 @@ import {
   usePersonalContextStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import { chatRoutePath } from './multi-session/routing/route';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -224,9 +225,9 @@ import {
 } from './features/teamOrganization/processing';
 import {
   normalizeTeamBootstrapMode,
-  normalizeTeamDispatchMode,
   resolveNewSessionBootstrapMode,
   resolveNewSessionDispatchMode,
+  resolveRestoredTeamDispatchMode,
   setTeamScheduledDispatchEnabled,
 } from './features/teamDispatch/featureConfig';
 
@@ -526,11 +527,6 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
-  // Where the settings page should land when a recommendation link opened it.
-  const [recommendationSettingsFocus, setRecommendationSettingsFocus] = useState<number | null>(null);
-  useEffect(() => {
-    if (activeNav !== 'settings') setRecommendationSettingsFocus(null);
-  }, [activeNav]);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -823,7 +819,7 @@ function AppContent({
       setToolPanelHidden(true);
       return () => { cancelled = true; };
     } else if (route.kind === 'chat-new') {
-      if (window.location.pathname !== '/chat/new') {
+      if (window.location.pathname !== chatRoutePath({ kind: 'chat-new' })) {
         navigate({ kind: 'chat-new' }, { replace: true });
       }
       pendingNewConversationRef.current = true;
@@ -846,13 +842,19 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
-  // 企业版「立即执行」打开的是执行会话。结果不走长连接，改由这条监听写进页面。
+  // 企业版 cron 结果不走长连接，改订 /sessions/{id}/live。
+  // 当前打开的会话要盯（含带 cron_id 的统一会话）；切走后也要后台盯到结束，
+  // 否则 isProcessing 停不掉（一直转圈）、也收不到终稿标蓝点。
   const activeCronId = useSessionStore((state) =>
     state.currentSession?.session_id === sessionId
       ? state.currentSession.cron_id
       : state.sessions.find((session) => session.session_id === sessionId)?.cron_id,
   );
-  useEffect(() => watchCronExecutionSession(sessionId, Boolean(activeCronId)), [sessionId, activeCronId]);
+  const cronLastRunSessionId = useCronStore((s) => s.lastRunSessionId);
+  useEffect(() => {
+    const ids = [sessionId, ...Object.values(cronLastRunSessionId)];
+    return watchCronExecutionSessions(ids, sessionId, Boolean(activeCronId));
+  }, [sessionId, cronLastRunSessionId, activeCronId]);
 
   const {
     setCurrentSession,
@@ -2064,15 +2066,17 @@ function AppContent({
           }
         }
         // 恢复会话时同步团队调度模式：团队建好后不可再改，前端只读展示。
-        const restoredDispatchMode = normalizeTeamDispatchMode(
-          (session as unknown as Record<string, unknown> | null)?.session_team_dispatch_mode,
+        const sessionRecord = session as unknown as Record<string, unknown> | null;
+        const restoredBootstrapMode = normalizeTeamBootstrapMode(
+          sessionRecord?.session_team_bootstrap_mode,
+        );
+        const restoredDispatchMode = resolveRestoredTeamDispatchMode(
+          sessionRecord?.session_team_dispatch_mode,
+          restoredBootstrapMode,
         );
         if (restoredDispatchMode) {
           useSessionStore.getState().setTeamDispatchMode(targetSessionId, restoredDispatchMode);
         }
-        const restoredBootstrapMode = normalizeTeamBootstrapMode(
-          (session as unknown as Record<string, unknown> | null)?.session_team_bootstrap_mode,
-        );
         if (restoredBootstrapMode) {
           useSessionStore.getState().setTeamBootstrapMode(targetSessionId, restoredBootstrapMode);
         }
@@ -4133,23 +4137,6 @@ function AppContent({
     ],
   );
 
-  const handleOpenRecommendationSettings = useCallback(() => {
-    setRecommendationSettingsFocus(Date.now());
-    setRequestedSettingsModuleId('recommendation');
-    setActiveNav('settings');
-  }, []);
-
-  const handleCorrectRecommendation = useCallback((initialInputValue: string) => {
-    const project = projects.find((item) => item.project_id === topicStarterProjectId) ?? null;
-    setRequestedSettingsModuleId(null);
-    setSelectedProject(project);
-    requestSessionNavigation('new', {
-      initialInputValue,
-      preserveProject: Boolean(project),
-      project: project ?? undefined,
-    });
-  }, [projects, requestSessionNavigation, setSelectedProject, topicStarterProjectId]);
-
   const handleNavigate = useCallback(
     (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
       if (nav !== 'settings' && !confirmLeaveSettings()) {
@@ -4689,7 +4676,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     chat={(
                       <ChatPanel
                         promptSuggestionBox={promptSuggestionBox}
-                        onOpenRecommendationSettings={handleOpenRecommendationSettings}
+                        onOpenGeneralSettings={() => requestSettingsModule('general')}
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
                         onForkSession={handleForkSession}
@@ -4913,8 +4900,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             <SettingsPage
               definition={settingsPageDefinition}
               appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : undefined}
-              recommendationFocus={recommendationSettingsFocus}
-              onCorrectRecommendation={handleCorrectRecommendation}
               onRecommendationEnabledChange={promptSuggestionBox.setEnabled}
               isConnected={isConnected}
               connectionState={connectionState}

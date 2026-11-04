@@ -76,7 +76,7 @@ async def test_chat_hook_passes_params_to_extensions(monkeypatch, entry) -> None
         async def trigger(self, event, ctx) -> None:
             seen.append((event, ctx.params))
 
-    monkeypatch.setattr("gateway.extensions.registry.ExtensionRegistry", _Registry)
+    monkeypatch.setattr("agent_gateway.extensions.registry.ExtensionRegistry", _Registry)
 
     request = _request(ReqMethod.CHAT_SEND, session_id="sess-1", params={"query": "你好"})
     if entry == "middleware":
@@ -106,7 +106,7 @@ async def test_chat_hook_uses_local_hook_contract(monkeypatch) -> None:
         async def trigger(self, event, ctx) -> None:
             seen.append((event, ctx))
 
-    monkeypatch.setattr("gateway.extensions.registry.ExtensionRegistry", _Registry)
+    monkeypatch.setattr("agent_gateway.extensions.registry.ExtensionRegistry", _Registry)
 
     await trigger_before_chat_request(
         _request(ReqMethod.CHAT_SEND, session_id="sess-1", params={"query": "你好"})

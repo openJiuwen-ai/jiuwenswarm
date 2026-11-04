@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.routing.agent_request_timeout import (
+from agent_gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
     AgentRequestTimeoutError,
@@ -11,7 +11,7 @@ from gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
 )
-from gateway.routing import agent_request_timeout as timeout_policy
+from agent_gateway.routing import agent_request_timeout as timeout_policy
 
 
 def test_resolve_timeout_skips_stream_and_non_tui_requests():

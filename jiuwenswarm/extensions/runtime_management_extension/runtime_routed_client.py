@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from agent_gateway.routing.agent_client import AgentServerClient
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.request_identity import web_routing_identity
@@ -32,7 +33,6 @@ from jiuwenswarm.extensions.runtime_management_extension.session_route_client im
     RetryableRouteError,
     RuntimeSessionRouteClient,
 )
-from gateway.routing.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ _INTERRUPT_METHODS = frozenset(
 )
 _ROUTELESS_METHODS = frozenset(
     {
+        "hub.expert_packages.catalog",
         "agent.reload_config",
         "agent.prewarm.sync",
         "agent.prewarm_sync",

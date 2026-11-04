@@ -16,6 +16,7 @@ from jiuwenswarm.server.control.methods import (
     CONTROL_CONFIG_METHODS,
     CONTROL_HEALTH_METHODS,
     CONTROL_HISTORY_METHODS,
+    CONTROL_HUB_METHODS,
     CONTROL_PROJECT_METHODS,
     CONTROL_SESSION_METHODS,
 )
@@ -126,6 +127,9 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         if is_control_method(request):
+            if request.req_method.value in CONTROL_HUB_METHODS:
+                await self._dispatch_hub_catalog(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.HEALTH_CHECK_GET_CONF:
                 await self._dispatch_health(ws, request, send_lock)
                 return
@@ -135,6 +139,22 @@ class MethodRouter:
             await self._dispatch_control(ws, request, send_lock)
             return
         await self._admission.dispatch(ws, request, send_lock)
+
+    async def _dispatch_hub_catalog(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: Any,
+    ) -> None:
+        # Keep the cluster catalog outside user tenant binding and execution admission.
+        from jiuwenswarm.server.control.hub_catalog_service import handle_hub_catalog_request
+
+        try:
+            response = await handle_hub_catalog_request(request)
+        except Exception as exc:
+            logger.exception("[Front] Hub catalog query failed")
+            response = build_error_response(request, str(exc), code="INTERNAL_ERROR")
+        await self._send(ws, send_lock, encode_response(response, response_id=request.request_id))
 
     async def _dispatch_health(
         self,
