@@ -16799,6 +16799,20 @@ class JiuWenSwarmDeepAdapter:
         mode: str = "agent",
         channel_id: str | None = None,
     ) -> dict[str, Any] | None:
+        """Dispatch Worker slash commands through the extension boundary."""
+        from jiuwenswarm.server.runtime.commands.adapter_commands import run_adapter_slash_command
+
+        return await run_adapter_slash_command(
+            self, query, session_id, mode, channel_id, self._handle_native_slash_command,
+        )
+
+    async def _handle_native_slash_command(
+        self,
+        query: Any,
+        session_id: str = "default",
+        mode: str = "agent",
+        channel_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """Intercept slash commands before agent invocation.
 
         Returns result dict if handled, None to proceed normally.
