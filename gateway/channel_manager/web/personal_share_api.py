@@ -74,18 +74,24 @@ class _UploadLimits:
 async def _read_upload(request: Request, stream: Any, size: int) -> None:
     received = 0
     iterator = request.stream().__aiter__()
-    async with asyncio.timeout(_UPLOAD_TIMEOUT_SECONDS):
-        while True:
-            try:
-                chunk = await asyncio.wait_for(anext(iterator), timeout=_UPLOAD_IDLE_SECONDS)
-            except StopAsyncIteration:
-                break
-            received += len(chunk)
-            if received > size:
-                raise ValueError("share_export_upload_incomplete")
-            await asyncio.to_thread(stream.write, chunk)
-        if received != size:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _UPLOAD_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        try:
+            chunk = await asyncio.wait_for(
+                anext(iterator), timeout=min(_UPLOAD_IDLE_SECONDS, remaining),
+            )
+        except StopAsyncIteration:
+            break
+        received += len(chunk)
+        if received > size:
             raise ValueError("share_export_upload_incomplete")
+        await asyncio.to_thread(stream.write, chunk)
+    if received != size:
+        raise ValueError("share_export_upload_incomplete")
 
 
 def _manager():

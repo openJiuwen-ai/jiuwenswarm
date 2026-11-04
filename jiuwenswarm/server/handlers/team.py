@@ -427,6 +427,21 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
 
         async with TEAM_DELETION_GATE.mutation_lock(team_name):
             TEAM_DELETION_GATE.assert_not_deleting_locked(team_name)
+            from jiuwenswarm.enterprise.team.handlers import ensure_session_team_occupancy
+            from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded, team_quota_user_message
+
+            try:
+                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+                await run_team_store(
+                    ensure_session_team_occupancy,
+                    request,
+                    session_id=session_id,
+                    team_name=existing_binding.team_name,
+                    template_id=existing_binding.template_id,
+                )
+            except TeamQuotaExceeded as exc:
+                raise TeamBindingStoreError(team_quota_user_message(exc), code="QUOTA_EXCEEDED") from exc
             binding = binding_store.bind_session(
                 team_name=team_name,
                 session_id=session_id,
@@ -499,6 +514,27 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                 team_name=team_name,
                 channel_id=request.channel_id,
             )
+            if result.deleted:
+                try:
+                    from jiuwenswarm.enterprise.team.session_cleanup import (
+                        purge_team_for_deleted_session,
+                    )
+
+                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+                    for sid in result.session_ids:
+                        await run_team_store(
+                            purge_team_for_deleted_session,
+                            session_id=sid,
+                            team_name=team_name,
+                        )
+                    if not result.session_ids:
+                        await run_team_store(
+                            purge_team_for_deleted_session,
+                            team_name=team_name,
+                        )
+                except Exception:
+                    logger.exception("[Team] quota release after delete failed: %s", team_name)
             payload = {
                 "team_name": result.team_name,
                 "session_ids": list(result.session_ids),
