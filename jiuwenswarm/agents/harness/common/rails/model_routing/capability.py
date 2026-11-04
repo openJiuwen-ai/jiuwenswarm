@@ -76,7 +76,15 @@ def _build_cap_from_entry(
     model_obj: Optional[Any] = None
     if model_builder is not None and mcc:
         try:
-            model_obj = model_builder(mcc, mco)
+            # 能力声明（modalities）必须透传：否则自动路由构造的 Model 丢看图能力，
+            # 视觉候选经路由后必被判"不支持"（S_22 铁律 46）。
+            modalities = entry.get("modalities") if isinstance(entry, dict) else None
+            try:
+                model_obj = model_builder(mcc, mco, modalities)
+            except TypeError:
+                # 2 参旧 builder（如 _default_model_builder）兜底：不传能力位，
+                # 按"未声明即不支持"处理。
+                model_obj = model_builder(mcc, mco)
         except Exception as exc:
             logger.debug("[ModelRouting] model_builder failed for %s: %s", name, exc)
             model_obj = None

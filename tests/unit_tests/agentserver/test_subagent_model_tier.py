@@ -52,10 +52,10 @@ def _adapter_with_tier_models() -> JiuWenSwarmDeepAdapter:
         "default-model": default,
     }
 
-    def _build_from_entry(mcc, _mco):
+    def _build_from_entry(mcc, _mco, *_args, **_kwargs):
         return built[mcc["model_name"]]
 
-    adapter._build_model_from_entry = _build_from_entry  # type: ignore[method-assign]
+    # builder 已提升到 deep.model_factory，缓存构建经 interface_deep 命名空间调用
     previous_builder = interface_deep._build_model_from_entry
     interface_deep._build_model_from_entry = _build_from_entry
     try:

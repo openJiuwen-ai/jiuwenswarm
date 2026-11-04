@@ -30,7 +30,6 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.utils import DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
 from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _normalize_reload_value
 
 logger = logging.getLogger(__name__)
@@ -317,7 +316,7 @@ def _system_prompt_reload_fingerprint(deep_cfg: Any | None) -> str | None:
 _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 180.0
 
 
-def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
+def _build_model_from_entry(mcc: dict, mco: dict, modalities: Any = None) -> Model:
     """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
     name = mcc.get("model_name", "")
     # models.json 在 relay spawn 前落盘；未登录时 maas 条目 api_base/api_key 为空，
@@ -411,7 +410,17 @@ def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
             model_name=name,
         )
     )
-    return Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
+    model = Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
+    # 能力声明按条目原文可能是 ``modalities: [text, image]`` 列表，也可能被写成
+    # 逗号/空白分隔字符串；downstream 只认规范列表——不归一就会把字符串当列表遍历，
+    # 让 ``image`` 判定失真。归一后挂到 Model 上，供看图判定与换模同步共用。
+    from jiuwenswarm.agents.harness.common.tools.model_capabilities import (
+        coerce_modalities,
+    )
+
+    # 单模型「原生能力模态」显式配置；None / 未声明一律按不支持看图处理（不再回退内置表）。
+    model.modalities = coerce_modalities(modalities)
+    return model
 
 
 def _models_config_fingerprint(config: dict) -> str:
@@ -463,8 +472,9 @@ def _prepare_multimodal_image_inputs(
     request: AgentRequest,
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
-    from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+    from jiuwenswarm.agents.harness.common.multimodal import (
         extract_multimodal_image_files,
+        build_image_reference_line,
     )
 
     image_files = extract_multimodal_image_files(request.params)
@@ -473,81 +483,19 @@ def _prepare_multimodal_image_inputs(
 
     updated = dict(inputs)
     updated["_multimodal_image_files"] = image_files
+
+    # 把引用行写进用户 query：MultimodalImageRail 注入时靠它定位「本次要物化哪些图」。
+    # 「拆分第二刀」把这层逻辑精简掉了，导致模型看不到图片、只能 fallback 去 read_file。
+    query = updated.get("query")
+    if isinstance(query, str):
+        lines = [build_image_reference_line(f, i) for i, f in enumerate(image_files, start=1)]
+        if lines:
+            updated["query"] = (query + "\n" + "\n".join(lines)).strip()
+
     logger.info(
         "[JiuWenSwarmDeepAdapter] Prepared %d image attachment(s) "
         "for Core multimodal context-window injection",
         len(image_files),
-    )
-    return updated
-
-
-def _prepare_react_image_tool_prompt(
-    request: AgentRequest,
-    inputs: dict[str, Any],
-    *,
-    enable_read_image_multimodal: bool,
-) -> dict[str, Any]:
-    """Add image file paths to the ReAct prompt when native image input is off."""
-    if enable_read_image_multimodal:
-        return inputs
-
-    query = inputs.get("query")
-    if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
-        return inputs
-
-    from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-        extract_multimodal_image_files,
-    )
-
-    image_files = inputs.get("_multimodal_image_files")
-    if not isinstance(image_files, list) or not image_files:
-        image_files = extract_multimodal_image_files(request.params)
-    if not image_files:
-        return inputs
-
-    params = request.params if isinstance(request.params, dict) else {}
-    raw_question = params.get("query")
-    if not isinstance(raw_question, str) or not raw_question.strip():
-        raw_question = params.get("content")
-    question = raw_question.strip() if isinstance(raw_question, str) else ""
-    first_path = str(image_files[0].get("path") or "").strip()
-    if not first_path:
-        return inputs
-
-    media_items = []
-    for image_file in image_files:
-        path = str(image_file.get("path") or "").strip()
-        if not path:
-            continue
-        media_items.append(
-            {
-                "type": "image",
-                "filename": image_file.get("filename") or Path(path).name,
-                "mediaPath": path,
-                "mimeType": image_file.get("mime_type") or image_file.get("mimeType"),
-            }
-        )
-    if not media_items:
-        return inputs
-
-    tool_context = {
-        "marker": "jiuwenswarm_image_tool_context",
-        "mediaPath": first_path,
-        "mediaItems": media_items,
-        "question": question,
-        "toolHint": (
-            "当前主模型未启用原生图片输入。如果需要理解图片内容，请调用图片理解工具；"
-            "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
-            "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
-        ),
-    }
-
-    updated = dict(inputs)
-    updated.pop("_multimodal_image_files", None)
-    updated["query"] = (
-        query
-        + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
-        + json.dumps(tool_context, ensure_ascii=False)
     )
     return updated
 
@@ -557,16 +505,17 @@ def _build_image_tool_fallback_notice(
     *,
     enable_read_image_multimodal: bool,
     model: Any | None,
+    query: str | None = None,
 ) -> dict[str, Any] | None:
     if enable_read_image_multimodal:
         return None
 
-    from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-        extract_multimodal_image_files,
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        parse_image_references,
     )
 
-    image_files = extract_multimodal_image_files(request.params)
-    if not image_files:
+    image_references = parse_image_references(query) if isinstance(query, str) else []
+    if not image_references:
         return None
 
     model_config = getattr(model, "model_config", None)
@@ -580,27 +529,39 @@ def _build_image_tool_fallback_notice(
         "content": content,
         "request_id": request.request_id,
         "session_id": request.session_id,
-        "image_count": len(image_files),
+        "image_count": len(image_references),
     }
     if model_name:
         notice["model_name"] = model_name
     return notice
 
 
-def _resolve_enable_read_image_multimodal(config: dict[str, Any]) -> bool:
-    configured = config.get("enable_read_image_multimodal")
-    if isinstance(configured, bool):
-        return configured
-    return DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
+def _resolve_enable_read_image_multimodal(config: dict[str, Any], model: Any | None = None) -> bool:
+    """看图能力只由逐模型 modalities 是否含 ``image`` 决定，未声明即不支持（S_22 N2）。"""
+
+    if model is None:
+        return False
+    from jiuwenswarm.agents.harness.common.tools.model_capabilities import (
+        supports_native_image,
+    )
+
+    return supports_native_image(getattr(model, "modalities", None))
 
 
 def _build_multimodal_image_rail(
     enable_image_multimodal: bool | None = None,
+    *,
+    max_total_bytes: int = 0,
+    max_visual_tokens: int = 0,
+    max_count: int = 0,
 ) -> MultimodalImageRail | None:
     """Build MultimodalImageRail."""
     try:
         multimodal_image_rail = MultimodalImageRail(
             enable_image_multimodal=enable_image_multimodal,
+            max_total_bytes=max_total_bytes,
+            max_visual_tokens=max_visual_tokens,
+            max_count=max_count,
         )
         logger.info("[JiuWenSwarmDeepAdapter] MultimodalImageRail create success")
     except Exception as exc:

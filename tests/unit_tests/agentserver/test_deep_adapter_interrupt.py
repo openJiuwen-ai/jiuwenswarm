@@ -212,13 +212,11 @@ async def test_team_stream_binds_a2a_resource_context(
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", lambda _inputs: None)
     monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: None)
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._prepare_multimodal_image_inputs", lambda _request, inputs: inputs
+        interface_deep,
+        "_prepare_multimodal_image_inputs",
+        lambda _request, inputs: inputs,
     )
     monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._prepare_react_image_tool_prompt",
-        lambda _request, inputs, **_kwargs: inputs,
-    )
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "zh")
     monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda _session: "web")
     monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
