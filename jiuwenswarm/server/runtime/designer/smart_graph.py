@@ -393,6 +393,8 @@ def _plan_cast_sheets(
                 ),
                 "costume_lock": costume[:320],
                 "clothing_parts": dict(ch.get("clothing_parts") or {}),
+                "cast_form": str(ch.get("cast_form") or ""),
+                "cast_group_size": str(ch.get("cast_group_size") or ""),
             }
         )
 
@@ -864,6 +866,8 @@ def build_smart_video_graph(
                 "character_name": names[0] if names else display,
                 "character_names": names,
                 "costume_lock": wardrobe or str(sheet.get("costume_lock") or ""),
+                "cast_form": str(sheet.get("cast_form") or ""),
+                "cast_group_size": str(sheet.get("cast_group_size") or ""),
             }
             prompt = compose_character_sheet_prompt(cfg=seed_cfg, graph=None, seed="")
         except Exception:  # noqa: BLE001
@@ -889,6 +893,8 @@ def build_smart_video_graph(
                     "character_names": names,
                     "combined_cast": False,
                     "identity_source": True,
+                    "cast_form": str(sheet.get("cast_form") or ""),
+                    "cast_group_size": str(sheet.get("cast_group_size") or ""),
                     "costume_lock": str(sheet.get("costume_lock") or ""),
                     "style_lock": dict(film_style),
                     "max_image_calls": 1,
