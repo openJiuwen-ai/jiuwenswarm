@@ -38,6 +38,29 @@ Gateway 接入与登录示例分别提交，配套契约见 [Gateway 浏览器�
 上下文变化或组件退出时终止旧请求并释放 Object URL。资源就绪前不挂载图片。
 iframe 内部网页、HTML 相对资源、直接导航及桌面原生打开仍需独立资源授权接入。
 
+### 插件静态素材的生命周期
+
+2026-11-04 修订：登录示例的背景与宣传图属于包静态素材，原先却与所有 Gateway 资源一起绑定到请求 epoch，
+写入凭据后会先移除素材、继续显示表单。本次由宿主区分资源归属，不修改插件登录、清页或刷新顺序。
+
+采用既有 `/extension-assets/{package_id}/{generation}/{path}` 路由与受信任的客户端声明精确匹配。
+静态素材的版本由 Gateway 实例、包 ID 和激活代次共同确定；不注入请求绑定 header，也不随绑定值变化重新读取。
+包撤销、激活代次变化、Gateway 切换或声明不可用时，终止旧素材读取、拒绝迟到响应并释放已展示的 Object URL。
+其他 Gateway 资源继续按请求上下文取消与清理。组件卸载及调用者取消对两类资源都生效。
+
+不按扩展名、登录字段或任意 URL 前缀猜测授权范围；不通过延迟清理、保留旧凭据资源或提前关闭登录页遮挡问题。
+静态路由重定向不自动跟随，以免跳出已确认的包资源范围；显式 manual 保持现有传输约定。
+
+验证覆盖素材已加载及慢加载期间的凭据变化、包重载与卸载、声明撤销、URL 范围、取消及保护资源回归。
+客户端测试 25 项、组件测试 168 项通过；无客户端声明时不读取浏览器配置，保留无插件与服务端渲染的原有路径。
+提交前已从暂存区导出源码独立复核上述测试及 Chrome 两种场景，不依赖其他在途改动。
+`tests/webuiResourceBrowser.test.mjs` 复用协议夹具和登录示例真实素材，在 Chrome 157.0.8103.38 中验证两类加载场景：
+凭据切换后连续 12 个 animation frame 保留背景、宣传图、表单及 modal 状态，保护图片用新凭据重读，撤销包声明后清除素材。
+截图默认输出到 `/tmp/jiuwenswarm-resource-lifecycle-screenshots/`。浏览器夹具使用协议桩，不代替真实登录后端验收。
+复现入口：`node tests/webuiResourceBrowser.test.mjs`；可通过 `WEBUI_PLAYWRIGHT_MODULE`、`WEBUI_CHROME_PATH`
+和 `WEBUI_SCREENSHOTS` 指定 Playwright、浏览器及截图目录。最低 Chrome 107 尚未实测。
+Vite 生产构建通过；依照本地约束未运行 tsc、格式化或静态检查。
+
 Form 使用 AntD 本地状态与校验，Button.form 在实例内关联表单并通过 ui.click.data 发送字段。
 隐藏页签及暂时停用保留草稿，断连和销毁清理字段。Form.Item 使用正式协议名，不接受旧 FormItem 名称。
 Dropdown 只接受一个触发源：图标加可访问标签，或一棵展示子树。菜单标签允许展示节点、禁用项及分隔线，
@@ -78,3 +101,11 @@ Context changes cancel old requests and streams; ready contexts resume initializ
 Only explicit NOT_FOUND metadata errors establish a missing conversation. Independent pushes and embedded resource
 navigation still require their owning server contracts. Shared vectors verify the common frontend/Gateway component subset;
 browser protocol fixtures do not establish real identity-service acceptance. Authentication policy is unchanged.
+
+Package static assets now use Gateway identity, package ID and activation generation as their resource scope, without
+request-binding headers. Credential changes preserve their loaded URLs and pending requests, while activation changes
+cancel and release them. Other protected resources retain credential-based invalidation. The regression passed 25 client
+and 168 component tests. Chrome 157 verified both loaded and delayed assets over 12 frames per scenario, protected-image
+refresh with the new credential, and asset removal after package declarations were revoked. This uses the protocol fixture
+and real example artwork, not a production authentication service. The tests and both Chrome scenarios were rechecked
+from a staged-source export independently of other pending changes.

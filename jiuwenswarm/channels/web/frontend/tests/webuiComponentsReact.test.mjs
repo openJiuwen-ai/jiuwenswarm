@@ -121,6 +121,105 @@ test('protected images mount only after resource loading and discard old-context
   }
 });
 
+for (const loaded of [true, false]) {
+  test(`package background and images survive credential changes with resources ${loaded ? 'loaded' : 'pending'}`, async () => {
+    const host = browserClientCapabilities;
+    const originalFetch = globalThis.fetch;
+    const desktop = window.jiuwenDesktop;
+    const createObjectURL = URL.createObjectURL;
+    const revokeObjectURL = URL.revokeObjectURL;
+    const storageKeys = new Set(Object.keys(window.localStorage));
+    const pending = [];
+    const revoked = [];
+    let serial = 0;
+    let ready;
+    window.jiuwenDesktop = { apiBase: 'http://localhost' };
+    globalThis.fetch = (url, init) => new Promise((resolve) => pending.push({ url, init, resolve }));
+    URL.createObjectURL = () => `blob:http://localhost/package-resource-${++serial}`;
+    URL.revokeObjectURL = (url) => revoked.push(url);
+    const snapshot = { clientProtocolVersion: 1, gatewayInstanceId: 'asset-gateway', connectionEpoch: 'asset-connection',
+      packages: [{ packageId: 'asset-package', activationGeneration: 'asset-generation',
+        requestBindings: [{ type: 'http',
+          source: { key: 'credential' }, target: { location: 'header', name: 'Authorization', prefix: 'Bearer ' } }] }] };
+    host.configure(snapshot);
+    await Promise.resolve();
+    const prefix = '/extension-assets/asset-package/asset-generation/';
+    const app = await setup({ component: 'Box', props: { backgroundImage: prefix + 'background.svg' }, children: [
+      { component: 'Image', props: { src: prefix + 'promotion.png', alt: 'Promotion', preview: false } },
+      { component: 'Image', props: { src: '/protected-account-image', alt: 'Account', preview: false } },
+      { component: 'Input', props: { placeholder: 'Username' } },
+    ] });
+    const container = document.createElement('div'); document.body.append(container);
+    const raw = createRoot(container);
+    const complete = async (requests) => {
+      await act(async () => {
+        for (const request of requests) request.resolve(new Response(new Uint8Array([137, 80, 78, 71]),
+          { headers: { 'Content-Type': 'image/png' } }));
+      });
+    };
+    try {
+      await act(async () => raw.render(createElement(GatewayImage, { src: prefix + 'native.png', alt: 'Native' })));
+      const initial = pending.splice(0);
+      assert.equal(initial.length, 4);
+      if (loaded) await complete(initial);
+      const box = app.container.querySelector('[data-testid="webui-box"]');
+      const form = app.container.querySelector('input');
+      const promotion = app.container.querySelector('img[alt="Promotion"]');
+      const native = container.querySelector('img');
+      const background = box.style.backgroundImage;
+      const accountUrl = app.container.querySelector('img[alt="Account"]')?.src;
+      host.setInvocationWaiter(() => new Promise((resolve) => { ready = resolve; }));
+      await act(async () => host.acceptOperation({ clientProtocolVersion: 1,
+        invocation_id: 'asset-invocation', connection_epoch: 'asset-connection', package_id: 'asset-package',
+        activation_generation: 'asset-generation', method: 'local_storage.set',
+        params: { key: 'credential', value: 'changed' }, deadline: Date.now() + 30_000 }));
+      assert.equal(host.isChanging(), true);
+      assert.equal(app.container.querySelector('input'), form);
+      assert.equal(app.container.querySelector('img[alt="Account"]'), null);
+      if (loaded) {
+        assert.equal(app.container.querySelector('img[alt="Promotion"]'), promotion);
+        assert.equal(container.querySelector('img'), native);
+        assert.equal(box.style.backgroundImage, background);
+        assert.deepEqual(revoked, [accountUrl]);
+      } else {
+        assert.ok(initial.filter((item) => item.url.startsWith(prefix)).every((item) => !item.init.signal.aborted));
+        assert.equal(initial.find((item) => item.url === '/protected-account-image').init.signal.aborted, true);
+        await complete(initial);
+      }
+      const urls = [app.container.querySelector('img[alt="Promotion"]').src, container.querySelector('img').src];
+      assert.ok(urls.every((url) => url.startsWith('blob:')));
+      assert.match(box.style.backgroundImage, /blob:/);
+      assert.equal(pending.length, 0, 'credential changes do not reload package assets');
+      await act(async () => ready());
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].url, '/protected-account-image');
+      assert.equal(pending[0].init.headers.get('Authorization'), 'Bearer changed');
+      await complete(pending.splice(0));
+      assert.ok(app.container.querySelector('img[alt="Account"]'));
+      const next = structuredClone(snapshot);
+      if (loaded) next.packages[0].activationGeneration = 'reactivated';
+      else next.packages = [];
+      await act(async () => host.configure(next));
+      assert.equal(app.container.querySelector('img[alt="Promotion"]'), null);
+      assert.equal(container.querySelector('img'), null);
+      assert.equal(box.style.backgroundImage, '');
+      assert.ok(urls.every((url) => revoked.includes(url)));
+      assert.ok(pending.every((item) => !item.url.startsWith(prefix)), 'old activations are never requested again');
+    } finally {
+      ready?.();
+      await app.close();
+      await act(async () => raw.unmount()); container.remove();
+      host.setInvocationWaiter(() => Promise.resolve());
+      host.invalidate();
+      for (const key of Object.keys(window.localStorage)) if (!storageKeys.has(key)) window.localStorage.removeItem(key);
+      window.jiuwenDesktop = desktop;
+      globalThis.fetch = originalFetch;
+      URL.createObjectURL = createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL;
+    }
+  });
+}
+
 test('FilePreview embeds images and verified PDFs using the native browser viewer', async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];

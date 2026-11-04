@@ -53,6 +53,23 @@ request_context 是 WS 消息体中的固定扩展容器，类型使用 Record<s
 主 WebClient 和独立 `/ws/git` 客户端使用同一份 WebSocket 绑定声明；仅业务消息携带参数，连接握手不写入绑定值。Gateway 的 /ws/git 尚未接入插件策略，不能据此前端绑定宣称完整鉴权。两条连接均在绑定来源变化时取消旧请求等待，利用已有请求 ID 忽略其迟到响应。业务推送按现有事件结构消费；声明被撤销或配置无效期间暂停业务消息消费。
 媒体、Markdown 图片和文件下载通过资源适配器获取 Blob 后展示/下载；iframe 内部网页、HTML 相对资源、Markdown 的直接导航链接及桌面原生打开路径仍需与 Gateway 的独立资源授权协议联调，不能据此宣称所有嵌入资源已支持 header 绑定。
 
+## 资源作用域
+
+- 客户端能力接入启用时，插件静态素材仅指当前 Gateway 基路径下的正式 `/extension-assets/{package_id}/{generation}/{path}` 路由。
+  包 ID、激活代次须精确匹配受信任的 `client.declarations`；未知包、旧代次或声明不可用时不读取、不展示。
+- 静态素材不注入 HTTP 请求绑定，资源版本由 Gateway 实例、包 ID 和激活代次确定。
+  凭据及其他绑定值变化不取消其在途读取、不重新加载、不释放已显示的 Object URL。
+- 包撤销、重新激活、Gateway 切换或声明失效时取消旧素材请求与响应流，拒绝其迟到结果，释放旧 Object URL。
+  同版本重新注入声明不使素材失效。静态素材不自动跟随重定向；显式 manual 由调用者处理。
+- 其他受绑定的 Gateway 资源继续跟随请求上下文变化取消、移除并重新读取。
+  组件卸载、URL 变化及调用者取消仍按各自生命周期清理。
+
+Plugin static assets are identified by the formal Gateway asset route and trusted package activation declarations.
+Their resource version consists of Gateway identity, package ID and activation generation. They do not receive request
+bindings and survive credential changes, including pending loads. Package removal, reactivation, Gateway replacement
+or unavailable declarations invalidate their requests, response bodies and Object URLs. Other bound resources continue
+to be invalidated by request context changes. Unmounting, URL changes and caller cancellation still release resources.
+
 ## 上下文与 UI 帧
 
 有效绑定值变化后取消旧请求和流，隔离其迟到结果；上下文计数仅保存在前端运行态。业务视图、已有缓存和内存状态不会因此被重置，插件可显式请求整页刷新。
@@ -86,7 +103,7 @@ Explicit HTTP clients, binary previews, Markdown images and downloads use the sh
 client.declarations.packages 仅列出参与浏览器能力的包，不是所有 UI 插件的目录。
 普通 UI 帧沿用原有目标、组件、实例和 revision 校验；客户端能力包的 UI 帧额外要求匹配声明的 activation_generation。
 携带 activation_generation 但找不到有效声明的帧仍拒绝，不将失活的能力包解释成普通包。
-图片在绑定资源尚未返回时不挂载 img；资源上下文变化先移除旧图片并释放旧 URL，待新资源就绪后显示。
+图片在绑定资源尚未返回时不挂载 img；所属资源作用域失效时先移除旧图片并释放旧 URL，待新资源就绪后显示。
 真正的请求失败继续遵循原有图片及插件声明的 fallback 行为。
 请求上下文变化时移除旧 WebUI 贡献；新上下文就绪后，已挂载的非 entry 插槽重新上报 ui.ready。
 该流程只恢复插件贡献，不重置业务 Store，也不自动刷新整个页面。
@@ -94,6 +111,6 @@ client.declarations.packages 仅列出参与浏览器能力的包，不是所有
 Client declarations enumerate participating capability packages rather than the complete WebUI catalog.
 Ordinary frames retain the existing UI validation. Participating frames require their declared activation generation,
 and a generation-tagged frame without a matching declaration is rejected.
-Images are mounted after their bound resource becomes available; context changes remove old images and revoke their URLs before reloading.
+Images are mounted after their bound resource becomes available; invalidation of their resource scope removes old images and revokes their URLs before reloading.
 After the new request context is ready, mounted non-entry slots send ui.ready again to restore their contributions.
 This does not reset business stores or reload the page automatically.
