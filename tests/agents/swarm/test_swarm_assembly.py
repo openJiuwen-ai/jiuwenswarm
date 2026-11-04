@@ -1131,6 +1131,27 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("dispatch_mode", "spawn_mode", "explicit_fork", "enabled"),
+    [
+        ("scheduled", "inprocess", None, True),
+        ("scheduled", "inprocess", False, False),
+        ("scheduled", "process", None, False),
+        ("autonomous", "inprocess", None, False),
+    ],
+)
+def test_enrich_applies_scheduled_fork_default(
+    dispatch_mode: str, spawn_mode: str, explicit_fork: bool | None, enabled: bool
+) -> None:
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+    spec.spawn_mode = spawn_mode
+    if explicit_fork is not None:
+        spec.enable_fork = explicit_fork
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+    assert spec.enable_fork is enabled
+
+
 def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     """Enrichment rewrites member rails and attaches the build context."""
     spec = _make_team_spec()

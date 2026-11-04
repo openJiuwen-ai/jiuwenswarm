@@ -98,10 +98,11 @@ async def _build_spec(
     bootstrap_mode: str | None = None,
     *,
     config_bootstrap_mode: str = "leader",
+    config_dispatch_mode: str = "scheduled",
 ) -> SimpleNamespace:
     spec = SimpleNamespace(
         team_name="team",
-        dispatch_mode="scheduled",
+        dispatch_mode=config_dispatch_mode,
         bootstrap_mode=config_bootstrap_mode,
         enable_task_verification=True,
         enable_member_messaging=True,
@@ -114,7 +115,10 @@ async def _build_spec(
     monkeypatch.setattr("jiuwenswarm.agents.harness.team.team_manager.get_config", lambda: {})
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
     monkeypatch.setattr(TeamManager, "_load_session_team_spec", lambda self, _sid, **_kw: (spec, True))
-    monkeypatch.setattr("jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm", lambda _spec, **_kw: None)
+    def check_assembly_mode(spec: SimpleNamespace, **_kwargs: Any) -> None:
+        assert spec.dispatch_mode == (dispatch_mode or config_dispatch_mode)
+
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm", check_assembly_mode)
 
     return await TeamManager().get_swarm_enriched_team_spec(
         "s1",
@@ -196,7 +200,7 @@ def test_persist_bootstrap_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_framework_bootstrap_lands_on_a_scheduled_spec(monkeypatch: pytest.MonkeyPatch) -> None:
-    spec = await _build_spec(monkeypatch, "scheduled", "framework")
+    spec = await _build_spec(monkeypatch, "scheduled", "framework", config_dispatch_mode="autonomous")
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.bootstrap_mode == "framework"
