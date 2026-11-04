@@ -116,6 +116,18 @@ def test_a2ui_prompt_ok_cancel_button_row_not_right_aligned():
     assert "右对齐" not in zh
 
 
+def test_a2ui_prompt_forbids_reset_and_clear_form_buttons():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Do NOT add buttons that reset or clear form values" in en
+    assert "dataModelUpdate-initialized values" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "清空表单值的按钮" in zh
+    assert "dataModelUpdate 初始化的值" in zh
+
+
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
     en = build_a2ui_autonomy_instruction("en")
 
