@@ -12,7 +12,6 @@ from openjiuwen.core.context_engine import ContextEngine, ContextEngineConfig, C
 from openjiuwen.core.context_engine.compaction import message_fingerprint
 from openjiuwen.core.context_engine.processor.compressor.full_compact_processor import FullCompactProcessorConfig
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext, HandlerLevel
-from openjiuwen.core.extension.runtime import Runtime
 from openjiuwen.core.foundation.llm import AssistantMessage, UserMessage, ToolMessage, ToolCall
 from openjiuwen.core.session.agent import Session
 
@@ -22,41 +21,103 @@ from jiuwenswarm.extensions_v2.event_types.session_compact import (
     SessionCompacted, SessionCompactSkipped, register_session_compact_event,
 )
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops
+from jiuwenswarm.extensions_v2.management import ExtensionManager
+from .management.support import write_package
 
 
-async def _runtime(*, bind_native=True):
-    bus = ExtensionEventBus()
-    register_session_compact_event(bus)
-    runtime = Runtime()
-    service = SessionCompactionService(bus, invocation_guard=runtime.is_active_invocation)
-    register_session_ops(bus, compact_service=service)
-    await bus.trigger(Event("ops.build", None))
-    engine = ContextEngine(ContextEngineConfig(enable_tiktoken_counter=False, enable_openrouter_model_context_window_tokens=False))
-    session = Session(session_id="compact-a")
-    session.commit = AsyncMock()
-    context = await engine.create_context(session=session, history_messages=[
-        UserMessage(content="Keep the API constraints. " * 100),
-        AssistantMessage(content="Investigated the project. " * 100),
-        UserMessage(content="Tests are pending. " * 100),
-        AssistantMessage(content="Latest reply."),
-    ], processors=[("FullCompactProcessor", FullCompactProcessorConfig(
-        trigger_total_tokens=1, messages_to_keep=1, compression_call_max_tokens=100000,
-    ))])
-    calls = []
-    class Model:
-        async def invoke(self, *args, **kwargs):
-            calls.append(kwargs.get("messages", args[0] if args else None))
-            return AssistantMessage(content="API constraints retained. Tests pending.")
-    context._processors[0]._model = Model()
-    binding = SessionContext("compact-a", cwd="D:/workspace/project")
-    if bind_native:
-        service.bind(engine, binding, busy=lambda: False)
-    return bus, service, engine, context, binding, calls, runtime
+@pytest.fixture
+async def compact_runtime(tmp_path):
+    """Publish test handlers through Registry so Core supplies their generation."""
+    resources = []
+
+    async def create(*, bind_native=True):
+        bus = ExtensionEventBus()
+        manager = ExtensionManager(tmp_path / "installed", store_dir=tmp_path / "package-data")
+        callbacks = {}
+        completed = {}
+        service = SessionCompactionService(
+            bus, invocation_guard=lambda ops: manager.registry.runtime.is_active_invocation(ops),
+        )
+        resources.append((service, manager))
+
+        async def invoke(ops, key, event, next_handler):
+            runtime = manager.registry.runtime
+            assert runtime.is_active_invocation(ops)
+            active = runtime.get_active(ops.package_metadata.package_id)
+            assert runtime.invocation_generation(ops) == active.generation
+            result = await callbacks[key](event, ops, next_handler)
+            completed[key] = completed.get(key, 0) + 1
+            return result
+
+        async def build(event, ops, next_handler):
+            builder = await next_handler(event)
+            builder.add_namespace("compact_test")
+            builder.add_method("compact_test", "invoke", invoke)
+            return builder
+
+        def event_types(target):
+            register_session_compact_event(target)
+
+        def handlers(target):
+            register_session_ops(target, compact_service=service)
+            target.register_event_handler("ops.build", build, {}, HandlerLevel.BUILTIN)
+
+        await manager.init(bus, host_event_types=event_types, host_handlers=handlers)
+
+        async def register_user(event_type, callback):
+            key = "handler" + str(len(callbacks) + 1)
+            callbacks[key] = callback
+            package_id = "compact.test." + key
+            source = "\n".join([
+                "class Extension:",
+                "    def register(self, registrar):",
+                "        registrar.register_event_handler(" + repr(event_type) + ", self.handle, {})",
+                "    async def handle(self, event, ops, next_handler):",
+                "        return await ops.compact_test.invoke(" + repr(key) + ", event, next_handler)",
+                "def create_extension():",
+                "    return Extension()",
+            ])
+            root = write_package(tmp_path / "source", package_id=package_id, module_source=source)
+            report = (await manager.install([root]))[0]
+            assert report.status == "SUCCESS", report
+            return package_id
+
+        host = SimpleNamespace(manager=manager, register_user=register_user, completed=completed,
+                               is_active_invocation=manager.registry.runtime.is_active_invocation)
+        engine = ContextEngine(ContextEngineConfig(enable_tiktoken_counter=False, enable_openrouter_model_context_window_tokens=False))
+        session = Session(session_id="compact-a")
+        session.commit = AsyncMock()
+        context = await engine.create_context(session=session, history_messages=[
+            UserMessage(content="Keep the API constraints. " * 100),
+            AssistantMessage(content="Investigated the project. " * 100),
+            UserMessage(content="Tests are pending. " * 100),
+            AssistantMessage(content="Latest reply."),
+        ], processors=[("FullCompactProcessor", FullCompactProcessorConfig(
+            trigger_total_tokens=1, messages_to_keep=1, compression_call_max_tokens=100000,
+        ))])
+        calls = []
+        class Model:
+            async def invoke(self, *args, **kwargs):
+                calls.append(kwargs.get("messages", args[0] if args else None))
+                return AssistantMessage(content="API constraints retained. Tests pending.")
+        context._processors[0]._model = Model()
+        binding = SessionContext("compact-a", cwd="D:/workspace/project")
+        if bind_native:
+            service.bind(engine, binding, busy=lambda: False)
+        return bus, service, engine, context, binding, calls, host
+
+    try:
+        yield create
+    finally:
+        for service, manager in reversed(resources):
+            await service.close()
+            if manager.registry.is_ready:
+                await manager.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_default_ops_reports_not_integrated_without_dispatch_or_mutation():
-    bus, service, engine, context, binding, calls, runtime = await _runtime(bind_native=False)
+async def test_default_ops_reports_not_integrated_without_dispatch_or_mutation(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime(bind_native=False)
     before = message_fingerprint(context.get_messages())
     compact_handler = AsyncMock(side_effect=AssertionError("no native request may be invented"))
     bus.register_event_handler("session.compact", compact_handler, {}, HandlerLevel.USER)
@@ -69,8 +130,9 @@ async def test_default_ops_reports_not_integrated_without_dispatch_or_mutation()
         with pytest.raises(CompactionError, match="COMPACT_NOT_INTEGRATED"):
             await ops.session.compact(instructions="Keep pending work")
         return await next_handler(event)
-    bus.register_event_handler("test.caller", runtime._tracked_handler("demo", user), {}, HandlerLevel.USER)
+    await host.register_user("test.caller", user)
     assert await bus.trigger(Event("test.caller", {}), binding) == "original event completed"
+    assert host.completed == {"handler1": 1}, "the managed USER assertions must finish, not be fault-isolated"
     compact_handler.assert_not_awaited()
     assert not service.bindings and not service.tasks and engine._compaction.hook is None
     assert message_fingerprint(context.get_messages()) == before and not calls
@@ -79,9 +141,9 @@ async def test_default_ops_reports_not_integrated_without_dispatch_or_mutation()
 
 
 @pytest.mark.asyncio
-async def test_explicit_test_binding_traces_ops_user_builtin_core_and_returns_result(monkeypatch):
+async def test_explicit_test_binding_traces_ops_user_builtin_core_and_returns_result(compact_runtime, monkeypatch):
     from jiuwenswarm.extensions_v2.event_handlers import session_compact as handlers
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     trace = []
     prepare = handlers.prepare_compact
     async def observed_core(event, ops):
@@ -111,10 +173,11 @@ async def test_explicit_test_binding_traces_ops_user_builtin_core_and_returns_re
         result = await next_handler(event)
         trace.append("compact-builtin-after")
         return result
-    bus.register_event_handler("test.caller", runtime._tracked_handler("demo", outer), {}, HandlerLevel.USER)
+    await host.register_user("test.caller", outer)
     bus.register_event_handler("session.compact", user, {}, HandlerLevel.USER)
     bus.register_event_handler("session.compact", builtin, {}, HandlerLevel.BUILTIN)
     assert await bus.trigger(Event("test.caller", {}), binding) == "done"
+    assert host.completed == {"handler1": 1}
     assert trace == ["outer-user", "compact-user-before", "compact-builtin-before", "compact-core",
                      "compact-builtin-after", "compact-user-after", "outer-resumed", "outer-core"]
     assert len(calls) == 1 and "keep tests" in calls[0][0].content
@@ -138,8 +201,8 @@ async def test_native_input_start_does_not_bind_compaction_engine(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ops_to_event_to_native_result_and_next_original_event():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_ops_to_event_to_native_result_and_next_original_event(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     trace = []
     captured = []
     async def original_core(event, ops, next_handler):
@@ -158,20 +221,21 @@ async def test_ops_to_event_to_native_result_and_next_original_event():
         trace.append(event.event_input.trigger)
         value = replace(event.event_input, instructions=event.event_input.instructions + "; keep tests")
         return await next_handler(Event(event.event_type, value))
-    bus.register_event_handler("test.compact", runtime._tracked_handler("demo", user), {}, HandlerLevel.USER)
+    await host.register_user("test.compact", user)
     bus.register_event_handler("session.compact", compact_user, {}, HandlerLevel.USER)
     assert await bus.trigger(Event("test.compact", {}), binding) == "done"
+    assert host.completed == {"handler1": 1}
     assert trace == ["caller", "plugin", "original-core"]
     assert len(calls) == 1 and "keep tests" in calls[0][0].content
-    assert not runtime.is_active_invocation(captured[0][0])
+    assert not host.is_active_invocation(captured[0][0])
     context.get_session_ref().commit.assert_awaited_once()
     assert "Tests pending" in " ".join(message.content for message in context.get_messages())
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_post_next_skip_preserves_live_context_and_durable_state():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_post_next_skip_preserves_live_context_and_durable_state(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     before = message_fingerprint(context.get_messages())
     async def veto(event, ops, next_handler):
         result = await next_handler(event)
@@ -187,8 +251,8 @@ async def test_post_next_skip_preserves_live_context_and_durable_state():
 
 
 @pytest.mark.asyncio
-async def test_user_can_supply_summary_without_running_default_model():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_user_can_supply_summary_without_running_default_model(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     async def custom(event, ops, next_handler):
         return SessionCompacted([{"role": "user", "text": "My summary", "toolUses": []}])
     bus.register_event_handler("session.compact", custom, {}, HandlerLevel.USER)
@@ -200,8 +264,8 @@ async def test_user_can_supply_summary_without_running_default_model():
 
 
 @pytest.mark.asyncio
-async def test_direct_trigger_cannot_invent_platform_compaction():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_direct_trigger_cannot_invent_platform_compaction(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     with pytest.raises(Exception):
         await bus.trigger(Event("session.compact", {}), binding)
     assert not calls
@@ -209,8 +273,8 @@ async def test_direct_trigger_cannot_invent_platform_compaction():
 
 
 @pytest.mark.asyncio
-async def test_busy_and_missing_session_do_not_enter_event():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_busy_and_missing_session_do_not_enter_event(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     service.bindings["compact-a"].busy = lambda: True
     with pytest.raises(CompactionError, match="COMPACT_BUSY"):
         await service.run("compact-a")
@@ -250,8 +314,8 @@ def test_tool_message_roundtrip_preserves_native_type_and_call_identity():
 
 
 @pytest.mark.asyncio
-async def test_precompute_returns_candidate_but_does_not_install_or_commit():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_precompute_returns_candidate_but_does_not_install_or_commit(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     before = message_fingerprint(context.get_messages())
     candidate = await service.run("compact-a", trigger="precompute")
     assert candidate.tokens_after is None
@@ -263,8 +327,8 @@ async def test_precompute_returns_candidate_but_does_not_install_or_commit():
 
 
 @pytest.mark.asyncio
-async def test_opt_in_precompute_waits_for_input_task_exit_and_deduplicates():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_opt_in_precompute_waits_for_input_task_exit_and_deduplicates(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     before = message_fingerprint(context.get_messages())
     async def completed_input():
         service.schedule_precompute("compact-a", enabled=True, ratio=0.000001)
@@ -282,8 +346,8 @@ async def test_opt_in_precompute_waits_for_input_task_exit_and_deduplicates():
 
 
 @pytest.mark.asyncio
-async def test_reentrant_ops_does_not_retrigger_event_or_skip_other_policies():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_reentrant_ops_does_not_retrigger_event_or_skip_other_policies(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     trace = []
     results = []
     async def core(event, ops, next_handler):
@@ -301,16 +365,17 @@ async def test_reentrant_ops_does_not_retrigger_event_or_skip_other_policies():
         trace.append("second")
         return await next_handler(event)
     for event_type, handler in [("test.caller", caller), ("session.compact", first), ("session.compact", second)]:
-        bus.register_event_handler(event_type, runtime._tracked_handler("demo", handler), {}, HandlerLevel.USER)
+        await host.register_user(event_type, handler)
     assert await bus.trigger(Event("test.caller", {}), binding) == "done"
+    assert host.completed == {"handler1": 1, "handler2": 1, "handler3": 1}
     assert trace == ["first", "second"] and len(calls) == 1
     assert isinstance(results[0], SessionCompacted)
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_plugin_ops_rejects_child_task_expired_and_unmanaged_invocations():
-    bus, service, engine, context, binding, calls, runtime = await _runtime()
+async def test_plugin_ops_rejects_child_task_expired_and_unmanaged_invocations(compact_runtime):
+    bus, service, engine, context, binding, calls, host = await compact_runtime()
     captured = []
     async def core(event, ops, next_handler):
         return "done"
@@ -320,11 +385,12 @@ async def test_plugin_ops_rejects_child_task_expired_and_unmanaged_invocations()
         with pytest.raises(CompactionError, match="COMPACT_UNBOUND_INVOCATION"):
             await asyncio.create_task(ops.session.compact())
         return await next_handler(event)
-    handler_id = bus.register_event_handler("test.caller", runtime._tracked_handler("demo", user), {}, HandlerLevel.USER)
+    package_id = await host.register_user("test.caller", user)
     assert await bus.trigger(Event("test.caller", {}), binding) == "done"
+    assert host.completed == {"handler1": 1}
     with pytest.raises(CompactionError, match="COMPACT_UNBOUND_INVOCATION"):
         await captured[0].session.compact()
-    bus.unregister_event_handler(handler_id)
+    assert (await host.manager.uninstall(package_id)).status == "SUCCESS"
     async def unmanaged(event, ops, next_handler):
         captured.append(ops)
         with pytest.raises(CompactionError, match="COMPACT_UNBOUND_INVOCATION"):
