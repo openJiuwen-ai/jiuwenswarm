@@ -31,27 +31,33 @@ def test_a2ui_prompt_discourages_nested_templates():
 def test_a2ui_prompt_titles_input_components_with_text():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert '{"literalString": ""}' in en
-    assert "Wrap each Text title and its input component together in a Column" in en
+    assert 'TextField\'s "label" MUST be empty.' in en
+    assert '{"literalString": ""}' not in en
+    assert "avoiding a doubled label" not in en
+    assert "Wrap each Text title and its input component together in a Column." in en
+    assert "(title first, input second)" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert '{"literalString": ""}' in zh
-    assert "共同包在一个 Column 里" in zh
+    assert '"label" 置空；' in zh
+    assert '{"literalString": ""}' not in zh
+    assert "避免双重标签" not in zh
+    assert "共同包在一个 Column 里。" in zh
+    assert "标题在前、输入在后" not in zh
 
 
 def test_a2ui_prompt_heading_text_is_plain_text():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "MUST contain plain text only" in en
-    assert "do not use any Markdown syntax" in en
-    assert "parsed as a bullet list" in en
+    assert "Titles MUST be plain text" in en
+    assert "MUST NOT contain any Markdown syntax" in en
+    assert "parsed as a bullet list" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "必须是纯文本" in zh
+    assert "标题必须是纯文本" in zh
     assert "禁止任何 Markdown 语法" in zh
-    assert "会被解析成无序列表" in zh
+    assert "会被解析成无序列表" not in zh
 
 
 def test_a2ui_prompt_component_fit():
@@ -165,14 +171,26 @@ def test_a2ui_prompt_cancel_button_only_when_needed():
     assert "默认不要添加" in zh
 
 
-def test_a2ui_prompt_forbids_emoji_in_ui_text():
+def test_a2ui_prompt_image_url_reachable_rule():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "MUST NOT contain emoji" in en
+    assert "Every image URL MUST be a valid, reachable link." in en
+    assert "obtained from the user or a tool result" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "禁止使用 emoji" in zh
+    assert "图片 URL 必须是有效可访问的链接。" in zh
+    assert "须来自用户提供或工具返回" not in zh
+
+
+def test_a2ui_prompt_forbids_emoji_in_ui_text():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Emoji MUST NOT be used anywhere in A2UI UI text" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "A2UI 界面全面禁止使用 emoji" in zh
 
 
 def test_a2ui_prompt_defines_hotel_booking_actions():
