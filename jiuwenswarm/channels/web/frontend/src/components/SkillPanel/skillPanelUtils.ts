@@ -5,6 +5,17 @@
  */
 import type { MarketplacePluginItem, SkillItem } from './types';
 
+/** 广场复用技能入口；保留 Pack 类型供详情和安装使用，不按 Pack 另开分组。 */
+export function groupMarketplaceSkills(skills: MarketplacePluginItem[]) {
+  const teamSkills: MarketplacePluginItem[] = [];
+  const featuredSkills: MarketplacePluginItem[] = [];
+  for (const skill of skills) {
+    if (skill.plugin_type === 'swarmskill') teamSkills.push(skill);
+    else featuredSkills.push(skill);
+  }
+  return { teamSkills, featuredSkills };
+}
+
 /** 刷新会 git pull marketplace，略放宽；普通进页单次 RPC 一般很快。 */
 export const SKILLS_FETCH_TIMEOUT_REFRESH_MS = 60_000;
 export const SKILLS_FETCH_TIMEOUT_NORMAL_MS = 30_000;

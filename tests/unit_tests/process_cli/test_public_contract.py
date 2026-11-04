@@ -37,6 +37,16 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 
 ROOT = Path(__file__).resolve().parents[3]
 
+_RUNTIME_IMPORT_BLOCKER = """
+import importlib.abc, sys
+class BlockRuntime(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        roots = ("jiuwenswarm.runtime", "openjiuwen")
+        if any(fullname == root or fullname.startswith(root + ".") for root in roots):
+            raise AssertionError("Runtime imported for protocol discovery")
+sys.meta_path.insert(0, BlockRuntime())
+"""
+
 
 def test_published_schema_is_valid_and_matches_generator():
     spec = importlib.util.spec_from_file_location(
@@ -166,13 +176,7 @@ def test_field_diagnostics_locate_problem_without_echoing_values(
 def test_protocol_discovery_starts_without_runtime_or_configuration(
     tmp_path, operation
 ):
-    blocker = """
-import importlib.abc, sys
-class BlockRuntime(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(("jiuwenswarm.runtime", "openjiuwen")):
-            raise AssertionError("Runtime imported for protocol discovery")
-sys.meta_path.insert(0, BlockRuntime())
+    blocker = _RUNTIME_IMPORT_BLOCKER + """
 from jiuwenswarm.channels.process_cli.main import main
 sys.argv = ["cli", "--query-json", "-"]
 raise SystemExit(main())
@@ -199,6 +203,30 @@ raise SystemExit(main())
         if operation.endswith("capabilities")
         else protocol_schema()
     )
+
+
+@pytest.mark.parametrize("module", [
+    "openjiuwen", "openjiuwen.core", "jiuwenswarm.runtime", "jiuwenswarm.runtime.events",
+])
+def test_protocol_discovery_guard_still_blocks_runtime_imports(module):
+    run = subprocess.run(
+        [sys.executable, "-c", _RUNTIME_IMPORT_BLOCKER + "\nimportlib.import_module(sys.argv[1])", module],
+        cwd=ROOT,
+        capture_output=True,
+        timeout=20,
+    )
+    assert run.returncode != 0
+    assert "AssertionError: Runtime imported for protocol discovery" in run.stderr.decode(errors="replace")
+
+
+def test_protocol_discovery_guard_allows_shared_protocol_package():
+    run = subprocess.run(
+        [sys.executable, "-c", _RUNTIME_IMPORT_BLOCKER + "\nfrom openjiuwen_protocol.message import ReqMethod"],
+        cwd=ROOT,
+        capture_output=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr.decode(errors="replace")
 
 
 def test_output_decoders_accept_additive_fields_and_unknown_observation_events():
