@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -391,3 +392,125 @@ async def test_session_scoped_key_creates_independent_agents() -> None:
     assert await agent_manager.get_agent(
         "u1", "jiuwenswarm", key_values={"session_id": "sess-2"}
     ) is not None
+
+
+async def _create_shared_alias(manager, session, sandbox="same"):
+    async def creator(info):
+        info.sandbox_id = sandbox
+        return info
+
+    return await manager.get_or_create_agent(
+        "user", "test", key_values={"session_id": session}, creator=creator,
+    )
+
+
+def _shared_alias_manager():
+    return AgentManager(key_fields=["user_id", "agent_type", "session_id"])
+
+
+async def test_forced_pop_removes_aliases_but_not_other_sandboxes():
+    manager = _shared_alias_manager()
+    first = await _create_shared_alias(manager, "one")
+    sibling = await _create_shared_alias(manager, "two")
+    unrelated = await _create_shared_alias(manager, "three", "different")
+
+    assert await manager.is_current(first)
+    assert await manager.pop_agent("user", "test", key_values={"session_id": "one"},
+                                   expected_agent_id="wrong", include_shared_sandbox=True) is None
+    assert await manager.is_current(sibling)
+    popped = await manager.pop_agent("user", "test", key_values={"session_id": "one"},
+                                     include_shared_sandbox=True)
+    assert popped.info.agent_id == first.info.agent_id
+    assert popped.is_deleted()
+    assert not await manager.is_current(first)
+    assert not await manager.is_current(sibling)
+    assert await manager.is_current(unrelated)
+
+
+@pytest.mark.parametrize("blocked", ["held", "recent", "failed"])
+async def test_idle_pop_refuses_until_every_alias_is_idle(blocked):
+    manager = _shared_alias_manager()
+    first = await _create_shared_alias(manager, "one")
+    sibling = await _create_shared_alias(manager, "two")
+    manager._runtimes[first.key].last_active_at = time.time() - 100
+    other = manager._runtimes[sibling.key]
+    other.last_active_at = time.time() - 100
+    if blocked == "held":
+        other.task_count = 1
+    elif blocked == "recent":
+        other.last_active_at = time.time()
+    else:
+        other.mark_failed(RuntimeError("failure"))
+    assert await manager.pop_if_idle(first.key, 30, include_shared_sandbox=True) is None
+    assert await manager.get_agent("user", "test", key_values={"session_id": "one"}) is not None
+    assert await manager.get_agent("user", "test", key_values={"session_id": "two"}) is not None
+
+
+async def test_idle_pop_removes_idle_aliases_and_default_pop_remains_scoped():
+    manager = _shared_alias_manager()
+    first = await _create_shared_alias(manager, "one")
+    sibling = await _create_shared_alias(manager, "two")
+    for runtime in manager._runtimes.values():
+        runtime.last_active_at = time.time() - 100
+    assert (await manager.pop_if_idle(first.key, 30, include_shared_sandbox=True)).is_deleted()
+    assert not await manager.is_current(sibling)
+
+    first = await _create_shared_alias(manager, "one")
+    sibling = await _create_shared_alias(manager, "two")
+    await manager.pop_agent("user", "test", key_values={"session_id": "one"})
+    assert not await manager.is_current(first)
+    assert await manager.is_current(sibling)
+
+
+async def test_wait_for_creation_times_out_instead_of_blocking_forever():
+    manager = AgentManager(creating_timeout_seconds=0.05)
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    async def creator(info):
+        entered.set()
+        await never.wait()
+        return info
+
+    creation = asyncio.create_task(
+        manager.get_or_create_agent("u1", "jiuwenswarm", creator=creator)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        runtime = await manager.get_agent("u1", "jiuwenswarm")
+        assert runtime is not None
+        assert await manager.wait_for_creation(
+            "u1", "jiuwenswarm", expected_agent_id=runtime.info.agent_id,
+        ) is False
+    finally:
+        never.set()
+        creation.cancel()
+        await asyncio.gather(creation, return_exceptions=True)
+
+
+async def test_idle_pop_refuses_while_shared_sandbox_is_creating():
+    manager = _shared_alias_manager()
+    ready = await _create_shared_alias(manager, "one")
+    manager._runtimes[ready.key].last_active_at = time.time() - 100
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def creator(info):
+        entered.set()
+        await release.wait()
+        info.sandbox_id = "same"
+        return info
+
+    creating = asyncio.create_task(
+        manager.get_or_create_agent(
+            "user", "test", key_values={"session_id": "two"}, creator=creator,
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert await manager.pop_if_idle(
+            ready.key, 30, include_shared_sandbox=True,
+        ) is None
+    finally:
+        release.set()
+        await asyncio.gather(creating, return_exceptions=True)

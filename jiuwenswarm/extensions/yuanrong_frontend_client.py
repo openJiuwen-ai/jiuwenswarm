@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import re
+import socket
 import uuid
 import urllib.error
 import urllib.parse
@@ -23,10 +25,24 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Mapping, TypedDict
 
 TRACE_ID_HEADER = "X-Trace-Id"
+AGENT_GENERATION_ENV = "JIUWEN_GATEWAY_SANDBOX_GENERATION"
 _TRACE_ID_MAX_LEN = 128
 _southbound_trace_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "yuanrong_southbound_trace_id", default=""
 )
+
+
+def deterministic_agent_instance_id(namespace: str, name: str) -> str:
+    """Return the frontend's deterministic instance ID for a namespace and name."""
+    normalized_namespace = str(namespace or "").strip()
+    normalized_name = str(name or "").strip()
+    if not normalized_namespace or not normalized_name:
+        raise ValueError("namespace and name are required to create sandbox")
+    canonical = (
+        f"yuanrong-agent-instance:v1|{len(normalized_namespace.encode('utf-8'))}:"
+        f"{normalized_namespace}{len(normalized_name.encode('utf-8'))}:{normalized_name}"
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, canonical))
 
 
 def normalize_trace_id(value: str | None = None) -> str:
@@ -323,6 +339,7 @@ _AGENT_INSTANCE_PROMOTE_KEYS = (
     "sandboxIp",
     "ip_address",
     "ipAddress",
+    "env_vars",
 )
 
 
@@ -386,8 +403,36 @@ class YuanrongAgentApiError(RuntimeError):
     """Raised when YuanRong /api/agent returns a non-success response."""
 
 
+class YuanrongAgentRequestNotSentError(YuanrongAgentApiError):
+    """The request could not be dispatched because connection setup failed."""
+
+
+class YuanrongAgentDeleteRejectedError(YuanrongAgentApiError):
+    """The frontend explicitly rejected a delete request."""
+
+
+class YuanrongAgentCreateUncertainError(YuanrongAgentApiError):
+    """A create response does not establish whether an instance was created."""
+
+
 class YuanrongAgentTimeoutError(YuanrongAgentApiError):
-    """请求已发出但等待响应超时（请求可能已在服务端生效，调用方需按幂等处理）。"""
+    """YuanRong did not respond in time. A write may already have taken effect."""
+
+
+class YuanrongAgentNotVisibleError(YuanrongAgentTimeoutError):
+    """Every completed observation during a guarded wait reported absence."""
+
+
+class YuanrongAgentNotFoundError(YuanrongAgentApiError):
+    """GET explicitly reports the instance as not found or not running."""
+
+
+class YuanrongAgentGenerationMismatchError(YuanrongAgentApiError):
+    """GET returned an instance belonging to a different generation."""
+
+
+class YuanrongAgentFailedError(YuanrongAgentApiError):
+    """The requested generation reached a terminal failure status."""
 
 
 @dataclass(frozen=True)
@@ -631,11 +676,24 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             )
             if operation is not None:
                 operation.set_attribute("http.response.status_code", status)
-            parsed = self._parse_agent_api_response(body, status)
-            instance_id = str(parsed.get("instance_id") or "").strip()
+            if status == 408 or status >= 500:
+                raise YuanrongAgentCreateUncertainError(
+                    f"create agent result uncertain: http_status={status}"
+                )
+            if 200 <= status < 300:
+                try:
+                    parsed = self._parse_agent_api_response(body, status)
+                except YuanrongAgentApiError:
+                    raise YuanrongAgentCreateUncertainError(
+                        f"create agent returned an invalid response: http_status={status}"
+                    ) from None
+            else:
+                parsed = self._parse_agent_api_response(body, status)
+            raw_instance_id = parsed.get("instance_id")
+            instance_id = raw_instance_id.strip() if isinstance(raw_instance_id, str) else ""
             if not instance_id:
-                raise YuanrongAgentApiError(
-                    f"create agent missing instance_id: status={status}, body={body!r}"
+                raise YuanrongAgentCreateUncertainError(
+                    f"create agent returned an invalid instance_id: http_status={status}"
                 )
 
         info = SandboxInfo(
@@ -688,7 +746,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 )
                 if operation is not None:
                     operation.set_attribute("http.response.status_code", status)
-                if self._agent_api_not_found(status, body):
+                if self._agent_instance_not_found(status, body, normalized_sandbox_id):
                     if operation is not None:
                         operation.record_outcome("skipped", reason="not_found")
                     record_cleanup_result("frontend.delete", "skipped", reason="not_found")
@@ -699,6 +757,10 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         resolved_trace_id,
                     )
                     return
+                if 400 <= status < 500 and status != 408:
+                    raise YuanrongAgentDeleteRejectedError(
+                        f"delete agent rejected: http_status={status}"
+                    )
                 self._parse_agent_api_response(body, status)
         except asyncio.CancelledError:
             record_cleanup_result("frontend.delete", "cancelled", reason="cancelled")
@@ -707,7 +769,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             outcome = "timeout" if self._is_timeout_error(exc) else "failed"
             record_cleanup_result("frontend.delete", outcome, reason=type(exc).__name__)
             raise
-        record_cleanup_result("frontend.delete", "success", reason="removed")
+        record_cleanup_result("frontend.delete", "success", reason="accepted")
         logger.info(
             "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s trace_id=%s",
             normalized_sandbox_id,
@@ -741,11 +803,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             )
             if operation is not None:
                 operation.set_attribute("http.response.status_code", status)
+            if self._agent_instance_not_found(status, body, normalized_id):
+                raise YuanrongAgentNotFoundError(
+                    f"agent instance not found: instance_id={normalized_id}"
+                )
             parsed = self._parse_agent_api_response(body, status)
             return _merge_agent_instance_payload(parsed)
 
     async def wait_until_running(
-        self, instance_id: str, *, trace_id: str | None = None
+        self, instance_id: str, *, trace_id: str | None = None,
+        expected_generation: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         """Poll GET /api/agent/:id until ``status`` is explicitly ``running``.
 
@@ -754,6 +822,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
         Missing ``status`` is not treated as ready: keep polling. Only an
         explicit ``running`` (or a failed status / timeout) ends the loop.
+        When a generation is expected, only its matching marker can satisfy
+        the status check. ``deadline`` is an event-loop monotonic timestamp.
         """
         normalized_id = str(instance_id or "").strip()
         if not normalized_id:
@@ -770,24 +840,63 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         )
         with (trace_operation("gw.frontend.wait_running", attributes={"instance_id": normalized_id})
               if current_request_trace() is not None else nullcontext(None)) as operation:
-            deadline = asyncio.get_running_loop().time() + timeout_s
+            loop = asyncio.get_running_loop()
+            wait_deadline = loop.time() + timeout_s
+            if deadline is not None:
+                wait_deadline = min(deadline, wait_deadline)
             attempt = 0
             last_error: BaseException | None = None
             last_status = ""
+            not_found_count = 0
+            all_observations_not_found = True
             # Only GET poll retries share one id; every other YuanRong call mints.
             poll_trace_id = bind_southbound_trace_id(
                 inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id
             )
+            def raise_wait_timeout() -> None:
+                if operation is not None:
+                    operation.record_outcome("timeout", reason="wait_running_timeout")
+                detail = str(last_error) if last_error is not None else f"status={last_status or 'empty'}"
+                error_type = (
+                    YuanrongAgentNotVisibleError
+                    if expected_generation is not None and not_found_count and all_observations_not_found
+                    else YuanrongAgentTimeoutError
+                    if expected_generation is not None or deadline is not None
+                    else YuanrongAgentApiError
+                )
+                raise error_type(
+                    f"agent instance not running after {timeout_s:.0f}s: "
+                    f"instance_id={normalized_id}, last={detail}, trace_id={poll_trace_id}"
+                )
+
             while True:
+                if attempt and loop.time() >= wait_deadline:
+                    raise_wait_timeout()
                 attempt += 1
                 instance: dict[str, Any] = {}
                 try:
-                    instance = await self.get_agent_info(
-                        normalized_id, trace_id=poll_trace_id
-                    )
+                    get_call = self.get_agent_info(normalized_id, trace_id=poll_trace_id)
+                    if expected_generation is not None or deadline is not None:
+                        instance = await asyncio.wait_for(
+                            get_call, timeout=max(0, wait_deadline - loop.time())
+                        )
+                    else:
+                        instance = await get_call
                     last_error = None
+                    all_observations_not_found = False
                 except YuanrongAgentApiError as exc:
+                    if expected_generation is not None and not isinstance(
+                        exc, YuanrongAgentNotFoundError
+                    ):
+                        raise
                     last_error = exc
+                    if isinstance(exc, YuanrongAgentNotFoundError):
+                        not_found_count += 1
+                    else:
+                        all_observations_not_found = False
+                except asyncio.TimeoutError as exc:
+                    last_error = exc
+                    all_observations_not_found = False
                 status = _instance_status(instance)
                 last_status = status
                 if operation is not None:
@@ -797,12 +906,24 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         status if status in _AGENT_FAILED_STATUSES
                         or status == _AGENT_RUNNING_STATUS else "other",
                     )
-                if status in _AGENT_FAILED_STATUSES:
-                    raise YuanrongAgentApiError(
+                generation_matches = True
+                if expected_generation is not None:
+                    env_vars = instance.get("env_vars")
+                    actual = (
+                        env_vars.get(AGENT_GENERATION_ENV)
+                        if isinstance(env_vars, Mapping) else None
+                    )
+                    generation_matches = actual == expected_generation
+                    if actual is not None and not generation_matches:
+                        raise YuanrongAgentGenerationMismatchError(
+                            f"agent instance generation mismatch: instance_id={normalized_id}"
+                        )
+                if generation_matches and status in _AGENT_FAILED_STATUSES:
+                    raise YuanrongAgentFailedError(
                         f"agent instance failed: instance_id={normalized_id}, "
                         f"status={status}"
                     )
-                if _is_agent_running(instance):
+                if generation_matches and _is_agent_running(instance):
                     logger.info(
                         "[YuanrongFrontendAgentClient] instance running after GET poll: "
                         "instance_id=%s attempt=%s status=%s trace_id=%s",
@@ -812,21 +933,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         poll_trace_id,
                     )
                     return instance
-                remaining = deadline - asyncio.get_running_loop().time()
+                remaining = wait_deadline - loop.time()
                 if remaining <= 0:
-                    if operation is not None:
-                        operation.record_outcome("timeout", reason="wait_running_timeout")
-                    detail = (
-                        str(last_error)
-                        if last_error is not None
-                        else f"status={last_status or 'empty'}"
-                    )
-                    raise YuanrongAgentApiError(
-                        f"agent instance not running after "
-                        f"{timeout_s:.0f}s: "
-                        f"instance_id={normalized_id}, last={detail}, "
-                        f"trace_id={poll_trace_id}"
-                    )
+                    raise_wait_timeout()
                 sleep_for = min(interval_s, remaining)
                 logger.debug(
                     "[YuanrongFrontendAgentClient] GET not running yet: "
@@ -1515,6 +1624,23 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             return False
         return parsed.get("code") in (404, "404")
 
+    @staticmethod
+    def _agent_instance_not_found(status: int, body: str, instance_id: str) -> bool:
+        """Recognize an instance absence, excluding a missing HTTP route."""
+        if status != 404:
+            return False
+        try:
+            parsed = json.loads(body)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(parsed, dict) or parsed.get("code") not in (404, "404"):
+            return False
+        message = str(parsed.get("message") or "").strip().casefold()
+        return message in (
+            f"instance not found: {instance_id}".strip().casefold(),
+            "instance not found or not running",
+        )
+
     def _urlopen_request(
         self,
         req: urllib.request.Request,
@@ -1523,12 +1649,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         raise_on_timeout: bool = False,
         trace_response: bool = False,
         preparation_trace: bool = False,
+        classify_not_sent: bool = False,
     ) -> tuple[int, str]:
         resolved_timeout = (
             self._invoke_timeout_s if timeout is None else float(timeout)
         )
+        response_started = False
         try:
             with urllib.request.urlopen(req, timeout=resolved_timeout) as resp:
+                response_started = True
                 status = int(getattr(resp, "status", 200))
                 if trace_response:
                     operation = current_request_trace()
@@ -1545,7 +1674,13 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 if operation is not None:
                     operation.event("http.response_headers", {"status_code": int(err.code)})
                     operation.event("response.first", {"outcome": "failed"})
-            text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
+            try:
+                text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
+            except (OSError, http.client.HTTPException):
+                if not classify_not_sent:
+                    raise
+                # Keep the observed status even if the error body was truncated.
+                text = ""
             if trace_response and operation is not None:
                 operation.event("http.response.completed", {"status_code": int(err.code)})
             logger.error(
@@ -1565,6 +1700,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 if operation is not None:
                     operation.record_outcome("timeout" if self._is_timeout_error(err) else "failed",
                                              reason=type(err).__name__)
+            if (
+                classify_not_sent
+                and not response_started
+                and isinstance(err, urllib.error.URLError)
+                and isinstance(err.reason, (ConnectionRefusedError, socket.gaierror))
+            ):
+                raise YuanrongAgentRequestNotSentError(
+                    f"request could not connect: url={req.full_url}, error={err}"
+                ) from err
             if raise_on_timeout and self._is_timeout_error(err):
                 raise YuanrongAgentTimeoutError(
                     f"request timeout after {resolved_timeout}s: "
@@ -1599,6 +1743,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             timeout=self._agent_timeout_s,
             preparation_trace=True,
             raise_on_timeout=True,
+            classify_not_sent=True,
         )
 
     def _do_agent_delete(
@@ -1615,6 +1760,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             req,
             timeout=self._agent_timeout_s,
             raise_on_timeout=True,
+            classify_not_sent=True,
         )
 
     def _do_agent_get(

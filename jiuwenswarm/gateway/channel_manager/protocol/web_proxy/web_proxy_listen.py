@@ -560,6 +560,7 @@ async def _proxy_http(
         return PlainTextResponse("web resolver is not configured", status_code=503)
 
     held = False
+    hold = None
     defer_release = False
     try:
         try:
@@ -568,6 +569,8 @@ async def _proxy_http(
             if _retry_after_seconds(exc) is not None:
                 return _sandbox_creating_response(exc)
             raise
+        if isinstance(endpoint, tuple):
+            endpoint, hold = endpoint
         if not endpoint:
             return PlainTextResponse(
                 f"agent not found or no http endpoint: user={user_id} agent_type={agent_type}",
@@ -655,7 +658,7 @@ async def _proxy_http(
                         yield chunk
                 finally:
                     await ctx.__aexit__(None, None, None)
-                    await _release_web_runtime(channel, user_id, agent_type)
+                    await _release_web_runtime(channel, user_id, agent_type, hold)
 
             defer_release = True
             response = StreamingResponse(_stream(), status_code=status)
@@ -697,7 +700,7 @@ async def _proxy_http(
         )
     finally:
         if held and not defer_release:
-            await _release_web_runtime(channel, user_id, agent_type)
+            await _release_web_runtime(channel, user_id, agent_type, hold)
 
 
 async def _handle_ws_proxy(app: FastAPI, websocket: WebSocket, *, tail: str) -> None:
@@ -746,6 +749,7 @@ async def _proxy_ws(
         return
 
     held = False
+    hold = None
     try:
         try:
             endpoint = await resolver(user_id, agent_type, "ws")
@@ -754,6 +758,8 @@ async def _proxy_ws(
                 await websocket.close(code=1013, reason="agent sandbox is creating")
                 return
             raise
+        if isinstance(endpoint, tuple):
+            endpoint, hold = endpoint
         if not endpoint:
             await websocket.close(code=1008, reason="agent not found")
             return
@@ -822,7 +828,7 @@ async def _proxy_ws(
                     logger.debug("[WebProxy] close client websocket ignored", exc_info=True)
     finally:
         if held:
-            await _release_web_runtime(channel, user_id, agent_type)
+            await _release_web_runtime(channel, user_id, agent_type, hold)
 
 
 async def _pump_starlette_to_upstream(
@@ -979,6 +985,7 @@ async def handle_3rdagent_web(
 
     resolver = getattr(channel, "web_resolver", None)
     held = False
+    hold = None
     try:
         if callable(resolver):
             try:
@@ -1010,6 +1017,8 @@ async def handle_3rdagent_web(
                     code="NO_WEB_ENDPOINT",
                 )
                 return
+            if isinstance(endpoint, tuple):
+                endpoint, hold = endpoint
             if not endpoint:
                 await channel.send_response(
                     ws,
@@ -1037,7 +1046,7 @@ async def handle_3rdagent_web(
         )
     finally:
         if held:
-            await _release_web_runtime(channel, uid, agent_type)
+            await _release_web_runtime(channel, uid, agent_type, hold)
 
 
 def _manager_for(channel: Any) -> WebPortManager:

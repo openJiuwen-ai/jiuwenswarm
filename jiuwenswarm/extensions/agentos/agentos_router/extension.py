@@ -101,6 +101,12 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
         """Drop one web-proxy task hold taken by ``resolve_web_endpoint``."""
         await self._router_client.release_web_endpoint(user_id, agent_type)
 
+    async def acquire_web_endpoint(self, user_id: str, agent_type: str, protocol: str):
+        """Resolve an endpoint with a generation-specific activity hold."""
+        return await self._router_client.resolve_web_endpoint(
+            user_id, agent_type, protocol, acquire=True, return_hold=True,
+        )
+
     def set_key_issuer(
         self,
         key_issuer,
