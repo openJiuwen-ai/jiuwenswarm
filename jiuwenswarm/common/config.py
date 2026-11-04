@@ -632,12 +632,28 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
 
 
+def _runtime_limit_int(name: str, raw: Any) -> int:
+    """Parse one nesting limit. Bool and float are refused, not coerced."""
+    if isinstance(raw, bool):
+        raise ValueError(f"react.subagent_runtime.{name} must be an integer")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and _signed_digits(raw.strip()):
+        return int(raw.strip())
+    raise ValueError(f"react.subagent_runtime.{name} must be an integer")
+
+
+def _signed_digits(text: str) -> bool:
+    digits = text[1:] if text.startswith("-") else text
+    return bool(digits) and digits.isdigit()
+
+
 def subagent_runtime_limits(config: dict[str, Any] | None = None) -> dict[str, int]:
     """Read nesting limits from ``react.subagent_runtime``.
 
     Missing keys use the product defaults: depth 2, 20 running, 20 alive.
-    ``max_spawn_depth < 1`` or ``max_subagents < max_concurrent_running``
-    refuses the config.
+    Depth, running, and alive must be integers >= 1, and alive must be
+    at least the running cap. Bool and non-integral numbers are refused.
     """
     cfg = config if config is not None else get_config()
     react = cfg.get("react") if isinstance(cfg, dict) else None
@@ -645,17 +661,17 @@ def subagent_runtime_limits(config: dict[str, Any] | None = None) -> dict[str, i
     runtime_cfg = runtime_cfg if isinstance(runtime_cfg, dict) else {}
 
     def _read(name: str, default: int) -> int:
-        raw = runtime_cfg.get(name, default)
-        try:
-            return int(raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"react.subagent_runtime.{name} must be an integer") from exc
+        return _runtime_limit_int(name, runtime_cfg.get(name, default))
 
     depth = _read("max_spawn_depth", 2)
     concurrent = _read("max_concurrent_running", 20)
     alive = _read("max_subagents", 20)
     if depth < 1:
         raise ValueError("react.subagent_runtime.max_spawn_depth must be >= 1")
+    if concurrent < 1 or alive < 1:
+        raise ValueError(
+            "react.subagent_runtime.max_concurrent_running and max_subagents must be >= 1"
+        )
     if alive < concurrent:
         raise ValueError(
             "react.subagent_runtime.max_subagents must be >= max_concurrent_running"

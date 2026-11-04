@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.leader_exclusive_tools import (
 logger = logging.getLogger(__name__)
 
 _INJECT_PATCH_MARKER = "_jiuwenswarm_excluded_spawn_tools_inject_patched"
+_FILTER_REGISTERED = False
 
 
 def tool_card_name(tool: Any) -> str:
@@ -65,12 +66,34 @@ def filter_excluded_spawn_tools(tools: Iterable[Any] | None) -> list[Any] | None
     return kept
 
 
+def _register_fork_inherited_tool_filter() -> None:
+    """Register the fork tool filter once. A missing SDK symbol is retried later."""
+    global _FILTER_REGISTERED
+    if _FILTER_REGISTERED:
+        return
+    try:
+        from openjiuwen.harness.subagent_runtime.fork_build import (
+            register_inherited_tool_filter,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[excluded_spawn_tools] fork inherited-tool filter unavailable",
+            exc_info=True,
+        )
+        return
+    register_inherited_tool_filter(filter_excluded_spawn_tools)
+    _FILTER_REGISTERED = True
+
+
 def apply_inject_general_purpose_excluded_tools_patch() -> bool:
     """Wrap factory ``_inject_general_purpose_subagent`` to strip leader tools.
 
     Idempotent. Covers Deep / Flash / Team: all GP specs are created through
     this helper (including ``create_deep_agent(add_general_purpose_agent=True)``).
+    The fork filter has its own marker: an old SDK missing the symbol does not
+    count as success, so a later call can register it.
     """
+    _register_fork_inherited_tool_filter()
     try:
         import openjiuwen.harness.factory as factory
     except Exception:  # noqa: BLE001
@@ -103,17 +126,6 @@ def apply_inject_general_purpose_excluded_tools_patch() -> bool:
     setattr(_inject_without_leader_tools, _INJECT_PATCH_MARKER, True)
     # getattr/setattr：避免 G.CLS.11（类外直接访问受保护成员）
     setattr(factory, "_inject_general_purpose_subagent", _inject_without_leader_tools)
-    try:
-        from openjiuwen.harness.subagent_runtime.fork_build import (
-            register_inherited_tool_filter,
-        )
-
-        register_inherited_tool_filter(filter_excluded_spawn_tools)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "[excluded_spawn_tools] fork inherited-tool filter unavailable",
-            exc_info=True,
-        )
     logger.info(
         "[excluded_spawn_tools] _inject_general_purpose_subagent leader-tool "
         "filter patch applied"

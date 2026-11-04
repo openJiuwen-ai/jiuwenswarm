@@ -5071,21 +5071,38 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return
         self._instance.resolve_subagent_model = self._resolve_model_for_subagent
-        self._bind_subagent_runtime_config()
 
-    def _bind_subagent_runtime_config(self) -> None:
-        """Pass yaml nesting limits into the root SubagentControl."""
+    def _bind_subagent_runtime_config(self, config_base: dict[str, Any] | None = None) -> None:
+        """Pass this instance's nesting limits into the root SubagentControl.
+
+        A bad limit or an older SDK must not abort ``create_instance``. The
+        instance then keeps the core defaults.
+        """
         if self._instance is None:
             return
-        import dataclasses
+        try:
+            import dataclasses
 
-        from openjiuwen.harness.subagent_runtime.config import SubagentRuntimeConfig
+            from openjiuwen.harness.subagent_runtime.config import SubagentRuntimeConfig
 
-        limits = subagent_runtime_limits()
-        accepted = {item.name for item in dataclasses.fields(SubagentRuntimeConfig)}
-        self._instance.subagent_runtime_config = SubagentRuntimeConfig(
-            **{key: value for key, value in limits.items() if key in accepted}
-        )
+            limits = subagent_runtime_limits(config_base)
+            accepted = {item.name for item in dataclasses.fields(SubagentRuntimeConfig)}
+            discarded = sorted(set(limits) - accepted)
+            if discarded:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] subagent runtime config keys "
+                    "not supported by SDK: %s",
+                    discarded,
+                )
+            self._instance.subagent_runtime_config = SubagentRuntimeConfig(
+                **{key: value for key, value in limits.items() if key in accepted}
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent runtime config binding failed: %s",
+                exc,
+                exc_info=True,
+            )
 
     def _bind_subagent_authorization_wiring(self) -> None:
         """安装子 Agent Skill 动态授权装配（包装 create_subagent，不改 agent-core）。
@@ -9197,6 +9214,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
+                self._bind_subagent_runtime_config(config_base)
 
                 _apply_llm_io_trace_patch()
 

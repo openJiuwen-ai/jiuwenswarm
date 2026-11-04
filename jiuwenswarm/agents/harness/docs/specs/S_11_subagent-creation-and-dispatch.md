@@ -8,7 +8,7 @@
 | 编号 / slug | S_11 / subagent-creation-and-dispatch |
 | 关联模块（agent-core 仓，机制主体） | `openjiuwen/harness/deep_agent.py`（`create_subagent` @1173、`_find_subagent_spec` @1361、`_bind_inherited_artifact_root` @1155）、`openjiuwen/harness/schema/config.py`（`SubAgentConfig` @302）、`openjiuwen/harness/subagents/`（七个预置工厂）、`openjiuwen/harness/tools/subagent/type_aliases.py`（`canonicalize_subagent_type`）、`openjiuwen/harness/tools/subagent/task_tool.py`（`_build_sub_session_id` @136、`_summarize_task_description` @40、卡片豁免 @408） |
 | 关联模块（jiuwenswarm 仓，装配） | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_agent_def_to_subagent_config` @24265、`_bind_subagent_model_resolver` @7187、`_build_configured_subagents` @4680）、`interface_code.py`（`_build_configured_subagents` @1124）、`jiuwenswarm/agents/harness/flash/rails/flash_subagent_rail.py`（spec 自注入）、`jiuwenswarm/agents/swarm/providers/code_subagents.py`（swarm.* providers） |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -18,7 +18,7 @@
 - **唯一汇聚点**：`DeepAgent.create_subagent`（四参数签名）——`TaskTool`（同步 task_tool）与 `SessionSpawnExecutor`（异步 session spawn）经此创建子代理；`AgentTool`（`/agents` 自定义 agent，经 `code_agent_rail.py`）创建侧直接 `create_deep_agent` 绕过汇聚点，属已知偏离（[[S_14]] N7）
 - **spec 匹配与归一化**：`_find_subagent_spec` + `canonicalize_subagent_type`（`general_agent` → `general-purpose`）
 - **`SubAgentConfig` 声明契约**：预置工厂层（`subagents/` 七工厂）只产出 spec，不执行
-- **create_kwargs 组装规则**：嵌套禁止、workspace 隔离推导、rails fork、超时不继承、restrict 收紧不放宽、multimodal 继承条件
+- **create_kwargs 组装规则**：嵌套三道闸、workspace 隔离推导、rails fork、超时不继承、restrict 收紧不放宽、multimodal 继承条件
 - **factory dispatch 白名单**：`factory_name` 按名分发到四个具名工厂
 - **jiuwenswarm 侧装配**：deep / code 两 profile 的 `_build_configured_subagents`、model resolver 绑定、AgentDefinition → SubAgentConfig 转换
 
@@ -35,7 +35,7 @@
 
 - **N1（唯一汇聚点）**：所有子代理实例创建必须经 `DeepAgent.create_subagent(subagent_type, subsession_id, browser_capabilities=None, model=None)`。新增分发路径**不得**绕过它直接 `create_deep_agent`——观测埋点（`observability/subagent.py`）、授权 wiring（[[S_13]]）、perf patch（[[S_14]] N18）都 patch 该汇聚点，绕过即全部失效。当前两条合法通道：`TaskTool` 与 `SessionSpawnExecutor`（docstring @1180 明示 "shared by TaskTool and SessionSpawnExecutor"）；`AgentTool`（code_agent_rail）虽经 `_agent_def_to_subagent_config` 转 spec，创建侧仍直接 `create_deep_agent` 绕过汇聚点——属**已知偏离**：观测 / 授权 / perf 对该通道**创建侧**不生效，执行侧以恒走 `invoke_subagent_with_trace` 补偿（[[S_14]] N7）。
 - **N2（类型归一化前置）**：spec 匹配（`_find_subagent_spec` @1361）前**必须**先 `canonicalize_subagent_type`（`type_aliases.py` @19；唯一别名映射 `general_agent` → `general-purpose`）。factory 分发同样按归一化后的 `factory_name.strip().lower()` 匹配。新增别名必须同时更新 `_CANONICAL_SUBAGENT_TYPES`，不允许在匹配点各自做小写比较。
-- **N3（嵌套结构性禁止）**：`create_kwargs` 强制 `subagents=None`、`enable_async_subagent=False`、`enable_subagent_runtime=False`（deep_agent.py @1272-1274）。子代理**不可再派生**二级子代理——开关不继承是结构性契约，不是配置默认值。若未来放开，`_control_registry` 的 per-parent 挂载与 [[S_12]] 状态机会连带失效，必须整域重审。
+- **N3（嵌套三道闸）**：没有 `SpawnFrame` 时，`create_kwargs` 仍强制 `subagents=None`、`enable_async_subagent=False`、`enable_subagent_runtime=False`、`add_general_purpose_agent=False`。有帧且 spec 不是现成 `DeepAgent` 时，`nested_runtime_overrides` 才改这四键：`can_delegate` 为真且 `child_depth < max_spawn_depth` 才挂 fork 占位 spec 并打开 runtime；否则四键保持关闭。fork 调用方在进创建之前就被 `FORK_CANNOT_SPAWN` 拒绝，所以默认深度 2 时 depth 2 的 fork 是叶子。超深度是 `DEPTH_LIMIT_REACHED`。子代理上的 runtime 工具经 `ToolBinding.control` 回到根会话那一个 `SubagentControl`，不另挂编排器（[[S_12]] N1）。AgentTool 通道不走这道闸，仍不开放嵌套（[[S_14]] N7）。
 - **N4（超时不继承，硬编码 1800）**：子代理 `completion_timeout` 固定 1800.0（@1282，注释明示 600s 偏短）；父级默认 600.0 不传入。合法等待可跨多轮（wait 工具卡片 `timeout_s=None`，[[S_12]] N13 呼应）。
 - **N5（workspace 隔离推导）**：spec.workspace 为字符串 / None → `Path(workspace)/_SUB_AGENTS_DIR/subsession_id`；为 `Workspace` 实例 → `Path(root_path)/_SUB_AGENTS_DIR/subsession_id`。子代理工作目录永远在父 workspace 下的 `sub_agents/` 子树，不共享父根。
 - **N6（rails fork 优先）**：spec.rails 逐条组装时**优先**调 `fork_for_agent()`（callable 才调），否则原样共享（@1224-1231）。共享实例意味着子代理对有状态 rail 的副作用会回传父级——有状态 rail 必须实现 fork，否则其状态污染由调用方自担。
@@ -123,7 +123,7 @@
 
 改 `create_subagent` / `SubAgentConfig` / 预置工厂 / `_agent_def_to_subagent_config` 前：
 
-- [ ] 嵌套禁止三键（N3）是否仍强制？
+- [ ] 嵌套三道闸（N3）是否还在：无 SpawnFrame 时四键关闭；只有 `can_delegate` 且未到 `max_spawn_depth` 才打开 fork runtime；fork 调用方直接拒绝？
 - [ ] factory 白名单（N9）与 `_find_subagent_spec` 匹配键是否同步？
 - [ ] 新增预置 agent 是否需要进 sticky 集合（N14 工具侧 `is_sticky_subagent_type` 与 [[S_12]] 运行时 `_runtime_sticky_subagent_type` 是两套口径，分别评估）？
 - [ ] workspace 推导（N5）与 restrict（N7）收紧语义未被放宽？
