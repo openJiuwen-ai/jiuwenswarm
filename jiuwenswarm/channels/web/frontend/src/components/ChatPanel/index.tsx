@@ -1325,7 +1325,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   } | null>(null);
   const [recommendationState, setRecommendationState] = useState("");
   const [recommendationRefresh, setRecommendationRefresh] = useState(0);
-  const manualRecommendationRetry = useRef(false);
   const keepSlateOnRefreshRef = useRef(false);
   // The switch event lands before the re-read. Hold that state across the refresh so the
   // prompt changes at once and the effect does not blank it while the request is in flight.
@@ -2001,8 +2000,6 @@ export const ChatPanel = React.memo(function ChatPanel({
       setRecommendationState(recommendationSwitchStateRef.current);
       setRecommendationRefresh(value => value + 1);
     });
-    const manualRetry = manualRecommendationRetry.current;
-    manualRecommendationRetry.current = false;
     const heldSwitchState = recommendationSwitchStateRef.current;
     recommendationSwitchStateRef.current = null;
     const refillSlateId = refillSlateIdRef.current;
@@ -2011,11 +2008,11 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
     keepSlateOnRefreshRef.current = false;
     setTopicStarterErrorKey(null);
-    setRecommendationState(manualRetry ? "preparing" : (heldSwitchState ?? ""));
+    setRecommendationState(heldSwitchState ?? "");
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {
-      ...requestParams, visit_id: topicStarterVisitId, manual_retry: manualRetry,
+      ...requestParams, visit_id: topicStarterVisitId, manual_retry: false,
       ...(refillSlateId ? { slate_id: refillSlateId } : {}),
     }, { timeoutMs: 60_000 })
       .then(response => {

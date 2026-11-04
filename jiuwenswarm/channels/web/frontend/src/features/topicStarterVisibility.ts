@@ -289,11 +289,6 @@ export function topicStarterShowsSettingsAction(state: string): boolean {
   return SETTINGS_PREPARATION_STATES.has(state);
 }
 
-export function topicStarterShowsRetryAction(_state: string): boolean {
-  // Preset stand-in fills empty pools; manual retry is no longer offered on the welcome page.
-  return false;
-}
-
 export function topicStarterShowsProviderRefusal(state: string): boolean {
   return state === 'provider_unavailable';
 }

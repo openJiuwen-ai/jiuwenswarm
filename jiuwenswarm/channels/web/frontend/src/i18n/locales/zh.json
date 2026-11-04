@@ -1806,8 +1806,7 @@
       "statusNoCards": "正在准备话题，你也可以直接开始聊。",
       "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
-      "disabledHintWithCards": "下面是预置话题。打开设置里的话题推荐后，会逐步换成更贴你的话题。",
-      "retryPreparation": "再试试"
+      "disabledHintWithCards": "下面是预置话题。打开设置里的话题推荐后，会逐步换成更贴你的话题。"
     },
     "promptSuggestionBox": {
       "label": "下一步：",

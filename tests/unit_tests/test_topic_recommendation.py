@@ -54,6 +54,40 @@ def test_save_topic_switch_records_history_boundary(user_config):
     assert user_config.recommendation["prompt_enabled"] is True
     assert controls.load_recommendation_controls()["history_after"] == 12.5
 
+
+def test_common_save_freezes_boundary_when_agent_hook_missing(user_config, tmp_path, monkeypatch):
+    """Settings config.set imports common switches; freeze must not depend on the agent hook."""
+    from jiuwenswarm.common import recommendation_switches as common_switches
+
+    monkeypatch.setattr(controls, "get_agent_workspace_dir", lambda: tmp_path)
+    hooks = list(common_switches._TOPIC_ENABLED_HOOKS)
+    common_switches._TOPIC_ENABLED_HOOKS.clear()
+    try:
+        common_switches.save_recommendation_switches(topic_enabled=True, now=42.0)
+        assert controls.load_recommendation_controls()["history_after"] == 42.0
+    finally:
+        common_switches._TOPIC_ENABLED_HOOKS[:] = hooks
+
+
+def test_repair_missing_consent_boundary_when_topics_already_enabled(
+    user_config, tmp_path, monkeypatch,
+):
+    """Enabled YAML without a store boundary is healed without requiring toggle off/on."""
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(controls, "get_agent_workspace_dir", lambda: tmp_path)
+
+    def enable_without_freeze(cfg):
+        section = cfg.setdefault("recommendation", {})
+        section["topic_enabled"] = True
+        return cfg
+
+    config_module.update_config(enable_without_freeze)
+    assert controls._consent_state()["history_after"] is None
+    assert controls.repair_missing_consent_boundary(now=99.0) is True
+    assert controls.load_recommendation_controls()["history_after"] == 99.0
+    assert controls.repair_missing_consent_boundary(now=100.0) is False
+
 def test_recommendation_switches_reload_ui_only():
     from jiuwenswarm.common.config_panel.config_set_handlers import ConfigChangeSet, needs_agent_reload
 

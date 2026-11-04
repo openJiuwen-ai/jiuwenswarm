@@ -17,7 +17,6 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   topicStarterShowsProviderRefusal,
-  topicStarterShowsRetryAction,
   topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
@@ -89,10 +88,6 @@ test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterStatusMessageKey('provider_unavailable', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterShowsSettingsAction('disabled'), true);
   assert.equal(topicStarterShowsSettingsAction('failed'), false);
-  assert.equal(topicStarterShowsRetryAction('waiting_for_input'), false);
-  assert.equal(topicStarterShowsRetryAction('failed'), false);
-  assert.equal(topicStarterShowsRetryAction('provider_unavailable'), false);
-  assert.equal(topicStarterShowsRetryAction('disabled'), false);
   assert.equal(topicStarterShowsProviderRefusal('provider_unavailable'), true);
   assert.equal(topicStarterShowsProviderRefusal('failed'), false);
 });

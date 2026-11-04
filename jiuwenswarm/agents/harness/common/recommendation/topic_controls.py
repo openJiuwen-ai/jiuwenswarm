@@ -194,6 +194,33 @@ def freeze_consent_boundary(now: float) -> None:
         )
 
 
+def repair_missing_consent_boundary(now: float | None = None) -> bool:
+    """Freeze a missing boundary when topics are already enabled.
+
+    ``topic_enabled`` can land in YAML without the store-side freeze (settings write through
+    ``common.recommendation_switches`` before the agent hook is registered). Across restarts the
+    switch stays on while ``history_after`` stays ``None``, so every turn is excluded and
+    generation abstains with ``no_eligible_history``. Repair freezes at ``now``; earlier turns
+    stay outside the boundary unless the user opts into include-history.
+    """
+
+    from jiuwenswarm.agents.harness.common.recommendation.switches import (
+        is_topic_recommendation_enabled,
+    )
+
+    if not is_topic_recommendation_enabled():
+        return False
+    if _consent_state()["history_after"] is not None:
+        return False
+    moment = time.time() if now is None else now
+    freeze_consent_boundary(moment)
+    logger.info(
+        "[Recommendation] repaired missing consent boundary at history_after=%s",
+        moment,
+    )
+    return True
+
+
 def migrate_legacy_recommendation_switches() -> bool:
     """Retire ``recommendation.enabled`` onto the two switches it used to drive.
 
