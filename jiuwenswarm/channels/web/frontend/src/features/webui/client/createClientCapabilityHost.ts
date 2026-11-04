@@ -266,7 +266,8 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
       if (awaitingDeclarations || invalidConfiguration) return false;
       if (!declarations) return true;
       if (!plain(input) || !plain(input.target)) return false;
-      const pkg = declarations.packages.find((item) => item.packageId === input.target.package_id);
+      const packageId = input.target.package_id;
+      const pkg = declarations.packages.find((item) => item.packageId === packageId);
       // Capability declarations cover participating packages, not the ordinary WebUI catalog.
       if (!pkg) return !Object.prototype.hasOwnProperty.call(input, 'activation_generation');
       return input.activation_generation === pkg.activationGeneration;
