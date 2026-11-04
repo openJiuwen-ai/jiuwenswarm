@@ -103,7 +103,6 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   buildTopicStarterRequest,
-  topicStarterShowsRetryAction,
   topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
@@ -2685,16 +2684,14 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {recommendationState === 'disabled' ? (
+                {recommendationState === 'disabled' && visibleTopicSlate?.topics.length ? (
                   <p className="chat-suggestions__title w-full" data-testid="chat-panel-topic-disabled-hint">
-                    {t(visibleTopicSlate?.topics.length
-                      ? 'chat.topicStarter.disabledHintWithCards'
-                      : 'chat.topicStarter.disabledHint')}
+                    {t('chat.topicStarter.disabledHintWithCards')}
                     <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
                       {t('chat.topicStarter.openSettings')}
                     </button>
                   </p>
-                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
+                ) : recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
                   <div
                     className="chat-suggestions__title"
                     role="status"
@@ -2713,20 +2710,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                         onClick={() => onOpenGeneralSettings?.()}
                       >
                         {t('chat.topicStarter.openSettings')}
-                      </button>
-                    ) : null}
-                    {topicStarterShowsRetryAction(recommendationState) ? (
-                      <button
-                        type="button"
-                        data-testid="chat-panel-topic-retry"
-                        onClick={() => {
-                          manualRecommendationRetry.current = true;
-                          if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
-                          setRecommendationRefresh(value => value + 1);
-                        }}
-                        className="ml-2 text-text-link underline"
-                      >
-                        {t('chat.topicStarter.retryPreparation')}
                       </button>
                     ) : null}
                   </div>

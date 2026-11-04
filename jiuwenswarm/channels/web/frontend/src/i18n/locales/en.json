@@ -1866,7 +1866,6 @@
       "statusNoCards": "Getting topics ready. You can start chatting now.",
       "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
       "openSettings": "Check settings",
-      "disabledHint": "For topics that understand you better, turn on recommendations in Settings - General.",
       "disabledHintWithCards": "These are preset topics. Turn on topic recommendations in Settings to gradually replace them with personalized ones.",
       "retryPreparation": "Try again"
     },

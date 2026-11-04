@@ -2133,6 +2133,67 @@ def test_disabled_serve_still_returns_preset_cards(tmp_path):
     assert 1 <= len(response["topics"]) <= 4
 
 
+def test_disabled_project_serve_still_returns_preset_cards(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        scope_for_project,
+    )
+
+    project_id = "proj_preset_align"
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-disabled-project.db"),
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: 1_700_000_000.0,
+    )
+    response = service.serve(
+        "session-disabled-project",
+        context_scope=scope_for_project(project_id),
+        project_id=project_id,
+    )
+    assert response["available"] is True
+    assert response["preparation_state"] == "disabled"
+    assert response["context_scope"] == scope_for_project(project_id)
+    assert response["project_id"] == project_id
+    assert 1 <= len(response["topics"]) <= 4
+    assert all(topic["title"] and topic["prompt"] for topic in response["topics"])
+
+
+def test_empty_project_pool_still_serves_presets_when_enabled(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        scope_for_project,
+    )
+
+    project_id = "proj_empty_preset"
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-empty-project.db"),
+        # No generator: stand-in must still fill the project welcome page.
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 1_700_000_000.0,
+    )
+    response = service.serve(
+        "session-empty-project",
+        context_scope=scope_for_project(project_id),
+        project_id=project_id,
+    )
+    assert response["available"] is True
+    assert response["context_scope"] == scope_for_project(project_id)
+    assert response["project_id"] == project_id
+    assert 1 <= len(response["topics"]) <= 4
+    assert response["selection_mode"] == "generic_dynamic"
+    assert all(topic["title"] and topic["prompt"] for topic in response["topics"])
+
+
 def test_hot_list_open_url_prefers_topic_page_then_board():
     from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
         BAIDU_PROVIDER_ID,
@@ -2208,6 +2269,7 @@ def test_cold_start_prefers_live_timely_corpus_cards():
     from datetime import datetime, timezone
 
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
         build_cold_start_cards,
     )
 
@@ -2215,6 +2277,8 @@ def test_cold_start_prefers_live_timely_corpus_cards():
     cards = build_cold_start_cards(
         trigger_key={
             "local_date": "2026-10-21",
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
             "profile_semantic_version": 0,
             "short_intent_version": 0,
             "search_provider_id": "test",

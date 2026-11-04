@@ -75,6 +75,10 @@ const dynamicSlate = {
 test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterShowsStatus('ready', false), false);
   assert.equal(topicStarterShowsStatus('preparing', false), true);
+  assert.equal(topicStarterShowsStatus('preparing', true), true);
+  assert.equal(topicStarterShowsStatus('failed', false), false);
+  assert.equal(topicStarterShowsStatus('no_content', false), false);
+  assert.equal(topicStarterShowsStatus('waiting_for_input', false), false);
   assert.equal(topicStarterStatusMessageKey('preparing', false), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterShowsSettingsAction('preparing'), false);
@@ -83,13 +87,11 @@ test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterStatusMessageKey('disabled', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('missing_configuration', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('provider_unavailable', false), 'chat.topicStarter.statusNeedsSettings');
-  assert.equal(topicStarterStatusMessageKey('waiting_for_input', false), 'chat.topicStarter.statusPreparing');
-  assert.equal(topicStarterStatusMessageKey('no_content', false), 'chat.topicStarter.statusPreparing');
-  assert.equal(topicStarterStatusMessageKey('failed', false), 'chat.topicStarter.statusPreparing');
-  assert.equal(topicStarterStatusMessageKey('failed', true), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterShowsSettingsAction('disabled'), true);
   assert.equal(topicStarterShowsSettingsAction('failed'), false);
-  assert.equal(topicStarterShowsRetryAction('waiting_for_input'), true);
+  assert.equal(topicStarterShowsRetryAction('waiting_for_input'), false);
+  assert.equal(topicStarterShowsRetryAction('failed'), false);
+  assert.equal(topicStarterShowsRetryAction('provider_unavailable'), false);
   assert.equal(topicStarterShowsRetryAction('disabled'), false);
   assert.equal(topicStarterShowsProviderRefusal('provider_unavailable'), true);
   assert.equal(topicStarterShowsProviderRefusal('failed'), false);

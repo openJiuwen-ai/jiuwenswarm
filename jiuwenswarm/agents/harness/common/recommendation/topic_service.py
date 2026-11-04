@@ -1527,13 +1527,19 @@ class TopicService:
         issued_slate: dict[str, Any] | None,
         preset_only: bool = False,
     ) -> dict[str, Any]:
-        """Write packaged/hot-list cards so the first welcome visit has a slate."""
+        """Write packaged/hot-list cards so a scope visit has a slate to show.
 
+        Global and project scopes share this stand-in: when recommendation is off
+        or the personalized pool is empty, the packaged corpus fills the page.
+        """
+
+        context_scope = str(trigger_key["context_scope"])
+        project_id = trigger_key.get("project_id")
         empty = read_terminal_pool(
             self.store,
             serving_compatibility_key=build_serving_compatibility_key(trigger_key),
-            context_scope=GLOBAL_NEW_CHAT_SCOPE,
-            project_id=None,
+            context_scope=context_scope,
+            project_id=project_id,
             feedback=feedback,
             now=self._now(),
             issued_slate=issued_slate,
@@ -1549,8 +1555,8 @@ class TopicService:
             # again instead of showing one card fewer.
             if existing_is_preset and len(empty["cards"]) >= FIRST_SCREEN_CARD_TARGET:
                 return empty
-        # Personalized pool miss (or provider refusal) still fills the homepage with
-        # packaged cards; never leave the welcome page blank when the corpus can serve.
+        # Personalized pool miss (or provider refusal) still fills the page with
+        # packaged cards; never leave it blank when the corpus can serve.
         provider_refused = (
             not preset_only and bool(self.configuration_status().get("provider_refused"))
         )
@@ -1584,8 +1590,8 @@ class TopicService:
         return read_terminal_pool(
             self.store,
             serving_compatibility_key=build_serving_compatibility_key(trigger_key),
-            context_scope=GLOBAL_NEW_CHAT_SCOPE,
-            project_id=None,
+            context_scope=context_scope,
+            project_id=project_id,
             feedback=feedback,
             now=self._now(),
             issued_slate=issued_slate,
@@ -1634,15 +1640,8 @@ class TopicService:
                     issued = payload
         preset_only = not self._accepting_work or self._ark_config is None
         if preset_only:
-            if context_scope != GLOBAL_NEW_CHAT_SCOPE:
-                return {
-                    "available": False,
-                    "reason": "disabled" if not self._accepting_work else "background_model_unavailable",
-                    "session_id": session_id,
-                    "policy_id": POLICY_ID,
-                    "context_scope": context_scope,
-                    "project_id": project_id,
-                }
+            # Global and project welcome pages both stand on packaged cards while
+            # recommendation is off or the background model is unset.
             served = self._serve_cold_start(
                 trigger_key=trigger_key,
                 feedback=feedback,
@@ -1659,7 +1658,7 @@ class TopicService:
                 now=self._now(),
                 issued_slate=issued,
             )
-            if not served["cards"] and context_scope == GLOBAL_NEW_CHAT_SCOPE:
+            if not served["cards"]:
                 served = self._serve_cold_start(
                     trigger_key=trigger_key,
                     feedback=feedback,
