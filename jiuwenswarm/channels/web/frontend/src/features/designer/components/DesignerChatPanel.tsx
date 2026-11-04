@@ -6,6 +6,7 @@ import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
+import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
@@ -144,9 +145,15 @@ export function DesignerChatPanel() {
 
   // Design has no model switch: a missing chat model means no leader round can
   // run at all, so warn here instead of failing only after the user sends
-  // (#5266). Re-checked whenever the catalog size changes, e.g. after the user
-  // fixes Settings in another tab.
+  // (#5266). Re-checked when the model catalog size changes or a config change
+  // is pushed, since generation-slot switches never change the catalog.
   const [blockedProblem, setBlockedProblem] = useState('');
+  const [configRevision, setConfigRevision] = useState(0);
+  useEffect(() => {
+    const onConfigChanged = () => setConfigRevision((value) => value + 1);
+    window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+    return () => window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+  }, []);
   useEffect(() => {
     if (!sessionId) {
       setBlockedProblem('');
@@ -159,7 +166,7 @@ export function DesignerChatPanel() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, availableModelCount]);
+  }, [sessionId, availableModelCount, configRevision]);
 
   useEffect(() => {
     const el = bodyRef.current;
