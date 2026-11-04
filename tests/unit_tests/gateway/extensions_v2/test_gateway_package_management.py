@@ -71,13 +71,29 @@ def create_extension():
 """
 
 
+AUTH_ENTRY = """\
+from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestOutput
+
+class Extension:
+    def register(self, registrar):
+        async def handler(event, ops, next_handler):
+            if event.event_input.headers.get("authorization") != "Bearer valid":
+                return GatewayRequestOutput(handled=True, route="deny", error={"code": "AUTH_REQUIRED"})
+            return await next_handler(event)
+
+        registrar.register_event_handler("gateway.request", handler)
+
+def create_extension():
+    return Extension()
+"""
+
+
 def _package_zip(
     tmp_path: Path,
     *,
     package_id: str = "demo.gateway",
     domain: str = "gateway",
     version: str = "0.1.0",
-    auth_provider: bool = False,
     entry: str = ENTRY,
 ) -> Path:
     source = tmp_path / "src" / package_id / version
@@ -88,7 +104,6 @@ def _package_zip(
         f"  id: {package_id}\n"
         f"  version: {version}\n"
         f"domain: {domain}\n"
-        f"auth_provider: {'true' if auth_provider else 'false'}\n"
         "extensions:\n"
         "  - id: demo\n"
         "    runtime: backend\n"
@@ -157,18 +172,6 @@ async def test_reload_republishes_the_installed_copy(tmp_path):
     assert runtime.user_handler_count == 1
 
 
-async def test_auth_provider_flag_follows_install_and_uninstall(tmp_path):
-    runtime = await _runtime(tmp_path)
-    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
-    assert runtime.has_auth_provider is False
-
-    await manager.install([_package_zip(tmp_path, auth_provider=True)])
-    assert runtime.has_auth_provider is True
-
-    await manager.uninstall("demo.gateway")
-    assert runtime.has_auth_provider is False
-
-
 async def test_query_frame_is_answered_locally_for_gateway_packages(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     await GatewayPackageManager(runtime, tmp_path / "extension_pkgs").install([_package_zip(tmp_path)])
@@ -210,10 +213,10 @@ async def test_uninstall_of_an_agent_package_is_forwarded(tmp_path, monkeypatch)
     assert runtime.channel.responses == []
 
 
-async def test_management_frames_cross_the_login_gate(tmp_path, monkeypatch):
+async def test_management_frames_follow_user_request_policy(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     await GatewayPackageManager(runtime, tmp_path / "extension_pkgs").install(
-        [_package_zip(tmp_path, auth_provider=True)]
+        [_package_zip(tmp_path, entry=AUTH_ENTRY)]
     )
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
     channel = runtime.channel
@@ -226,7 +229,7 @@ async def test_management_frames_cross_the_login_gate(tmp_path, monkeypatch):
     assert channel.responses[0]["code"] == "AUTH_REQUIRED"
 
     visited, _ = await runtime.intercept(
-        ws, "r3b", method, {"package_id": "demo.gateway"}, {"authorization": "Bearer tk"}
+        ws, "r3b", method, {"package_id": "demo.gateway"}, {"authorization": "Bearer valid"}
     )
 
     assert visited is False
@@ -250,12 +253,11 @@ async def test_partial_registration_failure_rolls_the_package_back(tmp_path):
     runtime = await _runtime(tmp_path)
     manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
 
-    reports = await manager.install([_package_zip(tmp_path, auth_provider=True, entry=BAD_ENTRY)])
+    reports = await manager.install([_package_zip(tmp_path, entry=BAD_ENTRY)])
 
     assert [report.status for report in reports] == ["FAILED"]
     assert reports[0].error.code == "EXTENSION_LOAD_FAILED"
     assert runtime.user_handler_count == 0
-    assert runtime.has_auth_provider is False
     assert runtime.active_packages() == ()
     assert manager.installed() == []
 
