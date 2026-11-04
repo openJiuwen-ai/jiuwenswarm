@@ -17,7 +17,7 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import
 )
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
 from agent_gateway.channel_manager.base import RobotMessageRouter
-from openjiuwen_protocol.message import Message, EventType
+from jiuwenswarm.common.schema.message import Message, EventType
 
 
 # ---------------------------------------------------------------------------
