@@ -5018,17 +5018,24 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         企业版创建走 HTTP（``POST /cron/jobs``），前端创建体通常不带 group/bot，
         身份在 ``X-Group-Id`` / ``X-Bot-Id`` / ``X-User-Id`` 头里，由 HTTP 入口
-        写到请求对象的 ``_web_routing``。这里回填进 params，避免缺身份被控制器拒绝。
+        写到请求对象的 ``_web_routing``。
+
+        ``group_id`` / ``bot_id`` 以路由身份为准：routing 非空时直接覆盖 params，
+        避免创建体残留旧组织、而列表/改删按当前路由过滤导致任务变孤儿。
+        ``user_id`` 仍优先用连接侧传入值；routing 仅在 params 为空或 default 时补齐。
         参数名沿用 handler 的 request/outbound 对象（历史字段叫 ws）。
         """
         filled = dict(params) if isinstance(params, dict) else {}
         routing = getattr(request, "_web_routing", None)
         if isinstance(routing, dict):
-            for key in ("group_id", "bot_id", "user_id"):
+            for key in ("group_id", "bot_id"):
                 routed = str(routing.get(key) or "").strip()
-                current = str(filled.get(key) or "").strip()
-                if routed and current in {"", "default"}:
+                if routed:
                     filled[key] = routed
+            routed_user = str(routing.get("user_id") or "").strip()
+            current_user = str(filled.get("user_id") or "").strip()
+            if routed_user and current_user in {"", "default"}:
+                filled["user_id"] = routed_user
         if user_id:
             filled["user_id"] = str(user_id).strip()
         return filled
