@@ -71,6 +71,10 @@ class ExecutionAdmission:
     def detach_backend(self) -> None:
         self._backend = None
 
+    def _runtime_failed_message(self) -> str:
+        reason = str(self._readiness.snapshot().get("failed_reason") or "").strip()
+        return f"AgentServer runtime failed: {reason}" if reason else "AgentServer runtime failed"
+
     async def dispatch(
         self,
         ws: Any,
@@ -86,7 +90,7 @@ class ExecutionAdmission:
             return
         if state is ReadinessState.FAILED:
             if not await self._try_recover_after_failed(request):
-                await self._reject(ws, request, send_lock, "RUNTIME_FAILED", "AgentServer runtime failed")
+                await self._reject(ws, request, send_lock, "RUNTIME_FAILED", self._runtime_failed_message())
                 return
             # Recovery path left FAILED behind; fall through so a warming
             # runtime queues the request and a ready one dispatches it.
@@ -144,7 +148,7 @@ class ExecutionAdmission:
             await self._registry.complete(tracked.request_id, tracked=tracked)
             code = "RUNTIME_FAILED" if state is ReadinessState.FAILED else "RUNTIME_WARMING"
             message = (
-                "AgentServer runtime failed"
+                self._runtime_failed_message()
                 if code == "RUNTIME_FAILED"
                 else "AgentServer runtime is still warming"
             )

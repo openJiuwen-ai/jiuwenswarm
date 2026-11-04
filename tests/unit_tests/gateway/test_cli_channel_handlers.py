@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import asyncio
+from contextlib import suppress
 
 import pytest
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
@@ -175,6 +176,9 @@ async def test_register_cli_handlers_registers_local_methods():
     assert "config.get" in cli_handlers
     assert "config.validate_model" in cli_handlers
     assert "session.list" in cli_handlers
+    assert "session.archive" in cli_handlers
+    assert "session.unarchive" in cli_handlers
+    assert "session.archived.list" in cli_handlers
     assert "chat.send" in cli_handlers
     assert "chat.resume" in cli_handlers
     assert "history.get" in cli_handlers
@@ -720,7 +724,112 @@ def test_build_cli_route_binding_creates_route_and_install_hook():
     assert "config.get" in cli_handlers
     assert "config.validate_model" in cli_handlers
     assert "session.list" in cli_handlers
+    for method in ("session.archive", "session.archived.list", "session.delete"):
+        assert method in cli_handlers
+        assert method not in binding.forward_methods
     assert "chat.send" in cli_handlers
+
+
+@pytest.mark.asyncio
+async def test_tui_lifecycle_poll_reaches_only_the_bound_window(monkeypatch):
+    from agent_gateway.channel_manager.web import lifecycle_handlers
+
+    server = FakeGatewayServer()
+    target_ws = type("Client", (), {"user_id": "owner", "closed": False})()
+    other_ws = type("Client", (), {"user_id": "other", "closed": False})()
+    server._session_to_client = {
+        ("tui", "target-session"): target_ws,
+        ("tui", "other-session"): other_ws,
+    }
+    server._find_channel_clients = lambda channel_id: [
+        ws for key, ws in server._session_to_client.items() if key[0] == channel_id
+    ]
+    server._connection_user_id = lambda ws: ws.user_id
+    delivered = asyncio.Event()
+    events = []
+
+    async def send_event(ws, event, payload):
+        events.append((ws, event, payload))
+        if event == "session.lifecycle.updated":
+            delivered.set()
+
+    async def fetch_lifecycle(*_args, **_kwargs):
+        return True, {"events": [{
+            "event": "session.lifecycle.updated",
+            "kind": "archive",
+            "completed": False,
+            "payload": {
+                "resource_id": "target-session",
+                "session_id": "target-session",
+                "project_id": "project-a",
+                "revision": 1,
+                "execution_blocked": True,
+                "lifecycle_operation": {"kind": "archive"},
+            },
+            "result": {},
+        }]}
+
+    server.send_event = send_event
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fetch_lifecycle)
+    binding = build_cli_route_binding(CliRouteBindParams(path="/tui"))
+    binding.install(server)
+    binding.session_bind_handler("tui", "target-session")
+    await asyncio.wait_for(delivered.wait(), 1)
+    assert [(ws, event) for ws, event, _ in events] == [
+        (target_ws, "session.lifecycle.updated")
+    ]
+    watcher_tasks = [
+        task for task in asyncio.all_tasks()
+        if task.get_name() == "tui-lifecycle-events"
+    ]
+    for task in watcher_tasks:
+        task.cancel()
+    for task in watcher_tasks:
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_tui_archive_notifies_another_window_for_the_same_user(monkeypatch):
+    from agent_gateway.channel_manager.web import lifecycle_handlers
+
+    server = FakeGatewayServer()
+    source_ws = type("Client", (), {"user_id": "owner", "closed": False})()
+    target_ws = type("Client", (), {"user_id": "owner", "closed": False})()
+    unrelated_ws = type("Client", (), {"user_id": "other", "closed": False})()
+    server._session_to_client = {
+        ("tui", "source-session"): source_ws,
+        ("tui", "target-session"): target_ws,
+        ("tui", "unrelated-session"): unrelated_ws,
+    }
+    server._find_channel_clients = lambda channel_id: [
+        ws for key, ws in server._session_to_client.items() if key[0] == channel_id
+    ]
+    server._connection_user_id = lambda ws: ws.user_id
+    events = []
+
+    async def send_event(ws, event, payload):
+        events.append((ws, event, payload))
+
+    async def archive_response(*_args, **_kwargs):
+        return True, {
+            "succeeded_count": 1,
+            "failed_count": 0,
+            "results": [{"session_id": "target-session", "ok": True, "accepted": True}],
+        }
+
+    server.send_event = send_event
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", archive_response)
+    binding = build_cli_route_binding(CliRouteBindParams(path="/tui"))
+    binding.install(server)
+    server.ensure_lifecycle_watch = lambda _user_id: None
+    await server.local_handlers["/tui"]["session.archive"](
+        source_ws, "archive-request", {"session_ids": ["target-session"]}, "source-session", "owner"
+    )
+    assert {(ws, event) for ws, event, _ in events} == {
+        (source_ws, "session.archived"),
+        (target_ws, "session.archived"),
+    }
 
 
 @pytest.mark.asyncio

@@ -86,13 +86,16 @@ async def test_session_close_cleans_records_only_after_completion(monkeypatch, o
     channel._track_session_busy(status("request", True, "expert"))
     monkeypatch.setattr(channel, "send_response", AsyncMock())
     monkeypatch.setattr(channel, "send_event", AsyncMock())
+    fetch = AsyncMock(return_value=(ok, payload))
     monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.lifecycle_handlers.fetch_agent_unary",
-        AsyncMock(return_value=(ok, payload)),
+        "agent_gateway.channel_manager.web.lifecycle_handlers.fetch_agent_unary", fetch,
     )
     register_lifecycle_handlers(channel, lambda: object(), lambda: None)
-    await channel._method_handlers["session.delete"](object(), "delete", {}, "session", "user")
+    await channel._method_handlers["session.delete"](
+        object(), "delete", {"session_id": "session"}, "session", "user",
+    )
     await asyncio.sleep(0)
+    fetch.assert_awaited_once()
     assert channel.is_session_busy("session") is busy
 
 

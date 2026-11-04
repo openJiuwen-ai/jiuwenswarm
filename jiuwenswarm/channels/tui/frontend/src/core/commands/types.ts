@@ -57,6 +57,11 @@ export interface CommandContext {
   themeName: ThemeName;
   accentColor: AccentColorName;
   updateSession: (id: string) => void;
+  enterDraftSession: () => string;
+  previousSessionId?: string;
+  isDraftSession?: boolean;
+  restoreDraftSession?: (id: string, previousId: string, mode: ClientMode) => void;
+  redirectFromClosedSession: (sessionId: string, action: "archive" | "delete") => Promise<string>;
   addItem: (item: HistoryItem) => void;
   /** 设置 /btw 侧问题覆盖层（独立于 transcript 渲染，不受滚动影响） */
   setBtwOverlay?: (question: string, answer: string) => void;

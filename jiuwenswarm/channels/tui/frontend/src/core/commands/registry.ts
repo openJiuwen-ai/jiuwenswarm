@@ -1,8 +1,10 @@
 /** 内置 slash 与 Gateway 受控指令对齐时参见仓库 `gateway/slash_command.py`（SSOT）与 `docs/zh/CLI_COMMANDS.md`。 */
 import type { SlashCommand } from "./types.js";
 import { createBranchCommand } from "./builtins/branch.js";
+import { createArchiveCommand, createUnarchiveCommand } from "./builtins/archive.js";
 import { createBtwCommand } from "./builtins/btw.js";
 import { createClearCommand } from "./builtins/clear.js";
+import { createDeleteCommand } from "./builtins/delete.js";
 import { createColorCommand } from "./builtins/color.js";
 import { createCompactCommand } from "./builtins/compact.js";
 import { createConfigCommand } from "./builtins/config.js";
@@ -88,8 +90,11 @@ export function createBuiltinCommands(options: BuiltinCommandsOptions = {}): Sla
     createHooksCommand(),
     createKeybindingsCommand(),
     createBranchCommand(),
+    createArchiveCommand(),
     createBtwCommand(),
     createClearCommand(),
+    createDeleteCommand(),
+    createUnarchiveCommand(),
     createInitCommand(),
     createColorCommand(),
     createCompactCommand(),

@@ -164,6 +164,23 @@ async def test_agent_delete_orders_release_before_dispose_and_runner(env):
 
 
 @pytest.mark.asyncio
+async def test_delete_archived_session_removes_session_history(env):
+    archived = env.root.parent / "sessions_archived" / "archived-session"
+    archived.mkdir(parents=True)
+    history = archived / "history.json"
+    history.write_text('{"messages": ["old conversation"]}', encoding="utf-8")
+
+    result = await env.runtime.delete_session(
+        channel_id="request",
+        session_id="archived-session",
+    )
+
+    assert result.ok and result.deleted
+    assert not archived.exists()
+    assert not history.exists()
+
+
+@pytest.mark.asyncio
 async def test_delete_retry_prepares_replacement_lifecycle(env):
     (env.root / "replaced").mkdir()
     provisioner = env.runtime._session_provisioner
