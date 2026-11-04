@@ -1555,7 +1555,8 @@ class TeamManager:
         """Replace a persisted reference only when its resource was deleted."""
         from jiuwenswarm.common.model_catalog import ModelCatalog
         from jiuwenswarm.server.runtime.model_routing_registry import (
-            ModelExecutionContext, ModelSelectionResolver,
+            ModelExecutionContext,
+            ModelSelectionResolver,
         )
 
         selected = SwarmModelSelection.model_validate(selection)
