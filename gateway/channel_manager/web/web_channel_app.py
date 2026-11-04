@@ -161,6 +161,10 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
                 "Gateway enterprise plane is required but try_build returned None"
             )
         plane.install_web_channel(app, channel)
+    else:
+        from gateway.channel_manager.web.personal_share_api import register_personal_share_routes
+
+        register_personal_share_routes(app, channel)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

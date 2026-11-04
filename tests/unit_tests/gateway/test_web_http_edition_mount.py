@@ -48,6 +48,11 @@ def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) ->
 
 
 def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    share = ModuleType("gateway.channel_manager.web.personal_share_api")
+    share.register_personal_share_routes = lambda app, channel: app.add_api_route(
+        "/share-api/jobs", lambda: None, methods=["GET"],
+    )
+    monkeypatch.setitem(sys.modules, share.__name__, share)
     ge = ModuleType("gateway.enterprise")
     ge.is_enterprise = lambda: False  # type: ignore[attr-defined]
     ge.try_build_enterprise_plane = lambda: None  # type: ignore[attr-defined]
@@ -114,12 +119,20 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
     app = FastAPI()
     channel_app.register_http_routes(app, MagicMock())
     paths = {getattr(r, "path", None) for r in app.routes}
+    assert "/share-api/jobs" in paths
     assert "/api/v1/chat/completions" not in paths
     assert "/api/v1/health" not in paths
     assert "/api/v1/catalog" not in paths
 
 
 def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    share = ModuleType("gateway.channel_manager.web.personal_share_api")
+
+    def unexpected_personal_export(*args):
+        pytest.fail("Enterprise must not mount personal export mutations")
+
+    share.register_personal_share_routes = unexpected_personal_export
+    monkeypatch.setitem(sys.modules, share.__name__, share)
     class _FakePlane:
         def install_web_channel(self, app: FastAPI, channel: object) -> None:
             from gateway.channel_manager.web.web_http_routes import (

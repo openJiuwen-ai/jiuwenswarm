@@ -137,7 +137,7 @@ export function VideoDuplexModelSettings({
   const saveDraft = async () => {
     if (!draft || disabled || saving || deleting) return;
     if (!isConfigured(draft, secretLengths)) {
-      setError(t('settingsPanel.videoDuplex.requiredFields'));
+      setError(t('settingsPanel.voice.requiredFields'));
       return;
     }
     setSaving(true);
@@ -348,7 +348,7 @@ export function VideoDuplexModelSettings({
           ) : undefined
         }
       >
-        {configured ? (
+        {configured || enabled ? (
           <Switch
             checked={enabled}
             aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
@@ -380,7 +380,7 @@ export function VideoDuplexModelSettings({
           title={t('settingsPanel.videoDuplex.dialogTitle')}
           submitting={saving}
           confirmDisabled={disabled || deleting || !isConfigured(draft, secretLengths)}
-          description={t('settingsPanel.videoDuplex.requiredFields')}
+          description={t('settingsPanel.voice.requiredFields')}
           confirmLabel={t('common.save')}
           cancelLabel={t('common.cancel')}
           dialogClassName="settings-model-dialog"

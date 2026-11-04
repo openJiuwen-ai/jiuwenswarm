@@ -98,6 +98,16 @@ class ModelCatalog:
                 return group
         raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_group_id {group_id!r}")
 
+    def group_display_name(self, group_id: str) -> str:
+        """A model group's display name, falling back to its id.
+
+        The single naming source for every surface that names a model group
+        (runtime state file, team pool metadata, runtime prompt): falling
+        back to the id keeps a catalog miss from ever failing the caller.
+        """
+        group = self.get_group(group_id)
+        return str(group.get("display_name") or "").strip() or group_id
+
     def has_selection(self, selection: ModelSelection) -> bool:
         """Whether a saved selection still names a model, group, and route."""
         if selection.type == "model":
