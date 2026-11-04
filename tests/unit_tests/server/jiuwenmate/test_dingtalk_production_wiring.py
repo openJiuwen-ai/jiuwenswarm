@@ -13,11 +13,11 @@ import pytest
 import pytest_asyncio
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, DingTalkConfig
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.gateway.routing.keys import ChannelKey
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, DingTalkConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.routing.keys import ChannelKey
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
@@ -766,7 +766,7 @@ async def test_messages_without_an_app_identity_never_pick_an_arbitrary_robot():
 async def test_gateway_e2a_uses_dingtalk_envelope_and_preserves_event(host):
     handler = object.__new__(MessageHandler)
     handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={"disposition": "handled"})))
-    assert await handler.handle_persistent_dingtalk_event(_event()) is InboundDisposition.HANDLED
+    assert (await handler.handle_persistent_dingtalk_event(_event())).value == InboundDisposition.HANDLED.value
     envelope = handler.agent_client.send_request.await_args.args[0]
     assert envelope.channel == "dingtalk"
     assert envelope.method == ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value
@@ -1147,6 +1147,8 @@ def test_restart_only_fences_the_selected_channel_and_never_requeues_unknown(tmp
     assert repository.claim_pending_result_deliveries(NS, channels=frozenset({"dingtalk"}), now=NOW) == []
 
 async def test_welink_membership_validation_ack_preserves_operation_and_evidence():
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+
     handler = object.__new__(MessageHandler)
     handler._result_delivery_handler = AsyncMock(return_value={'outcome': 'unknown', 'handoff_target_valid': True})
     handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))

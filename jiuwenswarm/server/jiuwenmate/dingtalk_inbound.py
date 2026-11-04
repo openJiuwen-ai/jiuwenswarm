@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
 
 
