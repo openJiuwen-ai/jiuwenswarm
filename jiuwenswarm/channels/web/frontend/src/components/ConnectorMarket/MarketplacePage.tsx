@@ -1,4 +1,4 @@
-import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
+import { matchesAssetName } from '../../features/assetNameSearch';
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { catalogCacheOf } from '../../features/catalogCache';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
@@ -327,7 +327,7 @@ export function MarketplacePage({
         if (category === 'other' ? mcpTopCategorySet.has(cat) : cat !== category) return false;
       }
 
-      if (topTab === 'my' && q && !matchesAssetName(query, connector.searchNames ?? assetSearchNames(connector.displayName, connector.name))) return false;
+      if (topTab === 'my' && q && !matchesAssetName(query, [connector.displayName])) return false;
       return true;
     });
   }, [
@@ -361,7 +361,7 @@ export function MarketplacePage({
         if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
       }
 
-      if (topTab === 'my' && !matchesAssetName(query, assetSearchNames(pkg.displayName))) return false;
+      if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language) ?? ''])) return false;
       return true;
     });
   }, [
@@ -376,6 +376,7 @@ export function MarketplacePage({
     pluginConnectionStateMap,
     query,
     marketPluginResults,
+    i18n.language,
   ]);
 
   // 当前实际展示的那份列表（四个渲染分支互斥，取其一即可），分页条/总数/isEmpty 都基于它算。

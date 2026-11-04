@@ -1,6 +1,6 @@
 /** Trajectory analysis page: the trajectory and its diagnosis as two sub-pages of one session view. */
 
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/chatStore';
@@ -29,6 +29,7 @@ import {
   type TrajectoryPanelSubject,
   type TrajectoryPanelSummary,
 } from './TrajectoryPanel';
+import { trajectoryComposerPolicy, type TrajectoryComposerPolicy } from './trajectoryLayout';
 import css from './TrajectoryAnalysisPage.module.css';
 
 export type TrajectoryAnalysisSubpage = 'trajectory' | 'diagnosis';
@@ -40,6 +41,13 @@ export interface TrajectoryAnalysisPageProps {
   sessionId: string;
   /** Leave the page and return to the conversation. */
   onBack: () => void;
+  /**
+   * The docked composer follows the sub-page: closed and not reopenable while
+   * a range is being chosen or the diagnosis sub-page is showing.
+   */
+  onComposerPolicyChange?: (policy: TrajectoryComposerPolicy) => void;
+  /** Return to the conversation after a suggestion is written into the composer. */
+  onComposerFilled?: () => void;
 }
 
 interface FocusedCause {
@@ -52,6 +60,8 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   mode = 'agent',
   sessionId,
   onBack,
+  onComposerPolicyChange,
+  onComposerFilled,
 }: TrajectoryAnalysisPageProps) {
   const { t } = useTranslation();
   const [subpage, setSubpage] = useState<TrajectoryAnalysisSubpage>('trajectory');
@@ -134,6 +144,13 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [exitSelection, selecting]);
+
+  useLayoutEffect(() => {
+    onComposerPolicyChange?.(active ? trajectoryComposerPolicy(subpage, selecting) : 'available');
+  }, [active, onComposerPolicyChange, selecting, subpage]);
+  useLayoutEffect(() => () => {
+    onComposerPolicyChange?.('available');
+  }, [onComposerPolicyChange]);
 
   const enterSelection = useCallback(() => {
     dismissNotice();
@@ -334,6 +351,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           subjectLabels={subjectLabels}
           focusedFindingId={focused?.causeId ?? null}
           onFocusFinding={focusCause}
+          onComposerFilled={onComposerFilled ?? onBack}
         />
       </div>
       {selecting ? (

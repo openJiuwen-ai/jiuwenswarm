@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -924,28 +925,40 @@ def heuristic_analysis(prompt: str) -> dict[str, Any]:
     return ensure_audio_locks_on_analysis(payload, prompt)
 
 
+_THINK_CLOSE_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """Parse the first JSON object from model output.
 
-    Tolerates markdown fences, leading prose, and trailing chatter so slight
-    messiness does not force a heuristic fallback.
+    Tolerates reasoning blocks, markdown fences, leading prose, trailing chatter,
+    and raw newlines inside strings so slight messiness does not force a
+    heuristic fallback.
     """
-    raw = (text or "").strip()
+    raw = _THINK_CLOSE_RE.split(text or "")[-1].strip()
     if not raw:
         return None
 
+    unfenced = raw
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
     if fence:
-        raw = fence.group(1).strip()
+        unfenced = fence.group(1).strip()
     elif raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-        raw = re.sub(r"\s*```\s*$", "", raw).strip()
+        unfenced = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        unfenced = re.sub(r"\s*```\s*$", "", unfenced).strip()
+    parsed = _parse_json_object(unfenced)
+    if parsed is None and unfenced != raw:
+        # A fence inside a JSON string value cuts the fence match short.
+        parsed = _parse_json_object(raw)
+    return parsed
 
+
+def _parse_json_object(raw: str) -> dict[str, Any] | None:
     def _as_dict(value: Any) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
 
     try:
-        return _as_dict(json.loads(raw))
+        return _as_dict(json.loads(raw, strict=False))
     except json.JSONDecodeError:
         pass
 
@@ -954,7 +967,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return None
 
     try:
-        data, _end = json.JSONDecoder().raw_decode(raw[start:])
+        data, _end = json.JSONDecoder(strict=False).raw_decode(raw[start:])
         return _as_dict(data)
     except json.JSONDecodeError:
         pass
@@ -982,7 +995,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
             if depth == 0:
                 chunk = raw[start:i + 1]
                 try:
-                    return _as_dict(json.loads(chunk))
+                    return _as_dict(json.loads(chunk, strict=False))
                 except json.JSONDecodeError:
                     return None
     return None
@@ -1377,6 +1390,8 @@ async def analyze_creative_brief(
     }
 
     duration_sec = int(film_duration_sec or 0)
+    started_at = time.monotonic()
+    attempt = 1
     try:
 
         story_enrichment_rule = (
@@ -1557,6 +1572,7 @@ async def analyze_creative_brief(
         if isinstance(first, dict) and first.get("source") == "llm":
             return first
         remaining = max(8.0, float(timeout_sec) * 0.4)
+        attempt = 2
         second = await asyncio.wait_for(_call(reinforce_json=True), timeout=remaining)
         if isinstance(second, dict) and second.get("source") == "llm":
             return second
@@ -1567,9 +1583,20 @@ async def analyze_creative_brief(
     except DesignerLlmError:
         raise
     except asyncio.TimeoutError as exc:
-        logger.info("LLM script analysis timed out after %.1fs", timeout_sec)
+        elapsed = time.monotonic() - started_at
+        logger.info(
+            "LLM script analysis timed out after %.1fs (attempt %d, budget %.0fs)",
+            elapsed,
+            attempt,
+            timeout_sec,
+        )
+        detail = (
+            "the first reply was not usable JSON and the retry did not finish in time"
+            if attempt > 1
+            else "no reply arrived in time"
+        )
         raise DesignerLlmError(
-            f"Chat model timed out after {timeout_sec:.0f}s during script analysis.",
+            f"Chat model timed out after {elapsed:.0f}s during script analysis ({detail}).",
             code=LLM_API_ERROR,
         ) from exc
     except Exception as exc:  # noqa: BLE001

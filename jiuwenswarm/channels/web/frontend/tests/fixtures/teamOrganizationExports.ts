@@ -15,3 +15,5 @@ export { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '.
 export { useSettingsConfig } from '../../src/features/settings/services/useSettingsConfig';
 export { SettingsServicesProvider } from '../../src/features/settings/services/SettingsServicesProvider';
 export { parseHistoryJsonFileToPreviewMessages } from '../../src/features/historyRestore';
+export { parseOrganizationHistoryPanelRecords } from '../../src/features/teamHistoryPanelRestore';
+export { MemberToolEventProjector } from '../../src/features/teamOrganization/memberToolEvents';

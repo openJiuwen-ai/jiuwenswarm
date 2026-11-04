@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.gateway.embedded.runtime.session.project_store import file_lock
 
 _HELD_LOCKS = threading.local()
@@ -562,7 +563,7 @@ def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
     work_mode, keyword = params.get("work_mode"), params.get("keyword", "")
     if (
         work_mode is not None
-        and work_mode not in ("work", "code")
+        and work_mode not in SUPPORTED_WORK_MODES
         or not isinstance(keyword, str)
     ):
         raise LifecycleError("BAD_REQUEST", "invalid filter")

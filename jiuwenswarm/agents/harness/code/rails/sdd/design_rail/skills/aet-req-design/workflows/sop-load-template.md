@@ -2,7 +2,7 @@
 
 <instruct>
 
-**Assemble the template**: Run `scripts/assemble-template.mjs req-design` (Emphasizing running via `bash`, not reading with `read`). execute the Node script with argumentation `req-design` to output the assembled template.
+**Assemble the template**: Run `node scripts/assemble-template.mjs req-design` via the `bash` tool (NOT `bash scripts/assemble-template.mjs` — `.mjs` is a Node module, not a shell script). execute the Node script with argumentation `req-design` to output the assembled template.
 
 </instruct>
 

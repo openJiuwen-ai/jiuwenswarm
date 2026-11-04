@@ -247,8 +247,13 @@ export class ChatPanel implements vscode.Disposable {
       case 'switch_model': {
         const model = (msg.model as string) || null;
         this.activeModel = model;
-        this.debug(`ACTION→ switch_model ${model}`);
+        this.debug(`ACTION�+' switch_model ${model}`);
         this.postToWebview({ type: 'model_changed', model });
+        break;
+      }
+
+      case 'refresh_models': {
+        void this.refreshModels();
         break;
       }
 
@@ -838,6 +843,25 @@ export class ChatPanel implements vscode.Disposable {
     } catch (e) {
       this.debug(`delete_session failed: ${e}`);
       this.postToWebview({ type: 'sessions_error', message: String(e) });
+    }
+  }
+
+  private async refreshModels(): Promise<void> {
+    if (!this.session.sessionId || !this.ws.isConnected()) return;
+    try {
+      const { models, activeModel } = await this.session.listModels();
+      const modelList = models.map((m) => ({
+        model_name: (m.model_name as string) || '',
+        alias: (m.alias as string) || '',
+        model_provider: (m.model_provider as string) || '',
+      }));
+      this.postToWebview({
+        type: 'models_updated',
+        models: modelList,
+        activeModel: activeModel || undefined,
+      });
+    } catch {
+      this.debug('models.list refresh failed');
     }
   }
 

@@ -144,6 +144,29 @@ def _install_macos_media_capture_permission() -> None:
     delegate_cls._jiuwenswarm_media_permission_installed = True  # pylint: disable=protected-access
 
 
+def _macos_display_capture_supported() -> bool:
+    """WKWebView 的 getDisplayMedia 只能经 ScreenCaptureKit 系统选屏框拿到画面。
+
+    选屏框类 SCContentSharingPicker 自 macOS 14 起才有；更早的系统 WebKit
+    只弹“允许共享屏幕”确认，之后永远拿不到画面，网页收到 NotAllowedError，
+    与用户取消无法区分。这里把能力告诉前端，不支持时直接降级纯语音。
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        from Foundation import NSBundle  # type: ignore[import-not-found]
+        import objc  # type: ignore[import-not-found]
+
+        bundle = NSBundle.bundleWithPath_("/System/Library/Frameworks/ScreenCaptureKit.framework")
+        if bundle is None or not bundle.load():
+            return False
+        objc.lookUpClass("SCContentSharingPicker")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[desktop] screen capture picker unavailable: %s", exc)
+        return False
+
+
 def _desktop_window_preferences_path() -> Path:
     return get_user_workspace_dir() / "config" / DESKTOP_WINDOW_PREFERENCES_FILENAME
 
@@ -2505,6 +2528,8 @@ class DesktopRuntime:
         require ``copy`` — ``move``/``none`` are rejected and show the forbidden
         cursor.
         """
+        if not _macos_display_capture_supported():
+            self._run_js("window.__JIUWEN_DESKTOP_SCREEN_CAPTURE__ = false;")
         self._run_js(
             """
 (function () {

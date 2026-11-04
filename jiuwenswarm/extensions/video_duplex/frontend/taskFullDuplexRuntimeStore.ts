@@ -175,6 +175,11 @@ export function setTaskDuplexScreenSharing(sharing: boolean): void {
   publish({ screenSharing: sharing });
 }
 
+export function startTaskDuplexScreenSharing(): void {
+  if (!controller || snapshot.state !== "active" || snapshot.screenSharing) return;
+  void controller.startScreenSharing();
+}
+
 export function stopTaskDuplexScreenSharing(): void {
   controller?.stopScreenSharing();
 }

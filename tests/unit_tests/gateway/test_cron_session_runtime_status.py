@@ -476,3 +476,23 @@ async def test_team_timeout_ack_keeps_current_run_alive_until_timeout_result_is_
     response = await harness.channel.metadata(state.exec_session_id, user_id=owner)
     assert response["payload"]["is_processing"] is False
     assert response["payload"]["status"] == "idle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stopped", [True, False])
+async def test_stopped_owner_metadata_is_idle_while_child_keeps_git_guard_busy(harness_factory, stopped):
+    harness = await harness_factory(mode="team")
+    sid = "owner-with-running-child"
+    harness.client.metadata_payload["organization_owner_stopped"] = stopped
+    harness.channel.processing_event(sid, True)
+    harness.channel._track_session_busy(Message(
+        id="child-start", type="event", channel_id="web", session_id=sid,
+        params={}, timestamp=0, ok=True,
+        payload={"event_type": "chat.processing_status", "is_processing": True,
+                 "source": "org_expert_background", "team_id": "child", "request_id": "child-round"},
+    ))
+    response = await harness.channel.metadata(sid)
+    assert response["payload"]["is_processing"] is not stopped
+    assert response["payload"]["status"] == ("idle" if stopped else "processing")
+    assert harness.channel.is_session_busy(sid)
+    assert ("child", "child-round") in harness.channel._expert_processing_requests[sid]

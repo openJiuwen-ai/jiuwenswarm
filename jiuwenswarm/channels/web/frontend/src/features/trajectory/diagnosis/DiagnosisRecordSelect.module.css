@@ -2,8 +2,11 @@
   display: flex;
   max-width: 100%;
   min-width: 0;
+  flex: 0 1 auto;
   align-items: center;
   gap: 0.5rem;
+  /* A finished record's summary is nowrap text; keep the control on the right. */
+  margin-left: auto;
 }
 
 .caption {
@@ -16,8 +19,10 @@
 
 .field {
   position: relative;
-  width: min(32rem, 100%);
+  width: 20rem;
+  max-width: 100%;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .trigger {
@@ -26,6 +31,7 @@
   min-width: 0;
   align-items: center;
   gap: 0.5rem;
+  overflow: hidden;
   border: 1px solid var(--color-border-input);
   border-radius: 0.5rem;
   background: var(--color-surface-card);
@@ -62,6 +68,7 @@
 .time {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .label {

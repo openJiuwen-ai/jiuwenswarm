@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -510,6 +513,69 @@ def _history_stream_request(**params) -> AgentRequest:
         params=params,
         is_stream=True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    {"cursor": None, "limit": 1},
+    {"page_idx": 1},
+    {"cursor": None, "limit": 1, "subagent_id": "child"},
+])
+async def test_front_history_restores_durable_usage_without_usage_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    query: dict,
+) -> None:
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.server.front import router as router_module
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "history-usage-restore"
+    session_dir = tmp_path / session_id
+    session_dir.mkdir()
+    (session_dir / "history.jsonl").write_text(
+        json.dumps({"id": "m1", "role": "user", "content": "hello"}) + "\n",
+        encoding="utf-8",
+    )
+    ledger = SessionTokenUsageLedger(session_dir, session_id)
+    ledger.record("main-call", "main", 1234, 500)
+    ledger.record("child-call", "others", 200, 50)
+
+    router_module._load_history_service()
+    monkeypatch.setattr(router_module, "_LOAD_HISTORY_TODO_SNAPSHOT", lambda _session_id: [])
+    payloads: list[dict] = []
+
+    async def send(raw: str) -> None:
+        payloads.append(parse_agent_server_wire_chunk(json.loads(raw)).payload)
+
+    router = MethodRouter(Readiness(), ExecutionAdmission(Readiness()))
+    await router.dispatch(
+        SimpleNamespace(send=send),
+        _history_stream_request(session_id=session_id, **query),
+        asyncio.Lock(),
+    )
+
+    done = payloads[-1]
+    assert done["event_type"] == "history.message"
+    assert done["status"] == "done"
+    if query.get("subagent_id"):
+        assert "session_usage" not in done
+    else:
+        assert done["session_usage"] == {
+            "schema_version": 1,
+            "revision": 2,
+            "session_id": session_id,
+            "main": {
+                "input_tokens": 1234, "output_tokens": 500,
+                "input_calls": 1, "output_calls": 1, "calls_total": 1,
+            },
+            "others": {
+                "input_tokens": 200, "output_tokens": 50,
+                "input_calls": 1, "output_calls": 1, "calls_total": 1,
+            },
+        }
 
 
 @pytest.mark.asyncio

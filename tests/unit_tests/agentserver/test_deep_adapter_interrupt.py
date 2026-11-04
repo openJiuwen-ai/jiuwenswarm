@@ -860,6 +860,7 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
             "query": "resume",
             "mode": "agent",
             "source": "permission_interrupt",
+            "answers": [{"selected_options": ["allow_once"]}],
         },
     )
 
@@ -879,17 +880,24 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
     resume_task = asyncio.create_task(prepare_resume())
     await resume_started.wait()
 
-    assert adapter._permission_dispatch.lock.locked() is True
-    assert resume_task.done() is False
-    allow_cutover.set()
-    fresh = await fresh_task
-    loop_session.get_state.return_value = None
-    adapter._permission_dispatch.release(fresh)
-    with pytest.raises(
-        RootPermissionQueueError,
-        match="interaction_resume_state_missing",
-    ):
-        await resume_task
+    try:
+        assert adapter._permission_dispatch.lock.locked() is True
+        assert resume_task.done() is False
+        allow_cutover.set()
+        fresh = await fresh_task
+        loop_session.get_state.return_value = None
+        adapter._permission_dispatch.release(fresh)
+        with pytest.raises(
+            RootPermissionQueueError,
+            match="interaction_resume_state_missing",
+        ):
+            await resume_task
+    finally:
+        allow_cutover.set()
+        for task in (fresh_task, resume_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(fresh_task, resume_task, return_exceptions=True)
 
 
 def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> None:

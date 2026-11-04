@@ -820,6 +820,36 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return _shared_extract_json_object(text)
 
 
+_JSON_RETRY_RULE = (
+    " Your previous reply could not be parsed. Reply with exactly one JSON object: "
+    "no reasoning, no markdown fences, and every newline or quote inside a string escaped."
+)
+
+
+async def _model_json_object(
+    *, phase: str, prompt: str, system: str, max_tokens: int
+) -> dict[str, Any] | None:
+    """Ask the chat model for a JSON object, re-asking once when the reply does not parse."""
+    from jiuwenswarm.server.runtime.designer.model_tools import model_text_or_raise
+
+    for attempt in (1, 2):
+        result = await call_model_tool(
+            prompt=prompt,
+            system=system if attempt == 1 else system + _JSON_RETRY_RULE,
+            max_tokens=max_tokens,
+        )
+        parsed = _extract_json_object(model_text_or_raise(result))
+        if parsed is not None:
+            return parsed
+        logger.warning(
+            "Director %s reply was not a JSON object (attempt %d, finish=%s)",
+            phase,
+            attempt,
+            result.get("finish_reason"),
+        )
+    return None
+
+
 def validate_plan_occupancy(analysis: dict[str, Any]) -> dict[str, Any]:
     """Code validators after Director patch (no LLM): setting_id, on_screen, scene_locks, ids."""
     errors: list[str] = []
@@ -1687,7 +1717,6 @@ class Director:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
             LLM_API_ERROR,
-            model_text_or_raise,
         )
 
         meta = dict(graph.get("metadata") or {})
@@ -1773,7 +1802,8 @@ class Director:
             )
 
             shot_ceiling = infer_shot_budget(user_prompt, analysis)
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="execution graph",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -1798,8 +1828,6 @@ class Director:
                 system=system,
                 max_tokens=65536,
             )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text)
             if parsed is None:
                 raise DesignerLlmError(
                     "Chat model did not return valid execution graph JSON.",
@@ -3178,7 +3206,6 @@ class Director:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
             LLM_API_ERROR,
-            model_text_or_raise,
         )
 
         try:
@@ -3196,7 +3223,8 @@ class Director:
                 "Respond JSON only: "
                 '{"ok":true,"patched_brief_markdown":"...","notes":"...","issues":["..."]}'
             ) + _language_rule()
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="brief review",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -3209,13 +3237,9 @@ class Director:
                 system=system,
                 max_tokens=32768,
             )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text)
             if parsed is None:
-                raise DesignerLlmError(
-                    "Chat model did not return valid brief review JSON.",
-                    code=LLM_API_ERROR,
-                )
+                ack["review_skipped"] = "invalid_json"
+                parsed = {"notes": "Brief review reply was not valid JSON; kept the authored brief."}
             patched_md = str(parsed.get("patched_brief_markdown") or "").strip()
             if patched_md and len(patched_md) > 80:
                 brief = patched_md[:12000]
@@ -3320,7 +3344,6 @@ class Director:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
             LLM_API_ERROR,
-            model_text_or_raise,
         )
 
         try:
@@ -3350,7 +3373,8 @@ class Director:
                 '"bgm_lock":{"mood":"...","style":"...","rule":"..."},'
                 '"include_speech":true,"include_music":true,"notes":"..."}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="storyboard review",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -3366,13 +3390,11 @@ class Director:
                 system=system,
                 max_tokens=32768,
             )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text)
             if parsed is None:
-                raise DesignerLlmError(
-                    "Chat model did not return valid storyboard review JSON.",
-                    code=LLM_API_ERROR,
-                )
+                ack["review_skipped"] = "invalid_json"
+                parsed = {
+                    "notes": "Storyboard review reply was not valid JSON; kept the authored storyboard."
+                }
             for fix in parsed.get("shot_fixes") or []:
                 if not isinstance(fix, dict):
                     continue
