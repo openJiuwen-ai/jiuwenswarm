@@ -31,7 +31,7 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_file_service
 from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     CardKitError,
     FeishuCardKitClient,
     FeishuStreamingSession,

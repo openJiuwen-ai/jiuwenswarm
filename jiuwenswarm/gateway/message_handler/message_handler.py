@@ -38,7 +38,7 @@ from jiuwenswarm.gateway.routing.session_map import SessionMap
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     send_agent_request_with_timeout,
 )
-from jiuwenswarm.gateway.message_handler.join_exit_handlers import JoinExitHandlers
+from agent_gateway.message_handler.join_exit_handlers import JoinExitHandlers
 from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
     ParsedControlAction,
     parse_channel_control_text,

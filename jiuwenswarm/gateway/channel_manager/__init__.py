@@ -12,7 +12,7 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.telegram.telegram_connect 
     TelegramChannelConfig
 from jiuwenswarm.gateway.channel_manager.im_platforms.discord.discord_connect import DiscordChannel, DiscordChannelConfig
 from jiuwenswarm.gateway.channel_manager.im_platforms.slack.slack_connect import SlackChannel, SlackChannelConfig
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, DingTalkConfig
+from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, DingTalkConfig
 from jiuwenswarm.gateway.channel_manager.im_platforms.whatsapp.whatsapp_connect import WhatsAppChannel, \
     WhatsAppChannelConfig
 from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel, WecomConfig

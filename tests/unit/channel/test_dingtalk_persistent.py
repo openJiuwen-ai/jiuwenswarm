@@ -17,7 +17,7 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration imp
     merge_dingtalk_config,
     update_dingtalk_section,
 )
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,
     DingTalkConfig,
     DingTalkHandler,

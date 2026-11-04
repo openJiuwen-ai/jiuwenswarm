@@ -9,7 +9,7 @@ import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,
     DingTalkConfig,
 )
