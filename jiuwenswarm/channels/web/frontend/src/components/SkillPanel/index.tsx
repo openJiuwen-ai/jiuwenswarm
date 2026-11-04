@@ -17,6 +17,7 @@ import SourceManagerIcon from '../../assets/skill-panel/source-manager.svg?react
 import RefreshIcon from '../../assets/skill-panel/refresh.svg?react';
 import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs, LoadingSpinner, EmptyState } from '../ui';
 import { webRequest } from '../../services/webClient';
+import { installSkillWithPlan } from './SkillPackInstallPlan';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
@@ -41,7 +42,7 @@ import {
 import { FilterDropdown, MySkillGoTryButton, TopAnchorTooltip } from './SkillPanelWidgets';
 import { SkillToasts } from './SkillToasts';
 import { SkillGraphTab } from './SkillGraphTab';
-import { MarketplaceView, SkillPacksView } from './MarketplaceView';
+import { MarketplaceView } from './MarketplaceView';
 import { SkillDetailView } from './SkillDetailView';
 import { UploadSkillModal } from './UploadSkillModal';
 import { DocToSkillModal } from './DocToSkillModal';
@@ -274,7 +275,6 @@ export function SkillPanel({
     hubSkillMore,
     teamSkills,
     featuredSkills,
-    skillPacks,
     selectedHubSkill,
     hubDetail,
     hubDetailState,
@@ -285,7 +285,6 @@ export function SkillPanel({
     setHubDetailState,
     fetchHubSkillDetail,
     openHubMore,
-    openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
   } = useHubMarketplace({
@@ -430,6 +429,7 @@ export function SkillPanel({
       try {
         type InstallPayload = {
           success: boolean;
+          cancelled?: boolean;
           pending?: boolean;
           skill?: { name: string };
           detail?: string;
@@ -454,9 +454,10 @@ export function SkillPanel({
         let force = false;
         let data: InstallPayload;
         while (true) {
-          data = await webRequest<InstallPayload>('skills.online_search.install', buildParams(force), {
+          data = await installSkillWithPlan<InstallPayload>('skills.online_search.install', buildParams(force), {
             timeoutMs: 60000,
           });
+          if (data.cancelled) return;
           if (!data.success && !force && data.detail_key && alreadyInstalledKeys.has(data.detail_key)) {
             const confirmText =
               data.detail_key === 'skills.clawhub.errors.skillAlreadyInstalled'
@@ -928,6 +929,7 @@ export function SkillPanel({
           success: boolean;
           detail?: string;
           message?: string;
+          detail_key?: string;
         }>(
           'skills.uninstall',
           withSession({
@@ -935,7 +937,7 @@ export function SkillPanel({
           }),
         );
         if (!data.success) {
-          throw new Error(data.detail || data.message || t('skills.errors.uninstallFailed'));
+          throw new Error((data.detail_key ? t(data.detail_key) : '') || data.detail || data.message || t('skills.errors.uninstallFailed'));
         }
         showMessage('success', t('skills.messages.uninstalled', { pluginName }));
         await fetchSkills();
@@ -1092,10 +1094,11 @@ export function SkillPanel({
           name: string;
           enabled: boolean;
           detail?: string;
+          detail_key?: string;
         }>('skills.toggle', withSession({ name: skillName, enabled: newEnabled }));
 
         if (!result.success) {
-          throw new Error(result.detail || 'Failed to toggle skill');
+          throw new Error((result.detail_key ? t(result.detail_key) : '') || result.detail || 'Failed to toggle skill');
         }
 
         setSkills((prev) => prev.map((s) => (s.name === skillName ? { ...s, enabled: newEnabled } : s)));
@@ -1605,7 +1608,7 @@ export function SkillPanel({
     />
   );
 
-  // 技能广场页签：hub 技能详情 / 全部技能包专页 或 列表视图
+  // 技能广场页签：hub 技能详情或列表视图
   const renderMarketplace = () =>
     marketplaceSubView === 'detail' && selectedHubSkill ? (
       <SkillDetailView
@@ -1623,13 +1626,6 @@ export function SkillPanel({
         onGoToChat={handleGoToChat}
         onBackToHubDetail={handleBackToHubDetail}
       />
-    ) : marketplaceSubView === 'packs' ? (
-      <SkillPacksView
-        skillPacks={skillPacks}
-        onBack={handleBackToHubDetail}
-        onSelectHubSkill={handleSelectHubSkill}
-        renderHubSkillAction={renderHubSkillAction}
-      />
     ) : (
       <>
         <CatalogCacheNotice cache={hubCache} />
@@ -1640,7 +1636,6 @@ export function SkillPanel({
           featuredSkills={featuredSkills}
           hubTeamMore={hubTeamMore}
           hubSkillMore={hubSkillMore}
-          skillPacks={skillPacks}
           hubSkills={hubSkills}
           hubLoading={hubLoading}
           hubMoreLoading={hubMoreLoading}
@@ -1648,7 +1643,6 @@ export function SkillPanel({
           marketplaceCategory={marketplaceCategory}
           onSelectHubSkill={handleSelectHubSkill}
           renderHubSkillAction={renderHubSkillAction}
-          onOpenAllPacks={openHubAllPacks}
           onCategoryChange={handleMarketplaceCategoryChange}
           onOpenMore={openHubMore}
           onBackFromMore={handleBackToHubDetail}

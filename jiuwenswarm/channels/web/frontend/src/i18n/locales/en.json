@@ -10,6 +10,18 @@
     "retry": "Retry",
     "login": "Go to login"
   },
+  "skillPackInstall": {
+    "title": "Review SkillPack installation",
+    "summary": "Review the Pack and its locked member versions. Matching local Skills will be reused; missing members will be downloaded from this Hub. Nothing is installed until you confirm.",
+    "actions": { "reuse": "Reuse local", "download": "Download", "blocked": "Blocked" },
+    "blocked": "Resolve the listed conflicts before installing. Existing Skills will not be overwritten.",
+    "cancel": "Cancel",
+    "confirm": "Confirm installation",
+    "invalidPlan": "The installation plan is incomplete. Refresh the marketplace and try again.",
+    "changed": "The installation plan changed. Select the SkillPack again to review the latest plan.",
+    "refreshed": "The installation plan has changed. Review the members and confirm again.",
+    "validationFailed": "SkillPack validation failed. Download it again and check its members."
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -95,7 +107,10 @@
       "videoOff": "Video generation is switched off in Settings > Agent.",
       "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
+      "notSelected": "No model",
+      "openModelSettings": "Open Settings"
     },
     "activity": {
       "thinking": "Thinking",
@@ -3248,6 +3263,7 @@
     }
   },
   "skills": {
+    "inventoryBusy": "The skill library is busy. Please try again shortly.",
     "title": "Skills",
     "subtitle": "Manage and install skills available to the agent.",
     "tabs": {

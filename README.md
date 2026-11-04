@@ -60,7 +60,7 @@ One-click install, no environment setup — the quickest way to try JiuwenSwarm.
 | Platform  | Download                                                          | Notes                                         |
 | --------- | ----------------------------------------------------------------- | --------------------------------------------- |
 | Windows   | [Download Windows Version](https://openjiuwen.com/en/jiuwenswarm) | For Windows 10 / 11                           |
-| macOS     | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm)   | For Intel / Apple Silicon                     |
+| macOS     | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm)   | Apple Silicon (ARM64) only; Intel not supported                     |
 | HarmonyOS | [Try now](https://openjiuwen.com/en/jiuwenswarm)                  | HarmonyOS PC, installed via the official site |
 
 Download and follow the installer prompts to get started.
