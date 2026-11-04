@@ -532,7 +532,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const scheduleLabel = useCallback(
     (cronExpr: string) => {
       const parsed = cronExprToSchedule(cronExpr);
-      return parsed ? summarizeSchedule(parsed, t) : <span className="mono">{cronExpr}</span>;
+      const text = parsed ? summarizeSchedule(parsed, t) : cronExpr;
+      return {
+        node: parsed ? text : <span className="mono">{cronExpr}</span>,
+        text,
+      };
     },
     [t],
   );
@@ -1133,8 +1137,16 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       width: DEFAULT_COL_WIDTH,
       minWidth: MIN_COL_WIDTH,
       tdTestId: 'cron-job-schedule',
-      tdClassName: 'overflow-hidden truncate px-4 py-3 text-text',
-      render: (job) => scheduleLabel(job.cronExpr),
+      tdClassName: 'overflow-hidden px-4 py-3 text-text',
+      render: (job) => {
+        const schedule = scheduleLabel(job.cronExpr);
+        // 与名称列一致：单行省略，title 悬停看全文
+        return (
+          <span className="block truncate" title={schedule.text}>
+            {schedule.node}
+          </span>
+        );
+      },
     },
     {
       key: 'status',

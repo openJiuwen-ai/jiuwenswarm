@@ -95,7 +95,10 @@
       "videoOff": "视频生成已在「设置 > Agent」中关闭。",
       "videoMissing": "视频生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
       "imageOff": "图像生成已在「设置 > Agent」中关闭。",
-      "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。"
+      "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
+      "notSelected": "未选择模型",
+      "openModelSettings": "去设置"
     },
     "activity": {
       "thinking": "思考中",

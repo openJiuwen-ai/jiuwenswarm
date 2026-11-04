@@ -429,7 +429,7 @@ test('Codex installation falls back to built-in only when PATH has no usable exe
   }
 });
 
-async function mountCliSection(draftValues, onDetect) {
+async function mountCliSection(draftValues, onDetect, sectionProps = {}) {
   const { ExternalCliAgentsSection } = await import(
     '../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs'
   );
@@ -454,6 +454,7 @@ async function mountCliSection(draftValues, onDetect) {
     onCommitAgent: async (agent, choice) => { commits.push([agent, choice]); },
     initialResults: { claude: { cli_agent: 'claude', status: 'ok', path: '/bundled/claude' } },
     t: (key) => key,
+    ...sectionProps,
   };
   const render = async (values) => {
     props.draftValues = values;
@@ -480,6 +481,61 @@ async function mountCliSection(draftValues, onDetect) {
     },
   };
 }
+
+function assertCliStatus(agent, expected) {
+  const status = document.querySelector(
+    `[data-testid="settings-panel-external-cli-agent-status"][data-variant="${agent}"]`,
+  );
+  assert.ok(status, `${agent} status badge`);
+  assert.equal(status.textContent, `config.externalCli.${expected}`, agent);
+}
+
+for (const [name, enabled, detectionStatus, expected] of [
+  ['undetected and disabled', false, null, 'notInstalled'],
+  ['missing and disabled', false, 'missing', 'notInstalled'],
+  ['installed and disabled', false, 'ok', 'disabled'],
+  ['installed with a warning and disabled', false, 'warning', 'disabled'],
+  ['installed and enabled', true, 'ok', 'installed'],
+]) {
+  test(`external CLI status labels: ${name}`, async () => {
+    const agents = ['claude', 'codex'];
+    const draft = Object.fromEntries(agents.map((agent) => [
+      `external_cli_agent_${agent}_enabled`, String(enabled),
+    ]));
+    const initialResults = detectionStatus === null ? {} : Object.fromEntries(agents.map((agent) => [
+      agent, { cli_agent: agent, status: detectionStatus },
+    ]));
+    const env = await mountCliSection(draft, undefined, { initialResults });
+    try {
+      for (const agent of agents) assertCliStatus(agent, expected);
+    } finally {
+      env.cleanup();
+    }
+  });
+}
+
+test('external CLI status labels prioritize detection and installation over disabled or missing', async () => {
+  const pending = [];
+  const onDetect = (agent) => new Promise((resolve) => {
+    pending.push(() => resolve({ cli_agent: agent, status: 'missing' }));
+  });
+  const env = await mountCliSection({
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_codex_enabled: 'false',
+  }, onDetect, {
+    initialResults: {},
+    installStatuses: { claude: { status: 'running' }, codex: { status: 'running' } },
+  });
+  try {
+    assertCliStatus('claude', 'detecting');
+    assertCliStatus('codex', 'detecting');
+    await act(async () => { for (const resolve of pending) resolve(); });
+    assertCliStatus('claude', 'installPhase.running');
+    assertCliStatus('codex', 'installPhase.running');
+  } finally {
+    env.cleanup();
+  }
+});
 
 test('PATH remains selectable with a saved built-in choice and after changing executables', async () => {
   const initial = {
