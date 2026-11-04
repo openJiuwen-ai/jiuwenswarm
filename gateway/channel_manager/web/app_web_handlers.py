@@ -5013,16 +5013,43 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         params["_agentos_project_binding_verified"] = True
         return None
 
-    def _cron_owner_ids(user_id, params):
+    def _fill_cron_tenant_ids(request, params, user_id=None) -> dict:
+        """用本次请求上的 group/bot/user 补齐定时任务参数。
+
+        企业版创建走 HTTP（``POST /cron/jobs``），前端创建体通常不带 group/bot，
+        身份在 ``X-Group-Id`` / ``X-Bot-Id`` / ``X-User-Id`` 头里，由 HTTP 入口
+        写到请求对象的 ``_web_routing``。
+
+        ``group_id`` / ``bot_id`` 以路由身份为准：routing 非空时直接覆盖 params，
+        避免创建体残留旧组织、而列表/改删按当前路由过滤导致任务变孤儿。
+        ``user_id`` 仍优先用连接侧传入值；routing 仅在 params 为空或 default 时补齐。
+        参数名沿用 handler 的 request/outbound 对象（历史字段叫 ws）。
+        """
+        filled = dict(params) if isinstance(params, dict) else {}
+        routing = getattr(request, "_web_routing", None)
+        if isinstance(routing, dict):
+            for key in ("group_id", "bot_id"):
+                routed = str(routing.get(key) or "").strip()
+                if routed:
+                    filled[key] = routed
+            routed_user = str(routing.get("user_id") or "").strip()
+            current_user = str(filled.get("user_id") or "").strip()
+            if routed_user and current_user in {"", "default"}:
+                filled["user_id"] = routed_user
+        if user_id:
+            filled["user_id"] = str(user_id).strip()
+        return filled
+
+    def _cron_owner_ids(request, user_id, params):
         """修改、删除、开关、预览时传给控制器的三个身份。用户以连接为准。"""
-        raw = params if isinstance(params, dict) else {}
+        filled = _fill_cron_tenant_ids(request, params, user_id)
         return {
-            "user_id": str(user_id or ""),
-            "group_id": str(raw.get("group_id") or ""),
-            "bot_id": str(raw.get("bot_id") or ""),
+            "user_id": str(filled.get("user_id") or ""),
+            "group_id": str(filled.get("group_id") or ""),
+            "bot_id": str(filled.get("bot_id") or ""),
         }
 
-    async def _get_owned_cron_job(cc, job_id: str, user_id: str | None, params=None):
+    async def _get_owned_cron_job(cc, job_id: str, user_id: str | None, params=None, ws=None):
         """按用户、群、机器人取出一条任务。项目编号可以再收窄。
 
         用户以这次连接为准，不采用请求参数里自报的用户。没登录时用户是空，
@@ -5034,12 +5061,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         即使忽略筛选参数，也不能让别的用户改这条任务。
         """
         raw = params if isinstance(params, dict) else {}
+        filled = _fill_cron_tenant_ids(ws, raw, user_id) if ws is not None else dict(raw)
+        if user_id and "user_id" not in filled:
+            filled["user_id"] = str(user_id).strip()
         job = await cc.get_job(
             job_id,
             project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
-            user_id=str(user_id or ""),
-            group_id=str(raw.get("group_id") or ""),
-            bot_id=str(raw.get("bot_id") or ""),
+            user_id=str(filled.get("user_id") or user_id or ""),
+            group_id=str(filled.get("group_id") or ""),
+            bot_id=str(filled.get("bot_id") or ""),
         )
         owner = str(user_id or "").strip()
         if job is None:
@@ -5057,13 +5087,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
         raw = params if isinstance(params, dict) else {}
+        filled = _fill_cron_tenant_ids(ws, raw, user_id)
         # 总表和侧边栏不带项目编号，要这个人在每个项目下的任务。
         # 显式带了 project_id（含空串）才按那一个项目收窄。
         jobs = await cc.list_jobs(
             project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
-            user_id=str(user_id or ""),
-            group_id=str(raw.get("group_id") or ""),
-            bot_id=str(raw.get("bot_id") or ""),
+            user_id=str(filled.get("user_id") or user_id or ""),
+            group_id=str(filled.get("group_id") or ""),
+            bot_id=str(filled.get("bot_id") or ""),
         )
         # 连接上带了用户时再对一下，避免列表里混进别的用户。
         # 没带用户时，list_jobs 按空身份筛（个人版旧任务三格都是空）。
@@ -5127,7 +5158,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        job = await _get_owned_cron_job(cc, job_id, user_id, params)
+        job = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
         if job is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5148,10 +5179,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             if session_id:
                 params["session_id"] = session_id
-            # 注入创建者 user_id（web 连接携带），执行时透传给 faas 的 X-Session-Context，
-            # 否则 CreateSandbox 拉不起 → 60s 超时（见 plan-cron-user-id）。
-            if user_id:
-                params["user_id"] = str(user_id).strip()
+            # 企业版 HTTP 创建要 group/bot/user；前端常只放在请求头。
+            # HTTP 入口写到 outbound._web_routing，这里回填进 params。
+            params.update(_fill_cron_tenant_ids(ws, params, user_id))
             # 登录会话 id：服务端专有键，无条件覆盖客户端传值。controller 用它给
             # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
             # 体系），用后即弃、不落任务数据。
@@ -5227,7 +5257,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="patch must be object", code="BAD_REQUEST")
             return
         try:
-            if await _get_owned_cron_job(cc, job_id, user_id, params) is None:
+            if await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             patch = dict(patch)
@@ -5236,7 +5266,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 走目标 AgentServer，并带上企业路由 metadata。
             has_project_fields = "project_id" in patch or "project_dir" in patch
             if has_project_fields and _cron_requests_real_project(patch):
-                existing = await _get_owned_cron_job(cc, job_id, user_id, params)
+                existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
                 # 与 _get_owned_cron_job 相同的 dict/object 双态读取：
                 # 真实 CronController.get_job 返回 to_dict() 的 dict。
                 existing_work_mode = str(
@@ -5269,7 +5299,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 登录会话 id（服务端专有键，见 _cron_job_create）：改选登录免费模型时
             # 重绑华为账号凭据句柄；无条件覆盖客户端传值。
             patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
-            job = await cc.update_job(job_id, patch, **_cron_owner_ids(user_id, params))
+            job = await cc.update_job(job_id, patch, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5289,7 +5319,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
-        existing = await _get_owned_cron_job(cc, job_id, user_id, params)
+        existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5301,7 +5331,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            deleted = await cc.delete_job(job_id, **_cron_owner_ids(user_id, params))
+            deleted = await cc.delete_job(job_id, **_cron_owner_ids(ws, user_id, params))
         except Exception as exc:
             from gateway.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
@@ -5331,7 +5361,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
             return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
-        existing = await _get_owned_cron_job(cc, job_id, user_id, params)
+        existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5343,7 +5373,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled), **_cron_owner_ids(user_id, params))
+            job = await cc.toggle_job(job_id, bool(enabled), **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5362,13 +5392,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         try:
-            if await _get_owned_cron_job(cc, job_id, user_id, params) is None:
+            if await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             next_runs = await cc.preview_job(
                 job_id,
                 int(count) if count is not None else 5,
-                **_cron_owner_ids(user_id, params),
+                **_cron_owner_ids(ws, user_id, params),
             )
             await channel.send_response(ws, req_id, ok=True, payload={"next": next_runs})
         except KeyError:
@@ -5392,7 +5422,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 先取 job 拿 last_session_id（回退值），再触发 run_now 取 run_id
             # 对齐 chat.send 的 {accepted, session_id} 语义；首次执行 last_session_id
             # 为 None → session_id 空串（会话尚未就绪，前端轮询 cron.job.get 获取）
-            job = await _get_owned_cron_job(cc, job_id, user_id, params)
+            job = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
             if job is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
