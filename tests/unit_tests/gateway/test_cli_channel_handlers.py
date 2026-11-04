@@ -5,19 +5,19 @@ import asyncio
 import pytest
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from openjiuwen_protocol.message import ReqMethod
-
-from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
-from gateway.common.config_panel import tui_models_handlers
-from jiuwenswarm.common.config_panel import tui_models_handlers as _server_tui_models_handlers
-from gateway.channel_manager.tui import tui_connect as tui_connect_module
-from gateway.channel_manager.tui.tui_connect import (
+from agent_gateway.common.config_panel import tui_models_handlers
+from agent_gateway.channel_manager.tui import tui_connect as tui_connect_module
+from agent_gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
     CliRouteBindParams,
     build_cli_route_binding,
     register_cli_handlers,
 )
-from gateway.routing.agent_client import WebSocketAgentServerClient
-from gateway.heartbeat import HeartbeatServiceUnavailableError
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.heartbeat import HeartbeatServiceUnavailableError
+
+from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
+from jiuwenswarm.common.config_panel import tui_models_handlers as _server_tui_models_handlers
 
 
 class FakeGatewayServer:
@@ -223,7 +223,7 @@ async def test_memory_list_forwards_to_agentserver_with_routing_user(monkeypatch
         return True
 
     monkeypatch.setattr(
-        "gateway.routing.e2a_proxy.proxy_unary_request",
+        "agent_gateway.routing.e2a_proxy.proxy_unary_request",
         fake_proxy_unary_request,
     )
     register_cli_handlers(
@@ -445,7 +445,7 @@ async def test_harmonyos_dev_init_legacy_client_falls_back_to_local(monkeypatch)
     server = FakeGatewayServer()
     _install_failing_dev_init_send(monkeypatch)
     monkeypatch.setattr(
-        "gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
+        "agent_gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
         lambda client: True,
     )
 
@@ -456,7 +456,7 @@ async def test_harmonyos_dev_init_legacy_client_falls_back_to_local(monkeypatch)
         return {"ok": True, "source": "local-fallback"}
 
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "agent_gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -495,7 +495,7 @@ async def test_harmonyos_dev_init_remote_client_error_without_fallback(monkeypat
     server = FakeGatewayServer()
     _install_failing_dev_init_send(monkeypatch)
     monkeypatch.setattr(
-        "gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
+        "agent_gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
         lambda client: False,
     )
 
@@ -506,7 +506,7 @@ async def test_harmonyos_dev_init_remote_client_error_without_fallback(monkeypat
         return {"ok": True}
 
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "agent_gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -555,7 +555,7 @@ async def test_harmonyos_dev_init_business_failure_does_not_rerun_locally(monkey
         business_failure_send,
     )
     monkeypatch.setattr(
-        "gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
+        "agent_gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
         lambda client: True,
     )
 
@@ -566,7 +566,7 @@ async def test_harmonyos_dev_init_business_failure_does_not_rerun_locally(monkey
         return {"ok": True}
 
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "agent_gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -1243,7 +1243,7 @@ async def test_session_list_returns_agent_timeout_before_tui_request_timeout(mon
             await asyncio.Event().wait()
 
     monkeypatch.setattr(
-        "gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
+        "agent_gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
         0.01,
         raising=False,
     )
@@ -1686,7 +1686,7 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
         )
     )
     monkeypatch.setattr(
-        "gateway.routing.e2a_proxy.is_agentos_routing_client",
+        "agent_gateway.routing.e2a_proxy.is_agentos_routing_client",
         lambda _client: True,
     )
 
@@ -1696,7 +1696,7 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
         return True, {"project_id": "user-proj-1", "work_mode": "code"}
 
     monkeypatch.setattr(
-        "gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        "agent_gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
         _fake_resolve_agent_cron_project_binding,
     )
 

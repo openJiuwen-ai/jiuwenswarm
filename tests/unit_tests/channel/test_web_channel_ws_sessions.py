@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
     _resolve_ws_auth_session,

@@ -1737,7 +1737,7 @@ def test_process_cli_has_no_server_or_transport_dependencies() -> None:
 
     def _forbidden(module: str) -> bool:
         # gateway.common 是无状态纯组件的唯一真源，进程内 CLI 允许引用。
-        if module == "gateway.common" or module.startswith("gateway.common."):
+        if module == "agent_gateway.common" or module.startswith("agent_gateway.common."):
             return False
         return module.startswith(forbidden)
 

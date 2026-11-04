@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from gateway import telemetry
+from agent_gateway import telemetry
 
 
 

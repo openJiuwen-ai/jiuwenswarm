@@ -242,7 +242,7 @@ def test_catalogs_have_no_transport_dependencies(catalog_module: object) -> None
         for alias in node.names
     }
     assert all(
-        not module.startswith("gateway") or module.startswith("gateway.common")
+        not module.startswith("gateway") or module.startswith("agent_gateway.common")
         for module in gateway_modules
     )
     assert "websocket" not in lowered_source

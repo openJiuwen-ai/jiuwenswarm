@@ -8,7 +8,7 @@ from websockets.exceptions import ConnectionClosedError
 from openjiuwen_protocol.e2a.models import E2AEnvelope
 from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
 
 class Socket:

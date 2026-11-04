@@ -9,14 +9,14 @@ from typing import Any
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.im_platforms.slack import slack_connect
-from gateway.channel_manager.im_platforms.slack.slack_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.slack import slack_connect
+from agent_gateway.channel_manager.im_platforms.slack.slack_connect import (
     SlackChannel,
     SlackChannelConfig,
 )
-from gateway.routing.keys import SlackDeliveryTarget, make_delivery_target
-from gateway.routing.session_sharing import RoutingTarget
+from agent_gateway.routing.keys import SlackDeliveryTarget, make_delivery_target
+from agent_gateway.routing.session_sharing import RoutingTarget
 
 
 def _message(

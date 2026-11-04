@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message
-from gateway.im_pipeline.im_outbound import IMOutboundPipeline
+from agent_gateway.im_pipeline.im_outbound import IMOutboundPipeline
 
 
 @dataclass

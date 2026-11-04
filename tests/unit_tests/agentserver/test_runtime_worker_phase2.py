@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.routing.keys import AgentRef
+from agent_gateway.routing.keys import AgentRef
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -1031,7 +1031,7 @@ from jiuwenswarm.server.worker import lifecycle, runtime_backend, runtime_bootst
 forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
-    "gateway.extensions.manager",
+    "agent_gateway.extensions.manager",
     "jiuwenswarm.agents.harness",
 )
 hits = [name for name in sys.modules

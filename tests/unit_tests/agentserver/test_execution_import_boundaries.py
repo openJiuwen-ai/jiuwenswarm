@@ -13,7 +13,7 @@ import pytest
     [
         (
             "from jiuwenswarm.common.auth import login_credentials",
-            ["gateway.auth.account_kit"],
+            ["agent_gateway.auth.account_kit"],
         ),
         (
             "from jiuwenswarm.agents.harness.common.rails.permissions import tool_permission_context",

@@ -24,7 +24,7 @@ def __getattr__(name: str) -> Any:
     if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(
-        import_module("gateway.extensions.agentos.agentos_router"),
+        import_module("agent_gateway.extensions.agentos.agentos_router"),
         name,
     )
     globals()[name] = value

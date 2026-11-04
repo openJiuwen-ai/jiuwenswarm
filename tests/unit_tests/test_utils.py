@@ -965,12 +965,20 @@ class TestCleanupStaleOpenjiuwenDescs:
         "relative_path",
         (
             "jiuwenswarm/app.py",
-            "gateway/app_gateway.py",
+            "agent_gateway/app_gateway.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
         root = Path(__file__).resolve().parents[2]
-        source = (root / relative_path).read_text(encoding="utf-8")
+        if relative_path.startswith("agent_gateway/"):
+            import agent_gateway
+
+            source_path = (
+                Path(agent_gateway.__file__).resolve().parent / "app_gateway.py"
+            )
+        else:
+            source_path = root / relative_path
+        source = source_path.read_text(encoding="utf-8")
         cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
         # 只约束 openjiuwen SDK 本体：清理针对的是 SDK 会读取的过期描述文件。
@@ -1045,12 +1053,12 @@ def test_gateway_logger_propagates_into_jiuwenswarm_handlers(tmp_path, monkeypat
     capture = _Capture()
     logging.getLogger("jiuwenswarm").addHandler(capture)
     try:
-        logging.getLogger("gateway.app_gateway").warning("gateway log routed?")
-        logging.getLogger("gateway.channel_manager.web.app_web_handlers").warning("nested routed?")
+        logging.getLogger("agent_gateway.app_gateway").warning("gateway log routed?")
+        logging.getLogger("agent_gateway.channel_manager.web.app_web_handlers").warning("nested routed?")
     finally:
         logging.getLogger("jiuwenswarm").removeHandler(capture)
         capture.close()
 
-    assert "gateway.app_gateway" in captured
-    assert "gateway.channel_manager.web.app_web_handlers" in captured
+    assert "agent_gateway.app_gateway" in captured
+    assert "agent_gateway.channel_manager.web.app_web_handlers" in captured
     del root

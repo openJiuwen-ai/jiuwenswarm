@@ -7,21 +7,21 @@ from typing import Any
 
 import pytest
 
-from gateway.cron.db_schedule import (
+from agent_gateway.cron.db_schedule import (
     claim_periodic_run,
     datetime_to_db_value,
     should_use_db_schedule,
 )
-from gateway.cron.db_store import (
+from agent_gateway.cron.db_store import (
     GatewayDbCronJobStore,
     _row_to_job,
 )
-from gateway.cron.models import CronJob
-from gateway.storage.access import (
+from agent_gateway.cron.models import CronJob
+from agent_gateway.storage.access import (
     clear_persistent_store,
     set_persistent_store,
 )
-from gateway.runtime.cron.store import FileCronJobStore
+from agent_gateway.runtime.cron.store import FileCronJobStore
 
 
 class _MemoryPersistent:
@@ -205,7 +205,7 @@ async def test_db_store_update_keeps_identity(memory_store):
 
 
 def test_enterprise_registry_registers_cron_job_table():
-    from gateway.storage_assembly.layouts import build_gateway_store_registry
+    from agent_gateway.storage_assembly.layouts import build_gateway_store_registry
 
     registry = build_gateway_store_registry()
     layout = registry.get("cron_job")
@@ -242,7 +242,7 @@ async def test_claim_periodic_run_uses_one_row_update(monkeypatch):
         return 1
 
     monkeypatch.setattr(
-        "gateway.cron.db_schedule._execute_claim_sql",
+        "agent_gateway.cron.db_schedule._execute_claim_sql",
         _fake_execute,
     )
     job = CronJob(
@@ -264,7 +264,7 @@ async def test_claim_periodic_run_uses_one_row_update(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gateway_factory_picks_store(monkeypatch):
-    from gateway.cron.factory import create_gateway_cron_store
+    from agent_gateway.cron.factory import create_gateway_cron_store
 
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.delenv("GATEWAY_DB_HOST", raising=False)

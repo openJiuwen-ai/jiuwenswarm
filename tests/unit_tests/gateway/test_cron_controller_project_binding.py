@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.controller import CronController
-from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
 
 
@@ -579,7 +579,7 @@ async def test_enterprise_create_job_keeps_identity_and_skips_login_binding(
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     monkeypatch.setattr(
-        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
         AsyncMock(return_value="some-model"),
     )
     cc = _make_controller()
@@ -739,7 +739,7 @@ async def test_personal_update_rejects_a_different_user() -> None:
 async def test_enterprise_update_requires_identity_and_drops_mcp(monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(
-        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        "agent_gateway.cron.enterprise_model.resolve_enterprise_cron_model",
         AsyncMock(return_value="ok-model"),
     )
     cc = _make_controller()

@@ -17,20 +17,21 @@ import json
 import re
 from pathlib import Path
 
+import agent_gateway
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
 DESKTOP_APP_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "desktop_app.py"
 MAIN_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "main.cjs"
 PRELOAD_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "preload.cjs"
-FILE_PICKER_PY = (
-    REPO_ROOT / "gateway" / "channel_manager" / "web" / "file_picker.py"
-)
+FILE_PICKER_PY = GATEWAY_ROOT / "channel_manager" / "web" / "file_picker.py"
 APP_WEB_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 VITE_ENV_DTS = (
     REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src" / "vite-env.d.ts"
 )
 FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src"
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
-GATEWAY_LOCK_PY = REPO_ROOT / "gateway" / "gateway_lock.py"
+GATEWAY_LOCK_PY = GATEWAY_ROOT / "gateway_lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
 EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
 BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"

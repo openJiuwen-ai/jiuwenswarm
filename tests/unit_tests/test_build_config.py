@@ -84,7 +84,6 @@ def test_write_updates_only_python_runtime_and_static_package_metadata(tmp_path:
         Path("pyproject.toml"),
         Path("packages/jiuwenswarm-tui/pyproject.toml"),
         Path("jiuwenswarm/common/_build_config.py"),
-        Path("gateway/common/_build_config.py"),
     }
     assert find_drift(tmp_path) == []
 
@@ -97,7 +96,6 @@ def test_write_updates_only_python_runtime_and_static_package_metadata(tmp_path:
     assert 'version = "1.2.3.beta4"' in tui_pyproject
     assert "VERSION = '1.2.3.beta4'" in runtime_config
     assert "DMG_FILENAME = 'WorkSwarm-1.2.3.beta4-macos.dmg'" in runtime_config
-    assert (tmp_path / "gateway/common/_build_config.py").read_text(encoding="utf-8") == runtime_config
 
 
 def test_check_detects_version_drift_before_write(tmp_path: Path) -> None:
@@ -117,32 +115,8 @@ def test_check_detects_version_drift_before_write(tmp_path: Path) -> None:
 
     assert Path("packages/jiuwenswarm-tui/pyproject.toml") in drift
     assert Path("jiuwenswarm/common/_build_config.py") in drift
-    assert Path("gateway/common/_build_config.py") in drift
     write_expected(tmp_path)
     assert find_drift(tmp_path) == []
-
-
-def test_cli_detects_and_repairs_gateway_only_version_drift(tmp_path: Path) -> None:
-    _create_project_fixture(tmp_path, version="0.2.8")
-    write_expected(tmp_path)
-    gateway_config = tmp_path / "gateway/common/_build_config.py"
-    gateway_config.write_text(
-        gateway_config.read_text(encoding="utf-8").replace("0.2.8", "0.2.5.beta1"),
-        encoding="utf-8",
-    )
-    command = [sys.executable, str(PROJECT_ROOT / "scripts/build_config.py"), "--root", str(tmp_path)]
-
-    check = subprocess.run([*command, "--check"], capture_output=True, text=True)
-
-    assert check.returncode == 1
-    assert "gateway" in check.stderr
-    assert find_drift(tmp_path) == [Path("gateway/common/_build_config.py")]
-    subprocess.run([*command, "--sync"], check=True, capture_output=True, text=True)
-    subprocess.run([*command, "--check"], check=True, capture_output=True, text=True)
-    assert gateway_config.read_text(encoding="utf-8") == (
-        tmp_path / "jiuwenswarm/common/_build_config.py"
-    ).read_text(encoding="utf-8")
-    assert write_expected(tmp_path) == []
 
 
 def test_unknown_distribution_name_requires_explicit_mapping(tmp_path: Path) -> None:
@@ -443,5 +417,4 @@ def test_cli_sync_status_uses_stderr_without_log_prefix(tmp_path: Path) -> None:
         "updated pyproject.toml",
         "updated packages/jiuwenswarm-tui/pyproject.toml",
         "updated jiuwenswarm/common/_build_config.py",
-        "updated gateway/common/_build_config.py",
     ]

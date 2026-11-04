@@ -6,7 +6,7 @@
 常量），断言无白名单外的新增违规：
 
   R1 common 禁止 import server/agents/channels/gateway/extensions/symphony
-  R2 server  禁止 import gateway
+  R2 server  禁止 import agent_gateway
   R3 gateway 禁止 import server/agents/channels
 
 例外：``gateway.common`` 为无状态纯组件的唯一真源、扩展治理层

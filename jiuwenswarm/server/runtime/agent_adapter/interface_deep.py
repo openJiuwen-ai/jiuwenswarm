@@ -151,7 +151,7 @@ from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
 
-from gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
+from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
@@ -386,6 +386,8 @@ except ImportError:  # Compatibility with older agent-core versions.
             return False
 
 
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402  # pylint: disable=wrong-import-order
+
 from jiuwenswarm.server.runtime.tokenizer_service import (
     configured_tokenizer_profiles,
     resolve_tokenizer_cache_dir,
@@ -468,7 +470,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  #
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -512,7 +513,6 @@ from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
 )
-
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
@@ -562,6 +562,14 @@ from jiuwenswarm.server.runtime import extension_package_manager as equipment
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
 # 时间戳与 live「答完再入列」对齐。按 session 暂存，跨同 session 的并发 stream 共享。
 _pending_goal_objective_history: dict[str, dict[str, Any]] = {}
+from agent_gateway.common.mode_matrix import (  # pylint: disable=wrong-import-order
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    deprecate_mode,
+    is_code_profile_mode,
+    is_team_mode,
+)
+
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
@@ -627,7 +635,6 @@ from jiuwenswarm.agents.harness.common.tools.visual_gen_tools import (
     visual_gen_configured,
     visual_gen_enabled,
 )
-
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
     SkillRetrievalToolkit,
@@ -759,13 +766,6 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from gateway.common.mode_matrix import (
-    NEW_AGENT_WORK_NORMAL,
-    NEW_AGENT_WORK_PLAN,
-    deprecate_mode,
-    is_code_profile_mode,
-    is_team_mode,
-)
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 apply_free_search_runtime_defaults()
@@ -860,7 +860,7 @@ def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
         return "team_root"
     if normalized_mode == "code" and normalized_sub_mode == "team":
         return "team_root"
-    from gateway.common.mode_matrix import supports_single_agent_permission_profile
+    from agent_gateway.common.mode_matrix import supports_single_agent_permission_profile
 
     if supports_single_agent_permission_profile(mode, sub_mode):
         return "single_agent"
@@ -4019,7 +4019,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 metadata = get_session_metadata(sid)
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
                 # Explicit stable selections win; legacy ordinary names are also an
@@ -8373,7 +8373,7 @@ class JiuWenSwarmDeepAdapter:
         if group_id:
             cached = self._model_group_cache.get(group_id)
             if cached is None:
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.model_compiler_adapter import (
                     build_model_from_selection,
                 )
@@ -8577,7 +8577,7 @@ class JiuWenSwarmDeepAdapter:
         raw_selection = params.get("model_selection")
         if isinstance(raw_selection, dict):
             try:
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
                 suffix = f":{selection.route_id}" if selection.route_id else ""
                 return f"{selection.type}:{selection.id}{suffix}"
@@ -8611,7 +8611,7 @@ class JiuWenSwarmDeepAdapter:
         raw_selection = params.get("model_selection")
         if raw_selection is not None:
             try:
-                from gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
                 if self._is_cron_execution_session(getattr(request, "session_id", None)):
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -8651,7 +8651,7 @@ class JiuWenSwarmDeepAdapter:
             except ValueError:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
         from jiuwenswarm.common.model_catalog import ModelCatalog
-        from gateway.common.model_selection import ModelSelection
+        from agent_gateway.common.model_selection import ModelSelection
         from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
         catalog = ModelCatalog()
@@ -8684,7 +8684,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _resolve_stable_model(self, requested: str, can_access=None) -> Model:
         """Cache by resolved content, not only ID: edits take effect without restart."""
-        from gateway.common.model_selection import ModelSelection
+        from agent_gateway.common.model_selection import ModelSelection
         from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
         from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -18667,7 +18667,7 @@ class JiuWenSwarmDeepAdapter:
     def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
         """Refuse protected-mode steering before any SDK submission."""
         from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
-        from gateway.common.mode_matrix import is_plan_mode
+        from agent_gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.context import get_current_runtime
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 

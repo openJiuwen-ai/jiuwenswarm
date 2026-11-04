@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 import yaml
 
-from gateway.common.mode_matrix import resolve_request_mode
+from agent_gateway.common.mode_matrix import resolve_request_mode
 from jiuwenswarm.extensions.sdk.plugin_runtime import PluginRuntimeServices
 from jiuwenswarm.runtime.request import resolve_agent_request_mode
 

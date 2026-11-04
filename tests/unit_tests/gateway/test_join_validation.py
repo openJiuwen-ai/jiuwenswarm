@@ -13,16 +13,16 @@ import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from openjiuwen_protocol.message import Message
-from gateway.message_handler.command_parser.slash_command import (
+from agent_gateway.message_handler.command_parser.slash_command import (
     ParsedChannelControl,
     ParsedControlAction,
 )
-from gateway.message_handler.join_exit_handlers import (
+from agent_gateway.message_handler.join_exit_handlers import (
     JoinExitHandlers,
     _join_err_team_not_exist,
 )
-from gateway.message_handler.message_handler import MessageHandler
-from gateway.routing.session_sharing import SessionSharingRegistry
+from agent_gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.routing.session_sharing import SessionSharingRegistry
 
 
 # ── copy helper ──

@@ -23,32 +23,32 @@ from weakref import WeakValueDictionary
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
-from gateway.common.security.ws_origin import (
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from gateway.common.session_message import (
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from gateway.common.ws_diagnostics import (
+from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
-from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )

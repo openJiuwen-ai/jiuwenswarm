@@ -7,12 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,

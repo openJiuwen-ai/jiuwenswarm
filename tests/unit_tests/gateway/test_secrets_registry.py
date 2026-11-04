@@ -15,8 +15,9 @@ from pathlib import Path
 
 import pytest
 
-import gateway.common.local_env_config as lec
-from gateway.common.secrets.registry import (
+import agent_gateway
+import agent_gateway.common.local_env_config as lec
+from agent_gateway.common.secrets.registry import (
     SecretRegistry,
     bundled_registry_path,
 )
@@ -29,8 +30,8 @@ def _reset_env_tip_state():
 
 
 def test_bundled_registry_path_anchors_to_gateway_package_resources():
-    repo_root = Path(__file__).resolve().parents[3]
-    assert bundled_registry_path() == repo_root / "gateway" / "resources" / "secret_registry.yaml"
+    package_root = Path(agent_gateway.__file__).resolve().parent
+    assert bundled_registry_path() == package_root / "resources" / "secret_registry.yaml"
 
 
 def test_missing_bundled_registry_falls_back_to_user_only(tmp_path):

@@ -13,15 +13,15 @@ from opentelemetry import context
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from gateway import telemetry
-from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
-from gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway import telemetry
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse
-from gateway.extensions.agentos.agentos_router import router_client
-from gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig, RegistryValidationError
-from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from gateway.extensions.yuanrong_frontend_client import SandboxInfo, YuanrongFrontendAgentClient
+from agent_gateway.extensions.agentos.agentos_router import router_client
+from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig, RegistryValidationError
+from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from agent_gateway.extensions.yuanrong_frontend_client import SandboxInfo, YuanrongFrontendAgentClient
 
 
 def _setup_trace(monkeypatch, request_id="r", method="chat.send", connection_id="c"):
