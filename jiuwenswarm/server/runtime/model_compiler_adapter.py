@@ -6,6 +6,19 @@ from typing import Any
 
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, ModelSelectionError
 from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
+from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
+
+
+def _core_request_config(values: dict[str, Any]) -> dict[str, Any]:
+    # Translate Swarm's UI hint before Core merges request layers. Core owns
+    # provider wire formats; reasoning_level is not part of its request schema.
+    return inject_reasoning_params(model_client_config={}, model_config_obj=values)
+
+
+def _core_model_data(model: ResolvedModel) -> dict[str, Any]:
+    data = model.model_dump()
+    data["request_defaults"] = _core_request_config(model.request_defaults)
+    return data
 
 
 def compile_model_selection(resolved: ResolvedSelection) -> Any:
@@ -22,14 +35,14 @@ def compile_model_selection(resolved: ResolvedSelection) -> Any:
             "agent-core model-selection compiler is unavailable",
         ) from exc
     if isinstance(resolved, ResolvedModel):
-        core = CoreModel(**resolved.model_dump())
+        core = CoreModel(**_core_model_data(resolved))
     else:
         routes = [
             CoreRoute(
                 route_id=r.route_id,
-                model=CoreModel(**r.model.model_dump()),
+                model=CoreModel(**_core_model_data(r.model)),
                 enabled=r.enabled,
-                request_overrides=r.request_overrides,
+                request_overrides=_core_request_config(r.request_overrides),
                 tpm=r.tpm,
                 rpm=r.rpm,
                 timeout=r.timeout,
@@ -39,7 +52,7 @@ def compile_model_selection(resolved: ResolvedSelection) -> Any:
         core = CoreGroup(
             model_group_id=resolved.model_group_id,
             routes=routes,
-            request_config=resolved.request_config,
+            request_config=_core_request_config(resolved.request_config),
             routing=resolved.routing,
         )
     return compile_core(core)
