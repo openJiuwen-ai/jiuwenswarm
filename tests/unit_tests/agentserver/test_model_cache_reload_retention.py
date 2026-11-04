@@ -9,6 +9,10 @@ from types import SimpleNamespace
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 
 from jiuwenswarm.common.model_identity import build_model_identity_reference
+from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import (
+    _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+    _build_model_from_entry,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -24,6 +28,20 @@ def _entry(name: str, *, api_base: str = "https://maas.example/v2", api_key: str
         },
         "model_config_obj": {},
     }
+
+
+def test_entry_without_idle_timeout_uses_host_default():
+    entry = _entry("glm-5.3")
+    model = _build_model_from_entry(entry["model_client_config"], entry["model_config_obj"])
+    assert model.model_client_config.stream_idle_timeout == _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+    assert "stream_idle_timeout" not in entry["model_client_config"]
+
+
+def test_entry_idle_timeout_overrides_host_default():
+    entry = _entry("glm-5.3")
+    entry["model_client_config"]["stream_idle_timeout"] = 30
+    model = _build_model_from_entry(entry["model_client_config"], entry["model_config_obj"])
+    assert model.model_client_config.stream_idle_timeout == 30
 
 
 def _config(*entries: dict) -> dict:
