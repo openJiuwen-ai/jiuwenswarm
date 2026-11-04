@@ -8,8 +8,8 @@ picks ``openrouter``. MiniMax cloud is not a music backend: MiniMax Music3 runs
 on vLLM-Omni.
 
 - ``vllm-omni``: a self-hosted vLLM-Omni server, ``POST {base}/audio/speech``.
-  MiniMax Music3 and MOSS-SoundEffect take different fields, so the served
-  model name (or ``GET {base}/models``) picks the request shape.
+  MiniMax Music3, YuE2 and MOSS-SoundEffect take different fields, so the
+  served model name (or ``GET {base}/models``) picks the request shape.
 - ``openrouter``: Google Lyria 3 on OpenRouter chat completions. Audio output
   only streams, as base64 MP3 pieces in ``choices[0].delta.audio.data``.
 """
@@ -54,6 +54,14 @@ _MUSIC3_MAX_TOKENS = 9000
 # Music3 never ends on its own; the token budget cuts it off. Ask for more than the
 # film so compose can pick the climax and the ending point from the extra material.
 _MUSIC3_HEADROOM = 1.5
+
+# YuE2 on vLLM-Omni: ``input`` is the lyrics (rejected when empty) and
+# ``instructions`` the style caption; ``max_new_tokens`` counts 25 fps frames in
+# [200, 9000]. The prompt and the frame budget share a 24576-token context.
+_YUE2_LYRICS = "[instrumental]"
+_YUE2_CAPTION_LIMIT = 4000
+_YUE2_MIN_FRAMES = 200
+_YUE2_MAX_FRAMES = 9000
 
 _OPENROUTER_HOST = re.compile(r"(^|\.)openrouter\.ai$", re.IGNORECASE)
 _OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1"
@@ -241,6 +249,15 @@ def _vllm_omni_body(model: str, request: MusicRequest) -> dict[str, Any]:
             "duration_seconds": round(request.duration_sec, 2),
             "response_format": "wav",
         }
+    if "yue" in name:
+        frames = round(request.duration_sec * _MUSIC3_HEADROOM * _MUSIC3_FPS)
+        return {
+            "model": model,
+            "input": _YUE2_LYRICS,
+            "instructions": _instrumental_caption(request.caption, _YUE2_CAPTION_LIMIT),
+            "max_new_tokens": max(_YUE2_MIN_FRAMES, min(_YUE2_MAX_FRAMES, frames)),
+            "response_format": "wav",
+        }
     if "music" in name:
         tokens = max(1, min(_MUSIC3_MAX_TOKENS, round(request.duration_sec * _MUSIC3_HEADROOM * _MUSIC3_FPS)))
         return {
@@ -252,7 +269,7 @@ def _vllm_omni_body(model: str, request: MusicRequest) -> dict[str, Any]:
         }
     raise _MusicError(
         f"vLLM-Omni model {model!r} is not a music model this tool drives "
-        "(MiniMax Music3 or MOSS-SoundEffect)."
+        "(MiniMax Music3, YuE2 or MOSS-SoundEffect)."
     )
 
 

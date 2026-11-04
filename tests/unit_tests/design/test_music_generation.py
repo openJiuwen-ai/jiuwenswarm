@@ -120,6 +120,44 @@ async def test_vllm_omni_music3_sends_tags_and_token_budget(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("seconds", "frames"), [(20, 750), (2, 200), (600, 9000)])
+async def test_vllm_omni_yue2_sends_wordless_lyrics_style_and_frame_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: float, frames: int
+) -> None:
+    _configure(monkeypatch, protocol="vllm-omni", api_base="http://gpu:8093/v1", model_name="m-a-p/YuE2-3B")
+    seen = _mock_http(
+        monkeypatch,
+        lambda _r: httpx.Response(200, content=b"RIFFyue", headers={"content-type": "audio/wav"}),
+    )
+    result = await generate_music(
+        MusicRequest(caption="lo-fi hip-hop at 85 BPM", duration_sec=seconds), dest_stem=tmp_path / "bgm"
+    )
+    assert Path(result["music_path"]).read_bytes() == b"RIFFyue"
+    assert str(seen[0].url) == "http://gpu:8093/v1/audio/speech"
+    body = _body(seen[0])
+    assert body["input"] == "[instrumental]"
+    assert body["instructions"].startswith("lo-fi hip-hop at 85 BPM")
+    assert "no vocals" in body["instructions"]
+    assert body["max_new_tokens"] == frames
+    assert not {"voice", "language", "stream", "ambient_sound"} & set(body)
+
+
+@pytest.mark.asyncio
+async def test_vllm_omni_discovers_a_served_yue2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure(monkeypatch, protocol="vllm-omni", api_base="http://gpu:8093/v1")
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "m-a-p/YuE2-3B"}]})
+        return httpx.Response(200, content=b"RIFFyue", headers={"content-type": "audio/wav"})
+
+    seen = _mock_http(monkeypatch, _handler)
+    result = await generate_music(MusicRequest(caption="warm piano", duration_sec=10), dest_stem=tmp_path / "bgm")
+    assert result["detail"] == "vLLM-Omni m-a-p/YuE2-3B"
+    assert _body(seen[1])["input"] == "[instrumental]"
+
+
+@pytest.mark.asyncio
 async def test_vllm_omni_moss_discovers_model_and_sends_duration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
