@@ -18,6 +18,7 @@ import yaml
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
+from openjiuwen.core.events.ops_impl.state import unconfigure_state
 from openjiuwen.core.events.ops_impl.store import unconfigure_store
 from openjiuwen.core.extension import (
     ActivePackageRecord,
@@ -26,7 +27,7 @@ from openjiuwen.core.extension import (
     PackageResourceCleanup,
     Registry,
 )
-from openjiuwen.core.extension.data import JsonStore
+from openjiuwen.core.extension.data import JsonState, JsonStore
 from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.management import (
@@ -64,9 +65,16 @@ def _manifest_domain(root: Path) -> str:
 class ExtensionManager:
     """Stable host entry; all control-plane work is delegated to ``Registry``."""
 
-    def __init__(self, install_dir: Path, *, store_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        install_dir: Path,
+        *,
+        store_dir: Path | None = None,
+        state_dir: Path | None = None,
+    ) -> None:
         self.install_dir = Path(install_dir).expanduser().resolve()
         self._store = JsonStore(store_dir) if store_dir is not None else None
+        self._states = JsonState(state_dir) if state_dir is not None else None
         self._registry = Registry()
         self._operation_lock = asyncio.Lock()
         self._bus: ExtensionEventBus | None = None
@@ -105,16 +113,19 @@ class ExtensionManager:
                     host_event_types=host_event_types,
                     host_handlers=host_handlers,
                     store=self._store,
+                    states=self._states,
                     cleanup_callbacks=cleanup_callbacks,
                 )
                 self._registry.open_install_dir(self.install_dir, host_version=host_version)
             except asyncio.CancelledError:
+                unconfigure_state(event_bus)
                 unconfigure_store(event_bus)
                 unbind_context(event_bus)
                 self._registry = Registry()
                 raise
             except Exception:
                 if self._registry.is_ready:
+                    unconfigure_state(event_bus)
                     unconfigure_store(event_bus)
                     unbind_context(event_bus)
                 self._registry = Registry()
@@ -253,6 +264,7 @@ class ExtensionManager:
                     finally:
                         remaining.discard(package_id)
             if not failed:
+                unconfigure_state(bus)
                 unconfigure_store(bus)
                 unbind_context(bus)
                 self._bus = None
