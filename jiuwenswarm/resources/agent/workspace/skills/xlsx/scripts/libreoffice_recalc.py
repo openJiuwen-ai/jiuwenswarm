@@ -22,21 +22,7 @@ import subprocess
 import sys
 import tempfile
 
-
-def _which(tool, *fallbacks):
-    """Absolute path of an external tool, or None when it is unavailable.
-
-    External programs are invoked through this resolved path rather than a bare
-    name left to PATH lookup. `fallbacks` covers the usual install locations for
-    when PATH is minimal (CI sandboxes, service contexts).
-    """
-    found = shutil.which(tool)
-    if found:
-        return os.path.abspath(found)
-    for candidate in fallbacks:
-        if os.path.isabs(candidate) and os.path.exists(candidate):
-            return candidate
-    return None
+from _tool_paths import SOFFICE_FALLBACKS, resolve
 
 
 def main():
@@ -45,9 +31,7 @@ def main():
     ap.add_argument("--out", help="output path (defaults to recalc in place)")
     args = ap.parse_args()
 
-    soffice = _which("soffice", "/usr/bin/soffice", "/usr/local/bin/soffice",
-                     "/usr/lib/libreoffice/program/soffice",
-                     r"C:\Program Files\LibreOffice\program\soffice.exe")
+    soffice = resolve("soffice", SOFFICE_FALLBACKS)
     if soffice is None:
         print("soffice (LibreOffice) not found; see doctor.py", file=sys.stderr)
         return 2
