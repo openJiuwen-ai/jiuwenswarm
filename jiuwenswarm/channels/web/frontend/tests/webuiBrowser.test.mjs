@@ -38,7 +38,7 @@ const tree = { component: 'Box', props: { direction: 'column', gap: 'md' }, chil
   ] }, button('confirm', '确认', { form: 'sample', variant: 'primary' }), button('close', '关闭测试视图'),
 ] };
 const declarations = { clientProtocolVersion: 1, gatewayInstanceId: 'fixture-gateway', connectionEpoch: 'fixture-connection', packages: [{
-  packageId: 'pkg.fixture', activationGeneration: 'fixture-generation', grants: ['local_storage.write', 'request.bind.gateway', 'page.reload'], requestBindings: [
+  packageId: 'pkg.fixture', activationGeneration: 'fixture-generation', requestBindings: [
     { type: 'http', source: { key: 'record', path: ['credential'] }, target: { location: 'header', name: 'Authorization', prefix: 'Bearer ' } },
     { type: 'websocket', source: { key: 'record', path: ['credential'] }, target: { location: 'message', path: ['request_context', 'headers', 'Authorization'], prefix: 'Bearer ' } },
   ],
@@ -61,7 +61,7 @@ async function render(root, revision, scope = target) {
     activation_generation: 'fixture-generation' });
 }
 async function operation(value, extra = {}) {
-  await send('client.operation', { clientProtocolVersion: 1, operation_id: 'fixture-operation', invocation_id: 'completed-fixture-request',
+  await send('client.operation', { clientProtocolVersion: 1, invocation_id: 'completed-fixture-request',
     connection_epoch: 'fixture-connection', package_id: 'pkg.fixture', activation_generation: 'fixture-generation',
     method: 'local_storage.set', params: { key: 'record', value }, deadline: Date.now() + 30_000, ...extra });
 }
@@ -221,7 +221,7 @@ try {
   await lifecyclePage.getByRole('button', { name: 'Change context' }).click();
   const controlId = await controlReceived;
   lifecycleSocket.send(JSON.stringify({ type: 'event', event: 'client.operation', payload: {
-    clientProtocolVersion: 1, operation_id: 'lifecycle-operation', invocation_id: controlId,
+    clientProtocolVersion: 1, invocation_id: controlId,
     connection_epoch: 'fixture-connection', package_id: 'pkg.fixture', activation_generation: 'fixture-generation',
     method: 'local_storage.set', params: { key: 'record', value: { credential: 'next-context' } }, deadline: Date.now() + 30_000,
   } }));
@@ -247,7 +247,7 @@ try {
   const reloadControlId = await reloadControlReceived;
   const reloaded = lifecyclePage.waitForEvent('load');
   lifecycleSocket.send(JSON.stringify({ type: 'event', event: 'client.operation', payload: {
-    clientProtocolVersion: 1, operation_id: 'page-reload-operation', invocation_id: reloadControlId,
+    clientProtocolVersion: 1, invocation_id: reloadControlId,
     connection_epoch: 'fixture-connection', package_id: 'pkg.fixture', activation_generation: 'fixture-generation',
     method: 'page.reload', params: {}, deadline: Date.now() + 30_000,
   } }));
@@ -262,7 +262,7 @@ try {
   await lifecyclePage.screenshot({ path: `${output}/explicit-page-reload.png` });
   await lifecyclePage.evaluate(() => window.webuiFixture.i18n.changeLanguage('zh'));
   lifecycleSocket.send(JSON.stringify({ type: 'event', event: 'client.operation', payload: {
-    clientProtocolVersion: 1, operation_id: 'invalid-operation', invocation_id: 'completed-request',
+    clientProtocolVersion: 1, invocation_id: 'completed-request',
     connection_epoch: 'fixture-connection', package_id: 'pkg.fixture', activation_generation: 'fixture-generation',
     method: 'page.reload', params: { unexpected: true }, deadline: Date.now() + 30_000,
   } }));

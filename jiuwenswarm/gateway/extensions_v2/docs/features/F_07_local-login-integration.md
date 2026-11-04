@@ -35,7 +35,8 @@ Form.requiredMark=false 隐藏必填星号而保留校验；Input.autoComplete=o
 
 ## 客户端接入
 
-部署配置按包授予 request.bind.gateway、local_storage.write 和 page.reload。
+安装并激活的客户端插件直接具备请求绑定、浏览器存储写删和页面刷新能力。
+无需额外权限声明、授权配置或确认；连接和包激活归属仍由宿主校验。
 requestBindings 决定哪类请求携带哪些参数；WebSocket 保留完整 request_context，
 GatewayRequestInput.headers 是其中 headers 的规范化视图；HTTP 使用实际请求 header。
 浏览器存储按 Gateway 和包隔离，Gateway 不保存其副本。
@@ -112,8 +113,72 @@ production WebChannel/AgentServer behavior, model inference, real identity-servi
 页面初始化保留工作台提前展示的行为，不新增等待配置完成的登录专用加载屏。
 修改插件 Python 模块后需重启测试 Gateway；settings.json 可通过 reload 生效。
 
-运行、打包和部署授权方式见示例的 [中文说明](../../../../extensions_v2/examples/auth_login_demo/README.md) 与
+运行、打包和安装授权方式见示例的 [中文说明](../../../../extensions_v2/examples/auth_login_demo/README.md) 与
 [English README](../../../../extensions_v2/examples/auth_login_demo/README_EN.md)。本文件维护该本地接入的验证状态。
+
+## 安装后直接使用浏览器能力（2026-11-04）
+
+本次需求已确认：移除请求绑定、存储写删和页面刷新三项能力的额外授权要求，安装后直接可用。
+当前目标与兼容契约由 [S_06](../specs/S_06_local-browser-bridge.md) 维护；本节记录方案与验证。
+此前只允许部署配置授权的规则由本节替代；原规则旨在让部署方控制浏览器操作，但导致 ZIP 无法独立交付使用。
+
+```mermaid
+flowchart LR
+    ZIP["安装 ZIP"] --> CHECK["校验请求绑定和 UI 声明"]
+    CHECK --> ACTIVE["激活：登记包身份与代次"]
+    ACTIVE --> CLIENT["client.declarations 下发活动包和绑定"]
+    ACTIVE --> OPS["操作校验包、连接、代次及参数"]
+    STORE["安装副本 manifest"] -->|重载或重启| CHECK
+```
+
+采用已安装且激活的客户端包作为能力使用边界，不按 login 包 ID 特判，也不在安装时改写 Gateway 配置。
+取消 client_grants 的读取和三项能力的前后端授权检查；旧配置残留不影响加载，已安装的旧 ZIP 无需改写。
+浏览器协议同步删除 grants 字段及相关能力名常量、类型声明和校验，不保留无消费者的兼容分支。
+client.operation 删除未被回执、去重或关联逻辑使用的 operation_id；保留用于原请求结束等待的 invocation_id。
+本次同步更新 Gateway、前端和协议样例，旧客户端不作为兼容目标；登录包本身无需修改 manifest。
+不引入新的权限声明或数据库。未知命令、绑定冲突、非法参数和跨包、跨连接、旧激活调用继续拒绝。
+
+包与连接生命周期沿用现有机制，重载和重启从安装副本重建活动包；原有激活代次检查继续拒绝旧调用。
+page.reload 是宿主提供的能力，浏览器自身没有要求该安装授权。
+无新增界面文案；中英文安装说明同步取消手改配置步骤。
+
+实施范围：Gateway 配置和浏览器桥接、前端客户端能力执行器、相关规约与中英文说明；登录包 manifest 不变。
+验证计划覆盖空配置安装后的完整登录流程、重启恢复、重载撤销、未知命令和错误归属拒绝，以及精简后的协议字段。
+本次执行验证（2026-11-04，本地 macOS、Python 3.11.4）：
+
+- `.venv/bin/python -m pytest tests/unit_tests/gateway/extensions_v2/ -o addopts='' -o log_cli=false --asyncio-mode=auto -q`：138 项通过。
+  所有登录示例用例均不再提供授权配置，覆盖真实 ZIP 安装、注册、登录、退出、重载及 Gateway 重启后的账号和 token 恢复。
+  通用包另验证存储写入、删除和刷新直接可用，禁用按钮及非法事件数据仍不能进入业务 Handler。
+- 前端目录执行 `npm run test:webui-client`：25 项通过；`npm run test:webui-components`：134 项通过；
+  `npm run test:app-request-context`：4 项通过。
+  声明和操作不携带已删除字段，未知包、旧连接、旧代次、非法参数及过期命令继续拒绝。
+- 本机真实 Gateway 的 WebSocket 只读验证通过：登录包处于 active，已有 token 可完成包查询，
+  下发包声明精确包含 packageId、activationGeneration 和 requestBindings 三个字段。
+- 本次未重跑浏览器登录全流程或模型执行；前面的历史验证不作为本次改动的证据。
+
+本次能力契约已实现并通过上述单元与本地协议验证，无额外权限声明或授权配置的实现遗留。
+需运行包含本次改动的 Gateway；旧插件 ZIP 可原样使用，重新打包仅为同步安装说明。
+Gateway 与前端使用同一精简协议，不要求接收插件的同事手改配置。
+
+Active installed client packages now use storage, request bindings and page reload without separate grants or
+permission declarations. All 138 Gateway tests and 163 frontend client/component/request-context tests passed,
+including ZIP installation and restart restoration. A live Gateway check verified the active login package, an
+authenticated query and declarations without grant fields. Browser login flows and model execution were not repeated.
+
+### 冗余校验审查
+
+审查以 PR !118 的引入记录、当前生产者与消费者、已有边界和回归测试为依据，不把不同入口的同类检查视为重复。
+
+| 清理项 | 删除依据 |
+| --- | --- |
+| grants 字段、能力名常量及兼容分支 | 额外授权策略已取消，字段无业务消费者；前后端与协议样例同步删除 |
+| operation_id 的生成、类型与非空检查 | 没有回执、去重、重试或关联消费者；不能提供与名称相称的语义 |
+| local_storage.delete 的第二次方法判断 | 前面的分支已限定为 set/delete；排除 set 后只能为 delete |
+| 分派器重复检查 disabled 与事件数据对象类型 | 同一调用链中的 validate_event_data 已检查组件事件结构及禁用状态；统一由该入口判断 |
+
+保留连接归属、活动包和激活代次、命令时限、绑定冲突、有限 JSON 与容量、资源路径边界及表单字段检查。
+invocation_id 仍供上下文变更等待原请求结束，不能与无消费者的逐操作标识一起删除。
+资源根路径判断不与 is_file 合并：畸形包可把 assets 声明为文件，仍须拒绝把根自身作为素材返回。
 
 ## 插件共存与资源生命周期
 
@@ -126,3 +191,21 @@ AgentServer 等普通插件的帧继续走既有 WebUI 协议，无需为展示 
 再次退出后登录树的宣传图正常加载，再用第二个已注册账号登录，头像菜单显示对应用户名。
 慢资源与上下文切换通过受控延迟资源测试覆盖；浏览器结果不扩大为对每一个动画帧的录像验证。
 退出由插件只下发存储删除与显式刷新，新页面再由 Gateway 请求链触发登录树。
+
+## 断连回调与静态服务素材接入修复（2026-11-04）
+
+旧接入的断连入口只接收 ws，但 WebChannel 既有回调约定为 (ws, session_ids)，导致回调在进入运行时前失败。
+入口现在接收并转交会话集合，沿用运行时的 gateway.disconnect 通知及 finally 清理；释放连接映射、连接状态和
+application 视图，其他浏览器连接与聊天会话保持独立。单参数调用仍可省略集合，异常继续遵守入口不外抛的契约。
+
+all 模式使用的 Python 静态服务此前只代理 /api 和 /ws，插件素材路径会落入 SPA HTML。
+静态服务现在复用既有 HTTP 代理，将 /extension-assets/ 转发到同一个 WebChannel HTTP 目标。
+不引入绝对素材地址或额外 CORS 配置；后端继续校验包、激活代次和 assets 目录边界，404 原样传回。
+Vite 已有同一路径代理，不需重复修改。旧激活的素材 URL 在重载后仍应失效，不能把后端 404 改写成成功。
+
+本轮验证计划覆盖真实注册的断连钩子、重连与连接隔离、GET/HEAD 图片内容和 404 透传，以及实际安装包的素材路由。
+尚未完成本轮验证；未登录拒绝请求的 401 语义及真实投递失败的错误和回滚行为保持既有契约。
+
+The disconnect entry now accepts the existing WebChannel callback arguments and forwards them to runtime cleanup.
+The built frontend server proxies extension assets through the existing same-origin HTTP path. Backend asset checks
+and delivery-failure rollback remain authoritative; verification for this revision is pending.

@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | `init_gateway_extensions` | `async (channel, config=None) -> GatewayRuntime \| None` | 装配并启动；已装配时返回同一实例；禁用或失败返回 `None` |
 | `intercept_gateway_frame` | `async (ws, req_id, method, params, headers=None, *, request_context=None) -> tuple[bool, dict]` | 返回 `(visited, params)`；`visited=True` 表示已处置，原生分发必须跳过 |
-| `notify_gateway_disconnect` | `async (ws) -> None` | 清理该连接的 connection 作用域状态；不抛异常 |
+| `notify_gateway_disconnect` | `async (ws, session_ids=None) -> None` | 对齐 WebChannel 断连回调，向运行时传递会话集合并清理该连接的 connection 作用域状态；不抛异常 |
 
 三个入口均幂等或 fail-open：任何异常都不得阻断 Gateway 的原生路径。
 
@@ -36,9 +36,9 @@
 | `http.max_body_bytes` | int | `1048576` | 上限 `4194304`；非法值回落默认 |
 | `http.follow_redirects` | bool | `false` | 非布尔值回落 `false` |
 | `auth.enabled` | bool | `true` | `false` 时门禁不生效，等价于无准入 |
-| `client_grants` | map[str, list[str]] | `{}` | 按包显式授予浏览器能力；支持 `request.bind.gateway`、`local_storage.write`、`page.reload`，详见 [浏览器接入规约](S_06_local-browser-bridge.md) |
 
 配置读取异常时不抛错，等价于空配置。
+客户端浏览器能力随包安装激活直接可用，无需额外授权配置；详见 [浏览器接入规约](S_06_local-browser-bridge.md)。
 
 ## 3. 包契约
 

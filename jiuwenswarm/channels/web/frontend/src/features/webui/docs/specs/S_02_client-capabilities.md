@@ -7,7 +7,7 @@
 生产单例为 `browserClientCapabilities`，通过受信任的宿主适配器调用 `configure(snapshot)`。快照类型见 `client/types.ts`：
 
 - clientProtocolVersion=1、稳定 gatewayInstanceId、当前 connectionEpoch。
-- packages 中的 packageId、activationGeneration、部署 grants 和 requestBindings。
+- packages 中的 packageId、activationGeneration 和 requestBindings。安装激活后直接具备浏览器能力，不传输额外权限字段。
 - 快照由主 WebSocket 的 client.declarations 事件接入；没有额外 bootstrap 请求，也不在请求失败时启用 Mock。
 
 快照只来自宿主接入层，不从渲染树、事件参数或插件填写的物理存储键加载。无配置时保留原有请求和 WebUI 行为；配置非法时拒绝激活并呈现通用错误，不继续使用旧绑定。
@@ -15,24 +15,25 @@
 
 ## localStorage
 
-下行 `client.operation` 的字段为 `clientProtocolVersion`、`operation_id`、`invocation_id`、`connection_epoch`、`package_id`、`activation_generation`、`method`、`params`、`deadline`。
+下行 `client.operation` 的字段为 `clientProtocolVersion`、`invocation_id`、`connection_epoch`、`package_id`、`activation_generation`、`method`、`params`、`deadline`。
 
 - method 仅允许 `local_storage.set` 与 `local_storage.delete`；params 为逻辑 key 和 set 所需的 value。
 - deadline 为 Unix 毫秒时间戳，只约束命令执行时限，与保存值的业务有效期无关。
 - 命名空间由浏览器分区、稳定 Gateway ID 和 packageId 决定；每个逻辑 key 独占一条原生 localStorage 记录。
 - 首版限制为 key 128 UTF-8 字节、JSON 64 KiB、嵌套深度 8。只接收有限 JSON；写删失败在本地显示，不换存储。
 - 没有 get/keys、条目版本、条件写入、全站 clear、执行回执、重放或重试。delete 删除执行时的当前值。
+- invocation_id 关联发起操作的原请求，供存储变化后的上下文等待原请求结束；不生成无人消费的逐操作标识。
 - `subscribeStorage` 只提供 package_id/key，不含 value、旧值或逐操作执行结果；对应插件事件的服务端路由待接入层联调。
 
 本地存储成功后才更新绑定上下文。原标签页直接更新；其他标签页通过 storage 事件按同一命名空间重新读取。原生事件的 oldValue/newValue 不向插件或日志转发。
 
 ## 页面刷新
 
-前端支持下行 client.operation 的 method=page.reload、params={}，需要当前包具有部署授权 page.reload。Gateway 通过 with_client_ops(ops) 提供 ops.client.page.reload()；投递端契约由 Gateway 浏览器桥接规约维护。
+前端支持下行 client.operation 的 method=page.reload、params={}，当前已安装且激活的客户端包无需单独授权。Gateway 通过 with_client_ops(ops) 提供 ops.client.page.reload()；投递端契约由 Gateway 浏览器桥接规约维护。
 
 命令只刷新收到它的当前页面，保留当前 URL，行为为 window.location.reload()。不清理 localStorage/sessionStorage，不修改其他标签页，不重试，也不发送执行回执。插件需要重新初始化页面时，先下发 localStorage 写删，再显式下发刷新命令；同连接按消息顺序执行，各命令独立处理。
 
-收到命令后完成连接归属、包激活代次、page.reload 授权、参数和 deadline 检查，通过后立即调用刷新函数，不等待原请求回包。声明初始化、重连、存储写删、绑定值变化和其他标签页 storage 事件均不会自动触发刷新。
+收到命令后完成连接归属、包激活代次、参数和 deadline 检查，通过后立即调用刷新函数，不等待原请求回包。声明初始化、重连、存储写删、绑定值变化和其他标签页 storage 事件均不会自动触发刷新。
 
 ## 请求绑定
 
@@ -78,7 +79,7 @@ request_context is a fixed extension container in the WS message body, represent
 
 Context counters belong to frontend runtime state. Context changes cancel pending requests and streams; existing request IDs and local counters prevent consumption of their late results. Business events use the existing event structure. WebUI frames are validated against package activation, target, instance and revision. The Gateway integration contract defines request and login-state attribution for independent pushes. Cross-context push isolation and HTTP-to-UI correlation remain integration work, while local isolation covers pending requests and streams. Loaded business state is retained until an explicit page reload.
 
-Explicit HTTP clients, binary previews, Markdown images and downloads use the shared transport. The main WebClient and the separate /ws/git client share business-message bindings and cancel pending requests when their context changes; neither injects bindings into the connection handshake. Bound requests reject automatic redirects while preserving explicit manual handling, with RequestInit taking precedence over Request. Context or caller cancellation immediately errors the response wrapper and discards queued unread bytes. The page.reload command requires its own deployment grant and empty parameters. It validates connection ownership, package activation, permission, parameters and deadline once, then immediately calls window.location.reload() without waiting for a request reply. Configuration, reconnection and storage or binding changes do not reload the page automatically. Persistent storage and other tabs remain unchanged. Each command executes independently, without transactions, retries or execution receipts. Gateway/SDK integration is delivered in a separate commit. Embedded HTML resources, direct Markdown navigation and native desktop opening still require an independently authorized Gateway resource contract. An explicit reload recreates the JavaScript environment and WebSocket; the host does not reset business stores individually. Entry remains mounted independently, and footer readiness follows initialization reads. Gateway routing and declaration delivery are provided by the companion integration; the Mock login plugin is delivered separately.
+Explicit HTTP clients, binary previews, Markdown images and downloads use the shared transport. The main WebClient and the separate /ws/git client share business-message bindings and cancel pending requests when their context changes; neither injects bindings into the connection handshake. Bound requests reject automatic redirects while preserving explicit manual handling, with RequestInit taking precedence over Request. Context or caller cancellation immediately errors the response wrapper and discards queued unread bytes. Active installed client packages directly support storage, request bindings and page.reload. Declarations contain no grant fields, and commands carry no unused operation identifiers. The page.reload command requires empty parameters. It validates connection ownership, package activation, parameters and deadline once, then immediately calls window.location.reload() without waiting for a request reply. Configuration, reconnection and storage or binding changes do not reload the page automatically. Persistent storage and other tabs remain unchanged. Each command executes independently, without transactions, retries or execution receipts. Gateway/SDK integration is delivered in a separate commit. Embedded HTML resources, direct Markdown navigation and native desktop opening still require an independently authorized Gateway resource contract. An explicit reload recreates the JavaScript environment and WebSocket; the host does not reset business stores individually. Entry remains mounted independently, and footer readiness follows initialization reads. Gateway routing and declaration delivery are provided by the companion integration; the Mock login plugin is delivered separately.
 
 ## 普通 WebUI 与客户端能力包共存
 

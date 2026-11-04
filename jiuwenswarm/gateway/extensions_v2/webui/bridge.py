@@ -102,7 +102,7 @@ class BrowserBridge:
         return any(package.client for package in self.runtime.active_packages())
 
     def validate_package(self, package) -> None:
-        """Validate declarations and deployment grants before publication."""
+        """Validate browser declarations before publication."""
         if not package.client:
             return
         if set(package.client) != {"requestBindings"}:
@@ -110,9 +110,6 @@ class BrowserBridge:
         bindings = package.client["requestBindings"]
         if not isinstance(bindings, list):
             raise ValueError("requestBindings must be a list")
-        grants = self.runtime.config.client_grants.get(package.package_id, ())
-        if bindings and "request.bind.gateway" not in grants:
-            raise ValueError("request.bind.gateway deployment grant is required")
         targets: list[tuple[str, list[str]]] = []
         for active in self.runtime.active_packages():
             if active.package_id != package.package_id:
@@ -198,7 +195,6 @@ class BrowserBridge:
 
     async def _declare(self, connection: BrowserConnection) -> None:
         packages = [{"packageId": package.package_id, "activationGeneration": self.generations[package.package_id],
-                     "grants": list(self.runtime.config.client_grants.get(package.package_id, ())),
                      "requestBindings": package.client["requestBindings"]}
                     for package in self.runtime.active_packages() if package.client]
         signature = json.dumps(packages, sort_keys=True)
@@ -274,9 +270,6 @@ class BrowserBridge:
 
     async def operation(self, ops: EventHandlerOps, method: str, params: dict[str, Any]) -> dict:
         package, connection = self._caller(ops)
-        permission = "page.reload" if method == "page.reload" else "local_storage.write"
-        if permission not in self.runtime.config.client_grants.get(package.package_id, ()):
-            raise ValueError(f"{permission} deployment grant is required")
         if method == "page.reload":
             if params:
                 raise ValueError("page.reload does not accept parameters")
@@ -291,7 +284,7 @@ class BrowserBridge:
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("browser operations require a current request id")
         await self.runtime.channel.send_event(connection.ws, "client.operation", {
-            "clientProtocolVersion": 1, "operation_id": uuid4().hex, "invocation_id": request_id,
+            "clientProtocolVersion": 1, "invocation_id": request_id,
             "connection_epoch": connection.epoch, "package_id": package.package_id,
             "activation_generation": self.generations[package.package_id], "method": method,
             "params": params, "deadline": int(time.time() * 1000) + 30_000,
@@ -350,7 +343,7 @@ class BrowserBridge:
         node = nodes.get(payload["node_key"])
         action = (node.events or {}).get(event_name) if node else None
         if (not action or payload["action_id"] != action["id"] or payload["args"] != action.get("args", {})
-                or node.props.get("disabled") is True or not self._valid_action(node, event_name, payload["data"], nodes)):
+                or not self._valid_action(node, event_name, payload["data"], nodes)):
             return UiActionOutput(accepted=False, status="invalid_action", code="SCHEMA_ERROR")
         result = await self.runtime.bus.trigger(Event(event_name, UiActionInput(
             event_name, scoped, MappingProxyType(payload), request.request_context,
@@ -359,7 +352,7 @@ class BrowserBridge:
 
     @staticmethod
     def _valid_action(node: RenderNode, event: str, data: Any, nodes: dict[str, RenderNode]) -> bool:
-        if not isinstance(data, dict) or not validate_event_data(node.component, event, data, node.props):
+        if not validate_event_data(node.component, event, data, node.props):
             return False
         if node.component != "Button" or "form" not in node.props:
             return True

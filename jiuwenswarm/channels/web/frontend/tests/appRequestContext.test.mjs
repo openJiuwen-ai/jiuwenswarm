@@ -67,7 +67,7 @@ function deferred() {
 }
 const snapshot = {
   clientProtocolVersion: 1, gatewayInstanceId: 'gateway', connectionEpoch: 'connection', packages: [{
-    packageId: 'example', activationGeneration: 'generation', grants: ['local_storage.write', 'request.bind.gateway'],
+    packageId: 'example', activationGeneration: 'generation',
     requestBindings: [{ type: 'websocket', source: { key: 'record' },
       target: { location: 'message', path: ['request_context', 'credential'] } }],
   }],
@@ -171,7 +171,7 @@ test('App rereads configuration and route metadata once the new context is ready
     app.setMissingSessionId('saved-session');
     const receipt = deferred();
     app.host.setInvocationWaiter(() => receipt.promise);
-    await act(async () => app.host.acceptOperation({ clientProtocolVersion: 1, operation_id: 'op',
+    await act(async () => app.host.acceptOperation({ clientProtocolVersion: 1,
       invocation_id: 'invocation', connection_epoch: 'connection', package_id: 'example',
       activation_generation: 'generation', method: 'local_storage.set', params: { key: 'record', value: 'new value' },
       deadline: Date.now() + 30_000 }));

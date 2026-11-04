@@ -39,21 +39,10 @@ token 首版不会自动过期，退出登录撤销该 token；注销不会删�
 ZIP 根包含 manifest.yaml、settings.json、auth_login_demo/、assets/ 和中英文说明。
 不包含账号数据库、缓存、测试或运行日志。
 
-## 本地 Gateway 配置与安装
+## 本地 Gateway 安装
 
-在**测试实例**配置中给该包授予浏览器能力，不修改真实身份服务：
-
-```yaml
-extensions:
-  gateway:
-    enabled: true
-    install_dir: /absolute/path/to/test/extension_pkgs
-    client_grants:
-      webui.login-demo:
-        - local_storage.write
-        - request.bind.gateway
-        - page.reload
-```
+使用已包含本次浏览器接入的 Gateway。安装并激活后，插件可直接保存登录状态、绑定请求凭据和刷新页面，
+无需修改 Gateway 配置、声明额外权限或再次授权。Gateway 与前端需同步更新至本次浏览器协议。
 
 通过已有 `/extension install /tmp/webui-login-demo.zip` 安装，或使用 GatewayPackageManager.install。
 启用包之后需要登录，安装管理操作请在启动加载之前完成。

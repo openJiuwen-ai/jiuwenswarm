@@ -83,7 +83,7 @@ test('protected images mount only after resource loading and discard old-context
   URL.revokeObjectURL = (url) => revoked.push(url);
   host.configure({ clientProtocolVersion: 1, gatewayInstanceId: 'image-gateway', connectionEpoch: 'image-connection',
     packages: [{ packageId: 'image-package', activationGeneration: 'image-generation',
-      grants: ['local_storage.write', 'request.bind.gateway'], requestBindings: [{ type: 'http',
+      requestBindings: [{ type: 'http',
         source: { key: 'credential' }, target: { location: 'header', name: 'Authorization', prefix: 'Bearer ' } }] }] });
   await Promise.resolve();
   const app = await setup({ component: 'Image', props: { src: '/protected-image', alt: 'Protected', preview: false } });
@@ -104,7 +104,7 @@ test('protected images mount only after resource loading and discard old-context
     await completeImages();
     const first = [app.container.querySelector('img').src, container.querySelector('img').src];
     assert.ok(first.every((url) => url.startsWith('blob:')));
-    await act(async () => host.acceptOperation({ clientProtocolVersion: 1, operation_id: 'image-change',
+    await act(async () => host.acceptOperation({ clientProtocolVersion: 1,
       invocation_id: 'image-invocation', connection_epoch: 'image-connection', package_id: 'image-package',
       activation_generation: 'image-generation', method: 'local_storage.set',
       params: { key: 'credential', value: 'changed' }, deadline: Date.now() + 30_000 }));

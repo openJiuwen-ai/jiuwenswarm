@@ -95,7 +95,7 @@ def _zip(tmp_path):
 async def _installed(tmp_path):
     channel = BrowserChannel()
     runtime = GatewayRuntime(channel=channel, config=GatewayExtensionConfig(
-        install_dir=tmp_path / "installed", client_grants={PACKAGE: ("request.bind.gateway", "local_storage.write", "page.reload")},
+        install_dir=tmp_path / "installed",
     ))
     await runtime.start()
     report = (await runtime.packages.install([_zip(tmp_path)]))[0]
@@ -287,13 +287,28 @@ async def test_registration_errors_do_not_sign_in_or_queue_storage(tmp_path):
         await runtime.shutdown()
 
 
-async def test_missing_deployment_grants_rejects_package_activation(tmp_path):
-    runtime = GatewayRuntime(channel=BrowserChannel(), config=GatewayExtensionConfig(install_dir=tmp_path / "installed"))
+async def test_installed_example_restarts_without_deployment_grants(tmp_path):
+    runtime, channel, ws = await _installed(tmp_path)
+    config = runtime.config
+    try:
+        await runtime.intercept(ws, "config", "config.get", {})
+        token = await _register(runtime, channel, ws, "alpha")
+    finally:
+        await runtime.shutdown()
+    channel = BrowserChannel()
+    runtime = GatewayRuntime(channel=channel, config=config)
     await runtime.start()
     try:
-        report = (await runtime.packages.install([_zip(tmp_path)]))[0]
-        assert report.status == "FAILED"
-        assert not runtime.active_packages()
+        assert [package.package_id for package in runtime.active_packages()] == [PACKAGE]
+        ws = SimpleNamespace(closed=False)
+        visited, params = await runtime.intercept(ws, "restored", "chat.send", {"message": "hello"}, request_context={
+            "headers": {"Authorization": "Bearer " + token},
+        })
+        assert not visited and params == {"message": "hello"}
+        await _click(runtime, ws, "user.menu", {"key": "logout"}, token)
+        assert channel.responses[-1]["payload"]["status"] == "logged_out"
+        operations = [item["payload"]["method"] for item in channel.events if item["event"] == "client.operation"]
+        assert operations == ["local_storage.delete", "page.reload"]
     finally:
         await runtime.shutdown()
 
