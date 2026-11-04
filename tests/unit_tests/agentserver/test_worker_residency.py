@@ -114,6 +114,51 @@ def test_targeted_cancel_retires_only_the_target_dispatch() -> None:
     assert popup("owner", request("owner-turn")) == []
 
 
+def test_retire_releases_finished_dispatch_active_slot() -> None:
+    """Retiring a finished round's ask_user frees its _active slot.
+
+    finish() kept the slot because the suspended interaction made the record
+    look busy; without the release every retired round leaks one slot until
+    register raises the dispatch limit."""
+    store = WorkerEventStore()
+    store.register(request("turn-1"), "d-1")
+    store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                           "interaction_id": "ask-1"}}, "d-1")
+    store.finish("d-1")
+    interrupt = replace(request("cancel", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(interrupt)
+    # The slot is free again: re-registering the request_id succeeds instead
+    # of raising "duplicate active request_id".
+    store.register(request("turn-1"), "d-2")
+
+
+def test_cancel_with_legacy_request_id_param_retires_only_that_round() -> None:
+    """A cancel whose target arrives as params.request_id retires that round.
+
+    Legacy clients use request_id instead of target_request_id — same
+    fallback contract as admission._dispatch_cancel and
+    dispatcher._drop_queued_cancel."""
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    cancel = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                     params={"request_id": "expert-turn"})
+    store.retire_session_interactions(cancel)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        for item in store.snapshot(query)["dispatches"]:
+            if item["dispatch_id"] == dispatch_id:
+                return item["pending_interactions"]
+        return []
+
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "real_state", [None, "succeeded", "running", "waiting_for_input", "waiting_for_control", "queued"],
@@ -278,7 +323,8 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     cancellations = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def on_gateway_disconnect(self, ws, remote):
@@ -323,7 +369,8 @@ async def test_warming_queue_survives_reconnection():
     invoked = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def dispatch_parsed_request(self, ws, req, lock):
@@ -360,10 +407,12 @@ async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
     dispatcher = WorkerDispatcher(bridge)
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
-        def get_session_snapshot(self, session_id):
+        @staticmethod
+        def get_session_snapshot(session_id):
             return SimpleNamespace(executions=())
 
     await dispatcher.bind_runtime(Runtime())

@@ -269,10 +269,18 @@ class WorkerEventStore:
         record: the same scope also carries the owner turn and other rounds
         whose pending interactions must stay answerable. An already-returned
         record still counts — its suspended ask_user is as unanswerable as a
-        live one once its round is the cancel target.
+        live one once its round is the cancel target. Retiring a non-active
+        record also releases its ``_active`` slot here: ``finish`` kept the
+        slot because the suspended interaction made the record look busy, and
+        without the release every retired round leaks one slot until the
+        dispatch limit rejects all later work.
         """
         scope = request_scope(request)
-        target = str((request.params or {}).get("target_request_id") or "")
+        # Legacy clients pass the cancel target as request_id — same fallback
+        # as admission._dispatch_cancel and dispatcher._drop_queued_cancel.
+        params = request.params or {}
+        target = str(params.get("target_request_id") or params.get("request_id") or "")
+        retired: list[str] = []
         for record in self.records.values():
             if record.scope != scope:
                 continue
@@ -282,6 +290,12 @@ class WorkerEventStore:
                 continue
             record.interactions.clear()
             record.is_processing = False
+            if not record.active:
+                retired.append(record.dispatch_id)
+        # finish() may trim self.records, so it runs after the iteration;
+        # active records keep their slot for the cancel/complete path.
+        for dispatch_id in retired:
+            self.finish(dispatch_id)
 
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
         # Admission is decided by the dispatcher's recoverable-control filter,

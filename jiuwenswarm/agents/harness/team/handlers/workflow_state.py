@@ -952,7 +952,8 @@ class WorkflowRunState(BaseModel):
             WorkflowRunState._is_terminal_status(a.status) for a in phase.agents
         )
 
-    def _refresh_phase_counts(self, phase: WorkflowPhaseState) -> None:
+    @staticmethod
+    def _refresh_phase_counts(phase: WorkflowPhaseState) -> None:
         """Recompute a phase card's counters from its agent list (derived).
 
         ``agent_count`` is the total number of agent instances on the card;
@@ -1672,12 +1673,14 @@ class WorkflowRunState(BaseModel):
         )
         if phase is None or agent is None:
             return None
-        agent.status = "waiting_for_human"
+        # A human turn landing while the run is parked must not flip the card
+        # to waiting_for_human — same liveness gate as _on_human_replied.
+        agent.status = "waiting_for_human" if self._phase_may_run() else "paused"
         agent.correlation_id = progress.correlation_id
         agent.human_prompt = progress.prompt
         logger.info(
-            "[WF_DBG WorkflowRunState] agent %s -> waiting_for_human, phase=%s",
-            agent.name, phase.name,
+            "[WF_DBG WorkflowRunState] agent %s -> %s, phase=%s",
+            agent.name, agent.status, phase.name,
         )
         return self._build_phase_delta(phase)
 
@@ -1689,7 +1692,9 @@ class WorkflowRunState(BaseModel):
         )
         if phase is None or agent is None:
             return None
-        agent.status = "running"
+        # A reply landing while the run is parked must not flip the card back
+        # to running — same liveness gate as _on_agent_started.
+        agent.status = "running" if self._phase_may_run() else "paused"
         agent.human_reply = progress.answer
         logger.info(
             "[WF_DBG WorkflowRunState] agent %s -> replied, phase=%s",

@@ -1238,6 +1238,55 @@ def test_workflow_paused_marks_running_agents_paused():
     assert state.phases[0].agents[0].completed_at is None
 
 
+def test_human_replied_while_run_paused_keeps_agent_paused():
+    """A reply landing after workflow_paused keeps the human card paused.
+
+    The pause aborts the pending human turn (card paused); a late reply must
+    not resurrect it to running on a parked run — the run's liveness gates
+    the flip, same as agent_started."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress(
+        "agent_started", phase="review", label="host",
+        agent_id="main/call:1", node_type="human", correlation_id="review:host:0",
+    ))
+    state.apply(_make_progress(
+        "human_prompt", label="host", correlation_id="review:host:0", prompt="q?",
+    ))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    agent = state.phases[0].agents[0]
+    assert agent.status == "paused"
+    state.apply(_make_progress(
+        "human_replied", label="host", correlation_id="review:host:0", answer="a",
+    ))
+    assert state.status == "paused"
+    assert agent.status == "paused"
+    assert agent.human_reply == "a"
+
+
+def test_human_prompt_while_run_paused_keeps_agent_paused():
+    """A human turn arriving after workflow_paused keeps the card paused.
+
+    The parked run must not show a waiting_for_human card — the popup is dead
+    on arrival; the run's liveness gates the stamp, same as human_replied."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress(
+        "agent_started", phase="review", label="host",
+        agent_id="main/call:1", node_type="human", correlation_id="review:host:0",
+    ))
+    state.apply(_make_progress("workflow_paused"))
+    agent = state.phases[0].agents[0]
+    assert agent.status == "paused"
+    state.apply(_make_progress(
+        "human_prompt", label="host", correlation_id="review:host:0", prompt="q?",
+    ))
+    assert state.status == "paused"
+    assert agent.status == "paused"
+    assert agent.human_prompt == "q?"
+
+
 def test_resume_relaunch_started_flips_paused_back_to_running():
     """A resume relaunch re-enters the engine, so WORKFLOW_STARTED arrives with
     relaunch_kind="resume" and flips the run status back to running
