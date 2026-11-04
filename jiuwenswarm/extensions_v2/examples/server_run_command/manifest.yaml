@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.server-run-command
+  displayName: Project command example
+  version: 1.0.0
+extensions:
+  - id: project-command
+    runtime: backend
+    module: extension.py
