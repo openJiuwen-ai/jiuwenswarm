@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 from collections.abc import Mapping
 from dataclasses import replace
 
@@ -78,11 +80,21 @@ class WorkbenchHandlers:
         lock = self._locks.setdefault(update.session_id, asyncio.Lock())
         async with lock:
             state = self._sessions.setdefault(update.session_id, SessionState())
-            if await self._load_usage(ops, update.session_id, update.request_id, state):
+            total = update.total_tokens
+            if isinstance(total, (int, float)) and not isinstance(total, bool) and math.isfinite(total) and total >= 0:
+                state.turn(update.request_id).total_tokens = total
+                await ops.store.set(self._usage_key(update.session_id, update.request_id), {
+                    "session_id": update.session_id,
+                    "turn": {"request_id": update.request_id, "total_tokens": total},
+                })
                 slot = "conversation.session.content.after"
                 if (slot, update.request_id) in state.mounted:
                     await self._render(ops, update.session_id, slot, update.request_id, state)
         return await next_handler(event)
+
+    @staticmethod
+    def _usage_key(session_id: str, request_id: str) -> str:
+        return "turn-usage:" + json.dumps([session_id, request_id], ensure_ascii=True)
 
     @staticmethod
     async def _load_usage(
@@ -91,13 +103,16 @@ class WorkbenchHandlers:
         request_id: str,
         state: SessionState,
     ) -> bool:
-        usage = await ops.session.usage()
+        usage = await ops.store.get(WorkbenchHandlers._usage_key(session_id, request_id))
         if not isinstance(usage, Mapping) or usage.get("session_id") != session_id:
             return False
         turn_usage = usage.get("turn")
         if not isinstance(turn_usage, Mapping) or turn_usage.get("request_id") != request_id:
             return False
-        state.turn(request_id).total_tokens = turn_usage.get("total_tokens")
+        total = turn_usage.get("total_tokens")
+        if not isinstance(total, (int, float)) or isinstance(total, bool) or not math.isfinite(total) or total < 0:
+            return False
+        state.turn(request_id).total_tokens = total
         return True
 
     async def on_event(

@@ -7,7 +7,7 @@ import { JSDOM } from 'jsdom';
 import { build } from 'esbuild';
 
 // Execute App's actual callbacks and effects with controlled request boundaries.
-const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 function extract(startMarker, endMarker, includeEnd = false) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start + startMarker.length);

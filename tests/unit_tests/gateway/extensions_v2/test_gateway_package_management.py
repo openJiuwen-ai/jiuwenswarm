@@ -8,6 +8,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.extension import ExtensionFailure
 
@@ -279,3 +281,83 @@ async def test_uninstall_reports_failure_when_the_copy_cannot_be_deleted(tmp_pat
     assert report.error.code == "EXTENSION_INSTALL_COPY_FAILED"
     assert runtime.user_handler_count == 0
     assert manager.installed() != []
+
+
+async def test_local_cli_uses_live_gateway_manager(tmp_path, monkeypatch):
+    from jiuwenswarm.channels.cli import extension as cli
+    from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19001")
+    runtime = await _runtime(tmp_path)
+    service = await start_local_cli(runtime)
+    archive = _package_zip(tmp_path)
+    try:
+        result, code = await cli.execute(cli.parser().parse_args(["install", str(archive), "--json"]))
+        assert code == 0 and result["domain"] == "gateway" and result["active"]
+        assert runtime.user_handler_count == 1
+        result, code = await cli.execute(cli.parser().parse_args(["reload", "demo.gateway", "--domain", "gateway"]))
+        assert code == 0 and result["verification_status"] == "SUCCESS"
+        result, code = await cli.execute(cli.parser().parse_args(["uninstall", "demo.gateway", "--domain", "gateway"]))
+        assert code == 0 and not result["active"] and runtime.user_handler_count == 0
+    finally:
+        await service.close()
+        await runtime.shutdown()
+
+
+async def test_local_cli_retains_failed_gateway_report(tmp_path, monkeypatch):
+    from jiuwenswarm.channels.cli import extension as cli
+    from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19001")
+    runtime = await _runtime(tmp_path)
+    service = await start_local_cli(runtime)
+    archive = _package_zip(tmp_path, entry=BAD_ENTRY)
+    try:
+        result, code = await cli.execute(cli.parser().parse_args(["install", str(archive)]))
+        assert code == 1 and result["operation_status"] == "FAILED"
+        assert isinstance(result["reports"][0]["error"]["code"], str)
+        assert not runtime.active_packages()
+    finally:
+        await service.close()
+        await runtime.shutdown()
+
+
+async def test_gateway_assembly_publishes_and_revokes_cli(tmp_path, monkeypatch):
+    from jiuwenswarm.channels.cli import extension as cli
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19001")
+    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
+    first = await assembly.install_gateway_extensions(
+        Channel(), GatewayExtensionConfig(install_dir=tmp_path / "extension_pkgs"),
+    )
+    try:
+        assert first is not None
+        result, code = await cli.execute(cli.parser().parse_args(["query", "--domain", "gateway"]))
+        assert code == 0 and result["state"]["active"] == []
+    finally:
+        await assembly.shutdown_gateway_extensions()
+    result, code = await cli.execute(cli.parser().parse_args(["query", "--domain", "gateway"]))
+    assert code == 2 and result["error"]["code"] == "HOST_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("package_id", [None, "", False])
+async def test_local_cli_rejects_invalid_explicit_query_id(tmp_path, monkeypatch, package_id):
+    from jiuwenswarm.common import extension_cli
+    from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19001")
+    runtime = await _runtime(tmp_path)
+    service = await start_local_cli(runtime)
+    try:
+        response = await extension_cli.request(
+            extension_cli.read_context("gateway"), "query", {"package_id": package_id}, 2,
+        )
+        assert not response["ok"]
+        assert response["payload"]["code"] == "INVALID_PARAMS"
+    finally:
+        await service.close()
+        await runtime.shutdown()

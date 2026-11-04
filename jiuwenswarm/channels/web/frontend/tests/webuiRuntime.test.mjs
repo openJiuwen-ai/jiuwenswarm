@@ -269,3 +269,40 @@ test('reconnect keeps consumer instance identity after content clear', async () 
   assert.equal(ready.at(-1).target.instanceKey, 'main', 'ready identity is kept until the consumer releases');
   handle.release();
 });
+
+
+test('installation notification refreshes matching mounted owners once per target', async () => {
+  const { transport, runtime } = setup();
+  const first = runtime.mountSlot('sess-1', DEMO_SLOT);
+  const duplicate = runtime.mountSlot('sess-1', DEMO_SLOT);
+  const other = runtime.mountSlot('sess-2', DEMO_SLOT);
+  await flush();
+  const before = transport.dispatches.length;
+  transport.injectPackagesInstalled(['pkg.new', 'pkg.new'], 'sess-1');
+  await flush();
+  const added = transport.dispatches.slice(before);
+  assert.equal(added.length, 1);
+  assert.equal(added[0].event, 'ui.ready');
+  assert.equal(added[0].target.packageId, 'pkg.new');
+  assert.equal(added[0].target.sessionId, 'sess-1');
+  first.release();
+  duplicate.release();
+  const afterRelease = transport.dispatches.length;
+  transport.injectPackagesInstalled(['pkg.new'], 'sess-1');
+  await flush();
+  assert.equal(transport.dispatches.length, afterRelease);
+  other.release();
+  runtime.dispose();
+});
+
+test('installation notification preserves the host notifyReady opt-out', async () => {
+  const { transport, runtime } = setup();
+  const owner = runtime.mountSlot('sess-1', DEMO_SLOT, { notifyReady: false });
+  await flush();
+  assert.equal(transport.dispatches.length, 0);
+  transport.injectPackagesInstalled(['pkg.new'], 'sess-1');
+  await flush();
+  assert.equal(transport.dispatches.length, 0);
+  owner.release();
+  runtime.dispose();
+});

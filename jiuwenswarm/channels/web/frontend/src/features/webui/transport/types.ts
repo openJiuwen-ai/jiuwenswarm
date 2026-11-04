@@ -9,6 +9,7 @@ import type { WebUIComponentEvent } from '../contracts/wire.ts';
 export type WebUIConnectionState = 'idle' | 'connected' | 'disconnected';
 
 export interface WebUITransportHandlers {
+  onPackagesInstalled?: (packageIds: readonly string[], sessionId?: string) => void;
   onRenderFrame: (payload: unknown) => void;
   onClearFrame: (payload: unknown) => void;
   onErrorFrame: (payload: unknown) => void;

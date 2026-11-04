@@ -292,6 +292,22 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   const transportHandlers: WebUITransportHandlers = {
+    onPackagesInstalled(packageIds, sessionId) {
+      const targets = new Set<string>();
+      for (const owner of owners.values()) {
+        if (owner.closed || (sessionId !== undefined && owner.sessionId !== sessionId)) continue;
+        for (const packageId of packageIds) {
+          if (!packageId || (owner.packageId !== undefined && owner.packageId !== packageId)) continue;
+          const instances = owner.ready.size ? owner.ready : new Set([owner.instanceKey ?? '']);
+          for (const instanceKey of instances) {
+            const key = JSON.stringify([owner.sessionId, owner.slotId, packageId, instanceKey]);
+            if (targets.has(key)) continue;
+            targets.add(key);
+            void sendReady(owner, instanceKey, packageId);
+          }
+        }
+      }
+    },
     onRenderFrame(payload) {
       if (disposed) {
         return;
@@ -340,8 +356,11 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     },
   };
 
-  async function sendReady(owner: MountedOwner, instanceKey: string): Promise<void> {
-    if (disposed || connectionState !== 'connected' || owner.closed || owner.notifyReady === false || (owner.readyOnce && owner.readySent)) {
+  async function sendReady(owner: MountedOwner, instanceKey: string, packageId?: string): Promise<void> {
+    if (
+      disposed || connectionState !== 'connected' || owner.closed || owner.notifyReady === false
+      || (packageId === undefined && owner.readyOnce && owner.readySent)
+    ) {
       return;
     }
     owner.readySent = true;
@@ -352,7 +371,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         target: {
           sessionId: owner.sessionId,
           slotId: owner.slotId,
-          packageId: owner.packageId ?? '',
+          packageId: packageId ?? owner.packageId ?? '',
           instanceKey,
           ...(slot?.scope === 'application' ? { scope: 'application' as const } : {}),
         },

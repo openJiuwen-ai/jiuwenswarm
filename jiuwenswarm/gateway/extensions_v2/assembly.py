@@ -35,6 +35,7 @@ class GatewayAssembly:
 
 _ASSEMBLY: GatewayAssembly | None = None
 _LOCK = asyncio.Lock()
+_LOCAL_CLI: Any = None
 
 
 async def install_gateway_extensions(
@@ -43,7 +44,7 @@ async def install_gateway_extensions(
 ) -> GatewayAssembly | None:
     """Assemble Extensions V2 once; a failure disables the feature, not the Gateway."""
 
-    global _ASSEMBLY
+    global _ASSEMBLY, _LOCAL_CLI
     async with _LOCK:
         if _ASSEMBLY is not None:
             return _ASSEMBLY
@@ -60,6 +61,12 @@ async def install_gateway_extensions(
             return None
         _hook_disconnect(channel)
         _ASSEMBLY = assembly
+        try:
+            from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli
+
+            _LOCAL_CLI = await start_local_cli(assembly.runtime)
+        except Exception:  # noqa: BLE001 - CLI unavailability must not disable the Gateway
+            logger.exception("[GatewayExtensions] local CLI unavailable")
         logger.info("[GatewayExtensions] assembly ready")
         return assembly
 
@@ -67,10 +74,13 @@ async def install_gateway_extensions(
 async def shutdown_gateway_extensions() -> None:
     """Stop the runtime and drop its handlers; idempotent."""
 
-    global _ASSEMBLY
+    global _ASSEMBLY, _LOCAL_CLI
     async with _LOCK:
         assembly, _ASSEMBLY = _ASSEMBLY, None
     if assembly is not None:
+        if _LOCAL_CLI is not None:
+            await _LOCAL_CLI.close()
+            _LOCAL_CLI = None
         await assembly.runtime.shutdown()
 
 

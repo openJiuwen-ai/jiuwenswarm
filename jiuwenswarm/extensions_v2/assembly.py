@@ -39,12 +39,13 @@ class ExtensionAssembly:
 
 _ASSEMBLY: ExtensionAssembly | None = None
 _LOCK = asyncio.Lock()
+_LOCAL_CLI: Any = None
 
 
 async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
     """Assemble Extensions V2 once; a failure disables the feature, not the server."""
 
-    global _ASSEMBLY
+    global _ASSEMBLY, _LOCAL_CLI
     async with _LOCK:
         if _ASSEMBLY is not None:
             return _ASSEMBLY
@@ -83,6 +84,12 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
         await _activate_installed(assembly.manager)
         _wire_team_extension_bus(assembly.bus)
         _ASSEMBLY = assembly
+        try:
+            from jiuwenswarm.extensions_v2.management.local_cli import start_local_cli
+
+            _LOCAL_CLI = await start_local_cli()
+        except Exception:  # noqa: BLE001 - CLI unavailability must not disable the host
+            logger.exception("[ExtensionsV2] local CLI unavailable")
         logger.info("[ExtensionsV2] assembly ready")
         return assembly
 
@@ -111,11 +118,14 @@ def get_authorization_service() -> SessionAuthorizationService | None:
 async def shutdown_extensions() -> None:
     """Release active views and package handlers without deleting install copies."""
 
-    global _ASSEMBLY
+    global _ASSEMBLY, _LOCAL_CLI
     async with _LOCK:
         assembly = _ASSEMBLY
         if assembly is None:
             return
+        if _LOCAL_CLI is not None:
+            await _LOCAL_CLI.close()
+            _LOCAL_CLI = None
         try:
             await assembly.compact.close()
             await assembly.manager.shutdown()
