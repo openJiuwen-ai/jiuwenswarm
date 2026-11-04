@@ -6,6 +6,12 @@ from __future__ import annotations
 
 import pytest
 from starlette.requests import Request
+from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
+    PackageAllowlistService,
+    read_package_allowlist_packages,
+)
+from agent_gateway.routing.agent_client import _stamp_package_allowlist
+from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
@@ -16,13 +22,7 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import 
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     identity_headers,
 )
-from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
-    PackageAllowlistService,
-    read_package_allowlist_packages,
-)
-from gateway.routing.agent_client import _stamp_package_allowlist
 from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
-from gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 from jiuwenswarm.common.schema.package_allowlist import (
     HEADER_NAME,
     decode_package_allowlist_header,
@@ -32,11 +32,11 @@ from jiuwenswarm.common.schema.package_allowlist import (
 _KEEP = [{"kind": "agent_template", "id": "keep"}]
 _EVIL = [{"kind": "agent_template", "id": "evil"}]
 _REPO = (
-    "gateway.enterprise.config.manager_config.core.application_config."
+    "agent_gateway.enterprise.config.manager_config.core.application_config."
     "package_allowlist.require_enterprise_repository"
 )
 _READ = (
-    "gateway.enterprise.config.manager_config.core.application_config."
+    "agent_gateway.enterprise.config.manager_config.core.application_config."
     "package_allowlist.read_package_allowlist_packages"
 )
 

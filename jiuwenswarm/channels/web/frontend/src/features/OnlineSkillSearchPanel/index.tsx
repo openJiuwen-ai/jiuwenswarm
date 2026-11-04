@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
+import { installSkillWithPlan } from '../../components/SkillPanel/SkillPackInstallPlan';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { isClawHubOriginInstalled, normalizeSkillNetUrl } from '../../utils/skillNetUrl';
 
@@ -53,6 +54,7 @@ type OnlineSearchResponse = {
 };
 
 type InstallResponse = {
+  cancelled?: boolean;
   success: boolean;
   status?: string;
   detail?: string;
@@ -256,7 +258,7 @@ export function OnlineSkillSearchPanel({
             }
             skillName = data.skill?.name || skillName;
           } else if (item.source === 'teamskillshub') {
-            const data = await webRequest<InstallResponse>(
+            const data = await installSkillWithPlan<InstallResponse>(
               'skills.teamskillshub.install',
               withSession({
                 asset_id: item.identifier,
@@ -264,8 +266,11 @@ export function OnlineSkillSearchPanel({
                 ...((item.display_name || item.name)
                   ? { display_name: item.display_name || item.name }
                   : {}),
-              })
+              }),
+              { timeoutMs: 180000 },
+              abortController.signal,
             );
+            if (data.cancelled) return;
             throwIfAborted(abortController.signal);
             if (!data.success) {
               throw new Error(data.detail_key ? t(data.detail_key) : data.detail || t('skills.onlineSearch.installFailed'));

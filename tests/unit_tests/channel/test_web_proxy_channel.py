@@ -17,11 +17,11 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.protocol.web_proxy import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.protocol.web_proxy import (
     web_proxy_listen,
 )
-from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     _TEST_NET_1,
     WEB_PROXY_COOKIE_NAME,
     WEB_PROXY_USER_COOKIE,
@@ -39,16 +39,16 @@ from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     _sandbox_creating_response,
     new_web_proxy_client_session,
 )
-from gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
     WebPortManager,
     _manager_for,
     _request_target_summary,
     build_agent_port_app,
     handle_3rdagent_web,
 )
-from gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from gateway.extensions.auth.credential_authenticator import AuthResult
+from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 
 
 def _free_port() -> int:
@@ -288,7 +288,7 @@ class _FakeIamClient:
         channel: str = "file-api",
         allow_query_token: bool = True,
     ) -> AuthResult:
-        from gateway.extensions.auth.common import (
+        from agent_gateway.extensions.auth.common import (
             extract_token_from_path_and_headers,
         )
 

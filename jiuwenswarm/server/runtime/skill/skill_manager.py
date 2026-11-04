@@ -29,6 +29,7 @@ import yaml
 import urllib3
 import httpx
 import requests
+from filelock import Timeout as InventoryLockTimeout
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
@@ -118,6 +119,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_client import (
     HubNotFoundError,
 )
 from jiuwenswarm.server.runtime.marketplace.hub_models import HubArtifact
+from jiuwenswarm.server.runtime.skill.skillpack_install import inventory_mutation, inventory_mutex
 from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
     HubPackageDownloader,
 )
@@ -302,6 +304,23 @@ class SkillRpcError(Exception):
         self.message = message
         super().__init__(message)
 
+
+def _inventory_busy_result() -> dict[str, Any]:
+    return {
+        "success": False, "code": "SKILL_INVENTORY_BUSY",
+        "detail_key": "skills.inventoryBusy",
+        "detail": "技能目录正在被其他操作占用，请稍后重试。",
+    }
+
+
+def _skillpack_validation_result(exc: SkillPackValidationError) -> dict[str, Any]:
+    changed = exc.code == "SKILLPACK_PLAN_CHANGED"
+    return {
+        "success": False, "code": exc.code,
+        "detail_key": "skillPackInstall.changed" if changed else "skillPackInstall.validationFailed",
+        "detail": "安装计划已失效，请重新确认。" if changed else "技能包校验失败，请重新下载并检查成员状态。",
+    }
+
 _SKILLNET_DOWNLOAD_TIMEOUT: int = int(os.environ.get("SKILLNET_DOWNLOAD_TIMEOUT", "60"))
 _SKILLNET_MAX_RETRIES: int = int(os.environ.get("SKILLNET_MAX_RETRIES", "3"))
 # SkillNet 异步安装 job 必须跨 SkillManager 实例共享：skills.* 无状态 RPC 在
@@ -340,7 +359,7 @@ _ONLINE_SEARCH_RRF_K = 60
 _ONLINE_SEARCH_SOURCE_ORDER = {"skillnet": 0, "teamskillshub": 1, "clawhub": 2}
 _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
 _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-skill"}
-_SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
+_SINGLE_SKILL_PLUGIN_TYPES = {"skill", "skillpack"}
 
 _SKILL_DISPLAY_FILENAME = "skill_display.md"
 _BUILTIN_SKILL_UI_WHITELIST = frozenset(
@@ -1029,6 +1048,9 @@ class SkillManager:
             self._state_file = _get_state_file()
         self._skills_dir.mkdir(parents=True, exist_ok=True)
         self._state: dict[str, Any] = self._load_state()
+        if (self._skills_dir / ".skillpack/transactions").is_dir():
+            self._skillpack_installer(self._get_team_skills_hub_base_url()).recover()
+            self.reload_state()
         self._skillpacks = SkillPackService(
             self._skills_dir,
             enabled_for=self.get_skill_enabled,
@@ -1493,11 +1515,18 @@ class SkillManager:
         页面缓存的列表数据。企业版在 workspace 锁里重载账本后再写，
         避免并发安装被旧内存覆盖。
         """
+        try:
+            return await asyncio.to_thread(self._toggle_skills_locked, params)
+        except InventoryLockTimeout:
+            return _inventory_busy_result()
+
+    @inventory_mutation
+    def _toggle_skills_locked(self, params: dict) -> dict:
         blocked = self._managed_skill_toggle_blocked(params)
         if blocked is not None:
             return blocked
         if is_enterprise():
-            return await asyncio.to_thread(self._handle_enterprise_skills_toggle, params)
+            return self._handle_enterprise_skills_toggle(params)
         return self._toggle_skill_body(params)
 
     def _managed_skill_toggle_blocked(self, params: dict) -> dict | None:
@@ -2780,6 +2809,8 @@ class SkillManager:
             normalized["owner_handle"] = owner_handle
             if owner_handle:
                 normalized["matched_sources"][0]["owner_handle"] = owner_handle
+        if source == "teamskillshub" and item.get("skill_type") == "skillpack":
+            normalized["skill_type"] = "skillpack"
         return normalized
 
     @staticmethod
@@ -3058,6 +3089,9 @@ class SkillManager:
                 hub_payload["version"] = params["version"]
             if params.get("market_url") is not None:
                 hub_payload["market_url"] = params["market_url"]
+            for key in ("plan_id", "confirmed", "expected_skill_type"):
+                if key in params:
+                    hub_payload[key] = params[key]
             display_name = str(params.get("display_name") or "").strip()
             if display_name:
                 hub_payload["display_name"] = display_name
@@ -3232,6 +3266,8 @@ class SkillManager:
                 out["detail_key"] = job["detail_key"]
             if "detail_params" in job:
                 out["detail_params"] = job["detail_params"]
+            if "code" in job:
+                out["code"] = job["code"]
             return out
         # done
         return {
@@ -3855,7 +3891,9 @@ class SkillManager:
             if params.get("cache_mode") == "prefer_cache" and not search_publisher_id:
                 from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import get_hub_catalog_cache
                 effective = {k: v for k, v in params.items() if k not in {"cache_mode", "refresh"}}
-                key = json.dumps([base_url, "skill", "search", query_params], sort_keys=True)
+                # Earlier catalog snapshots stripped skill_type (and search cards
+                # do not retain tags), so they cannot safely identify Pack cards.
+                key = json.dumps([base_url, "skill", "search", query_params, "typed-v1"], sort_keys=True)
                 effective["_catalog_load"] = True
 
                 async def load_search():
@@ -3902,6 +3940,7 @@ class SkillManager:
                         "updated_at": int(item.get("update_time") or 0),
                         "plugin_type": plugin_type,
                         "is_team_skill": is_team_skill,
+                        "skill_type": self._hub_skill_type_hint(item),
                     }
                 )
             return {
@@ -3971,7 +4010,9 @@ class SkillManager:
                     base, {k: auth.get(k, "") for k in ("token", "system_token")},
                     {"session": session, **context_fields} if explicit_context else None,
                 ) if private else base
-                key = json.dumps([identity, "skill", "recommend", key_params], sort_keys=True, default=str)
+                key = json.dumps(
+                    [identity, "skill", "recommend", key_params, "typed-v1"], sort_keys=True, default=str
+                )
                 effective["_catalog_load"] = True
 
                 async def load_recommendation():
@@ -4078,6 +4119,26 @@ class SkillManager:
         if not asset_id:
             return {"success": False, "detail": "缺少参数: asset_id"}
 
+        from jiuwenswarm.server.runtime.skill.skillpack_config import skillpack_productization_enabled
+
+        if params.get("plan_id"):
+            if not skillpack_productization_enabled() or params.get("confirmed") is not True:
+                return {"success": False, "detail": "SkillPack 安装需要用户确认且功能已启用"}
+            installer = self._skillpack_installer(
+                self._get_team_skills_hub_base_url(params.get("market_url"))
+            )
+            try:
+                return await installer.commit(
+                    str(params["plan_id"]), on_committed=self._register_skillpack_install,
+                    expected_asset_id=asset_id,
+                )
+            except SkillPackValidationError as exc:
+                return _skillpack_validation_result(exc)
+            except InventoryLockTimeout:
+                return _inventory_busy_result()
+            finally:
+                self.reload_state()
+
         force = bool(params.get("force", False))
         version = params.get("version")
         version_str = str(version).strip() if version is not None else ""
@@ -4085,7 +4146,7 @@ class SkillManager:
         requested_display_name = str(params.get("display_name") or "").strip()
 
         existing = self._find_skill_dir_by_installed_asset_id(asset_id)
-        if existing is not None:
+        if existing is not None and not is_skillpack(existing) and not skillpack_productization_enabled():
             return {
                 "success": True,
                 "skill": {
@@ -4103,7 +4164,7 @@ class SkillManager:
             # 页面不传 version 时取远端最新；兼容内部诊断传 version
             artifact_data = await self._team_skills_hub_http_get_data(
                 f"/api/v1/artifacts/{asset_id}",
-                params={"version": version_str} if version_str else None,
+                params={"version": version_str, "is_cli_download": True} if version_str else {"is_cli_download": True},
                 timeout=_TEAM_SKILLS_HUB_MARKET_TIMEOUT,
                 base_url=base_url,
             )
@@ -4137,6 +4198,27 @@ class SkillManager:
                         "下载内容不完整，未找到 SKILL.md",
                     )
 
+                from jiuwenswarm.server.runtime.skill.skillpack_lock import has_skillpack_wrapper_tag
+
+                pack_detected = is_skillpack(skill_dir) or (skill_dir / "skillpack.lock.json").exists()
+                if not pack_detected:
+                    pack_detected = (
+                        has_skillpack_wrapper_tag(tmp_path)
+                        or artifact_data.get("plugin_type") == "skillpack"
+                    )
+                if pack_detected:
+                    if not skillpack_productization_enabled():
+                        raise SkillRpcError(ERROR_SKILL_OPERATION_UNSUPPORTED, "SkillPack 安装尚未启用")
+                    if params.get("output"):
+                        raise SkillRpcError(ERROR_SKILL_OPERATION_UNSUPPORTED, "SkillPack 必须安装到当前技能目录")
+                    artifact = HubArtifact.from_payload(artifact_data)
+                    if artifact.asset_id != asset_id or (version_str and artifact.version != version_str):
+                        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "Hub 制品身份不一致")
+                    return await self._skillpack_installer(base_url).prepare(artifact, artifact_bytes)
+
+                if params.get("expected_skill_type") == "skillpack":
+                    raise SkillPackValidationError("Expected a SkillPack when refreshing its install plan")
+
                 meta = self._assert_skill_package_safe(skill_dir)
                 # 触发类型识别（与导入路径一致）
                 detect_skill_type(skill_dir)
@@ -4164,39 +4246,93 @@ class SkillManager:
                     if use_custom_output
                     else self._skills_dir
                 )
-                install_root.mkdir(parents=True, exist_ok=True)
-                dest = install_root / skill_name
+                with inventory_mutex(install_root):
+                    self.reload_state()
+                    install_root.mkdir(parents=True, exist_ok=True)
+                    dest = install_root / skill_name
 
-                if dest.exists():
-                    # 即使 force=true 也不得覆盖同名本地 Skill
-                    installed_same = get_installed_asset_id(dest) == asset_id
-                    if installed_same:
+                    if dest.exists():
+                        # 即使 force=true 也不得覆盖同名本地 Skill
+                        installed_same = get_installed_asset_id(dest) == asset_id
+                        if installed_same:
+                            return {
+                                "success": True,
+                                "skill": {
+                                    "name": skill_name,
+                                    "source": "teamskillshub",
+                                    "asset_id": asset_id,
+                                    "path": str(dest),
+                                },
+                            }
+                        raise SkillRpcError(
+                            ERROR_SKILL_NAME_CONFLICT,
+                            f"本地已存在同名 Skill: {skill_name}",
+                        )
+                    # force 仅保留兼容字段，本期禁止用于删除覆盖
+                    _ = force
+
+                    self._install_teamskills_hub_first_copy(
+                        skill_dir=skill_dir,
+                        dest=dest,
+                        asset_id=asset_id,
+                        product_version=product_version,
+                    )
+
+                    from jiuwenswarm.server.runtime.skill.archive_store import atomic_write_json
+                    from jiuwenswarm.server.runtime.skill.skillpack_install import PROVENANCE_PATH
+
+                    atomic_write_json(dest / PROVENANCE_PATH, {
+                        "hub_url": base_url.rstrip("/"), "asset_id": asset_id,
+                        "version": product_version, "artifact_sha256": checksum_sha256,
+                        "content_sha256": compute_content_checksum(dest), "kind": "skill",
+                    })
+
+                    resolved_display_name = requested_display_name or skill_name
+
+                    if use_custom_output:
                         return {
                             "success": True,
                             "skill": {
                                 "name": skill_name,
+                                "display_name": resolved_display_name,
                                 "source": "teamskillshub",
                                 "asset_id": asset_id,
                                 "path": str(dest),
                             },
                         }
-                    raise SkillRpcError(
-                        ERROR_SKILL_NAME_CONFLICT,
-                        f"本地已存在同名 Skill: {skill_name}",
+
+                    for mirror_root in self._get_mirror_skills_dirs():
+                        mirror_dest = mirror_root / skill_name
+                        if mirror_dest.exists():
+                            continue
+                        mirror_root.mkdir(parents=True, exist_ok=True)
+                        shutil.copytree(
+                            skill_dir,
+                            mirror_dest,
+                            ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
+                        )
+
+                    installed_at = datetime.now(timezone.utc).isoformat()
+                    self._add_local_skill(
+                        {
+                            "name": skill_name,
+                            "display_name": resolved_display_name,
+                            "origin": f"teamskillshub:{asset_id}",
+                            "source": "teamskillshub",
+                            "installed_at": installed_at,
+                        }
                     )
-                # force 仅保留兼容字段，本期禁止用于删除覆盖
-                _ = force
-
-                self._install_teamskills_hub_first_copy(
-                    skill_dir=skill_dir,
-                    dest=dest,
-                    asset_id=asset_id,
-                    product_version=product_version,
-                )
-
-                resolved_display_name = requested_display_name or skill_name
-
-                if use_custom_output:
+                    self._add_installed_plugin(
+                        {
+                            "name": skill_name,
+                            "display_name": resolved_display_name,
+                            "marketplace": "teamskillshub",
+                            "commit": "",
+                            "source": "teamskillshub",
+                            "installed_at": installed_at,
+                        }
+                    )
+                    self._refresh_agent_data_indexes()
                     return {
                         "success": True,
                         "skill": {
@@ -4207,49 +4343,10 @@ class SkillManager:
                             "path": str(dest),
                         },
                     }
-
-                for mirror_root in self._get_mirror_skills_dirs():
-                    mirror_dest = mirror_root / skill_name
-                    if mirror_dest.exists():
-                        continue
-                    mirror_root.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(
-                        skill_dir,
-                        mirror_dest,
-                        ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
-                    )
-
-                installed_at = datetime.now(timezone.utc).isoformat()
-                self._add_local_skill(
-                    {
-                        "name": skill_name,
-                        "display_name": resolved_display_name,
-                        "origin": f"teamskillshub:{asset_id}",
-                        "source": "teamskillshub",
-                        "installed_at": installed_at,
-                    }
-                )
-                self._add_installed_plugin(
-                    {
-                        "name": skill_name,
-                        "display_name": resolved_display_name,
-                        "marketplace": "teamskillshub",
-                        "commit": "",
-                        "source": "teamskillshub",
-                        "installed_at": installed_at,
-                    }
-                )
-                self._refresh_agent_data_indexes()
-                return {
-                    "success": True,
-                    "skill": {
-                        "name": skill_name,
-                        "display_name": resolved_display_name,
-                        "source": "teamskillshub",
-                        "asset_id": asset_id,
-                        "path": str(dest),
-                    },
-                }
+        except SkillPackValidationError as exc:
+            return _skillpack_validation_result(exc)
+        except InventoryLockTimeout:
+            return _inventory_busy_result()
         except SkillRpcError:
             raise
         except Exception as exc:
@@ -4260,6 +4357,52 @@ class SkillManager:
                 "detail_key": "skills.teamskillshub.errors.installFailed",
                 "code": ERROR_SKILLHUB_INSTALL_FAILED,
             }
+
+    def _skillpack_installer(self, base_url: str):
+        from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
+        from jiuwenswarm.server.runtime.skill.skillpack_install import SkillPackInstaller
+
+        self.reload_state()
+        return SkillPackInstaller(
+            self._skills_dir, base_url,
+            HubClient(transport=HttpHubTransport(base_url=base_url)),
+            state_files=(self._state_file, self._agent_root / "agent-data.json"),
+            enabled_for=self._skillpack_live_enabled,
+        )
+
+    def _skillpack_live_enabled(self, name: str) -> bool:
+        """Read enabled state after network waits without mutating or repairing it."""
+        if not self._state_file.exists():
+            return True
+        state = json.loads(self._state_file.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("Invalid local skill state")
+        return get_skill_enabled(state, name)
+
+    def _register_skillpack_install(self, records: list[dict[str, Any]]) -> None:
+        """Register a transaction without hiding index generation failures."""
+        from jiuwenswarm.server.runtime.skill.archive_store import atomic_write_json
+
+        self.reload_state()
+        new_names = {record["name"] for record in records if record["action"] == "download"}
+        local = [item for item in self._state.get("local_skills", []) if item.get("name") not in new_names]
+        plugins = [item for item in self._state.get("installed_plugins", []) if item.get("name") not in new_names]
+        for record in records:
+            if record["action"] != "download":
+                continue
+            local.append({
+                "name": record["name"], "source": "teamskillshub",
+                "origin": f"teamskillshub:{record['asset_id']}",
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+            })
+            plugins.append({
+                "name": record["name"], "source": "teamskillshub",
+                "marketplace": "teamskillshub", "commit": "", "enabled": True,
+            })
+        self._state["local_skills"] = local
+        self._state["installed_plugins"] = plugins
+        atomic_write_json(self._state_file, self._state)
+        self._generate_agent_data_for_workspace(self._agent_root)
 
     async def handle_skills_team_skills_hub_publish(self, params: dict) -> dict:
         """发布 TeamSkills；成功后仅写入本地远端发布元数据."""
@@ -4586,6 +4729,11 @@ class SkillManager:
     ) -> None:
         try:
             result = await asyncio.to_thread(self._skillnet_install_files_sync, skill_url, force, mirror_url)
+        except InventoryLockTimeout:
+            self._skillnet_install_jobs[install_id] = {
+                **_inventory_busy_result(), "status": "failed",
+            }
+            return
         except Exception as exc:
             logger.error("SkillNet 后台安装异常: %s", exc)
             raw = str(exc).strip()
@@ -4611,41 +4759,12 @@ class SkillManager:
                 job_entry["detail_key"] = result["detail_key"]
             if result.get("detail_params") is not None:
                 job_entry["detail_params"] = result["detail_params"]
+            if result.get("code"):
+                job_entry["code"] = result["code"]
             self._skillnet_install_jobs[install_id] = job_entry
             return
 
         skill_name = result["skill_name"]
-        meta = result["meta"]
-        skill_url_stored = result["skill_url"]
-        try:
-            self._add_local_skill(
-                {
-                    "name": skill_name,
-                    "origin": skill_url_stored,
-                    "source": "skillnet",
-                    "installed_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            self._add_installed_plugin(
-                {
-                    "name": skill_name,
-                    "marketplace": "skillnet",
-                    "version": meta.get("version", ""),
-                    "commit": "",
-                    "source": "skillnet",
-                    "installed_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            self._refresh_agent_data_indexes()
-        except Exception as exc:
-            logger.error("SkillNet 写入状态失败: %s", exc)
-            self._skillnet_install_jobs[install_id] = {
-                "status": "failed",
-                "detail": "安装完成但保存配置失败，请刷新页面重试。",
-                "detail_key": "skills.skillNet.errors.saveConfigFailed",
-            }
-            return
-
         hook = self._skillnet_install_complete_hook
         if hook is not None:
             try:
@@ -4667,7 +4786,7 @@ class SkillManager:
     def _skillnet_install_files_sync(
         self, skill_url: str, force: bool, mirror_url: str | None = None
     ) -> dict[str, Any]:
-        """在工作线程中下载并拷贝到 skills 目录；返回 ok / skill_name / meta / skill_url."""
+        """下载不占库存锁；在同一锁内完成文件落盘及状态登记。"""
         try:
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_skillnet_") as tmpdir:
                 tmp_path = Path(tmpdir)
@@ -4704,32 +4823,9 @@ class SkillManager:
                 except ValueError as exc:
                     _log_rejected_name("skills.skillnet.install", "skill", raw_skill_name, exc)
                     return {"ok": False, "detail": str(exc)}
-                dest = _safe_child_path(self._skills_dir, skill_name, "skill")
-                if dest.exists():
-                    if not force:
-                        return {
-                            "ok": False,
-                            "detail": "该技能已安装。",
-                            "detail_key": "skills.skillNet.errors.skillAlreadyInstalled",
-                        }
-                    _safe_rmtree(dest)
-
-                shutil.copytree(skill_dir, dest)
-                for mirror_root in self._get_mirror_skills_dirs():
-                    mirror_dest = _safe_child_path(mirror_root, skill_name, "skill")
-                    if mirror_dest.exists():
-                        if not force:
-                            continue
-                        _safe_rmtree(mirror_dest)
-                    mirror_root.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(skill_dir, mirror_dest)
-                _safe_rmtree(skill_dir)
-                return {
-                    "ok": True,
-                    "skill_name": skill_name,
-                    "meta": meta,
-                    "skill_url": skill_url,
-                }
+                return self._commit_skillnet_install(skill_dir, skill_name, meta, skill_url, force=force)
+        except InventoryLockTimeout:
+            return {**_inventory_busy_result(), "ok": False}
         except SkillNetEmptyDownloadError as exc:
             logger.error("SkillNet 下载失败: %s", exc)
             out: dict[str, Any] = {
@@ -4758,6 +4854,59 @@ class SkillManager:
                 extra["detail_key"] = "skills.skillNet.errors.installFailedFallback"
             return {"ok": False, "detail": detail, **extra}
 
+    def _commit_skillnet_install(
+        self, skill_dir: Path, skill_name: str, meta: dict[str, Any], skill_url: str, *, force: bool,
+    ) -> dict[str, Any]:
+        """Serialize the worker's inventory write with Pack install/recovery."""
+        with inventory_mutex(self._skills_dir):
+            self.reload_state()
+            dest = _safe_child_path(self._skills_dir, skill_name, "skill")
+            if dest.exists():
+                if not force:
+                    return {
+                        "ok": False,
+                        "detail": "该技能已安装。",
+                        "detail_key": "skills.skillNet.errors.skillAlreadyInstalled",
+                    }
+                protected_packs = [
+                    pack for pack in referencing_skillpacks(self._skills_dir, skill_name)
+                    if is_skillpack(self._skills_dir / pack)
+                ]
+                if protected_packs:
+                    return {
+                        "ok": False, "code": "SKILL_REFERENCED_BY_PACK",
+                        "detail": f"该 Skill 仍被 SkillPack 引用，不能覆盖：{', '.join(protected_packs)}",
+                    }
+                _safe_rmtree(dest)
+
+            shutil.copytree(skill_dir, dest)
+            for mirror_root in self._get_mirror_skills_dirs():
+                mirror_dest = _safe_child_path(mirror_root, skill_name, "skill")
+                if mirror_dest.exists():
+                    if not force:
+                        continue
+                    _safe_rmtree(mirror_dest)
+                mirror_root.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(skill_dir, mirror_dest)
+            try:
+                self._add_local_skill({
+                    "name": skill_name, "origin": skill_url, "source": "skillnet",
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                self._add_installed_plugin({
+                    "name": skill_name, "marketplace": "skillnet", "version": meta.get("version", ""),
+                    "commit": "", "source": "skillnet",
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                self._refresh_agent_data_indexes()
+            except Exception as exc:
+                logger.error("SkillNet 写入状态失败: %s", exc)
+                return {
+                    "ok": False, "detail": "安装完成但保存配置失败，请刷新页面重试。",
+                    "detail_key": "skills.skillNet.errors.saveConfigFailed",
+                }
+            return {"ok": True, "skill_name": skill_name, "meta": meta, "skill_url": skill_url}
+
     async def handle_skills_uninstall(self, params: dict) -> dict:
         """卸载已安装的 skill.
 
@@ -4765,10 +4914,12 @@ class SkillManager:
             name: skill 名称
             origin: 可选。企业版按 origin 精确删除，避免同名另一条被清掉。
         """
-        if is_enterprise():
+        try:
             return await asyncio.to_thread(self._handle_enterprise_skills_uninstall, params)
-        return self._handle_enterprise_skills_uninstall(params)
+        except InventoryLockTimeout:
+            return _inventory_busy_result()
 
+    @inventory_mutation
     @_state_transactional
     def _handle_enterprise_skills_uninstall(self, params: dict) -> dict:
         raw_name = str(params.get("name") or "")
@@ -4804,6 +4955,9 @@ class SkillManager:
             dest = _safe_child_path(self._skills_dir, entity_name, "skill")
             if not dest.is_dir():
                 return {"success": False, "detail": f"未找到 skill: {logical_name}"}
+            protected = self._referenced_member_uninstall_error(entity_name, logical_name)
+            if protected is not None:
+                return protected
             _safe_rmtree(dest)
             for mirror_root in self._get_mirror_skills_dirs():
                 mirror_dest = _safe_child_path(mirror_root, dest.name, "skill")
@@ -4816,6 +4970,19 @@ class SkillManager:
             self._refresh_agent_data_indexes()
             return {"success": True, "name": logical_name}
         return self._uninstall_skill_body(params)
+
+    def _referenced_member_uninstall_error(self, *names: str) -> dict | None:
+        referenced_packs = set()
+        for name in names:
+            referenced_packs.update(referencing_skillpacks(self._skills_dir, name))
+        protected_packs = sorted(pack for pack in referenced_packs if is_skillpack(self._skills_dir / pack))
+        if not protected_packs:
+            return None
+        return {
+            "success": False, "code": "SKILL_REFERENCED_BY_PACK",
+            "detail": f"该 Skill 仍被 SkillPack 引用，不能卸载：{', '.join(protected_packs)}",
+            "referencing_skillpacks": protected_packs,
+        }
 
     def _uninstall_skill_body(self, params: dict) -> dict:
         raw_name = params.get("name", "")
@@ -4847,6 +5014,9 @@ class SkillManager:
         if dest is None:
             return {"success": False, "detail": f"未找到 skill: {name}"}
         affected_skillpacks = referencing_skillpacks(self._skills_dir, name)
+        protected = self._referenced_member_uninstall_error(name)
+        if protected is not None:
+            return protected
 
         # 检查是否为真正的内置技能（源码目录中的，不允许删除）
         builtin_dir = get_builtin_skills_dir()
@@ -5689,6 +5859,23 @@ class SkillManager:
         allow_skillpack: bool = False,
     ) -> dict[str, Any]:
         """把已校验的 Skill 目录安装到 workspace，并返回约定的 skill 字段."""
+        with inventory_mutex(self._skills_dir):
+            self.reload_state()
+            return self._install_imported_skill_dir_locked(
+                src, force=force, origin=origin, source_trusted=source_trusted,
+                conflict_code=conflict_code, allow_skillpack=allow_skillpack,
+            )
+
+    def _install_imported_skill_dir_locked(
+        self,
+        src: Path,
+        *,
+        force: bool,
+        origin: str,
+        source_trusted: bool,
+        conflict_code: str,
+        allow_skillpack: bool,
+    ) -> dict[str, Any]:
         meta = self._assert_skill_package_safe(
             src,
             source_trusted=source_trusted,
@@ -5876,15 +6063,18 @@ class SkillManager:
             )
         except SkillPackValidationError as exc:
             raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
-        hard_blockers = [
-            item
-            for item in status.blocked_members
-            if item.get("reason") in {"missing", "invalid"}
-        ]
+        hard_blockers = list(status.blocked_members)
         if hard_blockers:
+            disabled = [item["name"] for item in hard_blockers if item["reason"] == "disabled"]
+            unavailable = [item["name"] for item in hard_blockers if item["reason"] != "disabled"]
+            reasons = []
+            if disabled:
+                reasons.append(f"请先启用成员 {', '.join(disabled)}，再重新确认安装")
+            if unavailable:
+                reasons.append(f"请检查缺失或无效成员 {', '.join(unavailable)}")
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
-                f"Symphony SkillPack 成员不可安装: {hard_blockers}",
+                "Symphony SkillPack 成员不可安装：" + "；".join(reasons),
             )
         return self._install_imported_skill_dir(
             source,
@@ -8514,6 +8704,7 @@ class SkillManager:
             "latest_version": latest_version,
             "updated_at": updated_at,
             "plugin_type": plugin_type,
+            "skill_type": cls._hub_skill_type_hint(item),
             "tags": cls._coerce_str_list(item.get("tags")),
             "score": score,
             "publisher_name": publisher_name,
@@ -8525,6 +8716,18 @@ class SkillManager:
             "category_id": str(item.get("category_id") or "").strip(),
             "category_name": str(item.get("category_name") or "").strip(),
         }
+
+    @staticmethod
+    def _hub_skill_type_hint(item: dict[str, Any]) -> str:
+        """Only a display hint; installation always validates the actual root and lock."""
+        from jiuwenswarm.server.runtime.skill.skillpack_lock import SKILLPACK_HUB_TAG
+
+        tags = item.get("tags")
+        if item.get("plugin_type") == "skillpack":
+            return "skillpack"
+        if item.get("plugin_type") == "skill" and isinstance(tags, list) and SKILLPACK_HUB_TAG in tags:
+            return "skillpack"
+        return "swarm_skill" if item.get("plugin_type") in _TEAM_SKILL_PLUGIN_TYPES else "skill"
 
     @staticmethod
     def _safe_extract_zip_members_into(zf: zipfile.ZipFile, dest_root: Path) -> None:
@@ -9560,6 +9763,13 @@ class SkillManager:
         生效。
         """
         self._state = self._load_state()
+
+    def skillpack_inventory_snapshot(self, *, lock_timeout: float = 0) -> dict[str, Any]:
+        """Return current typed inventory for confirmed SkillPack routing."""
+        from jiuwenswarm.server.runtime.skill.skillpack_inventory import skillpack_inventory_snapshot
+
+        with inventory_mutex(self._skills_dir).acquire(timeout=lock_timeout):
+            return skillpack_inventory_snapshot(self._skills_dir, self._skillpack_live_enabled)
 
     def list_disabled_skills(self) -> list[str]:
         disabled = set(list_disabled_skills(self._state))
@@ -11087,6 +11297,10 @@ class SkillManager:
 
     async def handle_skills_source_install(self, params: dict) -> dict:
         """Install one exact Provider artifact through the common transaction."""
+        for key in ("source_id", "skill_id", "version_id"):
+            value = params.get(key)
+            if value is not None and not isinstance(value, str):
+                return self._source_error("invalid_params", f"{key} must be a string")
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         version_id = str(params.get("version_id") or "").strip()
@@ -11094,7 +11308,9 @@ class SkillManager:
             return self._source_error(
                 "missing_params", "source_id, skill_id and version_id are required"
             )
-        force = bool(params.get("force", False))
+        force = params.get("force", False)
+        if not isinstance(force, bool):
+            return self._source_error("invalid_params", "force must be a boolean")
         # 市场展示名（技能广场卡片名）透传落盘，让「我的技能」与技能广场同名显示
         market_display_name = str(params.get("display_name") or "").strip()[:200]
         market_version = str(params.get("version") or "").strip()[:100]
@@ -11174,6 +11390,16 @@ class SkillManager:
 
     async def handle_skills_update(self, params: dict) -> dict:
         """Update an installed SkillRef through the same verified install transaction."""
+        for key in (
+            "source_id",
+            "skill_id",
+            "target_version_id",
+            "version_id",
+            "expected_current_version_id",
+        ):
+            value = params.get(key)
+            if value is not None and not isinstance(value, str):
+                return self._source_error("invalid_params", f"{key} must be a string")
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         target_version_id = str(
@@ -11639,7 +11865,14 @@ class SkillManager:
         user / 未标记可卸。真正删除仍委托 ``handle_skills_uninstall``。
         """
 
-        name = str(params.get("name") or "").strip()
+        name_raw = params.get("name")
+        if name_raw is not None and not isinstance(name_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "name must be a string",
+            }
+        name = str(name_raw or "").strip()
         if not name:
             return {
                 "success": False,
@@ -11664,7 +11897,17 @@ class SkillManager:
                 "error_message": "service_id and agent_id are required",
             }
 
-        origin = str(params.get("origin") or "").strip()
+        # Type-invalid origins must never silently degrade to name-only
+        # matching: a wrongly-typed origin would otherwise uninstall a
+        # different same-named installation (#5882).
+        origin_raw = params.get("origin")
+        if origin_raw is not None and not isinstance(origin_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "origin must be a string",
+            }
+        origin = str(origin_raw or "").strip()
         installation = self._find_web_uninstall_installation(name=name, origin=origin)
         if installation is None:
             logger.warning(

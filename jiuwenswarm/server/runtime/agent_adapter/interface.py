@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_team_mode as is_team_runtime_mode,
@@ -33,12 +33,12 @@ from gateway.common.mode_matrix import (
     is_web_composable_mode,
     read_request_work_mode,
 )
-from gateway.common.session_message import (
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
-from gateway.extensions.registry import ExtensionRegistry
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -2603,6 +2603,8 @@ class JiuWenSwarm:
                 }
                 and payload.get("pending")
             ):
+                _reload_after_skills = False
+            if payload.get("confirmation_required"):
                 _reload_after_skills = False
             if _reload_after_skills:
                 await self.create_instance()

@@ -13,6 +13,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from agent_gateway.routing.agent_client import (
+    AGENT_REQUEST_TIMEOUT_SECONDS,
+    AgentServerClient,
+)
 
 from jiuwenswarm.common.e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
@@ -26,10 +30,6 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
     assemble_rest_request,
     normalize_agent_http_base,
-)
-from gateway.routing.agent_client import (
-    AGENT_REQUEST_TIMEOUT_SECONDS,
-    AgentServerClient,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,12 +57,12 @@ _CANCELLED_RID_TTL_SECONDS = 2.0
 
 async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
     """企业版先读库再组头。个人版直接组请求。"""
-    from gateway.enterprise.edition import is_enterprise
+    from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return assemble_rest_request(envelope, base_url=api_root)
-    from gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
-    from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
+    from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
+    from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
         read_package_allowlist_packages,
     )
 

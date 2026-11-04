@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from openjiuwen_protocol.message import EventType, Message
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 
 
 def _question(payload: dict) -> Message:

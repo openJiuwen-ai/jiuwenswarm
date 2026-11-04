@@ -246,7 +246,7 @@ def test_agent_manager_mode_maps_auto_to_agent_instance():
 async def test_early_macro_then_compose_auto_code_to_code_normal(monkeypatch):
     """Auto + work_mode=code must land on CodeAdapter after MACRO → agent."""
     from jiuwenswarm.agents.harness.macro_routing.schemas import MacroRoutingDecision
-    from gateway.common.mode_matrix import resolve_request_mode
+    from agent_gateway.common.mode_matrix import resolve_request_mode
 
     async def fake_route(query, *, requested_mode, config_base=None):
         del query, requested_mode, config_base
@@ -294,7 +294,7 @@ async def test_early_macro_then_compose_auto_code_to_code_normal(monkeypatch):
 async def test_early_macro_then_compose_auto_code_to_code_team(monkeypatch):
     """Auto + work_mode=code must land on code.team after MACRO → team."""
     from jiuwenswarm.agents.harness.macro_routing.schemas import MacroRoutingDecision
-    from gateway.common.mode_matrix import resolve_request_mode
+    from agent_gateway.common.mode_matrix import resolve_request_mode
 
     async def fake_route(query, *, requested_mode, config_base=None):
         del query, requested_mode, config_base

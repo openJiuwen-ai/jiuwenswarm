@@ -408,21 +408,20 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   sharedViewportRef,
   rangeAppearance = 'focus',
 }: TrajectoryTimelineProps) {
+  // Always slide late prep before the model reply so Input/CONTEXT never paint
+  // over ASSISTANT — including diagnosis selection. Brush and Input-click both
+  // use these display coordinates; toWall maps them back for the diagnosis scope.
   const model = useMemo(() => {
     const projected = withSharedWallClockDomain(
       deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
       sharedDomain,
       mapTime,
     )
-    // Wall-clock modes keep absolute span times while the viewport is locked
-    // for diagnosis brush → toWall selection. Browse mode may still slide late
-    // prep for ledger-phase readability; duration mode already relocates inside
-    // deriveTimedTimeline.
-    if (projected === null || lockViewport || mode === 'duration' || mode === 'tokens' || mode === 'sequence') {
+    if (projected === null || mode === 'duration' || mode === 'tokens' || mode === 'sequence') {
       return projected
     }
     return alignPrepSpansBeforeModel(projected, turns)
-  }, [lockViewport, mapTime, mode, nowMilliseconds, sharedDomain, turns])
+  }, [mapTime, mode, nowMilliseconds, sharedDomain, turns])
   const detailByIndex = useMemo(
     () => new Map(turns.flatMap(turn =>
       turn.groups.flatMap(group =>
@@ -873,7 +872,15 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
       onRecordSelect?.(clickedSpan.index)
       return
     }
-    const committedRange = selected.end - selected.start < minimumSelectionDuration
+    // Diagnosis region brushes must keep the exact drag (same as SharedTimeAxis).
+    // Focus mode still pads short drags so a click-sized brush can frame a span.
+    // Region browse (clickSelectsOwnRecord) still falls through to nearest-record.
+    const exactRegionBrush = rangeAppearance === 'region' || spanSelectsRange
+    if (exactRegionBrush && click && !clickSelectsOwnRecord) {
+      return
+    }
+    const committedRange = !exactRegionBrush
+      && selected.end - selected.start < minimumSelectionDuration
       ? centeredRange(
         click ? selected.start : (selected.start + selected.end) / 2,
         minimumSelectionDuration,

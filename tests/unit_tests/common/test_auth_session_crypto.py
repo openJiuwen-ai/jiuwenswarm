@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from gateway.auth import session_store as store_mod
+from agent_gateway.auth import session_store as store_mod
 
 
 @pytest.fixture(autouse=True)

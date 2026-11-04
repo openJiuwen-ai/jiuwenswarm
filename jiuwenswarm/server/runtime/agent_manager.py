@@ -16,9 +16,7 @@ from copy import deepcopy
 from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
-from jiuwenswarm.common.config import get_available_models, get_config
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     canonicalize_mode_text,
@@ -27,6 +25,9 @@ from gateway.common.mode_matrix import (
     normalize_work_mode,
     resolve_new_canonical_mode,
 )
+
+from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from jiuwenswarm.common.config import get_available_models, get_config
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,

@@ -2,7 +2,7 @@
 
 """管理端 Hub 目录去掉企业版不提供的四个包。"""
 
-from gateway.enterprise.config.manager_config.routers.application_config_routers import (
+from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import (
     _without_hidden_hub_items,
 )
 

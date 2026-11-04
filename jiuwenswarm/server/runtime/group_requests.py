@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 
+from agent_gateway.common.protocol_ids import validate_session_id
+from agent_gateway.common.mode_matrix import is_team_mode
+
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionCommitContext,
@@ -17,8 +20,6 @@ from jiuwenswarm.server.runtime.group_service import (
     read_group,
 )
 from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
-from gateway.common.protocol_ids import validate_session_id
-from gateway.common.mode_matrix import is_team_mode
 
 logger = logging.getLogger(__name__)
 

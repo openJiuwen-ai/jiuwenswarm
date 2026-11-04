@@ -8,12 +8,12 @@ session (e.g. Feishu) instead of only the originating channel.
 from __future__ import annotations
 
 import pytest
+from openjiuwen_protocol.message import EventType, Message
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
+from agent_gateway.routing.session_sharing import SessionSharingRegistry, SubRole
 
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
-from openjiuwen_protocol.message import EventType, Message
-from gateway.channel_manager.channel_manager import ChannelManager
-from gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
-from gateway.routing.session_sharing import SessionSharingRegistry, SubRole
 
 
 class _FakeMessageHandler:

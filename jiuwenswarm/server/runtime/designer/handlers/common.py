@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 
+from agent_gateway.common.work_mode import is_default_project_id
+
 from jiuwenswarm.common.schema.designer_graph import (
     EDGE_KIND_DATA,
     NODE_ROLE_BRIEF,
@@ -28,7 +30,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,  # re-exported; image/compose handlers call it on this module
     get_default_project_session_workspace_dir,
 )
-from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 from jiuwenswarm.server.runtime.designer.user_references import user_reference_image_paths
 from jiuwenswarm.server.runtime.session import project_store
@@ -851,6 +852,35 @@ def _image_gen_semaphore():
 _RATE_LIMIT_TOKENS = ("ratequota", "rate limit", "throttling", "too many requests", "429")
 
 
+def note_media_settings_gap(ctx: object, kind: str, where: str) -> str | None:
+    """Per-node Settings-gap check: log it, show it on the canvas, report it.
+
+    Runs before every media node generates, so a first run and a regenerate
+    both name the blocked node and the Settings > Agent fix instead of a bare
+    "no image_path" / "no file" (#5266).
+
+    Settings > Agent writes only to ``.env``, so reload it first; otherwise a
+    slot the user just fixed is reported from stale ``os.environ`` values.
+    """
+    from jiuwenswarm.common.utils import get_env_file
+    from jiuwenswarm.dotenv_early import load_dotenv_runtime
+    from jiuwenswarm.server.runtime.designer import media_generation
+
+    try:
+        load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+    except Exception:
+        logger.debug("Failed to reload media generation env before Settings check", exc_info=True)
+
+    problem = media_generation.note_generation_problem(kind, where)  # type: ignore[arg-type]
+    emit = getattr(ctx, "emit_activity", None) if ctx is not None else None
+    if problem and callable(emit):
+        try:
+            emit("stage", problem, f"{kind}_gen")
+        except TypeError:
+            emit("stage", problem)
+    return problem
+
+
 def _is_rate_limit_error(text: str) -> bool:
     low = (text or "").lower()
     return any(token in low for token in _RATE_LIMIT_TOKENS)
@@ -862,8 +892,13 @@ async def generate_designer_image(
     reference_images: list[str] | None = None,
     max_tries: int = 2,
     save_dir: str | None = None,
-) -> dict[str, str] | None:
+) -> dict[str, str]:
     """Call the Settings > Agent image model when enabled. Tests monkeypatch this function.
+
+    Returns ``{"image_path": ...}`` or ``{"error": ...}``. The error always
+    names the reason — including a Settings gap (switched off / not configured
+    / unsupported endpoint) — so node handlers do not report a bare
+    "no image_path" for a Settings problem (#5266).
 
     Retries transient RateQuota/429 with backoff under a global concurrency cap.
     """
@@ -878,9 +913,17 @@ async def generate_designer_image(
     except Exception:
         logger.debug("Failed to reload image generation env before generation", exc_info=True)
 
+    # Keep the original gate (enabled flag only) so an enabled-but-incomplete
+    # slot still reaches the generator, which reports its own reason. Only the
+    # payload changes: carry the reason instead of returning None, because a
+    # bare None degrades to "no image_path" in node handlers (#5266).
     if not media_generation.generation_enabled("image"):
-        logger.info("Designer image generation skipped: VISUAL_GEN_ENABLED is off")
-        return None
+        problem = media_generation.generation_problem("image") or ""
+        logger.info(
+            "Designer image generation skipped: %s",
+            problem or "VISUAL_GEN_ENABLED is off",
+        )
+        return {"error": problem or "Image generation is switched off in Settings > Agent."}
     refs = [str(item).strip() for item in (reference_images or []) if str(item).strip()]
     if refs:
         logger.info(

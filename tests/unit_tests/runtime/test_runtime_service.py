@@ -3252,8 +3252,8 @@ async def test_early_stream_close_delivers_post_event_to_callback() -> None:
 async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
@@ -3313,8 +3313,8 @@ async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> No
 async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
@@ -3677,8 +3677,8 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
 async def test_extension_load_error_survives_shutdown_error_and_retries(
     monkeypatch,
 ) -> None:
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     ExtensionRegistry.reset_instance()
     load_extensions = AsyncMock(

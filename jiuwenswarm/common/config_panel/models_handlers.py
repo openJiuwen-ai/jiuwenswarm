@@ -573,7 +573,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
         vendor_key = str(item.get("vendor_key") or "").strip() or None
         plan = str(item.get("plan") or "").strip() or None
         if plan:
-            from gateway.common.model_vendor_registry import PlanKind
+            from agent_gateway.common.model_vendor_registry import PlanKind
 
             try:
                 plan = PlanKind(plan).value

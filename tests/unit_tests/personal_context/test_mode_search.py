@@ -10,8 +10,13 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from agent_gateway.common.mode_matrix import NEW_CANONICAL_MODES, NEW_TEAM_DESIGN
+from openjiuwen.core.foundation.llm import AssistantMessage
+from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.harness.prompts import PromptAttachmentManager
+from openjiuwen.harness.rails.agent_mode_rail import AgentModeRail
 
-from gateway.common.mode_matrix import NEW_CANONICAL_MODES, NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm import register_swarm_providers
 from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
@@ -20,11 +25,6 @@ from jiuwenswarm.common import utils
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-from openjiuwen.core.foundation.llm import AssistantMessage
-from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
-from openjiuwen.core.single_agent.ability_manager import AbilityManager
-from openjiuwen.harness.prompts import PromptAttachmentManager
-from openjiuwen.harness.rails.agent_mode_rail import AgentModeRail
 
 
 _MODE_ROLES = [

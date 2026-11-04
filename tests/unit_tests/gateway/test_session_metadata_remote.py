@@ -10,15 +10,15 @@ from typing import Any
 
 import pytest
 
-from gateway.routing import session_metadata_remote
-from gateway.routing.session_metadata_remote import (
+from agent_gateway.routing import session_metadata_remote
+from agent_gateway.routing.session_metadata_remote import (
     SessionMetadataRemoteProvider,
     SessionMetadataRemoteUnavailable,
     bind_agent_client,
     install,
 )
-from gateway.common import external_providers
-from gateway.common.external_providers import provider
+from agent_gateway.common import external_providers
+from agent_gateway.common.external_providers import provider
 
 
 class _FakeUnary:
@@ -134,7 +134,7 @@ def test_remote_sync_entry_degrades_to_empty_dict() -> None:
 
     # 直接挂在模块 logger 上断言：conftest 的 setup_logger 会把 gateway logger
     # 家族重挂到 jiuwenswarm root 下，caplog（真 root）不保证能收到记录。
-    module_logger = logging.getLogger("gateway.routing.session_metadata_remote")
+    module_logger = logging.getLogger("agent_gateway.routing.session_metadata_remote")
     handler = _Capture()
     module_logger.addHandler(handler)
     try:

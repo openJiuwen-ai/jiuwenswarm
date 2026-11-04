@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway.channel_manager.tui.harmonyos import harmonyos_project
-from gateway.channel_manager.tui.harmonyos.harmonyos_project import (
+from agent_gateway.channel_manager.tui.harmonyos import harmonyos_project
+from agent_gateway.channel_manager.tui.harmonyos.harmonyos_project import (
     HarmonyOSProjectError,
     inspect_harmonyos_project,
     load_harmonyos_project_context,

@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from gateway.channel_manager.tui.tui_channel import TuiChannel
+from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
 
 
 class _FakeWebSocket:

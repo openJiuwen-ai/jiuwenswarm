@@ -13,8 +13,8 @@ import time
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message
-from gateway.channel_manager.web.web_connect import WebChannel
-from gateway.routing.keys import AgentRef, RoutingKey
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.routing.keys import AgentRef, RoutingKey
 
 
 class _FakeWs:
@@ -25,7 +25,7 @@ class _FakeWs:
 
 def _make_channel() -> WebChannel:
     channel = object.__new__(WebChannel)
-    from gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+    from agent_gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
 
     channel.delivery = WebDeliveryRegistry()
     channel._expert_processing_requests = {}
@@ -261,8 +261,8 @@ async def test_event_without_ws_id_keeps_session_fallback() -> None:
 
 async def test_team_routing_target_fallthrough_keeps_session_fallback() -> None:
     """team fan_out（routing_target）V2 未命中后的回退保留原语义，不受孤儿丢弃影响。"""
-    from gateway.routing.keys import WebDeliveryTarget
-    from gateway.routing.session_sharing import RoutingTarget
+    from agent_gateway.routing.keys import WebDeliveryTarget
+    from agent_gateway.routing.session_sharing import RoutingTarget
 
     channel = _make_channel()
     new_ws = _FakeWs("ws-new")

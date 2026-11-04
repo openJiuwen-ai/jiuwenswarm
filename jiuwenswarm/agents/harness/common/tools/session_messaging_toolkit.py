@@ -17,9 +17,9 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import SystemPromptPriority
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageSource,
@@ -104,6 +104,8 @@ _SESSION_MESSAGING_TOOL_NAMES = frozenset(
         "session_message_resolve",
         "session_continue_queued",
         "session_read",
+        # Sedimentation uses the same Host-authenticated request ownership.
+        "skillpack_distill",
     }
 )
 

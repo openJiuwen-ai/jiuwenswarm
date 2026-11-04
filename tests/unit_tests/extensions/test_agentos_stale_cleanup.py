@@ -6,14 +6,14 @@ from typing import Any
 
 import pytest
 
-from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
-from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from gateway.extensions.agentos.agentos_router.registry_client import (
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from agent_gateway.extensions.agentos.agentos_router.registry_client import (
     InstanceRecord,
     instance_service_id,
 )
-from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from gateway.extensions.agentos.agentos_router.stale_cleanup import (
+from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from agent_gateway.extensions.agentos.agentos_router.stale_cleanup import (
     cleanup_stale_sandboxes,
 )
 from tests.unit_tests.extensions.test_agentos_router import (
