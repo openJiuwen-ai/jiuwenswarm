@@ -54,7 +54,6 @@ function fixture() {
     useDesignerStore: { getState: () => ({ applyGraph() {}, async flushSave() {} }) },
     useDesignerChatStore: { getState: () => ({ replaceMessages() {} }) },
     buildConversationModelPayload: ({ selectedModelName }) => ({ model_name: selectedModelName }),
-    flushApplicationConversationHistory: async () => {},
     webClient: { async request(method, params) { calls.requests.push({ method, params }); } },
   };
   const entry = evaluate(entryScript, context, '{ bindDesignerChatSession, seedDesignerChatHistory, sendDesignerLeaderMessage, submitDesignComposer }');

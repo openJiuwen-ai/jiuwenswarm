@@ -19,37 +19,33 @@ export class TaskDuplexJobs {
     return searchSessionId;
   }
 
-  accept(payload: SearchJobPayload, onRejected?: (reason: string) => void): ConversationJob | null {
-    const reject = (reason: string): null => {
-      onRejected?.(reason);
-      return null;
-    };
+  accept(payload: SearchJobPayload): ConversationJob | null {
     const jobId = payload.job_id?.trim();
     const searchSessionId = payload.search_session_id?.trim();
     const sessionId = searchSessionId
       ? this.owners.get(searchSessionId)
       : undefined;
-    if (!jobId || !sessionId) return reject("missing_job_or_unbound_session");
+    if (!jobId || !sessionId) return null;
     const previous = this.jobs.get(jobId);
-    if (previous && previous.sessionId !== sessionId) return reject("session_mismatch");
+    if (previous && previous.sessionId !== sessionId) return null;
     if (previous && payload.sequence != null && previous.payload.sequence != null
-        && payload.sequence < previous.payload.sequence) return reject("older_sequence");
-    if (previous?.payload.status === "cancelled") return reject("already_cancelled");
+        && payload.sequence < previous.payload.sequence) return null;
+    if (previous?.payload.status === "cancelled") return null;
     if (
-      previous && (previous.payload.queue_version ?? -1) >= 2 ** 48 &&
+      previous &&
       (payload.queue_version ?? previous.payload.queue_version ?? -1) <
         (previous.payload.queue_version ?? -1)
     )
-      return reject("older_queue_version");
+      return null;
     if (
       previous?.payload.status === "cancelling" &&
       ["queued", "running"].includes(payload.status || "") &&
       payload.queue_version == null
     )
-      return reject("cancelling_without_queue_version");
+      return null;
     // An in-flight status request or submission acknowledgement may arrive after completion.
     if (previous && isTerminal(previous.payload) && !isTerminal(payload))
-      return reject("terminal_state_regression");
+      return null;
     const job = {
       sessionId,
       payload: { ...previous?.payload, ...payload, replay: payload.replay ?? false },
