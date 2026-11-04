@@ -461,9 +461,11 @@ async def test_native_permission_rejects_invalid_alias_without_accepting_interac
 
 @pytest.mark.parametrize("size", [128, 129, 512])
 @pytest.mark.parametrize("decision", ["allow_once", "reject"])
-async def test_native_smart_long_alias_reaches_runtime_by_request_id(tmp_path, size, decision):
-    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+async def test_native_smart_long_alias_reaches_runtime_by_request_id(tmp_path, monkeypatch, size, decision):
+    from jiuwenswarm.server.runtime.agent_adapter import interface
 
+    monkeypatch.setattr(interface, "get_config", lambda: {})
+    host = object.__new__(interface.JiuWenSwarm)
     call_id = "c" * size
     store = TaskStore(tmp_path / "smart-alias.sqlite")
     resumed = []
@@ -474,9 +476,8 @@ async def test_native_smart_long_alias_reaches_runtime_by_request_id(tmp_path, s
                 request = AgentTaskExecutor.answer_input(task).to_agent_request()
                 assert request.params["request_id"] == call_id
                 assert request.params["answers"][0]["card_id"] == call_id
-                interactive = JiuWenSwarm._build_interactive_input_from_answers(
-                    call_id, request.params["answers"], source=request.params["source"],
-                )
+                inputs, _, _ = host.build_inputs(request)
+                interactive = inputs["query"]
                 assert list(interactive.user_inputs) == [call_id]
                 assert interactive.user_inputs[call_id]["approved"] is (decision == "allow_once")
                 resumed.append(task["id"])
