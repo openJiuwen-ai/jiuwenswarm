@@ -138,7 +138,7 @@ test('web client transport subscribes to the three frames and connection state',
   assert.equal(transport.getConnectionState(), 'connected');
 
   off();
-  assert.equal(client.offCalls, 4);
+  assert.equal(client.offCalls, 5);
   client.emit('webui.render', { revision: 3 });
   assert.equal(received.length, 3);
 });
@@ -187,7 +187,7 @@ test('trusted client declarations configure the capability host and unsubscribe 
   capabilities.configure = () => { throw new Error('configuration rejected'); };
   assert.doesNotThrow(() => client.emit('client.declarations', {}));
   off();
-  assert.equal(client.offCalls, 6);
+  assert.equal(client.offCalls, 7);
   client.emit('client.declarations', snapshot);
   client.emit('client.operation', {});
   assert.equal(calls.length, 2);
@@ -219,4 +219,54 @@ test('web client transport returns null for failures and malformed receipts', as
     }),
     null,
   );
+});
+
+
+test('installation events are validated and the subscription is released', () => {
+  const client = createFakeClient();
+  const transport = createWebClientTransport(client);
+  const received = [];
+  const off = transport.subscribe({
+    onRenderFrame() {},
+    onClearFrame() {},
+    onErrorFrame() {},
+    onConnectionStateChange() {},
+    onPackagesInstalled: (ids, sessionId) => received.push([ids, sessionId]),
+  });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.new'], session_id: 's1' });
+  client.emit('extensions.v2.installed', { package_ids: [1] });
+  client.emit('extensions.v2.installed', { package_ids: 'pkg.new' });
+  assert.deepEqual(received, [[['pkg.new'], 's1']]);
+  off();
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.new'] });
+  assert.equal(received.length, 1);
+});
+
+test('installation subscription coexists with client capability validation and declarations', () => {
+  const client = createFakeClient();
+  const calls = [];
+  const capabilities = {
+    configure: (snapshot) => calls.push(['configure', snapshot]),
+    acceptOperation: (operation) => calls.push(['operation', operation]),
+    acceptsFrame: () => false,
+  };
+  const transport = createWebClientTransport(client, capabilities);
+  const off = transport.subscribe({
+    onRenderFrame: () => calls.push(['render']),
+    onClearFrame() {},
+    onErrorFrame() {},
+    onConnectionStateChange() {},
+    onPackagesInstalled: (ids) => calls.push(['installed', ids]),
+  });
+  client.emit('client.declarations', { packages: [] });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.new'] });
+  client.emit('client.operation', { operation: 'example' });
+  client.emit('webui.render', { revision: 1 });
+  assert.deepEqual(calls, [
+    ['configure', { packages: [] }],
+    ['installed', ['pkg.new']],
+    ['operation', { operation: 'example' }],
+  ]);
+  off();
+  assert.equal(client.offCalls, 7);
 });

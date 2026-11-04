@@ -23,6 +23,7 @@ export interface MockWebUITransport extends WebUITransport {
   injectRenderFrame(payload: unknown): void;
   injectClearFrame(payload: unknown): void;
   injectErrorFrame(payload: unknown): void;
+  injectPackagesInstalled(packageIds: readonly string[], sessionId?: string): void;
   setConnectionState(state: WebUIConnectionState): void;
   resolveNextDispatch(receipt: WebUIDispatchReceipt | null): void;
 }
@@ -71,6 +72,9 @@ export function createMockTransport(options: MockTransportOptions = {}): MockWeb
     },
     injectClearFrame(payload) {
       broadcast((handler) => handler.onClearFrame(payload));
+    },
+    injectPackagesInstalled(packageIds, sessionId) {
+      broadcast((handler) => handler.onPackagesInstalled?.(packageIds, sessionId));
     },
     injectErrorFrame(payload) {
       broadcast((handler) => handler.onErrorFrame(payload));

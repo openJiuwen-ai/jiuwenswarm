@@ -51,16 +51,14 @@ class TokenWeatherHandlers:
         ops: EventHandlerOps | None,
         next_handler: EventNext,
     ) -> ContextUsageOutput:
-        del next_handler
         update = event.event_input
         if not isinstance(update, ContextUsageUpdate):
             return ContextUsageOutput(accepted=False)
         state = self._state(update.session_id)
-        if not state.apply(update):
-            return ContextUsageOutput(accepted=True, request_id=update.request_id)
-        await self._render_turn(ops, update)
-        await self._render_summary(ops, update.session_id, state)
-        return ContextUsageOutput(accepted=True, request_id=update.request_id)
+        if state.apply(update):
+            await self._render_turn(ops, update)
+            await self._render_summary(ops, update.session_id, state)
+        return await next_handler(event)
 
     async def on_ready(
         self,
