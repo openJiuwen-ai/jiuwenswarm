@@ -247,7 +247,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
 
     Returns ``None`` when *target_sid* has no pending interrupt, ``_UNPROVEN``
     when the interrupt cannot be matched to the context, otherwise
-    ``(loop_session, state, context, context_engine, active_ids, stale_ids)``.
+    ``(loop_session, state, context, context_engine, active_ids, stale_ids, state_signature)``.
     A tool call is stale when its result is already in the context tail.
     """
     loop_session = getattr(instance, "_loop_session", None)
@@ -323,7 +323,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
             tail_id_set.add(tool_call_id)
     active_ids = [tid for tid in pending_tool_ids if tid not in tail_id_set]
     stale_ids = [tid for tid in pending_tool_ids if tid in tail_id_set]
-    return loop_session, state, context, context_engine, active_ids, stale_ids
+    return loop_session, state, context, context_engine, active_ids, stale_ids, state_signature
 
 
 def has_live_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None) -> bool:
@@ -387,13 +387,13 @@ async def discard_pending_permission_interrupt_for_target(
             return True
         if split is None or split is _UNPROVEN:
             return False
-        loop_session, state, context, context_engine, active_ids, stale_ids = split
+        loop_session, state, context, context_engine, active_ids, stale_ids, state_signature = split
         if only_stale and active_ids:
             return False
 
         added = 0
         try:
-            names = {call.id: call.name for call in state.ai_message.tool_calls}
+            names = dict(state_signature)
             client_tool_ids = {call.tool_call_id for call in _paused_client_tool_calls(state)}
             for tool_call_id in active_ids:
                 await context.add_messages(
