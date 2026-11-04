@@ -42,18 +42,14 @@ The four quick actions below the input use this same normal size.
 
 Turn slots use the actual `requestId` as `instance_key`. Usage appears as a label such as `用量：22.8M tokens`,
 using `Button(type="text", size="md", icon="database")` without a `ui.click` binding, for display only.
-The total comes from `turn.total_tokens` returned by `ops.session.usage()`.
-It represents the provider's round total, rather than context occupancy or a cumulative session bill.
-The plugin listens for `context.usage.updated`, reads the bound host snapshot, and updates only the matching session and requestId.
-Repeated notifications replace the value without adding it. Reported zero is displayed as `用量：0 tokens`;
-missing totals show "not reported", without fixed values or a total inferred from input and output counts.
+The total comes from `total_tokens` on the `context.usage.updated` notification.
+It is the provider's round total, not context occupancy or a cumulative bill.
+`ops.session.usage()` reports context-window information and no longer exposes a round `turn` field.
 
-The first mount queries available usage; later ready events retain cached values. Notifications received before mounting are cached too.
-"Refresh round" queries usage again, saves the current filter summary, and displays that round's refresh count.
-"Round details" displays its requestId and saved summary. Other rounds and sessions do not overwrite these values.
-Reactivating the plugin clears its cache. The public query provides only the latest available round, so recovery requires a matching requestId;
-other historical rounds show "not reported". Host usage notifications or saved provider summaries are required;
-runtime modes that provide neither keep the "not reported" display.
+- Notifications replace the value for the same session and requestId and continue the handler chain.
+- The package stores round totals in its own store. Mounting, reloading and reactivation recover only the matching record.
+- Reported zero is displayed as `用量：0 tokens`. Missing notifications or records show "not reported"; input/output counts are not added to infer a total.
+- "Refresh round" reads the stored value and updates the filter summary and refresh count. "Round details" displays the requestId and saved summary. Other rounds and sessions remain independent.
 
 The round menu uses `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")` and keeps its muted background while open.
 A plugin-rendered `Button(value="👍", type="text")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.

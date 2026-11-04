@@ -391,3 +391,36 @@ jiuwenswarm chat --jsonl "analyze README" | jq
 ### Relationship with TUI
 
 `jiuwenswarm chat` reuses the TUI's `/tui` route (`channel_id="tui"`), sharing the same MessageHandler and AgentServer pipeline. Only one TUI/CLI connection per `channel_id="tui"` is active at a time — opening the TUI while `jiuwenswarm chat` is running (or vice versa) will replace the previous WebSocket client on that channel. The first version of the terminal CLI does not aim to replicate all TUI slash commands.
+
+
+## Extension package management
+
+Inside a running Swarm agent, use the existing terminal tool to invoke the host CLI.
+The host supplies the current instance and a local management capability; prompts need no Gateway address or login credentials.
+
+```text
+jiuwenswarm extension install "<absolute ZIP path>" --json
+jiuwenswarm extension query "<package_id>" --json
+jiuwenswarm extension reload "<package_id>" --json
+jiuwenswarm extension uninstall "<package_id>" --json
+```
+
+Source and Wheel installations use the command above. EXE and DMG installations use the existing backend executable
+identified by `JIUWENSWARM_EXECUTABLE`, followed by the same `extension` arguments. In Bash:
+
+```bash
+"$JIUWENSWARM_EXECUTABLE" extension install "<absolute ZIP path>" --json
+```
+
+In PowerShell, use `& $env:JIUWENSWARM_EXECUTABLE extension ...`.
+
+- Install selects the host from the final ZIP manifest. Use `--domain gateway` for subsequent Gateway queries, reloads and removals.
+- Commands affect the selected host process. The ZIP must be readable by that host; the CLI does not upload files.
+- Existing copies are not automatically replaced. Reload reads the installed copy, not the original ZIP.
+- Successful installation notifies mounted WebUI owners. Notification delivery does not prove the UI or business effect was verified.
+- Exit codes: 0 success; 1 confirmed failure or state mismatch; 2 failure before mutation; 3 uncertain operation or verification.
+  For an uncertain outcome, query state without repeating the mutation.
+- HOST_UNAVAILABLE means the local runtime context is missing or unavailable. The CLI never scans ports.
+  Remote sandboxes require their own network and file mappings.
+
+Restart the host after updating the implementation. Desktop applications require a new build containing the command.

@@ -59,6 +59,7 @@ class WebUIRuntime:
         self.registry = registry or ActiveRenderRegistry()
         self._catalog = catalog or WebUICatalogService(lambda: ())
         self._locate_workspace = workspace_locator
+        self._ready_clients: dict[tuple[str, str], None] = {}
         self._connections: WeakValueDictionary[str, WebUIConnectionContext] = WeakValueDictionary()
 
     def register_event_types(self, bus: ExtensionEventBus | None = None) -> None:
@@ -173,8 +174,26 @@ class WebUIRuntime:
         with bind_connection(connection):
             yield
 
+    def remember_ready_client(self, connection_id: str, session_id: str) -> None:
+        """Remember validated browser ownership even before a package contributes UI."""
+        if connection_id:
+            self._ready_clients[(connection_id, session_id)] = None
+            while len(self._ready_clients) > 1024:
+                self._ready_clients.pop(next(iter(self._ready_clients)))
+
+    async def notify_packages_installed(self, package_ids: list[str]) -> bool:
+        """Ask connected owners to replay ui.ready for newly installed packages."""
+        delivered = False
+        for connection_id, session_id in tuple(self._ready_clients):
+            sent = await self.transport.notify_packages_installed(connection_id, session_id, package_ids)
+            delivered = sent or delivered
+        return delivered
+
     async def drop_connection(self, connection_id: str) -> None:
         """Release application views and prevent pending calls from recreating them."""
+        for key in tuple(self._ready_clients):
+            if key[0] == connection_id:
+                self._ready_clients.pop(key, None)
         connection = self._connections.get(connection_id)
         if connection is not None:
             connection.closed = True
@@ -197,12 +216,16 @@ class WebUIRuntime:
     async def drop_session(self, session_id: str) -> None:
         """Remove all views of a session and notify the browser."""
 
+        for key in tuple(self._ready_clients):
+            if key[1] == session_id:
+                self._ready_clients.pop(key, None)
         for instance in self.registry.drop_session(session_id):
             await self.transport.send_clear(clear_frame(instance, reason="session_closed"))
 
     async def shutdown(self) -> None:
         """Remove every active view."""
 
+        self._ready_clients.clear()
         for connection in tuple(self._connections.values()):
             connection.closed = True
         for instance in self.registry.snapshot():
