@@ -1365,7 +1365,9 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
-        self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
+        self._jiuwenmate_web = JiuwenMateWebAdapter(
+            push=self.send_push, inspect_feishu_group=self._inspect_feishu_group,
+        )
         self._adapter_registry = AdapterRegistry()
         for adapter in (
             VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
