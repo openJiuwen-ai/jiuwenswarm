@@ -55,8 +55,6 @@ if TYPE_CHECKING:
         ShareImageRenderAuth,
     )
 
-<<<<<<< HEAD
-=======
 _share_image_export_manager: ShareImageExportManager | None = None
 _share_image_export_manager_lock = threading.Lock()
 
@@ -68,8 +66,6 @@ _SKILL_UPLOAD_WRITE_PATHS = frozenset(
         "/file-api/skills/create-from-knowledge",
     }
 )
-
->>>>>>> d665edb54 (feat(skill): enterprise upload permission gate and approval UI)
 
 class _BadRequestError(ValueError):
     """Client-supplied input the web handler cannot process.

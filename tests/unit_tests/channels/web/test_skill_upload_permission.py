@@ -86,7 +86,7 @@ def test_enabled_requires_manager_base_url(monkeypatch: pytest.MonkeyPatch):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_token_rejected_401():
+def test_missing_token_rejected_401(enforce):
     with pytest.raises(SkillUploadPermissionError) as exc:
         check_skill_upload_permission(authorization=None)
     assert exc.value.status == 401
@@ -232,7 +232,12 @@ def test_upload_temp_gate_blocks_unauthorized(upload_server, monkeypatch: pytest
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     port, upload_root = upload_server
     connection = HTTPConnection("127.0.0.1", port, timeout=5)
-    connection.request("POST", "/file-api/skills/upload-temp", body=b"", headers={})
+    connection.request(
+        "POST",
+        "/file-api/skills/upload-temp",
+        body=b"",
+        headers={"Authorization": "Bearer token-unauthorized"},
+    )
     response = connection.getresponse()
     payload = json.loads(response.read())
     assert response.status == 403
@@ -288,7 +293,12 @@ def test_import_gate_blocks_unauthorized(upload_server, monkeypatch: pytest.Monk
     monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: _manager_response_ok(False))
     port, _ = upload_server
     connection = HTTPConnection("127.0.0.1", port, timeout=5)
-    connection.request("POST", "/file-api/skills/import", body=b"", headers={})
+    connection.request(
+        "POST",
+        "/file-api/skills/import",
+        body=b"",
+        headers={"Authorization": "Bearer token-unauthorized"},
+    )
     response = connection.getresponse()
     payload = json.loads(response.read())
     assert response.status == 403
