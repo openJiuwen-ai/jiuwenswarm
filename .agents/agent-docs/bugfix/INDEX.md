@@ -1,8 +1,8 @@
----
-title: 故障修复 B索引
-author: openjiuwen_ai
-author_email: openjiuwen_ai@163.com
-generated: true
+---
+title: 故障修复 B索引
+author: openjiuwen_ai
+author_email: openjiuwen_ai@163.com
+generated: true
 ---
 
 # 故障修复 B索引
