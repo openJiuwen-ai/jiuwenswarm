@@ -435,6 +435,13 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - **硬依赖：** 新 Core 压缩前 Hook、Processor 安全候选/延迟副作用、Extension Runtime 当前包调用有效性校验；依赖 Core 新版本，不能作为 Server-only 功能交付。与 send/receive 或七查询无新增运行时硬依赖。
 - **编号登记：** 按用户要求接续当前目录：features/F_28_session-compact.md 与 specs/S_15_session-compact.md；负责人刘瑜。旧编号 F30/S17 已在本 PR 重命名并同步引用，已合入文档不重排。本次明确采用现存目录连续编号口径；合入前核对并行新增。不另建 designs/session-compact 文档。
 
+### EXTV2-27 会话凭据授权句柄
+
+- **特性与规约：** [F_29 session.authorize / ops.session.authorize](../features/F_29_session-authorize.md)、[S_16](../specs/S_16_session-authorize.md)。沿用已登记的授权编号，负责人刘瑜。
+- **范围：** 无参 Ops；同名事件空输入、value/deny 输出；宿主显式绑定 Anthropic/OpenAI 凭据，签发绑定原调用包、会话与激活代次的不透明 handle。
+- **边界：** 平台尚未自动采集真实凭据；未绑定时返回 None。HTTP 消费、OAuth 和登录流程另行接入。
+- **验证入口：** F_29 第 6 节与 tests/unit_tests/extensions_v2/test_session_authorize.py；状态见第 4 节。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -566,6 +573,7 @@ flowchart LR
 | EXTV2-24 跨会话接收入队前扩展 | 已开发 | 刘瑜 | 与 EXTV2-23 同 PR，待合入 | 同一组证据，覆盖改写/消费、目标上下文、来源保护和取消，不重复计数；见 F_26 第 6 节 | 2026-11-02 |
 | EXTV2-25 store 持久化接入 | 已开发 | 李志远 | 本 PR，待合入 | 宿主目录注入、清理回调、store_probe 与专项/全量回归见 F_27 | 2026-11-03 |
 | EXTV2-26 会话压缩与压缩前扩展 | 接口已开发；主流程未接入 | 刘瑜 | [Server !109](https://gitcode.com/huenrui_/jiuwenswarm/pull/109)；先合入 [Core !125](https://gitcode.com/huenrui_/agent-core/pull/125)，均待合入 | 当前接口阶段：Core 定向 31＋原生回归 139＝170 项通过；Server 85＋真实安装包 1＝86 项通过。默认 Ops 明确 NOT_INTEGRATED；独立受控绑定验证完整层级；旧真实模型证据仅为历史，见 F_28 §6.3 / S_15 | 2026-11-03 |
+| EXTV2-27 会话凭据授权句柄 | 已开发 | 刘瑜 | [!114](https://gitcode.com/huenrui_/jiuwenswarm/pull/114)，待合入 | 宿主显式绑定、Ops/Event 链、凭据隔离与句柄撤销验证见 F_29 第 6 节 | 2026-11-04 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
