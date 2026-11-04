@@ -3,7 +3,7 @@
 """Component rules for the Gateway-owned application slots.
 
 The vocabulary matches the browser component catalog, but this copy is the
-Gateway contract: it carries the Form / FormItem / Dropdown interaction
+Gateway contract: it carries the Form / Form.Item / Dropdown interaction
 components a package needs for an application-slot view. The AgentServer copy
 does not enable them, so the two files intentionally diverge here.
 """
@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
+from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
 def token(*values: str) -> dict[str, Any]:
@@ -52,7 +53,12 @@ FIELD_NAME = {"kind": "string", "minBytes": 1, "maxBytes": 200}
 FORM_RULE = obj({
     "required": BOOL, "min": INTEGER, "max": INTEGER, "pattern": TEXT, "message": TEXT,
 })
-MENU_ITEM = obj({"key": FIELD_NAME, "label": TEXT}, "key", "label")
+MENU_ITEM = union(
+    obj({"type": token("item"), "key": FIELD_NAME, "label": union(TEXT, {"kind": "nodes"}),
+         "disabled": BOOL, "danger": BOOL}, "key", "label"),
+    obj({"type": token("divider"), "key": FIELD_NAME}, "type"),
+)
+DIMENSION = union(NUMBER, TEXT)
 TREE_OPTION = obj({
     "key": TEXT, "value": TEXT, "title": TEXT, "disabled": BOOL, "disableCheckbox": BOOL,
     "selectable": BOOL, "checkable": BOOL, "children": array({"kind": "tree-option"}),
@@ -67,10 +73,14 @@ _FILE_NODE: dict[str, Any] = obj({
 # The same rule vocabulary as catalog/types.ts, without UI adapters or callbacks.
 COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Box": {"props": {
-        "direction": token("row", "column"), "gap": token("none", "sm", "md", "lg"),
+        "direction": token("row", "column"), "gap": union(token("none", "sm", "md", "lg"), {"kind": "number", "min": 0}),
         "align": token("stretch", "start", "center", "end", "baseline"),
         "justify": token("start", "center", "end", "between", "around", "evenly"),
         "wrap": BOOL, "flex": {"kind": "number", "min": 0, "max": 1000},
+        "width": DIMENSION, "height": DIMENSION, "minHeight": DIMENSION, "maxWidth": DIMENSION,
+        "marginInline": DIMENSION, "padding": token("none", "sm", "md", "lg"),
+        "backgroundImage": TEXT, "backgroundFit": token("cover", "contain"),
+        "visibleFrom": token("sm", "md", "lg"),
     }, "children": True},
     "Text": {"props": {
         "value": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
@@ -84,11 +94,11 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         # Name of a Form in the same render tree. When present the browser
         # validates that form and sends its field values with ``ui.click``.
         "form": FIELD_NAME,
-    }, "events": {"ui.click": NO_DATA}},
+    }, "events": {"ui.click": {"kind": "record", "value": TEXT}}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
         "allowClear": BOOL, "showCount": BOOL, "type": token("text", "email", "tel", "url", "password"),
-        "readOnly": BOOL,
+        "readOnly": BOOL, "autoComplete": TEXT,
     }, "events": {
         "ui.click": VALUE_TEXT, "ui.change": obj({"value": TEXT, "isComposing": BOOL}, "value", "isComposing"),
         "ui.press_enter": VALUE_TEXT,
@@ -135,6 +145,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Image": {"props": {
         "src": TEXT, "alt": TEXT, "width": union(NUMBER, TEXT), "height": union(NUMBER, TEXT),
         "fallback": TEXT, "preview": union(BOOL, obj({"src": TEXT}, "src")),
+        "fit": token("contain", "cover"),
     }, "required": ("src",)},
     "Divider": {"props": {
         "children": TEXT, "orientation": token("horizontal", "vertical"), "variant": token("solid", "dashed", "dotted"),
@@ -151,16 +162,22 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }},
     "Form": {"props": {
         "name": FIELD_NAME, "layout": token("vertical", "horizontal", "inline"), "disabled": BOOL,
-        "ariaLabel": TEXT,
-    }, "required": ("name",), "children": True, "childComponents": ("FormItem",)},
-    "FormItem": {"props": {
+        "ariaLabel": TEXT, "requiredMark": BOOL,
+    }, "required": ("name",), "children": True, "childComponents": ("Form.Item",)},
+    "Form.Item": {"props": {
         "name": FIELD_NAME, "label": TEXT, "rules": array(FORM_RULE),
     }, "required": ("name",), "children": True, "childComponents": ("Input",)},
     "Dropdown": {"props": {
-        "label": TEXT, "trigger": token("click", "hover"), "disabled": BOOL,
-        "placement": token("bottomLeft", "bottom", "bottomRight", "topLeft", "top", "topRight"),
+        "trigger": token("click", "hover"), "disabled": BOOL,
+        "icon": token(*WEBUI_ICON_NAMES), "ariaLabel": TEXT,
+        "placement": token("bottomLeft", "bottom", "bottomRight", "topLeft", "top", "topRight",
+                           "left", "leftTop", "leftBottom", "right", "rightTop", "rightBottom"),
+        "align": obj({"points": array(token("tl", "tc", "tr", "cl", "cc", "cr", "bl", "bc", "br")),
+                      "offset": array({"kind": "number", "min": -128, "max": 128})}, "points"),
+        "autoFocus": BOOL, "destroyOnHidden": BOOL,
+        "styles": obj({"root": obj({"width": {"kind": "number", "min": 0, "max": 4096}})}),
         "items": array(MENU_ITEM),
-    }, "required": ("items",), "children": True},
+    }, "required": ("items",), "children": True, "events": {"ui.select": obj({"key": TEXT}, "key")}},
     "FileTree": {
         "props": {
             "treeData": array(_FILE_NODE), "selectedKey": union(TEXT, NIL), "expandedKeys": array(TEXT),
@@ -350,6 +367,15 @@ def valid_url(value: str, *, iframe: bool = False) -> bool:
         return False
 
 
+def _dimension_allowed(value: Any, *, allow_auto: bool) -> bool:
+    if finite_number(value):
+        return 0 <= value <= 4096
+    if value == "auto":
+        return allow_auto
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(px|%)", value) if isinstance(value, str) else None
+    return match is not None and float(match[1]) <= (100 if match[2] == "%" else 4096)
+
+
 def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     """Validate types, required fields and dependent component properties."""
     rule = COMPONENT_RULES[component]
@@ -358,18 +384,32 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     for key, value in props.items():
         if key not in rule["props"] or not check_value(rule["props"][key], value):
             return f"invalid {component}.{key}"
-    if component in ("Form", "FormItem") and not props["name"].strip():
+    if component in ("Form", "Form.Item") and not props["name"].strip():
         return "field name is required"
-    if component == "FormItem" and not _form_rules_ok(props.get("rules", ())):
-        return "invalid FormItem.rules"
+    if component == "Form.Item" and not _form_rules_ok(props.get("rules", ())):
+        return "invalid Form.Item.rules"
+    if component == "Form.Item" and props["name"] in {"__proto__", "constructor", "prototype"}:
+        return "invalid field name"
     if component == "Button" and "form" in props and not props["form"].strip():
         return "form reference is required"
     if component == "Dropdown":
+        if props.get("icon") and not props.get("ariaLabel", "").strip():
+            return "icon dropdowns require a non-empty ariaLabel"
         items = props["items"]
-        if not _unique([item["key"] for item in items]) or any(
-            not item["key"].strip() or not item["label"].strip() for item in items
-        ):
+        keys = [item["key"] for item in items if "key" in item]
+        if not items or not _unique(keys) or any(not key.strip() for key in keys) or any(
+            item.get("type") != "divider" and not item["label"] for item in items
+        ) or any(isinstance(item.get("label"), str) and not item["label"].strip() for item in items):
             return "invalid menu items"
+        align = props.get("align")
+        if align and (len(align["points"]) != 2 or "offset" in align and len(align["offset"]) != 2):
+            return "invalid menu alignment"
+    if component == "Box":
+        for key in ("width", "height", "minHeight", "maxWidth", "marginInline"):
+            if key in props and not _dimension_allowed(props[key], allow_auto=key not in ("minHeight", "maxWidth")):
+                return "invalid Box dimension"
+        if "backgroundImage" in props and not valid_url(props["backgroundImage"]):
+            return "invalid background URL"
     if component == "Input" and "maxLength" in props:
         if any(len(props[key].encode("utf-16-le")) // 2 > props["maxLength"]
                for key in ("value", "defaultValue") if key in props):
@@ -475,6 +515,11 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
     rule = COMPONENT_RULES.get(component, {}).get("events", {}).get(event)
     if rule is None or not check_value(rule, data) or props.get("disabled") or props.get("loading"):
         return False
+    if component == "Button":
+        return "form" in props or not data
+    if component == "Dropdown":
+        return any(item.get("type") != "divider" and not item.get("disabled") and item["key"] == data["key"]
+                   for item in props["items"])
     if component == "Input":
         return (not (props.get("readOnly") and event != "ui.click")
                 and ("maxLength" not in props or len(data["value"].encode("utf-16-le")) // 2 <= props["maxLength"]))

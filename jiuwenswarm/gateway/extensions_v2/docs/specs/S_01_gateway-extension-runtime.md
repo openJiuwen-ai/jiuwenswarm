@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-04 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -18,7 +18,7 @@
 | 入口 | 签名 | 语义 |
 | --- | --- | --- |
 | `init_gateway_extensions` | `async (channel, config=None) -> GatewayRuntime \| None` | 装配并启动；已装配时返回同一实例；禁用或失败返回 `None` |
-| `intercept_gateway_frame` | `async (ws, req_id, method, params, headers=None) -> tuple[bool, dict]` | 返回 `(visited, params)`；`visited=True` 表示已处置，原生分发必须跳过 |
+| `intercept_gateway_frame` | `async (ws, req_id, method, params, headers=None, *, request_context=None) -> tuple[bool, dict]` | 返回 `(visited, params)`；`visited=True` 表示已处置，原生分发必须跳过 |
 | `notify_gateway_disconnect` | `async (ws) -> None` | 清理该连接的 connection 作用域状态；不抛异常 |
 
 三个入口均幂等或 fail-open：任何异常都不得阻断 Gateway 的原生路径。
@@ -36,6 +36,7 @@
 | `http.max_body_bytes` | int | `1048576` | 上限 `4194304`；非法值回落默认 |
 | `http.follow_redirects` | bool | `false` | 非布尔值回落 `false` |
 | `auth.enabled` | bool | `true` | `false` 时门禁不生效，等价于无准入 |
+| `client_grants` | map[str, list[str]] | `{}` | 按包显式授予浏览器能力；支持 `request.bind.gateway`、`local_storage.write`、`page.reload`，详见 [浏览器接入规约](S_06_local-browser-bridge.md) |
 
 配置读取异常时不抛错，等价于空配置。
 
@@ -50,6 +51,7 @@
 | `domain` | `gateway` 才由 Gateway 加载；缺省视为 `agent`，只允许 `agent` / `gateway` |
 | `auth_provider` | 可选布尔，缺省 `false`。声明 `true` 表示该包拥有登录流程，门禁仅在有此类包时生效；**该包必须至少注册一个 handler**——平台只按此声明决定门禁，不校验 handler 数量，声明了却一个都没注册会导致门禁打开但无登录动作 |
 | `modules` | 入口模块列表，执行后调用 `create_extension(registrar)` |
+| `ui` / `client` | 可选映射，缺省为空；声明贡献和请求绑定，详见 [浏览器接入规约](S_06_local-browser-bridge.md) |
 | Handler 层级 | 只能是 USER；登记按包事务化，任一声明失败则整包回滚并报 `FAILED`，不会半注册 |
 
 版本选择：同一 `package.id` 取最高版本目录。
@@ -60,7 +62,8 @@
 | --- | --- | --- | --- |
 | `gateway.request` | `GatewayRequestInput` | `GatewayRequestOutput` | 校验 method，`forward` |
 | `ui.render` | `UiRenderInput` | `UiRenderOutput` | 校验并下发 |
-| `ui.click` | `UiClickInput` | `UiClickOutput` | 校验实例并回执 |
+| `ui.ready` / `ui.click` / `ui.select` / `ui.change` / `ui.press_enter` / `ui.search` / `ui.clear` | `UiActionInput` | `UiActionOutput` | 默认未接管；浏览器分派器在触发前校验当前实例及动作 |
+| `gateway.disconnect` | `GatewayDisconnectInput` | 无 | 通知插件连接结束，再清理连接资源 |
 
 所有事件名满足 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`；重复注册同名事件返回 `EVENTS_REGISTRATION_INVALID`。
 
@@ -75,6 +78,10 @@
 | 其他 | — | 等同 `forward` |
 
 `params` 冻结为只读映射；`session_id` 从 params 的 `session_id` 提取；`headers` 来自浏览器帧的 `request_context.headers`，键统一小写。
+
+完整 `request_context` 独立保留，不合并进 `params`。`webui.dispatch` 同样先经过 USER 请求策略；
+继续处理的客户端能力包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
+HTTP 接入将合法的默认 `forward` 结果继续交给原接口，不要求 `handled=true`。具体范围见 [浏览器接入规约](S_06_local-browser-bridge.md)。
 
 ## 6. 认证门禁契约
 

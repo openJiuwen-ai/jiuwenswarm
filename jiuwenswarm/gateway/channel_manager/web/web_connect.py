@@ -1896,10 +1896,12 @@ class WebChannel(BaseWsChannel):
         # token 校验由 USER 扩展包负责。
         from jiuwenswarm.gateway.extensions_v2 import intercept_gateway_frame
 
-        _request_context = data.get("request_context")
-        _headers = _request_context.get("headers") if isinstance(_request_context, dict) else None
+        request_context = data.get("request_context")
+        if request_context is not None and not isinstance(request_context, dict):
+            await self.send_response(ws, req_id, ok=False, error="invalid request context", code="BAD_REQUEST")
+            return
         _visited, params = await intercept_gateway_frame(
-            ws, req_id, method, params, _headers if isinstance(_headers, dict) else None
+            ws, req_id, method, params, request_context=request_context,
         )
         if _visited:
             return

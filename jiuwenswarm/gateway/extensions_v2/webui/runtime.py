@@ -117,3 +117,4 @@ class GatewayWebUIRuntime:
         for instance in self.registry.snapshot():
             await self.transport.send_clear(clear_frame(instance, reason="shutdown"))
             self.registry.drop_instance(instance.target)
+        self.registry.clear()

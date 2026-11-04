@@ -2,8 +2,8 @@
 
 """WebUI event inputs, outputs and downstream frame models.
 
-Copied from ``jiuwenswarm/extensions_v2/webui/models.py``. Both copies must
-change together; the Gateway runtime never imports the AgentServer package.
+Rendering shares the AgentServer vocabulary. Gateway actions additionally
+carry the browser request context; the runtimes never import each other.
 """
 
 from __future__ import annotations
@@ -120,6 +120,7 @@ class UiActionInput:
     event_type: str
     target: RenderTarget
     payload: Mapping[str, Any] = field(default_factory=_empty_props)
+    request_context: Mapping[str, Any] = field(default_factory=_empty_props)
 
 
 @dataclass(frozen=True, slots=True)

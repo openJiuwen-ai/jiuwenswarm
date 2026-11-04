@@ -8,7 +8,7 @@
 | 编号 / slug | `S_02 / ui-render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 6 节](../designs/extensions-v2-architecture.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-04 |
 | 契约状态 | 已实现；本文是 Gateway 侧 `ui.render` 与 Ops 契约的唯一维护位置 |
 
 本文维护 Gateway 侧渲染的对外契约：事件与 Ops 形状、槽位表、组件目录、下行帧、尺寸上限与错误码。平台不预置任何视图：`ui.render` 只负责校验并投递扩展包提交的树。与 AgentServer 同名的模型保持字段一致；差异只在第 6 节列出的必要项。
@@ -88,12 +88,16 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | 槽位表只含两个 application 槽位 | Gateway 不渲染会话槽位，避免与 AgentServer 双写同一实例 |
 | 传输层按 `ws_id` 直接 `send_event` | Gateway 拥有 socket，不经过 AgentServer 推送通道 |
 | 连接事实来自 `SessionContext.metadata` | Gateway 没有 AgentServer 的 contextvar 调用上下文 |
-| 组件目录补 `Form` / `FormItem` / `Dropdown`，`Button` 增加 `form` | 浏览器组件契约要求表单用 `Form.name` + `FormItem.name` 描述，按钮通过 `form` 引用同树 Form；`Input` 不带 `name` |
+| 组件目录补 `Form` / `Form.Item` / `Dropdown`，`Button` 增加 `form` | 浏览器组件契约要求表单用 `Form.name` + `Form.Item.name` 描述，按钮通过 `form` 引用同树 Form；`Input` 不带 `name` |
 | 无 `contributions.py` 与目录服务 | 槽位固定，扩展包不能新增槽位 |
 
-表单组件契约：`Form` 必须有唯一 `name`，子节点只能是 `FormItem`；`FormItem` 必须有 `name`，子节点只能是 `Input`，可带 `rules`（`required` / `min` / `max` / `pattern` / `message`）；`Button.form` 必须引用同一棵树中的 `Form.name`。点击时前端按 `Form.name` 组装 `ui.click.data`。AgentServer 副本暂不引入这三条规则，两份 `component_rules.py` 在表单契约上有意分歧。
+表单组件契约：`Form` 必须有唯一 `name` 和非空子节点，子节点只能是 `Form.Item`；`Form.Item` 的 `name` 在同一表单内唯一且不能是 `__proto__`、`constructor` 或 `prototype`，必须只有一个不声明远程事件的 `Input` 子节点，可带 `rules`（`required` / `min` / `max` / `pattern` / `message`）；`Button.form` 必须引用同一棵树中的 `Form.name`。点击时前端按 `Form.name` 组装 `ui.click.data`。AgentServer 副本暂不引入这三条规则，两份 `component_rules.py` 在表单契约上有意分歧。
 
-除上表外，`webui/models.py`、`schema.py`、`registry.py`、`component_rules.py` 与 AgentServer 保持同构，修改时两侧同步。
+Gateway 的组件规则与浏览器组件目录对齐；运行时与 AgentServer 分别持有实例。通用模型保持对应，浏览器能力的激活归属及版本生命周期由 [S_06](S_06_local-browser-bridge.md) 维护，不跨宿主 import。
+
+`Box.gap` 接受 none/sm/md/lg 或非负有限数值（px）。Dropdown 只允许一个触发源：白名单图标与非空 ariaLabel，或一个展示子节点；不接受旧 label 属性。图标白名单从前端 JSON 生成到两个宿主各自的模块。表单、菜单和布局的共享验证向量位于前端 tests/fixtures/webuiGatewayCases.json。
+
+Form.Item is the canonical field-node name. Field names are unique within a form, reserved prototype names and remote input events are rejected, and forms require fields. Box accepts numeric non-negative finite gaps. Dropdown accepts exactly one icon or display trigger source; icon triggers require an accessible label. Shared vectors verify browser and Gateway acceptance.
 
 ## 7. 错误码
 
@@ -120,4 +124,4 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | 未知组件与未知槽位拒绝 | `test_gateway_ui_render.py` |
 | clear 模式 | `test_gateway_ui_render.py` |
 | 目标连接隔离与断线清理 | `test_gateway_ui_render.py` |
-| 组件目录覆盖 `Form` / `FormItem` / `Button.form` / `Dropdown` | `test_gateway_ui_render.py` |
+| 组件目录覆盖 `Form` / `Form.Item` / `Button.form` / `Dropdown` | `test_gateway_ui_render.py` |

@@ -35,10 +35,11 @@
 - [启动装配与运行时](docs/features/F_01_assembly-and-runtime.md)：单例装配、顺序约束、零扩展快路径、渠道钩子与停机。
 - [`gateway.request` 与认证门禁](docs/features/F_02_gateway-request-and-auth-gate.md)：四路由语义、门禁放行条件与本地方法表。
 - [运行时规约](docs/specs/S_01_gateway-extension-runtime.md)：入口、配置、包、事件、路由、错误码与不变量的唯一维护位置。
-- 待建立：`docs/features/F_03_render-service.md`、`F_04_ui-store.md`、`F_05_ui-click.md`
-  与 `docs/specs/S_02_ui-render.md`、`S_03_ui-store.md`、`S_04_ui-click.md`。
-- [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算、重定向策略与登录示例链路。
-- [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键、错误码与示例包契约。
+- [渲染服务](docs/features/F_03_render-service.md)与[渲染规约](docs/specs/S_02_ui-render.md)：应用级树、组件规则、实例版本与下行传输。
+- [浏览器桥接](docs/specs/S_06_local-browser-bridge.md)：声明、客户端操作、应用级交互与资源接入。
+- 待建立：ui.store 的浏览器订阅特性与规约；当前示例不依赖该能力。
+- [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算与重定向策略。
+- [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键与错误码。
 
 ### 代码入口
 
@@ -50,7 +51,8 @@
 - [event_types/](event_types/)：事件类型注册与匹配函数。
 - [core_handlers/](core_handlers/)：各事件的 CORE Handler。
 - [handler_ops/](handler_ops/)：`ops.build` 能力注册。
-- 待建立：[webui/](webui/) 渲染协议、校验、登记、传输与上行适配；[examples/auth_login_demo/](examples/auth_login_demo/) 登录鉴权示例包。
+- [webui/](webui/)：渲染协议、校验、登记、传输与上行适配。
+- [auth_login_demo/](../../extensions_v2/examples/auth_login_demo/)：统一示例目录中的登录鉴权包，声明 `domain: gateway`。
 
 ## 命名与编号
 

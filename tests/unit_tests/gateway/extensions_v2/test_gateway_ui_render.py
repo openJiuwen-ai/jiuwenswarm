@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
@@ -19,6 +22,40 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
     UiRenderInput,
     UiRenderOutput,
 )
+from jiuwenswarm.gateway.extensions_v2.webui.schema import validate_root
+from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
+
+
+def _contract_node(raw: dict) -> RenderNode:
+    props = dict(raw.get("props", {}))
+    content = "children" if raw["component"] == "Tabs" else "label" if raw["component"] == "Dropdown" else ""
+    if content:
+        props["items"] = [
+            {**item, content: tuple(_contract_node(child) for child in item[content])}
+            if isinstance(item.get(content), list) else dict(item)
+            for item in props["items"]
+        ]
+    return RenderNode(
+        component=raw["component"], props=props,
+        children=tuple(_contract_node(child) for child in raw.get("children", [])), events=raw.get("events"),
+    )
+
+
+CONTRACT_CASES = json.loads((Path(__file__).parents[4] / (
+    "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiGatewayCases.json"
+)).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", CONTRACT_CASES, ids=lambda case: case["name"])
+def test_gateway_component_contract_matches_browser(case):
+    assert validate_root(_contract_node(case["root"])).ok is case["valid"]
+
+
+def test_dropdown_accepts_the_shared_icon_whitelist():
+    for icon in WEBUI_ICON_NAMES:
+        assert validate_root(RenderNode(component="Dropdown", props={
+            "icon": icon, "ariaLabel": "Actions", "items": [{"key": "apply", "label": "Apply"}],
+        })).ok
 
 #: Header every authenticated frame carries; the gate only checks presence.
 AUTH_HEADERS = {"authorization": "Bearer tk_1"}
@@ -144,6 +181,7 @@ async def test_ops_ui_render_delivers_a_frame(tmp_path):
     assert "connection_id" not in payload["target"]
     assert "session_id" not in payload["target"]
     assert payload["root"]["component"] == "Box"
+    assert "activation_generation" not in payload, "ordinary UI packages do not require client declarations"
 
 
 async def test_revision_increases_per_instance(tmp_path):
@@ -183,7 +221,7 @@ async def test_form_form_item_and_dropdown_are_in_the_catalog(tmp_path):
                 props={"name": "prefs", "layout": "vertical"},
                 children=(
                     RenderNode(
-                        component="FormItem",
+                        component="Form.Item",
                         props={
                             "name": "nickname",
                             "label": "Nickname",
@@ -201,6 +239,7 @@ async def test_form_form_item_and_dropdown_are_in_the_catalog(tmp_path):
             RenderNode(
                 component="Dropdown",
                 props={"items": [{"key": "logout", "label": "Logout"}]},
+                children=(RenderNode(component="Text", props={"value": "User"}),),
             ),
         ),
     )
@@ -273,6 +312,27 @@ async def test_only_the_target_connection_receives_the_frame(tmp_path):
     assert runtime.channel.ws_by_id("ws-1") is not None
     assert runtime.channel.ws_by_id("ws-2") is None
     assert len(runtime.channel.events) == 1
+
+
+async def test_entry_can_reopen_after_clear_with_a_monotonic_revision(tmp_path):
+    runtime = await _runtime(tmp_path)
+    record = {"request": _render_request()}
+    runtime.publish(_package(_render_handler(record)))
+    ws = _ws()
+    try:
+        await runtime.intercept(ws, "open", "config.get", {}, AUTH_HEADERS)
+        record["request"] = _render_request(mode=RenderMode.CLEAR)
+        await runtime.intercept(ws, "clear", "config.get", {}, AUTH_HEADERS)
+        assert runtime.registry.snapshot() == ()
+        record["request"] = _render_request()
+        await runtime.intercept(ws, "reopen", "config.get", {}, AUTH_HEADERS)
+        assert [payload["revision"] for _, payload in runtime.channel.events] == [1, 2, 3]
+        await runtime.on_disconnect(ws)
+        assert runtime.registry.snapshot() == ()
+        await runtime.intercept(ws, "new-lifecycle", "config.get", {}, AUTH_HEADERS)
+        assert runtime.channel.events[-1][1]["revision"] == 1
+    finally:
+        await runtime.shutdown()
 
 
 async def test_disconnect_drops_application_instances(tmp_path):

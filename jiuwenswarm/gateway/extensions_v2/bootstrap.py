@@ -24,7 +24,8 @@ from jiuwenswarm.gateway.extensions_v2.core_handlers.request_core import build_r
 from jiuwenswarm.gateway.extensions_v2.event_types.gateway import register_gateway_request_events
 from jiuwenswarm.gateway.extensions_v2.handler_ops.gateway_ops import build_gateway_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
-from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST
+from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT, EVENT_UI_RENDER
+from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -35,12 +36,29 @@ def register_event_types(bus: ExtensionEventBus, runtime: GatewayRuntime) -> Non
 
     runtime.webui.register_event_types(bus)
     register_gateway_request_events(bus, build_request_core_handler())
+    runtime.browser.register_events(bus)
+    async def disconnect_core(event, ops, next_handler):
+        del event, ops, next_handler
+        return None
+    bus.register_event_type(EVENT_GATEWAY_DISCONNECT, match_pattern_subset, disconnect_core)
 
 
 def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[str]:
     """Register BUILTIN handlers and return their ids for shutdown."""
 
     handler_ids = [
+        bus.register_event_handler(
+            EVENT_UI_RENDER,
+            runtime.browser.build_render_guard_handler(),
+            {},
+            HandlerLevel.BUILTIN,
+        ),
+        bus.register_event_handler(
+            OPS_BUILD_EVENT_TYPE,
+            runtime.browser.build_ops_handler(),
+            {},
+            HandlerLevel.BUILTIN,
+        ),
         bus.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
             build_gateway_ops_build_handler(bus),
@@ -53,6 +71,14 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
         bus.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
             build_http_ops_build_handler(runtime.config.http),
+            {},
+            HandlerLevel.BUILTIN,
+        )
+    )
+    handler_ids.append(
+        bus.register_event_handler(
+            EVENT_GATEWAY_REQUEST,
+            runtime.browser.build_request_dispatch_handler(),
             {},
             HandlerLevel.BUILTIN,
         )
