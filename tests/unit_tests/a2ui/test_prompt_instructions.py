@@ -40,14 +40,14 @@ def test_a2ui_prompt_titles_input_components_with_text():
     en = build_a2ui_autonomy_instruction("en")
 
     assert "for TextField and Slider the inline label MUST" in en
-    assert "do NOT add an extra Text title above it" in en
+    assert "CheckBox.label MUST keep the descriptive text" in en
     assert '{"literalString": ""}' in en
     assert "Wrap each Text title and its input component together in a Column." in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "TextField 与 Slider 的内联 label" in zh
-    assert "不要在其正上方额外加 Text 标题" in zh
+    assert "CheckBox 的 label 必须保留描述文字" in zh
     assert '{"literalString": ""}' in zh
     assert "共同包在一个 Column 里。" in zh
 
