@@ -103,6 +103,17 @@ def apply_inject_general_purpose_excluded_tools_patch() -> bool:
     setattr(_inject_without_leader_tools, _INJECT_PATCH_MARKER, True)
     # getattr/setattr：避免 G.CLS.11（类外直接访问受保护成员）
     setattr(factory, "_inject_general_purpose_subagent", _inject_without_leader_tools)
+    try:
+        from openjiuwen.harness.subagent_runtime.fork_build import (
+            register_inherited_tool_filter,
+        )
+
+        register_inherited_tool_filter(filter_excluded_spawn_tools)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[excluded_spawn_tools] fork inherited-tool filter unavailable",
+            exc_info=True,
+        )
     logger.info(
         "[excluded_spawn_tools] _inject_general_purpose_subagent leader-tool "
         "filter patch applied"

@@ -632,6 +632,41 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
 
 
+def subagent_runtime_limits(config: dict[str, Any] | None = None) -> dict[str, int]:
+    """Read nesting limits from ``react.subagent_runtime``.
+
+    Missing keys use the product defaults: depth 2, 20 running, 20 alive.
+    ``max_spawn_depth < 1`` or ``max_subagents < max_concurrent_running``
+    refuses the config.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    runtime_cfg = runtime_cfg if isinstance(runtime_cfg, dict) else {}
+
+    def _read(name: str, default: int) -> int:
+        raw = runtime_cfg.get(name, default)
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"react.subagent_runtime.{name} must be an integer") from exc
+
+    depth = _read("max_spawn_depth", 2)
+    concurrent = _read("max_concurrent_running", 20)
+    alive = _read("max_subagents", 20)
+    if depth < 1:
+        raise ValueError("react.subagent_runtime.max_spawn_depth must be >= 1")
+    if alive < concurrent:
+        raise ValueError(
+            "react.subagent_runtime.max_subagents must be >= max_concurrent_running"
+        )
+    return {
+        "max_spawn_depth": depth,
+        "max_concurrent_running": concurrent,
+        "max_subagents": alive,
+    }
+
+
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return ``react.subagent_runtime.enabled`` for persistent subagent tools.
 

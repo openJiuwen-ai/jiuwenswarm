@@ -13,7 +13,10 @@ import yaml
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
-from jiuwenswarm.common.config import is_subagent_runtime_enabled
+from jiuwenswarm.common.config import (
+    is_subagent_runtime_enabled,
+    subagent_runtime_limits,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _agent_ras_kwargs_from_config,
@@ -31,7 +34,29 @@ def test_shipped_template_subagent_runtime_enabled_by_default() -> None:
     )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["react"]["subagent_runtime"]["enabled"] is True
+    assert config["react"]["subagent_runtime"]["max_spawn_depth"] == 2
+    assert config["react"]["subagent_runtime"]["max_concurrent_running"] == 20
+    assert config["react"]["subagent_runtime"]["max_subagents"] == 20
     assert is_subagent_runtime_enabled(config) is True
+    assert subagent_runtime_limits(config) == {
+        "max_spawn_depth": 2,
+        "max_concurrent_running": 20,
+        "max_subagents": 20,
+    }
+
+
+def test_subagent_runtime_limits_defaults_and_rejects_bad_pairs() -> None:
+    assert subagent_runtime_limits({}) == {
+        "max_spawn_depth": 2,
+        "max_concurrent_running": 20,
+        "max_subagents": 20,
+    }
+    with pytest.raises(ValueError, match="max_spawn_depth"):
+        subagent_runtime_limits({"react": {"subagent_runtime": {"max_spawn_depth": 0}}})
+    with pytest.raises(ValueError, match="max_subagents"):
+        subagent_runtime_limits(
+            {"react": {"subagent_runtime": {"max_subagents": 1, "max_concurrent_running": 5}}}
+        )
 
 
 def test_is_subagent_runtime_enabled_defaults_off() -> None:

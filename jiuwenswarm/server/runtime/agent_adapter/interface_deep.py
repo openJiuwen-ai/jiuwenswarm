@@ -770,6 +770,7 @@ from jiuwenswarm.common.config import (
     get_ttse_enabled,
     is_subagent_mirror_child_stream_enabled,
     is_subagent_runtime_enabled,
+    subagent_runtime_limits,
     resolve_config_env_vars,
     resolve_string_or_list_config,
 )
@@ -5070,6 +5071,21 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return
         self._instance.resolve_subagent_model = self._resolve_model_for_subagent
+        self._bind_subagent_runtime_config()
+
+    def _bind_subagent_runtime_config(self) -> None:
+        """Pass yaml nesting limits into the root SubagentControl."""
+        if self._instance is None:
+            return
+        import dataclasses
+
+        from openjiuwen.harness.subagent_runtime.config import SubagentRuntimeConfig
+
+        limits = subagent_runtime_limits()
+        accepted = {item.name for item in dataclasses.fields(SubagentRuntimeConfig)}
+        self._instance.subagent_runtime_config = SubagentRuntimeConfig(
+            **{key: value for key, value in limits.items() if key in accepted}
+        )
 
     def _bind_subagent_authorization_wiring(self) -> None:
         """安装子 Agent Skill 动态授权装配（包装 create_subagent，不改 agent-core）。
