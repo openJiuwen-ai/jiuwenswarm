@@ -95,6 +95,30 @@ test('a truly departed member (no workflow_run_id, absent from snapshot) is remo
   assert.deepEqual(currentMembers().map((m) => m.member_id), ['researcher']);
 });
 
+test('snapshot replacement keeps departed mirrored workers missing from the snapshot', () => {
+  seedOwnerTeam();
+  // The mirrored worker shut down earlier: its identity record lives only in
+  // the frontend departed projection (rememberDepartedTeamMember wrote it);
+  // the real member's departed state is owned by the server roster.
+  const departedMirror = { ...mirroredWorker('a'), status: 'shut_down' };
+  useSessionStore.getState().setTeamDepartedMembers(SESSION_ID, [
+    departedMirror,
+    { id: 'm-departed', member_id: 'writer', status: 'shut_down', timestamp: 1 },
+  ]);
+
+  applyTeamSnapshotToSession(SESSION_ID, 'owner-team', {
+    members: [{ member_id: 'researcher', status: 'ready', name: '研究员' }],
+    tasks: [],
+  });
+
+  const departed = useSessionStore.getState().runtimes[SESSION_ID].teamDepartedMembers;
+  // The mirrored worker keeps its identity for task-card and @-mention name
+  // lookups; the real member follows the snapshot's full-replacement contract.
+  assert.deepEqual(departed.map((m) => m.member_id), ['wf_a']);
+  assert.equal(departed[0].workflow_run_id, 'wf_a');
+  assert.equal(departed[0].name, '工作流执行员');
+});
+
 test('a member_id present in both sides resolves to the snapshot version', () => {
   seedOwnerTeam();
   useSessionStore.getState().setTeamMembers(SESSION_ID, [

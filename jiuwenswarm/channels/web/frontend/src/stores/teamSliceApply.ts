@@ -117,6 +117,13 @@ export function applyTeamSnapshotToSession(
     (member) => member.workflow_run_id && !snapshotMemberIds.has(member.member_id)
   );
   currentStore.setTeamMembers(sessionId, [...mirroredMembers, ...members]);
-  currentStore.setTeamDepartedMembers(sessionId, departedMembers);
+  // teamDepartedMembers 同样不能全量替换：镜像 worker 离队后只活在这条投影里
+  // （shutdown 事件写入，见 rememberDepartedTeamMember），快照不带它的身份记录，
+  // 清掉后任务卡与 @ 提及会退化为裸 member_id。
+  const snapshotDepartedIds = new Set(departedMembers.map((member) => member.member_id));
+  const mirroredDeparted = (currentStore.getRuntime(sessionId)?.teamDepartedMembers ?? []).filter(
+    (member) => member.workflow_run_id && !snapshotDepartedIds.has(member.member_id)
+  );
+  currentStore.setTeamDepartedMembers(sessionId, [...mirroredDeparted, ...departedMembers]);
   currentStore.setTeamTasks(sessionId, tasks);
 }
