@@ -39,13 +39,15 @@ def test_a2ui_prompt_discourages_nested_templates():
 def test_a2ui_prompt_titles_input_components_with_text():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert 'the inline label of TextField, CheckBox, and Slider MUST' in en
+    assert "for TextField and Slider the inline label MUST" in en
+    assert "do NOT add an extra Text title above it" in en
     assert '{"literalString": ""}' in en
     assert "Wrap each Text title and its input component together in a Column." in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "TextField、CheckBox、Slider 的内联 label" in zh
+    assert "TextField 与 Slider 的内联 label" in zh
+    assert "不要在其正上方额外加 Text 标题" in zh
     assert '{"literalString": ""}' in zh
     assert "共同包在一个 Column 里。" in zh
 
@@ -180,11 +182,13 @@ def test_a2ui_prompt_cancel_button_only_when_needed():
 def test_a2ui_prompt_image_url_reachable_rule():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "do not claim a URL is reachable if you have not verified it" in en
+    assert "Do not invent image URLs" in en
+    assert "upload.wikimedia.org thumbnail" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "未经验证不要声称链接可达" in zh
+    assert "不要编造图片 URL" in zh
+    assert "upload.wikimedia.org thumbnail" in zh
 
 
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
