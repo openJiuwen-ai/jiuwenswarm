@@ -1866,6 +1866,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       });
       pendingContextCompressionStartRef.current.clear();
       clearAllPendingTeamMemberContextCompressionStarts();
+      // hook 卸载（页面级）时计数基数一并作废；残留条目只占内存，不会
+      // 再被读（成员 read 点都伴随同 key 的 delete/set）。
+      memberCompressionCountRef.current.clear();
+      contextCompressionSummaryRef.current.clear();
     };
   }, [clearAllPendingTeamMemberContextCompressionStarts]);
 
