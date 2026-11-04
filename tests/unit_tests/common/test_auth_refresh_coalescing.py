@@ -6,10 +6,10 @@ import time
 
 import pytest
 
-from gateway.auth import service as service_mod
-from gateway.auth import session_store as store_mod
-from gateway.auth.account_kit import Credential, LoginOutcome
-from gateway.auth.service import REFRESH_AHEAD_S, AuthService, ModelAuthRequired
+from agent_gateway.auth import service as service_mod
+from agent_gateway.auth import session_store as store_mod
+from agent_gateway.auth.account_kit import Credential, LoginOutcome
+from agent_gateway.auth.service import REFRESH_AHEAD_S, AuthService, ModelAuthRequired
 
 
 @pytest.fixture

@@ -3039,6 +3039,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     []
   );
 
+  const restoreForegroundProcessing = useCallback(
+    (sessionId: string, payload: Record<string, unknown>): void => {
+      // Organization output is rendered here, but its request lifecycle belongs
+      // to useOrganizationEvents. Never turn that output into foreground work.
+      if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+        payload.source !== 'org_expert_direct' && payload.team_id) return;
+      const runtime = useChatStore.getState().getRuntime(sessionId);
+      if (!isProactiveRecommendationPayload(payload) &&
+        !runtime?.isProcessing && !runtime?.isLoadingHistory && !runtime?.isPaused) {
+        useChatStore.getState().setProcessing(sessionId, true);
+      }
+    },
+    [isProactiveRecommendationPayload],
+  );
+
   const clearThinkingForVisibleOutput = useCallback((sessionId: string) => {
     const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
     const isProcessingNow = useChatStore.getState().getRuntime(sessionId)?.isProcessing;
@@ -3323,13 +3338,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (!sessionId) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !isProactiveRecommendationPayload(payload) &&
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-        ) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
 
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         const agentTemplateName =
@@ -3532,10 +3541,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (isProactiveRecommendationPayload(payload)) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (!activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
 
         const agentTemplateName =
           !isProactiveRecommendationPayload(payload)
@@ -4453,13 +4459,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !isProactiveRecommendationPayload(payload) &&
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-        ) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         if (!isProactiveRecommendationPayload(payload)) {
           clearThinkingForVisibleOutput(sessionId);
@@ -5999,6 +5999,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     reconcileAgentGroupBinding,
     updateSession,
     resolveEventSessionId,
+    restoreForegroundProcessing,
     backfillOptimisticBubbleTimestamp,
     shouldDropDuplicatedEvent,
     t,

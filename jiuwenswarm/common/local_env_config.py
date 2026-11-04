@@ -4,6 +4,6 @@
 
 import sys
 
-import gateway.common.local_env_config as _real
+import agent_gateway.common.local_env_config as _real
 
 sys.modules[__name__] = _real

@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
-from gateway.extensions.auth.ssh_key_registry import (
+from agent_gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
+from agent_gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )
-from gateway.channel_manager.protocol.ssh.server import ProxySSHServer, SSHProxy
-from gateway.channel_manager.protocol.ssh.ssh_connect import (
+from agent_gateway.channel_manager.protocol.ssh.server import ProxySSHServer, SSHProxy
+from agent_gateway.channel_manager.protocol.ssh.ssh_connect import (
     SshAuthConfig,
     SshChannel,
     SshChannelConfig,
@@ -269,7 +269,7 @@ async def test_handle_ssh_client_uses_authenticated_identity(monkeypatch):
 
     # Avoid depending on asyncssh.Error path; keep exception type available.
     monkeypatch.setattr(
-        "gateway.channel_manager.protocol.ssh.server.asyncssh",
+        "agent_gateway.channel_manager.protocol.ssh.server.asyncssh",
         asyncssh,
         raising=False,
     )

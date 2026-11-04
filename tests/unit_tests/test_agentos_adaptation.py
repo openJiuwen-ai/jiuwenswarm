@@ -9,9 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from agent_gateway.extensions.agentos.config_updater.client import FetchResult
+from agent_gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier, ConfigUpdaterService
+
 from jiuwenswarm.common.etcd.client import EtcdError, _extract_watch_kvs
-from gateway.extensions.agentos.config_updater.client import FetchResult
-from gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier, ConfigUpdaterService
 
 
 class ConfigUpdaterTest(unittest.IsolatedAsyncioTestCase):

@@ -44,6 +44,13 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import SkillUseRail
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_CODE_NORMAL,
+    NEW_TEAM_CODE_PLAN,
+    NEW_TEAM_DESIGN,
+    TEAM_PLAN_CODE_MODE,
+    is_team_plan_mode,
+)
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
@@ -69,13 +76,6 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from gateway.common.mode_matrix import (
-    NEW_TEAM_CODE_NORMAL,
-    NEW_TEAM_CODE_PLAN,
-    NEW_TEAM_DESIGN,
-    TEAM_PLAN_CODE_MODE,
-    is_team_plan_mode,
-)
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset(

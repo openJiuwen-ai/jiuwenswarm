@@ -11,8 +11,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-from gateway import telemetry
-from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway import telemetry
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
 
 
 @pytest.fixture(autouse=True)
@@ -561,8 +561,8 @@ def test_late_response_does_not_rebind_to_same_id_on_another_connection():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target_ws, expected", [("origin", "incomplete"), ("observer", "success")])
 async def test_fanout_missing_origin_channel_does_not_silently_succeed(target_ws, expected):
-    from gateway.routing.keys import WebDeliveryTarget
-    from gateway.routing.session_sharing import SessionDispatcher
+    from agent_gateway.routing.keys import WebDeliveryTarget
+    from agent_gateway.routing.session_sharing import SessionDispatcher
 
     telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
     operation = telemetry.start_request_trace("r", "chat.send", channel="web", connection_id="c")

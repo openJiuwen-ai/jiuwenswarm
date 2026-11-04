@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.controller import CronController
-from gateway.cron.proactive_cron_sync import (
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.proactive_cron_sync import (
     DEFAULT_CRON_EXPR,
     PROACTIVE_JOB_ID,
 )
-from gateway.cron.store import CronJobStore
+from agent_gateway.cron.store import CronJobStore
 
 
 def _make_controller(tmp_path) -> tuple[CronController, CronJobStore]:
@@ -123,7 +123,7 @@ async def test_create_job_rejects_user_path_reusing_fixed_proactive_id(tmp_path)
 @pytest.mark.asyncio
 async def test_proactive_sync_registers_builtin_job_via_internal_path(tmp_path):
     """proactive_cron_sync 走内部关键字路径，开关打开时仍能注册内置任务。"""
-    from gateway.cron.proactive_cron_sync import _ensure_present
+    from agent_gateway.cron.proactive_cron_sync import _ensure_present
 
     controller, store = _make_controller(tmp_path)
     await _ensure_present(controller)

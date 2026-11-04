@@ -1,10 +1,7 @@
 """Web 组合模式解析与 TUI 历史模式直通的回归测试。"""
 
 import pytest
-
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import Mode
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     NEW_AGENT_CODE_NORMAL,
@@ -20,6 +17,9 @@ from gateway.common.mode_matrix import (
     is_team_mode,
     resolve_request_mode,
 )
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import Mode
 from jiuwenswarm.server.agent_ws_server import (
     _apply_resolved_mode_to_request,
     resolve_agent_request_mode,

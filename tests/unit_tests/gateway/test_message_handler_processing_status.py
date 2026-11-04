@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 from openjiuwen_protocol.message import EventType
 
 

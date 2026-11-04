@@ -14,7 +14,7 @@ from contextlib import nullcontext
 
 import pytest
 
-from gateway.app_gateway import _connect_with_retry
+from agent_gateway.app_gateway import _connect_with_retry
 
 
 class _FakeClient:

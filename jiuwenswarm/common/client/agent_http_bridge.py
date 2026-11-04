@@ -9,7 +9,7 @@ Gateway → AgentServer 的受认证 HTTP bridge（下载/上传基址推导、�
 
 from __future__ import annotations
 
-from gateway.common.client.agent_http_bridge import (  # noqa: F401
+from agent_gateway.common.client.agent_http_bridge import (  # noqa: F401
     UPLOAD_TIMEOUT_SECONDS,
     resolve_agent_host_port,
     resolve_agent_http_base,

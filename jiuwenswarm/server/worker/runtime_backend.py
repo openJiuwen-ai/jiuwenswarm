@@ -289,8 +289,8 @@ def preload_runtime_backend() -> None:
     import openjiuwen.core.runner  # noqa: F401
     _log_preparation_stage("runner_import", began)
     began = time.monotonic()
-    import gateway.extensions.manager  # noqa: F401
-    import gateway.extensions.registry  # noqa: F401
+    import agent_gateway.extensions.manager  # noqa: F401
+    import agent_gateway.extensions.registry  # noqa: F401
     _log_preparation_stage("extension_imports", began)
     began = time.monotonic()
     import jiuwenswarm.server.agent_ws_server  # noqa: F401

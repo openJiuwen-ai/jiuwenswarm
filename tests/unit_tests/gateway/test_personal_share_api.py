@@ -16,9 +16,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from gateway.channel_manager.web import personal_share_api as api
-from gateway.channel_manager.web import share_snapshot
-from gateway.channel_manager.web.share_image_export import ShareImageExportManager
+from agent_gateway.channel_manager.web import personal_share_api as api
+from agent_gateway.channel_manager.web import share_snapshot
+from agent_gateway.channel_manager.web.share_image_export import ShareImageExportManager
 
 
 def _png():

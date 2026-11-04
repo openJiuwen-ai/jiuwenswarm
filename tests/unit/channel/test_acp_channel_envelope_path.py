@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from gateway.channel_manager.protocol.acp.acp_connect import (
+from agent_gateway.channel_manager.protocol.acp.acp_connect import (
     AcpChannel,
     AcpChannelConfig,
 )
