@@ -5907,6 +5907,8 @@ async def test_cron_live_uses_routed_metadata_for_normal_web_session_ids(monkeyp
     request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
     response = await endpoint("web_allocated_session", request)
     assert response.status_code == expected
+    if expected == 404:
+        assert json.loads(response.body) == {"error": "not_cron_session"}
     lookup.assert_awaited_once_with(request, channel, "session.get_metadata", {"session_id": "web_allocated_session"})
     if expected == 200:
         assert isinstance(response, StreamingResponse)
