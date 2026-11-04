@@ -113,6 +113,18 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self.attachment_manager = getattr(agent, "prompt_attachment_manager", None)
 
+    def _apply_voice_summary_policy(self, ctx: AgentCallbackContext) -> None:
+        """Apply voice receipt policy only when the optional module is present."""
+        try:
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+        except ModuleNotFoundError as exc:
+            if exc.name != "jiuwenswarm.extensions.video_duplex.backend.session_receipts":
+                raise
+            if self.system_prompt_builder is not None:
+                self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
+            return
+        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
@@ -484,9 +496,7 @@ class RuntimePromptRail(DeepAgentRail):
             "trusted_dirs_policy"):
             self.system_prompt_builder.remove_section(name)
 
-        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
-
-        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+        self._apply_voice_summary_policy(ctx)
 
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
@@ -848,9 +858,7 @@ class RuntimePromptRail(DeepAgentRail):
             or runtime_state.get("language")
             or "unknown"
         ).strip()
-        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
-
-        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+        self._apply_voice_summary_policy(ctx)
 
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 

@@ -1094,8 +1094,12 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "## Current Channel" in prompt
 
     items = await agent.prompt_attachment_manager.collect_for_session("sess1")
-    assert [item.id for item in items] == ["session.sess1.runtime.setting"]
+    assert [item.id for item in items] == [
+        "session.sess1.runtime.current_media",
+        "session.sess1.runtime.setting",
+    ]
     rendered = agent.prompt_attachment_manager.render(items)
+    assert "No screen or camera image is attached to this turn." in rendered
     assert "model-x" in rendered
     assert "Current channel: web" in rendered
     assert "Always respond in English" not in prompt

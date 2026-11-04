@@ -170,7 +170,9 @@ def test_protocol_discovery_starts_without_runtime_or_configuration(
 import importlib.abc, sys
 class BlockRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(("jiuwenswarm.runtime", "openjiuwen")):
+        if fullname in {"jiuwenswarm.runtime", "openjiuwen"} or fullname.startswith(
+            ("jiuwenswarm.runtime.", "openjiuwen.")
+        ):
             raise AssertionError("Runtime imported for protocol discovery")
 sys.meta_path.insert(0, BlockRuntime())
 from jiuwenswarm.channels.process_cli.main import main
