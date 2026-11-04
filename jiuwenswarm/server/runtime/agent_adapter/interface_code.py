@@ -1886,6 +1886,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,
             ),
+            # Code sessions get the detached client tools too (_update_session_tools is shared).
+            _RailBuildInfo("_client_tool_guard_rail", self._build_client_tool_guard_rail),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *([_RailBuildInfo("_permission_rail", lambda: group["_permission_rail"])]

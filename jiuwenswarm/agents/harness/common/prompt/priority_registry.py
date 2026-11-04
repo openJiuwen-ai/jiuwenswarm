@@ -44,6 +44,7 @@ class SystemPromptPriority(IntEnum):
     TOOL_NAVIGATION = 72
     PROGRESSIVE_TOOL_RULES = 75
     HEARTBEAT = 78
+    CLIENT_TOOLS = 79
     TASK_TOOL = 80
     SUBAGENT_TOOLS = 81
     SESSION_TOOLS = 82
@@ -101,6 +102,7 @@ _SECTION_PRIORITIES = MappingProxyType({
     "subagent_tools": SystemPromptPriority.SUBAGENT_TOOLS,
     "task_tool": SystemPromptPriority.TASK_TOOL,
     "session_tools": SystemPromptPriority.SESSION_TOOLS,
+    "client_tools": SystemPromptPriority.CLIENT_TOOLS,
     "completion_signal": SystemPromptPriority.COMPLETION_SIGNAL,
     "mode_instructions": SystemPromptPriority.MODE_INSTRUCTIONS,
     "runtime": SystemPromptPriority.RUNTIME,

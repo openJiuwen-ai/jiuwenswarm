@@ -628,6 +628,12 @@ session_cleanup:
   # CLEANUP_PERIOD_DAYS overrides this setting when set.
   retention_days: 30                # Set 0 to keep sessions and file-operation logs indefinitely.
 
+client_tools:
+  # Detached client tools (client_tool.register): the client runs the call in the background.
+  default_timeout_s: 120            # A call without a result after this ends as timeout (tools may declare timeout_s, 1-3600).
+  disconnect_grace_s: 30            # A call whose client disconnected ends as client_gone unless it reconnects in time.
+  delivery_wait_s: 600              # How long a result waits for a question the user has not answered; then delivery fails.
+
 # ============================================================
 # 单 Agent 轨迹观测 Web 数据面
 # ============================================================

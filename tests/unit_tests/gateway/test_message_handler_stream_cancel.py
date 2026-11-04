@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
+from gateway.common.cancel_sources import CANCEL_SOURCE_NEW_MESSAGE
 from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
+from openjiuwen_protocol.e2a.constants import E2A_INTERNAL_CANCEL_SOURCE_KEY
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
 
@@ -806,6 +808,20 @@ async def test_web_channel_only_cancels_matching_session() -> None:
     assert not other_session_task.cancelled()
     await asyncio.sleep(0)
     assert len(_FakeAgentClient.sent_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_replacing_a_turn_tells_agentserver_the_cancel_comes_from_a_new_message() -> None:
+    # AgentServer keeps detached client tool calls running for this cancel source only;
+    # an explicit stop carries no source and still cancels them.
+    handler = _TestMessageHandler.create()
+    _seed_stream_task(handler, rid="rid-a", channel_id="web", session_id="sess_a")
+
+    await handler.cancel_stream_tasks_for_channel(_chat_send_message(channel_id="web", session_id="sess_a"))
+    await asyncio.sleep(0)
+
+    [interrupt] = _FakeAgentClient.sent_requests
+    assert interrupt.channel_context[E2A_INTERNAL_CANCEL_SOURCE_KEY] == CANCEL_SOURCE_NEW_MESSAGE
 
 
 @pytest.mark.asyncio

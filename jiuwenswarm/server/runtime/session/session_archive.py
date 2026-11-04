@@ -309,12 +309,26 @@ class SessionArchiveService:
                     raise lc.LifecycleError(
                         "OPERATION_IN_PROGRESS", "project operation is pending"
                     )
-                return await self._session(
+                result = await self._session(
                     session_id, action, channel_id, project_id
                 )
-        return await self._session(
-            session_id, action, channel_id, project_id
-        )
+        else:
+            result = await self._session(
+                session_id, action, channel_id, project_id
+            )
+        await self._close_client_tools(session_id, action, result)
+        return result
+
+    async def _close_client_tools(self, session_id: str, action: str, result: dict) -> None:
+        """An archived or deleted Session's client tool calls end as cancelled."""
+
+        adapter = getattr(self.runtime, "client_tool_adapter", None)
+        if adapter is None or action not in ("archive", "delete") or not result.get("ok", True):
+            return
+        try:
+            await adapter.close_session(session_id)
+        except Exception:  # noqa: BLE001 - the lifecycle action already succeeded
+            logger.warning("client tools not closed: session_id=%s", session_id, exc_info=True)
 
     def _session_message_service(self):
         """Return the Runtime-attached mailbox, or None when messaging is off."""

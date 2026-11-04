@@ -6,7 +6,7 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-03T16:00+08:00 -->
+<!-- generated-at: 2026-11-04T09:35+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -18,10 +18,14 @@ generated: true
 |---|
 | [agent_teams](#module-1) |
 | [agent_teams/workflow](#module-2) |
-| [jiuwenswarm](#module-3) |
-| [jiuwenswarm/channels/web/frontend](#module-4) |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) |
-| [jiuwenswarm/observability](#module-6) |
+| [gateway](#module-3) |
+| [jiuwenswarm](#module-4) |
+| [jiuwenswarm/agents/harness/common/rails](#module-5) |
+| [jiuwenswarm/channels/web/frontend](#module-6) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-7) |
+| [jiuwenswarm/observability](#module-8) |
+| [jiuwenswarm/runtime](#module-9) |
+| [jiuwenswarm/server](#module-10) |
 
 <a id="module-1"></a>
 
@@ -47,6 +51,16 @@ generated: true
 
 <a id="module-3"></a>
 
+## gateway
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-0410-client-tool-adapter](proposals/D-20261103-0410-client-tool-adapter/design.md) | 客户端工具调用适配层（Client Tool Adapter） | draft | chickeyton | swarm | 2026-11-03 |
+
+<a id="module-4"></a>
+
 ## jiuwenswarm
 
 ### 开发后 (archive)
@@ -57,7 +71,17 @@ generated: true
 | [SDD-0010](archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | shipped | @chenchunzhou | observability | 2026-08-06 |
 | [SDD-0028](archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | swarmflow verify / fork 可观测与前端呈现 | shipped | @xiajing | observability | 2026-09-29 |
 
-<a id="module-4"></a>
+<a id="module-5"></a>
+
+## jiuwenswarm/agents/harness/common/rails
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-0410-client-tool-adapter](proposals/D-20261103-0410-client-tool-adapter/design.md) | 客户端工具调用适配层（Client Tool Adapter） | draft | chickeyton | swarm | 2026-11-03 |
+
+<a id="module-6"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -67,7 +91,7 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0026](proposals/SDD-0026-trajectory-observability-web-ui/design.md) | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | draft | @alan_cheng | observability | 2026-09-15 |
 
-<a id="module-5"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -77,7 +101,7 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
 
-<a id="module-6"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/observability
 
@@ -86,3 +110,23 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+
+<a id="module-9"></a>
+
+## jiuwenswarm/runtime
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-0410-client-tool-adapter](proposals/D-20261103-0410-client-tool-adapter/design.md) | 客户端工具调用适配层（Client Tool Adapter） | draft | chickeyton | swarm | 2026-11-03 |
+
+<a id="module-10"></a>
+
+## jiuwenswarm/server
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-0410-client-tool-adapter](proposals/D-20261103-0410-client-tool-adapter/design.md) | 客户端工具调用适配层（Client Tool Adapter） | draft | chickeyton | swarm | 2026-11-03 |

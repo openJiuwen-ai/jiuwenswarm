@@ -144,6 +144,23 @@ from jiuwenswarm.server.client_attachments import (
     set_conversation_access,
     start_client_attachment_sweep,
 )
+from jiuwenswarm.runtime.client_tool_adapter import (
+    DEFAULT_DELIVERY_WAIT_SECONDS as DEFAULT_CLIENT_TOOL_DELIVERY_WAIT_SECONDS,
+    DEFAULT_DISCONNECT_GRACE_SECONDS as DEFAULT_CLIENT_TOOL_GRACE_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_CLIENT_TOOL_TIMEOUT_SECONDS,
+    MAX_TIMEOUT_SECONDS as MAX_CLIENT_TOOL_TIMEOUT_SECONDS,
+    MIN_TIMEOUT_SECONDS as MIN_CLIENT_TOOL_TIMEOUT_SECONDS,
+    CLIENT_TOOL_RESULT_SOURCE,
+    ClientToolAdapter,
+    ClientToolCall,
+    ClientToolDeliveryError,
+    ClientToolStateStore,
+    config_seconds,
+)
+from jiuwenswarm.server.handlers.client_tools import (
+    handle_client_tool_request,
+    settle_client_tools_on_chat_cancel,
+)
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
 )
@@ -629,6 +646,14 @@ async def _stop_stream_keepalive(
 
 
 _UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError, ClientToolAnswerMismatch)
+
+_CLIENT_TOOL_METHODS = frozenset({
+    ReqMethod.CLIENT_TOOL_REGISTER,
+    ReqMethod.CLIENT_TOOL_RESULT,
+    ReqMethod.CLIENT_TOOL_CANCEL,
+    ReqMethod.CLIENT_TOOL_LIST_PENDING,
+})
+_CLIENT_TOOL_DELIVERY_POLL_SECONDS = 0.5
 
 
 @dataclass(slots=True)
@@ -1336,6 +1361,7 @@ class AgentWebSocketServer:
         self._runtime.set_session_delete_lifecycle(self._heartbeat_runtime)
         self._agent_manager.set_heartbeat_service(self._heartbeat_runtime)
         self._install_session_message_service()
+        self._install_client_tool_adapter()
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
@@ -1431,6 +1457,125 @@ class AgentWebSocketServer:
         )
         self._session_message_service = service
         self._runtime.set_session_message_service(service)
+
+    def _install_client_tool_adapter(self) -> None:
+        """Create the AgentServer-owned adapter of detached client tools for this Runtime."""
+
+        # A bad value falls back to its default: a typo in config.yaml must not stop the server.
+        settings = get_config().get("client_tools")
+        default_timeout = config_seconds(
+            settings, "default_timeout_s", DEFAULT_CLIENT_TOOL_TIMEOUT_SECONDS,
+            minimum=MIN_CLIENT_TOOL_TIMEOUT_SECONDS,
+        )
+        self._client_tool_delivery_wait_s = config_seconds(
+            settings, "delivery_wait_s", DEFAULT_CLIENT_TOOL_DELIVERY_WAIT_SECONDS,
+        )
+        adapter = ClientToolAdapter(
+            store=ClientToolStateStore(get_agent_sessions_dir),
+            emit=self._push_client_tool_event,
+            deliver=self._deliver_client_tool_result,
+            default_timeout_s=min(default_timeout, MAX_CLIENT_TOOL_TIMEOUT_SECONDS),
+            disconnect_grace_s=config_seconds(settings, "disconnect_grace_s", DEFAULT_CLIENT_TOOL_GRACE_SECONDS),
+        )
+        self._client_tool_adapter = adapter
+        self._runtime.set_client_tool_adapter(adapter)
+
+    async def _push_client_tool_event(self, session_id: str, payload: dict[str, Any]) -> None:
+        await self.send_push(
+            build_server_push_message(
+                session_id=session_id,
+                request_id=str(payload.get("call_id") or ""),
+                payload=payload,
+            )
+        )
+
+    async def _wait_for_client_tool_delivery(self, session_id: str) -> None:
+        """Wait while the Session's paused turn waits on the user; a follow-up must not supersede it.
+
+        Raises:
+            ClientToolDeliveryError: The pause outlasted ``client_tools.delivery_wait_s``.
+        """
+
+        admission = self._heartbeat_runtime.admission
+        limit = getattr(self, "_client_tool_delivery_wait_s", DEFAULT_CLIENT_TOOL_DELIVERY_WAIT_SECONDS)
+        deadline = time.monotonic() + limit
+        while admission.has_pending_interaction(session_id):
+            if time.monotonic() >= deadline:
+                raise ClientToolDeliveryError("the conversation kept waiting on the user")
+            await asyncio.sleep(_CLIENT_TOOL_DELIVERY_POLL_SECONDS)
+
+    async def _deliver_client_tool_result(self, call: ClientToolCall, envelope: str) -> None:
+        """Hand a client tool result to the Session's agent, after the turn that is running there.
+
+        The result goes in as a ``follow_up`` input: the running execution takes
+        it once its current round ends, or it starts a new turn when the
+        Session is idle. The events of a new turn are pushed to the Session's
+        clients like any background turn.
+        """
+
+        session_id = call.session_id
+        await self._wait_for_client_tool_delivery(session_id)
+        metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False) or {}
+        mode = deprecate_mode(metadata.get("mode")) if metadata else ""
+        if not is_single_agent_mode(mode):
+            raise ClientToolDeliveryError(f"the session no longer takes client tool results (mode {mode or 'unknown'})")
+        channel_id = str(metadata.get("channel_id") or "web").strip().lower() or "web"
+        marker = {"call_id": call.call_id, "tool_name": call.tool_name}
+        params: dict[str, Any] = {
+            "query": envelope,
+            "mode": mode,
+            "input_mode": "follow_up",
+            "client_tool_result": marker,
+            # A source makes the input internal: the client's output must never count as
+            # something the user wrote (permission root intent, person-driven turn).
+            "source": CLIENT_TOOL_RESULT_SOURCE,
+        }
+        for key in ("project_id", "project_dir", "work_mode"):
+            value = metadata.get(key)
+            if value is not None and str(value).strip():
+                params[key] = value
+        model_name = metadata.get("model")
+        if isinstance(model_name, str) and model_name.strip():
+            params["model_name"] = model_name.strip()
+        request = AgentRequest(
+            request_id=f"client-tool-result-{call.call_id}",
+            channel_id=channel_id,
+            session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            params=params,
+            is_stream=True,
+            timestamp=_dt.datetime.now(_dt.timezone.utc).timestamp(),
+            user_id=str(metadata.get("user_id") or "").strip(),
+        )
+        execution_scope = getattr(getattr(self, "_current_ws", None), "execution_scope", None)
+        if callable(execution_scope):
+            with execution_scope(request):
+                await self._run_client_tool_result_turn(request, channel_id, marker)
+        else:
+            await self._run_client_tool_result_turn(request, channel_id, marker)
+
+    async def _run_client_tool_result_turn(
+        self, request: AgentRequest, channel_id: str, marker: dict[str, Any],
+    ) -> None:
+        runtime = self._execution_runtime()
+        await runtime.start()
+        await runtime.create_or_resume_session(channel_id=channel_id, session_id=request.session_id)
+        async for event in runtime.stream(request, trigger_hook=False):
+            payload = dict(event.payload) if isinstance(event.payload, dict) else {}
+            event_type = str(payload.get("event_type") or "")
+            if event.ok and event_type == "runtime.accepted":
+                continue  # the input's own receipt; a running turn streams what follows
+            if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
+                payload["event_type"] = "chat.error"
+                payload["error"] = str(payload.get("error") or payload.get("message") or "Runtime execution failed")
+            await self.send_push(
+                build_server_push_message(
+                    session_id=request.session_id,
+                    request_id=event.request_id or request.request_id,
+                    payload={**payload, "client_tool_result": marker},
+                    fallback_channel_id=channel_id,
+                )
+            )
 
     async def _release_abandoned_session_message_wait(
         self, record: SessionMessageRecord
@@ -2268,6 +2413,9 @@ class AgentWebSocketServer:
         session_message_service = getattr(self, "_session_message_service", None)
         if session_message_service is not None:
             await session_message_service.stop()
+        client_tool_adapter = getattr(self, "_client_tool_adapter", None)
+        if client_tool_adapter is not None:
+            await client_tool_adapter.aclose()
         # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
         warmup = self._checkpointer_warmup_task
         self._checkpointer_warmup_task = None
@@ -2364,6 +2512,7 @@ class AgentWebSocketServer:
                     self._heartbeat_runtime
                 )
                 self._install_session_message_service()
+                self._install_client_tool_adapter()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
                     VoiceTaskServerAdapter(),
@@ -3114,6 +3263,13 @@ class AgentWebSocketServer:
             ):
                 await self._handle_mcp_app(ws, request, send_lock)
                 return
+            if request.req_method in _CLIENT_TOOL_METHODS:
+                from jiuwenswarm.server.context import bind_request_tenant, build_ws_request_context
+
+                ctx = build_ws_request_context(self, ws, request, send_lock)
+                async with bind_request_tenant(ctx):
+                    await handle_client_tool_request(ctx)
+                return
             if request.req_method == ReqMethod.COMMAND_SANDBOX:
                 await self._handle_command_sandbox(ws, request, send_lock)
                 return
@@ -3286,6 +3442,7 @@ class AgentWebSocketServer:
                 sid = request.session_id or "default"
                 intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
+                await settle_client_tools_on_chat_cancel(self._execution_runtime(), request)
 
                 # 只有 cancel/supplement 才取消流式任务
                 # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）

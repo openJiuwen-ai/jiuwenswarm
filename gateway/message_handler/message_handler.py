@@ -22,6 +22,7 @@ from openjiuwen_protocol.e2a.constants import (
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_WIRE_INTERNAL_METADATA_KEYS,
 )
+from gateway.common.cancel_sources import CANCEL_SOURCE_NEW_MESSAGE
 from openjiuwen_protocol.hooks import GatewayChatHookContext, GatewayHookEvents
 from openjiuwen_protocol.message import (
     PROMPT_SUGGESTION_READY_EVENT,
@@ -1290,6 +1291,9 @@ class MessageHandler(ABC):
             await self._cancel_agent_work_for_session(
                 cancel_msg,
                 old_sid,
+                # Tell AgentServer the user moved on, not stopped: work that outlives a
+                # turn (detached client tool calls) keeps running.
+                cancel_source=CANCEL_SOURCE_NEW_MESSAGE,
                 publish_interrupt_result=False,
                 channel_id=channel_id,
                 cancel_gateway_tasks=False,

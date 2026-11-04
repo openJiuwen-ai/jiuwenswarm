@@ -411,6 +411,8 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
     resolve_cua_factory_options,
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
+from jiuwenswarm.agents.harness.common.rails.client_tool_guard_rail import ClientToolGuardRail  # noqa: E402
+from jiuwenswarm.agents.harness.common.tools.detached_client_tool import DetachedClientTool  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (  # noqa: E402
     SessionMessagingRouteRail,
     SessionMessagingToolkit,
@@ -2241,6 +2243,9 @@ class JiuWenSwarmDeepAdapter:
         self._send_file_toolkit: SendFileToolkit | None = None
         self._session_messaging_toolkit: SessionMessagingToolkit | None = None
         self._session_messaging_route_rail: SessionMessagingRouteRail | None = None
+        self._client_tool_guard_rail: ClientToolGuardRail | None = None
+        # Detached client tools registered on this agent, by agent-side tool name.
+        self._client_tools: dict[str, DetachedClientTool] = {}
         self._runtime_state_write_task: asyncio.Task[None] | None = None
         self._channel_id: str | None = None
         self._is_cron_execution: bool = False
@@ -11095,6 +11100,10 @@ class JiuWenSwarmDeepAdapter:
     def _build_session_messaging_route_rail() -> SessionMessagingRouteRail:
         return SessionMessagingRouteRail()
 
+    @staticmethod
+    def _build_client_tool_guard_rail() -> ClientToolGuardRail:
+        return ClientToolGuardRail()
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -11538,6 +11547,7 @@ class JiuWenSwarmDeepAdapter:
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,
             ),
+            _RailBuildInfo("_client_tool_guard_rail", self._build_client_tool_guard_rail),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
@@ -14306,6 +14316,54 @@ class JiuWenSwarmDeepAdapter:
             self._instance.ability_manager.add(tool.card)
             registered_names.add(tool.card.name)
 
+    def _ensure_client_tools_registered(
+        self,
+        session_id: str | None,
+        channel_id: str | None,
+    ) -> None:
+        """Offer the agent exactly the detached client tools the Session's clients declared."""
+
+        from jiuwenswarm.runtime.context import get_current_runtime
+
+        if self._instance is None:
+            return
+        runtime = get_current_runtime()
+        adapter = getattr(runtime, "client_tool_adapter", None)
+        sid = str(session_id or "").strip()
+        eligible = bool(
+            adapter is not None
+            and sid
+            and str(channel_id or "").strip().lower() in {"web", "tui"}
+            and not is_team_mode(deprecate_mode(self._last_mode))
+            and not getattr(self, "_is_cron_execution", False)
+        )
+        guard = getattr(self, "_client_tool_guard_rail", None)
+        if guard is not None:
+            guard.bind(sid if eligible else "", lambda: getattr(get_current_runtime(), "client_tool_adapter", None))
+        wanted = {spec.tool_name: spec for spec in adapter.specs(sid)} if eligible else {}
+        if not wanted and not getattr(self, "_client_tools", None):
+            return
+        self._client_tools = getattr(self, "_client_tools", None) or {}
+        stale = [
+            tool for name, tool in self._client_tools.items()
+            if wanted.get(name) != tool.spec or tool.session_id != sid
+        ]
+        if stale:
+            self._remove_registered_tools(stale)
+            for tool in stale:
+                self._client_tools.pop(tool.card.name, None)
+        for name, spec in wanted.items():
+            if name in self._client_tools:
+                continue
+            tool = DetachedClientTool(
+                spec,
+                session_id=sid,
+                adapter=lambda: getattr(get_current_runtime(), "client_tool_adapter", None),
+            )
+            self._register_agent_owned_tool(tool, self._tool_owner_id())
+            self._instance.ability_manager.add(tool.card)
+            self._client_tools[name] = tool
+
     async def _update_session_tools(
         self,
         session_id: str | None,
@@ -14319,6 +14377,7 @@ class JiuWenSwarmDeepAdapter:
         这里每次请求只做幂等检查和运行时上下文更新。
         """
         self._ensure_session_messaging_tools_registered(session_id, channel_id)
+        self._ensure_client_tools_registered(session_id, channel_id)
 
         # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次，
         # 之后每次请求只用 update_runtime_context 刷新 request_id/session_id/channel 等

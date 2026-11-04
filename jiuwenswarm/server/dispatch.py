@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers.bootstrap import (
 )
 from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
+from jiuwenswarm.server.handlers.client_tools import handle_client_tool_request
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
 from jiuwenswarm.server.handlers.organization import (
     handle_a4p_request,
@@ -207,6 +208,10 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.ISSUE_DELETE: handle_schedule_request,
     ReqMethod.ISSUE_MATRIX: handle_schedule_request,
     ReqMethod.CHAT_CANCEL: handle_chat_cancel,
+    ReqMethod.CLIENT_TOOL_REGISTER: handle_client_tool_request,
+    ReqMethod.CLIENT_TOOL_RESULT: handle_client_tool_request,
+    ReqMethod.CLIENT_TOOL_CANCEL: handle_client_tool_request,
+    ReqMethod.CLIENT_TOOL_LIST_PENDING: handle_client_tool_request,
     ReqMethod.INITIALIZE: handle_initialize,
     ReqMethod.SESSION_CREATE: handle_session_create,
     ReqMethod.SESSION_FORK: handle_session_fork,

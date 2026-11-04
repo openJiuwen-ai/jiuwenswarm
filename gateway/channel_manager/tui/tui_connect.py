@@ -95,6 +95,12 @@ async def _tui_config_send_request(client: Any, env: Any, *, label: str) -> Any:
 
 CLI_FORWARD_REQ_METHODS = frozenset(
     {
+        # Detached client tools: the client declares, answers and cancels calls (see
+        # jiuwenswarm/server/handlers/client_tools.py).
+        "client_tool.register",
+        "client_tool.result",
+        "client_tool.cancel",
+        "client_tool.list_pending",
         "command.add_dir",
         "command.btw",
         "command.chrome",
@@ -234,6 +240,10 @@ CLI_FORWARD_REQ_METHODS = frozenset(
 
 CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
     {
+        "client_tool.register",
+        "client_tool.result",
+        "client_tool.cancel",
+        "client_tool.list_pending",
         "command.add_dir",
         "command.btw",
         "command.chrome",

@@ -17,6 +17,7 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.handlers.client_tools import settle_client_tools_on_chat_cancel
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ async def handle_chat_cancel(ctx: RequestContext) -> None:
     sid = request.session_id or "default"
     intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
     cleanup_after_cancel = _is_client_disconnect_cancel_request(request)
+    await settle_client_tools_on_chat_cancel(services.execution_runtime(), request)
 
     # 只有 cancel/supplement 才取消流式任务
     # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）

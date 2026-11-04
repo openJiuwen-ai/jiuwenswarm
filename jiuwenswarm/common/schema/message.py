@@ -112,6 +112,14 @@ _ensure_req_method("MCP_APP_CALL_TOOL", "mcp_app.call_tool")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")
+_ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_DISPATCH", "chat.client_tool_dispatch")
+_ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_SETTLED", "chat.client_tool_settled")
+_ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_DELIVERY", "chat.client_tool_delivery")
+# Detached client tools: a connected client declares tools, runs their calls and answers them.
+_ensure_req_method("CLIENT_TOOL_REGISTER", "client_tool.register")
+_ensure_req_method("CLIENT_TOOL_RESULT", "client_tool.result")
+_ensure_req_method("CLIENT_TOOL_CANCEL", "client_tool.cancel")
+_ensure_req_method("CLIENT_TOOL_LIST_PENDING", "client_tool.list_pending")
 # Client attachments (e.g. the Office add-in task pane): a client attaches the
 # resource it edits to a conversation, renews the attachment's lease, and reads
 # the other attachments and their conversations. The pinned protocol package

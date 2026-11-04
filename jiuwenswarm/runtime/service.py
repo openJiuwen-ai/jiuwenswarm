@@ -397,6 +397,7 @@ class AgentRuntime:
         self._plan_controller = plan_controller
         self._admission_controller = admission_controller
         self._session_message_service: Any | None = None
+        self._client_tool_adapter: Any | None = None
         self._participant_registry = (
             participant_registry or RuntimeParticipantRegistry()
         )
@@ -636,6 +637,17 @@ class AgentRuntime:
         """Attach a transport-neutral Host capability used by Agent tools."""
 
         self._session_message_service = service
+
+    @property
+    def client_tool_adapter(self) -> Any | None:
+        """Return the optional AgentServer-owned adapter of detached client tools."""
+
+        return self._client_tool_adapter
+
+    def set_client_tool_adapter(self, adapter: Any | None) -> None:
+        """Attach the Host capability that runs client tools in the background."""
+
+        self._client_tool_adapter = adapter
 
     def set_session_delete_lifecycle(
         self,
