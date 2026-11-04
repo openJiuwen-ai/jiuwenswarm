@@ -7621,7 +7621,7 @@ class AgentWebSocketServer:
                 )
 
         team_manager = get_team_manager(channel_id)
-        metadata_team_name = ""
+        owner_team_name = ""
         live_team_name = ""
         if session_id:
             session_info = team_manager.get_runtime_team_snapshot().get(session_id)
@@ -7642,13 +7642,33 @@ class AgentWebSocketServer:
 
             metadata = get_session_metadata(session_id) or {}
             metadata_team_name = str(metadata.get("team_name") or "").strip()
-            if metadata_team_name:
+            owner_team_name = metadata_team_name or live_team_name
+            if owner_team_name:
                 _upsert(
-                    metadata_team_name,
+                    owner_team_name,
                     state="configured",
                     agent_group_name=metadata.get("agent_group_name"),
                     source="metadata",
                 )
+                owner = entries[owner_team_name]
+                group_name = str(owner.get("agent_group_name") or "").strip()
+                if group_name:
+                    from jiuwenswarm.server.runtime.extension_package_manager import (
+                        normalize_agent_group_display_identity,
+                    )
+
+                    # Restore display metadata only for this session's bound Team.
+                    identity = normalize_agent_group_display_identity(
+                        owner.get("team_group_identity"), binding_name=group_name,
+                    )
+                    if identity is None and group_name == str(metadata.get("agent_group_name") or "").strip():
+                        identity = normalize_agent_group_display_identity(
+                            metadata.get("team_group_identity"), binding_name=group_name,
+                        )
+                    if identity is not None:
+                        owner["team_group_identity"] = identity
+                    else:
+                        owner.pop("team_group_identity", None)
 
         from jiuwenswarm.server.runtime.team_organization_history import (
             organization_enabled,
@@ -7718,7 +7738,6 @@ class AgentWebSocketServer:
         # team would answer is_owner=false and the Web conversation view would
         # flip to the empty team panel until the next poll. Metadata stays
         # authoritative once it has been persisted.
-        owner_team_name = metadata_team_name or live_team_name
         for entry in entries.values():
             entry["is_owner"] = bool(
                 owner_team_name and entry["team_id"] == owner_team_name
