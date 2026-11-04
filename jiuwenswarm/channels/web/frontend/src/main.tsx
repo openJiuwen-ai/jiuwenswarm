@@ -5,6 +5,7 @@ import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
 import { EnterpriseEntry } from './EnterpriseEntry.tsx'
+import { SkillPackInstallPlanHost } from './components/SkillPanel/SkillPackInstallPlan';
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
 import { enterpriseSettingsPageDefinition } from './features/settings/registry/enterpriseDefinition';
@@ -74,5 +75,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         />
       </EnterpriseEntry>
     )}
+    <SkillPackInstallPlanHost />
   </A2UIProvider>,
 )

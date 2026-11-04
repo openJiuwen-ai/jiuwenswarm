@@ -14,12 +14,22 @@ Prior speech is stamped as already-delivered — next clip must not restate it.
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import shutil
-import subprocess
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
+    PROBE_TIMEOUT_S,
+    run_ffmpeg,
+    run_off_loop,
+)
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +228,7 @@ def extract_last_frame(video_path: Path, dest: Path | None = None) -> Path | Non
     out.parent.mkdir(parents=True, exist_ok=True)
     # Seek near end; -sseof works on most ffmpeg builds.
     try:
-        proc = subprocess.run(
+        proc = run_ffmpeg(
             [
                 ffmpeg,
                 "-y",
@@ -232,15 +242,7 @@ def extract_last_frame(video_path: Path, dest: Path | None = None) -> Path | Non
                 "2",
                 str(out.resolve()),
             ],
-            capture_output=True,
-            text=True,
-            # ffmpeg writes UTF-8 to a pipe; decode explicitly so a non-UTF-8
-            # locale cannot raise inside the reader thread (which would leave a
-            # traceback on stderr while the caller only sees empty output).
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-            check=False,
+            timeout=PROBE_TIMEOUT_S,
         )
         if proc.returncode == 0 and out.is_file() and out.stat().st_size > 100:
             return out.resolve()
@@ -527,6 +529,20 @@ def resolve_gated_last_frame_chain(
     return []
 
 
+async def resolve_gated_last_frame_chain_off_loop(
+    cfg: dict[str, Any] | None,
+    ctx: NodeExecutionContext,
+) -> list[dict[str, Any]]:
+    """:func:`resolve_gated_last_frame_chain` on a worker thread: it may grab frames with ffmpeg."""
+    from jiuwenswarm.server.runtime.designer.handlers.types import thread_snapshot
+
+    snapshot = thread_snapshot(ctx)
+    graph = snapshot.graph if isinstance(snapshot.graph, dict) else {}
+    return await run_off_loop(
+        partial(resolve_gated_last_frame_chain, copy.deepcopy(cfg), graph=graph, ctx=snapshot)
+    )
+
+
 def chain_paths_newest_first(chain: list[dict[str, Any]] | None) -> list[Path]:
     """Attach order for Wan: newest ending first, then older history."""
     paths: list[Path] = []
@@ -718,57 +734,3 @@ def stamp_last_frame_onto_next_clips(
             cfg = scrub_restated_speech(cfg)
         node["config"] = cfg
     return notes
-
-
-def resolve_gated_last_frame_path(
-    cfg: dict[str, Any] | None,
-    *,
-    graph: dict[str, Any] | None = None,
-    ctx: Any = None,
-) -> Path | None:
-    """Return immediate prior last-frame path when gate allows and file exists."""
-    chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=ctx, max_frames=1)
-    if chain:
-        path = Path(str(chain[-1].get("path") or "").strip())
-        if path.is_file():
-            return path.resolve()
-    cfg = cfg if isinstance(cfg, dict) else {}
-    path = Path(str(cfg.get("previous_clip_last_frame") or "").strip())
-    prev_id = str(cfg.get("continuity_clip_node_id") or cfg.get("previous_clip_node_id") or "").strip()
-    prev_cfg: dict[str, Any] = {}
-    graph = graph if isinstance(graph, dict) else {}
-    if prev_id:
-        for n in graph.get("nodes") or []:
-            if isinstance(n, dict) and str(n.get("id") or "") == prev_id:
-                prev_cfg = n.get("config") if isinstance(n.get("config"), dict) else {}
-                break
-        if (not path.is_file()) and isinstance(prev_cfg, dict):
-            alt = str(prev_cfg.get("last_frame_path") or "").strip()
-            if alt:
-                path = Path(alt)
-    gated = should_keep_scene_frame_chain(later_cfg=cfg, earlier_cfg=prev_cfg) or bool(
-        cfg.get("use_prior_last_frame")
-    )
-    if cfg.get("use_prior_last_frame") is False:
-        return None
-    if not gated and not bool(cfg.get("use_prior_last_frame")):
-        return None
-    if path.is_file():
-        return path.resolve()
-    if ctx is not None and prev_id:
-        try:
-            from jiuwenswarm.server.runtime.designer.handlers.common import (
-                node_output_refs,
-                path_from_uri,
-            )
-
-            for ref in node_output_refs(ctx, prev_id):
-                uri = str((ref or {}).get("uri") or "")
-                vp = path_from_uri(uri)
-                if vp is not None and vp.is_file() and vp.suffix.lower() in {".mp4", ".mov", ".webm"}:
-                    extracted = extract_last_frame(vp)
-                    if extracted is not None:
-                        return extracted
-        except Exception:  # noqa: BLE001
-            logger.debug("resolve prior last frame from ctx failed", exc_info=True)
-    return None

@@ -63,3 +63,20 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   assert.doesNotMatch(marketplaceSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
   assert.doesNotMatch(installationSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
 });
+
+test('TeamSkillsHubModal fallback matches the server-side default Hub', () => {
+  const modalSource = readFileSync(
+    new URL('../src/features/TeamSkillsHubModal/index.tsx', import.meta.url),
+    'utf8',
+  );
+  const hubClientSource = readFileSync(
+    new URL('../../../../server/runtime/marketplace/hub_client.py', import.meta.url),
+    'utf8',
+  );
+
+  const modalMatch = modalSource.match(/const DEFAULT_TEAMSKILLS_HUB_BASE_URL = "([^"]+)"/);
+  const serverMatch = hubClientSource.match(/DEFAULT_HUB_BASE_URL = "([^"]+)"/);
+  assert.ok(modalMatch, 'missing frontend fallback constant');
+  assert.ok(serverMatch, 'missing backend default Hub constant');
+  assert.equal(modalMatch[1], serverMatch[1]);
+});
