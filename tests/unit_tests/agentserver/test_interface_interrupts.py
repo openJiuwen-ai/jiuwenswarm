@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,6 +21,8 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+
+test_logger = logging.getLogger("tests.interface_interrupts")
 
 
 class _InterruptHarness(JiuWenSwarm):
@@ -222,10 +225,10 @@ async def test_team_interrupt_resume_is_ack_only(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_team_pause_success_broadcasts_terminal_processing_status(
+async def test_team_pause_leaves_terminal_delivery_to_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pause park must emit an explicit terminal frame for frame-based consumers."""
+    """The adapter must not duplicate Runtime's Session completion broadcast."""
     claw = _InterruptHarness()
     fake_manager = _FakeTeamManager(pause_result=True)
 
@@ -239,14 +242,11 @@ async def test_team_pause_success_broadcasts_terminal_processing_status(
         AsyncMock(),
     )
 
-    await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+    response = await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
 
-    assert len(fake_manager.broadcast_events) == 1
-    event = fake_manager.broadcast_events[0]
-    assert event["event_type"] == "chat.processing_status"
-    assert event["is_processing"] is False
-    assert event["is_complete"] is True
-    assert "paused" not in event
+    assert response.payload["success"] is True
+    assert fake_manager.broadcast_events == []
+    test_logger.info("Team adapter returned pause success without a duplicate waiter frame")
 
 
 @pytest.mark.asyncio

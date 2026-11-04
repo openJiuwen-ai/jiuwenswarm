@@ -163,6 +163,159 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_repor
 
 
 @pytest.mark.asyncio
+async def test_after_model_call_persists_cumulative_usage_without_emitting_an_event(
+    monkeypatch,
+    tmp_path,
+):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
+
+    class _UsageMetadata:
+        @staticmethod
+        def model_dump():
+            return {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        context_usage_report=SimpleNamespace(parts={}),
+        extra={"_context_usage_event_emitted": True},
+        agent=SimpleNamespace(),
+        inputs=SimpleNamespace(
+            context_usage_request_id="call-1",
+            context_usage_attribution={
+                "product_session_id": "team/workflow/avatar",
+                "depth": 2,
+                "team_id": "team-1",
+                "member_name": "leader",
+                "agent_path": ["leader"],
+            },
+            response=SimpleNamespace(usage_metadata=_UsageMetadata()),
+        ),
+    )
+
+    rail = _TestRail()
+    rail.init(SimpleNamespace(_build_context=SimpleNamespace(role="leader", session_id="sess_usage")))
+    await rail.after_model_call(ctx)
+
+    assert session.outputs == []
+    assert get_session_token_usage("sess_usage")["main"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "input_calls": 1,
+        "output_calls": 1,
+        "calls_total": 1,
+    }
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import SessionTokenUsageRail
+
+    ctx.inputs.context_usage_request_id = "call-child"
+    ctx.inputs.context_usage_attribution["product_session_id"] = "sess_usage"
+    await SessionTokenUsageRail().after_model_call(ctx)
+    assert get_session_token_usage("sess_usage")["main"]["input_tokens"] == 100
+    assert get_session_token_usage("sess_usage")["others"]["input_tokens"] == 100
+    assert session.outputs == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_build_context", [True, False])
+async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypatch, tmp_path, has_build_context):
+    from openjiuwen.core.single_agent.rail.base import bind_usage_invocation_id, reset_usage_invocation_id
+    from openjiuwen.harness.deep_agent import DeepAgent
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+        install_session_token_usage_subagent_hook,
+    )
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
+
+    class _Child:
+        def __init__(self):
+            self.rails = []
+
+        def configured_rails(self):
+            return self.rails
+
+        def add_rail(self, rail):
+            self.rails.append(rail)
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(DeepAgent, "create_subagent", lambda _self, *_args, **_kwargs: _Child())
+    install_session_token_usage_subagent_hook()
+    parent = SimpleNamespace(
+        _usage_build_context=SimpleNamespace(session_id="root_usage") if has_build_context else None,
+    )
+    child = DeepAgent.create_subagent(parent, "general-purpose", "team/workflow/child")
+    rail = child.rails[0]
+    ctx = SimpleNamespace(
+        extra={},
+        session=None,
+        inputs=SimpleNamespace(conversation_id="team/workflow/child", invocation_id="invoke-child"),
+    )
+    ctx.inputs = SimpleNamespace(
+        context_usage_request_id="child-call",
+        context_usage_attribution={
+            "product_session_id": "team/workflow" if has_build_context else "root_usage",
+            "execution_session_id": "team/workflow/child",
+            "invocation_id": "invoke-child",
+        },
+        response=SimpleNamespace(usage_metadata={"input_tokens": 7, "output_tokens": 3}),
+    )
+    await rail.after_model_call(ctx)
+    token = bind_usage_invocation_id("invoke-child")
+    try:
+        nested = DeepAgent.create_subagent(child, "general-purpose", "team/workflow/nested")
+    finally:
+        reset_usage_invocation_id(token)
+    nested_ctx = SimpleNamespace(
+        extra={},
+        session=None,
+        inputs=SimpleNamespace(conversation_id="team/workflow/nested", invocation_id="invoke-nested"),
+    )
+    nested_ctx.inputs = SimpleNamespace(
+        context_usage_request_id="nested-call",
+        context_usage_attribution={
+            "product_session_id": "team/workflow/child",
+            "execution_session_id": "team/workflow/nested",
+            "invocation_id": "invoke-nested",
+        },
+        response=SimpleNamespace(usage_metadata={"input_tokens": 5, "output_tokens": 2}),
+    )
+    await nested.rails[0].after_model_call(nested_ctx)
+    assert get_session_token_usage("root_usage")["others"]["input_tokens"] == 12
+    assert get_session_token_usage("root_usage")["others"]["output_tokens"] == 5
+    await rail.after_invoke(SimpleNamespace(inputs=SimpleNamespace(conversation_id="team/workflow/child")))
+    assert not rail.invocation_products
+
+
+def test_subagent_hook_adds_one_token_usage_rail(monkeypatch):
+    from openjiuwen.harness.deep_agent import DeepAgent
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+        SessionTokenUsageRail,
+        install_session_token_usage_subagent_hook,
+    )
+
+    class _FakeSubagent:
+        def __init__(self):
+            self.rails = []
+
+        def configured_rails(self):
+            return self.rails
+
+        def add_rail(self, rail):
+            self.rails.append(rail)
+
+    child = _FakeSubagent()
+    monkeypatch.setattr(DeepAgent, "create_subagent", lambda _self, *_args, **_kwargs: child)
+    install_session_token_usage_subagent_hook()
+
+    created = DeepAgent.create_subagent(object(), "general-purpose", "sub-session")
+
+    assert created is child
+    assert sum(isinstance(rail, SessionTokenUsageRail) for rail in child.rails) == 1
+
+
+@pytest.mark.asyncio
 async def test_context_usage_keeps_runtime_context_limit_fallback(monkeypatch):
     captured_kwargs = {}
 

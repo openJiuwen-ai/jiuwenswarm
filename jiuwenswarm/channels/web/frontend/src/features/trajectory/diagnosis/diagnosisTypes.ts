@@ -128,6 +128,8 @@ export interface DiagnosisInput {
   evaluate_artifact: boolean;
   locale: 'zh' | 'en';
   resolved_span_count: number;
+  /** Per-subject windows the run was fixed to, including a full-trajectory run. */
+  resolved_ranges?: SelectionRange[];
   excluded_running: StepRef[];
 }
 
@@ -273,13 +275,22 @@ export interface DiagnosisProgressEvent {
   diagnosis_id: string;
   seq: number;
   stage_id: string;
-  kind: 'stage_started' | 'output_delta' | 'stage_finished' | 'reward_failure_causes' | 'evolution_judge' | 'root_causes';
+  kind:
+    | 'stage_started'
+    | 'output_delta'
+    | 'stage_finished'
+    | 'reward'
+    | 'reward_failure_causes'
+    | 'evolution_judge'
+    | 'root_causes';
   title?: string;
   text_delta?: string;
   status?: 'completed' | 'failed' | 'skipped';
   summary?: string;
   skip_reason?: string;
   elapsed_ms?: number;
+  /** Artifact evaluation, sent once when diagnosis finishes scoring. */
+  reward?: RewardPayload | null;
   /** Whole-table replacement events: every item known so far. */
   reward_failure_causes?: RewardFailureCause[];
   evolution_judge?: EvolutionJudge[];

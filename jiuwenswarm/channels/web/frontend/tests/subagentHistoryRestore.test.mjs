@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  beginHistoryRestore,
+  fetchHistoryCursorBatch,
+  webClient,
   mergeHistoryToolReplayItems,
   parseHistoryJsonFileToTimelinePreview,
   parseSubagentHistoryReplay,
@@ -13,6 +16,105 @@ import {
 
 const sessionId = 'web_session';
 const subagentId = 'web_session_sub_general-purpose_1';
+
+test('history completion restores current totals even when the page has no usage records', () => {
+  const usage = {
+    schema_version: 1,
+    revision: 12,
+    session_id: sessionId,
+    main: { input_tokens: 300, output_tokens: 40, input_calls: 2, output_calls: 2, calls_total: 2 },
+    others: { input_tokens: 150, output_tokens: 20, input_calls: 1, output_calls: 1, calls_total: 1 },
+  };
+  const done = {
+    type: 'event',
+    event: 'history.message',
+    payload: {
+      session_id: sessionId,
+      status: 'done',
+      cursor: null,
+      next_cursor: null,
+      has_more: false,
+      snapshot_id: 'history-snapshot',
+      snapshot_end: 0,
+      session_usage: usage,
+    },
+  };
+  let restored = null;
+  const handle = beginHistoryRestore({
+    sessionId,
+    onReady: () => {},
+    onSessionTokenUsage: (snapshot) => { restored = snapshot; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.deepEqual(restored, usage);
+  } finally {
+    handle.dispose();
+  }
+
+  let batch = null;
+  const batchHandle = fetchHistoryCursorBatch({
+    sessionId,
+    cursor: null,
+    onReady: (result) => { batch = result; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.deepEqual(batch.tokenUsageSnapshot, usage);
+  } finally {
+    batchHandle.dispose();
+  }
+});
+
+test('history restore ignores zero-revision token usage snapshots', () => {
+  const emptyUsage = {
+    schema_version: 1,
+    revision: 0,
+    session_id: sessionId,
+    main: { input_tokens: null, output_tokens: null, input_calls: 0, output_calls: 0, calls_total: 0 },
+    others: { input_tokens: null, output_tokens: null, input_calls: 0, output_calls: 0, calls_total: 0 },
+  };
+  const done = {
+    type: 'event',
+    event: 'history.message',
+    payload: {
+      session_id: sessionId,
+      status: 'done',
+      cursor: null,
+      next_cursor: null,
+      has_more: false,
+      snapshot_id: 'empty-history',
+      snapshot_end: 0,
+      session_usage: emptyUsage,
+    },
+  };
+
+  let restored = null;
+  const handle = beginHistoryRestore({
+    sessionId,
+    onReady: () => {},
+    onSessionTokenUsage: (snapshot) => { restored = snapshot; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.equal(restored, null);
+  } finally {
+    handle.dispose();
+  }
+
+  let batch = null;
+  const batchHandle = fetchHistoryCursorBatch({
+    sessionId,
+    cursor: null,
+    onReady: (result) => { batch = result; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.equal(batch.tokenUsageSnapshot, null);
+  } finally {
+    batchHandle.dispose();
+  }
+});
 
 test('existing full-duplex spoken replies stay expanded after history restore without changing normal chat', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
@@ -482,7 +584,26 @@ test('subagent history replays persisted activity without treating it as final t
   });
 });
 
-test('session history restores persisted usage summary onto the preceding assistant message', () => {
+test('session history restores persisted usage summary and session token totals', () => {
+  const sessionUsage = {
+    schema_version: 1,
+    revision: 3,
+    session_id: sessionId,
+    main: {
+      input_tokens: 210,
+      output_tokens: 40,
+      input_calls: 2,
+      output_calls: 2,
+      calls_total: 2,
+    },
+    others: {
+      input_tokens: 70,
+      output_tokens: 15,
+      input_calls: 1,
+      output_calls: 1,
+      calls_total: 1,
+    },
+  };
   const preview = parseHistoryJsonFileToTimelinePreview([
     {
       id: 'r1:user',
@@ -511,6 +632,7 @@ test('session history restores persisted usage summary onto the preceding assist
         output_cost: 0.02,
         total_cost: 0.03,
       },
+      session_usage: sessionUsage,
     },
   ], sessionId);
 
@@ -523,6 +645,29 @@ test('session history restores persisted usage summary onto the preceding assist
     output_cost: 0.02,
     total_cost: 0.03,
   });
+  assert.deepEqual(preview.tokenUsageSnapshot, sessionUsage);
+});
+
+test('session history ignores a cumulative snapshot belonging to another session', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'foreign-usage-summary',
+      role: 'assistant',
+      event_type: 'chat.usage_summary',
+      timestamp: 1787019581,
+      content: '',
+      usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      session_usage: {
+        schema_version: 1,
+        revision: 1,
+        session_id: 'another-session',
+        main: { input_tokens: 10, output_tokens: 2, input_calls: 1, output_calls: 1, calls_total: 1 },
+        others: { input_tokens: 0, output_tokens: 0, input_calls: 0, output_calls: 0, calls_total: 0 },
+      },
+    },
+  ], sessionId);
+
+  assert.equal(preview.tokenUsageSnapshot, null);
 });
 
 test('session history restores the complete context usage payload without adding a chat message', () => {

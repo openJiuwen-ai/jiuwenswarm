@@ -158,6 +158,9 @@ _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES: dict[str, dict[str, Any]] = {
     "codex": _CODEX_DEPENDENCY_INSTALL_STATUS,
 }
 _EXTERNAL_CLI_DEPENDENCY_INSTALL_REGISTRY_LOCK = threading.Lock()
+# Bound on the paths one history-prune request may name. Far above the
+# persisted per-kind history limit; only caps request size.
+_EXTERNAL_CLI_PRUNE_PATH_HISTORIES_MAX_PATHS = 50
 
 
 _PROJECT_ROOT = get_root_dir()
@@ -494,6 +497,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "session.assets.list",
     "session.assets.register",
     "session.assets.rename",
+    "session.assets.remove",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -785,6 +789,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "session.assets.list",
     "session.assets.register",
     "session.assets.rename",
+    "session.assets.remove",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -2336,6 +2341,53 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         result = _detect_external_cli_agent(cli_agent, cli_path, use_builtin)
         await channel.send_response(ws, req_id, ok=True, payload=result)
 
+    async def _external_cli_validate_paths(ws, req_id, params, session_id):
+        if not isinstance(params, dict):
+            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
+            return
+        raw_paths = params.get("paths")
+        if not isinstance(raw_paths, list):
+            await channel.send_response(ws, req_id, ok=False, error="paths must be array", code="BAD_REQUEST")
+            return
+        # Cap the batch so one request cannot fan out into unbounded stat calls.
+        paths = [str(path or "").strip() for path in raw_paths][:50]
+        # Probe one path at a time. Results are three-valued: True = the file
+        # exists, False = confirmed missing, null = undeterminable (locked
+        # exe, revoked ACL, offline drive). Callers may only prune history
+        # entries on False — an unreadable path is not proof of absence.
+        results: dict[str, bool | None] = {}
+        for path in paths:
+            if not path:
+                continue
+            try:
+                results[path] = Path(path).expanduser().is_file()
+            except (OSError, RuntimeError, ValueError):
+                results[path] = None
+        await channel.send_response(ws, req_id, ok=True, payload={"results": results})
+
+    async def _external_cli_prune_path_histories(ws, req_id, params, session_id):
+        if not isinstance(params, dict):
+            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
+            return
+        cli_agent = str(params.get("cli_agent") or "").strip().lower()
+        raw_remove = params.get("remove_paths")
+        if not cli_agent:
+            await channel.send_response(ws, req_id, ok=False, error="cli_agent is required", code="BAD_REQUEST")
+            return
+        if not isinstance(raw_remove, list):
+            await channel.send_response(ws, req_id, ok=False, error="remove_paths must be array", code="BAD_REQUEST")
+            return
+        # The prune runs server-side against the on-disk history, so only the
+        # intersection is dropped and entries appended by a concurrent save
+        # survive even when the caller acted on a stale snapshot.
+        from jiuwenswarm.common.config import prune_external_cli_path_histories_in_config
+
+        surviving = prune_external_cli_path_histories_in_config(
+            cli_agent,
+            [str(path or "") for path in raw_remove][: _EXTERNAL_CLI_PRUNE_PATH_HISTORIES_MAX_PATHS],
+        )
+        await channel.send_response(ws, req_id, ok=True, payload={"histories": surviving})
+
     async def _external_cli_codex_install_status(ws, req_id, params, session_id):
         await channel.send_response(ws, req_id, ok=True, payload=_snapshot_codex_dependency_install_status())
 
@@ -2985,6 +3037,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 cron_activity = getattr(_get_cron(), "is_session_processing", None)
                 if callable(cron_activity):
                     is_processing = is_processing or cron_activity(target_session_id, user_id=user_id)
+                # Child activity still guards Git writes, but cannot restart a stopped Owner composer.
+                if payload.get("organization_owner_stopped") is True:
+                    is_processing = False
                 payload["is_processing"] = is_processing
                 payload["status"] = "processing" if is_processing else "idle"
                 # Cron executes outside the Web busy cache; keep this response
@@ -5850,6 +5905,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     channel.register_method("external_cli.detect", _external_cli_detect)
+    channel.register_method("external_cli.validate_paths", _external_cli_validate_paths)
+    channel.register_method("external_cli.prune_path_histories", _external_cli_prune_path_histories)
     channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
     channel.register_method("external_cli.install_status", _external_cli_install_status)
     channel.register_method("external_cli.install", _external_cli_install)

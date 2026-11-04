@@ -397,7 +397,8 @@ async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
-async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent):
+@pytest.mark.parametrize("owner_flag", [None, "organization_owner_stop", "organization_stop"])
+async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent, owner_flag):
     handler = _TestMessageHandler.create()
     monkeypatch.setattr(
         "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
@@ -406,7 +407,10 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
     msg.req_method = ReqMethod.CHAT_CANCEL
     msg.is_stream = False
-    msg.params.update({"target_team_id": "expert", "intent": intent})
+    target = "owner" if owner_flag else "expert"
+    msg.params.update({"target_team_id": target, "intent": intent})
+    if owner_flag:
+        msg.params[owner_flag] = True
     session_cancel = AsyncMock()
     monkeypatch.setattr(handler, "_cancel_agent_work_for_session", session_cancel)
     owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
@@ -417,7 +421,9 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
             while not _FakeAgentClient.sent_requests:
                 await asyncio.sleep(0)
         env = _FakeAgentClient.sent_requests[0]
-        assert env.params["target_team_id"] == "expert"
+        assert env.params["target_team_id"] == target
+        if owner_flag:
+            assert env.params[owner_flag] is True
         assert env.params["intent"] == intent
         assert not owner.done()
         session_cancel.assert_not_awaited()

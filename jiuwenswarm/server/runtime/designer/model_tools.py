@@ -5,12 +5,16 @@
 from __future__ import annotations
 
 import base64
+import copy
+import ipaddress
 import logging
 import mimetypes
 from contextlib import contextmanager
 from contextvars import ContextVar
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from jiuwenswarm.common.config import get_config, get_model_names, resolve_env_vars
 
@@ -48,14 +52,112 @@ def _clamp_max_tokens(value: int | None) -> int:
     return max(256, min(_DESIGNER_MAX_TOKENS_CAP, n))
 
 
-def _thinking_disabled_extra_body() -> dict[str, Any]:
-    """Provider-neutral knobs so reasoning does not eat the output budget."""
-    return {
-        "thinking": {"type": "disabled"},
-        "reasoning": {"enabled": False},
-        "enable_thinking": False,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }
+# Subset of agent-core reasoning_profiles (REASONING_PROFILES / MODEL_REASONING_FALLBACKS)
+# for the "reasoning off" request; keep in sync when core changes those tables.
+_OPENROUTER_REASONING_MODELS = (
+    "openai/gpt-5.6-*",
+    "qwen/qwen3.8-max*",
+    "z-ai/glm-5.2*",
+    "deepseek/deepseek-v4-pro*",
+    "minimax/minimax-m3*",
+    "anthropic/claude-sonnet-4.5*",
+    "google/gemini-2.5-flash*",
+    "poolside/laguna-s-2.1*",
+)
+_CANNOT_DISABLE_THINKING_MODELS = (
+    "kimi-k3*",
+    "qwen3-vl-*-thinking*",
+    "kimi-k2.7-code*",
+    "kimi-k2-thinking*",
+    "minimax-m2*",
+    "minimax-m1*",
+    "codegeex-4*",
+    "doubao-1.5-pro*",
+    "qianfan-ocr-*",
+)
+_ENABLE_THINKING_MODELS = ("qwen3*", "qwen-plus*", "qwen-max*", "qwen-flash*")
+# Deviates from agent-core tables: DashScope rejects disabling thinking for GLM models
+# (only low/high/max), so the whole family gets no switch there.
+_DASHSCOPE_CANNOT_DISABLE_THINKING_MODELS = ("glm-*",)
+_DASHSCOPE_HOSTS = ("dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "maas.aliyuncs.com")
+_GENERIC_ENDPOINT_PROFILES = {"", "openai", "openai-compatible"}
+# Self-hosted servers render thinking through the chat template; they ignore
+# provider-specific top-level switches such as ``enable_thinking``.
+_CHAT_TEMPLATE_PROFILES = {"vllm", "sglang"}
+_CHAT_TEMPLATE_THINKING_OFF = {"chat_template_kwargs": {"enable_thinking": False}}
+# An IP / localhost / intranet api_base says nothing about the serving stack, so it
+# keeps the provider-neutral body Designer sent to every endpoint before per-provider
+# switches existed; such endpoints were validated against exactly this payload.
+_SELF_HOSTED_PROVIDER = "self-hosted"
+_PROVIDER_NEUTRAL_THINKING_OFF = {
+    "thinking": {"type": "disabled"},
+    "reasoning": {"enabled": False},
+    "enable_thinking": False,
+    "chat_template_kwargs": {"enable_thinking": False},
+}
+
+
+def _api_host(api_base: str) -> str:
+    return (urlparse(api_base if "://" in api_base else f"https://{api_base}").hostname or "").lower()
+
+
+def _is_self_hosted_host(host: str) -> bool:
+    """IP literals, localhost and dot-less intranet names point at a self-deployed server."""
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or "." not in host:
+        return True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _reasoning_provider(api_base: str, endpoint_profile: str) -> str:
+    """Explicit endpoint_profile wins; otherwise infer the provider from the api_base host."""
+    profile = endpoint_profile.strip().lower().replace("_", "-")
+    if profile not in _GENERIC_ENDPOINT_PROFILES:
+        return profile
+    host = _api_host(api_base)
+    if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
+        return "openrouter"
+    if any(host == h or host.endswith(f".{h}") for h in _DASHSCOPE_HOSTS):
+        return "dashscope"
+    if _is_self_hosted_host(host):
+        return _SELF_HOSTED_PROVIDER
+    return profile
+
+
+def _thinking_disabled_extra_body(api_base: str, model_name: str, endpoint_profile: str = "") -> dict[str, Any]:
+    """Send only the switch the provider honors so reasoning does not eat the output budget.
+
+    Unrecognized switches are not always ignored: DashScope-style proxies reject
+    ``enable_thinking=false`` with HTTP 400 for always-thinking models, so models
+    that cannot disable thinking get no switch at all. An explicit vLLM / SGLang
+    profile additionally gets ``chat_template_kwargs`` because that is the only
+    switch their templates read; an IP / localhost / intranet api_base of unknown
+    stack gets every switch.
+    """
+    model = model_name.strip().lower()
+    short = model.rsplit("/", 1)[-1]
+
+    def matches(patterns: tuple[str, ...]) -> bool:
+        return any(fnmatchcase(model, p) or fnmatchcase(short, p) for p in patterns)
+
+    provider = _reasoning_provider(api_base, endpoint_profile)
+    if provider == "openrouter" and any(fnmatchcase(model, p) for p in _OPENROUTER_REASONING_MODELS):
+        return {"reasoning": {"effort": "none"}}
+    if provider == "dashscope" and matches(_DASHSCOPE_CANNOT_DISABLE_THINKING_MODELS):
+        return {}
+    if matches(_CANNOT_DISABLE_THINKING_MODELS):
+        return {}
+    if provider == _SELF_HOSTED_PROVIDER:
+        return copy.deepcopy(_PROVIDER_NEUTRAL_THINKING_OFF)
+    template_switch = _CHAT_TEMPLATE_THINKING_OFF if provider in _CHAT_TEMPLATE_PROFILES else {}
+    if matches(_ENABLE_THINKING_MODELS):
+        return {"enable_thinking": False, **template_switch}
+    return {"thinking": {"type": "disabled"}, **template_switch}
 
 
 def _message_text(msg: Any) -> str:
@@ -457,6 +559,7 @@ async def call_model_tool(
     cfg = get_config() or {}
     defaults = (cfg.get("models") or {}).get("defaults") or []
     api_key = ""
+    endpoint_profile = ""
     api_base = str(chosen.get("api_base") or "")
     model_name = str(chosen.get("model_name") or chosen.get("id") or "")
     if isinstance(defaults, list) and defaults:
@@ -464,6 +567,7 @@ async def call_model_tool(
         if 0 <= idx < len(defaults) and isinstance(defaults[idx], dict):
             mcc = defaults[idx].get("model_client_config") or {}
             api_key = resolve_env_vars(str(mcc.get("api_key") or ""))
+            endpoint_profile = str(mcc.get("endpoint_profile") or "")
             if not api_base:
                 api_base = resolve_env_vars(str(mcc.get("api_base") or ""))
             if not model_name:
@@ -510,7 +614,7 @@ async def call_model_tool(
                     ],
                     "max_tokens": max_tokens,
                     "temperature": temperature,
-                    "extra_body": _thinking_disabled_extra_body(),
+                    "extra_body": _thinking_disabled_extra_body(api_base, model_name, endpoint_profile),
                 }
                 from jiuwenswarm.server.runtime.designer.trajectory import (
                     current_trajectory_span,

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import joyAiLogo from '../../../../assets/providers/joyai.jpg';
 import qwenLogo from '../../../../assets/providers/qwen.svg';
 import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Select, Switch } from '../../../../components/ui';
@@ -11,8 +10,6 @@ import { webRequest } from '../../../../services/webClient';
 import {
   isConfigured,
   type SettingsValues,
-  type Provider,
-  type VoiceProtocol,
   type ReplyLanguage,
 } from './videoDuplexSettingsValidation';
 import './VideoDuplexModelSettings.css';
@@ -36,7 +33,7 @@ const DEFAULTS: SettingsValues = {
   voice_tts_voice: '',
 };
 
-const SECRET_KEYS = ['joyai_api_key', 'qwen_omni_api_key', 'voice_api_key'] as const;
+const SECRET_KEYS = ['qwen_omni_api_key'] as const;
 type Payload = { values: SettingsValues; configured_secret_lengths: Record<string, number> };
 
 function secretPlaceholder(length?: number): string {
@@ -126,15 +123,15 @@ export function VideoDuplexModelSettings({
   }, [t]);
 
   const configured = isConfigured(values, secretLengths);
-  const modelName = values.video_live_provider === 'qwen_omni' ? values.qwen_omni_model : values.joyai_model;
-  const providerName = values.video_live_provider === 'qwen_omni' ? 'Qwen Omni Realtime' : 'JoyAI';
+  const modelName = values.qwen_omni_model;
+  const providerName = 'Qwen Omni Realtime';
   const updateDraft = <K extends keyof SettingsValues>(key: K, value: SettingsValues[K]) => {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
   const openEditor = () => {
     setError('');
-    setDraft({ ...values });
+    setDraft({ ...values, video_live_provider: 'qwen_omni' });
   };
 
   const saveDraft = async () => {
@@ -145,7 +142,14 @@ export function VideoDuplexModelSettings({
     }
     setSaving(true);
     setError('');
-    const outgoing: Record<string, string> = { ...draft };
+    const outgoing: Record<string, string> = {
+      video_live_provider: 'qwen_omni',
+      qwen_omni_realtime_url: draft.qwen_omni_realtime_url,
+      qwen_omni_api_key: draft.qwen_omni_api_key,
+      qwen_omni_model: draft.qwen_omni_model,
+      qwen_omni_voice: draft.qwen_omni_voice,
+      reply_language: draft.reply_language,
+    };
     SECRET_KEYS.forEach((key) => {
       if (!draft[key].trim()) delete outgoing[key];
     });
@@ -265,23 +269,13 @@ export function VideoDuplexModelSettings({
           configured ? (
             <>
               <div className="settings-agent-media__model-card">
-                {values.video_live_provider === 'qwen_omni' ? (
-                  <img
-                    src={qwenLogo}
-                    alt=""
-                    className="video-duplex-model-settings__model-icon"
-                    aria-hidden="true"
-                    data-testid="settings-video-duplex-model-icon"
-                  />
-                ) : (
-                  <img
-                    src={joyAiLogo}
-                    alt=""
-                    className="video-duplex-model-settings__model-icon video-duplex-model-settings__model-icon--joyai"
-                    aria-hidden="true"
-                    data-testid="settings-video-duplex-model-icon"
-                  />
-                )}
+                <img
+                  src={qwenLogo}
+                  alt=""
+                  className="video-duplex-model-settings__model-icon"
+                  aria-hidden="true"
+                  data-testid="settings-video-duplex-model-icon"
+                />
                 <div className="video-duplex-model-settings__model-copy">
                   <strong className="settings-agent-media__model-name">{modelName}</strong>
                   <small>{providerName}</small>
@@ -405,122 +399,39 @@ export function VideoDuplexModelSettings({
             })}
             <label className="video-duplex-model-settings__field">
               <span>{t('settingsPanel.videoDuplex.providerLabel')}</span>
-              <select
-                value={draft.video_live_provider}
-                onChange={(event) => updateDraft('video_live_provider', event.target.value as Provider)}
-              >
-                <option value="joyai">JoyAI</option>
-                <option value="qwen_omni">Qwen Omni Realtime</option>
-              </select>
+              <input
+                value="Qwen Omni Realtime"
+                readOnly
+                data-testid="settings-video-duplex-provider"
+              />
             </label>
-            {draft.video_live_provider === 'joyai' ? (
-              <>
-                <ConfigField
-                  field="joyai_api_base"
-                  value={draft.joyai_api_base}
-                  label="JoyAI API Base"
-                  onChange={(value) => updateDraft('joyai_api_base', value)}
-                />
-                <ConfigField
-                  field="joyai_api_key"
-                  value={draft.joyai_api_key}
-                  label="JoyAI API Key"
-                  secret
-                  placeholder={secretPlaceholder(secretLengths.joyai_api_key)}
-                  onChange={(value) => updateDraft('joyai_api_key', value)}
-                />
-                <ConfigField
-                  field="joyai_model"
-                  value={draft.joyai_model}
-                  label={t('settingsPanel.videoDuplex.joyaiModelLabel')}
-                  onChange={(value) => updateDraft('joyai_model', value)}
-                />
-                <h3>{t('settingsPanel.videoDuplex.voiceSectionTitle')}</h3>
-                <label className="video-duplex-model-settings__field">
-                  <span>{t('settingsPanel.videoDuplex.voiceProtocolLabel')}</span>
-                  <select
-                    value={draft.voice_protocol}
-                    onChange={(event) => updateDraft('voice_protocol', event.target.value as VoiceProtocol)}
-                  >
-                    <option value="native_ws">JoyAI WebSocket</option>
-                    <option value="openai_http">OpenAI HTTP</option>
-                  </select>
-                </label>
-                <ConfigField
-                  field="voice_asr_endpoint"
-                  value={draft.voice_asr_endpoint}
-                  label={t('settingsPanel.videoDuplex.asrEndpointLabel')}
-                  onChange={(value) => updateDraft('voice_asr_endpoint', value)}
-                />
-                <ConfigField
-                  field="voice_tts_endpoint"
-                  value={draft.voice_tts_endpoint}
-                  label={t('settingsPanel.videoDuplex.ttsEndpointLabel')}
-                  onChange={(value) => updateDraft('voice_tts_endpoint', value)}
-                />
-                {draft.voice_protocol === 'openai_http' ? (
-                  <>
-                    <ConfigField
-                      field="voice_api_key"
-                      value={draft.voice_api_key}
-                      label={t('settingsPanel.videoDuplex.voiceApiKeyLabel')}
-                      secret
-                      placeholder={secretPlaceholder(secretLengths.voice_api_key)}
-                      onChange={(value) => updateDraft('voice_api_key', value)}
-                    />
-                    <ConfigField
-                      field="voice_asr_model"
-                      value={draft.voice_asr_model}
-                      label={t('settingsPanel.videoDuplex.asrModelLabel')}
-                      onChange={(value) => updateDraft('voice_asr_model', value)}
-                    />
-                    <ConfigField
-                      field="voice_tts_model"
-                      value={draft.voice_tts_model}
-                      label={t('settingsPanel.videoDuplex.ttsModelLabel')}
-                      onChange={(value) => updateDraft('voice_tts_model', value)}
-                    />
-                  </>
-                ) : null}
-                <ConfigField
-                  field="voice_tts_voice"
-                  value={draft.voice_tts_voice}
-                  label={t('settingsPanel.videoDuplex.ttsVoiceLabel')}
-                  required={draft.voice_protocol === 'native_ws'}
-                  onChange={(value) => updateDraft('voice_tts_voice', value)}
-                />
-              </>
-            ) : (
-              <>
-                <ConfigField
-                  field="qwen_omni_realtime_url"
-                  value={draft.qwen_omni_realtime_url}
-                  label="Qwen Realtime WebSocket"
-                  onChange={(value) => updateDraft('qwen_omni_realtime_url', value)}
-                />
-                <ConfigField
-                  field="qwen_omni_api_key"
-                  value={draft.qwen_omni_api_key}
-                  label="Qwen API Key"
-                  secret
-                  placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)}
-                  onChange={(value) => updateDraft('qwen_omni_api_key', value)}
-                />
-                <ConfigField
-                  field="qwen_omni_model"
-                  value={draft.qwen_omni_model}
-                  label={t('settingsPanel.videoDuplex.qwenModelLabel')}
-                  onChange={(value) => updateDraft('qwen_omni_model', value)}
-                />
-                <ConfigField
-                  field="qwen_omni_voice"
-                  value={draft.qwen_omni_voice}
-                  required={false}
-                  label={t('settingsPanel.videoDuplex.qwenVoiceLabel')}
-                  onChange={(value) => updateDraft('qwen_omni_voice', value)}
-                />
-              </>
-            )}
+            <ConfigField
+              field="qwen_omni_realtime_url"
+              value={draft.qwen_omni_realtime_url}
+              label="Qwen Realtime WebSocket"
+              onChange={(value) => updateDraft('qwen_omni_realtime_url', value)}
+            />
+            <ConfigField
+              field="qwen_omni_api_key"
+              value={draft.qwen_omni_api_key}
+              label="Qwen API Key"
+              secret
+              placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)}
+              onChange={(value) => updateDraft('qwen_omni_api_key', value)}
+            />
+            <ConfigField
+              field="qwen_omni_model"
+              value={draft.qwen_omni_model}
+              label={t('settingsPanel.videoDuplex.qwenModelLabel')}
+              onChange={(value) => updateDraft('qwen_omni_model', value)}
+            />
+            <ConfigField
+              field="qwen_omni_voice"
+              value={draft.qwen_omni_voice}
+              required={false}
+              label={t('settingsPanel.videoDuplex.qwenVoiceLabel')}
+              onChange={(value) => updateDraft('qwen_omni_voice', value)}
+            />
           </div>
           {error ? (
             <div className="settings-page__error" role="alert">

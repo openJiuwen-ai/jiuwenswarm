@@ -44,6 +44,9 @@ from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import (
     ToolCatalogueSnapshot,
     ToolRetrievalToolkit,
 )
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    discovery_description,
+)
 from jiuwenswarm.common.config import is_tool_retrieval_enabled
 
 logger = logging.getLogger(__name__)
@@ -92,8 +95,8 @@ _DISCLOSURE_INTRO_CN = (
     "把符合 schema 的参数放入 `args`。不要直接调用 deferred 工具名称。\n"
     "6. `tool_search` 只用于发现工具，永不执行工具；不要用 `bash` 或其他 direct 工具"
     "替代或执行搜索到的工具。\n"
-    "7. 同一用户意图不要重复调用相同或相近的检索；若返回结果不适用，不要猜测工具"
-    "名，必要时调用 `ask_user`，否则说明当前没有合适工具。\n"
+    "7. 内置工具的 keyword 支持中英文能力词，MCP 按提供方原始描述检索。"
+    "不要重复相近检索、逐个枚举无关分类或猜测工具名称。\n"
     "\n"
     "下方目录为 session 初始快照；会话中的新增、修改、删除以「deferred 工具目录更新」"
     "附件通知，新增工具的名称同样直列，直接 get_schema。"
@@ -130,9 +133,9 @@ _DISCLOSURE_INTRO_EN = (
     "arguments in `args`. Do not call deferred tool names directly.\n"
     "6. `tool_search` only discovers tools, it never executes them; do not use "
     "`bash` or another direct tool to substitute for or execute a discovered tool.\n"
-    "7. Do not repeat the same or a similar search or enumerate categories one "
-    "by one; if the results do not fit, call `ask_user` when necessary, "
-    "otherwise state that no suitable tool is available.\n"
+    "7. Built-in keyword search accepts Chinese or English capability terms; "
+    "MCP search uses the provider's original descriptions. Do not repeat similar "
+    "searches, enumerate unrelated categories, or guess tool names.\n"
     "\n"
     "The catalogue below is the session's initial snapshot; mid-session "
     "additions, changes, and removals arrive as \"Deferred-tool directory "
@@ -471,7 +474,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
                 [
                     "",
                     "Categories (virtual groups):" if english else "分类（虚拟目录）：",
-                    *_render_categories(categories),
+                    *_render_categories(categories, language="en" if english else "cn"),
                 ]
             )
         covered = {name for category in categories for name in category.tools}
@@ -901,7 +904,9 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             )
             return {}, {}
         descriptions = {
-            str(name): _compact_description(str(getattr(info, "description", "") or ""))
+            str(name): _compact_description(
+                discovery_description(info, toolkit.language)
+            )
             for name, info in infos.items()
             if str(name)
         }
@@ -1057,7 +1062,7 @@ def _compact_description(description: str) -> str:
     return compact[: _MAX_ENTRY_DESC_CHARS - 1].rstrip() + "…"
 
 
-def _render_categories(categories: tuple[ToolCategory, ...]) -> list[str]:
+def _render_categories(categories: tuple[ToolCategory, ...], language: str = "cn") -> list[str]:
     """Render description-only category lines, type-marked ``[category]``.
 
     Lines carry only the description — tool names are discovered through
@@ -1068,7 +1073,7 @@ def _render_categories(categories: tuple[ToolCategory, ...]) -> list[str]:
 
     return [
         f"- [category] `{_compact_text(category.path)}`: "
-        f"{_compact_text(category.description)}"
+        f"{_compact_text(category.description_for(language))}"
         for category in categories
     ]
 

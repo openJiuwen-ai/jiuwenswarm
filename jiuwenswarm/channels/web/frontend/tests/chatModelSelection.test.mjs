@@ -247,3 +247,64 @@ test('pending new conversation keeps a manually selected model when the default 
 
   useSessionStore.getState().removeRuntime('new');
 });
+
+test('free models without IDs survive refresh before and after the catalog arrives', () => {
+  const previousStorage = globalThis.localStorage;
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  };
+  const store = useSessionStore.getState();
+  const free = { ...models[1], model_id: undefined, model_name: 'free-model', is_free: true };
+  const catalog = [...models, free];
+  try {
+    store.removeRuntime('new');
+    store.setAvailableModelGroups([]);
+    store.setAvailableModels(catalog, 'main-model');
+    store.ensureRuntime('new');
+    store.setSelectedModelSelection('new', { type: 'model', id: 'mdl-main' });
+    store.setSelectedModelName('new', free.model_name);
+    store.removeRuntime('new');
+    store.setAvailableModels([], null);
+    assert.equal(store.ensureRuntime('new').selectedModelName, free.model_name);
+    store.initializeDefaultModel('new');
+    store.setAvailableModelGroups([]);
+    store.setAvailableModels(catalog, 'main-model');
+    assert.equal(store.getRuntime('new').selectedModelName, free.model_name);
+    assert.equal(store.getRuntime('new').selectedModelSelection, null);
+    assert.deepEqual(store.getModelSelectionPayload('new'), { model_name: free.model_name });
+    store.removeRuntime('new');
+    assert.equal(store.ensureRuntime('new').selectedModelName, free.model_name);
+    // A later stable choice takes precedence over the legacy name cache.
+    store.setSelectedModelSelection('new', { type: 'model', id: 'mdl-main' });
+    store.removeRuntime('new');
+    assert.deepEqual(store.ensureRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-main' });
+    // A removed free model must also fall back when recreating the draft.
+    store.setSelectedModelName('new', free.model_name);
+    store.setAvailableModels(models, 'main-model');
+    store.removeRuntime('new');
+    assert.equal(store.ensureRuntime('new').selectedModelName, 'main-model');
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-main' });
+    assert.deepEqual(store.getModelSelectionPayload('new'), {
+      model_selection: { type: 'model', id: 'mdl-main' },
+    });
+    // When the same model gains an ID, both restoration paths use that ID.
+    store.setAvailableModels(catalog, 'main-model');
+    store.setSelectedModelName('new', free.model_name);
+    const stableFree = { ...free, model_id: 'mdl-free' };
+    store.setAvailableModels([...models, stableFree], 'main-model');
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-free' });
+    store.removeRuntime('new');
+    assert.equal(store.ensureRuntime('new').selectedModelName, free.model_name);
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-free' });
+    assert.deepEqual(store.getModelSelectionPayload('new'), {
+      model_selection: { type: 'model', id: 'mdl-free' },
+    });
+  } finally {
+    store.removeRuntime('new');
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
+});

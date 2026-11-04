@@ -708,6 +708,20 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
   assert.match(panelSource, /spanSelectsRange: selecting/);
   assert.match(panelSource, /agentSelection: \{/);
+  // Include checkbox only while a shared brush / full-scope pick is active.
+  assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
+  // Full-trajectory pick keeps lane "select all" inactive; a click narrows to that lane.
+  assert.match(panelSource, /if \(fullScopeSelection\) return false;/);
+  assert.match(
+    panelSource,
+    /toggleSelectAllOnLane\(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals\)/,
+  );
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /showIncludeToggle === true && onToggleIncluded !== undefined/);
+  assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
 });
 
 test('diagnosis sub-page folds finished stages and offers record management', () => {

@@ -431,6 +431,9 @@ def get_panel() -> dict[str, Any]:
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
+        payload["comfyui_workflow_enabled"] = _bool_text(
+            experimental_cfg.get("comfyui_workflow_enabled"), False
+        )
         payload["progressive_tool_optimize"] = _bool_text(
             raw.get("progressive_tool_optimize"), False
         )
@@ -481,6 +484,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")

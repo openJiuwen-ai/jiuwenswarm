@@ -67,6 +67,9 @@ from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
+from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+    record_model_token_usage,
+)
 from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
@@ -347,12 +350,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         member_name: str | None = None,
         role: str | None = None,
         root_permission_queue: RootPermissionQueue | None = None,
+        project_interruption_snapshots: bool = False,
     ) -> None:
         super().__init__()
         self._deep_agent: Optional[Any] = None
         self._member_name = str(member_name or "").strip()
         self._role = str(role or "").strip().lower()
         self._root_permission_queue = root_permission_queue
+        self.project_interruption_snapshots = project_interruption_snapshots
         # Per-session pause/abort state.  Keyed by session_id (conversation_id).
         # Shared adapter instances serve multiple concurrent sessions; scalar state
         # would cause cross-session contamination (session A cancel kills session B).
@@ -869,6 +874,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     keys=(),
                     reason="permission_queue_unavailable",
                 )
+            elif self.project_interruption_snapshots:
+                await self._project_ordinary_interruption(ctx)
             return
         try:
             snapshot = queue.reconcile(
@@ -883,6 +890,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             return
         if snapshot is None:
+            if self.project_interruption_snapshots:
+                await self._project_ordinary_interruption(ctx)
             return
         payload = build_verified_permission_ask_user_question(
             snapshot.interactions[0],
@@ -902,6 +911,27 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 payload=payload,
             )
         )
+
+    async def _project_ordinary_interruption(self, ctx: AgentCallbackContext) -> None:
+        """Expose the SDK's current head without retaining a second pending list."""
+        result = ctx.inputs.result
+        if not isinstance(result, dict) or result.get("result_type") != "interrupt":
+            return
+        payload = convert_interactions_to_ask_user_question(
+            result.get("state") or [], root_permission_queue=self._root_permission_queue,
+        )
+        interrupt_ids = result.get("interrupt_ids")
+        if payload is None or not isinstance(interrupt_ids, list) or (
+            payload["request_id"] not in interrupt_ids
+        ):
+            await ctx.session.write_stream(OutputSchema(
+                type="error", index=0,
+                payload={"error": self._interruption_retry_message()},
+            ))
+            return
+        await ctx.session.write_stream(OutputSchema(
+            type="chat.ask_user_question", index=0, payload=payload,
+        ))
 
     async def _cancel_interruption_snapshot(
         self,
@@ -1049,6 +1079,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        build_context = getattr(self._deep_agent, "_build_context", None)
+        usage_role = self._role or getattr(build_context, "role", None)
+        await record_model_token_usage(
+            ctx,
+            fallback_role=usage_role,
+            product_session_id=getattr(build_context, "session_id", None),
+        )
         # New agent-core versions emit the complete pre/post context usage
         # snapshots themselves.  The report on the callback context is the
         # capability marker; emitting the legacy rail event as well would add
@@ -1192,13 +1229,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 tc,
                 tool_result,
             )
-        await self._emit_ask_user_question_if_interrupted(
-            session,
-            tc,
-            ctx.inputs.tool_name,
-            tool_result,
-            ctx.exception,
-        )
+        if not self.project_interruption_snapshots:
+            await self._emit_ask_user_question_if_interrupted(
+                session,
+                tc,
+                ctx.inputs.tool_name,
+                tool_result,
+                ctx.exception,
+            )
 
         tool_name = ctx.inputs.tool_name
         sid = self._resolve_sid(ctx, session)

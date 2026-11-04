@@ -144,7 +144,12 @@ async def test_web_channel_splits_chat_final_and_leaves_others_unsplit(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch):
+async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    SessionTokenUsageLedger(tmp_path / "sess-web", "sess-web").record("call-1", "main", 33, 11)
     server = agent_ws_server_module.AgentWebSocketServer.__new__(
         agent_ws_server_module.AgentWebSocketServer
     )
@@ -180,6 +185,54 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch):
     assert all(payload["has_more"] is True for payload in history_payloads)
     assert all(payload["snapshot_id"] == "snapshot-a" for payload in history_payloads)
     assert history_payloads[-1]["status"] == "done"
+    assert history_payloads[-1]["session_usage"]["main"]["input_tokens"] == 33
+
+
+@pytest.mark.asyncio
+async def test_web_cursor_stream_omits_unrecorded_session_usage(monkeypatch):
+    from jiuwenswarm.server.control import history_service
+
+    server = agent_ws_server_module.AgentWebSocketServer.__new__(
+        agent_ws_server_module.AgentWebSocketServer
+    )
+    monkeypatch.setattr(
+        server,
+        "get_conversation_history_cursor",
+        lambda session_id, cursor, **_kwargs: {
+            "messages": [],
+            "next_cursor": None,
+            "has_more": False,
+            "snapshot_id": "snapshot-empty",
+            "snapshot_end": 0,
+        },
+    )
+    monkeypatch.setattr(
+        history_service,
+        "load_history_session_usage",
+        lambda session_id: {
+            "schema_version": 1,
+            "revision": 0,
+            "session_id": session_id,
+            "main": {},
+            "others": {},
+        },
+    )
+    ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-web-empty-usage",
+        channel_id="web",
+        req_method=ReqMethod.HISTORY_GET,
+        params={"session_id": "sess-web-empty", "cursor": None, "limit": 50},
+    )
+
+    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+
+    done = next(
+        frame["payload"] for frame in ws.sent
+        if frame["payload"].get("event_type") == "history.message"
+        and frame["payload"].get("status") == "done"
+    )
+    assert "session_usage" not in done
 
 
 @pytest.mark.asyncio
