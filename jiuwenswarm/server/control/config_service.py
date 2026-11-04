@@ -22,6 +22,7 @@ from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
+from jiuwenswarm.common.config import get_team_code_todo_reminder_disabled
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -490,6 +491,7 @@ def get_panel() -> dict[str, Any]:
         payload["team_member_subtasks_enabled"] = _depth_switch_text(
             _nested(raw, _TEAM_MEMBER_SUBTASK_DEPTH_PATH, 0)
         )
+        payload["team_code_todo_reminder_disabled"] = _bool_text(get_team_code_todo_reminder_disabled(raw))
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
@@ -528,6 +530,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("team_task_verification_enabled", "false")
         payload.setdefault("team_member_messaging_enabled", "false")
         payload.setdefault("team_member_subtasks_enabled", "false")
+        payload.setdefault("team_code_todo_reminder_disabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("topic_recommendation_enabled", "false")

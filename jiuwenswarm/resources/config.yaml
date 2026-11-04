@@ -1826,6 +1826,9 @@ modes:
       # autonomous 模式下忽略。见 core F_128。
       max_subtask_depth: 0
 
+      # Suppress periodic Todo reminders for Code agents in scheduled teams.
+      disable_code_todo_reminder: false
+
       leader:
         member_name: team-leader
         display_name: 团队领导

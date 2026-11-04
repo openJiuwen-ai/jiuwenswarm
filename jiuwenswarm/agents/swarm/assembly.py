@@ -65,7 +65,7 @@ from jiuwenswarm.agents.swarm.context import (
     get_heartbeat_job_service,
 )
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
-from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.config import get_config, get_team_code_todo_reminder_disabled
 from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
@@ -528,6 +528,9 @@ def enrich_team_spec_for_swarm(
         server_id_scope=f"team:{spec.team_name}",
         resolve_credentials=True,
     )
+    disable_code_todo_reminder = (
+        spec.dispatch_mode == "scheduled" and get_team_code_todo_reminder_disabled(config)
+    )
 
     for role in _MEMBER_ROLES:
         if role in spec.agents:
@@ -538,6 +541,7 @@ def enrich_team_spec_for_swarm(
                 spec.agents[role],
                 enable_permissions=spec.enable_permissions,
                 mcp_configs=mcp_configs,
+                disable_code_todo_reminder=disable_code_todo_reminder,
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
             spec.agents[role] = member_spec

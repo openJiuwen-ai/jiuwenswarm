@@ -199,6 +199,8 @@ Agent Team 模式是 JiuwenSwarm 平台的一种特殊协作模式，用户可�
 
 执行后，当前对话将进入 Agent Team 模式，Leader Agent 会自动接管任务协调。
 
+在「配置 → 实验特性 → 调度模式」下开启「禁用 Code Todo 提醒」，可以停止向使用调度模式的 Code 团队成员注入周期性 Todo 提醒。成员仍可使用 Todo 工具。该开关默认关闭，配置键为 `modes.team.jiuwen_team.disable_code_todo_reminder`。
+
 **在 Agent Team 模式下如何输入 Prompt**
 
 进入 Agent Team 模式后，用户输入 Prompt 的方式与普通对话类似，但建议注意以下几点以更好地帮助任务完成：

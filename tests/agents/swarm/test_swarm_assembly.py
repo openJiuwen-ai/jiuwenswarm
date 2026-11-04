@@ -1152,6 +1152,34 @@ def test_enrich_applies_scheduled_fork_default(
     assert spec.enable_fork is enabled
 
 
+@pytest.mark.parametrize(
+    ("mode", "dispatch_mode", "disable", "expected"),
+    [
+        ("code.team", "scheduled", True, False),
+        ("team.plan.code", "scheduled", True, False),
+        ("code.team", "scheduled", False, True),
+        ("code.team", "autonomous", True, True),
+        ("team", "scheduled", True, None),
+    ],
+)
+def test_enrich_gates_code_todo_reminders_by_effective_dispatch_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str, dispatch_mode: str, disable: bool, expected: bool | None,
+) -> None:
+    config = {"modes": {"team": {"jiuwen_team": {"disable_code_todo_reminder": disable}}}}
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    reminders = [rail for rail in spec.agents["teammate"].rails if rail.type == registry.CODE_TASK_PLANNING]
+    if expected is None:
+        assert reminders == []
+    else:
+        assert len(reminders) == 1
+        assert reminders[0].params.get("enable_task_reminders", True) is expected
+
+
 def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     """Enrichment rewrites member rails and attaches the build context."""
     spec = _make_team_spec()

@@ -48,6 +48,7 @@ TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode
 TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
 TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
 TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
+TEAM_CODE_TODO_REMINDER_DISABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "disable_code_todo_reminder")
 DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
 DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
@@ -2849,14 +2850,17 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             data.get("web_config_panel", {}).pop("agent_team_agents", None)
     if "modes" not in data or not isinstance(data["modes"], dict):
         data["modes"] = {}
-    # The team editor payload carries no built-in model catalog, so the one
-    # configured for each CLI kind is carried over from the current config.
+    # Keep settings owned by other panels and built-in CLI model catalogs
+    # when the team editor replaces the team mapping.
     existing_teams = data["modes"].get("team")
     if isinstance(existing_teams, dict):
+        reminder_team, reminder_key = TEAM_CODE_TODO_REMINDER_DISABLED_CONFIG_PATH[-2:]
         for team_name, transformed_team in team_mapping.items():
             existing_team = existing_teams.get(team_name)
             if not isinstance(existing_team, dict):
                 continue
+            if team_name == reminder_team and reminder_key in existing_team:
+                transformed_team.setdefault(reminder_key, existing_team[reminder_key])
             agents = transformed_team.get("external_cli_agents")
             if isinstance(agents, list):
                 _carry_over_builtin_models(agents, existing_team.get("external_cli_agents"))
@@ -2919,6 +2923,19 @@ def update_team_task_verification_in_config(enabled: bool) -> None:
 def update_team_member_messaging_in_config(enabled: bool) -> None:
     """Update ``modes.team.jiuwen_team.enable_member_messaging`` in config.yaml."""
     _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
+
+
+def get_team_code_todo_reminder_disabled(config: dict[str, Any]) -> bool:
+    """Read the scheduled Code team reminder preference, defaulting to false."""
+    value: Any = config
+    for segment in TEAM_CODE_TODO_REMINDER_DISABLED_CONFIG_PATH:
+        value = value.get(segment) if isinstance(value, dict) else None
+    return coerce_config_bool(value, default=False)
+
+
+def update_team_code_todo_reminder_disabled_in_config(disabled: bool) -> None:
+    """Persist the scheduled Code team reminder preference."""
+    _set_config_path(TEAM_CODE_TODO_REMINDER_DISABLED_CONFIG_PATH, disabled)
 
 
 def coerce_subtask_depth(value: Any) -> int:

@@ -511,7 +511,7 @@ def build_code_task_planning(params: dict[str, Any], ctx: SwarmBuildContext) -> 
     try:
         from jiuwenswarm.agents.harness.code.rails import CodeTaskPlanningRail
 
-        return CodeTaskPlanningRail()
+        return CodeTaskPlanningRail(enable_task_reminders=params.get("enable_task_reminders", True))
     except Exception as exc:
         logger.warning("[swarm.code_task_planning] create failed: %s", exc)
         return None
