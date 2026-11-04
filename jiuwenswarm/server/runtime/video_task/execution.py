@@ -15,9 +15,10 @@ from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
     unbind_managed_task_session,
 )
 
-from .checkpoint import TaskCheckpoint
+from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
+
 from .bridge import RemoteTaskEndpoint
-from .diagnostics import trace_task
+from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 
 _settlements = set()
 # Requests whose settlement reporter is still waiting on native work.

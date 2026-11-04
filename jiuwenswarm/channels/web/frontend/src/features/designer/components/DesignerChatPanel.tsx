@@ -1,4 +1,4 @@
-import { PanelRight, Square, X } from 'lucide-react';
+import { LoaderCircle, PanelRight, Square, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
@@ -7,6 +7,7 @@ import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestion
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
 import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
+import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
@@ -19,7 +20,7 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
-import { findDesignModelsProblem, loadedDesignChatAnthropicProblem } from '../designModelsReadiness';
+import { findDesignModelsProblem, loadedDesignChatAnthropicProblem } from '../designPromptReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
@@ -142,6 +143,11 @@ export function DesignerChatPanel() {
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
+
+  // Design has no model switch: a missing chat model means no leader round can
+  // run at all, so warn here instead of failing only after the user sends
+  // (#5266). Re-checked when the model catalog size changes or a config change
+  // is pushed, since generation-slot switches never change the catalog.
   const ensureDuplexSession = useCallback(async () => {
     if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
     try {
@@ -154,11 +160,13 @@ export function DesignerChatPanel() {
     }
   }, [sessionId, domainGraph, t]);
 
-  // Design has no model switch: a missing chat model means no leader round can
-  // run at all, so warn here instead of failing only after the user sends
-  // (#5266). Re-checked whenever the catalog size changes, e.g. after the user
-  // fixes Settings in another tab.
   const [blockedProblem, setBlockedProblem] = useState('');
+  const [configRevision, setConfigRevision] = useState(0);
+  useEffect(() => {
+    const onConfigChanged = () => setConfigRevision((value) => value + 1);
+    window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+    return () => window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+  }, []);
   useEffect(() => {
     if (!sessionId) {
       setBlockedProblem('');
@@ -171,7 +179,7 @@ export function DesignerChatPanel() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, availableModelCount, selectedModelName]);
+  }, [sessionId, availableModelCount, configRevision, selectedModelName]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -245,8 +253,6 @@ export function DesignerChatPanel() {
     if ((!content && attachments.length === 0) || chatBusy) return;
     // Same gate as the landing page: a round needs the chat model and both
     // generation slots, so refuse loudly instead of failing mid-run (#5266).
-    // Anthropic is read from the in-memory catalog so the click returns before
-    // any design RPC, even if the warning effect has not finished.
     const protocolProblem = loadedDesignChatAnthropicProblem(sessionId, selectedModelName);
     if (protocolProblem || blockedProblem) {
       toast.open({ content: protocolProblem || blockedProblem, variant: 'error' });
@@ -320,6 +326,8 @@ export function DesignerChatPanel() {
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
+      const interruptId =
+        pendingQuestion?.request_id === requestId ? pendingQuestion.interruptId : undefined;
       try {
         if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
           await webClient.request('video.search.answer', {
@@ -340,6 +348,7 @@ export function DesignerChatPanel() {
             selectedModelSelection,
           }),
           ...(source ? { source } : {}),
+          ...(interruptId ? { interrupt_id: interruptId } : {}),
         });
         if (pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
@@ -489,11 +498,23 @@ export function DesignerChatPanel() {
                     className="designer-chat-panel__send"
                     disabled={chatBusy || !canSend}
                     onClick={handleSend}
-                    aria-label={t('designer.chat.send')}
-                    title={blockedProblem || undefined}
+                    aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                    aria-busy={chatBusy}
+                    title={blockedProblem || (chatBusy ? t('designer.chat.running') : undefined)}
                     data-testid="designer-chat-panel-send"
+                    data-variant={chatBusy ? 'running' : 'idle'}
                   >
-                    <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                    {/* A leader round can run for minutes (graph autorun); the button
+                        must read as "working", never as the idle send plane (#5410). */}
+                    {chatBusy ? (
+                      <LoaderCircle
+                        className="designer-chat-panel__send-spinner animate-spin"
+                        size={18}
+                        aria-hidden
+                      />
+                    ) : (
+                      <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                    )}
                   </button>
                 )
               }

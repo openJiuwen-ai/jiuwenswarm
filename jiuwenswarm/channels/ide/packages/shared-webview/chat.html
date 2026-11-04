@@ -1736,6 +1736,7 @@ let state = {
   skills: [],
   showDebug: false,
   streaming: false,
+  stopRequested: false, // set when the user clicks ■; final turn is classified as stopped
   models: [],
   activeModel: null,
   turns: [],
@@ -2836,6 +2837,7 @@ function handleJiuwenEvent(evt) {
 // Called when we send a message — create a user turn and an empty assistant turn
 function beginTurn(requestId, userContent) {
   const msgs = document.getElementById('messages');
+  state.stopRequested = false;
 
   // User message
   const userEl = document.createElement('div');
@@ -3234,6 +3236,7 @@ function renderAskUserQuestion(rid, payload) {
     (payload.source === 'confirm_interrupt' ? 'Exit Plan and Execute' : 'Question');
   const question = payload.question || q.question || q.message || '';
   const source = payload.source || q.source || 'confirm_interrupt';
+  const interruptId = typeof payload.interrupt_id === 'string' ? payload.interrupt_id : '';
 
   // Waiting for the user — stop the typing animation
   if (pt.typingEl) {
@@ -3264,7 +3267,7 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
-      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value));
+      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value), interruptId);
     });
   });
 
@@ -3286,8 +3289,7 @@ function mapInterruptAnswerValue(pt, value) {
   return value;
 }
 
-function sendAnswerForInterrupt(pt, rid, source, optionValue) {
-  // Ignore clicks from a card whose turn was already stopped/finalized.
+function sendAnswerForInterrupt(pt, rid, source, optionValue, interruptId) {
   if (!pt || state.pendingTurns[rid] !== pt) return;
   pt.questionAnswered = true;
   // The user chose to continue this turn, so a previous stop click no longer
@@ -3301,6 +3303,7 @@ function sendAnswerForInterrupt(pt, rid, source, optionValue) {
     mode: state.mode,
     requestId: rid,
     source: source,
+    interruptId: interruptId,
     answers: [{ selected_options: [optionValue], custom_input: '' }],
   });
 }
@@ -4254,6 +4257,7 @@ inputEl.addEventListener('input', function() {
 
 sendBtn.addEventListener('click', function() {
   if (state.streaming) {
+    state.stopRequested = true;
     send({ type: 'stop' });
     // Finalize all pending turns immediately — Gateway handles backend cancellation.
     // A turn waiting on an interrupt would otherwise keep the early-return path in
@@ -4261,14 +4265,14 @@ sendBtn.addEventListener('click', function() {
     Object.keys(state.pendingTurns).forEach(function(rid) {
       var pt = state.pendingTurns[rid];
       if (pt) {
-        pt.stopRequested = true;
-        pt.questionAnswered = true;
         if (pt.pendingQuestion) {
           pt.pendingQuestion.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
           pt.pendingQuestion.classList.add('answered');
           var qStatus = pt.pendingQuestion.querySelector('.question-status');
           if (qStatus) qStatus.textContent = 'Stopped';
         }
+        pt.stopRequested = true;
+        pt.questionAnswered = true;
       }
       finalizeTurn(rid, { stopped: true });
     });
@@ -4877,6 +4881,7 @@ function clearMessages() {
   msgs.innerHTML = '';
   state.pendingTurns = {};
   state.streaming = false;
+  state.stopRequested = false;
   state.rewindable = false;
   _historyPendingAssistant = null;
   document.getElementById('input').disabled = false;

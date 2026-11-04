@@ -31,8 +31,8 @@ def _login_credential_ref(ws, target) -> str:
 
     任务直发 AgentServer，不经过 Gateway 转发时挂凭据那一步；与 cron 一样创建时绑定、执行时补挂。
     """
-    from jiuwenswarm.common.auth.passthrough import _is_login_model
-    from jiuwenswarm.gateway.cron.controller import _login_credential_ref_from_session
+    from agent_gateway.auth.passthrough import _is_login_model
+    from agent_gateway.cron.controller import _login_credential_ref_from_session
 
     model_name = str(target.get("model_name") or "").strip()
     auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
@@ -46,7 +46,7 @@ async def _login_model_auth(task) -> dict[str, Any] | None:
     if not ref:
         return None
     from types import SimpleNamespace
-    from jiuwenswarm.gateway.cron.scheduler import _login_model_auth_for_job
+    from agent_gateway.cron.scheduler import _login_model_auth_for_job
 
     return await asyncio.to_thread(_login_model_auth_for_job, SimpleNamespace(credential_ref=ref))
 
@@ -61,7 +61,7 @@ CHAT_ANSWER_CONFIRM_TIMEOUT = 10
 
 async def gateway_scheduled_jobs(owner):
     """Read the Gateway cron store with the same owner scope as the sidebar's ``cron.job.list``."""
-    from jiuwenswarm.gateway.cron.controller import CronController
+    from agent_gateway.cron.controller import CronController
 
     # An empty owner is the anonymous single-user scope; the sidebar then lists every job too.
     return await CronController.get_instance().list_jobs(user_id=owner or None)
@@ -104,7 +104,7 @@ async def send_agent_request_with_timeout(
 
 def task_identity(ws, scope):
     """Use WebChannel's user scope; connection admission belongs to the gateway."""
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     if not isinstance(scope, str) or not scope:
         raise ValueError("Invalid task conversation")
@@ -192,8 +192,8 @@ class AgentTaskExecutor:
                 }
             )
         from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
-            InteractionPending,
             ExecutionUncertain,
+            InteractionPending,
         )
 
         try:
@@ -281,6 +281,7 @@ class AgentTaskExecutor:
                 for a in interaction["answers"]
             ),
             source=interaction["source"],
+            interrupt_id=str(interaction.get("interrupt_id") or ""),
             mode=target["mode"],
             work_mode="" if target["mode"] == "team.design" else target.get("work_mode", "work"),
             project_dir=target.get("project_dir", ""),
@@ -788,6 +789,8 @@ class VideoSearchManager:
                 "source": interaction["source"],
                 "questions": interaction["questions"],
             }
+            if interaction.get("interrupt_id"):
+                payload["interrupt_id"] = interaction["interrupt_id"]
             if interaction.get("approval_schema"):
                 payload["approval_schema"] = interaction["approval_schema"]
             await asyncio.wait_for(

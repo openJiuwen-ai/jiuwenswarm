@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveSer
 
 
 def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
-    from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
+    from agent_gateway.cron.lifecycle_owners import LifecycleOwners
 
     path = tmp_path / "cron_jobs.json"
     first = LifecycleOwners(path)
@@ -32,7 +32,7 @@ def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web import lifecycle_handlers
+    from agent_gateway.channel_manager.web import lifecycle_handlers
 
     service, create, root, _ = archive
     create()
@@ -87,6 +87,43 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert event == "session.deleted"
     assert payload["session_id"] == "sess_a"
     assert payload["project_id"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_session_delete_forwards_group_and_bot(monkeypatch):
+    """删除会话时把网页上的群、机器人交给执行端，否则企业版会去默认目录里找。"""
+    from agent_gateway.channel_manager.web import lifecycle_handlers
+
+    seen: dict = {}
+
+    async def fetch(**kwargs):
+        seen["metadata"] = kwargs.get("metadata")
+        return True, {"session_id": "sess_a", "project_id": "default"}
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fetch)
+    methods = {}
+    channel = SimpleNamespace(
+        channel_id="web",
+        clients=[],
+        register_method=lambda name, fn: methods.update({name: fn}),
+        send_response=AsyncMock(),
+        send_event=AsyncMock(),
+    )
+    lifecycle_handlers.register_lifecycle_handlers(
+        channel, lambda: object(), lambda: None
+    )
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "zxy",
+            "group_id": "group-1",
+            "bot_id": "bot-1",
+        }
+    )
+    await methods["session.delete"](
+        ws, "req", {"session_id": "sess_a"}, None, "zxy"
+    )
+    assert seen["metadata"]["user_id"] == "zxy"
+    assert seen["metadata"]["routing"] == {"group_id": "group-1", "bot_id": "bot-1"}
 
 
 @pytest.fixture
@@ -1196,6 +1233,9 @@ async def test_cancelled_restore_marks_failed_and_recovers_promptly(archive):
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert (root / "sessions/sess_a").exists()
     lc.guard("sess_a")
     await service.close()
@@ -1214,6 +1254,9 @@ async def test_interrupted_archive_is_finalized_by_recovery(archive):
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert not (root / "sessions/sess_a").exists()
     assert (root / "sessions_archived/sess_a").exists()
     with pytest.raises(lc.LifecycleError) as error:
@@ -1239,6 +1282,9 @@ async def test_abandoned_archive_with_moved_directory_finalizes_archived(archive
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert lc.state("session", "sess_a")["blocked"] is True
     with pytest.raises(lc.LifecycleError) as error:
         lc.guard("sess_a")
@@ -2001,6 +2047,53 @@ async def test_cleanup_attempts_are_bounded(archive):
     # Once abandoned, neither recovery nor a manual re-entry may retry it.
     await service._finalize_session("sess_a", "delete", "web", "default", None)
     assert runtime.delete_session.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_busy_lock_path_consumes_the_cleanup_budget(archive):
+    """拿不到锁也是失败：`cleanup_attempts` 必须随失败落盘，否则预算永不消耗（#5845）。
+
+    `_finalize_session_locked` 是唯一写 `cleanup_attempts` 的地方，而占用路径（跨进程
+    flock 被另一进程长期持有）永远进不到它。只在局部变量里 +1 时，每次重新 spawn 的
+    finalizer 读到的 attempts 恒为 0：`_MAX_CLEANUP_ATTEMPTS` 永不达成、`_abandon_cleanup`
+    不可达，同一个会话被无限重试并持续占用收尾槽位。
+    """
+    service, create, _, _runtime = archive
+    create()
+    lc.begin("session", "sess_a", "archive", block_execution=True)
+    lc.mark_finalizing("session", "sess_a")
+    operation_id = lc.state("session", "sess_a")["operation"]["operation_id"]
+
+    class _BusyLock:
+        """模拟 `self.lock(...)` 始终被另一进程占住。"""
+
+        async def __aenter__(self):
+            raise lc.LifecycleError("OPERATION_IN_PROGRESS", "held by another process")
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    service.lock = lambda *args, **kwargs: _BusyLock()  # type: ignore[method-assign]
+
+    await service._finalize_session("sess_a", "archive", "web", "default", None)
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["cleanup_attempts"] == 1, "占用路径的 attempts 没有落盘"
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+    assert operation["cleanup_next_at"] > 0, "占用路径没有写退避时间"
+
+    # 后续每轮 recovery 重新 spawn：attempts 必须继续累加，直到预算耗尽转 abandoned。
+    busy = lc.LifecycleError("OPERATION_IN_PROGRESS", "held by another process")
+    for attempts in (2, 3, 4, 5):
+        await service._record_finalize_failure(
+            "sess_a", "archive", attempts, busy, operation_id
+        )
+
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["cleanup_attempts"] == 5
+    assert operation["status"] == "abandoned"
+    assert operation["cleanup_exhausted"] is True
+    assert operation["retryable"] is False
 
 
 @pytest.mark.asyncio

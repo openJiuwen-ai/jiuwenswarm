@@ -195,7 +195,7 @@ async def test_runtime_preserves_session_mode_type_before_prepare(
     if requested_mode is not None:
         params["mode"] = requested_mode
     request = _chat_request("mode-type-request", "mode-type", params)
-    request = AgentRuntime._normalize_runtime_request(request)
+    request = AgentRuntime.normalize_request(request)
     agent = object()
 
     async def get_agent_for_request(request, **kwargs):

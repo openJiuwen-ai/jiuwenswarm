@@ -99,8 +99,8 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     import json
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
@@ -137,7 +137,7 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
         ("org_expert_direct", False, "chat.final", True),
         ("org_expert_background", True, "chat.final", True),
         ("org_root_background", True, "chat.tool_call", True),
-        ("org_expert_background", False, "chat.final", False),
+        ("org_expert_background", False, "chat.final", True),
         ("org_summary_background", True, "chat.delta", False),
     ],
 )
@@ -150,7 +150,7 @@ async def test_group_background_replies_are_written_to_session_history(
         history.append(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.append_history_record",
         append_history_record,
     )
     monkeypatch.setattr(
@@ -183,7 +183,7 @@ async def test_group_background_replies_are_written_to_session_history(
 async def test_group_reply_is_stored_when_no_browser_is_attached(monkeypatch):
     history = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.append_history_record",
         lambda **kwargs: history.append(kwargs),
     )
     monkeypatch.setattr(
@@ -364,7 +364,7 @@ def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
         _resolve,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle",
+        "openjiuwen.agent_teams.experts.load_agent_group_package_bundle",
         _load,
     )
     return calls
@@ -897,8 +897,8 @@ async def test_org_turn_closes_only_owner_processing(
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
     from jiuwenswarm.server.runtime.session import session_metadata
 
@@ -978,8 +978,8 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     class Agent:
@@ -1065,6 +1065,8 @@ async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkey
         return True
     transport = SimpleNamespace(send_push=AsyncMock(side_effect=send))
     launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
+    monkeypatch.setattr(launcher, "_flush_expert_history", AsyncMock())
+    monkeypatch.setattr(launcher, "_persist_expert_history", AsyncMock())
     assert await launcher.run_organization_turn("expert", "session", {}, source=source) is not failed
     assert active_turns("session") == []
     ids = [call.args[0]["request_id"] for call in transport.send_push.call_args_list]

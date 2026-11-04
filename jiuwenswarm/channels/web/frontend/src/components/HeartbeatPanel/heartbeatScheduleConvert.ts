@@ -49,13 +49,13 @@ export function onceLocalToEpochSeconds(
 }
 
 export function scheduleDtoToForm(schedule: HeartbeatScheduleDTO, fallbackTimezone: string): HeartbeatScheduleFormValue {
+  const tz = fallbackTimezone || DEFAULT_ONCE_TIMEZONE;
   if (schedule.type === 'interval') {
-    return { kind: 'interval', intervalSeconds: schedule.interval_seconds, cronExpr: '', timezone: fallbackTimezone, onceDate: '', onceTime: '' };
+    return { kind: 'interval', intervalSeconds: schedule.interval_seconds, cronExpr: '', timezone: tz, onceDate: '', onceTime: '' };
   }
   if (schedule.type === 'cron') {
-    return { kind: 'cron', intervalSeconds: 1800, cronExpr: schedule.cron_expr, timezone: schedule.timezone, onceDate: '', onceTime: '' };
+    return { kind: 'cron', intervalSeconds: 1800, cronExpr: schedule.cron_expr, timezone: schedule.timezone || tz, onceDate: '', onceTime: '' };
   }
-  const tz = fallbackTimezone || DEFAULT_ONCE_TIMEZONE;
   const { date, time } = epochSecondsToOnceLocal(schedule.run_at, tz);
   return { kind: 'once', intervalSeconds: 1800, cronExpr: '', timezone: tz, onceDate: date, onceTime: time };
 }

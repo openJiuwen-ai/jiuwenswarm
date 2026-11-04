@@ -648,7 +648,8 @@ class ToolRetrievalPromptRail(DeepAgentRail):
         ]
         for index, tool in enumerate(rest):
             if str(getattr(tool, "name", "") or "") == _BASELINE_META_ANCHOR:
-                return rest[: index + 1] + metas + rest[index + 1 :]
+                cut = index + 1
+                return rest[:cut] + metas + rest[cut:]
         return rest + metas
 
     # ─── deferred-catalogue drift sync (mirrors ProgressiveToolRail) ─────

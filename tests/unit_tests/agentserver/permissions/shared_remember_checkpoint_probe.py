@@ -25,9 +25,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.common import config
     from jiuwenswarm.common.utils import get_checkpoint_dir
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        ensure_persistent_checkpointer, close_persistent_checkpointer,
-    )
+    from jiuwenswarm.runtime.checkpointer import ensure_persistent_checkpointer, close_persistent_checkpointer
     from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
     from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueue
     from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (

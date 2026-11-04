@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.extensions.video_duplex.backend.mode_routing import execution_target, resolve_execution_target
@@ -190,11 +191,13 @@ async def test_real_team_stream_entry_uses_design_binding(monkeypatch, design_ho
     from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
     store, task, request = design_host
+    expected = AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id,
+                                  payload={"event_type": "chat.delta", "content": "native-design-output"})
     async def native_stream(*_):
         assert store.read(task["id"])["execution_bound"]
-        yield "native-design-output"
+        yield expected
     monkeypatch.setattr(team_helpers, "_process_team_message_stream_with_design", native_stream)
-    assert [chunk async for chunk in team_helpers.process_team_message_stream(request, {}, None)] == ["native-design-output"]
+    assert [chunk async for chunk in team_helpers.process_team_message_stream(request, {}, None)] == [expected]
     assert store.read(task["id"])["execution_settled"]
 
 
@@ -204,6 +207,8 @@ async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, 
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     store, task, request = design_host
+    expected = AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id,
+                                  payload={"event_type": "chat.delta", "content": "native-design-output"})
 
     @asynccontextmanager
     async def admission(*_):
@@ -211,7 +216,7 @@ async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, 
 
     async def native_stream(*_):
         assert store.read(task["id"])["execution_bound"]
-        yield "native-design-output"
+        yield expected
 
     monkeypatch.setattr(team_helpers, "_process_team_message_stream_with_design", native_stream)
     adapter = SimpleNamespace(
@@ -223,7 +228,7 @@ async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, 
         task_execution_binding=(SimpleNamespace(_react_agent=object(), active_round=None), SimpleNamespace(managed_tasks={})),
     )
     chunks = [chunk async for chunk in JiuWenSwarmDeepAdapter.process_message_stream_impl(adapter, request, {})]
-    assert chunks == ["native-design-output"]
+    assert chunks == [expected]
     saved = store.read(task["id"])
     assert saved["execution_settled"] and not saved["execution_cancelled"]
 

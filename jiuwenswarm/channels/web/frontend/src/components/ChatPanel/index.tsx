@@ -6,10 +6,8 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { toast } from '../ui/Toast/toastStore';
 import {
   Activity,
-  ArrowRight,
   CheckCircle2,
   ClipboardList,
   Copy,
@@ -30,10 +28,12 @@ import {
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
+import { isEnterprise } from '../../edition';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore, useWorkspaceStore } from '../../stores';
 import {
   AgentMode,
   MediaItem,
+  type ChatInputProvenance,
   type ChatSendOptions,
   Message,
   UserAnswer,
@@ -90,9 +90,29 @@ import {
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
 import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { toast } from '../ui/Toast/toastStore';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
+import type { PromptSuggestionBox } from '../../hooks/usePromptSuggestionBox';
+import { webClient, webRequest } from '../../services/webClient';
+import {
+  buildDynamicTopicStarterSlate,
+  buildDirectInputEvent,
+  buildExposureEvent,
+  buildPageLeftEvent,
+  buildSessionBoundEvent,
+  buildTopicClickEvent,
+  buildTopicStarterRequest,
+  topicStarterShowsProviderRefusal,
+  topicStarterShowsRetryAction,
+  topicStarterShowsStatus,
+  topicStarterStatusMessageKey,
+  type TopicStarterEvent,
+  type TopicStarterResponse,
+  type TopicStarterTopic,
+  type TopicStarterVisibleSlate,
+} from '../../features/topicStarterVisibility';
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -105,7 +125,13 @@ export interface ChatHistoryPagerProps {
 }
 
 interface ChatPanelProps {
-  onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
+  promptSuggestionBox: PromptSuggestionBox;
+  onOpenGeneralSettings?: () => void;
+  onSendMessage: (
+    content: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions | ChatInputProvenance,
+  ) => void | Promise<string | void>;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   onForkSession: (
     sourceSessionId: string,
@@ -137,6 +163,7 @@ interface ChatPanelProps {
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
   isProcessing: boolean;
+  isConnected: boolean;
   onUserAnswer: (
     requestId: string,
     answers: UserAnswer[],
@@ -150,6 +177,8 @@ interface ChatPanelProps {
   sessionTitle?: string;
   sessionProjectName?: string;
   sessionProject?: ProjectInfo | null;
+  /** Explicit project selected before a new session exists; null means global new chat. */
+  topicStarterProjectId?: string | null;
   /** 自会话管理恢复历史后出现；支持分页加载更早消息 */
   historyPager?: ChatHistoryPagerProps | null;
   /** 历史会话首屏恢复中：保持聊天布局，避免短暂退回欢迎态 */
@@ -210,19 +239,104 @@ interface ChatPanelProps {
 // mode === 'human' 闸门），所以这两处直接断言身份，不依赖成员名册是否已到齐。
 const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 
-function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
+function SuggestionCard({
+  topic,
+  onClick,
+  disabled = false,
+}: {
+  topic: TopicStarterTopic;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  // Reports open their original page; hot-list entries preview the frozen source and offer news search.
+  const source = topic.evidence?.[0];
+  // Only absolute http(s) URLs may reach an href: a javascript:/data: value from the
+  // backend must not become a clickable script.
+  const safeHttpUrl = (value: string) => (/^https?:\/\//i.test(value) ? value : '');
+  const sourceUrl = safeHttpUrl(typeof source?.source_url === 'string' ? source.source_url : '');
+  const datePageUrl = typeof source?.date_page_url === 'string' ? source.date_page_url : '';
+  const separateDatePage = /^https?:\/\//i.test(datePageUrl) && datePageUrl !== sourceUrl;
+  const sourceSite = /^https?:\/\/(?:www\.)?([^/?#:]+)/i.exec(sourceUrl)?.[1];
+  const hotList = source?.source_kind === 'hot_list_entry' && typeof source.hot_list_rank === 'number';
+  const sourceText = typeof source?.source_text === 'string' ? source.source_text : '';
+  const searchUrl = safeHttpUrl(typeof source?.search_url === 'string' ? source.search_url : sourceUrl);
+  const listedAt = typeof source?.listed_at === 'string' ? new Date(source.listed_at) : null;
+  const sourceBadge = !sourceSite
+    ? null
+    : hotList
+      ? [
+          t(source?.publisher === 'weibo.com' ? 'chat.topicStarter.weiboHotList' : 'chat.topicStarter.baiduHotList'),
+          t('chat.topicStarter.hotListRank', { rank: source?.hot_list_rank }),
+          listedAt && !Number.isNaN(listedAt.getTime())
+            ? t('chat.topicStarter.hotListListedAt', {
+                time: `${String(listedAt.getHours()).padStart(2, '0')}:${String(listedAt.getMinutes()).padStart(2, '0')}`,
+              })
+            : '',
+        ].filter(Boolean).join(' · ')
+      : [
+          source?.source_kind === 'news_report' ? '资讯' : '近期',
+          sourceSite,
+          typeof source?.published_at === 'string' ? source.published_at.slice(5, 10).replace('-', '/') : '',
+        ].filter(Boolean).join(' · ');
   return (
-    <button
-      className="chat-suggestion-card"
+    <div
+      className={`chat-suggestion-card${sourceBadge ? ' chat-suggestion-card--sourced' : ''}${hotList ? ' chat-suggestion-card--hot-list' : ''}`}
       data-testid="chat-panel-welcome-suggestion"
-      data-variant={text}
-      onClick={onClick}
+      data-variant={topic.title}
     >
-      <Sparkles className="chat-suggestion-card__icon" strokeWidth={2} />
-      <span className="chat-suggestion-card__text">{text}</span>
-      <ArrowRight className="chat-suggestion-card__arrow" strokeWidth={2} />
-    </button>
+      {sourceBadge && (
+        <div data-testid="chat-panel-topic-sources" data-variant={topic.title} className="chat-suggestion-card__sources">
+          {hotList ? (
+            <details data-testid="chat-panel-topic-source-preview" data-variant={topic.title}>
+              <summary
+                data-testid="chat-panel-topic-source"
+                data-variant={topic.title}
+                className="chat-suggestion-card__source"
+                aria-label={t('chat.topicStarter.viewHotListEntry', { source: sourceBadge })}
+              >
+                {sourceBadge}
+              </summary>
+              <div className="chat-suggestion-card__source-preview">
+                <span data-testid="chat-panel-topic-source-label">{t('chat.topicStarter.hotListEntry')}</span>
+                <p data-testid="chat-panel-topic-source-text">{sourceText}</p>
+                <a
+                  data-testid="chat-panel-topic-news-search"
+                  data-variant={topic.title}
+                  className="chat-suggestion-card__source"
+                  href={searchUrl || '#'}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t('chat.topicStarter.openNewsSearch')}
+                >
+                  {t('chat.topicStarter.searchRelatedNews')} <span aria-hidden="true">↗</span>
+                </a>
+              </div>
+            </details>
+          ) : (
+            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={`打开原文：${sourceBadge}`}>
+              {sourceBadge} <span aria-hidden="true">↗</span>
+            </a>
+          )}
+          {separateDatePage && (
+            <a data-testid="chat-panel-topic-date-source" data-variant={topic.title} className="chat-suggestion-card__source chat-suggestion-card__date-source" href={datePageUrl} target="_blank" rel="noreferrer" aria-label={t('chat.topicStarter.openDateAndVersion')}>
+              {t('chat.topicStarter.dateAndVersion')} <span aria-hidden="true">↗</span>
+            </a>
+          )}
+        </div>
+      )}
+      <button data-testid="chat-panel-topic-open" data-variant={topic.title} className="chat-suggestion-card__main" type="button" onClick={onClick} disabled={disabled}>
+        <span className="chat-suggestion-card__text">{topic.title}</span>
+      </button>
+    </div>
   );
+}
+
+let topicStarterVisitSequence = 0;
+
+function newTopicStarterVisitId(): string {
+  topicStarterVisitSequence += 1;
+  return `topic-visit-${Date.now()}-${topicStarterVisitSequence}`;
 }
 
 function InterruptResultBubble() {
@@ -658,6 +772,7 @@ export function AgentActivityCard({
 }
 
 function getActiveTeamMessages(historyMessages: Message[], messages: Message[]): Message[] {
+  // Activity-card input only; the chat timeline reads the selected conversation's messages.
   const seen = new Set<string>();
   return [...historyMessages, ...messages].filter(isTeamActivityMessage).filter((message) => {
     const key = getTeamMessageIdentity(message);
@@ -676,6 +791,7 @@ function getTeamMessageIdentity(message: Message): string {
   }
   return [
     'team',
+    message.sourceTeamId || '',
     event.type,
     event.messageId,
     event.fromMember,
@@ -984,6 +1100,11 @@ function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; 
   );
 }
 
+// The dismissal notice stays long enough to use its buttons, fades out over its last second
+// (ChatPanel.css) and then leaves the page.
+// An open global new page asks for the hot-list check every 30 minutes. The gateway runs one only
+// 30 minutes after the last one ended, so the page asks a minute later to land past that mark.
+const NEWS_CHECK_INTERVAL_MS = 31 * 60 * 1000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const LOAD_OLDER_THRESHOLD_PX = 8;
 const VISIBILITY_RESTORE_SCROLL_SUPPRESS_MS = 300;
@@ -1049,6 +1170,8 @@ function BeeBanner({
  * rebuild a potentially very large message timeline and composer subtree.
  */
 export const ChatPanel = React.memo(function ChatPanel({
+  promptSuggestionBox,
+  onOpenGeneralSettings,
   onSendMessage,
   onEnsureSession,
   onForkSession,
@@ -1062,6 +1185,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onCancel,
   onSwitchMode,
   isProcessing: sessionIsProcessing,
+  isConnected,
   onUserAnswer,
   onExportShare,
   isExportingShare = false,
@@ -1071,6 +1195,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   sessionTitle,
   sessionProjectName,
   sessionProject = null,
+  topicStarterProjectId = null,
   historyPager = null,
   isHistoryRestoring = false,
   teamAreaExpanded = false,
@@ -1158,8 +1283,14 @@ export const ChatPanel = React.memo(function ChatPanel({
   const stickToBottomUntilStableRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
+  const hasPendingQuestion = useChatStore(
+    (s) => Boolean(s.runtimes[activeSessionId ?? '']?.pendingQuestions[0]),
+  );
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
-  const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
+  // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
+  const hasConversation = Boolean(
+    isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+  );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
   const historyPublishedBatchSeq = historyPager?.publishedBatchSeq ?? 0;
@@ -1186,7 +1317,55 @@ export const ChatPanel = React.memo(function ChatPanel({
   const chatContentClassName = hasConversation
     ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';
-  const suggestions = [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')];
+  const topicStarterVisitId = useMemo(
+    () => newTopicStarterVisitId(),
+    [activeSessionId, autoFocusKey, topicStarterProjectId],
+  );
+  const [dynamicSlate, setDynamicSlate] = useState<{
+    visitId: string;
+    slate: TopicStarterVisibleSlate;
+    exposureAcknowledged: boolean;
+  } | null>(null);
+  const [recommendationState, setRecommendationState] = useState("");
+  const [recommendationRefresh, setRecommendationRefresh] = useState(0);
+  const manualRecommendationRetry = useRef(false);
+  const keepSlateOnRefreshRef = useRef(false);
+  // The switch event lands before the re-read. Hold that state across the refresh so the
+  // prompt changes at once and the effect does not blank it while the request is in flight.
+  const recommendationSwitchStateRef = useRef<string | null>(null);
+  const refillSlateIdRef = useRef<string | null>(null);
+  // Exposure is recorded only while the page is in the foreground; a ready pool reaches a page in the background when it is back.
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
+  const readyWhileHiddenRef = useRef(false);
+  const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
+  const visibleTopicSlate = recommendationState !== 'disabled' && dynamicSlate?.visitId === topicStarterVisitId
+    ? dynamicSlate.slate : null;
+  const visibleTopicSlateId = visibleTopicSlate?.slateId;
+  const acceptingDynamicRef = useRef(false);
+  const interactedRecommendationVisitRef = useRef<string | null>(null);
+  const topicStarterClickLatchRef = useRef<string | null>(null);
+  const [topicStarterClickLatch, setTopicStarterClickLatch] = useState<string | null>(null);
+  const topicStarterVisitIdRef = useRef(topicStarterVisitId);
+  const visibleTopicSlateRef = useRef<TopicStarterVisibleSlate | null>(null);
+  const topicStarterExposureAcknowledgementsRef = useRef(new Map<string, Promise<unknown>>());
+  topicStarterVisitIdRef.current = topicStarterVisitId;
+  visibleTopicSlateRef.current = hasConversation ? null : visibleTopicSlate;
+  const visibleTopicSlateInteractionKey = visibleTopicSlate ? `${topicStarterVisitId}\u0000${visibleTopicSlate.slateId}` : null;
+  const topicStarterSuggestionsDisabled = Boolean(
+    visibleTopicSlate &&
+    (dynamicSlate?.visitId !== topicStarterVisitId ||
+      dynamicSlate.slate.slateId !== visibleTopicSlate.slateId ||
+      !dynamicSlate.exposureAcknowledged ||
+      topicStarterClickLatch === visibleTopicSlateInteractionKey),
+  );
+  const {
+    text: nextInputSuggestion,
+    suggestions: nextInputSuggestions,
+    accept: acceptNextInputSuggestion,
+    takeSubmission: takeNextInputSubmission,
+    markShown: markNextInputSuggestionShown,
+  } = promptSuggestionBox;
+  const nextInputSuggestionKey = nextInputSuggestions.map(item => item.suggestionId).join('\n');
   const shouldShowChatHeader = hasConversation;
   const composerDockVisible = composerDocked && hasConversation;
   // Report the composer's measured height so the docked trajectory view can
@@ -1216,7 +1395,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
-  const shouldShowShareExport = Boolean(onExportShare);
+  const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
@@ -1257,7 +1436,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     };
   }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
-  const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
+  const heartbeatAvailable = !isEnterprise() && Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const {
     turnsByMessageId: codeTurnsByMessageId,
     turnCardAnchors: codeTurnCardAnchors,
@@ -1328,34 +1507,44 @@ export const ChatPanel = React.memo(function ChatPanel({
     return null;
   }, [continuedFromSessionId, messages]);
 
+  // Keep the next question in the empty composer regardless of timeline scroll position.
+  const nextInputSuggestionPlaceholder = nextInputSuggestion
+    ? t('chat.promptSuggestionBox.placeholder', { text: nextInputSuggestion })
+    : null;
+  useEffect(() => {
+    if (nextInputSuggestions.length) markNextInputSuggestionShown();
+  }, [nextInputSuggestionKey, markNextInputSuggestionShown, nextInputSuggestions.length]);
+
   const renderAfterMessage = useCallback(
     (message: Message) => {
       const codeChanges = renderCodeChangesAfterMessage(message);
       const messageKey = message.renderKey ?? message.id;
       if (
-        !forkBoundaryMessageKey ||
-        messageKey !== forkBoundaryMessageKey ||
-        !continuedFromSessionId ||
-        !onOpenContinuedFromSession
+        (!forkBoundaryMessageKey ||
+          messageKey !== forkBoundaryMessageKey ||
+          !continuedFromSessionId ||
+          !onOpenContinuedFromSession)
       ) {
         return codeChanges;
       }
       return (
         <>
           {codeChanges}
-          <button
-            type="button"
-            className="chat-fork-origin"
-            data-testid="chat-panel-continued-from-chat"
-            title={t('chat.openSourceChat')}
-            aria-label={t('chat.openSourceChat')}
-            onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
-          >
-            <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
-              <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
-              {t('chat.continuedFromChat')}
-            </span>
-          </button>
+          {forkBoundaryMessageKey && messageKey === forkBoundaryMessageKey && continuedFromSessionId && onOpenContinuedFromSession ? (
+            <button
+              type="button"
+              className="chat-fork-origin"
+              data-testid="chat-panel-continued-from-chat"
+              title={t('chat.openSourceChat')}
+              aria-label={t('chat.openSourceChat')}
+              onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
+            >
+              <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
+                <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
+                {t('chat.continuedFromChat')}
+              </span>
+            </button>
+          ) : null}
         </>
       );
     },
@@ -1523,6 +1712,44 @@ export const ChatPanel = React.memo(function ChatPanel({
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [activeSessionId, rememberSessionScrollTop, restoreSessionScrollTop]);
 
+  // 空白全局新建页回到前台、以及开在前台时每 30 分钟：让后台检查资讯，页面本身不等待结果。
+  useEffect(() => {
+    if (!isConnected || hasConversation || topicStarterProjectId) return;
+    const checkNews = () => {
+      if (document.hidden || !acceptingDynamicRef.current) return;
+      void webRequest('topic_starters.foreground', { context_scope: 'global_new_chat', visit_id: topicStarterVisitIdRef.current }).catch(() => undefined);
+    };
+    let timer: number | null = null;
+    const keepChecking = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = document.hidden ? null : window.setInterval(checkNews, NEWS_CHECK_INTERVAL_MS);
+    };
+    const handleVisibility = () => {
+      checkNews();
+      keepChecking();
+    };
+    keepChecking();
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [hasConversation, isConnected, topicStarterProjectId]);
+
+  useEffect(() => {
+    const handleTopicPageVisibility = () => {
+      const visible = document.visibilityState === 'visible';
+      setPageVisible(visible);
+      if (!visible || !readyWhileHiddenRef.current) return;
+      readyWhileHiddenRef.current = false;
+      if (!acceptingDynamicRef.current) return;
+      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      setRecommendationRefresh(value => value + 1);
+    };
+    document.addEventListener('visibilitychange', handleTopicPageVisibility);
+    return () => document.removeEventListener('visibilitychange', handleTopicPageVisibility);
+  }, []);
+
   useLayoutEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -1583,7 +1810,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       return;
     }
 
-    // 只有当用户在底部时才自动滚动
+    // 只有当用户在底部时才自动滚动；回答末尾新出现的建议标签同样跟随到底部
     if (!userScrolledUpRef.current) {
       const el = scrollContainerRef.current;
       if (el) {
@@ -1602,24 +1829,264 @@ export const ChatPanel = React.memo(function ChatPanel({
     historyPublishedBatchSeq,
     historyLoadingMore,
     historyPrepending,
+    nextInputSuggestion,
     teamHumanShareCommands.length,
     updateHistoryLayoutSnapshot,
   ]);
 
   // 包装发送消息函数，添加滚动逻辑
+  const sendTopicStarterEvent = useCallback(async (event: TopicStarterEvent) => {
+    const response = await webRequest<{ recorded?: boolean }>('topic_starters.event', { ...event });
+    if (response.recorded !== true) {
+      throw new Error(`topic_starters.event was not recorded: ${event.event_type}`);
+    }
+    return response;
+  }, []);
+
+  const ensureTopicStarterExposureAcknowledged = useCallback(
+    (slate: TopicStarterVisibleSlate) => {
+      const acknowledgements = topicStarterExposureAcknowledgementsRef.current;
+      const slateKey = `${slate.sessionId}\u0000${slate.slateId}`;
+      const existing = acknowledgements.get(slateKey);
+      if (existing) return existing;
+      const acknowledgement = sendTopicStarterEvent(buildExposureEvent(slate));
+      acknowledgements.set(slateKey, acknowledgement);
+      void acknowledgement.catch(() => {
+        if (acknowledgements.get(slateKey) === acknowledgement) {
+          acknowledgements.delete(slateKey);
+        }
+      });
+      return acknowledgement;
+    },
+    [sendTopicStarterEvent],
+  );
+
+  useEffect(() => useChatStore.subscribe((state, previous) => {
+    if (!activeSessionId || hasConversation || state.activeSessionId !== activeSessionId) return;
+    const input = state.runtimes[activeSessionId]?.inputValue;
+    const previousInput = previous.runtimes[activeSessionId]?.inputValue;
+    if (previousInput && !input && !visibleTopicSlateRef.current && !acceptingDynamicRef.current) {
+      interactedRecommendationVisitRef.current = null;
+      acceptingDynamicRef.current = true;
+      setRecommendationRefresh(value => value + 1);
+    }
+  }), [activeSessionId, hasConversation]);
+
+  // v6 展示只读预计算池，后台 Ark 配置与会话回答模型相互独立。因此新欢迎页
+  // WebChannel ready 后立即请求，不等待模型列表，也不把会话 model_name 传给 Topic Starter。
+  // 连接恢复会重新进入该 effect，避免页面先启动时的一次失败永久留下静态入口。
+  useEffect(() => {
+    acceptingDynamicRef.current = Boolean(activeSessionId && !hasConversation && interactedRecommendationVisitRef.current !== topicStarterVisitId);
+    if (!isConnected || !activeSessionId || hasConversation) {
+      return;
+    }
+    const requestSessionId = activeSessionId;
+    const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId);
+    let active = true;
+    let receivedScopeState = false;
+    const unsubscribeReady = webClient.on<{ visit_id?: string; context_scope: string; state: string; pool_written?: boolean }>("topic_starters.ready", ({ payload }) => {
+      if (!active || (payload.visit_id && payload.visit_id !== topicStarterVisitId) || payload.context_scope !== requestParams.context_scope) return;
+      receivedScopeState = true;
+      setRecommendationState(payload.state);
+      // Preparation that wrote no pool leaves the cards on screen as the pool still serves them.
+      const poolUnchanged = payload.pool_written === false && Boolean(visibleTopicSlateRef.current);
+      if (acceptingDynamicRef.current && payload.state === "ready" && !poolUnchanged) {
+        if (document.visibilityState !== 'visible') {
+          readyWhileHiddenRef.current = true;
+        } else {
+          // Cards already on screen stay until the new pool answers.
+          if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+          setRecommendationRefresh(value => value + 1);
+        }
+      }
+      // A round without new cards does not retire cards the pool still serves.
+      if (acceptingDynamicRef.current && payload.state === "no_content" && !visibleTopicSlateRef.current) setDynamicSlate(null);
+    });
+    const unsubscribeControl = webClient.on<{ enabled: boolean }>("topic_starters.control_changed", ({ payload }) => {
+      if (hasConversation) {
+        if (!payload.enabled) {
+          setRecommendationState('disabled');
+          acceptingDynamicRef.current = false;
+        }
+        return;
+      }
+      acceptingDynamicRef.current = true;
+      if (payload.enabled && visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      if (!payload.enabled) setDynamicSlate(null);
+      recommendationSwitchStateRef.current = payload.enabled ? 'preparing' : 'disabled';
+      setRecommendationState(recommendationSwitchStateRef.current);
+      setRecommendationRefresh(value => value + 1);
+    });
+    const manualRetry = manualRecommendationRetry.current;
+    manualRecommendationRetry.current = false;
+    const heldSwitchState = recommendationSwitchStateRef.current;
+    recommendationSwitchStateRef.current = null;
+    const refillSlateId = refillSlateIdRef.current;
+    refillSlateIdRef.current = null;
+    // A backfill re-read keeps the remaining cards on screen until the pool answers.
+    if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
+    keepSlateOnRefreshRef.current = false;
+    setTopicStarterErrorKey(null);
+    setRecommendationState(manualRetry ? "preparing" : (heldSwitchState ?? ""));
+    // This read also serves a pool that became ready while the page was in the background.
+    readyWhileHiddenRef.current = false;
+    void webRequest<TopicStarterResponse>('topic_starters.get', {
+      ...requestParams, visit_id: topicStarterVisitId, manual_retry: manualRetry,
+      ...(refillSlateId ? { slate_id: refillSlateId } : {}),
+    }, { timeoutMs: 60_000 })
+      .then(response => {
+        if (!active || !acceptingDynamicRef.current) {
+          return;
+        }
+        if (!receivedScopeState) {
+          setRecommendationState(response.preparation_state || (response.available ? "ready" : response.reason === "disabled" ? "disabled" : response.reason === "v6_pool_miss" ? "preparing" : "missing_configuration"));
+        }
+        const slate = buildDynamicTopicStarterSlate(response, requestParams);
+        if (!slate) {
+          if (response?.available !== false) {
+            setTopicStarterErrorKey('network.requestFailed');
+          } else {
+            // The pool now serves no card: those kept on screen for this re-read are gone too.
+            setDynamicSlate(null);
+          }
+          return;
+        }
+        setDynamicSlate({
+          visitId: topicStarterVisitId,
+          slate,
+          exposureAcknowledged: false,
+        });
+      })
+      .catch(error => {
+        if (active) {
+          setTopicStarterErrorKey('network.requestFailed');
+          setRecommendationState("failed");
+        }
+        console.error('topic_starters.get failed:', error);
+      });
+    return () => {
+      active = false;
+      unsubscribeReady();
+      unsubscribeControl();
+    };
+  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh]);
+
+
+  useEffect(() => {
+    if (
+      hasConversation ||
+      !pageVisible ||
+      !dynamicSlate ||
+      !acceptingDynamicRef.current ||
+      dynamicSlate.visitId !== topicStarterVisitId ||
+      dynamicSlate.exposureAcknowledged ||
+      visibleTopicSlateRef.current?.slateId !== dynamicSlate.slate.slateId
+    ) {
+      return;
+    }
+    const displayedSlate = dynamicSlate.slate;
+    const displayedVisitId = dynamicSlate.visitId;
+    let active = true;
+    void ensureTopicStarterExposureAcknowledged(displayedSlate)
+      .then(() => {
+        if (
+          !active ||
+          !acceptingDynamicRef.current ||
+          topicStarterVisitIdRef.current !== displayedVisitId ||
+          visibleTopicSlateRef.current?.slateId !== displayedSlate.slateId
+        ) {
+          return;
+        }
+        setDynamicSlate(current =>
+          current?.visitId === displayedVisitId && current.slate.slateId === displayedSlate.slateId ? { ...current, exposureAcknowledged: true } : current,
+        );
+      })
+      .catch(error => {
+        if (active) {
+          setDynamicSlate(current => (current?.visitId === displayedVisitId && current.slate.slateId === displayedSlate.slateId ? null : current));
+          setTopicStarterErrorKey('network.requestFailed');
+        }
+        console.error('topic_starters exposure was not recorded:', error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [dynamicSlate, ensureTopicStarterExposureAcknowledged, hasConversation, pageVisible, topicStarterVisitId]);
+
+  useEffect(() => {
+    if (hasConversation || !visibleTopicSlate || !dynamicSlate?.exposureAcknowledged) return;
+    const displayedSlate = visibleTopicSlate;
+    const displayedVisitId = topicStarterVisitId;
+    return () => {
+      if (!acceptingDynamicRef.current) return;
+      const replacement = visibleTopicSlateRef.current;
+      if (topicStarterVisitIdRef.current === displayedVisitId && replacement?.slateId !== displayedSlate.slateId) {
+        return;
+      }
+      void ensureTopicStarterExposureAcknowledged(displayedSlate)
+        .then(() => sendTopicStarterEvent(buildPageLeftEvent(displayedSlate)))
+        .catch(error => {
+          console.error('topic_starters page-left lineage was not recorded:', error);
+        });
+    };
+  }, [
+    ensureTopicStarterExposureAcknowledged,
+    dynamicSlate?.exposureAcknowledged,
+    hasConversation,
+    sendTopicStarterEvent,
+    topicStarterVisitId,
+    visibleTopicSlateId,
+  ]);
+
+  const handleInputIntent = useCallback(
+    (sessionId: string) => {
+      interactedRecommendationVisitRef.current = topicStarterVisitIdRef.current;
+      acceptingDynamicRef.current = false;
+      onInputIntent?.(sessionId);
+    },
+    [onInputIntent],
+  );
+
   const handleSendMessage = useCallback(
-    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions | ChatInputProvenance) => {
+      const queued = options && 'queuedTaskId' in options;
+      // Capture submission provenance before awaiting the history flush.
+      const nextInput = queued ? null : takeNextInputSubmission(content);
       try {
         if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
       } catch (error) {
+        nextInput?.settle(false);
         toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
         return;
       }
+      if (queued || !nextInput) {
+        setIsSending(true);
+        onSendMessage(content, mediaItems, options);
+        return;
+      }
+      const slate = visibleTopicSlateRef.current;
+      acceptingDynamicRef.current = false;
+      const directInputRecorded =
+        slate?.kind === 'dynamic'
+          ? ensureTopicStarterExposureAcknowledged(slate).then(() => sendTopicStarterEvent(buildDirectInputEvent(slate)))
+          : Promise.resolve();
       setIsSending(true);
-      onSendMessage(content, mediaItems, options);
+      const sent = Promise.resolve(onSendMessage(content, mediaItems, nextInput.provenance)).then(
+        sessionId => nextInput.settle(Boolean(sessionId)),
+        error => {
+          nextInput.settle(false);
+          throw error;
+        },
+      );
+      void Promise.all([sent, directInputRecorded]).catch(error => {
+        setTopicStarterErrorKey('network.requestFailed');
+        console.error('topic_starters direct-input lineage was not recorded:', error);
+      });
     },
-    [activeSessionId, onSendMessage, t],
+    [activeSessionId, ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent, takeNextInputSubmission, t],
   );
+
+  const handleEmptyComposerTab = useCallback(() => acceptNextInputSuggestion('tab'), [acceptNextInputSuggestion]);
 
   // 当发送消息时强制滚动到底部
   useEffect(() => {
@@ -1635,8 +2102,77 @@ export const ChatPanel = React.memo(function ChatPanel({
     }
   }, [activeSessionId, isSending, updateHistoryLayoutSnapshot]);
 
-  const handleSuggestion = useCallback((text: string) => handleSendMessage(text), [handleSendMessage]);
+  const handleSuggestion = useCallback(
+    (topic: TopicStarterTopic) => {
+      const slate = visibleTopicSlateRef.current;
+      if (!slate || !slate.manifestId || !slate.generationBatchId) return;
+      const visitId = topicStarterVisitIdRef.current;
+      const interactionKey = `${visitId}\u0000${slate.slateId}`;
+      if (topicStarterClickLatchRef.current === interactionKey) return;
+      topicStarterClickLatchRef.current = interactionKey;
+      setTopicStarterClickLatch(interactionKey);
+      acceptingDynamicRef.current = false;
+      const provenance: ChatInputProvenance = {
+        input_origin: 'starter_click',
+        assistance_origin: 'starter_click',
+        topic_starter: {
+          manifest_id: slate.manifestId,
+          generation_batch_id: slate.generationBatchId,
+          exposure_id: slate.slateId,
+          card_revision_id: topic.id,
+          context_scope: slate.contextScope,
+          project_id: slate.projectId,
+        },
+      };
+      let clickRecorded = false;
+      let messageAccepted = false;
+      const isCurrentClick = () =>
+        topicStarterVisitIdRef.current === visitId &&
+        visibleTopicSlateRef.current?.slateId === slate.slateId &&
+        visibleTopicSlateRef.current.contextScope === slate.contextScope &&
+        visibleTopicSlateRef.current.projectId === slate.projectId;
+      const releaseClickLatch = () => {
+        if (topicStarterClickLatchRef.current !== interactionKey) return;
+        topicStarterClickLatchRef.current = null;
+        setTopicStarterClickLatch(current => (current === interactionKey ? null : current));
+        if (topicStarterVisitIdRef.current === visitId && visibleTopicSlateRef.current?.slateId === slate.slateId) {
+          acceptingDynamicRef.current = true;
+        }
+      };
+      void (async () => {
+        await ensureTopicStarterExposureAcknowledged(slate);
+        if (!isCurrentClick()) {
+          releaseClickLatch();
+          return;
+        }
+        await sendTopicStarterEvent(buildTopicClickEvent(slate, topic.id));
+        clickRecorded = true;
+        if (!isCurrentClick()) {
+          releaseClickLatch();
+          return;
+        }
+        setIsSending(true);
+        const realSessionId = await onSendMessage(topic.prompt, undefined, provenance);
+        if (!realSessionId) {
+          if (isCurrentClick()) setTopicStarterErrorKey('network.sendMessageFailed');
+          releaseClickLatch();
+          return;
+        }
+        messageAccepted = true;
+        await sendTopicStarterEvent(buildSessionBoundEvent(slate, realSessionId, topic.id));
+      })().catch(error => {
+        // The click is over even when the message was accepted: a latch left set would disable
+        // every card of this slate for the rest of the visit.
+        releaseClickLatch();
+        if (!messageAccepted && !isCurrentClick()) return;
+        setTopicStarterErrorKey(!clickRecorded || messageAccepted ? 'network.requestFailed' : 'network.sendMessageFailed');
+        console.error('topic_starters click failed:', error);
+      });
+    },
+    [ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent],
+  );
 
+  // Keep only the shown cards of this slate that pass; an empty page falls back to the static entrances.
   const markDesktopFileDropZoneActive = useCallback(() => {
     desktopFileDropAcceptUntilRef.current = Date.now() + 1200;
   }, []);
@@ -1866,6 +2402,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             {heartbeatAvailable && (
               <button
                 type="button"
+                data-testid="chat-panel-heartbeat-trigger"
                 className={`chat-header-icon-btn ${heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
                 onClick={() => onToggleHeartbeatPanel?.()}
                 title={t('heartbeat.panel.title')}
@@ -1877,6 +2414,8 @@ export const ChatPanel = React.memo(function ChatPanel({
               type="button"
               className={`chat-header-icon-btn ${teamAreaExpanded === false && !heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
               data-testid="chat-panel-header-chat-toggle"
+              title={t('chatUi.toggleOverview')}
+              aria-label={t('chatUi.toggleOverview')}
               data-variant="collapse"
               data-team-area-toggle="true"
               onClick={() => onToggleTeamArea?.(teamAreaExpanded === false ? null : false)}
@@ -1888,6 +2427,8 @@ export const ChatPanel = React.memo(function ChatPanel({
                 type="button"
                 className="chat-header-icon-btn"
                 data-testid="chat-panel-header-expand-toggle"
+                title={t('chatUi.expandDetails')}
+                aria-label={t('chatUi.expandDetails')}
                 data-variant="expand"
                 data-team-area-toggle="true"
                 onClick={() => onToggleTeamArea?.(true)}
@@ -2034,7 +2575,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
                   onForkSession={onForkSession}
-                  onInputIntent={onInputIntent}
+                  onInputIntent={handleInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
                   onDiscardMedia={onDiscardMedia}
@@ -2054,6 +2595,47 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
+              </div>
+              <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
+                {recommendationState === 'disabled' ? (
+                  <p className="w-full text-sm text-text-muted" data-testid="chat-panel-topic-disabled-hint">
+                    {t('chat.topicStarter.disabledHint')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </p>
+                ) : recommendationState === 'missing_configuration' ? (
+                  <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-topic-configuration-hint">
+                    {t('chat.topicStarter.statusMissingConfiguration')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </div>
+                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
+                  {recommendationState !== 'provider_unavailable' ? t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate))) : null}
+                  {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}
+                  {topicStarterShowsRetryAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-retry" onClick={() => { manualRecommendationRetry.current = true; if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true; setRecommendationRefresh(value => value + 1); }} className="ml-2 text-text-link underline">{t('chat.topicStarter.retryPreparation')}</button> : null}
+                </div> : null}
+                {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (
+                  <p role="alert" data-testid="chat-panel-welcome-topic-starter-error">
+                    {t(topicStarterErrorKey)}
+                  </p>
+                )}
+                {Boolean(visibleTopicSlate?.topics.length) && (
+                  <h2 className="chat-suggestions__title" data-testid="chat-panel-topic-heading">
+                    {t('chat.topicStarter.recommendedForYou')}
+                  </h2>
+                )}
+                {(visibleTopicSlate?.topics ?? []).map(topic => {
+                  return (
+                    <SuggestionCard
+                      key={topic.id}
+                      topic={topic}
+                      onClick={() => handleSuggestion(topic)}
+                      disabled={topicStarterSuggestionsDisabled}
+                    />
+                  );
+                })}
               </div>
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
@@ -2079,11 +2661,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </span>
                 </div>
               )}
-              <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {suggestions.map((text) => (
-                  <SuggestionCard key={text} text={text} onClick={() => handleSuggestion(text)} />
-                ))}
-              </div>
             </div>
           )}
           <div />
@@ -2109,7 +2686,9 @@ export const ChatPanel = React.memo(function ChatPanel({
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
             onForkSession={onForkSession}
-            onInputIntent={onInputIntent}
+            onInputIntent={handleInputIntent}
+            onEmptyComposerTab={handleEmptyComposerTab}
+            suggestionPlaceholder={nextInputSuggestionPlaceholder}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
             onDiscardMedia={onDiscardMedia}

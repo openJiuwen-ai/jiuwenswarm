@@ -6,17 +6,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
-from jiuwenswarm.extensions.video_duplex.backend.tasks import bridge
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.server.runtime.video_task import bridge
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
 
@@ -28,7 +29,7 @@ def routed_task_fixture(tmp_path, monkeypatch):
     service.kick = Mock()
     task = service.submit("alice", "voice", "create", "Plan a meeting")
     task = store.update(task["id"], lambda t: t.update(status="running", checkpoint_open=True))
-    endpoint = bridge.GatewayTaskEndpoint(store)
+    endpoint = GatewayTaskEndpoint(store)
     request = SimpleNamespace(
         channel_id="video_tool", session_id=task["core_session_id"],
         request_id=task["request_id"], user_id="alice",
@@ -64,7 +65,7 @@ def routed_task_fixture(tmp_path, monkeypatch):
     server_root = tmp_path / "agent-server"
     server_root.mkdir()
     from jiuwenswarm.common import utils
-    monkeypatch.setattr(utils, "get_agent_root_dir", lambda: server_root)
+    monkeypatch.setattr(utils, "get_agent_root_dir", lambda tenant_key=None: server_root)
     yield SimpleNamespace(
         store=store, task=task, endpoint=endpoint, request=request, frames=frames,
         acks=acks, handler=handler, push=push, server_root=server_root,
@@ -117,7 +118,7 @@ async def test_cancel_settlement_closes_and_settles_in_one_checkpoint(routed_tas
 
 
 async def test_cancel_during_normal_output_cleanup_preserves_settlement(routed_task, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
 
     r = routed_task
     rail = SimpleNamespace(managed_tasks={})
@@ -343,7 +344,7 @@ async def test_checkpoint_ack_can_finish_while_session_is_closing(routed_task, m
 async def test_checkpoint_roundtrip_over_websocket_without_shared_task_database(routed_task, monkeypatch):
     """Use the production client/dispatcher; only server startup and model work are omitted."""
     from websockets.legacy.server import serve
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
 
@@ -483,9 +484,8 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
 
     executor.run = run
     service = TaskService(r.store, executor, concurrency=1)
-    service.started = True
     try:
-        service.kick()
+        service.start("alice", "voice")
         assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
         waiting = service.submit("alice", "voice", "next", "Next task")
         await service.cancel("alice", "voice", r.task["id"], "stop-starting")

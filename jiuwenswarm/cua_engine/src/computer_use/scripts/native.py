@@ -1,5 +1,6 @@
 import argparse
 import json
+import locale
 import logging
 import os
 import shutil
@@ -16,7 +17,16 @@ LOGGER = logging.getLogger(__name__)
 
 def run(command, args, cwd=None, capture=False):
     result = subprocess.run(
-        [str(command), *map(str, args)], cwd=cwd, text=True, capture_output=capture,
+        [str(command), *map(str, args)],
+        cwd=cwd,
+        text=True,
+        # Native toolchains (swift, the C# compiler, the platform driver) emit
+        # their output in the console code page, so decode it with the locale
+        # codec; errors="replace" keeps a stray byte from aborting the reader
+        # thread and silently emptying stdout.
+        encoding=locale.getpreferredencoding(False) or "utf-8",
+        errors="replace",
+        capture_output=capture,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     if result.returncode:
@@ -129,7 +139,11 @@ def read_permissions(request=False, root=None, timeout=None):
     try:
         result = subprocess.run(
             [native["command"], *native["args"], "--request-permissions" if request else "--check-permissions"],
-            stdout=subprocess.PIPE, text=True, timeout=timeout)
+            stdout=subprocess.PIPE, text=True, timeout=timeout,
+            # The driver is a native binary: decode with the locale codec and
+            # never let a bad byte truncate the JSON response to an empty string.
+            encoding=locale.getpreferredencoding(False) or "utf-8",
+            errors="replace")
     except FileNotFoundError:
         raise RuntimeError("本机后端尚未构建，请先运行 jiuwenswarm-computer-use --prepare 或 computer-use-build。") from None
     if result.returncode:

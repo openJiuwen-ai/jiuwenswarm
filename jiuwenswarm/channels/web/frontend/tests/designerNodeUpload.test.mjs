@@ -1,11 +1,12 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
   DESIGNER_UPLOAD_TOO_LARGE,
+  isDesignerUploadTooLarge,
   buildUploadedDesignerNode,
   canReplaceUploadedNode,
-  isDesignerUploadTooLarge,
   storeDesignerUpload,
   uploadAcceptForNodeType,
   uploadKindFromMime,
@@ -69,6 +70,18 @@ test('uploadedNodeConfig swaps the upload while keeping unrelated config', () =>
   assert.equal(next.role, 'image');
   assert.equal(next.upload.uri, stored.uri);
   assert.equal(next.upload.asset_id, '');
+});
+
+test('storeDesignerUpload rejects files over 32 MB before reading them', async () => {
+  const oversized = {
+    name: 'clip.mp4',
+    type: 'video/mp4',
+    size: 32 * 1024 * 1024 + 1,
+    slice() {
+      throw new Error('oversized files must not be read');
+    },
+  };
+  await assert.rejects(storeDesignerUpload(oversized), { message: 'file_too_large' });
 });
 
 test('canReplaceUploadedNode rejects generated and chat-reference nodes', () => {

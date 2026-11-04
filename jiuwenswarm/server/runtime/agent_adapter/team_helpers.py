@@ -25,38 +25,37 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
-from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamMonitor, TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
-
-from jiuwenswarm.server.runtime.session.history_io import (
-    run_history_io, run_stream_parser, stream_chunk_writes_history,
-)
-
-from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
-from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
-from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
-    SessionMessagingRoute,
-    session_messaging_route_context,
-    with_session_messaging_route,
-)
-from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
-from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
-from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
-from jiuwenswarm.common.chat_final import FINAL_MODE_PATCH_SEGMENT
-from jiuwenswarm.common.session_message import with_cross_session_history_metadata
-from jiuwenswarm.common.cron_team_completion import (
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.session_message import with_cross_session_history_metadata
+from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     _drain_cron_delegation_grace_events,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
+
+from jiuwenswarm.server.runtime.session.history_io import (
+    run_history_io, run_stream_parser, stream_chunk_writes_history,
+)
+from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
+from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
+from jiuwenswarm.agents.harness.team.member_status import is_departed_member
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SessionMessagingRoute,
+    session_messaging_route_context,
+    with_session_messaging_route,
+)
+from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
+from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
+from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
+from jiuwenswarm.common.chat_final import FINAL_MODE_PATCH_SEGMENT
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import (
     BaseMonitorHandler,
     monitor_team_agent,
@@ -127,6 +126,8 @@ _SESSION_BUDGET_STATE_KEY = "session_budget"
 _SESSION_SWARMFLOW_CONFIG_KEY = "session_swarmflow_config"
 _SESSION_TEAM_DISPATCH_MODE_KEY = "session_team_dispatch_mode"
 _TEAM_DISPATCH_MODES = frozenset({"autonomous", "scheduled"})
+_SESSION_TEAM_BOOTSTRAP_MODE_KEY = "session_team_bootstrap_mode"
+_TEAM_BOOTSTRAP_MODES = frozenset({"leader", "framework"})
 
 _TEAM_CREATE_KINDS = {
     RunActionKind.CREATE.value,
@@ -1200,7 +1201,11 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
-    _enqueue_write(session_id, metadata)
+    _enqueue_write(
+        session_id,
+        metadata,
+        merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_dispatch_mode(
@@ -1221,6 +1226,55 @@ def _resolve_session_team_dispatch_mode(
     from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata
     metadata = _read_metadata(session_id, cache_bust=True)
     return _coerce_team_dispatch_mode(metadata.get(_SESSION_TEAM_DISPATCH_MODE_KEY))
+
+
+def _coerce_team_bootstrap_mode(value: Any) -> str | None:
+    """Return ``value`` as a known bootstrap mode, else None."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in _TEAM_BOOTSTRAP_MODES else None
+
+
+def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) -> None:
+    """Persist the session-level team bootstrap mode to session metadata.
+
+    Same shape as ``persist_session_team_dispatch_mode``: read-modify-write,
+    no-op on read failure, so a refreshed page restores the mode the team was
+    built with.
+    """
+    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata, _enqueue_write
+    metadata = _read_metadata(session_id, cache_bust=True)
+    if not metadata.get("session_id"):
+        logger.warning(
+            "[TeamHelpers] skipping session_team_bootstrap_mode persist: "
+            "failed to read session metadata (session_id=%s)",
+            session_id,
+        )
+        return
+    metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
+    _enqueue_write(
+        session_id,
+        metadata,
+        merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
+    )
+
+
+def _resolve_session_team_bootstrap_mode(
+    params: dict | None,
+    *,
+    session_id: str,
+) -> str | None:
+    """Resolve the session-level team bootstrap mode: params > persisted > unset.
+
+    ``None`` means "not specified" and the team config's ``bootstrap_mode``
+    stands, exactly like ``_resolve_session_team_dispatch_mode``.
+    """
+    if params is not None:
+        requested = _coerce_team_bootstrap_mode(params.get("team_bootstrap_mode"))
+        if requested is not None:
+            return requested
+    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata
+    metadata = _read_metadata(session_id, cache_bust=True)
+    return _coerce_team_bootstrap_mode(metadata.get(_SESSION_TEAM_BOOTSTRAP_MODE_KEY))
 
 
 def _resolve_channel_id(channel_id: str | None) -> str:
@@ -1875,12 +1929,13 @@ async def _finish_cron_team_stream_after_delegation_grace(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Wait briefly after a solo harness final before ending the cron team stream."""
     await asyncio.sleep(_CRON_DELEGATION_GRACE_SECONDS)
     resolved_channel_id = _resolve_channel_id(channel_id)
     completion = get_team_manager(channel_id).get_cron_completion(session_id)
-    if completion is None:
+    if completion is None or (expected_completion is not None and completion is not expected_completion):
         return
     if completion.get("tasks_ever_created"):
         completion["finish_scheduled"] = False
@@ -1888,36 +1943,23 @@ async def _finish_cron_team_stream_after_delegation_grace(
     if not cron_team_round_should_end(completion):
         completion["finish_scheduled"] = False
         return
-    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id)
+    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id, completion)
 
 
 async def _finish_cron_team_stream_after_round(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Cancel the background team stream once cron SwarmFlow + leader report are done."""
     resolved_channel_id = _resolve_channel_id(channel_id)
     team_manager = get_team_manager(channel_id)
     try:
-        stream_task = team_manager.pop_stream_task(session_id)
-        if stream_task is not None and not stream_task.done():
-            stream_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-        await _broadcast_event(
-            channel_id,
-            session_id,
-            {
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "rid": round_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-        )
+        completion = expected_completion or team_manager.get_cron_completion(session_id)
+        if completion is None:
+            return
+        await team_manager.finish_cron_stream(session_id, completion, round_id)
         logger.info(
             "[TeamHelpers] cron team stream finished early: source=cron_round_finished "
             "is_processing=False channel_id=%s session_id=%s round_id=%s",
@@ -1932,7 +1974,15 @@ async def _finish_cron_team_stream_after_round(
             session_id,
             exc,
         )
-    finally:
+
+
+def _release_cron_waiter_completion(team_manager: Any, session_id: str, request_id: str) -> None:
+    """Leave a scheduled finisher's ownership fence intact after its waiter exits."""
+    completion = team_manager.get_cron_completion(session_id)
+    if (
+        completion is not None and completion.get("request_id") == request_id
+        and not completion.get("finish_scheduled")
+    ):
         team_manager.pop_cron_completion(session_id)
 
 
@@ -1944,13 +1994,16 @@ def _try_finish_cron_team_stream(
     """End persistent team streams for cron once workflow completes and leader reports."""
     team_manager = get_team_manager(channel_id)
     waiters = team_manager.get_waiters(session_id)
-    if not any(_is_cron_request_id(request_id) for request_id, _ in waiters):
+    cron_request_id = next((rid for rid, _ in waiters if _is_cron_request_id(rid)), None)
+    if cron_request_id is None:
         return
 
     completion = team_manager.setdefault_cron_completion(
         session_id,
         {
             **new_cron_team_round_state(),
+            **team_manager.cron_completion_owner(session_id, cron_request_id),
+            "channel_id": _resolve_channel_id(channel_id),
             "round_id": None,
             "finish_scheduled": False,
         },
@@ -1968,6 +2021,7 @@ def _try_finish_cron_team_stream(
                     channel_id,
                     session_id,
                     round_id,
+                    completion,
                 ),
                 name=f"cron-team-grace-{session_id}",
             )
@@ -1977,6 +2031,7 @@ def _try_finish_cron_team_stream(
                 channel_id,
                 session_id,
                 round_id,
+                completion,
             ),
             name=f"cron-team-finish-{session_id}",
         )
@@ -2065,7 +2120,12 @@ async def _broadcast_team_state_snapshot(
         if get_wf_handler is not None:
             wf_handler = get_wf_handler(session_id)
             if wf_handler is not None:
-                db_member_ids = {m.get("member_id", "") for m in snapshot.get("members", [])}
+                # Departed members keep their DB row too, so their ids stay
+                # reserved even though they are off the roster.
+                db_member_ids = {
+                    m.get("member_id", "")
+                    for m in (*snapshot.get("members", []), *snapshot.get("departed_members", []))
+                }
                 # Iterative loops reuse an agent id across phases of one run;
                 # like the live path's session-wide spawned_members, each
                 # mirrored member is emitted exactly once per replay.
@@ -2131,7 +2191,7 @@ _ROSTER_MUTATING_TOOLS = frozenset({
     "spawn_teammate",
     "spawn_human_agent",
     "spawn_bridge_agent",
-    "spawn_external_cli",
+    "spawn_expert",
 })
 
 
@@ -2196,8 +2256,7 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
-            member_status = str(member.get("status") or "").strip().lower()
-            if member_status == MemberStatus.SHUTDOWN.value:
+            if is_departed_member(member.get("status")):
                 continue
             if not candidate_id or candidate_id in announced_members:
                 continue
@@ -2910,6 +2969,22 @@ async def _process_team_message_stream_with_design(
             async for chunk in stream:
                 if design_bindings is not None:
                     _push_design_tool_activity(request, chunk)
+                if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.processing_status":
+                    is_terminal_status = (
+                        chunk.payload.get("is_processing") is False
+                        and chunk.payload.get("is_complete") is True
+                    )
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] handoff_to_adapter: session_id=%s request_id=%s "
+                        "channel_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        request.session_id,
+                        chunk.request_id,
+                        chunk.channel_id,
+                        chunk.payload.get("rid"),
+                        chunk.payload.get("is_processing"),
+                        chunk.payload.get("is_complete"),
+                    )
                 yield chunk
     finally:
         if design_bindings is not None:
@@ -3001,6 +3076,11 @@ async def _process_team_message_stream_locked(
     sanitized_metadata = dict(request_metadata)
     sanitized_metadata.pop(TEAM_EXECUTION_CONTEXT_METADATA_KEY, None)
     request = replace(request, metadata=sanitized_metadata)
+    wait_for_stop = getattr(team_manager, "wait_for_request_stop", None)
+    if callable(wait_for_stop):
+        # Wait before marking this input in-flight: the old producer's cleanup
+        # must finish before the new turn chooses or activates a runtime.
+        await wait_for_stop(session_id)
     # 归档闸门：Team 回合从进入适配器起即算「运行中」，直到本轮 round 终止
     # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
     begin_request = getattr(team_manager, "begin_request", None)
@@ -3194,7 +3274,7 @@ async def _process_team_message_stream(
     # i.e. wait for this very turn to finish (it is released only after the
     # stream ends), a self-deadlock. ``_begin_team_round`` routes such turns
     # through the mailbox-scoped admission instead.
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     request_params = getattr(request, "params", None)
     cross_session_marker = (
@@ -3526,7 +3606,7 @@ async def _process_team_message_stream(
         # caller-supplied compiled payload with runtime credentials is never
         # accepted).
         if model_selection is not None:
-            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
             model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
             if get_session_metadata(session_id, cache_bust=True).get("cron_id"):
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -3558,7 +3638,7 @@ async def _process_team_message_stream(
                     stored.model_dump(exclude_none=True) if stored is not None else None
                 )
             if isinstance(stored_selection, dict):
-                from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+                from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                 selected = SwarmModelSelection.model_validate(stored_selection)
@@ -3578,6 +3658,10 @@ async def _process_team_message_stream(
             params_obj if isinstance(params_obj, dict) else None,
             session_id=session_id,
         )
+        team_bootstrap_mode = _resolve_session_team_bootstrap_mode(
+            params_obj if isinstance(params_obj, dict) else None,
+            session_id=session_id,
+        )
         team_spec = await team_manager.get_swarm_enriched_team_spec(
             session_id=session_id,
             mode=resolved_mode,
@@ -3594,15 +3678,19 @@ async def _process_team_message_stream(
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
             dispatch_mode=team_dispatch_mode,
+            bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(team_spec, deep_agent)
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",
                 group_members=request_metadata.get("group_members"),
                 touch_last_message_at=False, sync_write=True)
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
-            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
             from jiuwenswarm.server.runtime.session.model_selection_store import (
                 get_session_model_selection,
                 set_session_model_selection,
@@ -3643,6 +3731,11 @@ async def _process_team_message_stream(
             and _coerce_team_dispatch_mode(params_obj.get("team_dispatch_mode")) is not None
         ):
             persist_session_team_dispatch_mode(session_id, team_spec.dispatch_mode)
+        if (
+            isinstance(params_obj, dict)
+            and _coerce_team_bootstrap_mode(params_obj.get("team_bootstrap_mode")) is not None
+        ):
+            persist_session_team_bootstrap_mode(session_id, team_spec.bootstrap_mode)
         if team_skill_names is not None:
             await _apply_team_skill_selection(
                 team_manager=team_manager,
@@ -4372,7 +4465,7 @@ async def _process_team_message_stream(
                 generation=generation,
             )
             if _is_cron_request_id(rid):
-                team_manager.pop_cron_completion(session_id)
+                _release_cron_waiter_completion(team_manager, session_id, rid)
             if not team_manager.has_waiters(session_id):
                 logger.info(
                     "[TeamHelpers] cleared waiter set: session_id=%s",

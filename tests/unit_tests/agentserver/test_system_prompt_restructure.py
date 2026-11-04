@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -52,7 +52,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
-from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+from jiuwenswarm.runtime.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -319,7 +319,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=True),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -784,7 +784,7 @@ async def test_symphony_orchestration_rail_clears_when_unavailable(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=True),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -815,7 +815,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=False),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -1094,7 +1094,7 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "## Current Channel" in prompt
 
     items = await agent.prompt_attachment_manager.collect_for_session("sess1")
-    assert [item.id for item in items] == ["session.sess1.runtime.setting"]
+    assert {item.id for item in items} == {"session.sess1.runtime.setting", "session.sess1.runtime.current_media"}
     rendered = agent.prompt_attachment_manager.render(items)
     assert "model-x" in rendered
     assert "Current channel: web" in rendered
@@ -1107,41 +1107,96 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     ("language", "heading", "required", "forbidden"),
     [
         (
-            "en", "# A4P Intent Authorization",
+            "en",
+            "# A4P Intent Authorization",
             (
-                "FIRST: before reading, listing, searching, writing",
-                "call `request_a4p_intent_authorization`",
-                "Read-only operations also require this preparation",
-                "Do not read or explore first",
-                "A user-supplied path is not permission",
-                "Inspect permittedActions, unapprovedActions and deniedActions",
-                "Execute only permittedActions", "authorizationRequired=false",
-                "policy-allowed and valid-token-covered", "Session authorization may be staged",
-                "complete exact commands", "must not absorb whitespace",
-                "a filename glob under a fixed directory", "explicit absolute paths without '..'",
-                "Filename discovery does not authorize read_file",
-                "Choose a feasible plan once and proceed", "never placeholders",
-                "create disabled", "complete future scope using the returned cronJobId",
-                "every planned action is permitted", "Cron authorization cannot be staged",
-                "do not trial-run now",
+                'call `request_a4p_intent_authorization`',
+                'Read-only operations also require this preparation',
+                'Only tools outside this list may be',
+                'Submit multiple actions together',
+                'Ordinary parameters need not be known',
+                'complete exact commands',
+                'must not absorb whitespace, Shell operators, redirections, or extra arguments',
+                'a filename glob under a fixed directory',
+                'never a bare *',
+                'Use dedicated file tools for writes',
+                'Choose a feasible plan once and proceed',
+                'revise only for new facts',
+                'execute with resolved values, never placeholders',
+                'Do not broaden scopes or guess missing information',
+                'Reuse approved scopes',
+                'Cron authorization cannot be staged',
+                'every planned action is permitted',
+                'put execution/preparation in the future plan',
+                'actions from the same plan',
+                'system-designated default creation tool',
+                'create disabled',
+                'complete future scope using the returned cronJobId',
+                'enable after ok=true',
+                'Keep the job disabled',
+                'Do not repeat rejected or failed requests unchanged',
+                'Execute only permittedActions',
+                'unapprovedActions still lack approval',
+                'actual calls still recheck permissions',
             ),
-            ("## Planning and convergence", "may use normal permission approval"),
+            (
+                "determine and freeze the most direct future call list",
+                "use only one clearly defined read-only source for the same dynamic value",
+                "Never guess or use placeholders",
+                "ad hoc protected operation may use normal permission approval",
+                "estimate the total calls",
+                "maxExecutions",
+                "uptime",
+                "df -h",
+                "mkdir -p",
+                "系统巡检报告",
+            ),
         ),
         (
-            "cn", "# A4P 意图授权",
+            "cn",
+            "# A4P 意图授权",
             (
-                "第一步", "必须先调用", "`request_a4p_intent_authorization`",
-                "只读操作也必须先提交", "不得先读取或搜索文件来准备授权",
-                "用户提供路径不等于已授权", "只有列表外的工具可先用于获取必要信息",
-                "检查 permittedActions、unapprovedActions 和 deniedActions",
-                "只能执行 permittedActions 中的操作", "authorizationRequired=false",
-                "后端过滤规则允许", "会话允许分阶段授权", "默认授权完整精确命令",
-                "固定目录下的文件名 glob", "不得使用裸 *", "显式使用绝对路径且不含 '..'",
-                "文件名搜索不包含 read_file 权限", "选定可行计划后执行",
-                "真实值而非占位符", "create disabled", "一次性授权完整未来范围",
-                "计划内全部操作获准后 enable", "Cron 不能分阶段授权", "不额外试运行",
+                '必须先调用 `request_a4p_intent_authorization`',
+                '只读操作也必须先提交',
+                '只有列表外的工具',
+                '合并提交多个 actions',
+                '无需提前确定普通参数',
+                '默认授权完整精确命令',
+                '不得覆盖空白、Shell 运算符、重定向或额外参数',
+                '固定目录下的文件名 glob',
+                '不得使用裸 *',
+                '使用专用文件工具写入',
+                '选定可行计划后执行',
+                '仅因新事实、需求变化或实际错误调整',
+                '动态参数用有界范围表达',
+                '实际执行使用真实值而非占位符',
+                '不扩大范围或猜测缺失信息',
+                '复用已批准范围',
+                'Cron 不能分阶段授权',
+                '范围不足时保持禁用',
+                '准备和执行放入未来计划',
+                '同一计划生成 description 和 actions',
+                '使用系统指定的默认创建工具',
+                'create disabled',
+                'cronJobId 一次性授权完整未来范围',
+                'ok=true 且计划内全部操作获准后 enable',
+                '拒绝或失败后不要原样重复请求',
+                '只能执行 permittedActions 中的操作',
+                'unapprovedActions 仍缺授权',
+                '实际调用仍重新校验权限',
             ),
-            ("## 规划与收敛", "可使用普通权限审批"),
+            (
+                "确定并冻结一份最直接的未来调用清单",
+                "同一动态值只使用一个明确的只读来源",
+                "不得猜测或使用占位符",
+                "临时、非工作流型的受保护操作可使用普通权限审批",
+                "调用工具前先估计",
+                "maxExecutions",
+                "uptime",
+                "df -h",
+                "mkdir -p",
+                "系统巡检报告",
+            ),
         ),
     ],
 )
@@ -1267,7 +1322,8 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, cha
 
 
 @pytest.mark.asyncio
-async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
+@pytest.mark.parametrize("channel", ["__cron__", "web"])
+async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch, channel):
     class _Runtime:
         @staticmethod
         def cron_intent_authorization_summary(job_id):
@@ -1293,7 +1349,7 @@ async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
     )
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
-    rail = RuntimePromptRail(language="en", channel="__cron__")
+    rail = RuntimePromptRail(language="en", channel=channel)
     rail.init(agent)
     rail.set_request_metadata({"cron": {"job_id": "job-1"}})
     ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
@@ -2466,7 +2522,6 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         sys_operation=None,
         language="cn",
         max_iterations=7,
-        rails=[ANY],
     )
 
 
@@ -2504,7 +2559,6 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         sys_operation=None,
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
-        rails=[ANY],
     )
 
 

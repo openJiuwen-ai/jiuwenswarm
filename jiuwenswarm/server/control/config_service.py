@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 import os
 import re
 import sys
@@ -21,14 +23,13 @@ import yaml
 from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.symphony_config import (
     resolve_symphony_enabled,
     resolve_symphony_evolution_enabled,
 )
@@ -116,6 +117,8 @@ _SWARMFLOW_ENABLED_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+_TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+_TEAM_MEMBER_SUBTASK_DEPTH_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -140,6 +143,16 @@ def _nested(raw: dict[str, Any], path: tuple[str, ...], default: Any = None) -> 
             return default
         current = current.get(segment)
     return default if current is None else current
+
+
+def _depth_switch_text(value: Any) -> str:
+    """Render ``max_subtask_depth`` as the member-subtask switch: on iff a depth > 0 (core F_128)."""
+    if isinstance(value, bool):
+        return "false"
+    try:
+        return "true" if int(value) > 0 else "false"
+    except (TypeError, ValueError):
+        return "false"
 
 
 def _bool_text(value: Any, default: bool = False) -> str:
@@ -200,8 +213,22 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _flatten_recommendation(raw: dict[str, Any]) -> dict[str, str]:
+    """The two switches as resolved, from the one implementation the rest of the app uses.
+
+    ``raw`` is passed in, so the import stays lazy and this module still never loads
+    ``jiuwenswarm.common.config`` (see the module docstring).
+    """
+
+    from jiuwenswarm.common.recommendation_switches import (
+        flatten_recommendation_for_config_panel,
+    )
+
+    return flatten_recommendation_for_config_panel(raw)
+
+
 def _flatten_external_cli(raw: dict[str, Any]) -> dict[str, str]:
-    from jiuwenswarm.common.config_panel.config_set_handlers import (
+    from jiuwenswarm.common.config_panel.external_cli_read import (
         EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
         custom_agents_config_value,
         flatten_external_cli_agents_for_config_panel,
@@ -446,11 +473,18 @@ def get_panel() -> dict[str, Any]:
         payload["team_task_verification_enabled"] = _bool_text(
             _nested(raw, _TEAM_TASK_VERIFICATION_PATH, False)
         )
+        payload["team_member_messaging_enabled"] = _bool_text(
+            _nested(raw, _TEAM_MEMBER_MESSAGING_PATH, False)
+        )
+        payload["team_member_subtasks_enabled"] = _depth_switch_text(
+            _nested(raw, _TEAM_MEMBER_SUBTASK_DEPTH_PATH, 0)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
         payload.update(_flatten_external_cli(raw))
         payload.update(_flatten_symphony(raw))
+        payload.update(_flatten_recommendation(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
@@ -489,9 +523,13 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")
         payload.setdefault("team_task_verification_enabled", "false")
+        payload.setdefault("team_member_messaging_enabled", "false")
+        payload.setdefault("team_member_subtasks_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "true")

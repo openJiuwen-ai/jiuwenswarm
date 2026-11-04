@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from openjiuwen_protocol.message import EventType, Message
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 def status(request_id, processing, team_id=""):
@@ -64,8 +64,11 @@ def test_missing_request_id_never_uses_message_frame_id():
 async def test_disconnect_reconciles_live_requests_instead_of_clearing_work(monkeypatch, live, snapshot_key):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter(), agent_client=object())
     channel._track_session_busy(status("request", True, "expert"))
-    fetch = AsyncMock(return_value=(True, {snapshot_key: live, **({"expert_requests": []} if snapshot_key == "organization_requests" else {})}))
-    monkeypatch.setattr("jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary", fetch)
+    payload = {snapshot_key: live}
+    if snapshot_key == "organization_requests":
+        payload["expert_requests"] = []
+    fetch = AsyncMock(return_value=(True, payload))
+    monkeypatch.setattr("agent_gateway.routing.e2a_proxy.fetch_agent_unary", fetch)
     await channel.reconcile_expert_processing("session", "user")
     assert channel.is_session_busy("session") is bool(live)
 
@@ -77,14 +80,14 @@ async def test_disconnect_reconciles_live_requests_instead_of_clearing_work(monk
     (True, {"session_id": "session", "operation_id": "pending"}, True),
 ])
 async def test_session_close_cleans_records_only_after_completion(monkeypatch, ok, payload, busy):
-    from jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
+    from agent_gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel._track_session_busy(status("request", True, "expert"))
     monkeypatch.setattr(channel, "send_response", AsyncMock())
     monkeypatch.setattr(channel, "send_event", AsyncMock())
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers.fetch_agent_unary",
+        "agent_gateway.channel_manager.web.lifecycle_handlers.fetch_agent_unary",
         AsyncMock(return_value=(ok, payload)),
     )
     register_lifecycle_handlers(channel, lambda: object(), lambda: None)

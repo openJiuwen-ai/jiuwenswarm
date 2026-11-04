@@ -2,7 +2,7 @@ import type { ModelEntry } from '../../../types';
 
 export const SETTINGS_CONFIG_CHANGED_EVENT = 'jiuwen:settings-config-changed';
 
-export type SettingsCategory = 'general' | 'models' | 'agent' | 'browser' | 'channels' | 'security' | 'experimental';
+export type SettingsCategory = 'general' | 'models' | 'agent' | 'browser' | 'channels' | 'recommendation' | 'security' | 'experimental';
 
 export type SettingsRequest = <T = unknown>(
   method: string,
@@ -31,6 +31,9 @@ export type ModelValidationPayload = {
   model_provider: string;
   reasoning_level: string | undefined;
   endpoint_profile?: string;
+  /** 供应商预设标识（与模型条目同源，仅透传）。缺失表示自定义供应商；
+   *  后端据此判断探测是否应回退持久化 endpoint_profile（与保存合并同口径）。 */
+  vendor_key?: string;
 };
 
 const envField = (
@@ -150,6 +153,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
   yamlField('cua_agent_enabled', 'experimental', 'boolean', 'react.subagents.cua_agent.enabled'),
+  yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
   yamlField('progressive_tool_optimize', 'experimental', 'boolean', 'progressive_tool_optimize'),
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
@@ -160,6 +164,18 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'experimental',
     'boolean',
     'modes.team.jiuwen_team.enable_task_verification',
+  ),
+  yamlField(
+    'team_member_messaging_enabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.enable_member_messaging',
+  ),
+  yamlField(
+    'team_member_subtasks_enabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.max_subtask_depth',
   ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
@@ -211,6 +227,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'text',
     'modes.team.jiuwen_team.external_cli_path_histories',
   ),
+  yamlField('topic_recommendation_enabled', 'recommendation', 'boolean', 'recommendation.topic_enabled'),
+  yamlField('prompt_suggestion_enabled', 'recommendation', 'boolean', 'recommendation.prompt_enabled'),
   yamlField('proactive_recommendation_enabled', 'experimental', 'boolean', 'proactive_recommendation.enabled'),
   yamlField(
     'proactive_recommendation_max_recommend_per_day',
@@ -349,6 +367,7 @@ export function buildModelValidationPayload(model: ModelEntry): ModelValidationP
     reasoning_level: model.reasoning_level,
   };
   if (model.endpoint_profile) payload.endpoint_profile = model.endpoint_profile;
+  if (model.vendor_key) payload.vendor_key = model.vendor_key;
   return payload;
 }
 

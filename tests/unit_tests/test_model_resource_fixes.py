@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_errors import ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
 
@@ -120,10 +120,13 @@ def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, 
     assert catalog_state["models"]["defaults"][0]["model_config_obj"]["reasoning_level"] is level
 
 
-@pytest.mark.parametrize("runtime", ["server", "gateway.embedded"])
+# A5：gateway.embedded 副本已删除（gateway 生产统一用 common.model_routing_registry）。
+@pytest.mark.parametrize("runtime", ["server"])
 @pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
 def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
-    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+    from jiuwenswarm.server.runtime.model_compiler_adapter import (
+        compile_model_selection,
+    )
 
     entry = catalog_state["models"]["defaults"][0]
     entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example.com/v1"})
@@ -151,7 +154,9 @@ def test_stable_selection_translates_reasoning_before_core_compilation(catalog_s
 @pytest.mark.parametrize("source", ["defaults", "agentos", "source", "model_source"])
 async def test_model_get_returns_plaintext_key_only_for_user_configured_models(catalog_state, monkeypatch, source):
     from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
-    from jiuwenswarm.common.config_panel.model_resource_handlers import _resource_payload
+    from jiuwenswarm.common.config_panel.model_resource_handlers import (
+        _resource_payload,
+    )
 
     crypto = SimpleNamespace(decrypt=lambda value: value.removeprefix("enc:"))
     monkeypatch.setattr(config_module, "get_crypto_provider", lambda: crypto)
@@ -309,7 +314,9 @@ def test_corrupt_cron_reference_file_returns_explicit_error(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_shared_registration_and_reload(catalog_state, monkeypatch):
     from jiuwenswarm.common.config_panel.models_handlers import register_models_handlers
-    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import _ConfigRpcChannel
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
+        _ConfigRpcChannel,
+    )
 
     channel = _ConfigRpcChannel("web")
     reload_models = AsyncMock(return_value=True)
@@ -334,10 +341,12 @@ async def test_config_adapter_registers_resource_methods(catalog_state):
         assert response.ok, response.payload
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
@@ -352,10 +361,12 @@ def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, r
     assert to_session_info(latest)["model_selection"] == selection
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     session_id = "__cron___1a1231c0004_53dd13fcf709"
@@ -368,8 +379,40 @@ def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime)
         store.set_session_model_selection("../escape", selection)
 
 
+def test_model_selection_read_rides_out_metadata_replacement(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    store = import_module("jiuwenswarm.common.model_selection_store")
+    monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
+    selection = {"type": "model_group", "id": "mgp_a", "route_id": "rte_b"}
+    metadata_path = tmp_path / "design_race" / "metadata.json"
+    metadata_path.parent.mkdir()
+    metadata_path.write_text(json.dumps({"model_selection": selection}), encoding="utf-8")
+    real_read_text = Path.read_text
+    denials = {"left": 2}
+
+    def read_text(self, *args, **kwargs):
+        if self == metadata_path and denials["left"]:
+            denials["left"] -= 1
+            raise PermissionError(13, "file is being replaced")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert store.get_session_model_selection("design_race") == ModelSelection.model_validate(selection)
+
+    denials["left"] = store._SHARING_RETRY_ATTEMPTS
+    with pytest.raises(ModelSelectionError, match="cannot read the session's model selection"):
+        store.get_session_model_selection("design_race")
+
+
 def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
-    from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver as GatewayResolver
+    # A5：gateway 生产（cron/controller）统一用 common 版 resolver
+    from jiuwenswarm.common.model_routing_registry import (
+        ModelSelectionResolver as GatewayResolver,
+    )
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a",
@@ -381,7 +424,9 @@ def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
 
 
 def test_hot_edit_recompiles_same_selection(catalog_state, monkeypatch):
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     compiled = []
 
@@ -401,10 +446,15 @@ def test_hot_edit_recompiles_same_selection(catalog_state, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reference_check_fails_closed_on_store_error(catalog_state, monkeypatch):
-    from jiuwenswarm.common.config_panel.model_resource_handlers import find_resource_references
+    from jiuwenswarm.common.config_panel.model_resource_handlers import (
+        find_resource_references,
+    )
 
     store = SimpleNamespace(list_jobs=AsyncMock(side_effect=RuntimeError("etcd unavailable")), aclose=AsyncMock())
-    monkeypatch.setattr("jiuwenswarm.runtime.cron.factory.create_gateway_cron_store", AsyncMock(return_value=store))
+    from types import SimpleNamespace as _NS
+
+    from jiuwenswarm.common.external_providers import register
+    register("cron_store_factory", _NS(create_gateway_cron_store=AsyncMock(return_value=store)))
     with pytest.raises(RuntimeError, match="etcd unavailable"):
         await find_resource_references(ModelCatalog(catalog_state), ModelSelection(type="model", id="mdl_a"))
     store.aclose.assert_awaited_once()
@@ -448,7 +498,9 @@ def test_delete_model_prunes_group_routes_instead_of_failing(catalog_state):
 
 def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     catalog_state["models"]["defaults"] = [catalog_state["models"]["defaults"][1]]
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -465,7 +517,9 @@ def test_deleted_session_selection_uses_current_default(catalog_state, monkeypat
 @pytest.mark.parametrize("cron", [True, False])
 def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._is_cron_execution = cron
@@ -477,7 +531,9 @@ def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron
 
 def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a", "routes": [{"route_id": "current", "model_id": "mdl_a"}],
@@ -495,7 +551,9 @@ def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
 
 def test_session_then_spec_then_default_group_priority(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._session_instance_agent_definition = {"model_selection": {"type": "model", "id": "mdl_b"}}

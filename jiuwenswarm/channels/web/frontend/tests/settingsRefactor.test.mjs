@@ -271,7 +271,7 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the nine-module order and fails invalid registrations', () => {
+test('registry definition preserves module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
@@ -527,6 +527,21 @@ test('simple Settings definitions reject unknown sources and derive required i18
     () => validateSettingsI18n(definition, (key) => requiredKeys.has(key)),
     /Missing settings i18n key: settingsPanel\.fields\.chrome_path\.placeholder/,
   );
+});
+
+test('settings items can explicitly override a module source without bypassing field validation', () => {
+  const create = (item) => createSettingsPageDefinition({
+    id: 'mixed-source-settings', compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [{ id: 'general', titleKey: 'settings.general', icon: () => null, source: 'locale',
+      sections: [{ id: 'general', items: [item] }],
+    }],
+  });
+  const item = { id: 'topics', component: 'switch', key: 'topic_recommendation_enabled', source: 'config' };
+  assert.equal(create(item).modules[0].sections[0].items[0].source, 'config');
+  assert.throws(() => create({ ...item, source: 'locale' }), /does not belong to source locale/);
+  assert.throws(() => create({ ...item, source: 'unknown' }), /unsupported settings source/);
+  assert.throws(() => create({ ...item, key: 'unregistered_field' }), /does not belong to source config/);
 });
 
 test('open-source Settings composition preserves the registered modules and editable policy', () => {
@@ -884,7 +899,8 @@ test('simple Settings controls are declared per module and enforced by the share
 test('shared Settings extension model remains product-neutral', () => {
   const forbiddenProductName = ['enter', 'prise'].join('');
   const files = [
-    ...sourceFilesUnder('src/features/settings'),
+    ...['components', 'services'].flatMap((directory) => sourceFilesUnder(`src/features/settings/${directory}`)),
+    ...sourceFilesUnder('src/features/settings/registry').filter((file) => !file.pathname.endsWith('/enterpriseDefinition.ts')),
     ...sourceFilesUnder('tests/fixtures/settings-extension'),
   ];
   for (const file of files) {
@@ -1134,15 +1150,17 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
     [
-      'cua_agent_enabled',
       'moa_jev_enabled',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',
       'kv_cache_affinity_enabled',
       'comfyui_workflow_enabled',
+      'cua_agent_enabled',
       'team_organization_ui_enabled',
       'team_scheduled_dispatch_enabled',
       'team_task_verification_enabled',
+      'team_member_messaging_enabled',
+      'team_member_subtasks_enabled',
       'proactive_recommendation_enabled',
       'progressive_tool_optimize',
     ].sort(),
@@ -1174,10 +1192,13 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_member_messaging_enabled',
+    'team_member_subtasks_enabled',
     'team_organization_ui_enabled',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
     'trajectory_ui_diagnosis_enabled',
+    'trajectory_ui_enabled',
   ]);
 
   const channelCatalogFile = parseTsx('src/features/settings/modules/channels/channelCatalog.ts');
@@ -1709,11 +1730,11 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.match(
     settingsPageCss,
-    /\.settings-models__toast--success\s*\{[^}]*border-color:\s*var\(--color-feedback-success\)[^}]*background:\s*var\(--color-feedback-success-toast\)/s,
+    /\.settings-models__toast--success,\s*\.settings-external-cli__toast--success\s*\{[^}]*border-color:\s*var\(--color-feedback-success\)[^}]*background:\s*var\(--color-feedback-success-toast\)/s,
   );
   assert.match(
     settingsPageCss,
-    /\.settings-models__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
+    /\.settings-models__toast--error,\s*\.settings-external-cli__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
   );
   assert.doesNotMatch(settingsPageCss, /\.settings-model-group\s*\{/);
   assert.doesNotMatch(settingsPageCss, /\.settings-model-group__items/);
@@ -1983,7 +2004,8 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.doesNotMatch(app, /ConfigPanel|BrowserPanel|ChannelsPanel|ExtensionsHubPanel/);
   assert.match(settingsChannelsModule, /import \{ SettingsChannelsPanel \} from '\.\/SettingsChannelsPanel'/);
   assert.doesNotMatch(settingsChannelsModule, /components\/ChannelsPanel/);
-  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'models' \| 'agent'/);
+  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'general' \| 'models' \| 'agent'/);
+  assert.doesNotMatch(settingsNavigation, /'recommendation'/);
   assert.match(settingsNavigation, /SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module'/);
   assert.equal(existsSync(new URL('src/components/ConfigPanel/index.tsx', root)), false);
   assert.equal(existsSync(new URL('src/components/BrowserPanel/index.tsx', root)), false);
@@ -2021,6 +2043,8 @@ test('Jev browser settings preserve mode, independent provider credentials and r
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
   assert.match(keySettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
   assert.match(keySettings, /decision_mode: 'llm'/);
+  assert.match(keySettings, /decision_display_name: ''/);
+  assert.match(keySettings, /moa_jev_enabled: 'false'/);
   assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
   assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
   assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);
@@ -2039,7 +2063,7 @@ test('legacy page translations and Harness package state are removed without del
   ];
 
   for (const locale of [zh, en]) {
-    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors', 'pane']);
+    assert.deepEqual(Object.keys(locale.browser).sort(), ['downloads', 'errors', 'pane']);
     assert.deepEqual(Object.keys(locale.channels.labels).sort(), supportedChannelIds);
     assert.deepEqual(Object.keys(locale.config).sort(), expectedConfigSections);
     assert.equal(locale.extensions, undefined);

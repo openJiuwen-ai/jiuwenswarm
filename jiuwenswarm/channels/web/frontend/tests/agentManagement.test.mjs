@@ -48,6 +48,7 @@ import {
 import {
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
+  collectCategories,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
@@ -537,13 +538,31 @@ test('catalog view model filters mine/search and returns the full filtered list'
 
   const productCatalog = buildCatalogViewModel(catalog, {
     scope: 'catalog',
-    category: 'ProductDevelopment',
+    category: 'Engineering',
     query: '',
   });
   assert.deepEqual(
     productCatalog.items.map((item) => item.id),
     ['b', 'hub-c'],
   );
+
+  // 分类页签改由已加载数据动态统计（#5902）：市场有几个分类出几个页签，
+  // 按频次排序但不截断（超过 6 个也全保留），也不再自建 "Other" 聚合类型。
+  assert.deepEqual(
+    collectCategories(['Design', 'Engineering', 'Engineering', '']),
+    ['Engineering', 'Design'],
+  );
+  assert.equal(
+    collectCategories(['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8']).length,
+    8,
+  );
+  // category 直接与后端自由字符串精确比对，不再有"其他"兜底分组。
+  const unmatchedCatalog = buildCatalogViewModel(catalog, {
+    scope: 'catalog',
+    category: 'Research',
+    query: '',
+  });
+  assert.deepEqual(unmatchedCatalog.items.map((item) => item.id), []);
 });
 
 test('My Experts keeps its own capability descriptions across catalog refreshes', () => {
@@ -759,12 +778,10 @@ test('mine search excludes hidden English names from Chinese cards (#4473)', () 
   assert.equal(buildCatalogViewModel([fallback], { scope: 'mine', category: '', query: 'Casework' }).items.length, 1);
 });
 test('in-flight transport deaths are the only uncertain install outcomes', () => {
-  // webClient raises these codes itself when a request dies after being
-  // sent but before the backend could answer (timeout, dropped socket —
-  // including WS_CLOSED, which disconnect() uses to reject in-flight
-  // requests). The backend may still complete the install, so the
-  // just-imported package must be kept. WS_NOT_READY is deliberately
-  // excluded: the request never left the client, so rollback is safe.
+  // webClient raises these codes itself when a request dies before the
+  // backend could answer (timeout, dropped socket — including WS_CLOSED,
+  // which disconnect() uses to reject in-flight requests). The backend may
+  // still complete the install, so the just-imported package must be kept.
   for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
     assert.equal(isUncertainInstallError({ code }), true, code);
   }
@@ -781,7 +798,8 @@ test('backend verdicts without a code stay definite so the upload rollback fires
   assert.equal(isUncertainInstallError({ code: 'agent_management_request_failed' }), false);
   // A rejection that carries a backend code stays definite as well.
   assert.equal(isUncertainInstallError({ code: 'HUB_ASSET_NOT_FOUND' }), false);
-  // Codeless plain Error throws on this path are definite too.
+  // Codeless plain Error throws on this path are definite too — handleInstall
+  // raises one itself for the backend's auth_required answer.
   assert.equal(isUncertainInstallError(new Error('auth required')), false);
   assert.equal(isUncertainInstallError({ code: '' }), false);
   assert.equal(isUncertainInstallError(null), false);

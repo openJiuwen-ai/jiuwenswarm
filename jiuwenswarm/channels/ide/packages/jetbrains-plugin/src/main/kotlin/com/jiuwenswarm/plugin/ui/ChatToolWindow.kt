@@ -309,33 +309,6 @@ class ChatPanel(
     // ──────────────────────────────────────────
     // Webview → Plugin messages
     // ──────────────────────────────────────────
-
-    /** Re-fetch models.list so a session created before model config stops showing a stale placeholder. */
-    private fun refreshModels() {
-        val sid = service.session.sessionId ?: return
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                val (models, model) = service.session.listModels()
-                if (service.session.sessionId != sid) return@executeOnPooledThread
-                val modelList = models.map { m ->
-                    mapOf(
-                        "model_name" to (m.get("model_name")?.asString ?: ""),
-                        "alias" to (m.get("alias")?.asString ?: ""),
-                        "model_provider" to (m.get("model_provider")?.asString ?: ""),
-                    )
-                }
-                dispatchToWebview(
-                    mapOf(
-                        "type" to "models_updated",
-                        "models" to modelList,
-                        "activeModel" to model,
-                    )
-                )
-            } catch (_: Exception) {
-                debug("models.list refresh failed")
-            }
-        }
-    }
     private fun readFileSnapshot(path: String): String? {
         val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path) ?: return null
         return try {
@@ -405,6 +378,33 @@ class ChatPanel(
         return true
     }
 
+    /** Re-fetch models.list so a session created before model config stops showing a stale placeholder. */
+    private fun refreshModels() {
+        val sid = service.session.sessionId ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val (models, model) = service.session.listModels()
+                if (service.session.sessionId != sid) return@executeOnPooledThread
+                val modelList = models.map { m ->
+                    mapOf(
+                        "model_name" to (m.get("model_name")?.asString ?: ""),
+                        "alias" to (m.get("alias")?.asString ?: ""),
+                        "model_provider" to (m.get("model_provider")?.asString ?: ""),
+                    )
+                }
+                dispatchToWebview(
+                    mapOf(
+                        "type" to "models_updated",
+                        "models" to modelList,
+                        "activeModel" to model,
+                    )
+                )
+            } catch (_: Exception) {
+                debug("models.list refresh failed")
+            }
+        }
+    }
+
     private fun handleWebviewMessage(jsonStr: String) {
         try {
             val msg = gson.fromJson(jsonStr, JsonObject::class.java)
@@ -442,8 +442,9 @@ class ChatPanel(
                     if (answers.size() == 0) return
                     val source = msg.get("source")?.asString ?: "confirm_interrupt"
                     val mode = msg.get("mode")?.asString ?: "code.plan"
+                    val interruptId = msg.get("interruptId")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
                     debug("ANSWER→ requestId=$rid source=$source options=${answers.size()}")
-                    if (!service.session.sendAnswer(rid, answers, source, mode)) {
+                    if (!service.session.sendAnswer(rid, answers, source, mode, interruptId)) {
                         dispatchToWebview(mapOf(
                             "type" to "error",
                             "message" to "Not connected or no active session",

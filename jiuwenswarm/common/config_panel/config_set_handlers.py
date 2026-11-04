@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,14 +40,17 @@ from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
     DEFAULT_TEAM_DISPATCH_MODE,
+    DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
-    EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
     TEAM_DISPATCH_MODE_CONFIG_PATH,
+    TEAM_MEMBER_MESSAGING_CONFIG_PATH,
+    TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
+    coerce_subtask_depth,
     get_config,
     get_config_raw,
     resolve_env_vars,
@@ -77,11 +81,27 @@ from jiuwenswarm.common.config import (
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
+    update_team_member_messaging_in_config,
+    update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
     update_trajectory_diagnosis_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
     validate_persisted_kv_cache_affinity,
+)
+from jiuwenswarm.common.recommendation_switches import (
+    flatten_recommendation_for_config_panel,
+    save_recommendation_switches,
+)
+from jiuwenswarm.common.config_panel.external_cli_read import (
+    EXTERNAL_CLI_AGENT_KEY_SUFFIXES,
+    EXTERNAL_CLI_AGENT_KINDS,
+    EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
+    _uploaded_cli_path,
+    custom_agents_config_value,
+    external_cli_agent_key,
+    external_cli_agent_kinds,
+    flatten_external_cli_agents_for_config_panel,
 )
 from jiuwenswarm.common.config_panel.models_handlers import (
     ConfigPanelBadRequest,
@@ -107,12 +127,8 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.utils import get_env_file
 from jiuwenswarm.common.version import get_runtime_version
-from jiuwenswarm.server.runtime.a2ui.integration import (
-    get_a2ui_config_payload,
-    get_default_a2ui_config_payload,
-    validate_a2ui_config_update,
-)
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.external_providers import ExternalProviderUnregistered, provider
+from jiuwenswarm.common.symphony_config import (
     DEFAULT_EVOLUTION_ENABLED,
     DEFAULT_SYMPHONY_ENABLED,
     resolve_symphony_enabled,
@@ -227,13 +243,7 @@ class ConfigChangeSet:
             elif key_text == "trajectory_ui_diagnosis_enabled":
                 # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
-            elif key_text in {
-                "task_full_duplex_enabled",
-                "team_organization_ui_enabled",
-                "comfyui_workflow_enabled",
-            }:
-                scopes.add("web_ui")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
+            elif key_text in WEB_UI_YAML_KEYS or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -387,6 +397,8 @@ CONFIG_YAML_KEYS = frozenset({
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "task_asr_enabled",
+    "topic_recommendation_enabled",
+    "prompt_suggestion_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -394,6 +406,8 @@ CONFIG_YAML_KEYS = frozenset({
     "swarmflow_budget",
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
+    "team_member_messaging_enabled",
+    "team_member_subtasks_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -408,11 +422,46 @@ CONFIG_YAML_KEYS = frozenset({
     "enable_free_models",
     "progressive_tool_optimize",
 })
-# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification），改动后需重载 team。
+# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
+# enable_member_messaging / max_subtask_depth），改动后需重载 team。
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
+    "team_member_messaging_enabled",
+    "team_member_subtasks_enabled",
 })
+# Settings toggles that only change YAML; AgentServer reads the file next turn.
+RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
+    "topic_recommendation_enabled",
+    "prompt_suggestion_enabled",
+})
+WEB_UI_YAML_KEYS = frozenset({
+    "task_full_duplex_enabled",
+    "team_organization_ui_enabled",
+    "comfyui_workflow_enabled",
+    "setup_guide_enabled",
+    *RECOMMENDATION_UI_CONFIG_KEYS,
+})
+# Scopes that must reach AgentServer before config.save_all returns.
+AGENT_RELOAD_SCOPES = frozenset({
+    "model",
+    "multimodal",
+    "search",
+    "team",
+    "permissions",
+    "agent_runtime",
+    "proactive",
+})
+
+
+def needs_agent_reload(scopes: set[str] | None) -> bool:
+    """True when this save must wait for AgentServer to apply it."""
+
+    if not scopes:
+        return True
+    return bool(scopes & AGENT_RELOAD_SCOPES)
+
+
 EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
@@ -423,9 +472,6 @@ EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_codex_cli_path",
     "external_cli_agent_codex_path_histories",
 })
-EXTERNAL_CLI_AGENT_KINDS = ("claude", "codex")
-EXTERNAL_CLI_AGENT_KEY_SUFFIXES = ("enabled", "use_builtin", "cli_path")
-EXTERNAL_CLI_CUSTOM_AGENTS_KEY = "external_cli_custom_agents"
 DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 EXTERNAL_CLI_PUBLISH_PATH = "/ws"
@@ -608,17 +654,19 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         TEAM_TASK_VERIFICATION_CONFIG_PATH,
         DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     )
+    member_messaging = get_nested_config_value(
+        raw,
+        TEAM_MEMBER_MESSAGING_CONFIG_PATH,
+        DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
+    )
+    subtask_depth = get_nested_config_value(raw, TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
     return {
         "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
         "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
+        "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
+        # The depth doubles as the switch (core F_128): on means any depth > 0.
+        "team_member_subtasks_enabled": "true" if coerce_subtask_depth(subtask_depth) > 0 else "false",
     }
-
-
-def external_cli_agent_kinds() -> tuple[str, ...]:
-    """Return Claude, Codex and every installed custom agent."""
-    from jiuwenswarm.common.custom_agent_runtime import custom_agent_names
-
-    return (*EXTERNAL_CLI_AGENT_KINDS, *custom_agent_names())
 
 
 def custom_external_cli_config_keys() -> tuple[str, ...]:
@@ -632,75 +680,9 @@ def custom_external_cli_config_keys() -> tuple[str, ...]:
     )
 
 
-def custom_agents_config_value() -> str:
-    """Describe the installed custom agents for the settings panel, as a JSON string.
-
-    Config values travel as strings; each item carries ``name`` / ``version`` /
-    ``summary`` / ``has_cli`` (whether a CLI executable was uploaded with it).
-    """
-    from jiuwenswarm.common.custom_agent_runtime import list_custom_agents
-
-    return json.dumps(
-        [
-            {"name": agent.name, "version": agent.version, "summary": agent.summary, "has_cli": bool(agent.cli_path)}
-            for agent in list_custom_agents()
-        ],
-        ensure_ascii=False,
-    )
-
-
 def is_external_cli_agent_config_key(key: str) -> bool:
     """Return whether ``key`` is a settings key of a built-in or custom agent."""
     return key in EXTERNAL_CLI_AGENT_CONFIG_KEYS or key in custom_external_cli_config_keys()
-
-
-def _uploaded_cli_path(cli_agent: str) -> str:
-    """Return the CLI executable uploaded with custom agent ``cli_agent``, if any."""
-    if cli_agent in EXTERNAL_CLI_AGENT_KINDS:
-        return ""
-    from jiuwenswarm.common.custom_agent_runtime import get_custom_agent
-
-    agent = get_custom_agent(cli_agent)
-    return agent.cli_path if agent is not None else ""
-
-
-def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    agents = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
-    configured: dict[str, dict[str, str]] = {}
-    if isinstance(agents, list):
-        for item in agents:
-            if isinstance(item, str):
-                cli_agent = item.strip()
-                cli_path = ""
-            elif isinstance(item, dict):
-                cli_agent = str(item.get("cli_agent") or "").strip()
-                cli_path = str(item.get("cli_path") or item.get("codex_bin") or "").strip()
-            else:
-                continue
-            if cli_agent:
-                configured[cli_agent] = {"cli_path": cli_path}
-    # Per-kind path histories persisted under their own config node so pure
-    # history writes do not rebuild agent entries.
-    histories = get_nested_config_value(raw, EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH, {})
-    flat: dict[str, str] = {}
-    for cli_agent in external_cli_agent_kinds():
-        entry = configured.get(cli_agent)
-        cli_path = entry.get("cli_path", "") if entry is not None else ""
-        # A custom agent running its uploaded CLI uses the "built-in CLI" choice.
-        builtin = entry is not None and cli_path in {"", _uploaded_cli_path(cli_agent)}
-        # Keep the first occurrence so a hand-edited config cannot show
-        # duplicate dropdown options.
-        history_paths: list[str] = []
-        history = histories.get(cli_agent) if isinstance(histories, dict) else None
-        if isinstance(history, list):
-            for path in history:
-                if isinstance(path, str) and path.strip() and path not in history_paths:
-                    history_paths.append(path)
-        flat[external_cli_agent_key(cli_agent, "enabled")] = "true" if entry is not None else "false"
-        flat[external_cli_agent_key(cli_agent, "use_builtin")] = "true" if builtin else "false"
-        flat[external_cli_agent_key(cli_agent, "cli_path")] = "" if builtin else cli_path
-        flat[external_cli_agent_key(cli_agent, "path_histories")] = json.dumps(history_paths, ensure_ascii=False)
-    return flat
 
 
 def parse_config_switch_bool(value: Any) -> bool:
@@ -1154,10 +1136,6 @@ def inject_external_cli_publish_url(params: dict[str, Any]) -> dict[str, Any]:
     return {**params, "team": teams}
 
 
-def external_cli_agent_key(cli_agent: str, suffix: str) -> str:
-    return f"external_cli_agent_{cli_agent}_{suffix}"
-
-
 def external_cli_agent_effective_state(
     cli_agent: str,
     current: dict[str, str],
@@ -1264,20 +1242,42 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     return merged
 
 
-def refresh_external_cli_builtin_models(external_cli_agents: list[dict[str, str]]) -> None:
+def newly_enabled_external_cli_agents(raw: dict[str, Any], external_cli_agents: list[dict[str, Any]]) -> list[str]:
+    """Return the kinds enabled by this save: absent before it, present after."""
+    persisted = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
+    before: set[str] = set()
+    if isinstance(persisted, list):
+        for item in persisted:
+            name = item.get("cli_agent") if isinstance(item, dict) else item
+            if isinstance(name, str) and name.strip():
+                before.add(name.strip())
+    return [
+        str(item.get("cli_agent"))
+        for item in external_cli_agents
+        if isinstance(item, dict) and item.get("cli_agent") and item.get("cli_agent") not in before
+    ]
+
+
+def refresh_external_cli_builtin_models(
+    external_cli_agents: list[dict[str, str]],
+    *,
+    enabled_now: list[str] | None = None,
+) -> None:
     """Check the configured built-in model catalogs against the enabled CLIs.
 
     Runs after the dependency check, so the SDK of every enabled kind is
     installed and its cli_path resolved. A catalog naming a model the CLI
     does not offer would only fail later, when the leader picks it, so the
-    facts are corrected here. Failure never blocks the switch.
+    facts are corrected here. A kind in ``enabled_now`` lost its catalog when
+    it was turned off, so it gets one from the models its CLI reports now.
+    Failure never blocks the switch.
     """
     if not external_cli_agents:
         return
     try:
         from jiuwenswarm.common.external_cli_catalog import refresh_external_cli_builtin_models as _refresh
 
-        _refresh()
+        _refresh(enabled_now=enabled_now or ())
     except Exception as exc:  # noqa: BLE001 - a health check must not fail the switch
         logger.warning("[config.set] external CLI builtin model check failed: %s", exc)
 
@@ -1350,6 +1350,33 @@ def parse_config_bool(value: Any) -> bool:
     return parse_kvc_bool(value)
 
 
+def _fallback_a2ui_config_payload(raw: dict[str, Any] | None = None) -> dict[str, str]:
+    """Gateway 等未注册 a2ui provider 时，直接从 yaml/env 解析开关。"""
+    enabled = False
+    if isinstance(raw, dict):
+        section = raw.get("a2ui")
+        if isinstance(section, dict):
+            enabled = parse_config_switch_bool(section.get("enabled", False))
+    env_enabled = os.getenv("JIUWENSWARM_A2UI_ENABLED")
+    if env_enabled is not None:
+        enabled = parse_config_switch_bool(env_enabled)
+    return {"a2ui_enabled": "true" if enabled else "false"}
+
+
+def _a2ui_config_payload(raw: dict[str, Any]) -> dict[str, str]:
+    try:
+        return provider("a2ui").get_a2ui_config_payload(raw)
+    except Exception:  # noqa: BLE001 — ExternalProviderUnregistered 或装配失败
+        return _fallback_a2ui_config_payload(raw)
+
+
+def _default_a2ui_config_payload() -> dict[str, str]:
+    try:
+        return dict(provider("a2ui").get_default_a2ui_config_payload())
+    except Exception:  # noqa: BLE001
+        return _fallback_a2ui_config_payload(None)
+
+
 def _get_crypto_provider() -> Any:
     """经 common 钩子取 crypto provider（未注册/未就绪返回 None）。
 
@@ -1399,8 +1426,9 @@ def preserve_deleted_team_entities(params: dict[str, Any]) -> None:
         return
 
     from jiuwenswarm.common.team_template_config import list_team_template_summaries
-    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
-    from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity_for_binding
+
+    get_team_binding_store = provider("team_binding_store").get_team_binding_store
+    ensure_team_entity_for_binding = provider("team_entity_store").ensure_team_entity_for_binding
 
     config_base = get_config()
     current_template_ids = {
@@ -1557,16 +1585,29 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者只在调度模式下生效，关闭调度模式时一并关闭。
+                    # 验证者、成员间通信与成员子任务只在调度模式下生效，关闭调度模式时一并关闭。
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
-            elif param_key == "team_task_verification_enabled":
+                    update_team_member_messaging_in_config(False)
+                    yaml_updated.append("team_member_messaging_enabled")
+                    update_team_member_subtasks_in_config(False)
+                    yaml_updated.append("team_member_subtasks_enabled")
+            elif param_key in (
+                "team_task_verification_enabled",
+                "team_member_messaging_enabled",
+                "team_member_subtasks_enabled",
+            ):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
                     if "team_scheduled_dispatch_enabled" in params
                     else flatten_team_dispatch_for_config_panel(raw)["team_scheduled_dispatch_enabled"] == "true"
                 )
-                update_team_task_verification_in_config(parsed and scheduled)
+                if param_key == "team_task_verification_enabled":
+                    update_team_task_verification_in_config(parsed and scheduled)
+                elif param_key == "team_member_messaging_enabled":
+                    update_team_member_messaging_in_config(parsed and scheduled)
+                else:
+                    update_team_member_subtasks_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1610,14 +1651,25 @@ def apply_config_payload(
                     update_external_cli_path_histories_in_config(
                         external_cli_path_histories_from_switches(raw, params)
                     )
-                    refresh_external_cli_builtin_models(external_cli_agents)
+                    refresh_external_cli_builtin_models(
+                        external_cli_agents,
+                        enabled_now=newly_enabled_external_cli_agents(raw, external_cli_agents),
+                    )
                     external_cli_agents_updated = True
             elif param_key == "skill_evolution":
                 update_skill_evolution_enabled_in_config(parsed)
             elif param_key == "ttse_enabled":
                 update_ttse_enabled_in_config(parsed)
             elif param_key.startswith("a2ui_"):
-                ok, update, error = validate_a2ui_config_update(param_key, val)
+                try:
+                    a2ui = provider("a2ui")
+                    ok, update, error = a2ui.validate_a2ui_config_update(param_key, val)
+                except ExternalProviderUnregistered:
+                    # Gateway 拆仓后本进程不注册 a2ui；开关仍可写 yaml。
+                    if param_key == "a2ui_enabled":
+                        ok, update, error = True, {"enabled": parse_config_bool(val)}, ""
+                    else:
+                        ok, update, error = False, {}, f"Unknown A2UI config key: {param_key}"
                 if not ok:
                     raise ConfigPanelBadRequest(error or "invalid A2UI config")
                 update_a2ui_in_config(update)
@@ -1633,6 +1685,10 @@ def apply_config_payload(
                 update_comfyui_workflow_enabled_in_config(parsed)
             elif param_key == "task_asr_enabled":
                 update_task_asr_in_config(parsed)
+            elif param_key == "topic_recommendation_enabled":
+                save_recommendation_switches(topic_enabled=parsed, now=time.time())
+            elif param_key == "prompt_suggestion_enabled":
+                save_recommendation_switches(prompt_enabled=parsed, now=time.time())
             elif param_key == "proactive_recommendation_enabled":
                 update_proactive_recommendation_in_config({"enabled": parsed})
             elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -1842,7 +1898,7 @@ async def config_get_handler(
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}
         payload["memory_forbidden_description"] = memory_desc
-        payload.update(get_a2ui_config_payload(raw))
+        payload.update(_a2ui_config_payload(raw))
         trajectory_cfg = raw.get("trajectory_ui") or {}
         payload["trajectory_ui_enabled"] = (
             "true" if trajectory_cfg.get("enabled", False) else "false"
@@ -1871,6 +1927,7 @@ async def config_get_handler(
         payload.update(flatten_external_cli_agents_for_config_panel(raw))
         payload[EXTERNAL_CLI_CUSTOM_AGENTS_KEY] = custom_agents_config_value()
         payload.update(flatten_symphony_for_config_panel(raw))
+        payload.update(flatten_recommendation_for_config_panel(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
@@ -1906,7 +1963,12 @@ async def config_get_handler(
             "team_task_verification_enabled",
             "true" if DEFAULT_TEAM_TASK_VERIFICATION_ENABLED else "false",
         )
-        for key, value in get_default_a2ui_config_payload().items():
+        payload.setdefault(
+            "team_member_messaging_enabled",
+            "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
+        )
+        payload.setdefault("team_member_subtasks_enabled", "false")
+        for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
@@ -1927,6 +1989,8 @@ async def config_get_handler(
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")

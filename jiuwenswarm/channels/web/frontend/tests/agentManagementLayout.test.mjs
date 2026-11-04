@@ -8,10 +8,13 @@ import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 const previousDocument = globalThis.document;
-const renderDom = new JSDOM('<!doctype html><html><body></body></html>');
+const previousWindow = globalThis.window;
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' });
 globalThis.document = renderDom.window.document;
+globalThis.window = renderDom.window;
 after(() => {
   globalThis.document = previousDocument;
+  globalThis.window = previousWindow;
   renderDom.window.close();
 });
 
@@ -570,7 +573,7 @@ test('group card actions keep uninstall in the detail page and install created g
   );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/);
 });
 
 test('failed expert upload install rolls back the import and shows the backend error in the notice slot', () => {
@@ -605,8 +608,6 @@ test('uncertain install errors are classified as transport failures', () => {
   for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
     assert.match(installOutcomeSource, new RegExp(`'${code}',`));
   }
-  // WS_NOT_READY is deliberately excluded: the request never left the client,
-  // so the backend never started the install and rollback is safe.
   assert.doesNotMatch(installOutcomeSource, /'WS_NOT_READY',/);
   assert.match(installOutcomeSource, /return INSTALL_TRANSPORT_ERROR_CODES\.has\(code\);/);
   // The fallback code must not be reintroduced as a blanket-uncertain rule:
@@ -642,7 +643,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
-  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /\(agentSelectionDisabled \|\| externalSwitchBlocked\) && 'is-locked'/);
   assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
   assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
   assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);
