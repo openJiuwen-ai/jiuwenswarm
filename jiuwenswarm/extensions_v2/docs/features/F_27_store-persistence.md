@@ -15,12 +15,12 @@
 
 Core 是通用 SDK，只实现 store 事件、Ops、JSON 文件服务与包资源清理接口。
 持久化实现位于 `openjiuwen.core.extension.data`，Bus 绑定位于 `openjiuwen.core.events.ops_impl.store`。
-应用数据根目录、`extension/store` 相对路径、WebUI 清理和程序装配均属于 Swarm。
-不实现 state，不改变 package 的内置 Handler 名称规则。
+应用数据根目录、`extensions.store_dir` 配置、WebUI 清理和程序装配均属于 Swarm。
+state 由宿主另行注入 `JsonState`（见 F_03 §9.2），本文不覆盖；不改变 package 的内置 Handler 名称规则。
 
 ```mermaid
 flowchart LR
-    A[get_user_workspace_dir] --> B[Swarm resolve_store_dir]
+    A[extensions.store_dir] --> B[Swarm resolve_store_dir]
     B --> C[JsonStore 显式路径]
     C --> D[Core Registry.init]
     E[ExtensionManager.uninstall] --> F[Core 卸载管理链]
@@ -28,7 +28,8 @@ flowchart LR
     G --> H[Core 删除 store 与安装副本]
 ```
 
-默认 store 目录为 `<用户数据根>/extension/store`，跟随已有 `JIUWENSWARM_DATA_DIR` 规则。
+`resolve_store_dir()` 读取 `resources/config.yaml` 的 `extensions.store_dir`，缺省为 `extension/store`；
+相对路径锚定用户工作目录，跟随已有 `JIUWENSWARM_DATA_DIR` 规则。
 不增加第二套数据根变量，也不让 Core 读取 Swarm 配置。
 ExtensionManager 保留原构造参数，新增可选 store_dir；AgentServer 装配显式注入，独立宿主可以自行选择。
 

@@ -17,7 +17,7 @@
 
    安装本身不调用 store；收到用量事件后才创建 JSON。已有同事件 Handler 必须继续 next，
    否则排在它后面的插件不会执行。使用 start_services 时，也可查看当前实例 run/worker-logs 下的日志。
-4. 默认数据文件为 `~/.jiuwenswarm/extension/store/example.store-probe.json`，内容只有 counter。
+4. 默认数据文件在 `extensions.store_dir`（缺省 `~/.jiuwenswarm/extension/store`）下的 `example.store-probe.json`，内容只有 counter。
    多实例或设置 `JIUWENSWARM_DATA_DIR` 时跟随现有用户数据根。可在相同环境查询实际目录：
 
    ```powershell

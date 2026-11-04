@@ -167,7 +167,7 @@ manifest 不可读或版本非法的目录记录告警后忽略，不影响其�
 ### 9.1 store 宿主集成
 
 2026-11-03：本仓只接入 Core 提供的 store 接口，不另定义持久化能力或复制 SDK 文件实现。
-`resolve_store_dir()` 使用当前用户数据根下的 `extension/store`，跟随已有 `JIUWENSWARM_DATA_DIR` 约定；
+`resolve_store_dir()` 读取 `extensions.store_dir`（缺省 `extension/store`），相对路径锚定用户工作目录，跟随已有 `JIUWENSWARM_DATA_DIR` 约定；
 AgentServer 将目录传给 `ExtensionManager(store_dir=...)`，由门面构造
 `openjiuwen.core.extension.data.JsonStore` 并注入 Registry。
 目录策略属于 Swarm，Core 不读取 Swarm 配置或约定具体应用路径。
@@ -187,3 +187,12 @@ AgentServer 将目录传给 `ExtensionManager(store_dir=...)`，由门面构造
 .venv/Scripts/python.exe -m pytest -q -rs -o addopts= -o log_cli=false `
   --asyncio-mode=auto tests/unit_tests/extensions_v2
 ```
+
+### 9.2 state 宿主集成
+
+2026-11-04：按与 store 相同的宿主边界接入 Core `JsonState`。
+`resolve_state_dir()` 读取 `extensions.state_dir`（缺省 `extension/state`）；AgentServer 传给
+`ExtensionManager(state_dir=...)`，门面构造 `JsonState` 并经 `Registry.init(states=...)` 注入。
+初始化失败与停机成功时调用 `unconfigure_state`，与 store 对称。
+CRUD、CAS、会话作用域与卸载删除由 Core 维护；本仓只负责目录与装配。
+调试包见 [State Counter](../../examples/state_counter/README.md)。
