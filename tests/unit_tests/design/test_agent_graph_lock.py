@@ -32,6 +32,7 @@ def test_agent_edit_is_blocked_only_while_a_trigger_is_active(active):
         pushed.assert_called_once()
 
 
+@pytest.mark.asyncio
 async def test_node_run_reports_a_trigger_refused_before_the_node_started():
     refused = {
         "status": "failed",

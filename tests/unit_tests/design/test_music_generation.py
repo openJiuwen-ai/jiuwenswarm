@@ -73,7 +73,7 @@ def test_slot_backend_comes_from_protocol_or_host(monkeypatch: pytest.MonkeyPatc
     assert music_slot().complete
 
     _configure(monkeypatch, api_base="https://api.minimaxi.com/v1")
-    assert music_slot().backend == "minimax"
+    assert music_slot().backend is None
 
 
 def test_switch_off_disables_a_configured_slot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,39 +178,13 @@ async def test_vllm_omni_http_error_is_reported(tmp_path: Path, monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_minimax_retries_other_region_on_auth_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _configure(monkeypatch, protocol="minimax", api_base="https://api.minimaxi.com/v1", api_key="k")
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "api.minimaxi.com":
-            return httpx.Response(200, json={"base_resp": {"status_code": 2049, "status_msg": "invalid api key"}})
-        return httpx.Response(
-            200,
-            json={"data": {"audio": b"ID3mp3".hex(), "status": 2}, "base_resp": {"status_code": 0}},
-        )
-
-    seen = _mock_http(monkeypatch, _handler)
-    result = await generate_music(MusicRequest(caption="tense strings", duration_sec=20), dest_stem=tmp_path / "bgm")
-    assert Path(result["music_path"]).read_bytes() == b"ID3mp3"
-    assert [r.url.host for r in seen] == ["api.minimaxi.com", "api.minimax.io"]
-    body = _body(seen[1])
-    assert body["is_instrumental"] is True
-    assert body["model"] == "music-3.0"
-    assert len(body["prompt"]) <= 2000
-    assert seen[1].headers["Authorization"] == "Bearer k"
-
-
-@pytest.mark.asyncio
-async def test_minimax_base_resp_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_minimax_cloud_is_not_a_music_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _configure(monkeypatch, protocol="minimax", api_base="https://api.minimax.io", api_key="k")
-    _mock_http(
-        monkeypatch,
-        lambda _r: httpx.Response(200, json={"base_resp": {"status_code": 1008, "status_msg": "insufficient balance"}}),
-    )
+    seen = _mock_http(monkeypatch, lambda _r: httpx.Response(500))
+    assert music_slot().backend is None
     result = await generate_music(MusicRequest(caption="x", duration_sec=8), dest_stem=tmp_path / "bgm")
-    assert result["error"] == "[ERROR]: MiniMax music: 1008 insufficient balance"
+    assert "MiniMax Music3 on vLLM-Omni" in result["error"]
+    assert seen == []
 
 
 def _sse(*chunks: dict[str, Any] | str) -> httpx.Response:

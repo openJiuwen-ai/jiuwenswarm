@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import shutil
 from functools import partial
@@ -21,7 +22,11 @@ from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_workspace_dir,
 )
-from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
+from jiuwenswarm.server.runtime.designer.handlers.types import (
+    NodeExecutionContext,
+    NodeResult,
+    thread_snapshot,
+)
 from jiuwenswarm.server.runtime.designer.music_cues import (
     CueSheet,
     bpm_range,
@@ -263,7 +268,9 @@ async def _try_music_api(
     if result.get("error") or not path.is_file():
         return None, str(result.get("error") or "music backend returned no file").removeprefix("[ERROR]: ")
     detail = result.get("detail") or "generated"
-    fitted, length = await run_off_loop(_fit_to_film, path, node, ctx, duration_sec)
+    fitted, length = await run_off_loop(
+        _fit_to_film, path, copy.deepcopy(node), thread_snapshot(ctx), duration_sec
+    )
     return _audio_result(fitted, f"music {detail} {length}"), ""
 
 

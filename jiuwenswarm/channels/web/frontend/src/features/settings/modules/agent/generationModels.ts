@@ -27,8 +27,8 @@
 // - vLLM-Omni：协议固定为 vllm-omni，自部署的推理服务，没有固定地址；API key 和模型名
 //   都可以留空（模型名留空时后端用服务实际加载的模型）。
 //
-// 音频生成（music_gen，设计模式的 BGM）后端只支持 OpenRouter（Lyria）、MiniMax 和
-// vLLM-Omni，火山和百炼没有音乐模型，目录为空。
+// 音频生成（music_gen，设计模式的 BGM）后端只支持 OpenRouter（Lyria）和 vLLM-Omni
+// （MiniMax Music3 等自部署模型）；MiniMax 云端不作为音乐后端，火山和百炼没有音乐模型，目录为空。
 
 export type GenerationSlot = 'video_gen' | 'visual_gen' | 'music_gen';
 
@@ -86,7 +86,7 @@ const OPENROUTER_MODELS: Record<GenerationSlot, readonly string[]> = {
 const MINIMAX_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['MiniMax-H3'],
   visual_gen: ['image-01'],
-  music_gen: ['music-3.0'],
+  music_gen: [],
 };
 
 // 供旧配置的协议识别及自定义目录使用；选择火山时的下拉列表从 Ark API 动态获取。
@@ -142,7 +142,7 @@ export const DEFAULT_GENERATION_MODEL: Record<GenerationVendor, Record<Generatio
     visual_gen: 'google/gemini-3.1-flash-image',
     music_gen: 'google/lyria-3-pro-preview',
   },
-  minimax: { video_gen: 'MiniMax-H3', visual_gen: 'image-01', music_gen: 'music-3.0' },
+  minimax: { video_gen: 'MiniMax-H3', visual_gen: 'image-01', music_gen: '' },
   modelark: { video_gen: 'doubao-seedance-2-5-260628', visual_gen: 'doubao-seedream-5-0-flash-260915', music_gen: '' },
   dashscope: { video_gen: 'wan3.0-video', visual_gen: 'qwen-image-3.0', music_gen: '' },
   // 模型名可空：默认留空，由后端使用服务实际加载的模型。
@@ -151,8 +151,8 @@ export const DEFAULT_GENERATION_MODEL: Record<GenerationVendor, Record<Generatio
 
 /** 每个槽位后端真正支持的厂商（GenerationModelConfigDialog 的厂商下拉）。 */
 export const GENERATION_SLOT_VENDORS: Record<GenerationSlot, readonly string[]> = {
-  video_gen: ['openrouter', 'volcengine', 'alibaba', 'vllm-omni'],
-  visual_gen: ['openrouter', 'volcengine', 'alibaba', 'vllm-omni'],
+  video_gen: ['openrouter', 'volcengine', 'minimax', 'alibaba', 'vllm-omni'],
+  visual_gen: ['openrouter', 'volcengine', 'minimax', 'alibaba', 'vllm-omni'],
   music_gen: ['openrouter', 'vllm-omni'],
 };
 

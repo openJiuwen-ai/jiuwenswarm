@@ -16,7 +16,6 @@ about a minute for any short request, so compose re-times the track:
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +23,12 @@ from typing import Any
 
 import numpy as np
 
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
+    ENCODE_TIMEOUT_S,
+    PROBE_TIMEOUT_S,
+    FfmpegCancelled,
+    run_ffmpeg,
+)
 from jiuwenswarm.server.runtime.designer.music_cues import RELEASE, CueSheet
 
 logger = logging.getLogger(__name__)
@@ -46,7 +51,6 @@ _NATURAL_FADE_SECONDS = 0.3
 _TRIM_FADE_SECONDS = 1.5
 _ENDING_FADE_BEATS = 8
 _ENDING_FADE_RANGE = (1.5, 5.0)
-_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 @dataclass(frozen=True)
@@ -296,19 +300,22 @@ def _snap_cuts(anchors: list[Anchor], features: MusicFeatures, sheet: CueSheet) 
     return out
 
 
-def _run(ffmpeg: str, args: list[str], *, binary: bool = False) -> subprocess.CompletedProcess[Any]:
-    kwargs: dict[str, object] = {"capture_output": True, "check": False}
-    if not binary:
-        kwargs.update(text=True, encoding="utf-8", errors="replace")
-    if os.name == "nt":
-        kwargs["creationflags"] = _CREATE_NO_WINDOW
-    return subprocess.run([ffmpeg, *args], **kwargs)
+def _run(ffmpeg: str, args: list[str], *, timeout: float, binary: bool = False) -> subprocess.CompletedProcess[Any]:
+    cmd = [ffmpeg, *args]
+    try:
+        return run_ffmpeg(cmd, timeout=timeout, binary=binary)
+    except FfmpegCancelled:
+        raise
+    except RuntimeError as exc:
+        empty = b"" if binary else ""
+        return subprocess.CompletedProcess(cmd, -1, empty, str(exc))
 
 
 def decode_mono(ffmpeg: str, path: Path) -> np.ndarray | None:
     proc = _run(
         ffmpeg,
         ["-v", "error", "-i", str(path), "-ac", "1", "-ar", str(_SAMPLE_RATE), "-f", "f32le", "-"],
+        timeout=PROBE_TIMEOUT_S,
         binary=True,
     )
     if proc.returncode != 0 or not proc.stdout:
@@ -358,6 +365,7 @@ def render(ffmpeg: str, source: Path, plan: AlignPlan, film_end: float, dest: Pa
         ffmpeg,
         ["-y", "-i", str(source), "-filter_complex", ";".join(filters), "-map", "[out]",
          "-c:a", "aac", "-b:a", "192k", "-t", f"{film_end:.3f}", str(dest)],
+        timeout=ENCODE_TIMEOUT_S,
     )
     if proc.returncode != 0 or not dest.is_file() or dest.stat().st_size < 512:
         logger.warning("BGM align render failed: %s", (proc.stderr or "")[-800:])

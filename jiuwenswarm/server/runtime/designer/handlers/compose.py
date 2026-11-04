@@ -29,6 +29,7 @@ from jiuwenswarm.common.schema.designer_graph import (
 from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
     ENCODE_TIMEOUT_S,
     PROBE_TIMEOUT_S,
+    FfmpegCancelled,
     run_ffmpeg,
     run_off_loop,
 )
@@ -683,13 +684,18 @@ def _edit_cue_sheet(ffmpeg: str, ctx: NodeExecutionContext, clip_paths: list[Pat
 
     durations = [_media_duration_seconds(ffmpeg, path) or 0.0 for path in clip_paths]
     emotions = storyboard_emotions(ctx.graph)
-    clips = sorted(
-        (n for n in (ctx.graph.get("nodes") or []) if isinstance(n, dict) and node_pipeline(n) == NODE_ROLE_CLIP),
-        key=node_clip_index,
-    )
+    states = (ctx.run or {}).get("node_states") or {}
+    emotion_by_path: dict[Path, str] = {}
+    for node in ctx.graph.get("nodes") or []:
+        if not isinstance(node, dict) or node_pipeline(node) != NODE_ROLE_CLIP:
+            continue
+        state = states.get(str(node.get("id") or ""))
+        path = _video_from_state(state, require_completed=True) if isinstance(state, dict) else None
+        if path is not None:
+            emotion_by_path[path] = emotions.get(node_clip_index(node), "")
     return build_cue_sheet(
         durations,
-        [emotions.get(node_clip_index(clip), "") for clip in clips],
+        [emotion_by_path.get(path, "") for path in clip_paths],
         tempo=bpm_range(film_bgm_lock(ctx.graph)),
     )
 
@@ -713,6 +719,8 @@ def _align_music_tracks(
             continue
         try:
             aligned, notes = align_music(ffmpeg, track, sheet, work_dir / f"{track.stem}_aligned")
+        except FfmpegCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("compose BGM alignment failed for %s: %s", track.name, exc)
             aligned, notes = None, []

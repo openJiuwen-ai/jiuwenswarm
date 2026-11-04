@@ -3,10 +3,10 @@
 
 One instrumental bed per film, mixed onto the concatenated clips at compose.
 ``MUSIC_GEN_ENABLED`` is the Settings switch; nothing runs while it is off.
-``MUSIC_GEN_PROTOCOL`` names the backend; without it the API URL host decides
-(MiniMax and OpenRouter hosts only):
+``MUSIC_GEN_PROTOCOL`` names the backend; without it an OpenRouter API URL
+picks ``openrouter``. MiniMax cloud is not a music backend: MiniMax Music3 runs
+on vLLM-Omni.
 
-- ``minimax``: MiniMax cloud ``POST /v1/music_generation`` with ``is_instrumental``.
 - ``vllm-omni``: a self-hosted vLLM-Omni server, ``POST {base}/audio/speech``.
   MiniMax Music3 and MOSS-SoundEffect take different fields, so the served
   model name (or ``GET {base}/models``) picks the request shape.
@@ -34,10 +34,9 @@ from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_veri
 
 logger = logging.getLogger(__name__)
 
-MINIMAX = gen_toolkits.MINIMAX
 VLLM_OMNI = gen_toolkits.VLLM_OMNI
 OPENROUTER = "openrouter"
-MUSIC_BACKENDS = (MINIMAX, VLLM_OMNI, OPENROUTER)
+MUSIC_BACKENDS = (VLLM_OMNI, OPENROUTER)
 
 _ENV_PREFIX = "MUSIC_GEN"
 _HTTP_TIMEOUT_SECONDS = 600.0
@@ -45,14 +44,6 @@ _HTTP_TIMEOUT_SECONDS = 600.0
 _MUSIC_TOOL_TIMEOUT_SECONDS = 900.0
 
 _INSTRUMENTAL_CLAUSE = "Instrumental only: no vocals, no singing, no lyrics."
-
-_MINIMAX_DEFAULT_ROOT = "https://api.minimax.io"
-# MiniMax keys are bound to one region; an auth failure retries the other host.
-_MINIMAX_REGION_ROOTS = ("https://api.minimax.io", "https://api.minimaxi.com")
-_MINIMAX_AUTH_STATUS_CODES = (1004, 2049)
-_MINIMAX_MODEL = "music-3.0"
-_MINIMAX_PROMPT_LIMIT = 2000
-_MINIMAX_DONE_STATUS = 2
 
 # Music3 has no instrumental switch: ``input`` must be non-empty lyrics, so
 # section tags without words stand in for an instrumental piece.
@@ -125,8 +116,6 @@ def music_slot() -> MusicSlot:
         backend: str | None = protocol
     elif _OPENROUTER_HOST.search(urlparse(api_base).hostname or ""):
         backend = OPENROUTER
-    elif gen_toolkits.detect_backend(f"{_ENV_PREFIX}_PROTOCOL", api_base) == MINIMAX:
-        backend = MINIMAX
     else:
         backend = None
     return MusicSlot(
@@ -146,7 +135,8 @@ def music_problem() -> str | None:
     if slot.backend is None:
         return (
             "Music generation is not configured: set MUSIC_GEN_PROTOCOL "
-            "(minimax / vllm-omni / openrouter) and MUSIC_GEN_API_BASE."
+            "(vllm-omni / openrouter) and MUSIC_GEN_API_BASE. MiniMax cloud is not "
+            "a music backend; serve MiniMax Music3 on vLLM-Omni instead."
         )
     if not slot.complete:
         if slot.backend == VLLM_OMNI:
@@ -174,9 +164,7 @@ async def generate_music(request: MusicRequest, *, dest_stem: Path) -> dict[str,
     )
     try:
         async with _client() as client:
-            if slot.backend == MINIMAX:
-                audio = await _minimax_music(client, slot, request)
-            elif slot.backend == VLLM_OMNI:
+            if slot.backend == VLLM_OMNI:
                 audio = await _vllm_omni_music(client, slot, request)
             else:
                 audio = await _openrouter_music(client, slot, request)
@@ -193,11 +181,7 @@ async def generate_music(request: MusicRequest, *, dest_stem: Path) -> dict[str,
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        timeout=_HTTP_TIMEOUT_SECONDS,
-        verify=get_requests_verify(),
-        follow_redirects=True,
-    )
+    return httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS, verify=get_requests_verify())
 
 
 def _headers(api_key: str) -> dict[str, str]:
@@ -226,54 +210,6 @@ def _error_text(response: httpx.Response) -> str:
 def _instrumental_caption(caption: str, limit: int, clause: str = _INSTRUMENTAL_CLAUSE) -> str:
     room = max(0, limit - len(clause) - 1)
     return f"{caption.strip()[:room]}\n{clause}".strip()
-
-
-def _minimax_roots(api_base: str) -> list[str]:
-    primary = re.sub(r"/v\d+/?$", "", (api_base or _MINIMAX_DEFAULT_ROOT).strip().rstrip("/"))
-    if primary not in _MINIMAX_REGION_ROOTS:
-        return [primary]
-    return [primary, *[root for root in _MINIMAX_REGION_ROOTS if root != primary]]
-
-
-def _minimax_auth_failed(status_code: int, payload: Any) -> bool:
-    if status_code == 401:
-        return True
-    base = payload.get("base_resp") if isinstance(payload, dict) else None
-    return isinstance(base, dict) and base.get("status_code") in _MINIMAX_AUTH_STATUS_CODES
-
-
-async def _minimax_music(client: httpx.AsyncClient, slot: MusicSlot, request: MusicRequest) -> _Audio:
-    model = slot.model or _MINIMAX_MODEL
-    body = {
-        "model": model,
-        "prompt": _instrumental_caption(request.caption, _MINIMAX_PROMPT_LIMIT),
-        "is_instrumental": True,
-        "output_format": "hex",
-        "audio_setting": {"sample_rate": 44100, "bitrate": 256000, "format": "mp3"},
-    }
-    roots = _minimax_roots(slot.api_base)
-    for index, root in enumerate(roots):
-        response = await client.post(f"{root}/v1/music_generation", json=body, headers=_headers(slot.api_key))
-        payload = _json(response)
-        if index + 1 < len(roots) and _minimax_auth_failed(response.status_code, payload):
-            logger.info("MiniMax music auth failed on %s; trying %s", root, roots[index + 1])
-            continue
-        break
-    if not isinstance(payload, dict):
-        raise _MusicError(f"MiniMax music: HTTP {response.status_code} {response.text[:300]}")
-    base = payload.get("base_resp")
-    if isinstance(base, dict) and base.get("status_code") not in (0, None):
-        raise _MusicError(f"MiniMax music: {base.get('status_code')} {base.get('status_msg', '')}".strip())
-    if response.status_code != 200:
-        raise _MusicError(f"MiniMax music: HTTP {response.status_code} {_error_text(response)}")
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    if data.get("status") != _MINIMAX_DONE_STATUS:
-        raise _MusicError(f"MiniMax music: unfinished response (status={data.get('status')!r})")
-    try:
-        audio = bytes.fromhex(str(data.get("audio") or ""))
-    except ValueError as exc:
-        raise _MusicError("MiniMax music: audio is not hex") from exc
-    return _Audio(audio, ".mp3", f"MiniMax {model}")
 
 
 async def _served_model(client: httpx.AsyncClient, base: str, api_key: str) -> str:
