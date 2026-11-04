@@ -117,6 +117,7 @@ class VideoNodeHandler:
             duration=duration,
             aspect_ratio=video.aspect_ratio,
             resolution=video.resolution,
+            node_label=f"designer_video_{ctx.run_id}_{ctx.node_id}",
         )
         path = Path(str(generated.get("video_path") or ""))
         if not path.is_file():
