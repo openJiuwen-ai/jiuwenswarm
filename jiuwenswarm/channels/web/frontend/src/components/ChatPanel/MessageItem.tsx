@@ -1,3 +1,5 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
+import { GatewayImage, GatewayVideo, needsGatewayResource, downloadGatewayResource } from '../../features/webui/client/GatewayResources';
 /**
  * MessageItem 组件
  *
@@ -1375,7 +1377,10 @@ export function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fileDownloadHead(file.download_url)
+      const head = needsGatewayResource(file.download_url)
+        ? gatewayFetch(file.download_url, { method: 'HEAD' })
+        : fileDownloadHead(file.download_url);
+      head
         .then((res) => {
           if (!cancelled) {
             setExpiredSet((prev) => {
@@ -1413,6 +1418,11 @@ export function FileDownloadList({
       : '';
     const href = file.download_url || pathHref;
     if (expiredSet.has(index) || !href) return;
+    if (needsGatewayResource(href)) {
+      try { await downloadGatewayResource(href, file.name || 'download'); }
+      catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
+      return;
+    }
     if (file.download_url && isEnterprise() && !(await prepareFileDownload(file.download_url))) {
       window.alert(t('artifacts.downloadFailed', { name: file.name }));
       return;
@@ -1527,7 +1537,7 @@ export function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <img
+                <GatewayImage
                   src={skillPackageIcon}
                   alt=""
                   aria-hidden="true"
@@ -1610,7 +1620,7 @@ export function FileDownloadList({
             )}
             </div>
             {showImagePreview && (
-              <img
+              <GatewayImage
                 src={file.download_url}
                 alt={displayName}
                 className="chat-panel-file-download-image-preview"
@@ -1619,15 +1629,15 @@ export function FileDownloadList({
               />
             )}
             {showVideoPreview && (
-              <video
+              <GatewayVideo
+                src={file.download_url}
                 controls
                 preload="metadata"
                 className="chat-panel-file-download-video-preview"
                 data-testid="chat-panel-file-download-video-preview"
                 onClick={(event) => event.stopPropagation()}
               >
-                <source src={file.download_url} type={file.mime_type} />
-              </video>
+              </GatewayVideo>
             )}
           </div>
         );

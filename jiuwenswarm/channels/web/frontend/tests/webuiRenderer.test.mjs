@@ -527,6 +527,42 @@ test('assembly rejects a catalog and registry that do not match', () => {
   );
 });
 
+test('assembly restores mounted contributions after their request context changes', async () => {
+  const listeners = new Map();
+  const changes = new Set();
+  let requests = 0;
+  const client = {
+    on(name, handler) { listeners.set(name, handler); return () => listeners.delete(name); },
+    onStateChange: () => () => undefined,
+    getState: () => 'ready',
+    async request(_method, params) {
+      assert.equal(params.event, 'ui.ready');
+      listeners.get('webui.render')?.({ payload: demoRenderFrame({ revision: ++requests }) });
+      return { accepted: true, status: 'rendered' };
+    },
+  };
+  const capabilities = {
+    acceptsFrame: () => true,
+    subscribe(listener) { changes.add(listener); return () => changes.delete(listener); },
+  };
+  const app = createWebUIAppRuntime({ client, clientCapabilities: capabilities,
+    catalog: demoCatalog, registry: createRendererRegistry({ demo: createProbeAdapter().Adapter }) });
+  app.start();
+  const mount = app.runtime.mountSlot('sess-1', DEMO_SLOT);
+  try {
+    await mount.notifyReady();
+    assert.equal(app.runtime.getInstance(INSTANCE_KEY).revision, 1);
+    for (const change of changes) change({ epoch: 1, phase: 'changing' });
+    assert.equal(app.runtime.getInstance(INSTANCE_KEY), undefined);
+    assert.equal(requests, 1, 'do not request a tree while the new context is pending');
+    for (const change of changes) change({ epoch: 1, phase: 'ready' });
+    await flush();
+    assert.equal(requests, 2);
+    assert.equal(app.runtime.getInstance(INSTANCE_KEY).revision, 2);
+  } finally { mount.release(); app.dispose(); }
+  assert.equal(changes.size, 0);
+});
+
 test('reconnect binds fresh node callbacks without reactivating retained callbacks', async () => {
   const restoreDom = installDom();
   const { transport, runtime } = setup();

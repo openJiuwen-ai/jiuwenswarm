@@ -5,6 +5,11 @@
 
 export type WebUIWireRenderMode = 'replace' | 'clear';
 
+/** Required by an activated client-capability adapter; omitted by legacy transports. */
+export interface WebUIWireClientContext {
+  activation_generation?: string;
+}
+
 export interface WebUIWireTarget {
   session_id?: string;
   scope?: 'session' | 'application';
@@ -25,7 +30,7 @@ export interface WebUIWireNode {
   events?: Partial<Record<WebUIComponentEvent, WebUIWireAction>>;
 }
 
-export interface WebUIWireRenderFrame {
+export interface WebUIWireRenderFrame extends WebUIWireClientContext {
   target: WebUIWireTarget;
   revision: number;
   mode: WebUIWireRenderMode;
@@ -33,13 +38,13 @@ export interface WebUIWireRenderFrame {
   schema_version: number;
 }
 
-export interface WebUIWireClearFrame {
+export interface WebUIWireClearFrame extends WebUIWireClientContext {
   target: WebUIWireTarget;
   revision: number;
   reason?: string;
 }
 
-export interface WebUIWireErrorFrame {
+export interface WebUIWireErrorFrame extends WebUIWireClientContext {
   target: WebUIWireTarget;
   revision: number;
   code: string;

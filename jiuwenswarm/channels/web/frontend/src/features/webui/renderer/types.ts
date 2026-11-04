@@ -37,6 +37,15 @@ export interface WebUIAdapterContext {
 }
 
 export interface WebUIAdapterProps {
+  fieldControl?: {
+    value?: string;
+    onChange?: (value: string) => void;
+    onBlur?: () => void;
+    id?: string;
+    'aria-invalid'?: boolean | 'true' | 'false';
+    'aria-describedby'?: string;
+    'aria-required'?: boolean | 'true' | 'false';
+  };
   node: WebUINormalizedNode;
   context: WebUIAdapterContext;
   children: ReactNode;
