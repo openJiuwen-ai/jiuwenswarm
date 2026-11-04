@@ -1,3 +1,4 @@
+import { duplexModelParams } from '../duplexModelParams';
 import { normalizeReplyLanguage, type ReplyLanguage } from './replyLanguage';
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
 import { canPlayJoyAIResponse, JoyAITtsInterruptionState, JoyAIVoiceSession } from './joyaiVoice';
@@ -383,6 +384,7 @@ export class JoyAIProvider {
             joyai_session_id: sessionId,
             search_session_id: searchSessionId,
             frame_time_range: frameTimeRange,
+            ...(requestKind === 'user' ? duplexModelParams(searchSessionId) : {}),
             ...(toolContext.text ? { tool_context: toolContext.text } : {}),
           },
           { timeoutMs: 60_000 },

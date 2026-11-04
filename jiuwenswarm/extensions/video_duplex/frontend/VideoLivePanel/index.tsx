@@ -31,6 +31,7 @@ import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSe
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
 import { describeDuplexError } from '../duplexErrorMessage';
+import { duplexModelParams } from '../duplexModelParams';
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -951,6 +952,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   turn_id: latestInstruction.turnId,
                   search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
+                  ...duplexModelParams(searchSessionId),
                 },
                 { timeoutMs: 10_000 },
               )
