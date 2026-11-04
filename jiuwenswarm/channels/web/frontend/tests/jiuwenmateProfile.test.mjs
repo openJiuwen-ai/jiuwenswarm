@@ -16,10 +16,12 @@ const { createRoot } = await import('react-dom/client');
 const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
 const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
 const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
+const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 const profileStyles = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
-await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh } }, interpolation: { escapeValue: false } });
+await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh }, en: { translation: en } }, interpolation: { escapeValue: false } });
 
 const colleague = {
   id: 'agent-1',
@@ -1214,6 +1216,99 @@ test('deleting a colleague offers to keep its data or delete everything, keeping
     else globalThis.document = previous.document;
     if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
+async function mountImAuthorize(extra) {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(ImAuthorizeDialog, { onSkip: noop, created: false, ...extra }));
+  });
+  const find = (id) => container.querySelector(`[data-testid="jiuwenmate-im-${id}"]`);
+  return {
+    find,
+    async fill(id, value) {
+      await act(async () => {
+        const input = find(id);
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+        input.dispatchEvent(new window.Event('input', { bubbles: true }));
+      });
+    },
+    async confirm() { await act(async () => find('confirm').click()); },
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      globalThis.window = previous.window;
+      globalThis.document = previous.document;
+      if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+    },
+  };
+}
+
+for (const [language, platform, message] of [
+  ['zh', 'feishu', '该渠道已绑定其他员工，请先解除原绑定。'],
+  ['en', 'dingtalk', 'This channel is already bound to another employee. Remove the existing binding first.'],
+]) {
+  test(`IM binding conflicts show a ${language} message and preserve ${platform} credentials for retry`, async () => {
+    await i18n.changeLanguage(language);
+    const submissions = [];
+    const view = await mountImAuthorize({
+      initialPlatform: platform,
+      onConfirm: async (credentials) => {
+        submissions.push(credentials);
+        if (submissions.length === 1) {
+          throw Object.assign(new Error('Internal binding conflict'), { code: 'CHANNEL_ALREADY_BOUND' });
+        }
+      },
+    });
+    try {
+      await view.fill('app-id', ' shared-id ');
+      await view.fill('secret', 'retry-secret');
+      if (platform === 'dingtalk') await view.fill('robot-code', ' robot-code ');
+      await view.confirm();
+      assert.equal(view.find('error').getAttribute('role'), 'alert');
+      assert.equal(view.find('error').textContent, message);
+      assert.equal(view.find('app-id').value, ' shared-id ');
+      assert.equal(view.find('secret').value, 'retry-secret');
+      assert.equal(view.find('platform-select').value, platform);
+      if (platform === 'dingtalk') assert.equal(view.find('robot-code').value, ' robot-code ');
+      assert.equal(view.find('confirm').disabled, false);
+      await view.confirm();
+      assert.equal(view.find('error'), null);
+      const credentials = { platform, appId: 'shared-id', appSecret: 'retry-secret', robotCode: platform === 'dingtalk' ? 'robot-code' : '' };
+      assert.deepEqual(submissions, [credentials, credentials]);
+    } finally {
+      await view.close();
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
+
+test('IM authorization keeps the original handling for unrelated errors', async () => {
+  for (const [cause, message] of [
+    [Object.assign(new Error('Credentials rejected'), { code: 'INVALID_CREDENTIALS' }), 'Credentials rejected'],
+    ['Service unavailable', 'Service unavailable'],
+    [null, 'null'],
+  ]) {
+    const view = await mountImAuthorize({ onConfirm: async () => { throw cause; } });
+    try {
+      await view.fill('app-id', 'cli-app');
+      await view.fill('secret', 'secret');
+      await view.confirm();
+      assert.equal(view.find('error').textContent, message);
+      assert.equal(view.find('confirm').disabled, false);
+    } finally { await view.close(); }
   }
 });
 

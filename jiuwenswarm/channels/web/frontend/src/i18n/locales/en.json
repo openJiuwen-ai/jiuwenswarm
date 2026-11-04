@@ -6070,6 +6070,7 @@
       "clientId": "Client ID",
       "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
       "isolationHint": "Web, Feishu and DingTalk share one colleague and workspace. Sessions stay separate; cross-group sharing requires authorization.",
+      "channelAlreadyBound": "This channel is already bound to another employee. Remove the existing binding first.",
       "robotCode": "Robot Code (optional)",
       "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
       "welinkTitle": "Bind WeLink",

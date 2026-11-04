@@ -6067,6 +6067,7 @@
       "clientId": "Client ID",
       "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
       "isolationHint": "Web、飞书和钉钉共用同一员工与工作空间；各会话独立，跨群分享须按授权处理。",
+      "channelAlreadyBound": "该渠道已绑定其他员工，请先解除原绑定。",
       "robotCode": "Robot Code（可选）",
       "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "welinkTitle": "绑定 WeLink",
