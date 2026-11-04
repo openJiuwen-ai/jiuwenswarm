@@ -11,6 +11,11 @@
 - 业务状态和领域决策由对应业务模块负责，不放进基础控件。多个地方引用同一组件也不足以单独构成抽成公共业务组件的理由；先确认它们共享同一业务语义和接口。
 - 修改 `src/components/ui/` 内的组件时，遵守该目录的 `AGENTS.md`。
 
+## WebUI 组件属性
+
+插件侧、后端与前端共同遵循 [S_17 WebUI 组件 Props 权威规约](../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
+修改组件字段、默认值、children 或事件数据时，先更新该规范，再按其功能影响清单同步目录、适配器、后端校验、插件及验证；不从 Ant Design 直接放行未登记属性。
+
 ## 特性规则入口
 
 - 因设置页需求而修改代码时，先阅读并遵守 `src/features/settings/AGENTS.md`；这也包括为该需求修改的目录外业务组件，例如 `src/components/PersonalContext/SettingsPanel.tsx`。普通布尔、选择、文本设置须接入前端 Settings 契约，并使用声明式设置项和 `SettingItemRenderer`；具体规则由设置页文件维护。仅为其他特性修改通用 UI 组件时，不必套用设置页专属布局规则。

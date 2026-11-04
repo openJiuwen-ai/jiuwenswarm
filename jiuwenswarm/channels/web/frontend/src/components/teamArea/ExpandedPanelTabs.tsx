@@ -8,14 +8,15 @@ import WebsiteBuildIcon from '../../assets/work-mode/website-build.svg?react';
 import artifactsIcon from '../../assets/artifacts.svg';
 import reviewIcon from '../../assets/review.svg';
 import { CloseButton } from '../ui/CloseButton/CloseButton';
-import './ExpandedPanelTabs.css';
+import '../subagent/Subagent.css';
+import '../ChatPanel/ChatPanel.css';
 
 export interface PanelTabItem {
   key: string;
   label: string;
   icon?: ReactNode;
   count?: string | number;
-  /** Close button renders when the section bar provides onTabClose; plugin pages are always closable. */
+  /** Render a close button for the desktop browser tab. */
   closable?: boolean;
 }
 
@@ -82,7 +83,6 @@ export function ExpandedPanelTabs({
   testIdPrefix = 'tool-panel',
   tabListLabel,
   idPrefix,
-  variant = 'pages',
 }: {
   tabs: PanelTabItem[];
   activeTab: string;
@@ -94,68 +94,58 @@ export function ExpandedPanelTabs({
   testIdPrefix?: string;
   tabListLabel?: string;
   idPrefix?: string;
-  variant?: 'pages' | 'sections';
 }) {
   const { t } = useTranslation();
   const generatedId = useId();
   const tabPanelId = idPrefix ?? generatedId;
 
   return (
-    <div data-testid={`${testIdPrefix}-expanded-header`} className={`panel-pages-header panel-pages-header--${variant}`}>
+    <div data-testid={`${testIdPrefix}-expanded-header`} className="single-agent-tool-tabs min-w-0">
       <div
         data-testid={`${testIdPrefix}-expanded-tabs`}
-        className="panel-pages-list"
+        className="single-agent-tool-tabs__list overflow-x-auto"
         role="tablist"
         aria-label={tabListLabel ?? t('team.toolTabs')}
       >
-        {tabs.map((tab, index) => {
+        {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
           const countSuffix = tab.count !== undefined ? ` (${tab.count})` : '';
           return (
-            <div key={tab.key} className={`panel-page ${isActive ? 'panel-page--active' : ''}`} role="presentation">
-              <button
-                type="button"
-                data-testid={`${testIdPrefix}-tab`}
-                data-variant={tab.key}
-                id={`${tabPanelId}-${encodeURIComponent(tab.key)}`}
-                role="tab"
-                tabIndex={isActive ? 0 : -1}
-                aria-selected={isActive}
-                aria-controls={`${tabPanelId}-panel`}
-                title={tab.label}
-                className="panel-page-select"
-                onClick={() => onTabChange(tab.key)}
-                onKeyDown={(event) => {
-                  const nextIndex = event.key === 'ArrowRight' ? (index + 1) % tabs.length
-                    : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
-                    : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
-                  if (nextIndex === null) return;
-                  event.preventDefault();
-                  const next = tabs[nextIndex];
-                  onTabChange(next.key);
-                  document.getElementById(`${tabPanelId}-${encodeURIComponent(next.key)}`)?.focus();
-                }}
-              >
-                {tab.icon}
-                <span className="panel-page-label">{tab.label}</span>
-                {countSuffix}
-              </button>
+            <div
+              key={tab.key}
+              data-testid={`${testIdPrefix}-tab`}
+              data-variant={tab.key}
+              id={`${tabPanelId}-${encodeURIComponent(tab.key)}`}
+              role="tab"
+              tabIndex={0}
+              aria-selected={isActive}
+              aria-controls={`${tabPanelId}-panel`}
+              title={tab.label}
+              className={`single-agent-tool-tab group shrink-0 ${isActive ? 'single-agent-tool-tab--active' : ''}`}
+              onClick={() => onTabChange(tab.key)}
+              onKeyDown={(event) => {
+                // Preserve native close-button activation when keyboard events bubble.
+                if (event.target !== event.currentTarget) return;
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                onTabChange(tab.key);
+              }}
+            >
+              {tab.icon}
+              {tab.label}
+              {countSuffix}
               {tab.closable && onTabClose && (
                 <span
                   data-variant={tab.key}
-                  className="panel-page-close"
+                  className="ml-1 -mr-0.5 inline-flex opacity-50 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                  onClick={(event) => event.stopPropagation()}
                 >
                   <CloseButton
-                    size={20}
+                    size={16}
                     testId={`${testIdPrefix}-tab-close`}
-                    ariaLabel={t('team.closeToolTab', { title: tab.label })}
-                    title={t('team.closeToolTab', { title: tab.label })}
-                    onClick={() => {
-                      onTabClose(tab.key);
-                      const next = isActive ? tabs[index + 1] ?? tabs[index - 1]
-                        : tabs.find((item) => item.key === activeTab);
-                      if (next) document.getElementById(`${tabPanelId}-${encodeURIComponent(next.key)}`)?.focus();
-                    }}
+                    ariaLabel={t('browser.pane.closeTab')}
+                    title={t('browser.pane.closeTab')}
+                    onClick={() => onTabClose(tab.key)}
                   />
                 </span>
               )}
@@ -164,13 +154,12 @@ export function ExpandedPanelTabs({
         })}
       </div>
 
-      <div className="panel-pages-controls">
+      <div className="flex shrink-0 items-center gap-2">
         {onToggleFullscreen && (
           <button
             onClick={onToggleFullscreen}
             data-testid={`${testIdPrefix}-maximize`}
-            type="button"
-            className="panel-pages-control"
+            className="chat-header-icon-btn panel-tab-icon-btn"
             aria-label={isFullscreen ? t('team.restore') : t('team.maximize')}
             title={isFullscreen ? t('team.restore') : t('team.maximize')}
           >
@@ -185,8 +174,7 @@ export function ExpandedPanelTabs({
           <button
             onClick={onCollapse}
             data-testid={`${testIdPrefix}-collapse`}
-            type="button"
-            className="panel-pages-control"
+            className="chat-header-icon-btn panel-tab-icon-btn panel-tab-icon-btn--collapse"
             aria-label={t('team.collapse')}
             title={t('team.collapse')}
           >

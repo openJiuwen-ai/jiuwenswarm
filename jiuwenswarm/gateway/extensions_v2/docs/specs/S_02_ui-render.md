@@ -83,21 +83,27 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 ## 6. 与 AgentServer 的必要差异
 
+组件属性、嵌套字段、children 和事件数据统一遵循
+[S_17 WebUI 组件 Props 权威规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
+本节只说明宿主范围，不独立定义另一套 props。
+
 | 差异 | 原因 |
 | --- | --- |
 | 槽位表只含两个 application 槽位 | Gateway 不渲染会话槽位，避免与 AgentServer 双写同一实例 |
 | 传输层按 `ws_id` 直接 `send_event` | Gateway 拥有 socket，不经过 AgentServer 推送通道 |
 | 连接事实来自 `SessionContext.metadata` | Gateway 没有 AgentServer 的 contextvar 调用上下文 |
-| 组件目录补 `Form` / `Form.Item` / `Dropdown`，`Button` 增加 `form` | 浏览器组件契约要求表单用 `Form.name` + `Form.Item.name` 描述，按钮通过 `form` 引用同树 Form；`Input` 不带 `name` |
+| `Form` / `Form.Item`、`Button.form`、布局与富菜单扩展 | Gateway 页面支持表单和富菜单；AgentServer 保持其组件子集；`Input` 不带 `name` |
 | 无 `contributions.py` 与目录服务 | 槽位固定，扩展包不能新增槽位 |
 
-表单组件契约：`Form` 必须有唯一 `name` 和非空子节点，子节点只能是 `Form.Item`；`Form.Item` 的 `name` 在同一表单内唯一且不能是 `__proto__`、`constructor` 或 `prototype`，必须只有一个不声明远程事件的 `Input` 子节点，可带 `rules`（`required` / `min` / `max` / `pattern` / `message`）；`Button.form` 必须引用同一棵树中的 `Form.name`。点击时前端按 `Form.name` 组装 `ui.click.data`。AgentServer 副本暂不引入这三条规则，两份 `component_rules.py` 在表单契约上有意分歧。
+表单字段、名称限制和规则见 S_17。点击带 form 引用的按钮时，前端先校验表单，再组装字段数据；普通按钮发送空 data。
+共同组件使用新属性：Button.value、Text.type / strong / code / ellipsis、Avatar.src，不接受旧字段别名。
 
 Gateway 的组件规则采用浏览器组件目录的子集；运行时与 AgentServer 分别持有实例。通用模型保持对应，浏览器能力的激活归属及版本生命周期由 [S_06](S_06_local-browser-bridge.md) 维护，不跨宿主 import。
 
-`Box.gap` 接受 none/sm/md/lg 或非负有限数值（px）。Gateway 的 Dropdown 必须有且只有一个展示子节点作为触发器，不接受 icon 或旧 label 属性；前端与 AgentServer 原有的图标能力保持不变。表单、菜单和布局的共享验证向量位于前端 tests/fixtures/webuiGatewayCases.json。
+Gateway 不支持独立 Icon 或 Dropdown.icon；Button.icon 使用共享白名单，由生成脚本在本域生成 Python 文件。
+Gateway 的 Dropdown 使用一个展示子树作为触发器，菜单 label 继续有效。表单、菜单和布局的共享验证向量位于前端 tests/fixtures/webuiGatewayCases.json。
 
-Form.Item is the canonical field-node name. Field names are unique within a form, reserved prototype names and remote input events are rejected, and forms require fields. Box accepts numeric non-negative finite gaps. Gateway Dropdown requires exactly one display child as its trigger and rejects the icon property. Existing browser and AgentServer icon support is unchanged. Shared vectors verify the common browser and Gateway subset.
+Component props follow S_17, including host-specific capabilities. Gateway keeps forms and rich menus, accepts the current Button/Text/Avatar props, and rejects legacy aliases. Button icons use the shared whitelist; standalone Icon and Dropdown.icon remain unsupported in Gateway.
 
 ## 7. 错误码
 

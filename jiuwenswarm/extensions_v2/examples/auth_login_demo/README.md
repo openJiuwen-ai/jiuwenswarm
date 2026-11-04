@@ -31,6 +31,11 @@ token 首版不会自动过期，退出登录撤销该 token；注销不会删�
 
 ## 打包
 
+组件属性遵循 [S_17](../../docs/specs/S_17_webui-component-props.md)：按钮文案使用 value，
+文字使用 type / strong，头像地址使用 src；Form.Item.label 与菜单项 label 继续保留。
+修改仓库源码后需重新打包并更新安装副本，单独 reload 不会复制新源码；Python 页面模块更新后重启测试 Gateway。
+更新时保留安装副本的 data/accounts.sqlite3。
+
 在仓库根目录执行，输出到你指定的本地位置：
 
 ```sh

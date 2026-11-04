@@ -9,9 +9,10 @@
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown。字段、默认值、必填与事件数据的唯一实现定义在
-[`catalog/components/`](../../catalog/components/)，本文不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`，其余 13 个槽位为会话范围。
+Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon。字段、默认值、必填与事件数据统一遵循
+[S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
+[`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
+槽位目录包含应用范围的 `application.entry` 与 `application.sidebar.footer`，其余 13 个槽位为会话范围。
 
 ## 表单、菜单与应用插槽
 
@@ -19,10 +20,10 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   gap 接受 none/sm/md/lg 或非负有限数值；数值按 px 直接传给 AntD Flex.gap，例如 gap=48，间距由插件声明。
   marginInline 接受 auto、非负有界数值或 px/% 字符串，直接写入原生 CSS margin-inline；插件可用 width=100%、maxWidth=1200、marginInline=auto 声明内容区居中。
 - Image.fit 支持 contain/cover，preview=false 可用于 Logo 和宣传图。背景图和内容图均由插件提供 URL，不内置登录图片或官网样式。
-- Avatar 使用 props.children 声明原样显示的文本；url 映射为 AntD src，alt 只作为图片描述，gap、size、shape 使用原生行为。
+- Avatar 使用 props.children 声明原样显示的文本；src 传给 AntD，alt 只作为图片描述，gap、size、shape 使用原生行为。
   style 只接受 backgroundColor、color（3/4/6/8 位 CSS 十六进制颜色）和 fontSize（1–4096 的数值像素）；gap 接受 0–4096。
   图像优先、加载失败后的 children 显示及文本缩放由 AntD 处理；允许空头像，不再接受 name。
-  首字母、配色、字色和字号由插件声明，宿主不推导账号展示。显式 url 仍须为合法的非空资源地址。
+  首字母、配色、字色和字号由插件声明，宿主不推导账号展示。显式 src 仍须为合法的非空资源地址。
 - Input.autoComplete 为可选字符串，直接传给 AntD Input 的原生自动填充属性；插件可声明 off，但浏览器密码管理器可以忽略此偏好，宿主不承诺禁止保存密码弹窗。
 - Form.name 在同一渲染实例内唯一；禁止嵌套 Form。可选 requiredMark 为布尔值，直接传给 AntD Form；false 隐藏必填星号，不改变 rules 的必填校验。Form.Item 仅接收 name、可选 label/rules 和一个 Input，字段名按字面解释，同一 Form 内不得重复。
 - Form 在保留的隐藏页签或暂时停用的内容中保留字段值；断连、replace、clear、实例结束或 destroyOnHidden 导致实际销毁时重新初始化。
@@ -41,7 +42,7 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
 
 The host owns slot placement, baseline spacing, theme and lifecycle. Plugins declare page presentation through the exposed AntD and native layout properties; the renderer performs generic validation and adaptation without login-specific styling branches.
 
-Avatar passes props.children text, alt, gap, size, shape and controlled style directly to AntD, mapping url to src. AntD owns image priority, children rendering after image failure and text scaling. Empty avatars are allowed; name is rejected. Style accepts only backgroundColor/color in 3-, 4-, 6- or 8-digit CSS hexadecimal notation, and numeric fontSize from 1 to 4096 pixels; gap is numeric from 0 to 4096. Plugins provide initials, colors and typography. An explicit url must be a valid, nonempty resource address.
+Avatar passes props.children text, alt, gap, size, shape and controlled style directly to AntD, using src for images. AntD owns image priority, children rendering after image failure and text scaling. Empty avatars are allowed; name is rejected. Style accepts only backgroundColor/color in 3-, 4-, 6- or 8-digit CSS hexadecimal notation, and numeric fontSize from 1 to 4096 pixels; gap is numeric from 0 to 4096. Plugins provide initials, colors and typography. An explicit src must be a valid, nonempty resource address.
 
 Input.autoComplete is an optional string passed directly to AntD Input. Plugins may declare off; browser password managers can override this preference, so it does not guarantee suppression of browser credential prompts.
 
@@ -86,19 +87,22 @@ Box provides bounded dimensions, padding, background-image fitting and explicit 
   同 revision 重建也分配新的 localFrameId；旧显示确认和失败反馈不能作用于新代次。
 - C-15：每次合法组件回调独立发送，包括值相同且前一个请求未完成的回调。
   等待回执期间绑定或代次失效时返回 `stale`，不表示服务端副作用已撤销。
-- C-16：渲染器只接受规范化节点，插件不能注入 className 或 style；独立的宿主外观参数优先于组件默认样式。
+- C-16：渲染器只接受规范化节点，插件不能注入 className 或任意 style（Avatar 的受控 style 除外）；独立的宿主外观参数优先于组件默认样式。
   Box/Button 的 unstyled 外观使用原生元素，Button 仍保留禁用、可访问标签与事件派发语义。
 - C-17：WebUI 主题配置仅作用于 Provider 子树，使用宿主语义 token 和语言设置；
   Button 逐字显示插件标签，不自动在两个中文字之间添加空格。
   普通尺寸使用 `size="medium"`（兼容 md，也为未指定时的尺寸）：高 32px、字号 14px、左右 padding 16px、
   图文间距 8px、圆角 8px；纯图标为 32px 方形点击区。按钮无默认阴影，尺寸由宿主主题统一配置。
   Button 的可选 icon 从[图标白名单](../../icons/whitelist.json)选择，例如 `search`、`file-text`、`refresh-cw`；
-  旧名称 `refresh` 保留为兼容别名。`iconOnly=true` 时隐藏可见文字，并要求非空 label
-  作为可访问名称及悬停提示；`variant="ghost"` 使用无边框的 text 按钮，hover 背景使用宿主的
+  旧名称 `refresh` 保留为兼容别名。纯图标按钮（声明 `icon` 且省略 `value`）要求非空 `aria-label`
+  作为可访问名称及悬停提示；`type="text"` 使用无边框的 text 按钮，hover 背景使用宿主的
   `--color-action-secondary`。聊天头部保留插件声明的文字、图标和变体，不为所有按钮注入刷新图标。
 - C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
   重新激活或 src 改变后重新加载，不保留旧文档。
   相对路径与 HTTP(S) 来源均使用不含 `allow-same-origin` 的固定 sandbox；加载提示不覆盖整页、不拦截鼠标。
+  宿主提供本地适应面板/桌面宽度切换；桌面模式的最小视口为 1280px，溢出由外层横向滚动容器承载，
+  切换模式不重建文档。重新加载操作重建当前 src；新标签页入口打开配置的 src 并隔离 opener。
+  加载 15 秒后显示非阻塞慢加载提示，继续接受 load；超时不等同加载失败，load 不证明远端业务可用。
 - C-19：Input 只为已绑定的 ui.change 派发 `{value, isComposing}`；组合输入结束发送一次提交值，
   其后浏览器重复的同值提交不再派发。未绑定 change 时允许本地编辑；disabled、readOnly 和断连时不派发。
   合法 replace 重新初始化输入值，拒绝的更新保留当前草稿；清空发送空字符串。
@@ -140,11 +144,13 @@ Box provides bounded dimensions, padding, background-image fitting and explicit 
   右侧分界线支持拖拽和左右方向键，调整宽度不派发插件事件；宿主外观参数仍优先。
   节点移除或类型改变时丢弃状态；clear、断连或消费者更换时沿用实例状态端口的重置规则。
 - C-29：尺寸统一推荐 small/medium/large，sm/md/lg 为兼容别名并在前端准备阶段转换。
-  Switch/Card 只有 small/medium 两档；Avatar 还接受 default（medium 的别名）与原有像素数值。
-  Text 的 max_lines 只接受正整数，省略表示不限行；旧的 0 应改为省略该属性。
-- C-30：Text.variant 的 primary、secondary、danger、ghost 分别使用主题主色、次要文本色、错误色、弱化文本色。
-  显式 tone 优先于 variant，包括 neutral；宿主 appearance.style 最后覆盖外观。
-  Button.secondary 使用默认色的 filled 外观，与 default 的 outlined 外观区分。
+  Switch/Card 只有 small/medium 两档；Avatar 使用 `src` 指定图片地址，还接受 default（medium 的别名）与原有像素数值。
+- C-30：Button 和 Text 的文案统一使用字符串 `value`，不接受 `props.children` 或节点子组件；宿主将 `value` 映射为 React 子内容。
+  Text 样式对齐 Ant Design `Typography.Text`（`type`、`strong`、`italic`、`underline`、`delete`、`code`、`mark`、`keyboard`、`disabled`、`ellipsis`）；宿主 `appearance.style` 最后覆盖外观。
+  Button 文案使用 `value`，样式对齐 Ant Design `Button` 属性（`type`、`color`、`variant`、`shape`、`size`、`danger`、`ghost`、`disabled`、`block`、`loading`、`href`、`target`、`icon`、`iconPlacement`、`aria-label`）：`color` 使用 Ant Design 预设色，`loading` 支持布尔或 `{delay}`，`href` 走 HTTP(S)/相对地址校验，`target` 需与 `href` 同时声明；纯图标按钮要求非空 `aria-label`。
+- C-31：Icon 是叶子组件，只接受图标白名单中的 `name`（含 `refresh` 兼容别名），不声明子节点与事件。
+  `size` 可选 small/medium/large，兼容 sm/md/lg，缺省 medium；省略 `aria-label` 时按装饰图标渲染 `aria-hidden`，
+  提供时必须非空并作为可访问名称。宿主不接受白名单外的名称、任意 SVG、className 或 style。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。

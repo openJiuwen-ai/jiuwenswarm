@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
+from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
 def token(*values: str) -> dict[str, Any]:
@@ -40,7 +41,12 @@ BOOL = {"kind": "boolean"}
 NUMBER = {"kind": "number"}
 NIL = {"kind": "null"}
 INTEGER = {"kind": "number", "integer": True, "min": 0}
-SIZE = token("small", "medium", "large")
+SIZE = token("small", "medium", "large", "sm", "md", "lg")
+COMPACT_SIZE = token("small", "medium", "sm", "md")
+PRESET_COLORS = (
+    "blue", "purple", "cyan", "green", "magenta", "pink", "red",
+    "orange", "yellow", "volcano", "geekblue", "lime", "gold",
+)
 VARIANT = token("outlined", "borderless", "filled", "underlined")
 INPUT_PROPS = {"disabled": BOOL, "ariaLabel": TEXT, "size": SIZE, "variant": VARIANT,
                "status": token("error", "warning")}
@@ -53,9 +59,9 @@ FORM_RULE = obj({
     "required": BOOL, "min": INTEGER, "max": INTEGER, "pattern": TEXT, "message": TEXT,
 })
 MENU_ITEM = union(
-    obj({"type": token("item"), "key": FIELD_NAME, "label": union(TEXT, {"kind": "nodes"}),
+    obj({"type": token("item"), "key": TEXT, "label": union(TEXT, {"kind": "nodes"}),
          "disabled": BOOL, "danger": BOOL}, "key", "label"),
-    obj({"type": token("divider"), "key": FIELD_NAME}, "type"),
+    obj({"type": token("divider"), "key": TEXT}, "type"),
 )
 DIMENSION = union(NUMBER, TEXT)
 TREE_OPTION = obj({
@@ -82,17 +88,18 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "visibleFrom": token("sm", "md", "lg"),
     }, "children": True},
     "Text": {"props": {
-        "value": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
-        "tone": token("neutral", "info", "success", "warning", "danger"),
-        "size": token("sm", "md", "lg"), "weight": token("regular", "medium", "bold"),
-        "max_lines": NUMBER, "monospace": BOOL,
+        "value": TEXT, "type": token("secondary", "success", "warning", "danger"),
+        "size": SIZE, "strong": BOOL, "italic": BOOL, "underline": BOOL, "delete": BOOL,
+        "code": BOOL, "mark": BOOL, "keyboard": BOOL, "disabled": BOOL, "ellipsis": BOOL,
     }},
     "Button": {"props": {
-        "label": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
-        "size": token("sm", "md", "lg"), "disabled": BOOL,
-        # Name of a Form in the same render tree. When present the browser
-        # validates that form and sends its field values with ``ui.click``.
-        "form": FIELD_NAME,
+        "value": TEXT, "type": token("default", "primary", "dashed", "link", "text"),
+        "color": token("default", "primary", "danger", *PRESET_COLORS),
+        "variant": token("outlined", "dashed", "solid", "filled", "text", "link"),
+        "shape": token("default", "circle", "round", "square"),
+        "size": SIZE, "danger": BOOL, "ghost": BOOL, "disabled": BOOL, "block": BOOL,
+        "loading": union(BOOL, obj({"delay": NUMBER})), "href": TEXT, "target": token("_self", "_blank"),
+        "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": TEXT, "form": FIELD_NAME,
     }, "events": {"ui.click": {"kind": "record", "value": TEXT}}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
@@ -104,7 +111,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }},
     "Switch": {"props": {
         "checked": BOOL, "defaultChecked": BOOL, "loading": BOOL, "disabled": BOOL,
-        "ariaLabel": TEXT, "size": token("medium", "small"), "checkedChildren": TEXT, "unCheckedChildren": TEXT,
+        "ariaLabel": TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
         **INPUT_PROPS, "options": array(obj({"value": OPTION_VALUE, "label": TEXT, "disabled": BOOL}, "value", "label")),
@@ -113,6 +120,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "mode": token("multiple", "tags"), "maxCount": {"kind": "number", "integer": True, "min": 1},
         "maxTagCount": union(INTEGER, token("responsive")), "showSearch": BOOL,
     }, "required": ("options",), "events": {
+        "ui.change": obj({"value": union(OPTION_VALUE, NIL, array(OPTION_VALUE))}, "value"),
         "ui.select": obj({"value": OPTION_VALUE}, "value"),
         "ui.search": obj({"searchValue": TEXT}, "searchValue"), "ui.clear": NO_DATA,
     }},
@@ -137,14 +145,15 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "required": ("items",), "events": {"ui.change": obj({"activeKey": TEXT}, "activeKey")}},
     "Empty": {"props": {"image": TEXT, "description": TEXT}},
     "Avatar": {"props": {
-        "url": TEXT, "children": TEXT, "alt": TEXT,
+        "src": TEXT, "children": TEXT, "alt": TEXT,
         "gap": {"kind": "number", "min": 0, "max": 4096},
         "style": obj({
             "backgroundColor": {"kind": "string", "maxBytes": 9},
             "color": {"kind": "string", "maxBytes": 9},
             "fontSize": {"kind": "number", "min": 1, "max": 4096},
         }),
-        "size": union(token("small", "default", "large"), {"kind": "number", "min": 1, "max": 4096}),
+        "size": union(token("small", "medium", "large", "sm", "md", "lg", "default"),
+                      {"kind": "number", "min": 1, "max": 4096}),
         "shape": token("circle", "square"),
     }},
     "Image": {"props": {
@@ -158,7 +167,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "children": True, "childComponents": ("Text",)},
     "Card": {"props": {
         "title": TEXT, "extra": TEXT, "cover": TEXT, "hoverable": BOOL,
-        "size": token("medium", "small"), "variant": token("outlined", "borderless"),
+        "size": COMPACT_SIZE, "variant": token("outlined", "borderless"),
     }, "children": True},
     "Tag": {"props": {
         "children": TEXT, "color": token("default", "success", "processing", "warning", "error"),
@@ -200,7 +209,8 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "props": {
             "file": union(NIL, obj({
                 "name": TEXT, "path": TEXT, "mimeType": TEXT, "size": INTEGER, "content": TEXT,
-            }, "name", "path", "content")),
+                "downloadUrl": TEXT,
+            }, "name", "path")),
             "emptyText": TEXT,
             "status": token("ready", "missing", "unsupported", "too_large", "forbidden", "unavailable", "error"),
         },
@@ -397,6 +407,11 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         return "invalid field name"
     if component == "Button" and "form" in props and not props["form"].strip():
         return "form reference is required"
+    if component == "Button":
+        if props.get("icon") and not props.get("value", "").strip() and not props.get("aria-label", "").strip():
+            return "icon-only buttons require a non-empty aria-label"
+        if "target" in props and "href" not in props:
+            return "button target requires href"
     if component == "Dropdown":
         items = props["items"]
         keys = [item["key"] for item in items if "key" in item]
@@ -481,6 +496,10 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         file = props["file"]
         if file is not None and (not file["name"].strip() or not _workspace_path_ok(file["path"])):
             return "invalid preview file"
+        if file is not None and "content" not in file and "downloadUrl" not in file:
+            return "preview content or URL is required"
+        if file is not None and "downloadUrl" in file and not valid_url(file["downloadUrl"]):
+            return "invalid preview URL"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
     if component == "Avatar":
@@ -488,7 +507,7 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         if any(key in style and re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", style[key]) is None
                for key in ("backgroundColor", "color")):
             return "Avatar colors must use hexadecimal notation"
-    url_fields = {"Avatar": ("url",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
+    url_fields = {"Button": ("href",), "Avatar": ("src",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
     if any(key in props and not valid_url(props[key], iframe=component == "Iframe") for key in url_fields.get(component, ())):
         return "invalid resource URL"
     if component == "Image":
@@ -542,6 +561,18 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
             return props.get("showSearch", "mode" in props)
         options = props["options"] if component == "Select" else _tree_options(props["treeData"])
         value = data["value"]
+        if component == "Select" and event == "ui.change":
+            initial = props.get("value", props.get("defaultValue"))
+            retained = initial if isinstance(initial, (list, tuple)) else ([] if initial is None else [initial])
+            values = [item["value"] for item in options if not item.get("disabled") or item["value"] in retained]
+            if value is None and not props.get("allowClear"):
+                return False
+            if not _selection_allowed(value, values, "mode" in props,
+                                      tags=props.get("mode") == "tags", maximum=props.get("maxCount")):
+                return False
+            selected = value if isinstance(value, (list, tuple)) else ([] if value is None else [value])
+            return not any(item.get("disabled") and item["value"] in selected and item["value"] not in retained
+                           for item in options)
         if component == "Select" and props.get("mode") == "tags":
             return isinstance(value, str) and bool(value)
         values = [item["value"] for item in options if not item.get("disabled")

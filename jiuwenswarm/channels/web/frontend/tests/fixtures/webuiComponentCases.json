@@ -8,17 +8,121 @@
     ["Avatar", {"gap": -1}],
     ["Avatar", {"name": "Alice"}],
     ["Avatar", {"children": 123}],
-    ["Avatar", {"children": "A", "url": ""}],
-    ["Avatar", {"children": "A", "url": "javascript:alert(1)"}],
-    ["Text", {"max_lines": -1.5}],
-    ["Text", {"max_lines": 0}],
-    ["Text", {"max_lines": 1.5}],
-    ["Button", {"icon": "unknown"}],
-    ["Button", {"iconOnly": true, "label": "More"}],
-    ["Button", {"iconOnly": true, "icon": "ellipsis", "label": "  "}],
-    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis"}],
-    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis", "ariaLabel": "  "}],
-    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "unknown", "ariaLabel": "More"}],
+    ["Avatar", {"children": "A", "src": ""}],
+    ["Avatar", {"children": "A", "src": "javascript:alert(1)"}],
+    ["Avatar", {"url": "/logo.svg"}],
+
+    [
+      "Dropdown",
+      {
+        "items": [{ "key": "", "label": "Action" }]
+      }
+    ],
+    [
+      "Text",
+      {
+        "type": "primary"
+      }
+    ],
+    [
+      "Text",
+      {
+        "strong": "yes"
+      }
+    ],
+    [
+      "Text",
+      {
+        "ellipsis": 2
+      }
+    ],
+    [
+      "Button",
+      {
+        "icon": "unknown"
+      }
+    ],
+    [
+      "Button",
+      {
+        "icon": "ellipsis"
+      }
+    ],
+    [
+      "Button",
+      {
+        "icon": "ellipsis",
+        "aria-label": "  "
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "x",
+        "ariaLabel": "legacy"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "x",
+        "href": "javascript:alert(1)"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "x",
+        "target": "_blank"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "x",
+        "loading": {
+          "delay": "fast"
+        }
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "refresh",
+            "label": "Refresh"
+          }
+        ],
+        "icon": "ellipsis"
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "refresh",
+            "label": "Refresh"
+          }
+        ],
+        "icon": "ellipsis",
+        "ariaLabel": "  "
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "refresh",
+            "label": "Refresh"
+          }
+        ],
+        "icon": "unknown",
+        "ariaLabel": "More"
+      }
+    ],
     [
       "Box",
       {
@@ -449,20 +553,20 @@
     [
       "Avatar",
       {
-        "url": "javascript:alert(1)"
+        "src": "javascript:alert(1)"
       }
     ],
     [
       "Avatar",
       {
-        "url": "/logo.svg",
+        "src": "/logo.svg",
         "shape": "triangle"
       }
     ],
     [
       "Avatar",
       {
-        "url": "/logo.svg",
+        "src": "/logo.svg",
         "size": 0
       }
     ],
@@ -512,25 +616,205 @@
         ],
         "trigger": "contextmenu"
       }
+    ],
+    [
+      "Button",
+      {
+        "children": "unsupported"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "same",
+        "children": "same"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": null
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": 123
+      }
+    ],
+    [
+      "Text",
+      {
+        "children": "unsupported"
+      }
+    ],
+    [
+      "Text",
+      {
+        "value": "same",
+        "children": "same"
+      }
+    ],
+    [
+      "Text",
+      {
+        "value": null
+      }
+    ],
+    [
+      "Text",
+      {
+        "value": 123
+      }
+    ],
+    [
+      "Icon",
+      {}
+    ],
+    [
+      "Icon",
+      {
+        "name": "unknown"
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "search",
+        "aria-label": "   "
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "search",
+        "size": "huge"
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "search",
+        "color": "red"
+      }
     ]
   ],
   "valid": [
     ["Avatar", {}],
     ["Avatar", {"children": "AB"}],
     ["Avatar", {"children": "张", "size": 20, "style": {"backgroundColor": "#89D7D8", "color": "#fff", "fontSize": 10}}],
-    ["Avatar", {"children": "A", "url": "/logo.svg"}],
+    ["Avatar", {"children": "A", "src": "/logo.svg"}],
     ["Avatar", {"alt": "Description only", "gap": 0}],
     ["Avatar", {"style": {"backgroundColor": "#abcd", "color": "#12345678"}}],
-    ["Text", {"max_lines": 2, "size": "large"}],
-    ["Button", {"label": "Secondary", "variant": "secondary", "size": "medium"}],
-    ["Input", {"size": "lg"}],
-    ["Switch", {"size": "sm"}],
-    ["Card", {"size": "md"}],
-    ["Avatar", {"url": "/logo.svg", "size": "medium"}],
-    ["Button", {"label": "Refresh", "icon": "refresh", "iconOnly": true, "variant": "ghost"}],
-    ["Button", {"label": "More", "icon": "ellipsis", "iconOnly": true, "variant": "ghost"}],
-    ["Button", {"label": "More", "icon": "ellipsis", "iconOnly": false}],
-    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis", "ariaLabel": "More", "placement": "topRight"}],
+
+    [
+      "Text",
+      {
+        "ellipsis": true,
+        "size": "large"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "Secondary",
+        "variant": "filled",
+        "size": "medium"
+      }
+    ],
+    [
+      "Input",
+      {
+        "size": "lg"
+      }
+    ],
+    [
+      "Switch",
+      {
+        "size": "sm"
+      }
+    ],
+    [
+      "Card",
+      {
+        "size": "md"
+      }
+    ],
+    [
+      "Avatar",
+      {
+        "src": "/logo.svg",
+        "size": "medium"
+      }
+    ],
+    [
+      "Button",
+      {
+        "aria-label": "Refresh",
+        "icon": "refresh",
+        "type": "text"
+      }
+    ],
+    [
+      "Button",
+      {
+        "aria-label": "More",
+        "icon": "ellipsis",
+        "type": "text"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "保存",
+        "loading": true
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "保存",
+        "loading": {
+          "delay": 100
+        }
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "文档",
+        "href": "https://example.com/docs",
+        "target": "_blank"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "品牌",
+        "color": "geekblue"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "More",
+        "icon": "ellipsis"
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "refresh",
+            "label": "Refresh"
+          }
+        ],
+        "icon": "ellipsis",
+        "ariaLabel": "More",
+        "placement": "topRight"
+      }
+    ],
     [
       "Text",
       {
@@ -540,7 +824,7 @@
     [
       "Button",
       {
-        "label": "Confirm",
+        "value": "Confirm",
         "disabled": true
       }
     ],
@@ -659,7 +943,7 @@
     [
       "Avatar",
       {
-        "url": "/logo.svg",
+        "src": "/logo.svg",
         "alt": "Welcome",
         "size": 64,
         "shape": "circle"
@@ -668,7 +952,7 @@
     [
       "Avatar",
       {
-        "url": "https://example.com/avatar.png",
+        "src": "https://example.com/avatar.png",
         "size": "small",
         "shape": "square"
       }
@@ -689,6 +973,61 @@
         ],
         "placement": "topLeft",
         "ariaLabel": "User menu"
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": ""
+      }
+    ],
+    [
+      "Button",
+      {
+        "value": "文案 / Text",
+        "type": "text"
+      }
+    ],
+    [
+      "Text",
+      {
+        "value": ""
+      }
+    ],
+    [
+      "Text",
+      {
+        "value": "文案 / Text",
+        "type": "secondary"
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "search"
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "refresh",
+        "size": "lg",
+        "aria-label": "刷新"
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "presentation",
+        "size": "large",
+        "aria-label": "Present"
+      }
+    ],
+    [
+      "Icon",
+      {
+        "name": "ellipsis",
+        "size": "small"
       }
     ]
   ]

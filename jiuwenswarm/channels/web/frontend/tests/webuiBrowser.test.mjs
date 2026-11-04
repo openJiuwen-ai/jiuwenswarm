@@ -27,7 +27,7 @@ await page.routeWebSocket(/\/ws(?:\?|$)/, (route) => {
   });
 });
 const target = { scope: 'application', slot_id: 'application.entry', package_id: 'pkg.fixture', instance_key: 'entry' };
-const button = (id, label, props = {}) => ({ component: 'Button', props: { label, ...props }, events: { 'ui.click': { id } } });
+const button = (id, label, props = {}) => ({ component: 'Button', props: { value: label, ...props }, events: { 'ui.click': { id } } });
 const tree = { component: 'Box', props: { direction: 'column', gap: 'md' }, children: [
   { component: 'Text', props: { value: '浏览器表单验证', size: 'lg' } },
   { component: 'Form', props: { name: 'sample' }, children: [
@@ -35,7 +35,7 @@ const tree = { component: 'Box', props: { direction: 'column', gap: 'md' }, chil
       children: [{ component: 'Input', props: { placeholder: 'Username' } }] },
     { component: 'Form.Item', props: { name: 'password', label: '密码', rules: [{ required: true, message: '请输入密码' }, { pattern: '^(?=.*[A-Za-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).+$', message: '密码需要字母、数字及特殊字符' }] },
       children: [{ component: 'Input', props: { type: 'password', placeholder: 'Password' } }] },
-  ] }, button('confirm', '确认', { form: 'sample', variant: 'primary' }), button('close', '关闭测试视图'),
+  ] }, button('confirm', '确认', { form: 'sample', type: 'primary' }), button('close', '关闭测试视图'),
 ] };
 const declarations = { clientProtocolVersion: 1, gatewayInstanceId: 'fixture-gateway', connectionEpoch: 'fixture-connection', packages: [{
   packageId: 'pkg.fixture', activationGeneration: 'fixture-generation', requestBindings: [
@@ -90,7 +90,7 @@ try {
   await page.getByPlaceholder('Password').press('Tab');
   assert.equal(await page.evaluate(() => document.querySelector('dialog').contains(document.activeElement)), true);
   assert.equal(await page.evaluate(() => window.webuiFixture.underlyingClicks()), 0);
-  await render({ component: 'Avatar', props: { url: '/logo.svg', alt: 'fixture-render-error' } }, 2);
+  await render({ component: 'Avatar', props: { src: '/logo.svg', alt: 'fixture-render-error' } }, 2);
   await page.getByTestId('webui-instance-error').waitFor({ state: 'visible' });
   assert.equal(await dialog.isVisible(), true);
   assert.equal(await page.getByTestId('webui-entry-content').getAttribute('inert'), '');
@@ -118,7 +118,7 @@ try {
   const footer = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.fixture', instance_key: 'avatar' };
   const footerTree = { component: 'Dropdown', props: { items: [{ key: 'exit', label: '退出登录' }],
     placement: 'topLeft', align: { points: ['bl', 'tr'], offset: [0, 0] } }, events: { 'ui.select': { id: 'menu' } },
-    children: [{ component: 'Avatar', props: { url: '/logo.svg', alt: 'User' } }] };
+    children: [{ component: 'Avatar', props: { src: '/logo.svg', alt: 'User' } }] };
   await render(footerTree, 1, footer);
   const menu = page.getByTestId('webui-dropdown-trigger');
   await menu.waitFor();

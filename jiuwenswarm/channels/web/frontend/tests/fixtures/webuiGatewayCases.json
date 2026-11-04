@@ -604,7 +604,7 @@
               {
                 "component": "Button",
                 "props": {
-                  "label": "Nested"
+                  "value": "Nested"
                 }
               }
             ]
@@ -616,6 +616,430 @@
           "component": "Text",
           "props": {
             "value": "Actions"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "value button",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Submit",
+        "type": "primary",
+        "color": "blue",
+        "variant": "solid",
+        "size": "medium"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "button link",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Open",
+        "href": "https://example.com",
+        "target": "_blank"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "loading button",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Wait",
+        "loading": {
+          "delay": 100
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "legacy button label",
+    "root": {
+      "component": "Button",
+      "props": {
+        "label": "Submit"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy button variant",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Submit",
+        "variant": "primary"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "button target without href",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Open",
+        "target": "_blank"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "button unsafe URL",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Open",
+        "href": "javascript:alert(1)"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "text typography",
+    "root": {
+      "component": "Text",
+      "props": {
+        "value": "Status",
+        "type": "warning",
+        "strong": true,
+        "code": true,
+        "ellipsis": true,
+        "size": "medium"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "legacy Text tone",
+    "root": {
+      "component": "Text",
+      "props": {
+        "value": "Status",
+        "tone": "danger"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy Text weight",
+    "root": {
+      "component": "Text",
+      "props": {
+        "value": "Status",
+        "weight": "bold"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy Text variant",
+    "root": {
+      "component": "Text",
+      "props": {
+        "value": "Status",
+        "variant": "secondary"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy Text max_lines",
+    "root": {
+      "component": "Text",
+      "props": {
+        "value": "Status",
+        "max_lines": 2
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy Text monospace",
+    "root": {
+      "component": "Text",
+      "props": {
+        "value": "Status",
+        "monospace": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "Avatar src",
+    "root": {
+      "component": "Avatar",
+      "props": {
+        "src": "/avatar.svg",
+        "size": "md"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "legacy Avatar url",
+    "root": {
+      "component": "Avatar",
+      "props": {
+        "url": "/avatar.svg"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "blank Form name",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "  "
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "oversized UTF-8 Form name",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value"
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "blank field name",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "  "
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "empty rule",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value",
+            "rules": [
+              {}
+            ]
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "message-only rule",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value",
+            "rules": [
+              {
+                "message": "Error"
+              }
+            ]
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "blank rule message",
+    "root": {
+      "component": "Form",
+      "props": {
+        "name": "sample"
+      },
+      "children": [
+        {
+          "component": "Form.Item",
+          "props": {
+            "name": "value",
+            "rules": [
+              {
+                "required": true,
+                "message": " "
+              }
+            ]
+          },
+          "children": [
+            {
+              "component": "Input"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "valid form reference",
+    "root": {
+      "component": "Box",
+      "children": [
+        {
+          "component": "Form",
+          "props": {
+            "name": "sample"
+          },
+          "children": [
+            {
+              "component": "Form.Item",
+              "props": {
+                "name": "value"
+              },
+              "children": [
+                {
+                  "component": "Input"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "component": "Button",
+          "props": {
+            "value": "Send",
+            "form": "sample"
+          },
+          "events": {
+            "ui.click": {
+              "id": "apply"
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "blank menu label",
+    "root": {
+      "component": "Dropdown",
+      "props": {
+        "items": [
+          {
+            "key": "one",
+            "label": "  "
+          }
+        ]
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Menu"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "Divider title conflict {'children': 'Title'}",
+    "root": {
+      "component": "Divider",
+      "props": {
+        "children": "Title"
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Title"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "Divider title conflict {'orientation': 'vertical'}",
+    "root": {
+      "component": "Divider",
+      "props": {
+        "orientation": "vertical"
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Title"
           }
         }
       ]

@@ -1,13 +1,16 @@
 # WebUI 组件目录与渲染适配
 
 建档日期：2026-10-30。最近修订：2026-11-04。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)，作为插件侧、后端和前端共同遵循的属性定义；
+本次核对完整字段、嵌套结构、事件、默认值和功能影响，并将后续变更顺序写入仓库规则。
+实施及验证记录在本文件维护；属性清单只在 S_17 维护，现有规则代码继续负责执行，尚无自动生成链路。
 本文件说明组件目录、属性校验器与渲染适配器的职责；整体运行时与页面渲染见
 [F_08 前端渲染](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md)。
 
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 20 个组件（包括 `Avatar`、`FileTree`、`FilePreview` 与 `Dropdown`），并登记应用范围的 `application.entry`、`application.sidebar.footer` 与 13 个会话范围槽位。登记组件或槽位只表示可查询其规则，
+目录包含 21 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown` 与 `Icon`），并登记应用范围的 `application.entry`、`application.sidebar.footer` 与 13 个会话范围槽位。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍
@@ -105,6 +108,15 @@ Button 与 Dropdown 共用前端 `src/features/webui/icons/whitelist.json`，包
 覆盖全部白名单图标的 SVG 输出、主题颜色与尺寸、别名一致性、Button 新图标的标签与事件、
 前后端名单一致性及非法名称拒绝。生成同步检查通过；本次未做完整应用构建或浏览器视觉复验。
 
+**独立图标组件 Icon（2026-11-04）**
+
+新增叶子组件 `Icon`，复用同一图标白名单：`name` 必填且只接受白名单名称，`size` 可选
+small/medium/large（兼容 sm/md/lg，缺省 medium），不提供 `aria-label` 时按装饰图标渲染
+`aria-hidden`，提供时必须非空并作为可访问名称。适配器从生成表读取 Lucide 组件，尺寸映射宿主
+字号 token（small/medium/large 对应 SM/LG/XL），外观只取宿主注入的 className/style，
+不开放任意 SVG、className 或 style；组件没有子节点和事件，也不作为槽位专用根组件。
+协议版本不因新增组件变化。
+
 **文字按钮与头部操作的外观边界（2026-11-03）**
 
 聊天头部原来为所有插件 Button 注入刷新图标并隐藏标签，其他动作也会显示为刷新。
@@ -144,11 +156,16 @@ Python 的 Workbench 轮次菜单与 WebUI 事件测试通过 252 项，覆盖�
 缺失适配器时拒绝组装；运行中找不到适配器则由实例错误边界处理，不能显示半棵可交互树。
 
 Box 将 direction、gap、align、justify、wrap 和 flex 映射为 Ant Design Flex 属性。
-Text 使用 Typography.Text，映射 monospace、max_lines 与语义 tone；Button 将 `ui.click` 交给节点绑定发送，断连或 disabled 时禁用。
+Text 使用 Typography.Text，使用 `value` 提供文案，对齐 `type`、`strong`、`italic`、`underline`、`delete`、`code`、`mark`、`keyboard`、`disabled`、`ellipsis` 等属性；Button 对齐 Ant Design Button 属性并将 `ui.click` 交给节点绑定发送，断连或 disabled 时禁用。
 按钮关闭中文双字自动插空格，保留插件原始标签。
-Card、Divider、Empty、Image 和 Tag 使用对应 Ant Design 组件；Panel 只渲染内容，标题由宿主负责。
+Avatar、Card、Divider、Empty、Image 和 Tag 使用对应 Ant Design 组件（Avatar 使用 `src`）；Panel 只渲染内容，标题由宿主负责。
 Iframe 固定使用 sandbox（脚本、表单、弹窗、模态框与下载白名单），不允许 `allow-same-origin`，并保留 referrerPolicy 限制。
 加载提示为不拦截鼠标的角标，避免子资源未加载完时阻挡文档内的点击；隐藏或断连时释放浏览上下文，重新激活后重新加载。
+2026-11-04 Iframe 体验调整：组件内提供适应面板和桌面宽度两种本地显示模式，默认适应面板；
+桌面模式将 iframe 最小视口设为 1280px，由外层容器承载横向滚动，避免依赖跨域网页自身的滚动条。
+模式切换只调整尺寸，不重建文档。重新加载按钮重建当前 src 的文档，在新标签页打开入口使用配置的 src，
+不推断 iframe 内导航后的地址。加载超过 15 秒显示非阻塞提示，继续等待 load，不将超时判为失败。
+这些操作仅由宿主处理，不新增组件属性或插件事件。当前实现与定向验证结果见下文验证记录。
 安全取舍和兼容限制见 [F_08 的 Iframe 决策](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互)。
 
 FileTree 使用现有实例状态端口保存滚动位置和宽度，解决目录数据 replace 后重挂载导致滚动回到顶部的问题。
@@ -249,3 +266,82 @@ Dropdown 菜单展开与 ui.select、宿主外观、主题继承和 Iframe 生�
 本次修复后 `test:webui-components` 通过 63 项；后端文件服务、Ops、组件规则、受管资源和下载端点
 定向测试通过 333 项，Windows 下跳过符号链接及 FIFO 相关测试 6 项；AgentOS 受管下载分支另通过 5 项。
 尚未完成完整 WebClient 跨进程及 AgentOS 部署联调。
+
+2026-11-04 Iframe 体验调整验证：`npm run test:webui-components` 通过 78 项。
+新增回归覆盖适应面板/桌面宽度切换不重建文档、外层滚动样式、同 URL 重新加载、失败后重试、
+原始地址的新标签页入口，以及慢加载提示在 load、隐藏和卸载时的计时器清理。
+本次使用 JSDOM 验证交互及样式规则，未操作浏览器；真实网页的滚动条、窄屏和主题显示待用户手工验证。
+
+2026-11-04 文案字段统一：Button 和 Text 以字符串 `value` 提供文案，前后端不接受
+`props.children`，也不为这次尚未发布的字段变更保留别名。适配器将 `value` 映射为 React 内容，
+容器的节点级 children 不变；工作台、Token Weather 及相关示例和断言同步迁移。
+Button 的 `type` 等样式属性继续按白名单校验，不通过放开未知属性解决插件渲染失败。
+前端 `test:webui-components`、`test:webui-contracts`、`test:webui-events` 分别通过 80、139、93 项，
+包括空文案、点击派发、children 拒绝及非法更新保留上一帧有效界面。
+使用 Python 3.12 虚拟环境直接调用后端规则、树校验和序列化，133 个用例通过。
+pytest 被环境缺少 `openjiuwen.core.events.ops_impl.store` 阻断，未完成后端完整回归。
+未操作浏览器、未运行静态检查或完整构建；运行服务是否已加载当前源码及实际插件恢复仍待手工确认。
+
+### 2026-11-04 Props 权威规约与三端核对
+
+新增 S_17，逐项列出当前 21 个组件、162 个顶层 props、嵌套对象、事件数据、子节点与根限制。
+功能影响清单覆盖插件视图、校验、序列化、实例与事件门禁、适配器、全部 15 个槽位及页面宿主、
+主题图标、文件资源、通信转发、示例和安装副本。根目录与两端 AGENTS、S_01、开发指南和中英文插件说明均引用该规范。
+后续属性变更从 S_17 开始，默认同步相关实现与调用方；当前不提供从 Markdown 自动生成实现的能力。
+
+核对发现并修复两处已有差异：前端 Dropdown 拒绝空菜单 key；后端 Divider 拒绝两种标题来源并存和竖向标题子节点，
+并补充共享非法属性用例及前后端完整树回归（包含 Tabs 内嵌场景）。
+
+验证结果：
+
+- 临时核对脚本确认 S_17 与两端的全部组件名、字段名和必填项一致，文档默认值与前端目录一致；
+  递归比较两端属性 / 事件类型、嵌套字段、枚举与子节点许可，补齐共同默认规模限制后结果一致。
+- `npm run test:webui-contracts` 通过 150 项，`npm run test:webui-components` 通过 84 项。
+- Python 3.12：`test_webui_events.py -k "divider or component_cases"` 通过 9 项；
+  `-k "shared_browser or dropdown"` 通过 209 项，两次均使用 `--no-cov`，不代表完整后端测试。
+- 9 份维护入口和规范文档的 158 个相对链接均有效；新文件单独检查空白，Git 未暂存和暂存差异检查通过。
+
+首次测试受沙箱子进程 / 用户日志目录权限限制，授权后重跑通过。未运行格式化、静态检查、完整构建或浏览器操作；
+运行服务和已安装插件副本未在本次任务中重启或更新，页面验收由用户手工完成。
+
+### 2026-11-04 Icon 组件
+
+新增叶子组件 Icon，字段与 [S_17 §4.21](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)
+一致：name 必填并限定共享白名单（含 refresh 别名），size 可选 small/medium/large（兼容 sm/md/lg，缺省回退 medium），
+aria-label 可选且提供时必须去空白后非空；省略标签时按装饰图标渲染 aria-hidden，提供时以 trim 后文本作为 img 名称。
+组件无子节点、无事件，也不作为槽位专用根组件。适配器从生成表读取 Lucide 组件，尺寸映射宿主字号 token
+（small/medium/large 对应 SM/LG/XL），外观只取宿主注入的 className/style，不开放任意 SVG、className 或 style。
+catalog 规则、适配器注册、后端 COMPONENT_RULES 与共享正反用例同步更新；组件总数由 20 调整为 21。
+
+验证结果：
+
+- 前端按 package.json 相同的 esbuild 参数重建测试入口并直接运行测试文件（当前会话沙箱禁止测试脚本的
+  子进程写入工作区缓存，原 `npm run test:webui-*` 未能直接执行）：test:webui-contracts 150 项、
+  webuiComponents 19 项、webuiComponentsReact 65 项、test:webui-events 93 项、test:webui-protocol 14 项、
+  test:webui-renderer 16 项通过，均为 0 失败；SVG 导入按原构建脚本的 stub 行为等价处理后验证。
+- 后端 test_webui_events.py 通过 336 项，包含 4 条合法与 5 条非法 Icon 共享属性用例。
+- 未运行格式化、静态检查、完整构建，也未在浏览器中做视觉验收。
+
+### 2026-11-04 合并后插件 Props 对齐
+
+Gateway 规则仍使用旧 Button / Text / Avatar 字段，导致新前端拒绝登录示例，
+而 FS / MCP Probe 的旧排版字段也无法通过 AgentServer 当前校验。
+按 S_17 将示例迁移为 Button.value、Text.type / strong / code / ellipsis、Avatar.src；
+不增加旧字段别名。单行截断改用 ellipsis，多行截断没有等价属性，移除该限制并保留原有内容长度上限。
+
+Gateway 共用组件同步新字段、尺寸别名、Select.ui.change 和 FilePreview.downloadUrl，
+继续保留本域的 Form / Form.Item、Button.form、布局、Input.autoComplete、Image.fit 与富菜单能力。
+前端表单名称和引用与 Gateway 统一为非空、最多 200 UTF-8 字节，规则至少声明一种校验条件。
+Button.icon 从同一图标白名单生成本域规则，不跨宿主 import；Gateway 继续拒绝独立 Icon 与 Dropdown.icon。
+补齐 AgentServer Dropdown 展示触发区及 Gateway Divider 标题约束，保持完整树校验一致。
+
+验证结果：
+
+- `npm run test:webui-contracts` 和 `npm run test:webui-components` 各通过 150 项；
+  后者包含 53 条 Gateway / 浏览器共享完整树用例。React 测试有 act / useLayoutEffect 警告，退出码为 0。
+- Python 3.12：Gateway Extensions V2 全目录、AgentServer test_webui_events.py、
+  test_probe_example_props.py 共通过 656 项；覆盖登录 ZIP 安装及交互、共用属性和事件向量、探测面板空态 / 成功 / 失败。
+- 新增 Dropdown 多触发节点、交互后代、Image 预览约束后，相关两侧定向回归 9 项通过。
+
+未运行格式化、静态检查、完整构建或浏览器验证。未更新真实安装副本或重启服务；
+修改仓库示例不会自动更新已安装插件，需按示例说明更新副本并重新加载对应宿主。

@@ -15,6 +15,7 @@ from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, GatewayRequestOutput
 from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data, validate_props
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     RenderMode,
     RenderNode,
@@ -48,6 +49,29 @@ CONTRACT_CASES = json.loads((Path(__file__).parents[4] / (
 @pytest.mark.parametrize("case", CONTRACT_CASES, ids=lambda case: case["name"])
 def test_gateway_component_contract_matches_browser(case):
     assert validate_root(_contract_node(case["root"])).ok is case["valid"]
+
+
+SHARED_PROP_CASES = json.loads((Path(__file__).parents[4] / (
+    "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiComponentCases.json"
+)).read_text(encoding="utf-8"))
+SHARED_EVENT_CASES = json.loads((Path(__file__).parents[4] / (
+    "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiEventCases.json"
+)).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("component,props,valid", [
+    (component, props, group == "valid")
+    for group, cases in SHARED_PROP_CASES.items()
+    for component, props in cases
+    if component not in {"Icon", "Dropdown"}
+])
+def test_shared_props_match_browser(component, props, valid):
+    assert (validate_props(component, props) is None) is valid
+
+
+@pytest.mark.parametrize("case", [case for case in SHARED_EVENT_CASES if case["component"] != "Dropdown"])
+def test_shared_event_data_matches_browser(case):
+    assert validate_event_data(case["component"], case["event"], case["data"], case["props"]) is case["allowed"]
 
 
 def test_dropdown_rejects_icon_properties():
@@ -103,7 +127,7 @@ PANEL_TREE = RenderNode(
         RenderNode(component="Input", props={"placeholder": "name"}),
         RenderNode(
             component="Button",
-            props={"label": "Send"},
+            props={"value": "Send"},
             events={"ui.click": {"id": "demo.send"}},
         ),
     ),
@@ -231,7 +255,7 @@ async def test_form_form_item_and_dropdown_are_in_the_catalog(tmp_path):
             ),
             RenderNode(
                 component="Button",
-                props={"label": "Save", "form": "prefs"},
+                props={"value": "Save", "form": "prefs"},
                 events={"ui.click": {"id": "demo.save"}},
             ),
             RenderNode(
@@ -256,7 +280,7 @@ async def test_button_form_must_reference_a_form_in_the_tree(tmp_path):
         children=(
             RenderNode(
                 component="Button",
-                props={"label": "Save", "form": "missing"},
+                props={"value": "Save", "form": "missing"},
                 events={"ui.click": {"id": "demo.save"}},
             ),
         ),

@@ -7,11 +7,6 @@ import { readFileSync } from 'node:fs';
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
   url: 'http://localhost/', pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
 });
-const textStyles = dom.window.document.createElement('style');
-textStyles.textContent = readFileSync(new URL(
-  '../src/features/webui/renderer/adapters/webuiText/WebUIText.css', import.meta.url,
-), 'utf8');
-dom.window.document.head.append(textStyles);
 const iframeStyles = dom.window.document.createElement('style');
 iframeStyles.textContent = readFileSync(new URL(
   '../src/features/webui/renderer/adapters/webuiIframe/Iframe.css', import.meta.url,
@@ -422,7 +417,7 @@ test('Avatar uses native children, styles and image priority without deriving ac
 });
 
 test('real Button preserves Chinese labels and dispatches the declared node event', async () => {
-  const app = await setup({ component: 'Button', props: { label: '确认', variant: 'primary', size: 'sm' }, events });
+  const app = await setup({ component: 'Button', props: { value: '确认', type: 'primary', size: 'sm' }, events });
   try {
     const button = app.container.querySelector('[data-testid="webui-button"]');
     assert.equal(button.textContent, '确认');
@@ -446,11 +441,25 @@ test('real Button preserves Chinese labels and dispatches the declared node even
   } finally { await app.close(); }
 });
 
+for (const component of ['Button', 'Text']) {
+  test(`${component} uses value, preserves empty text and rejects children without removing the last valid frame`, async () => {
+    const app = await setup({ component, props: { value: '有效文案' } });
+    try {
+      const selector = component === 'Button' ? '[data-testid="webui-button"]' : '[data-testid="webui-text"]';
+      assert.equal(app.container.querySelector(selector).textContent, '有效文案');
+      await app.replace({ component, props: { children: '无效文案' } }, 2);
+      assert.equal(app.container.querySelector(selector).textContent, '有效文案');
+      await app.replace({ component, props: { value: '' } }, 3);
+      assert.equal(app.container.querySelector(selector).textContent, '');
+    } finally { await app.close(); }
+  });
+}
+
 test('theme initialization preserves cached instances and mounts each host once', async () => {
   const transport = createMockTransport();
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
-  transport.injectRenderFrame(frame({ component: 'Button', props: { label: 'Cached' }, events }));
+  transport.injectRenderFrame(frame({ component: 'Button', props: { value: 'Cached' }, events }));
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
   try {
@@ -466,7 +475,7 @@ test('theme initialization preserves cached instances and mounts each host once'
 });
 
 test('text Button preserves labels and selected variants without host artwork', async () => {
-  const app = await setup({ component: 'Button', props: { label: '导出报告', variant: 'ghost' }, events });
+  const app = await setup({ component: 'Button', props: { value: '导出报告', type: 'text' }, events });
   try {
     const button = app.container.querySelector('[data-testid="webui-button"]');
     assert.equal(button.textContent, '导出报告');
@@ -474,9 +483,42 @@ test('text Button preserves labels and selected variants without host artwork', 
     assert.match(button.className, /ant-btn-text/);
     await click(button);
     assert.equal(app.business().length, 1);
-    await app.replace({ component: 'Button', props: { label: '删除记录', variant: 'danger' }, events });
+    await app.replace({ component: 'Button', props: { value: '删除记录', danger: true }, events });
     assert.equal(app.container.querySelector('button').textContent, '删除记录');
     assert.match(app.container.querySelector('button').className, /ant-btn-dangerous/);
+  } finally { await app.close(); }
+});
+
+test('Icon renders whitelisted artwork at theme sizes with optional labels', async () => {
+  const app = await setup({ component: 'Icon', props: { name: 'search' } });
+  const icon = () => app.container.querySelector('[data-testid="webui-icon"]');
+  try {
+    assert.equal(icon().tagName.toLowerCase(), 'svg');
+    assert.equal(icon().getAttribute('data-variant'), 'search');
+    assert.equal(icon().getAttribute('width'), '16');
+    assert.equal(icon().getAttribute('height'), '16');
+    assert.equal(icon().getAttribute('aria-hidden'), 'true');
+    assert.equal(icon().getAttribute('role'), null);
+    assert.match(icon().getAttribute('stroke'), /currentColor/);
+
+    await app.replace({ component: 'Icon', props: { name: 'refresh', size: 'sm' } });
+    assert.equal(icon().getAttribute('data-variant'), 'refresh');
+    assert.equal(icon().getAttribute('width'), '12');
+
+    await app.replace({ component: 'Icon', props: { name: 'camera', size: 'large' } }, 3);
+    assert.equal(icon().getAttribute('data-variant'), 'camera');
+    assert.equal(icon().getAttribute('width'), '20');
+
+    await app.replace({ component: 'Icon', props: { name: 'search', 'aria-label': '  Search  ' } }, 4);
+    assert.equal(icon().getAttribute('role'), 'img');
+    assert.equal(icon().getAttribute('aria-label'), 'Search');
+    assert.equal(icon().hasAttribute('aria-hidden'), false);
+
+    // Invalid frames keep the last valid one; the protocol already rejects them.
+    await app.replace({ component: 'Icon', props: { name: 'search', 'aria-label': '   ' } }, 5);
+    assert.equal(icon().getAttribute('aria-label'), 'Search');
+    await app.replace({ component: 'Icon', props: { name: 'not-an-icon' } }, 6);
+    assert.equal(icon().getAttribute('data-variant'), 'search');
   } finally { await app.close(); }
 });
 
@@ -503,27 +545,43 @@ test('every whitelisted icon renders themed artwork, including aliases', () => {
 for (const icon of ['ellipsis', 'refresh', 'camera']) {
   test(`icon-only Button (${icon}) keeps its accessible label and node event without visible text`, async () => {
     const tree = { component: 'Button', props: {
-      label: '本轮操作 / Round actions', icon, iconOnly: true, variant: 'ghost',
+      'aria-label': '本轮操作 / Round actions', icon, type: 'text',
     }, events };
     const app = await setup(tree);
     try {
       const button = app.container.querySelector('[data-testid="webui-button"]');
       assert.equal(button.textContent, '');
       assert.ok(button.querySelector('svg'));
-      assert.equal(button.getAttribute('aria-label'), tree.props.label);
-      assert.equal(button.title, tree.props.label);
+      assert.equal(button.getAttribute('aria-label'), tree.props['aria-label']);
+      assert.equal(button.title, tree.props['aria-label']);
       assert.match(button.className, /ant-btn-text/);
       assert.match(button.className, /ant-btn-icon-only/);
       await click(button);
       assert.equal(app.business().length, 1);
       assert.equal(app.business()[0].payload.action_id, 'confirm');
-      await app.replace({ ...tree, props: { ...tree.props, iconOnly: false } });
-      assert.equal(app.container.querySelector('button').textContent, tree.props.label);
+      await app.replace({ ...tree, props: { ...tree.props, value: tree.props['aria-label'] } });
+      assert.equal(app.container.querySelector('button').textContent, tree.props['aria-label']);
       await act(async () => app.transport.setConnectionState('disconnected'));
       assert.equal(app.container.querySelector('button').disabled, true);
     } finally { await app.close(); }
   });
 }
+
+test('Button forwards antd link, target and loading props', async () => {
+  const app = await setup({ component: 'Button', props: {
+    value: '文档', href: 'https://example.com/docs', target: '_blank',
+  }, events });
+  try {
+    const link = app.container.querySelector('[data-testid="webui-button"]');
+    assert.equal(link.tagName, 'A');
+    assert.equal(link.getAttribute('href'), 'https://example.com/docs');
+    assert.equal(link.getAttribute('target'), '_blank');
+    await app.replace({ component: 'Button', props: { value: '提交', loading: true }, events });
+    const button = app.container.querySelector('[data-testid="webui-button"]');
+    assert.equal(button.tagName, 'BUTTON');
+    assert.match(button.className, /ant-btn-loading/);
+  } finally { await app.close(); }
+});
 
 test('icon Dropdown opens locally, closes on selection and blocks disabled actions', async () => {
   const tree = { component: 'Dropdown', props: {
@@ -583,11 +641,11 @@ test('Dropdown keeps child triggers and supports keyboard activation without bus
 });
 
 test('disabled and unbound buttons never dispatch actions', async () => {
-  const app = await setup({ component: 'Button', props: { label: 'Disabled', disabled: true }, events });
+  const app = await setup({ component: 'Button', props: { value: 'Disabled', disabled: true }, events });
   try {
     await click(app.container.querySelector('button'));
     assert.equal(app.business().length, 0);
-    await app.replace({ component: 'Button', props: { label: 'Unbound', variant: 'ghost' } });
+    await app.replace({ component: 'Button', props: { value: 'Unbound', type: 'text' } });
     const button = app.container.querySelector('button');
     assert.equal(button.disabled, false);
     assert.match(button.className, /ant-btn-text/);
@@ -1216,7 +1274,7 @@ for (const eventName of ['ui.change', 'ui.press_enter', 'ui.click']) {
 
 test('host appearance supplies native layout, selection, icons and accessible icon-only buttons', async () => {
   const result = createProtocolPipeline(componentCatalog).processRenderFrame(frame({
-    component: 'Box', children: [{ component: 'Button', props: { label: 'Open' }, events }],
+    component: 'Box', children: [{ component: 'Button', props: { value: 'Open' }, events }],
   }));
   assert.equal(result.ok, true);
   const container = document.createElement('div'); document.body.append(container);
@@ -1295,12 +1353,12 @@ test('host theme maps semantic values, updates on root changes and localizes lib
   }
 });
 
-test('Text respects theme sizes, semantic tones and host style precedence', async () => {
+test('Text respects theme sizes, semantic types and host style precedence', async () => {
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
   try {
     await act(async () => root.render(createElement(componentRendererRegistry.get('Text'), {
-      node: { props: { value: 'Status', tone: 'danger', size: 'lg', weight: 'bold', monospace: true, max_lines: 2 } },
+      node: { props: { value: 'Status', type: 'danger', size: 'lg', strong: true, code: true, ellipsis: true } },
       appearance: { className: 'host-text', style: { fontSize: 21, fontWeight: 500, fontFamily: 'serif', overflow: 'visible' } },
     })));
     const text = container.querySelector('[data-testid="webui-text"]');
@@ -1314,50 +1372,58 @@ test('Text respects theme sizes, semantic tones and host style precedence', asyn
   } finally { await act(async () => root.unmount()); container.remove(); }
 });
 
-test('Text variants use semantic colors, explicit tone wins and secondary Button is filled', async () => {
-  const app = await setup({ component: 'Text', props: { value: 'Status', variant: 'primary' } });
+test('Text semantic types and Button variant/type props map to antd classes', async () => {
+  const app = await setup({ component: 'Text', props: { value: 'Status', type: 'secondary' } });
   const text = () => app.container.querySelector('[data-testid="webui-text"]');
   try {
-    const primary = text().style.color;
-    assert.ok(primary);
-    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'ghost' } }, 2);
-    assert.ok(text().style.color);
-    assert.notEqual(text().style.color, primary);
-    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'danger' } }, 3);
+    assert.match(text().className, /ant-typography-secondary/);
+    await app.replace({ component: 'Text', props: { value: 'Status', type: 'warning' } }, 2);
+    assert.match(text().className, /ant-typography-warning/);
+    await app.replace({ component: 'Text', props: { value: 'Status', type: 'danger' } }, 3);
     assert.match(text().className, /ant-typography-danger/);
-    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'danger', tone: 'neutral' } }, 4);
+    await app.replace({ component: 'Text', props: { value: 'Status' } }, 4);
     assert.doesNotMatch(text().className, /ant-typography-danger/);
-    assert.equal(text().style.color, '');
-    await app.replace({ component: 'Text', props: { value: 'Status', variant: 'primary', tone: 'success' } }, 5);
+    await app.replace({ component: 'Text', props: { value: 'Status', type: 'success' } }, 5);
     assert.match(text().className, /ant-typography-success/);
-    assert.equal(text().style.color, '');
-    await app.replace({ component: 'Button', props: { label: 'Secondary', variant: 'secondary', size: 'large' } }, 6);
+    await app.replace({ component: 'Button', props: { value: 'Secondary', variant: 'filled', size: 'large' } }, 6);
     const button = app.container.querySelector('[data-testid="webui-button"]');
     assert.match(button.className, /ant-btn-variant-filled/);
     assert.match(button.className, /ant-btn-lg/);
-    await app.replace({ component: 'Button', props: { label: 'Default', size: 'lg' } }, 7);
+    await app.replace({ component: 'Button', props: { value: 'Default', size: 'lg' } }, 7);
     assert.doesNotMatch(app.container.querySelector('button').className, /ant-btn-variant-filled/);
     assert.match(app.container.querySelector('button').className, /ant-btn-lg/);
   } finally { await app.close(); }
 });
 
-test('Text renders monospace, line limits and info tone from normalized props', async () => {
+test('Text renders antd typography modifiers and ellipsis from normalized props', async () => {
   const app = await setup({
-    component: 'Text', props: { value: 'First\nSecond\nThird', monospace: true, max_lines: 2, tone: 'info' },
+    component: 'Text',
+    props: {
+      value: 'First\nSecond\nThird',
+      code: true,
+      strong: true,
+      italic: true,
+      underline: true,
+      delete: true,
+      mark: true,
+      keyboard: true,
+      ellipsis: true,
+    },
   });
   try {
     const text = app.container.querySelector('[data-testid="webui-text"]');
-    assert.equal(text.style.fontFamily, 'var(--font-mono)');
-    assert.equal(getComputedStyle(text).display, '-webkit-box');
-    assert.equal(text.style.getPropertyValue('--webui-text-max-lines'), '2');
-    assert.equal(getComputedStyle(text).overflow, 'hidden');
-    assert.ok(text.style.color, 'info tone must have a semantic color');
-    await app.replace({ component: 'Text', props: { value: 'Plain', monospace: false } });
+    assert.ok(text.querySelector('code'));
+    assert.ok(text.querySelector('strong'));
+    assert.ok(text.querySelector('i'));
+    assert.ok(text.querySelector('u'));
+    assert.ok(text.querySelector('del'));
+    assert.ok(text.querySelector('mark'));
+    assert.ok(text.querySelector('kbd'));
+    assert.match(text.className, /ant-typography-ellipsis/);
+    await app.replace({ component: 'Text', props: { value: 'Plain', code: false, ellipsis: false } });
     const plain = app.container.querySelector('[data-testid="webui-text"]');
-    assert.equal(plain.style.fontFamily, '');
-    assert.equal(plain.style.getPropertyValue('--webui-text-max-lines'), '');
-    assert.ok(!plain.classList.contains('webui-text-clamped'));
-    assert.equal(plain.style.color, '');
+    assert.equal(plain.querySelector('code'), null);
+    assert.doesNotMatch(plain.className, /ant-typography-ellipsis/);
   } finally { await app.close(); }
 });
 
@@ -1394,6 +1460,108 @@ test('Iframe releases inactive documents and resets loading on source changes an
     assert.notEqual(getComputedStyle(state()).pointerEvents, 'none');
     assert.equal(app.business().length, 0);
   } finally { await app.close(); }
+});
+
+test('Iframe desktop width exposes an outer scroll container without reloading the page', async () => {
+  const app = await setup({ component: 'Iframe', props: { src: 'https://example.com/wide', title: 'Wide page' } },
+    { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const frame = app.container.querySelector('iframe');
+    const viewport = app.container.querySelector('[data-testid="webui-iframe-viewport"]');
+    const fit = app.container.querySelector('[data-testid="webui-iframe-fit"]');
+    const desktop = app.container.querySelector('[data-testid="webui-iframe-desktop"]');
+    assert.equal(viewport.dataset.variant, 'fit');
+    assert.equal(getComputedStyle(viewport).overflow, 'auto');
+    assert.equal(getComputedStyle(frame).minWidth, '0');
+    await act(async () => desktop.click());
+    assert.equal(viewport.dataset.variant, 'desktop');
+    assert.equal(desktop.getAttribute('aria-pressed'), 'true');
+    assert.equal(fit.getAttribute('aria-pressed'), 'false');
+    assert.equal(getComputedStyle(frame).minWidth, '1280px');
+    assert.equal(app.container.querySelector('iframe'), frame, 'resizing must preserve the browsing context');
+    await act(async () => fit.click());
+    assert.equal(viewport.dataset.variant, 'fit');
+    assert.equal(getComputedStyle(frame).minWidth, '0');
+    assert.equal(app.container.querySelector('iframe'), frame);
+    assert.equal(app.business().length, 0, 'display controls are local host operations');
+  } finally { await app.close(); }
+});
+
+test('Iframe reload retries the same URL and retains desktop width and sandbox permissions', async () => {
+  const app = await setup({ component: 'Iframe', props: { src: 'https://example.com/retry', title: 'Retry page' } },
+    { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const first = app.container.querySelector('iframe');
+    await act(async () => first.dispatchEvent(new window.Event('load')));
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-desktop"]').click());
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    const reloaded = app.container.querySelector('iframe');
+    assert.notEqual(reloaded, first);
+    assert.equal(reloaded.src, first.src);
+    assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-viewport"]').dataset.variant, 'desktop');
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'loading');
+    await act(async () => reloaded.dispatchEvent(new window.Event('error')));
+    assert.equal(app.container.querySelector('iframe'), null);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'error');
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    const retry = app.container.querySelector('iframe');
+    assert.ok(retry);
+    assert.equal(retry.src, first.src);
+    assert.equal(retry.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    await act(async () => retry.dispatchEvent(new window.Event('load')));
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]'), null);
+    const open = app.container.querySelector('[data-testid="webui-iframe-open-source"]');
+    assert.equal(open.href, first.src);
+    assert.equal(open.target, '_blank');
+    assert.equal(open.rel, 'noopener noreferrer');
+    assert.equal(app.business().length, 0);
+  } finally { await app.close(); }
+});
+
+test('Iframe slow loading stays interactive and cancels pending notices on completion and teardown', async (context) => {
+  const timers = new Map();
+  let nextTimer = -1;
+  const originalSetTimeout = window.setTimeout.bind(window);
+  const originalClearTimeout = window.clearTimeout.bind(window);
+  context.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
+    if (delay !== 15000) return originalSetTimeout(callback, delay, ...args);
+    const timer = nextTimer--;
+    timers.set(timer, callback);
+    return timer;
+  });
+  context.mock.method(window, 'clearTimeout', (timer) => {
+    if (!timers.delete(timer)) originalClearTimeout(timer);
+  });
+  const tree = (src) => ({ component: 'Iframe', props: { src, title: 'Slow page' } });
+  const app = await setup(tree('https://example.com/slow'), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    assert.equal(timers.size, 1);
+    const frame = app.container.querySelector('iframe');
+    await act(async () => {
+      const [timer, callback] = [...timers][0];
+      timers.delete(timer);
+      callback();
+    });
+    const notice = app.container.querySelector('[data-testid="webui-iframe-state"]');
+    assert.equal(notice.dataset.variant, 'slow');
+    assert.equal(getComputedStyle(notice).pointerEvents, 'none');
+    assert.equal(app.container.querySelector('iframe'), frame, 'slow loading must not discard the document');
+    await act(async () => frame.dispatchEvent(new window.Event('load')));
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]'), null);
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    assert.equal(timers.size, 1);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'loading');
+    await act(async () => app.container.querySelector('iframe').dispatchEvent(new window.Event('load')));
+    assert.equal(timers.size, 0, 'loaded frames cancel their slow-loading timer');
+    await app.replace(tree('https://example.com/next'));
+    assert.equal(timers.size, 1);
+    await app.activity(false);
+    assert.equal(timers.size, 0, 'inactive frames must not leave pending timers');
+    await app.activity(true);
+    assert.equal(timers.size, 1);
+  } finally { await app.close(); }
+  assert.equal(timers.size, 0, 'unmount cancels pending timers');
 });
 
 test('Iframe keeps relative and absolute host sources sandboxed without same-origin access', async () => {
@@ -1459,10 +1627,10 @@ test('WebUIEntryHost renders application.entry with Avatar and closes on clear f
           component: 'Box',
           props: { direction: 'column', align: 'center' },
           children: [
-            { component: 'Avatar', props: { url: '/logo.svg', alt: 'Welcome', size: 64 } },
+            { component: 'Avatar', props: { src: '/logo.svg', alt: 'Welcome', size: 64 } },
             {
               component: 'Button',
-              props: { label: 'Get started', variant: 'primary' },
+              props: { value: 'Get started', type: 'primary' },
               events: { 'ui.click': { id: 'workbench.entry.close' } },
             },
           ],
@@ -1534,8 +1702,8 @@ const formTree = (rules = [{ required: true, message: '请输入账号' }, { min
       { component: 'Form.Item', props: { name: 'secret', label: '密码', rules: [{ pattern: '^[A-Za-z]+[0-9]+!$', message: '密码格式不正确' }] },
         children: [{ component: 'Input', props: { type: 'password' } }] },
     ] },
-    { component: 'Button', props: { label: '确认', form: 'credentials' }, events },
-    { component: 'Button', props: { label: '普通按钮' }, events },
+    { component: 'Button', props: { value: '确认', form: 'credentials' }, events },
+    { component: 'Button', props: { value: '普通按钮' }, events },
   ],
 });
 
@@ -1580,7 +1748,7 @@ test('Form fields use literal names, optional rules, and stay isolated from anot
     { component: 'Form', props: { name: 'two' }, children: [
       { component: 'Form.Item', props: { name: 'other', rules: [{ required: true, message: 'Required' }] }, children: [{ component: 'Input' }] },
     ] },
-    { component: 'Button', props: { label: 'First', form: 'one' }, events },
+    { component: 'Button', props: { value: 'First', form: 'one' }, events },
   ] };
   const app = await setup(tree);
   try {
@@ -1600,7 +1768,7 @@ test('Dropdown expands locally and sends only the registered clicked menu key', 
     { key: 'account', label: 'alice', disabled: true }, { type: 'divider' }, { key: 'exit', label: '退出登录' },
   ],
     placement: 'topLeft', align: { points: ['bl', 'tr'], offset: [0, 0] } }, events: { 'ui.select': events['ui.click'] },
-    children: [{ component: 'Avatar', props: { url: '/logo.svg', alt: 'User' } }] });
+    children: [{ component: 'Avatar', props: { src: '/logo.svg', alt: 'User' } }] });
   try {
     await click(app.container.querySelector('[data-testid="webui-dropdown-trigger"]'));
     assert.equal(app.business().length, 0);
@@ -1678,7 +1846,7 @@ test('a new request context can replace the blocking entry without exposing the 
     await act(async () => runtime.resetRequestContext());
     assert.equal(container.querySelector('dialog').open, true);
     const next = { ...target, instance_key: 'new' };
-    await act(async () => transport.injectRenderFrame(frame({ component: 'Button', props: { label: 'Current view' }, events }, 1, next)));
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Button', props: { value: 'Current view' }, events }, 1, next)));
     assert.doesNotMatch(container.textContent, /Previous view/);
     await click(container.querySelector('[data-testid="webui-button"]'));
     assert.equal(transport.dispatches.findLast((item) => item.event === 'ui.click').target.instanceKey, 'new');

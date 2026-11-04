@@ -1,7 +1,7 @@
 import { checkURLs, component, object, text, token, union } from './shared.ts';
 
 export const avatarRule = component('Avatar', {
-  url: text,
+  src: text,
   children: text,
   alt: text,
   gap: { kind: 'number', min: 0, max: 4096 },
@@ -18,6 +18,6 @@ export const avatarRule = component('Avatar', {
     const style = (p.style ?? {}) as Record<string, unknown>;
     const invalidColor = ['backgroundColor', 'color'].some((key) => style[key] !== undefined
       && !/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(style[key] as string));
-    return checkURLs(p, ['url']) ?? (invalidColor ? 'Avatar colors must use hexadecimal notation' : null);
+    return checkURLs(p, ['src']) ?? (invalidColor ? 'Avatar colors must use hexadecimal notation' : null);
   },
 });

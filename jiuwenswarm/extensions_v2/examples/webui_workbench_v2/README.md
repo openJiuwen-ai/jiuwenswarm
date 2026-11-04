@@ -34,10 +34,10 @@
 | `conversation.session.content.after` | 已结束助手轮次的真实 Token 用量，复用 ghost Button 样式和 database 图标，不绑定点击动作；执行轮次菜单操作后另显示结果行 |
 | `conversation.turn.footer.actions` | `👍` 单符号按钮与 `…` 下拉入口并排，菜单包含“刷新本轮 / Refresh round”和“本轮详情 / Round details” |
 | `conversation.header.title.after` | 工作台状态 Tag |
-| `conversation.header.actions` | 刷新当前会话工作台的纯图标按钮；插件声明 `variant="ghost"`、`icon="refresh"` 和 `iconOnly=true` |
+| `conversation.header.actions` | 刷新当前会话工作台的纯图标按钮；插件声明 `type="text"`、`icon="refresh"` 和 `aria-label` |
 
 轮次位置的 `instance_key` 来自实际 `requestId`。用量显示为 `用量：22.8M tokens` 等文案，
-沿用 `Button(variant="ghost", size="md", icon="database")` 的外观，不声明 `ui.click`，仅用于展示。
+沿用 `Button(type="text", size="md", icon="database")` 的外观，不声明 `ui.click`，仅用于展示。
 取自 `ops.session.usage()` 的本轮 `turn.total_tokens`，不是上下文占用量或会话累计账单。
 插件监听 `context.usage.updated` 并读取宿主快照，只更新对应会话、对应 requestId 的展示；重复通知覆盖数值，不累加。
 真实零值显示 `用量：0 tokens`；缺失显示“未上报”，不使用固定数字，也不从输入和输出推算总数。
@@ -52,15 +52,15 @@
 这些尺寸由宿主主题提供，插件只声明 size；输入框下方的四个快捷按钮也使用该规格。
 
 轮次菜单使用 `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")`，展开期间保留浅灰背景。
-其左侧通过插件渲染树添加 `Button(label="👍", variant="ghost")`，仅展示符号，不绑定点赞业务动作；两者使用横向 Box 排列。
+其左侧通过插件渲染树添加 `Button(value="👍", type="text")`，仅展示符号，不绑定点赞业务动作；两者使用横向 Box 排列。
 打开菜单不发送业务事件；选中菜单项发送 `ui.select`，动作 `workbench.turn.select`，data.key 为 `refresh` 或 `details`。
-独立 Button 也支持 `icon="ellipsis", iconOnly=true, variant="ghost"`，label 保留为可访问名称及悬停提示。
+独立 Button 也支持纯图标模式（省略 `value` 并设置 `icon="ellipsis", type="text"`，`aria-label` 作为可访问名称及悬停提示）。
 
 输入框上方固定展示 `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06` 和灰色的“上下文充裕”，这些是演示数据，不代表实时用量。该视图属于本工作台插件，无需安装独立的 `token_weather` 插件。点击右侧“隐藏”后保留“Token 天气”和“显示”按钮；显隐状态按会话隔离，后续 ready 恢复当前状态，重新激活插件后重置。插件只使用 `Box`、`Text`、`Button`，不包裹 `Card`；背景、圆角和内边距由宿主 slot 提供。
 
 ## 侧栏用户入口
 
-`application.sidebar.footer` 是应用范围的 single 槽位，不要求聊天会话。插件在该槽位渲染 `Avatar` 触发区与 `Dropdown` 菜单，唯一菜单项“退出登录 / Sign out”绑定 `ui.select`；选中后按浏览器连接记录未登录状态并改渲染“登录”按钮，点击该按钮（`ui.click`，动作 `workbench.user.login`）切回用户菜单。状态按 `target.connection_id` 隔离；断连时平台清理实例，插件侧的演示状态随激活存续，重连后重新触发 `ui.ready`。示例不接入真实登录。
+`application.sidebar.footer` 是应用范围的 single 槽位，不要求聊天会话。用户菜单统一由本工作台的 `user-menu` 实例提供，无需另安装 `webui.user-menu`。插件在该槽位渲染使用 `src` 的 `Avatar` 触发区与 `Dropdown` 菜单，“个人资料 / Profile”和“退出登录 / Sign out”绑定 `ui.select`。个人资料仅返回演示选择回执，不打开页面；退出登录按浏览器连接记录未登录状态并改渲染使用 `value` 的“登录”按钮，点击该按钮（`ui.click`，动作 `workbench.user.login`）切回用户菜单。状态按 `target.connection_id` 隔离；断连时平台清理实例，插件侧的演示状态随激活存续，重连后重新触发 `ui.ready`。示例不接入真实登录。
 
 ## 右侧面板：工作区文件与网页预览
 

@@ -73,7 +73,7 @@ async def _click_params(runtime, ws, slot, *, props=None):
         session_id="", slot_id=slot, package_id=PACKAGE, instance_key="controls",
         scope="application", connection_id=connection_id,
     )
-    button_props = {"label": "Apply"}
+    button_props = {"value": "Apply"}
     if props is not None:
         button_props.update(props)
     await runtime.bus.trigger(Event("ui.render", UiRenderInput(

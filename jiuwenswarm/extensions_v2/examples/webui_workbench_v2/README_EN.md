@@ -34,14 +34,14 @@ After installation, open an existing real conversation and refresh or re-enter i
 | `conversation.session.content.after` | Real token usage for a completed assistant round, using the ghost Button style and database icon without a click action; round menu actions add a result row |
 | `conversation.turn.footer.actions` | A `👍` symbol button beside an icon-only `…` dropdown containing "Refresh round" and "Round details" |
 | `conversation.header.title.after` | Workbench status Tag |
-| `conversation.header.actions` | Icon-only refresh button declared by the plugin with `variant="ghost"`, `icon="refresh"`, and `iconOnly=true` |
+| `conversation.header.actions` | Icon-only refresh button declared by the plugin with `type="text"`, `icon="refresh"`, and `aria-label` |
 
 Normal buttons use `size="md"`: 32px height, 14px text, 16px horizontal padding, an 8px icon gap,
 8px corners, and no default shadow. The host theme owns these metrics; the plugin only selects size.
 The four quick actions below the input use this same normal size.
 
 Turn slots use the actual `requestId` as `instance_key`. Usage appears as a label such as `用量：22.8M tokens`,
-using `Button(variant="ghost", size="md", icon="database")` without a `ui.click` binding, for display only.
+using `Button(type="text", size="md", icon="database")` without a `ui.click` binding, for display only.
 The total comes from `turn.total_tokens` returned by `ops.session.usage()`.
 It represents the provider's round total, rather than context occupancy or a cumulative session bill.
 The plugin listens for `context.usage.updated`, reads the bound host snapshot, and updates only the matching session and requestId.
@@ -56,15 +56,15 @@ other historical rounds show "not reported". Host usage notifications or saved p
 runtime modes that provide neither keep the "not reported" display.
 
 The round menu uses `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")` and keeps its muted background while open.
-A plugin-rendered `Button(label="👍", variant="ghost")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.
+A plugin-rendered `Button(value="👍", type="text")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.
 Opening the menu sends no business event. Selecting an item sends `ui.select` with action `workbench.turn.select` and data.key `refresh` or `details`.
-Standalone Button nodes also support `icon="ellipsis", iconOnly=true, variant="ghost"`; label remains the accessible name and hover hint.
+Standalone Button nodes also support icon-only mode (`icon="ellipsis", type="text"` without `value`; `aria-label` provides the accessible name and hover hint).
 
 The above-input view displays fixed demo values: `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06`, followed by secondary text `上下文充裕`. These values do not represent live usage. This view belongs to Workbench and does not require the separate `token_weather` plugin. Hiding details keeps the `Token 天气` label and a show button. Visibility is scoped to the conversation, survives subsequent ready events, and resets when the plugin is activated again. The plugin uses `Box`, `Text`, and `Button` without a `Card`; the host slot supplies the background, border radius, and padding.
 
 ## Sidebar user entry
 
-`application.sidebar.footer` is an application-scope single slot that needs no chat session. The plugin renders an `Avatar` trigger with a `Dropdown` menu whose only item, "退出登录 / Sign out", is bound to `ui.select`. Selecting it records the signed-out state per browser connection and renders a "登录 / Sign in" button instead; clicking that button (`ui.click`, action `workbench.user.login`) restores the menu. State is isolated by `target.connection_id`; the platform clears the instance on disconnect while the plugin keeps the demo state for the activation, and the next connection triggers `ui.ready` again. No real authentication is involved.
+`application.sidebar.footer` is an application-scope single slot that needs no chat session. Workbench provides the user menu through its `user-menu` instance; the separate `webui.user-menu` package is no longer needed. The plugin renders an `Avatar` trigger using `src` with a `Dropdown` menu. Both "个人资料 / Profile" and "退出登录 / Sign out" bind `ui.select`. Profile only acknowledges the demo selection and opens no page. Sign out records the signed-out state per browser connection and renders a "登录 / Sign in" button using `value`; clicking it (`ui.click`, action `workbench.user.login`) restores the menu. State is isolated by `target.connection_id`; the platform clears the instance on disconnect while the plugin keeps the demo state for the activation, and the next connection triggers `ui.ready` again. No real authentication is involved.
 
 ## Right panel: workspace files and web preview
 

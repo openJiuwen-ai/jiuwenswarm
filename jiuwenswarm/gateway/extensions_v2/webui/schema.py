@@ -252,6 +252,11 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
         return _fail(f"{node.component} is only allowed at the tree root")
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")
+    if node.component == "Divider" and node.children:
+        if "children" in node.props:
+            return _fail("Divider title sources are mutually exclusive")
+        if node.props.get("orientation") == "vertical":
+            return _fail("vertical Divider cannot have a title")
     if node.component == "Form" and not node.children:
         return _fail("Form requires Form.Item children")
     if node.component == "Form.Item" and len(node.children) != 1:

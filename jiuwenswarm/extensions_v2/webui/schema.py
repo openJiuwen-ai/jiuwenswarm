@@ -217,8 +217,17 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
         return _fail(f"{node.component} is only allowed at the tree root")
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")
-    if node.component == "Dropdown" and bool(node.props.get("icon")) == bool(node.children):
-        return _fail("Dropdown requires exactly one trigger source: icon or non-empty children")
+    if node.component == "Dropdown":
+        if (bool(node.props.get("icon")) == bool(node.children)
+                or (not node.props.get("icon") and len(node.children) != 1)):
+            return _fail("Dropdown requires exactly one trigger source: icon or non-empty children")
+        if any(not _display_only(child) for child in node.children):
+            return _fail("Dropdown trigger must contain only display components")
+    if node.component == "Divider" and node.children:
+        if "children" in node.props:
+            return _fail("Divider title sources are mutually exclusive")
+        if node.props.get("orientation") == "vertical":
+            return _fail("vertical Divider cannot have a title")
     if node.component == "Tabs":
         for item in node.props["items"]:
             for child in item.get("children", ()):
@@ -237,6 +246,12 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
             if not report.ok:
                 return report
     return _OK
+
+
+def _display_only(node: RenderNode) -> bool:
+    return (isinstance(node, RenderNode) and node.component in {"Box", "Text", "Avatar", "Image", "Tag"}
+            and not node.events and (node.component != "Image" or node.props.get("preview") is False)
+            and all(_display_only(child) for child in node.children))
 
 
 def _validate_value(name: str, value: Any, *, depth: int = 0) -> ValidationReport:

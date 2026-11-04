@@ -1358,8 +1358,6 @@
     "maximize": "Maximize",
     "restore": "Exit Full Screen",
     "toolTabs": "Tool panel tabs",
-    "builtinTools": "Tools",
-    "closeToolTab": "Close {{title}} tab",
     "taskOverview": "Task Overview",
     "elapsedTime": "Elapsed time: {{value}}",
     "duration": "Duration",
@@ -5365,8 +5363,15 @@
   },
   "webuiIframe": {
     "loading": "Loading page...",
+    "slow": "This page is taking longer to load. Reload or open it in a new tab.",
     "error": "Unable to load page",
-    "inactive": "Page paused"
+    "inactive": "Page stopped. It will reload when restored.",
+    "displayMode": "Page display mode",
+    "fit": "Fit panel",
+    "desktop": "Desktop width",
+    "desktopHint": "Use a page width of at least 1280px with horizontal scrolling",
+    "reload": "Reload page",
+    "openSource": "Open original URL in a new tab"
   },
   "webuiFiles": {
     "treeLabel": "Workspace files",

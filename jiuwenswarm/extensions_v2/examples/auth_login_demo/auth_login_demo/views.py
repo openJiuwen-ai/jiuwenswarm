@@ -25,7 +25,7 @@ def account_avatar(username: str, alt: str, avatar: str | None = None) -> dict:
         "backgroundColor": AVATAR_COLORS[color_key % len(AVATAR_COLORS)], "color": "#FFFFFF", "fontSize": 14,
     }}
     if avatar:
-        props["url"] = avatar
+        props["src"] = avatar
     return props
 
 
@@ -65,11 +65,11 @@ COPY = {
 }
 
 
-def text(value: str, *, size: str | None = None, weight: str | None = None,
-         variant: str | None = None, tone: str | None = None) -> dict:
+def text(value: str, *, size: str | None = None, strong: bool | None = None,
+         text_type: str | None = None) -> dict:
     """Build one noninteractive text node."""
     props = {"value": value}
-    for name, setting in (("size", size), ("weight", weight), ("variant", variant), ("tone", tone)):
+    for name, setting in (("size", size), ("strong", strong), ("type", text_type)):
         if setting is not None:
             props[name] = setting
     return {"component": "Text", "props": props}
@@ -87,14 +87,14 @@ def login_view(language: str, layout: str, assets: dict[str, str], *, mode: str 
             {"pattern": r"^(?=.{8,128}$)(?=.*[A-Za-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).+$", "message": copy["password_pattern"]},
         ]}, "children": [{"component": "Input", "props": {"type": "password", "placeholder": copy["password"], "autoComplete": "off"}}]},
     ]
-    card = [text(copy["title"], size="lg", weight="bold"),
+    card = [text(copy["title"], size="lg", strong=True),
             {"component": "Form", "props": {"name": "credentials", "requiredMark": False}, "children": fields}]
     if message:
-        card.append(text(copy[message], tone="danger"))
+        card.append(text(copy[message], text_type="danger"))
     card.extend([
-        {"component": "Button", "props": {"label": copy["register" if mode == "register" else "submit"], "variant": "primary", "form": "credentials"},
+        {"component": "Button", "props": {"value": copy["register" if mode == "register" else "submit"], "type": "primary", "form": "credentials"},
          "events": {"ui.click": {"id": "login.register" if mode == "register" else "login.confirm"}}},
-        {"component": "Button", "props": {"label": copy["to_login" if mode == "register" else "to_register"], "variant": "ghost"},
+        {"component": "Button", "props": {"value": copy["to_login" if mode == "register" else "to_register"], "type": "text"},
          "events": {"ui.click": {"id": "login.mode", "args": {"mode": "login" if mode == "register" else "register"}}}},
     ])
     columns = []

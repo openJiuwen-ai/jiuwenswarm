@@ -1,4 +1,4 @@
-import { array, bool, component, nonEmpty, object, text, token, union, unique } from './shared.ts';
+import { array, bool, component, object, text, token, union, unique } from './shared.ts';
 import { WEBUI_ICON_NAMES } from '../../icons/names.ts';
 import type { WebUIWireNode } from '../../contracts/wire.ts';
 
@@ -37,9 +37,9 @@ export const dropdownRule = component('Dropdown', {
     }
     const items = props.items as WebUIDropdownItem[];
     const keys = items.flatMap((item) => item.key === undefined ? [] : [item.key]);
-    return items.length > 0 && keys.every(nonEmpty) && unique(keys)
-      && items.every((item) => item.type === 'divider' || (nonEmpty(item.key)
-        && (Array.isArray(item.label) ? item.label.length > 0 : nonEmpty(item.label))))
+    return items.length > 0 && keys.every((key) => key.trim().length > 0) && unique(keys)
+      && items.every((item) => item.type === 'divider' || (item.key.trim().length > 0
+        && (Array.isArray(item.label) ? item.label.length > 0 : item.label.trim().length > 0)))
       ? null : 'menu items must have unique non-empty keys and labels';
   },
   validateEvent: (_event, data, props) => (props.items as WebUIDropdownItem[]).some(

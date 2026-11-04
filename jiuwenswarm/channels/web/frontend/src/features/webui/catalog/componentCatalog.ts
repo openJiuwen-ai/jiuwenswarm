@@ -19,6 +19,7 @@ import { iframeRule } from './components/iframe.ts';
 import { avatarRule } from './components/avatar.ts';
 import { formRule, formItemRule } from './components/form.ts';
 import { dropdownRule } from './components/dropdown.ts';
+import { iconRule } from './components/icon.ts';
 
 /** Component contract; Box/Text/Button retain their existing props. */
 export const componentCatalog = createCatalog({
@@ -26,7 +27,7 @@ export const componentCatalog = createCatalog({
     ...basicComponentRules,
     inputRule, switchRule, selectRule, treeSelectRule,
     sliderRule, tabsRule, emptyRule, imageRule, dividerRule, cardRule, tagRule, panelRule, fileTreeRule, filePreviewRule,
-    iframeRule, avatarRule, formRule, formItemRule, dropdownRule,
+    iframeRule, avatarRule, formRule, formItemRule, dropdownRule, iconRule,
   ],
   slots: webUISlots,
 });

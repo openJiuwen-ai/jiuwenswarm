@@ -1,16 +1,21 @@
 # WebUI plugin interactions
 
+The [S_17 authoritative props specification](../docs/specs/S_17_webui-component-props.md) defines all component fields, defaults, nested structures, events and affected features.
+Plugin declarations, backend validation and frontend rendering must follow it. Update that specification first, then synchronize the three implementations and their callers. This guide provides usage examples rather than a separate property reference.
+
+Button and Text use the string prop `value` for text and reject `props.children`. Their adapters render `value` as React content. Node-level `children` remains reserved for components that allow nested nodes.
+
 Plugins publish trees through `ops.ui.render` and bind business actions with node events:
 
 ```python
 RenderNode(
     "Button",
-    {"label": "Refresh"},
+    {"value": "Refresh"},
     events={"ui.click": {"id": "refresh", "args": {"section": "summary"}}},
 )
 ```
 
-Declaring a component does not enable its browser renderer. Plugin validation covers 20 catalog components (including `Avatar`, `FileTree`, `FilePreview` and `Dropdown`).
+Declaring a component does not enable its browser renderer. Plugin validation covers 21 catalog components (including `Avatar`, `FileTree`, `FilePreview`, `Dropdown` and `Icon`).
 See the [component contract](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md).
 
 All browser interactions use `webui.dispatch`. The host takes the node path and revision from the displayed instance:
@@ -91,11 +96,11 @@ or null after clearing; multiple/tags mode uses an array.
 value takes precedence over defaultValue; a valid replace reinitializes selection. Disabled or disconnected selects cannot be used.
 
 Prefer small/medium/large component sizes; sm/md/lg remain aliases. Switch/Card support small/medium only,
-and Avatar also accepts default and numeric pixel sizes. Text.max_lines must be a positive integer;
-omit it for unlimited lines (remove legacy 0 values). Explicit Text.tone overrides variant; primary/danger/ghost
-use theme primary/error/tertiary text colors, and Button.secondary uses a filled appearance.
+and Avatar uses `src` and also accepts default and numeric pixel sizes.
+Text style props follow Ant Design `Typography.Text` (`type`, `strong`, `italic`, `underline`, `delete`, `code`, `mark`, `keyboard`, `disabled`, `ellipsis`); Button style props follow Ant Design `Button` (`type`, `color`, `variant`, `shape`, `size`, `danger`, `ghost`, `disabled`, `block`, `loading`, `href`, `target`, `icon`, `iconPlacement`, `aria-label`): `color` accepts the 13 preset colors, `loading` accepts a boolean or `{delay}`, `href` is validated as HTTP(S) or relative, and `target` requires `href`. Icon-only buttons require a nonempty `aria-label`.
 Avatar accepts text through props.children and native style.backgroundColor/color/fontSize. Colors use 3-, 4-, 6- or 8-digit hexadecimal notation; fontSize is numeric from 1 to 4096 pixels and gap from 0 to 4096. AntD handles image priority and text after image failure. Empty avatars are allowed, name is rejected, and the host does not derive initials or colors.
 Dropdown requires exactly one trigger source: icon or nonempty children; icon triggers also require a nonempty ariaLabel.
+An `Icon` renders one whitelisted Lucide icon on its own. `name` is required and limited to the shared whitelist (including the `refresh` alias); `size` accepts small/medium/large (sm/md/lg aliases). Without `aria-label` it is decorative and hidden from the accessibility tree; when provided it must be nonempty and becomes the accessible name. Icon has no children and no events.
 application.menu.main accepts native Box/Card trees without an Iframe. Panel/Iframe root-only restrictions still apply.
 
 A tree select can bind node selection, the whole selection value and clearing separately:

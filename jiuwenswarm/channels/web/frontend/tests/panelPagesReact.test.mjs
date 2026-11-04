@@ -21,8 +21,7 @@ after(() => {
 
 const { act, createElement: h, useState, useEffect } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ExpandedPanel, BUILTIN_PANEL_KEY, usePanelPages, i18n } =
-  await import('../node_modules/.cache/panel-pages/components.mjs');
+const { ExpandedPanel, i18n } = await import('../node_modules/.cache/panel-pages/components.mjs');
 await i18n.changeLanguage('en');
 
 async function setup(initial = {}) {
@@ -30,22 +29,26 @@ async function setup(initial = {}) {
   document.body.append(container);
   const root = createRoot(container);
   const unmounted = [];
+  const closed = [];
   function Body({ name }) {
     useEffect(() => () => { unmounted.push(name); }, [name]);
     return h('div', null, `Plugin ${name}`);
   }
-  function Harness({ scope = 's1', names = ['a', 'b', 'c'], title = '', onSectionTabClose }) {
-    const [nativeTab, setNativeTab] = useState('planning');
-    const pages = names.map((name) => ({
-      key: `${scope}:${name}`, label: `${name}${title}`, content: h(Body, { key: name, name }),
-    }));
-    const { visiblePages, activePage, selectPage, closePage } = usePanelPages(pages, scope);
+  function Harness({ names = ['a', 'b'], title = '', activeTab = 'planning', showMiddleTab = true }) {
+    const [selection, setSelection] = useState(activeTab);
+    const [showBrowserTab, setShowBrowserTab] = useState(true);
+    useEffect(() => setSelection(activeTab), [activeTab]);
     return h(ExpandedPanel, {
-      activeTab: nativeTab, onTabChange: setNativeTab,
-      activePage, onPageChange: selectPage, onTabClose: closePage, onSectionTabClose,
-      additionalPanels: visiblePages, onCollapse() {},
-      middleTab: { key: 'team', label: 'Team', icon: null }, showMiddleTab: true, showBrowserTab: true,
-      reviewPanel: h('div', null, 'Native review'), resolveActiveTab: (key) => key,
+      activeTab: selection, onTabChange: setSelection,
+      onTabClose(key) { closed.push(key); setShowBrowserTab(false); },
+      additionalPanels: names.map((name) => ({
+        key: `webui:${name}`, label: `${name}${title}`, content: h(Body, { key: name, name }),
+      })),
+      onCollapse() {},
+      middleTab: { key: 'team', label: 'Team', icon: null }, showMiddleTab, showBrowserTab,
+      reviewPanel: h('div', null, 'Native review'),
+      resolveActiveTab: (key) => ['planning', 'team', 'artifacts', 'review'].includes(key)
+        || (key === 'browser' && showBrowserTab) ? key : 'planning',
       renderPlanningContent: () => h('div', null, 'Native tasks'),
       renderMiddleTabContent: () => h('div', null, 'Native team'),
       renderBrowserContent: () => h('div', null, 'Native browser'),
@@ -53,126 +56,107 @@ async function setup(initial = {}) {
   }
   const render = async (props) => act(async () => root.render(h(Harness, props)));
   await render(initial);
-  const tab = (key, builtin = false) => container.querySelector(
-    `[data-testid="tool-panel-${builtin ? 'builtin-' : ''}tab"][data-variant="${key}"]`,
-  );
-  const close = (key) => tab(key).parentElement.querySelector('[data-testid="tool-panel-tab-close"]');
+  const tab = (key) => container.querySelector(`[data-testid="tool-panel-tab"][data-variant="${key}"]`);
   const click = async (node) => {
     assert.ok(node);
     await act(async () => node.click());
   };
   return {
-    container, tab, close, click, render, unmounted,
-    active: () => container.querySelector('[data-testid="tool-panel-tab"][aria-selected="true"]').dataset.variant,
+    container, tab, click, render, unmounted, closed,
+    active: () => container.querySelector('[role="tab"][aria-selected="true"]').dataset.variant,
+    content: () => container.querySelector('[data-testid="tool-panel-expanded-content"]').textContent,
     async dispose() { await act(async () => root.unmount()); container.remove(); },
   };
 }
 
-test('native tools occupy one permanent outer page with functional nonclosable sections', async () => {
+test('native functions and plugin pages share the original single tab row', async () => {
   const app = await setup();
   try {
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
-    assert.equal(app.close(BUILTIN_PANEL_KEY), null);
-    assert.equal(app.container.querySelectorAll('[data-testid="tool-panel-tab"]').length, 4);
-    assert.equal(app.container.querySelectorAll('[data-testid="tool-panel-builtin-tab-close"]').length, 0);
+    assert.equal(app.container.querySelectorAll('[role="tablist"]').length, 1);
+    assert.equal(app.container.querySelectorAll('[role="tabpanel"]').length, 1);
+    assert.deepEqual([...app.container.querySelectorAll('[role="tab"]')].map((node) => node.dataset.variant),
+      ['planning', 'team', 'artifacts', 'review', 'browser', 'organization', 'webui:a', 'webui:b']);
+    assert.equal(app.tab('builtin-tools'), null);
     for (const [key, text] of [
       ['team', 'Native team'], ['artifacts', 'Native artifacts'], ['review', 'Native review'],
-      ['browser', 'Native browser'], ['organization', 'Native organization'], ['planning', 'Native tasks'],
+      ['browser', 'Native browser'], ['organization', 'Native organization'],
+      ['webui:a', 'Plugin a'], ['webui:b', 'Plugin b'], ['planning', 'Native tasks'],
     ]) {
-      await app.click(app.tab(key, true));
-      assert.equal(app.container.querySelector('[data-testid="tool-panel-builtin-content"]').textContent, text);
+      await app.click(app.tab(key));
+      assert.equal(app.active(), key);
+      assert.equal(app.content(), text);
+      const panel = app.container.querySelector('[role="tabpanel"]');
+      assert.equal(panel.getAttribute('aria-labelledby'), app.tab(key).id);
     }
-    await app.click(app.tab('s1:a'));
-    assert.equal(app.container.querySelector('[data-testid="tool-panel-builtin-expanded-header"]'), null);
-    await app.click(app.tab(BUILTIN_PANEL_KEY));
-    assert.match(app.container.textContent, /Native tasks/);
+    assert.ok(app.unmounted.includes('a'));
   } finally { await app.dispose(); }
 });
 
-test('closing inactive pages preserves selection; closing active pages selects a neighbor and unmounts content', async () => {
+test('only the browser retains its original close button', async () => {
   const app = await setup();
   try {
-    await app.click(app.tab('s1:b'));
-    assert.equal(app.tab('s1:b').tagName, 'BUTTON');
-    assert.equal(app.close('s1:b').closest('[role="tab"]'), null, 'close is a sibling, not a nested button');
-    await app.click(app.close('s1:a'));
-    assert.equal(app.active(), 's1:b');
-    await app.click(app.close('s1:b'));
-    assert.equal(app.active(), 's1:c');
-    assert.ok(app.unmounted.includes('b'));
-    await app.click(app.close('s1:c'));
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
-    assert.match(app.container.textContent, /Native tasks/);
+    const buttons = app.container.querySelectorAll('[data-testid="tool-panel-tab-close"]');
+    assert.equal(buttons.length, 1);
+    assert.equal(buttons[0].closest('[role="tab"]').dataset.variant, 'browser');
+    await app.click(app.tab('webui:a'));
+    await app.click(buttons[0]);
+    assert.deepEqual(app.closed, ['browser']);
+    assert.equal(app.tab('browser'), null);
+    assert.equal(app.active(), 'webui:a');
+    assert.equal(app.content(), 'Plugin a');
   } finally { await app.dispose(); }
 });
 
-test('closing the last active page selects its left neighbor', async () => {
+test('closing the active browser falls back to tasks', async () => {
   const app = await setup();
   try {
-    await app.click(app.tab('s1:c'));
-    await app.click(app.close('s1:c'));
-    assert.equal(app.active(), 's1:b');
+    await app.click(app.tab('browser'));
+    await app.click(app.tab('browser').querySelector('[data-testid="tool-panel-tab-close"]'));
+    assert.equal(app.active(), 'planning');
+    assert.equal(app.content(), 'Native tasks');
   } finally { await app.dispose(); }
 });
 
-test('dismissed instances stay closed on plugin updates and are isolated by session', async () => {
+test('plugin updates preserve selection and clear removes the page', async () => {
   const app = await setup();
   try {
-    await app.click(app.close('s1:a'));
+    await app.click(app.tab('webui:a'));
     await app.render({ title: ' updated' });
-    assert.equal(app.tab('s1:a'), null);
-    assert.equal(app.tab('s1:b').textContent, 'b updated');
-    await app.click(app.tab('s1:b'));
-    await app.render({ scope: 's2' });
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
-    assert.ok(app.tab('s2:a'));
-    await app.render({ scope: 's1' });
-    assert.equal(app.tab('s1:a'), null);
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
+    assert.equal(app.active(), 'webui:a');
+    assert.equal(app.tab('webui:a').textContent, 'a updated');
+    await app.render({ names: ['b'] });
+    assert.equal(app.tab('webui:a'), null);
+    assert.equal(app.active(), 'planning');
+    assert.ok(app.unmounted.includes('a'));
   } finally { await app.dispose(); }
 });
 
-test('plugin clear removes the selected page and falls back without reviving stale selection', async () => {
+test('external native selection replaces plugin content', async () => {
   const app = await setup();
   try {
-    await app.click(app.tab('s1:b'));
-    await app.render({ names: ['a', 'c'] });
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
-    assert.ok(app.unmounted.includes('b'));
-    await app.render({});
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
+    await app.click(app.tab('webui:b'));
+    await app.render({ activeTab: 'review' });
+    assert.equal(app.active(), 'review');
+    assert.equal(app.content(), 'Native review');
+    await app.render({ activeTab: 'browser' });
+    assert.equal(app.active(), 'browser');
+    assert.equal(app.content(), 'Native browser');
   } finally { await app.dispose(); }
 });
 
-test('browser section keeps its close entry inside the builtin tools page', async () => {
-  const closed = [];
-  const app = await setup({ onSectionTabClose: (key) => closed.push(key) });
+test('native tabs remain usable without plugins or optional members', async () => {
+  const app = await setup({ names: [], showMiddleTab: false });
   try {
-    const closeButton = app.tab('browser', true).parentElement
-      .querySelector('[data-testid="tool-panel-builtin-tab-close"]');
-    assert.ok(closeButton, 'browser section renders its close button');
-    await app.click(closeButton);
-    assert.deepEqual(closed, ['browser']);
-  } finally { await app.dispose(); }
-});
-
-test('keyboard navigation selects pages and close returns focus to a surviving page', async () => {
-  const app = await setup();
-  try {
-    const press = async (key) => act(async () => {
-      app.tab(app.active()).dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true }));
-    });
-    await press('ArrowRight');
-    assert.equal(app.active(), 's1:a');
-    assert.equal(document.activeElement, app.tab('s1:a'));
-    await press('End');
-    assert.equal(app.active(), 's1:c');
-    await press('Home');
-    assert.equal(app.active(), BUILTIN_PANEL_KEY);
-    await app.click(app.tab('s1:a'));
-    await app.click(app.close('s1:a'));
-    assert.equal(document.activeElement, app.tab('s1:b'));
-    const panel = app.container.querySelector('[data-testid="tool-panel-expanded-content"]');
-    assert.equal(panel.getAttribute('aria-labelledby'), app.tab(app.active()).id);
+    assert.equal(app.active(), 'planning');
+    assert.equal(app.tab('team'), null);
+    assert.equal(app.container.querySelectorAll('[role="tablist"]').length, 1);
+    await act(async () => app.tab('review').dispatchEvent(
+      new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    ));
+    assert.equal(app.active(), 'review');
+    await act(async () => app.tab('planning').dispatchEvent(
+      new window.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }),
+    ));
+    assert.equal(app.active(), 'planning');
   } finally { await app.dispose(); }
 });
