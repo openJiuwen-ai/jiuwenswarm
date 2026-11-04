@@ -223,19 +223,23 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
-    // Run / Continue / Retry drive every node, so a generation slot this graph
-    // actually uses being off or incomplete can only fail the round: report it
-    // on the canvas instead of dispatching (#5266).
-    const problem = await findDesignRunProblem(graph.nodes);
+    const run = state.run?.graph_id === graph.graph_id ? state.run : null;
+    const nodeStates = run ? state.nodeStates : {};
+    const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
+    const primary = primaryFrom(graph, nodeStates, currentLayerNodeIds, false);
+    // A generation slot the remaining nodes actually use being off or incomplete
+    // can only fail the round: report it on the canvas instead of dispatching
+    // (#5266). Continue / Retry skip completed nodes, so only the rest count.
+    const resumes = primary === 'continue' || primary === 'retry_failed';
+    const pending = resumes
+      ? graph.nodes.filter((node) => nodeStates[node.id]?.status !== DESIGNER_NODE_STATUS_COMPLETED)
+      : graph.nodes;
+    const problem = await findDesignRunProblem(pending, graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;
     }
     await persistBeforeRun();
-    const run = state.run?.graph_id === graph.graph_id ? state.run : null;
-    const nodeStates = run ? state.nodeStates : {};
-    const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
-    const primary = primaryFrom(graph, nodeStates, currentLayerNodeIds, false);
     set({ runError: null, runWarning: null });
     try {
       let result;
@@ -273,7 +277,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     // slot off or incomplete can only fail, so report the same reason the
     // landing page uses instead of dispatching a doomed job (#5266).
     const node = graph.nodes.find((item) => item.id === nodeId);
-    const problem = await findDesignRunProblem([node]);
+    const problem = await findDesignRunProblem([node], graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;
@@ -301,7 +305,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     if (get().isRunning || graph.nodes.length === 0) return;
     // Rerun workflow starts over from the first node, so it needs the same
     // models a fresh run does (#5266).
-    const problem = await findDesignRunProblem(graph.nodes);
+    const problem = await findDesignRunProblem(graph.nodes, graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;

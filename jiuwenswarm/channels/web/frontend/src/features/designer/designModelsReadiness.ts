@@ -11,6 +11,7 @@ import { useSessionStore } from '../../stores/sessionStore';
 import { designChatModelReady } from './designChatModelState';
 import { generationProblemFromConfig, type GenerationKind } from './designGenerationReadiness';
 import { nodeGenerationKind, type MaybeNode } from './designerNodeGenerationKind';
+import type { DesignerExecutionGraph } from './executionGraphTypes';
 import type { ModelEntry } from '../../types';
 
 /**
@@ -43,11 +44,15 @@ export async function findDesignChatModelProblem(): Promise<string | null> {
  * Only the media kinds those nodes actually generate with are checked, so a
  * text-only graph is not blocked by an image slot it would never call, and the
  * chat model keeps its existing handling (see `findDesignModelsProblem`).
+ * `graph` lets a concat-only video node (no video model call) be told apart.
  */
-export async function findDesignRunProblem(nodes: readonly MaybeNode[]): Promise<string | null> {
+export async function findDesignRunProblem(
+  nodes: readonly MaybeNode[],
+  graph?: DesignerExecutionGraph | null,
+): Promise<string | null> {
   const kinds = new Set<GenerationKind>();
   for (const node of nodes) {
-    const kind = nodeGenerationKind(node);
+    const kind = nodeGenerationKind(node, graph);
     if (kind) kinds.add(kind);
   }
   if (kinds.size === 0) return null;
