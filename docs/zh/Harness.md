@@ -9,6 +9,10 @@ Harness Engineering 的核心目标是构建模型之外的工程化执行环境
 
 ## 一、概念定位
 
+RSI 优化产物安装后的全局激活版本是会话默认 Harness。在会话扩展中选择其他 RSI Harness 包时，会先卸载当前版本再加载所选版本，同一会话只生效一个 RSI Harness。取消选择后恢复全局默认版本；未传递扩展选择时保留当前选择。全局版本切换不会覆盖会话的显式选择，替换加载失败时恢复原版本。普通扩展包仍可组合使用。
+
+新建 Harness RSI 任务默认采用连续分数的两阶段晋级策略（`continuous_two_stage_v2`），分数范围为 0–1。候选首先在每个目标 case 上相对冻结的基准提分超过 0.05，再进行一次独立全量评估：每个目标仍须提分、每个非目标退分不超过 0.05，且全量平均分严格提高。工具、技能的实际调用与机器验证证据仍须通过检查。历史任务恢复时沿用创建时保存的配置，不自动迁移策略。
+
 ### 1.1 Harness 是什么
 
 Harness 是 Agent 的工程控制层。模型负责生成推理和行动意图，Harness 负责把这些意图放入受控执行系统中。因此，openJiuwen Harness 关注的不是替代模型，而是补齐模型外部的执行、状态、约束和反馈机制：
@@ -240,12 +244,20 @@ Harness 将图像、音频和视频理解封装为工具，使 Agent 可以把�
 - `audio_metadata`：识别音频时长，并在配置 ACR 时识别歌曲元数据。
 - 支持本地音频路径和 HTTP(S) 音频 URL，并通过 `max_audio_bytes` 限制下载大小。
 
-视频工具由视觉模型驱动：
+JiuwenSwarm 的视频工具由独立的 `models.video` 模型配置驱动：
 
 - `video_understanding`：接收本地视频或 HTTP(S) 视频 URL，并围绕用户 query 进行视频内容问答。
 - 本地视频会编码为 data URL；调用时可限制 `max_tokens`、`temperature` 和 `timeout_seconds`。
 
 多模态模型配置可以显式传入，也可以通过环境变量构造：`VisionModelConfig.from_env()` 会读取 `VISION_API_KEY`、`VISION_BASE_URL`、`VISION_MODEL` 等变量；`AudioModelConfig.from_env()` 会读取 `AUDIO_API_KEY`、`AUDIO_BASE_URL`、`AUDIO_TRANSCRIPTION_MODEL`、`AUDIO_QUESTION_ANSWERING_MODEL` 等变量。`enable_read_image_multimodal=True` 时，`read_file` 读取图片可以附带原生多模态输入；关闭后只返回图片元数据并提示使用视觉工具。
+
+在 JiuwenSwarm 应用中，Work 与默认 Code 共用多模态配置解析、工具构建、注册和热更新逻辑：
+
+- 视觉、音频、视频理解读取 `config.yaml` 的 `models.vision/audio/video`，支持 `model_config` 和 `model_client_config`。配置需要包含 API key、地址、模型名及 provider；能力开关优先读取 `VISION_ENABLED`、`AUDIO_ENABLED`、`VIDEO_ENABLED`，其次读取对应模型块的 `enabled`。未显式设置开关的完整旧配置继续生效。
+- 启用并配置好能力后，自动加载对应的全部工具，无需在 `modes.code.tools` 中逐个声明。该列表继续选择普通 Code 工具；旧列表中的多模态名称不会重复注册。图片生成 `generate_image`、视频生成 `generate_video` / `check_video_status`、可视化生成 `generate_visual` 同样沿用 Work 的各能力配置条件。
+- 默认 Code 会将这些工具装配进生成的 `DeepAgentSpec`；模型参数仍来自应用配置。显式传入的自定义 Spec 由调用方控制工具集合，不受默认自动加载或配置热更新扩展。
+- 配置热更新会更新视觉／音频工具实例的模型参数，并在能力开启或关闭时添加或移除工具。工具仍受已有 Agent 工具权限约束。
+- 多模态局部热更新遇到工具构建失败时，会保留该组已运行的工具，其他能力组继续更新；默认 Code 全量 Spec 替换遇到多模态构建或注册失败时，会回滚到原实例和注册记录。
 
 ### 3.10 Web & External Resources：网页与外部资源接入
 

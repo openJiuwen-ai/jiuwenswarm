@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 import clsx from 'clsx'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type {
@@ -458,10 +456,13 @@ export function JsonTree({
     if (root === null) throw new Error('JsonTree root is not mounted')
     const rootRect = root.getBoundingClientRect()
     const rowRect = row.getBoundingClientRect()
+    const rowTop = rowRect.top - rootRect.top - root.clientTop
+    // Root-content coordinates keep the absolute anchor inside the scroll chain,
+    // so wheeling over the copy button still scrolls the enclosing panel.
     return {
-      left: rootRect.left + root.clientWidth - 26,
-      side: rowRect.top - rootRect.top > root.clientHeight / 2 ? 'top' : 'bottom',
-      top: rowRect.top,
+      left: root.scrollLeft + root.clientWidth - 26,
+      side: rowTop > root.clientHeight / 2 ? 'top' : 'bottom',
+      top: root.scrollTop + rowTop,
     }
   }
 
@@ -499,10 +500,8 @@ export function JsonTree({
       const row = activeRowRef.current
       if (row !== undefined) repositionCopyButton(row)
     }
-    window.addEventListener('scroll', reposition, true)
     window.addEventListener('resize', reposition)
     return () => {
-      window.removeEventListener('scroll', reposition, true)
       window.removeEventListener('resize', reposition)
     }
   }, [])

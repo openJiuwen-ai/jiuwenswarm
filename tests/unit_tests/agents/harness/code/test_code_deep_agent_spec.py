@@ -34,6 +34,7 @@ from jiuwenswarm.server.runtime.agent_adapter import interface_code
 
 class _FakeCodeAdapter:
     def __init__(self) -> None:
+        self._instance = None
         self.calls: list[str] = []
         self.rail_names: list[str] = []
         self.subagent_config: dict = {}
@@ -59,9 +60,18 @@ class _FakeCodeAdapter:
     def _get_tool_build_func(self, tool_name, agent_id):
         raise AssertionError(f"unexpected tool build: {tool_name}/{agent_id}")
 
+    def _register_multimodal_tools(self, _agent_id, *, fail_on_error=False):
+        return []
+
     @staticmethod
     def _tool_owner_id():
         return "code-spec-test-agent"
+
+    @staticmethod
+    def _materialize_tool_retrieval_spec_tools(_agent_id, _tools, _config_base=None):
+        # The fake never arms the retrieval layer; the real adapter gates on
+        # the top-level switches inside this method.
+        return None
 
 
 def _model() -> Model:
@@ -126,7 +136,9 @@ def test_code_config_is_converted_to_spec_snapshot(tmp_path):
         CODE_SUBAGENT_BUNDLE
     ]
     assert spec.rails[0].params == {"configured_rails": ["SkillUseRail"]}
-    assert spec.tools[0].params == {"configured_tools": ["web_free_search"]}
+    assert spec.tools[0].params == {
+        "configured_tools": ["web_free_search"], "include_multimodal": True,
+    }
     assert spec.subagents[0].factory_kwargs == {
         "subagents": {"code_agent": {"enabled": True}},
         "max_iterations": 23,
@@ -308,16 +320,28 @@ def test_code_spec_preserves_configured_tool_owner(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("moa_enabled", [False, True])
 async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch,
     tmp_path,
+    moa_enabled,
 ):
     config_base = {
+        "experimental": {"multi_model_collaboration_enabled": True},
         "react": {"agent_name": "config-agent"},
         "modes": {"code": {"rails": [], "tools": []}},
         "symphony": {"enabled": True},
     }
     custom_model = _model()
+    aggregator = _model()
+    aggregator.model_config.model_name = "moa-aggregator"
+    from openjiuwen.harness.moa import MoAConfig, LlmVerifierProgressScorer
+    from jiuwenswarm.server.runtime.moa_runtime import MoARuntime
+
+    moa_runtime = MoARuntime(
+        aggregator=aggregator, model_name="moa-aggregator", fingerprint="moa-spec",
+        config=MoAConfig(reference_models=(_model(),), mode="verifier_routed", scorer=LlmVerifierProgressScorer(model=aggregator)),
+    )
     custom_spec = DeepAgentSpec(
         model=ModelSpec(
             model_client_config=custom_model.model_client_config,
@@ -334,10 +358,15 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         return None
 
     captured: dict = {}
+    caller_vision_tool = SimpleNamespace(
+        card=SimpleNamespace(name="visual_question_answering"),
+    )
 
     def build(spec, context):
         captured["spec"] = spec
         captured["context"] = context
+        # A caller Spec may still materialize tools through the Code bundle.
+        context.artifacts.tools = [caller_vision_tool]
         return SimpleNamespace(
             ensure_initialized=ensure_initialized,
             _registered_rails=[],
@@ -352,6 +381,8 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
 
     adapter = interface_code.JiuwenSwarmCodeAdapter()
     create_model = MagicMock(side_effect=AssertionError("config model must not build"))
+    adapter._model_recipes = {"unused": {"model_id": "config-only"}}
+    adapter._model_alias_to_key = {"unused-alias": "unused"}
 
     def create_sys_operation():
         adapter._sys_operation_card = SysOperationCard(
@@ -372,6 +403,9 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: False)
     monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
     monkeypatch.setattr(adapter, "_create_model", create_model)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_runtime.build_moa_runtime", lambda *_args, **_kwargs: moa_runtime)
+    apply_model = MagicMock()
+    monkeypatch.setattr(adapter, "_apply_model_to_react_agent", apply_model)
     monkeypatch.setattr(adapter, "_create_sys_operation", create_sys_operation)
     monkeypatch.setattr(adapter, "_seed_runtime_cwd", MagicMock())
     monkeypatch.setattr(adapter, "_ensure_cron_tools_registered", MagicMock())
@@ -391,9 +425,13 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         convert_config,
     )
 
+    supplied_context = code_spec_module.CodeBuildContext(
+        adapter=adapter, config_base=config_base, react_config={}, moa=moa_runtime.config,
+    )
     await adapter.create_instance(
-        {"channel_id": "web", "project_dir": str(tmp_path / "project")},
+        {"channel_id": "web", "project_dir": str(tmp_path / "project"), "moa_enabled": not moa_enabled, "moa_model_selection": {"type": "model_group", "id": "test-group"} if moa_enabled else None},
         spec=custom_spec,
+        build_context=supplied_context,
     )
 
     effective_spec = captured["spec"]
@@ -411,7 +449,23 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     assert adapter._custom_code_spec_active is True
     assert adapter._agent_name == "caller-spec-agent"
     assert owner_ids == [adapter._tool_owner_id()]
-    assert adapter._default_model_name == "test-model"
+    assert adapter._default_model_name == ("moa-aggregator" if moa_enabled else "test-model")
+    assert context.moa is (moa_runtime.config if moa_enabled else None)
+    assert supplied_context.moa is moa_runtime.config
+    assert custom_spec.model.model_request_config.model_name == "test-model"
+    assert effective_spec.model.model_request_config.model_name == ("moa-aggregator" if moa_enabled else "test-model")
+    assert "moa" not in effective_spec.model_dump()
+    if moa_enabled:
+        assert adapter._model is aggregator
+        assert adapter._moa_runtime is moa_runtime
+        apply_model.assert_called_once_with(aggregator, session_id=adapter._parent_session_id)
+    else:
+        apply_model.assert_not_called()
+        assert adapter._model_recipes == {}
+        assert adapter._model_alias_to_key == {}
+    # Reloads keep the caller Spec's tools untouched, including their configs.
+    assert adapter._vision_tools == []
+    assert adapter._vision_tools_registered is False
     create_model.assert_not_called()
     convert_config.assert_not_called()
     sync_symphony.assert_not_called()
@@ -506,16 +560,18 @@ def test_runtime_agent_definition_overlays_complete_product_spec():
     assert effective.enable_tool_resilience_rail is True
 
 
-def test_runtime_agent_definition_rejects_unsupported_tool_override():
-    with pytest.raises(ValueError, match="configured set"):
-        interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
-            DeepAgentSpec(system_prompt="product prompt"),
-            {
-                "name": "sdk_agent",
-                "instructions": "Follow the SDK task.",
-                "tools": ["shell"],
-            },
-        )
+def test_runtime_agent_definition_with_tool_list_disables_broader_subagents():
+    base = DeepAgentSpec(system_prompt="product prompt")
+    effective = interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
+        base,
+        {
+            "name": "sdk_agent",
+            "instructions": "Follow the SDK task.",
+            "tools": ["shell"],
+        },
+    )
+    assert effective.subagents == []
+    assert effective.tools == base.tools
 
 
 def test_runtime_agent_definition_is_propagated_to_session_builds():

@@ -43,7 +43,7 @@ def test_legacy_token_is_rejected_after_expiry(
 ) -> None:
     now = [100.0]
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: now[0],
     )
     manager = WebFileDownloadManager("s" * 32)
@@ -65,7 +65,7 @@ def test_verified_token_binds_durable_asset_claims(
 ) -> None:
     now = [100.0]
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: now[0],
     )
     owner, asset = _stage_asset(tmp_path, now=now[0], expires_at=160.0)
@@ -98,7 +98,7 @@ def test_verified_token_or_sidecar_claim_tamper_is_rejected(
 ) -> None:
     now = 100.0
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: now,
     )
     owner, asset = _stage_asset(tmp_path, now=now, expires_at=160.0)
@@ -125,7 +125,7 @@ def test_verified_token_rejects_sidecar_size_claim_tamper(
 ) -> None:
     now = 100.0
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: now,
     )
     owner, asset = _stage_asset(tmp_path, now=now, expires_at=160.0)
@@ -149,7 +149,7 @@ def test_verified_download_info_uses_sealed_asset_and_original_name(
 ) -> None:
     now = 100.0
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: now,
     )
     owner, asset = _stage_asset(tmp_path, now=now, expires_at=160.0)

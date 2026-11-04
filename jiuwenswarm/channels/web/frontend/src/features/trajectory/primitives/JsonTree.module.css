@@ -1,5 +1,3 @@
-/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
-
 .root {
   min-width: 0;
   overflow: auto;
@@ -119,7 +117,7 @@
 }
 
 .copyAnchor {
-  position: fixed;
+  position: absolute;
   z-index: 3;
   display: inline-flex;
 }

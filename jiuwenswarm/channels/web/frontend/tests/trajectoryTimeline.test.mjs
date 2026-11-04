@@ -4,10 +4,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  alignPrepSpansBeforeModel,
   deriveTrajectoryTimeline,
   panTrajectoryTimelineViewport,
   resolveTimelineMode,
   trajectoryTimelineFocusIndexes,
+  withSharedWallClockDomain,
   zoomTrajectoryTimelineViewport,
 } from '../node_modules/.cache/trajectory-timeline/timeline.mjs';
 
@@ -220,6 +222,91 @@ test('complete-time projections keep the idle gap that duration projection compr
   assert.deepEqual(ranges('time'), [[0, 0], [10_000, 10_000]]);
 });
 
+test('duration projection slides late context between on-time user and the model reply', () => {
+  const requestRecordId = 'req-1';
+  const turns = [turn(1, [
+    cell(0, 'user', { startedAt: 1_000, timeSeconds: null, requestRecordId }),
+    cell(1, 'message', { startedAt: 5_000, timeSeconds: 4, requestRecordId }),
+    cell(2, 'context', { startedAt: 7_000, timeSeconds: null, requestRecordId }),
+  ])];
+
+  const model = deriveTrajectoryTimeline(turns, 'duration');
+  const byKind = Object.fromEntries(model.spans.map(span => [span.kind, span]));
+  assert.equal(byKind.user.start, 1_000);
+  // Idle between user and message is removed, so the reply opens at 1_000.
+  assert.equal(byKind.message.start, 1_000);
+  assert.equal(byKind.message.end, 5_000);
+  // With no open interval before the reply, late prep parks on the reply edge.
+  assert.equal(byKind.context.start, 1_000);
+  assert.equal(byKind.context.end, 1_000);
+});
+
+test('wall-clock projections keep late prep at its recorded time until display align', () => {
+  const requestRecordId = 'req-1';
+  const turns = [turn(1, [
+    cell(0, 'user', { startedAt: 1_000, timeSeconds: null, requestRecordId }),
+    cell(1, 'message', { startedAt: 5_000, timeSeconds: 4, requestRecordId }),
+    cell(2, 'context', { startedAt: 7_000, timeSeconds: null, requestRecordId }),
+  ])];
+
+  const actual = deriveTrajectoryTimeline(turns, 'actual');
+  assert.equal(actual.spans.find(span => span.kind === 'context').start, 7_000);
+
+  const aligned = alignPrepSpansBeforeModel(actual, turns);
+  const byKind = Object.fromEntries(aligned.spans.map(span => [span.kind, span]));
+  assert.ok(byKind.context.start > byKind.user.start);
+  assert.ok(byKind.context.start < byKind.message.start);
+  assert.equal(byKind.context.end, byKind.context.start);
+});
+
+test('late prep without an earlier user parks at the model reply start', () => {
+  const requestRecordId = 'req-2';
+  const turns = [turn(1, [
+    cell(0, 'message', { startedAt: 5_000, timeSeconds: 2, requestRecordId }),
+    cell(1, 'context', { startedAt: 6_000, timeSeconds: null, requestRecordId }),
+  ])];
+
+  const aligned = alignPrepSpansBeforeModel(deriveTrajectoryTimeline(turns, 'actual'), turns);
+  const context = aligned.spans.find(span => span.kind === 'context');
+  assert.equal(context.start, 5_000);
+  assert.equal(context.end, 5_000);
+});
+
+test('prep without a shared request keeps its recorded wall-clock time', () => {
+  const turns = [turn(1, [
+    cell(0, 'user', { startedAt: 1_000, timeSeconds: null, requestRecordId: 'req-a' }),
+    cell(1, 'message', { startedAt: 2_000, timeSeconds: 1, requestRecordId: 'req-a' }),
+    cell(2, 'context', { startedAt: 8_000, timeSeconds: null }),
+  ])];
+
+  const aligned = alignPrepSpansBeforeModel(deriveTrajectoryTimeline(turns, 'actual'), turns);
+  const context = aligned.spans.find(span => span.kind === 'context');
+  assert.equal(context.start, 8_000);
+});
+
+test('alignPrepSpansBeforeModel keeps segment, splitFraction, and coveredIndexes', () => {
+  const turns = [turn(1, [
+    cell(0, 'message', { startedAt: 0, timeSeconds: 1, requestRecordId: 'req-seg' }),
+  ])];
+  const model = deriveTrajectoryTimeline(turns, 'actual');
+  const decorated = {
+    ...model,
+    spans: model.spans.map(span => ({
+      ...span,
+      segment: 'input',
+      splitFraction: 0.25,
+      coveredIndexes: [0, 1],
+    })),
+  };
+
+  const aligned = alignPrepSpansBeforeModel(decorated, turns);
+  assert.equal(aligned.spans[0].segment, 'input');
+  assert.equal(aligned.spans[0].splitFraction, 0.25);
+  assert.deepEqual(aligned.spans[0].coveredIndexes, [0, 1]);
+  assert.equal('groupKey' in aligned.spans[0], false);
+  assert.equal('behaviorOrder' in aligned.spans[0], false);
+});
+
 test('zoom keeps the pointed timeline time anchored and respects the minimum width', () => {
   const next = zoomTrajectoryTimelineViewport(
     { start: 0, end: 1_000 },
@@ -245,6 +332,24 @@ test('zooming back to the complete domain clears the viewport', () => {
     ),
     null,
   );
+});
+
+test('withSharedWallClockDomain keeps span times and widens the domain', () => {
+  const model = deriveTrajectoryTimeline([
+    turn(1, [cell(0, 'message', { startedAt: 5_000, timeSeconds: 2 })]),
+  ], 'actual');
+  const shared = withSharedWallClockDomain(model, { start: 1_000, end: 20_000 });
+  assert.equal(shared.start, 1_000);
+  assert.equal(shared.end, 20_000);
+  assert.equal(shared.spans[0].start, 5_000);
+  assert.equal(shared.spans[0].end, 7_000);
+  assert.equal(withSharedWallClockDomain(model, null), model);
+  assert.equal(withSharedWallClockDomain(null, { start: 0, end: 1 }), null);
+  const mapped = withSharedWallClockDomain(model, { start: 0, end: 2_000 }, time => time - 5_000);
+  assert.equal(mapped.spans[0].start, 0);
+  assert.equal(mapped.spans[0].end, 2_000);
+  assert.equal(mapped.start, 0);
+  assert.equal(mapped.end, 2_000);
 });
 
 test('horizontal scrolling pans a zoomed viewport and clamps both edges', () => {

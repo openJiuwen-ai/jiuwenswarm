@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Bounded Markdown-to-text projection shared by trajectory consumers.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/trajectory-preview.ts`
@@ -7,6 +5,17 @@
  */
 
 import { extractMarkdownPlainText } from '../primitives/markdown/plain-text.ts'
+import type { TrajectoryCell } from './record.ts'
+
+/** Distinguish reasoning fallback from an assistant's visible answer. */
+export function isThinkingOnlyPreview(
+  cell: Pick<TrajectoryCell, 'kind' | 'outputDetail' | 'previewMarkdown' | 'thinkingDetail'>,
+): boolean {
+  return cell.kind === 'message'
+    && !cell.outputDetail?.trim()
+    && !cell.previewMarkdown?.trim()
+    && Boolean(cell.thinkingDetail?.trim())
+}
 
 const PREVIEW_SOURCE_CHARACTERS = 2_048
 const PREVIEW_OUTPUT_CHARACTERS = 512

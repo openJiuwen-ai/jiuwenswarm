@@ -1,3 +1,6 @@
+import type { TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+import type { TeamTask } from '../../stores/sessionStore';
+
 /**
  * SwarmFlow workflow 共享类型与工具函数。
  *
@@ -22,6 +25,12 @@ export interface WorkflowAgentActivity {
   timestamp: string;
   type: 'tool_call' | 'tool_result';
   content: string;
+  /** The invoked tool; set on both call rows and orphan result rows. */
+  tool_name?: string | null;
+  /** Pairs a tool_call row with its result; absent on legacy rows. */
+  tool_call_id?: string | null;
+  /** Paired result preview, filled on the call row when its result arrives. */
+  tool_result_preview?: string | null;
 }
 
 export interface WorkflowBudget {
@@ -127,6 +136,12 @@ export interface WorkflowAgent {
   duration_ms?: number | null;
   kind?: 'agent' | 'human';
   node_type?: WorkflowNodeType;
+  /** External provider kind on third-party nodes ("claude" | "codex"); absent for native workers. */
+  agent_type?: string;
+  /** AgentGroup member picked via options.agent_template; absent for the generic worker. */
+  agent_template?: string;
+  /** That expert's display name; shown instead of the label and used as the avatar key. */
+  display_name?: string;
   correlation_id?: string;
   /**
    * Fork child (node_type=agent_session_fork): parent session's avatar member
@@ -340,6 +355,31 @@ export function verifyRoundText(
   if (group.verdict === 'pass') return t('swarmflow.verifyPass');
   if (group.verdict === 'fail') return t('swarmflow.verifyFail');
   return t('swarmflow.verifyUndecided');
+}
+
+/**
+ * 节点身份 → 头像身份：三方节点认 CLI 品牌脸，人类节点认人类脸，专家节点带成员名
+ * 让头像组件去专家团包里取图；native 节点给空身份，只按名字哈希取插画，不回落名册。
+ * agent_type 优先于 kind：三方节点永远不是人；专家与 agent_type 在引擎侧互斥。
+ */
+export function workflowAgentIdentity(
+  agent: Pick<WorkflowAgent, 'agent_type' | 'kind' | 'agent_template'>,
+): TeamMemberIdentity {
+  if (agent.agent_type) return { cliAgent: agent.agent_type };
+  if (agent.kind === 'human') return { role: 'human_agent' };
+  if (agent.agent_template) return { agentTemplate: agent.agent_template };
+  return {};
+}
+
+
+/** Label the tree / task cards show for a node: always the call label, same as the mirrored roster. */
+export function workflowAgentDisplayName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.name;
+}
+
+/** String the avatar illustration is hashed from — the call label, same as the mirrored member list. */
+export function workflowAgentAvatarName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.name;
 }
 
 export function sessionGroupKey(
@@ -576,6 +616,47 @@ export function childPhasesOf(workflow: WorkflowRun, parent: WorkflowPhase): Wor
   return (workflow.phases ?? []).filter(
     (phase) => phase.phase_type === 'child' && phase.parent_phase === parent.name,
   );
+}
+
+// ── 镜像任务 worker 解析 ──────────────────────────────────
+
+/**
+ * workflow phase 任务 → 该 phase 的 workers。
+ *
+ * 镜像 task 的 task_id 是 ``<run_id>:<phase_id>``（后端 _workflow_updated_to_team_events
+ * 构造），workflow_run_id 即 run id——按 phase id 直连 run.phases 是诚实 join。
+ * 同名 worker 去重（循环迭代复用同一 worker，栈上每个 worker 只出现一次）；
+ * phase agents 尚未懒加载（detail_pending）时返回 []，调用方回落旧渲染。
+ */
+/** 镜像 phase 任务对应的 run phase；不是镜像任务或 run 未加载时为 null。 */
+export function workflowPhaseForTask(
+  task: Pick<TeamTask, 'task_id' | 'workflow_run_id'>,
+  runs: WorkflowRun[],
+): { runId: string; phase: WorkflowPhase } | null {
+  const runId = task.workflow_run_id;
+  if (!runId || !task.task_id) return null;
+  const run = runs.find((candidate) => candidate.id === runId);
+  if (!run) return null;
+  const prefix = `${runId}:`;
+  if (!task.task_id.startsWith(prefix)) return null;
+  const phase = (run.phases ?? []).find((candidate) => candidate.id === task.task_id.slice(prefix.length));
+  return phase ? { runId, phase } : null;
+}
+
+export function workflowPhaseWorkers(task: TeamTask, runs: WorkflowRun[]): WorkflowAgent[] {
+  const phase = workflowPhaseForTask(task, runs)?.phase;
+  if (!phase?.agents) return [];
+  const seen = new Set<string>();
+  const workers: WorkflowAgent[] = [];
+  for (const agent of phase.agents) {
+    // agent_session 的多轮共用一个 avatar（member_name），只算一个 worker；
+    // 一次性 agent() 调用各算一个——同名节点（3 个并行 assemble）是不同成员，不能合并。
+    const key = agent.member_name ? `session:${agent.member_name}` : `node:${agent.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    workers.push(agent);
+  }
+  return workers;
 }
 
 // ── 增量合并 ──────────────────────────────────────────────

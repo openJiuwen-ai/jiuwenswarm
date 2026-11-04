@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 GatewayPushSender = Callable[[dict[str, Any]], Awaitable[bool | None]]
 _RETRY_DELAY_SECONDS = 0.1
+_MAX_RETRY_DELAY_SECONDS = 5.0
 
 
 class TrajectoryGatewayHintBridge:
@@ -33,6 +34,8 @@ class TrajectoryGatewayHintBridge:
         self._sender: GatewayPushSender | None = None
         self._pending: dict[tuple[str, str], CommittedTraceUpdate] = {}
         self._drain_task: asyncio.Task[None] | None = None
+        self._retry_delay = _RETRY_DELAY_SECONDS
+        self._retry_wakeup: asyncio.Event | None = None
 
     def bind(
         self,
@@ -43,6 +46,21 @@ class TrajectoryGatewayHintBridge:
         with self._lock:
             self._loop = loop
             self._sender = sender
+            self._retry_delay = _RETRY_DELAY_SECONDS
+
+    def notify_available(self) -> None:
+        """Retry pending hints now; the Gateway push connection is back."""
+        with self._lock:
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                return
+        loop.call_soon_threadsafe(self._wake_retry)
+
+    def _wake_retry(self) -> None:
+        self._retry_delay = _RETRY_DELAY_SECONDS
+        wakeup = self._retry_wakeup
+        if wakeup is not None:
+            wakeup.set()
 
     async def unbind(self) -> None:
         """Stop future delivery and cancel the loop-owned drain task."""
@@ -95,6 +113,7 @@ class TrajectoryGatewayHintBridge:
                     updates = tuple(self._pending.values())
                     self._pending.clear()
                 retry_needed = False
+                delivered_any = False
                 for update in updates:
                     try:
                         delivered = await sender(_push_message(update))
@@ -109,8 +128,12 @@ class TrajectoryGatewayHintBridge:
                     if delivered is False:
                         self._requeue(update)
                         retry_needed = True
+                    else:
+                        delivered_any = True
+                if delivered_any:
+                    self._retry_delay = _RETRY_DELAY_SECONDS
                 if retry_needed:
-                    await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                    await self._wait_retry()
         finally:
             self._drain_task = None
             with self._lock:
@@ -118,6 +141,20 @@ class TrajectoryGatewayHintBridge:
                 has_pending = bool(self._pending)
             if has_pending and loop is not None and not loop.is_closed():
                 loop.call_soon(self._ensure_drain)
+
+    async def _wait_retry(self) -> None:
+        """Back off exponentially while undelivered; ``notify_available`` cuts it short."""
+        delay = self._retry_delay
+        self._retry_delay = min(delay * 2, _MAX_RETRY_DELAY_SECONDS)
+        wakeup = asyncio.Event()
+        self._retry_wakeup = wakeup
+        try:
+            await asyncio.wait_for(wakeup.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            if self._retry_wakeup is wakeup:
+                self._retry_wakeup = None
 
     def _requeue(self, update: CommittedTraceUpdate) -> None:
         """Keep the newest unsent watermark until the Gateway reconnects."""

@@ -136,6 +136,23 @@ async def test_uninstall_failure_does_not_trigger_any_reload(swarm_with_fake_ada
 
 
 @pytest.mark.asyncio
+async def test_skillpack_prepare_does_not_reload_agent(swarm_with_fake_adapter):
+    swarm = swarm_with_fake_adapter
+
+    async def prepare(params):
+        return {"success": True, "confirmation_required": True, "plan_id": "prepared"}
+
+    swarm._skill_manager.handle_skills_team_skills_hub_install = prepare
+    request = AgentRequest(
+        request_id="prepare-pack", req_method=ReqMethod.SKILLS_TEAMSKILLS_HUB_INSTALL,
+        params={"asset_id": "pack"},
+    )
+    response = await swarm._handle_skills_request(request)
+    assert response.payload["confirmation_required"] is True
+    assert swarm._adapter.create_called is False
+
+
+@pytest.mark.asyncio
 async def test_uninstall_refreshes_skill_rail_via_adapter(swarm_with_fake_adapter, monkeypatch):
     """验证 _refresh_skill_rails_after_change 委托到 adapter.refresh_skill_rails."""
     swarm = swarm_with_fake_adapter

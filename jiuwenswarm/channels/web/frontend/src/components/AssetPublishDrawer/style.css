@@ -173,6 +173,11 @@
   color: var(--color-link, var(--color-control-emphasis));
   font-size: 12px;
 }
+.asset-publish-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .asset-publish-provider-options,
 .asset-publish-account-note {
   grid-column: 1 / -1;
@@ -295,7 +300,7 @@
 }
 .asset-publish-result-card[data-variant='queued'] .asset-publish-result-icon,
 .asset-publish-result-card[data-variant='uploading'] .asset-publish-result-icon,
-.asset-publish-result-card[data-variant='unknown'] .asset-publish-result-icon {
+.asset-publish-result-card[data-variant='unconfirmed'] .asset-publish-result-icon {
   background: var(--color-skill-notice-surface);
   color: var(--color-control-emphasis);
 }
@@ -456,9 +461,9 @@
   background: var(--color-feedback-danger-subtle);
   color: var(--color-feedback-danger);
 }
-.asset-publish-record-status[data-variant='published'] {
-  background: var(--color-feedback-success-subtle, #ecfdf3);
-  color: var(--color-feedback-success, #16803c);
+.asset-publish-record-status[data-variant='submitted'] {
+  background: var(--color-feedback-success-subtle);
+  color: var(--color-feedback-success);
 }
 
 .asset-publish-hint {

@@ -52,3 +52,37 @@ test('CLI identity wins over human identity', () => {
   const avatar = resolveTeamMemberAvatar('cli-1', { role: 'human_agent', cliAgent: 'codex' });
   assert.equal(avatar.kind, 'cli');
 });
+
+test('an expert renders the hashed illustration with the badge even when the package has an image', () => {
+  const withImage = resolveTeamMemberAvatar('视频镜头师', { agentTemplate: 'clip', avatar: 'data:image/svg+xml;base64,QUJD' });
+  const withoutImage = resolveTeamMemberAvatar('视频镜头师', { agentTemplate: 'clip' });
+  assert.equal(withImage.kind, 'expert');
+  assert.equal(withImage.src, withoutImage.src);
+  assert.equal(withImage.badge, 'expert');
+});
+
+test('an expert without a package avatar gets the hashed illustration plus the expert badge', () => {
+  const expert = resolveTeamMemberAvatar('视频镜头师', { agentTemplate: 'clip' });
+  const plain = resolveTeamMemberAvatar('视频镜头师', {});
+  assert.equal(expert.kind, 'expert');
+  assert.equal(expert.badge, 'expert');
+  assert.equal(expert.src, plain.src);
+  assert.equal(expert.backgroundColor, plain.backgroundColor);
+  assert.equal(plain.kind, 'member');
+  assert.equal(plain.badge, undefined);
+});
+
+test('a package member without an avatar gets the same illustration-plus-badge look (in and out of swarmflow)', () => {
+  const avatar = resolveTeamMemberAvatar('行程体验设计师', { packageMember: true });
+  assert.equal(avatar.kind, 'expert');
+  assert.equal(avatar.badge, 'expert');
+  assert.equal(avatar.letter, undefined);
+});
+
+test('a package member ignores the package image too — same illustration-plus-badge look', () => {
+  const withImage = resolveTeamMemberAvatar('storyboard', { packageMember: true, avatar: 'https://example.com/a.png' });
+  const withoutImage = resolveTeamMemberAvatar('storyboard', { packageMember: true });
+  assert.equal(withImage.kind, 'expert');
+  assert.equal(withImage.src, withoutImage.src);
+  assert.equal(withImage.badge, 'expert');
+});

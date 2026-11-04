@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Untrusted assistant-Markdown renderer over the direct mdast pipeline:
  * `parse.ts` grammars, the incremental streaming parser, and `render.tsx`.

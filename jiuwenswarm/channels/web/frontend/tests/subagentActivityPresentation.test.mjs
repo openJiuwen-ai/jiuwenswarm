@@ -91,7 +91,7 @@ test('keeps todo creation and result visible in the activity timeline', () => {
       kind: 'tool_call',
       tool_name: 'todo_create',
       tool_call_id: 'tool-1',
-      summary: 'todo_create({"tasks":[{"id":"research","content":"搜索市场"},{"id":"write","content":"撰写报告"}]})',
+      summary: 'todo_create({"todos":[{"id":"research","content":"搜索市场"},{"id":"write","content":"撰写报告"}]})',
     }),
     activity('result-1', 2, {
       kind: 'tool_result',
@@ -114,7 +114,7 @@ test('keeps todo creation and result visible in the activity timeline', () => {
     activity('call-1', 1, {
       kind: 'tool_call',
       tool_name: 'todo_create',
-      summary: 'todo_create({"tasks":[{"id":"research","content":"搜索市场"},{"id":"write","content":"撰写报告"}]})',
+      summary: 'todo_create({"todos":[{"id":"research","content":"搜索市场"},{"id":"write","content":"撰写报告"}]})',
     }),
     activity('result-1', 2, {
       kind: 'tool_result',
@@ -133,6 +133,7 @@ test('applies todo_modify status updates in the task section', () => {
       kind: 'tool_call',
       tool_name: 'todo_create',
       tool_call_id: 'create-1',
+      // Legacy todo_create input key, recorded by sessions before the rename to `todos`.
       summary: 'todo_create({"tasks":[{"id":"research_report","content":"撰写市场报告"}]})',
     }),
     activity('create-result', 2, {
@@ -170,7 +171,7 @@ test('ignores failed todo updates and closes outstanding tasks only on a complet
       kind: 'tool_call',
       tool_name: 'todo_create',
       tool_call_id: 'create-2',
-      summary: 'todo_create({"tasks":[{"id":"one","content":"第一项"},{"id":"two","content":"第二项"}]})',
+      summary: 'todo_create({"todos":[{"id":"one","content":"第一项"},{"id":"two","content":"第二项"}]})',
     }),
     activity('create-result', 2, {
       kind: 'tool_result',

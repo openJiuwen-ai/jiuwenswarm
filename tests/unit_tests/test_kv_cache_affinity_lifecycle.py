@@ -147,30 +147,44 @@ async def test_ambiguous_cold_session_waits_for_live_binding(
     assert all(kwargs["model"] == "model-b" for _, kwargs in model.calls)
 
 
-@pytest.mark.parametrize("extra_model", [None, "OpenAI", "AscendAffinity"])
-def test_default_binding_requires_a_single_affinity_model(
-    monkeypatch: pytest.MonkeyPatch, extra_model: str | None,
+@pytest.mark.parametrize(
+    ("agentos_provider", "expected_model"),
+    [
+        (None, "model-a"),
+        ("OpenAI", None),
+        ("AscendAffinity", "model-b"),
+    ],
+)
+def test_agentos_configuration_takes_precedence_for_kvc_target(
+    monkeypatch: pytest.MonkeyPatch,
+    agentos_provider: str | None,
+    expected_model: str | None,
 ) -> None:
     import openjiuwen.core.foundation.llm as llm
 
     config = {
-        "models": {"defaults": [{
-            "model_client_config": {
-                "client_provider": "AscendAffinity",
-                "model_name": "model-a",
-                "api_base": "http://model-a/v1",
-            },
-        }]},
+        "models": {
+            "defaults": [
+                {
+                    "model_client_config": {
+                        "client_provider": "AscendAffinity",
+                        "model_name": "model-a",
+                        "api_base": "http://model-a/v1",
+                    },
+                }
+            ]
+        },
     }
-    if extra_model:
-        # AgentOS models are candidates even though they are not the default.
-        config["models"]["agentos"] = [{
-            "model_client_config": {
-                "client_provider": extra_model,
-                "model_name": "model-b",
-                "api_base": "http://model-b/v1",
-            },
-        }]
+    if agentos_provider:
+        config["models"]["agentos"] = [
+            {
+                "model_client_config": {
+                    "client_provider": agentos_provider,
+                    "model_name": "model-b",
+                    "api_base": "http://model-b/v1",
+                },
+            }
+        ]
     monkeypatch.setattr(kv_cache_model_provider, "get_config", lambda: config)
     built = []
 
@@ -180,12 +194,121 @@ def test_default_binding_requires_a_single_affinity_model(
 
     monkeypatch.setattr(llm, "Model", _build_model)
     result = kv_cache_model_provider.create_default_kv_cache_model()
-    if extra_model == "AscendAffinity":
+    if expected_model is None:
         assert result is None
         assert not built
     else:
         assert result is not None
-        assert built[0]["model_config"].model_name == "model-a"
+        assert built[0]["model_config"].model_name == expected_model
+
+
+def test_agentos_only_configuration_supplies_kvc_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import openjiuwen.core.foundation.llm as llm
+
+    config = {
+        "models": {
+            "agentos": [
+                {
+                    "model_client_config": {
+                        "client_provider": "AscendAffinity",
+                        "model_name": "agentos-model",
+                        "api_base": "http://agentos-model/v1",
+                    },
+                    "model_config_obj": {"temperature": 0.25},
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(kv_cache_model_provider, "get_config", lambda: config)
+    built = []
+
+    def _build_model(**kwargs):
+        built.append(kwargs)
+        return SimpleNamespace(supports_kv_cache_affinity=lambda: True)
+
+    monkeypatch.setattr(llm, "Model", _build_model)
+
+    assert kv_cache_model_provider.create_default_kv_cache_model() is not None
+    assert built[0]["model_config"].model_name == "agentos-model"
+    assert built[0]["model_config"].temperature == 0.25
+
+
+def test_multiple_agentos_affinity_targets_remain_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {
+        "models": {
+            "agentos": [
+                {
+                    "model_client_config": {
+                        "client_provider": "AscendAffinity",
+                        "model_name": model_name,
+                        "api_base": api_base,
+                    }
+                }
+                for model_name, api_base in (
+                    ("agentos-a", "http://agentos-a/v1"),
+                    ("agentos-b", "http://agentos-b/v1"),
+                )
+            ]
+        }
+    }
+    monkeypatch.setattr(kv_cache_model_provider, "get_config", lambda: config)
+
+    assert kv_cache_model_provider.create_default_kv_cache_model() is None
+
+
+@pytest.mark.parametrize(
+    "agentos_api_base",
+    [
+        "http://model-a/v1",
+        "http://model-a/v1/",
+    ],
+)
+def test_default_binding_deduplicates_same_agentos_affinity_target(
+    monkeypatch: pytest.MonkeyPatch,
+    agentos_api_base: str,
+) -> None:
+    import openjiuwen.core.foundation.llm as llm
+
+    def _entry(*, is_default: bool, api_base: str) -> dict:
+        return {
+            "model_client_config": {
+                "client_provider": "AscendAffinity",
+                "model_name": "model-a",
+                "api_base": api_base,
+                "api_key": "same-key",
+                "custom_headers": {"X-KVC-Domain": "domain-a"},
+                "extensions": {
+                    "kv_cache": {
+                        "mode": "affinity",
+                        "affinity_field": "agent_hint",
+                    },
+                },
+            },
+            "model_config_obj": {},
+            "is_default": is_default,
+        }
+
+    models = [
+        _entry(is_default=True, api_base="http://model-a/v1"),
+        _entry(is_default=False, api_base=agentos_api_base),
+    ]
+    monkeypatch.setattr(kv_cache_model_provider, "get_config", lambda: {})
+    monkeypatch.setattr(
+        kv_cache_model_provider,
+        "get_default_models",
+        lambda _config: models,
+    )
+    monkeypatch.setattr(
+        llm,
+        "Model",
+        lambda **_kwargs: SimpleNamespace(supports_kv_cache_affinity=lambda: True),
+    )
+
+    assert kv_cache_model_provider.create_default_kv_cache_model() is not None
 
 
 def test_application_runtime_is_shared_until_closed() -> None:
@@ -219,7 +342,9 @@ async def test_kvc_close_failure_is_not_server_cancellation(monkeypatch, error_t
 
 
 @pytest.mark.asyncio
-async def test_shutdown_budget_includes_cancellation_resistant_cleanup(monkeypatch) -> None:
+async def test_shutdown_budget_includes_cancellation_resistant_cleanup(
+    monkeypatch,
+) -> None:
     release = asyncio.Event()
     cancelled = asyncio.Event()
     tasks = []

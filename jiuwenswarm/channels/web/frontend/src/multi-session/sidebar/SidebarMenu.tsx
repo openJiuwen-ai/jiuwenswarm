@@ -24,6 +24,8 @@ export type SidebarMenuProps =
       type: 'project';
       project: ProjectInfo;
       archiveSessionsDisabled?: boolean;
+      /** 项目移除成功后回调（如 Design 页需要离开已移除项目的路由） */
+      onRemoved?: (projectId: string) => void;
     });
 
 /**

@@ -4,8 +4,10 @@ import logging
 import weakref
 
 import pytest
+from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 from websockets.exceptions import ConnectionClosedError
 
+from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
 from jiuwenswarm.common.e2a.gateway_normalize import (
     build_fallback_e2a,
     e2a_from_agent_fields,
@@ -15,7 +17,6 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
-from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
 
 
 class FakeWebSocket:
@@ -41,11 +42,6 @@ class _AgentWsTestHarness(AgentWebSocketServer):
 
     async def handle_message_for_test(self, ws, raw: str, send_lock: asyncio.Lock) -> None:
         await self._handle_message(ws, raw, send_lock)
-
-
-class ClosedDuringUnaryServer(_AgentWsTestHarness):
-    async def _handle_unary(self, ws, request, send_lock) -> None:
-        raise ConnectionClosedError(None, None)
 
 
 class _FakeInterruptAgent:
@@ -136,7 +132,7 @@ async def _handle_cancel_cleanup_case(env) -> list[tuple[str, str]]:
 
 
 @pytest.mark.asyncio
-async def test_handle_message_treats_no_close_frame_as_disconnect(caplog) -> None:
+async def test_handle_message_treats_no_close_frame_as_disconnect(caplog, monkeypatch) -> None:
     target_logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger=target_logger.name)
@@ -144,16 +140,21 @@ async def test_handle_message_treats_no_close_frame_as_disconnect(caplog) -> Non
         request_id="req-closed",
         channel_id="tui",
         session_id="session-1",
-        req_method=ReqMethod.CONFIG_GET,
+        req_method=ReqMethod.PROJECT_LIST,
         params={},
         is_stream=False,
         timestamp=0.0,
     )
     try:
-        # 用 __new__ 绕过 __init__：真实 __init__ 会注册 ConfigAdapter 接管
-        # config.get，导致请求走适配器路径、不再触发 _handle_unary 的关闭帧场景；
-        # 空注册表下 CONFIG_GET 落到 _handle_unary（本类覆写为抛 ConnectionClosedError）。
-        await ClosedDuringUnaryServer.__new__(ClosedDuringUnaryServer).handle_message_for_test(
+        async def raise_closed(*_args, **_kwargs) -> bool:
+            raise WebSocketConnectionClosed(None, None)
+
+        server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+        # PROJECT_LIST may be claimed by gateway adapter / try_dispatch before
+        # _handle_unary; raise on the earliest dispatch hop so the close path runs.
+        monkeypatch.setattr(server, "_dispatch_gateway_adapter_request", raise_closed)
+        monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
+        await server.handle_message_for_test(
             FakeWebSocket(),
             json.dumps(env.to_dict(), ensure_ascii=False),
             asyncio.Lock(),
@@ -161,8 +162,9 @@ async def test_handle_message_treats_no_close_frame_as_disconnect(caplog) -> Non
     finally:
         target_logger.removeHandler(caplog.handler)
 
-    assert "no close frame received or sent" in caplog.text
+    assert "WebSocket 已关闭，放弃请求回包" in caplog.text
     assert "request_id=req-closed" in caplog.text
+    assert "no close frame received or sent" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -233,16 +235,15 @@ async def test_handle_message_dispatches_registered_gateway_adapter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_message_allows_health_check_without_req_method() -> None:
+async def test_handle_message_allows_health_check_without_req_method(monkeypatch) -> None:
     """Health checks omit method and must not hit the RSI prefix guard."""
     handled = []
 
-    class HealthCheckServer(_AgentWsTestHarness):
-        async def _handle_unary(self, ws, request, send_lock) -> None:
-            del ws, send_lock
-            handled.append(request)
+    async def record(_ws, request, _send_lock) -> None:
+        handled.append(request)
 
-    server = HealthCheckServer.__new__(HealthCheckServer)
+    server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    monkeypatch.setattr(server, "_handle_unary", record)
     env = e2a_from_agent_fields(
         request_id="healthcheck-regression",
         channel_id="__health_check__",
@@ -275,9 +276,8 @@ async def test_handle_message_requires_req_method_enum_for_rsi_dispatch(monkeypa
             del ws, request, send_lock
             rsi_handled.append(True)
 
-        async def _handle_unary(self, ws, request, send_lock) -> None:
-            del ws, send_lock
-            unary_handled.append(request)
+    async def record_unary(_ws, request, _send_lock) -> None:
+        unary_handled.append(request)
 
     monkeypatch.setattr(
         agent_ws_server_module,
@@ -289,6 +289,7 @@ async def test_handle_message_requires_req_method_enum_for_rsi_dispatch(monkeypa
         ),
     )
     server = StrictMethodServer.__new__(StrictMethodServer)
+    monkeypatch.setattr(server, "_handle_unary", record_unary)
     env = e2a_from_agent_fields(
         request_id="invalid-method-type",
         channel_id="web",
@@ -640,8 +641,8 @@ async def test_manual_cancel_keeps_session_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once() -> None:
-    server = _AgentWsTestHarness()
+async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once(monkeypatch) -> None:
+    server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
     order: list[str] = []
 
     async def hook(request) -> None:
@@ -652,12 +653,22 @@ async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once() ->
         assert request.params["hook_marker"] == "ready"
         order.append("binding")
 
-    async def unary(ws, request, send_lock) -> None:
+    async def unary(_ws, _request, _send_lock) -> None:
         order.append("unary")
 
     server._trigger_before_chat_request_hook = hook
     server._ensure_auto_team_binding_for_chat = bind
-    server._handle_unary = unary
+    monkeypatch.setattr(server, "_handle_unary", unary)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
+
+    class _ChatRuntimeStub:
+        def begin_chat_request(self, *_args, **_kwargs) -> None:
+            return None
+
+        def end_chat_request(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(server, "_execution_runtime", lambda: _ChatRuntimeStub())
     env = e2a_from_agent_fields(
         request_id="hook-order",
         channel_id="tui",

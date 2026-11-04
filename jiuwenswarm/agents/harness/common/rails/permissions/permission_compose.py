@@ -243,6 +243,7 @@ def compose_host_effective_permissions(
     session_permissions: dict[str, Any] | None = None,
     session_id: str | None = None,
     agent_permissions: dict[str, Any] | None = None,
+    auto_mode: bool = False,
 ) -> dict[str, Any]:
     """Effective = Global ⊕ User ⊕ Session. ``agent_permissions`` is ignored in P1.
 
@@ -252,6 +253,18 @@ def compose_host_effective_permissions(
     _ = (session_id, agent_permissions)
     try:
         g = _as_dict(global_permissions)
+        if auto_mode:
+            from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+                normalize_permissions_for_runtime,
+            )
+
+            g = normalize_permissions_for_runtime(compose_host_effective_permissions(
+                global_permissions=g,
+            ))
+            # The engine projection is authoritative after normalization. Old
+            # list mirrors must not turn its ASK back into ALLOW during compose.
+            for key in ("allow_tools", "ask_tools", "deny_tools"):
+                g.pop(key, None)
         u = _as_dict(user_permissions)
         s = {
             k: v

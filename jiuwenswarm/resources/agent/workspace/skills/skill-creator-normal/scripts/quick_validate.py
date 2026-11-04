@@ -143,6 +143,49 @@ def validate_skill(skill_path: Path | str) -> tuple[bool, str]:
                 ),
             )
 
+    # Soft-check skill_display.md (UI metadata for locally authored skills; warn only)
+    display_warning = ""
+    display_path = skill_path / "skill_display.md"
+    if not display_path.is_file():
+        display_warning = "Warning: skill_display.md is missing."
+        logger.warning(display_warning)
+    else:
+        try:
+            display_text = display_path.read_text(encoding="utf-8")
+            # 与 SkillManager._parse_skill_display_md 保持一致，兼容尾随空格与 CRLF
+            display_match = re.match(
+                r"^---\s*\n(.*?)\n---\s*\n?(.*)",
+                display_text,
+                re.DOTALL,
+            )
+            if not display_match:
+                display_warning = (
+                    "Warning: skill_display.md missing YAML frontmatter."
+                )
+                logger.warning(display_warning)
+            else:
+                display_fm = yaml.safe_load(display_match.group(1)) or {}
+                required_display = (
+                    "display_name_zh",
+                    "description_zh",
+                    "display_name_en",
+                    "description_en",
+                )
+                missing = [
+                    key
+                    for key in required_display
+                    if not str(display_fm.get(key) or "").strip()
+                ]
+                if missing:
+                    display_warning = (
+                        "Warning: skill_display.md missing fields: "
+                        + ", ".join(missing)
+                    )
+                    logger.warning(display_warning)
+        except Exception as exc:
+            display_warning = f"Warning: skill_display.md parse failed: {exc}"
+            logger.warning(display_warning)
+
     # Validate compatibility field if present (optional)
     compatibility = frontmatter.get("compatibility", "")
     if compatibility:
@@ -163,6 +206,8 @@ def validate_skill(skill_path: Path | str) -> tuple[bool, str]:
                 ),
             )
 
+    if display_warning:
+        return True, f"Skill is valid! {display_warning}"
     return True, "Skill is valid!"
 
 

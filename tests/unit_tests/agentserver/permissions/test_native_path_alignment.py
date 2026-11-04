@@ -15,7 +15,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent
-from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+from openjiuwen.core.single_agent.interrupt.state import RESUME_INTERRUPT_ANSWERS_KEY, InterruptAnswer
 from openjiuwen.core.sys_operation.config import LocalWorkConfig
 from openjiuwen.core.sys_operation.cwd import _cwd_state, init_cwd, set_cwd
 from openjiuwen.core.sys_operation.sys_operation import SysOperation, SysOperationCard
@@ -35,7 +35,7 @@ from jiuwenswarm.agents.harness.common.tools import pdf_tools
 
 
 @pytest.fixture
-def native(tmp_path, internal_auto_mode):
+def native(tmp_path):
     root = tmp_path / "task"
     work = root / "work"
     work.mkdir(parents=True)
@@ -175,7 +175,7 @@ def test_live_native_callback_requires_ability_manager(native):
 
 
 @pytest.mark.parametrize("failure", ["raises", "non_dict"])
-async def test_sdk_snapshot_fallback_retains_projected_search_base(native, monkeypatch, failure):
+async def test_sdk_snapshot_failure_denies_and_retains_native_projection(native, monkeypatch, failure):
     frozen, error = _freeze(native, "glob", {"pattern": "*.txt", "path": str(native.root.parent)})
     assert not error
     def broken_snapshot():
@@ -185,7 +185,7 @@ async def test_sdk_snapshot_fallback_retains_projected_search_base(native, monke
     base = native.rail.base_rail
     monkeypatch.setattr(base._host, "get_permissions_snapshot", broken_snapshot)
     result = await base.resolve_interrupt(frozen.ctx, frozen.tool_call, None)
-    assert isinstance(result, InterruptResult)
+    assert "permission_snapshot_unavailable" in str(result)
     assert base._engine._file_guard.checker is not None
 
 
@@ -215,20 +215,22 @@ async def test_auto_answer_reenters_native_projection_after_cwd_changes(native, 
     monkeypatch.setattr(base, "_collect_file_guard_persist_accesses", collect)
     monkeypatch.setattr(base, "_exact_persist_callback", lambda *_args: persisted.append(True) or True)
     monkeypatch.setattr(base._host, "persist_session_allow_rule", lambda *_args, **_kwargs: True)
-    with pytest.raises(AbortError):
+    with pytest.raises(AbortError) as raised:
         await native.rail.before_tool_call(invocation.ctx)
     assert NATIVE_PATH_ACCESS.get() is None
     pending = inv._extract_invocation((invocation.ctx,), {})
     frozen_args = inv.normalize_invocation_tool_args(name, pending.tool_args)
     assert frozen_args["path"] == str(native.root.parent)
     set_cwd(str(native.root / "outputs"))
-    invocation.ctx.extra[RESUME_USER_INPUT_KEY] = {
-        "approved": True, "auto_confirm": True, "persist_allow": permanent,
-    }
+    request = raised.value.cause.request
+    invocation.ctx.extra[RESUME_INTERRUPT_ANSWERS_KEY] = {"native-call": {request.interrupt_owner: InterruptAnswer(
+        owner=request.interrupt_owner, kind=request.interrupt_kind, request=request,
+        value={"approved": True, "auto_confirm": True, "persist_allow": permanent},
+    )}}
     result = await native.rail.before_tool_call(invocation.ctx)
     assert result is None
     assert collected == [[(str(native.root.parent), "read")]]
-    assert bool(persisted) is permanent
+    assert bool(persisted) is True
     assert inv.normalize_invocation_tool_args(name, pending.tool_args) == frozen_args
     assert NATIVE_PATH_ACCESS.get() is None
 
@@ -439,8 +441,6 @@ def test_smart_construction_leaves_process_file_registry_unchanged(tmp_path):
         )
         from openjiuwen.harness.security.models import PermissionLevel
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
-        from jiuwenswarm.agents.harness.common.rails.permissions import auto_config
-        auto_config._VALID_RUNTIME_MODES = {*auto_config._VALID_RUNTIME_MODES, auto_config.AUTO_PERMISSION_MODE}
         root = Path(sys.argv[1])
         defaults = FileGuardAxisDefaults(*(PermissionLevel.ASK,) * 3)
         checker = FileGuardChecker(EffectiveFileGuardConfig(True, "native", defaults, (), root))

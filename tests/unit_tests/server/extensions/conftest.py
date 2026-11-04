@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import json
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from jiuwenswarm.server.runtime import extension_package_manager as catalog
 AGENT_TEMPLATES = "agent_templates"
 AGENT_GROUPS = "agent_groups"
 PLUGIN_PACKAGES = "plugin_packages"
+
+
+def _run(coro):
+    """Drive an async catalog call from a synchronous test."""
+    return _asyncio.run(coro)
 
 
 @pytest.fixture
@@ -131,5 +137,5 @@ def marketplace_entries(kind: str) -> list[dict]:
 def list_packages(kind: str, params: dict | None = None) -> list[dict]:
     """List cards for one kind."""
     if kind == AGENT_TEMPLATES:
-        return catalog.list_agent_templates(params)
+        return _run(catalog.list_agent_templates(params))
     return catalog.list_plugin_packages(params)

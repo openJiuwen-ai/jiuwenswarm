@@ -122,6 +122,7 @@ class _ProductionSearchCallbacks:
             await self.queue_rail.before_tool_call(ctx)
             await self.permission_rail.before_tool_call(ctx)
         elif event is AgentCallbackEvent.AFTER_TOOL_CALL:
+            await self.queue_rail.after_tool_call(ctx)
             await self.permission_rail.after_tool_call(ctx)
         elif event is AgentCallbackEvent.ON_TOOL_EXCEPTION:
             await self.queue_rail.on_tool_exception(ctx)
@@ -165,7 +166,9 @@ async def test_real_fetch_callbacks_isolate_smart_and_manual_execution(monkeypat
     monkeypatch.setattr(Runner.resource_mgr, "get_tool", lambda **kwargs: fetch.mcp_fetch_webpage)
     manager = AbilityManager()
     manager.add(fetch.mcp_fetch_webpage.card)
-    parent = AgentCallbackContext(agent=SimpleNamespace(agent_callback_manager=SimpleNamespace(execute=callbacks)))
+    parent = AgentCallbackContext(agent=SimpleNamespace(
+        agent_callback_manager=SimpleNamespace(execute=callbacks), ability_manager=manager,
+    ))
     # An inherited parent marker must not affect a fresh non-Smart tool context.
     setattr(parent, PUBLIC_HTTPS_FETCH_CONTEXT_ATTR, True)
     intent = bind_root_decision_context(_effective_intent_context("Read the search result.", request_id="request-1"))
@@ -280,7 +283,7 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
 
     monkeypatch.setattr(manager, "_execute_single_tool_call", execute_tool)
     parent = AgentCallbackContext(
-        agent=SimpleNamespace(agent_callback_manager=callbacks)
+        agent=SimpleNamespace(agent_callback_manager=callbacks, ability_manager=manager)
     )
     session = SimpleNamespace(session_id="session-1")
     request_token = bind_root_permission_request(

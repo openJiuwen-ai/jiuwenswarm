@@ -495,11 +495,11 @@ class TestTruncationAndRedaction:
         # only the format differs from the upstream ``***`` — the key point is
         # the JSON-string arguments were parsed-then-masked, not leaked.
         for key in ("api_key", "password", "token", "authorization"):
-            assert re.search(rf'"{key}": "\*+\(fp:[0-9a-f]+\)"', out), (key, out)
+            assert re.search(rf'"{key}":\s*"\*+\(fp:[0-9a-f]+\)"', out), (key, out)
         # non-secret args stay visible -> masking is per-field, not whole-arg redaction
         assert "https://example.com" in out
         # plural token count must not be mis-masked
-        assert '"tokens_used": 42' in out
+        assert re.search(r'"tokens_used":\s*42\b', out)
 
     def test_nested_secrets_masked_and_original_unchanged(self, tmp_path):
         # Secrets buried deep in nested dict/list must still be masked, AND the
@@ -542,9 +542,9 @@ class TestTruncationAndRedaction:
         for secret in ("sk-real-xxx", "tok-real", "pw-real"):
             assert secret not in out
         for key in ("api_key", "token", "password"):
-            assert re.search(rf'"{key}": "\*+\(fp:[0-9a-f]+\)"', out), (key, out)
+            assert re.search(rf'"{key}":\s*"\*+\(fp:[0-9a-f]+\)"', out), (key, out)
         # non-secret fields survive and the nested structure is preserved
-        assert '"name": "demo"' in out
+        assert re.search(r'"name":\s*"demo"', out)
         assert "https://e.example" in out
 
         # 2) original payload NOT mutated (live data intact for tool execution)

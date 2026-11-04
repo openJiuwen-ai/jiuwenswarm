@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { FormDrawer, Input, Textarea } from '../ui';
 import {
   beginHubOAuth,
+  clearHubOAuthSession,
   getStoredOAuthProvider,
   getStoredOAuthUser,
   waitForHubOAuth,
@@ -11,7 +12,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { publishOutcome, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -92,12 +93,16 @@ const messages = {
     refresh: '刷新本地已知结果',
     queued: '已排队',
     uploading: '上传中',
-    pending_moderation: '提交成功，待审核',
-    published: '已发布',
     failed: '发布失败',
-    unknown: '结果待核实',
-    observed: '这里显示后端已知结果，不自动查询远端审核进度。',
+    submitted: '已提交',
+    unconfirmed: '提交结果未确认',
+    observed: '这里只显示本地可确定的提交状态；远端发布状态请以 Hub 为准。',
     requestFailed: '请求未完成，请重试或重新登录。',
+    undefinedPlaceholder: '连接器配置包含未声明的参数。请检查凭证占位符：宿主 OAuth 仅自动提供 OAUTH_ACCESS_TOKEN，其他参数需声明凭证字段。此问题与 Hub 登录无关。',
+    invalidAgentMcp: 'Hub 拒绝了连接器包校验（invalid_agent_mcp）。请检查清单及凭证声明；OAuth 认证头应由宿主提供，而非作为手填 Token 字段发布。请更新宿主后重新检查发布内容，不要反复重新登录。',
+    invalidPackage: '发布内容不合法，请检查清单文件或版本号后重试。',
+    publishUnavailable: '发布服务暂时不可用，请稍后重试。',
+    uploadOutcomeUnknown: '提交结果未确认。请到 Hub 的“我的上传”确认该版本是否存在，再决定是否重新提交。',
     invalidPluginStructure: '资源包结构不符合 Hub 要求，请检查清单文件和目录结构。',
     pluginNotFound: 'Hub 中找不到要更新的资源，请检查“更新目标 Hub ID”后重试。',
     sessionExchangeFailed: 'Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。',
@@ -112,7 +117,6 @@ const messages = {
     expired: '检查结果已过期，请重新检查。',
     invalid: '请检查发布名称、展示名称或版本（1.0.0 / 七位小写提交号）。',
     edit: '返回修改',
-    recheck: '检查新版本',
     identity: '远端更新权限由 Hub 最终校验。',
     versionHint: '例如 1.0.0 或 abcdef0',
     loginAgain: '重新登录',
@@ -127,6 +131,8 @@ const messages = {
     publicDescription: '审核通过后可在 Hub 中公开展示。',
     privateDescription: '仅对当前发布账号可见。',
     switchAccount: '切换账号',
+    signOut: '退出授权',
+    signOutConfirm: '退出后需要重新登录才能继续发布，已填写的内容会保留。是否继续？',
     loginWith: '使用',
     signedIn: '已登录',
     forceWarning: '将尝试覆盖 Hub 中的同版本内容，请确认你有更新权限。',
@@ -180,12 +186,17 @@ const messages = {
     refresh: 'Refresh known local result',
     queued: 'Queued',
     uploading: 'Uploading',
-    pending_moderation: 'Submitted, pending moderation',
-    published: 'Published',
     failed: 'Publishing failed',
-    unknown: 'Result needs verification',
-    observed: 'This is the result known to the backend; remote moderation is not polled.',
+    submitted: 'Submitted',
+    unconfirmed: 'Submission result unconfirmed',
+    observed: 'Only locally confirmed submission states are shown here; check the Hub for remote publication status.',
     requestFailed: 'The request did not complete. Retry or sign in again.',
+    undefinedPlaceholder: 'The connector configuration contains an undeclared parameter. Host OAuth supplies only OAUTH_ACCESS_TOKEN; other parameters need credential schema fields. This is not a Hub sign-in error.',
+    invalidAgentMcp: 'Hub rejected connector package validation (invalid_agent_mcp). Check the manifest and credentials declaration. The host must supply OAuth authorization headers, not publish them as manual token fields. Update the host and check the package again instead of repeatedly signing in.',
+    invalidPackage: 'The package is not publishable. Check its manifest or version and retry.',
+    publishUnavailable: 'The publishing service is unavailable right now. Retry later.',
+    uploadOutcomeUnknown:
+      'The submission result is unconfirmed. Check "My uploads" on the Hub before submitting again.',
     invalidPluginStructure: 'The package structure does not meet Hub requirements. Check its manifest and folders.',
     pluginNotFound: 'The Hub resource to update was not found. Check the target Hub ID and retry.',
     sessionExchangeFailed:
@@ -203,7 +214,6 @@ const messages = {
     expired: 'Package review expired. Check the package again.',
     invalid: 'Check the package name, display name and version (1.0.0 or seven lowercase hex characters).',
     edit: 'Back to editing',
-    recheck: 'Check a new version',
     identity: 'Hub makes the final decision on update permissions.',
     versionHint: 'For example 1.0.0 or abcdef0',
     loginAgain: 'Sign in again',
@@ -218,6 +228,8 @@ const messages = {
     publicDescription: 'Visible in Hub after moderation approval.',
     privateDescription: 'Visible only to the publishing account.',
     switchAccount: 'Switch account',
+    signOut: 'Sign out',
+    signOutConfirm: 'You will need to sign in again to publish. Your entered values are kept. Continue?',
     loginWith: 'Sign in with',
     signedIn: 'signed in',
     forceWarning: 'This will attempt to overwrite the same Hub version. Confirm that you have update permission.',
@@ -267,7 +279,6 @@ function AssetPublishDrawer({
   };
   const issueText = (value: unknown) => {
     const issue = value as { code?: string; message?: string; path?: string };
-    const code = typeof value === 'string' ? value : issue?.code;
     const zh = i18n.language.startsWith('zh');
     const known: Record<string, [string, string]> = {
       SOURCE_CHANGED: ['源文件已变化，请重新检查。', 'Source files changed. Check the package again.'],
@@ -286,12 +297,42 @@ function AssetPublishDrawer({
         'This version exists. Change the version or explicitly enable overwrite.',
       ],
     };
+    // Review lists (files, excluded, normalizations) carry plain strings: paths and notes.
+    // Only map a string when it is one of the known codes; otherwise show it verbatim.
+    if (typeof value === 'string') return known[value]?.[zh ? 0 : 1] ?? value;
+    // Dependencies are descriptive objects ({kind, path, embedded, source}) with no error code.
+    // Summarize them instead of falling through to the generic failure text.
+    if (value && typeof value === 'object' && !issue?.code && !issue?.message) {
+      const summary = Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== null && item !== undefined && item !== '')
+        .map(([key, item]) => `${key}: ${typeof item === 'object' ? JSON.stringify(item) : String(item)}`);
+      if (summary.length) return summary.join(', ');
+    }
+    const code = issue?.code;
     if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
     const safeKey = publishIssueKey(code || value);
+    // Connector validation errors can contain credential details in the Hub message.
+    if (safeKey === 'undefinedPlaceholder' || safeKey === 'invalidAgentMcp') return text(safeKey);
+    // Prefer the Hub's own guidance when it is short enough; it is more specific than any code table.
+    const reported = typeof issue?.message === 'string' ? issue.message.trim() : '';
+    if (reported) return reported;
     return safeKey === 'requestFailed' ? text('requestFailed') : text(safeKey);
   };
   const panel = useRef<HTMLElement | null>(null);
   const [review, setReview] = useState(false);
+  // Whether the user is looking at the result view. Only an explicit action opens it (picking a
+  // history record, or a submission that starts), so opening the drawer still lands on the form.
+  const [viewingResult, setViewingResult] = useState(false);
+  // A submission in flight must stay visible, and must not shrink back to the form once the poll
+  // settles, so take the result view as soon as one is locked.
+  useEffect(() => {
+    if (state.submissionLocked && state.record) setViewingResult(true);
+  }, [state.submissionLocked, state.record]);
+  // Leave the result view when the record goes away (a new package check, sign-out, ...), otherwise
+  // the flag survives and the next record that arrives would cover the form unasked.
+  useEffect(() => {
+    if (!state.record) setViewingResult(false);
+  }, [state.record]);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
@@ -341,6 +382,11 @@ function AssetPublishDrawer({
     const desktopOpen = window.pywebview?.api?.open_external_url;
     const browserTab = desktopOpen || window.__JIUWEN_DESKTOP__ ? null : window.open('', '_blank');
     loginWindow.current = browserTab;
+    const cancelled = () => {
+      if (generation === loginGeneration.current) return false;
+      browserTab?.close();
+      return true;
+    };
     try {
       setLoginError('');
       setLoginBusy(true);
@@ -348,8 +394,10 @@ function AssetPublishDrawer({
       if (!desktopOpen && !browserTab) throw new Error('浏览器阻止了授权窗口，请允许打开新标签页。');
       if (browserTab) browserTab.opener = null;
       const attempt = await beginHubOAuth(provider);
+      if (cancelled()) return;
       if (desktopOpen) {
         const opened = await desktopOpen(attempt.authorize_url);
+        if (cancelled()) return;
         if (!opened) throw new Error('无法打开系统浏览器，请重试。');
       } else if (browserTab) browserTab.location.href = attempt.authorize_url;
       loginAbort.current?.abort();
@@ -370,6 +418,21 @@ function AssetPublishDrawer({
       }
     }
   };
+  const signOut = () => {
+    if (!window.confirm(text('signOutConfirm'))) return;
+    // Invalidate an authorization attempt that is still in flight, including the stage before
+    // polling starts, otherwise it can resume and store a fresh token after signing out.
+    loginGeneration.current++;
+    loginAbort.current?.abort();
+    loginWindow.current?.close();
+    setLoginBusy(false);
+    clearHubOAuthSession();
+    setSwitchingAccount(false);
+    setReview(false);
+    setLoginError('');
+    // The hook listens for this event to re-read the authorization scope.
+    window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
+  };
   const invalid = validateMetadata(state.metadata).length > 0;
   const invalidFields = new Set(validateMetadata(state.metadata));
   const fields = ['asset_name', 'version', 'display_name', 'description', 'tags', 'version_desc'] as const;
@@ -379,11 +442,23 @@ function AssetPublishDrawer({
     description: 'descriptionHelp',
     tags: 'tagsHelp',
   };
-  const outcome = state.record ? publishOutcome(state.record) : null;
+  const recordState = state.record ? localRecordState(state.record) : null;
+  // The result view is shown when the user opened it, while a submission is in flight, or after a
+  // submission this session started (`attempted` is reset by a definitive rejection, by
+  // invalidate() (edit) and by prepare(), so a failed attempt cannot leave the card armed).
+  const showResult =
+    Boolean(state.record) && (viewingResult || state.submissionLocked || state.attempted);
+  // Both "back to editing" buttons must leave the same way; when only one of them reset the state,
+  // the card could pop back over the form on the next record update.
+  const backToForm = () => {
+    state.edit({});
+    setViewingResult(false);
+    setReview(false);
+  };
   const ResultIcon =
-    outcome === 'failed'
+    recordState === 'failed'
       ? CircleAlert
-      : ['queued', 'uploading', 'unknown'].includes(outcome || '')
+      : ['queued', 'uploading', 'unconfirmed'].includes(recordState || '')
         ? Clock3
         : CircleCheck;
   const zh = i18n.language.startsWith('zh');
@@ -460,12 +535,12 @@ function AssetPublishDrawer({
       closeTestId="asset-publish-close"
       footer={
         <>
-          {!review && !state.record && invalid && (
+          {!review && !showResult && invalid && (
             <p className="asset-publish-footer-validation" data-testid="asset-publish-validation">
               {text('invalid')}
             </p>
           )}
-          {!review && !state.record && (
+          {!review && !showResult && (
             <>
               <button type="button" onClick={onClose} data-testid="asset-publish-cancel">
                 {text('cancel')}
@@ -481,16 +556,13 @@ function AssetPublishDrawer({
               </button>
             </>
           )}
-          {review && !state.record && (
+          {review && !showResult && (
             <>
               <button
                 type="button"
                 data-testid="asset-publish-edit"
                 disabled={state.busy || state.attempted}
-                onClick={() => {
-                  state.edit({});
-                  setReview(false);
-                }}
+                onClick={backToForm}
               >
                 {text('edit')}
               </button>
@@ -499,16 +571,28 @@ function AssetPublishDrawer({
                 className="asset-publish-primary"
                 data-testid="asset-publish-commit"
                 disabled={state.busy || !state.draft?.can_submit || !!state.draft?.errors?.length || !state.loggedIn}
-                onClick={() => void state.commit()}
+                onClick={() => {
+                  void state.commit();
+                }}
               >
                 {text(state.busy ? 'busy' : state.attempted ? 'retry' : 'commit')}
               </button>
             </>
           )}
-          {state.record && (
-            <button type="button" onClick={onClose} data-testid="asset-publish-done">
-              {text('close')}
-            </button>
+          {showResult && (
+            <>
+              <button
+                type="button"
+                data-testid="asset-publish-result-edit"
+                disabled={state.submissionLocked || state.busy}
+                onClick={backToForm}
+              >
+                {text('edit')}
+              </button>
+              <button type="button" onClick={onClose} data-testid="asset-publish-done">
+                {text('close')}
+              </button>
+            </>
           )}
         </>
       }
@@ -559,15 +643,26 @@ function AssetPublishDrawer({
               <span data-testid="asset-publish-destination">{hubHost(state.description.hub_url)}</span>
             )}
           </div>
-          <button
-            type="button"
-            className="asset-publish-text-button"
-            data-testid="asset-publish-switch-account"
-            aria-expanded={switchingAccount}
-            onClick={() => setSwitchingAccount((value) => !value)}
-          >
-            {text('switchAccount')}
-          </button>
+          <div className="asset-publish-account-actions">
+            <button
+              type="button"
+              className="asset-publish-text-button"
+              data-testid="asset-publish-switch-account"
+              aria-expanded={switchingAccount}
+              onClick={() => setSwitchingAccount((value) => !value)}
+            >
+              {text('switchAccount')}
+            </button>
+            <button
+              type="button"
+              className="asset-publish-text-button"
+              data-testid="asset-publish-sign-out"
+              onClick={signOut}
+              disabled={state.busy || state.submissionLocked}
+            >
+              {text('signOut')}
+            </button>
+          </div>
           {switchingAccount && (
             <div className="asset-publish-provider-options">
               {(['gitcode', 'github'] as const).map((nextProvider) => (
@@ -621,7 +716,7 @@ function AssetPublishDrawer({
           {text(state.error as MessageKey)}
         </p>
       )}
-      {!review && !state.record && (
+      {!review && !showResult && (
         <form
           id="asset-publish-form"
           data-testid="asset-publish-form"
@@ -635,7 +730,7 @@ function AssetPublishDrawer({
         >
           <fieldset
             className="asset-publish-form-fields"
-            disabled={state.busy || (state.loggedIn && !state.description)}
+            disabled={state.busy || !state.description}
           >
             <section
               className="asset-publish-form-section"
@@ -733,7 +828,7 @@ function AssetPublishDrawer({
           ))}
         </form>
       )}
-      {review && !state.record && (
+      {review && !showResult && (
         <section data-testid="asset-publish-review">
           <h3 data-testid="asset-publish-review-title">{text('check')}</h3>
           <p data-testid="asset-publish-review-visibility">
@@ -772,18 +867,18 @@ function AssetPublishDrawer({
           )}
         </section>
       )}
-      {state.record && outcome && (
+      {state.record && showResult && recordState && (
         <section
           aria-live="polite"
           className="asset-publish-result-card"
           data-testid="asset-publish-result"
-          data-variant={outcome}
+          data-variant={recordState}
         >
           <header className="asset-publish-result-header" data-testid="asset-publish-result-header">
-            <span className="asset-publish-result-icon" aria-hidden="true">
+            <span className="asset-publish-result-icon" aria-hidden="true" data-testid="asset-publish-result-icon">
               <ResultIcon size={20} />
             </span>
-            <h3>{text(outcome as MessageKey)}</h3>
+            <h3 data-testid="asset-publish-result-status">{text(recordState as MessageKey)}</h3>
           </header>
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
@@ -808,19 +903,6 @@ function AssetPublishDrawer({
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
             <p data-testid="asset-publish-observed-note">{text('observed')}</p>
-            {!['queued', 'uploading', 'unknown'].includes(outcome) && (
-              <button
-                type="button"
-                data-testid="asset-publish-new-version"
-                disabled={state.submissionLocked || state.busy}
-                onClick={() => {
-                  state.edit({});
-                  setReview(false);
-                }}
-              >
-                {text('recheck')}
-              </button>
-            )}
           </footer>
         </section>
       )}
@@ -856,14 +938,21 @@ function AssetPublishDrawer({
                 data-testid="asset-publish-record"
                 disabled={state.submissionLocked || state.busy}
                 data-variant={record.operation_id}
-                onClick={() => state.setRecord(record)}
+                onClick={() => {
+                  state.setRecord(record);
+                  setViewingResult(true);
+                }}
               >
                 <span className="asset-publish-record-main">
                   <strong>{record.result?.version || record.version || text('empty')}</strong>
                   {record.updated_at && <small>{dateText(record.updated_at)}</small>}
                 </span>
-                <span className="asset-publish-record-status" data-variant={publishOutcome(record)}>
-                  {text(publishOutcome(record) as MessageKey)}
+                <span
+                  className="asset-publish-record-status"
+                  data-testid="asset-publish-record-status"
+                  data-variant={localRecordState(record)}
+                >
+                  {text(localRecordState(record) as MessageKey)}
                 </span>
               </button>
             ))}

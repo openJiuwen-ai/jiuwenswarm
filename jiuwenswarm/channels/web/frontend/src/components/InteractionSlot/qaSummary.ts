@@ -13,6 +13,8 @@ export interface QaSummaryItem {
   question: string;
   /** 用户选中的选项标签 + 自定义输入（若有），已合并为展示用字符串数组 */
   answers: string[];
+  /** Preserve non-secret choices while treating unclassified legacy answers conservatively. */
+  answerSources?: Array<'option' | 'input' | 'skipped'>;
 }
 
 export interface QaSummaryData {
@@ -35,13 +37,20 @@ const SENSITIVE_QUESTION_MARKERS = [
   '秘钥',
 ];
 
+export function isSensitiveQuestion(question: string): boolean {
+  return SENSITIVE_QUESTION_MARKERS.some((marker) => question.toLocaleLowerCase().includes(marker));
+}
+
 function maskSensitiveSummary(data: QaSummaryData): QaSummaryData {
   return {
     ...data,
     items: data.items.map((item) => ({
       ...item,
-      answers: SENSITIVE_QUESTION_MARKERS.some((marker) => item.question.toLocaleLowerCase().includes(marker))
-        ? item.answers.map(() => MASKED_ANSWER)
+      answers: isSensitiveQuestion(item.question)
+        ? item.answers.map((answer, index) => {
+            const source = Array.isArray(item.answerSources) ? item.answerSources[index] : undefined;
+            return source === 'option' || source === 'skipped' ? answer : MASKED_ANSWER;
+          })
         : [...item.answers],
     })),
   };

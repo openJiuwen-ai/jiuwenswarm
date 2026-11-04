@@ -36,10 +36,7 @@ from typing import Any
 import yaml
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 from openjiuwen.core.foundation.llm import Model, ProviderType
-from openjiuwen.core.foundation.llm.schema.config import (
-    ModelClientConfig,
-    ModelRequestConfig,
-)
+from openjiuwen.core.foundation.llm.schema.config import ModelRequestConfig
 from openjiuwen.rsi.harness_rsi.auto_harness.schema import load_auto_harness_config
 
 from jiuwenswarm.common.auth.model_catalog import is_login_model
@@ -66,12 +63,17 @@ from jiuwenswarm.common.context_window import (
 )
 from jiuwenswarm.common.model_config_validation import probe_model_connection
 from jiuwenswarm.common.reasoning_config import (
+    effective_endpoint_profile,
     resolve_endpoint_profile_override,
     validate_reasoning_level_for_model,
 )
+from jiuwenswarm.common.config_panel.models_handlers import (
+    build_probe_model_client_config,
+    resolve_persisted_mcc_for_validate,
+)
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.utils import get_user_workspace_dir
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import get_runtime_version
 
 logger = logging.getLogger(__name__)
 
@@ -472,7 +474,7 @@ async def config_get_handler(
         param_key: (os.getenv(env_key) or "")
         for param_key, env_key in CLI_CONFIG_SET_ENV_MAP.items()
     }
-    payload["app_version"] = __version__
+    payload["app_version"] = get_runtime_version()
     try:
         raw = get_config_raw()
         crypto_provider = _get_crypto_provider()
@@ -918,7 +920,18 @@ async def config_validate_model_handler(
     api_key = str(params.get("api_key") or "").strip()
     model = str(params.get("model") or "").strip()
     model_provider = normalize_provider_value(str(params.get("model_provider") or ""))
-    verify_ssl = bool(params.get("verify_ssl", False))
+    verify_ssl: bool | None = None
+    if "verify_ssl" in params:
+        verify_ssl = bool(params.get("verify_ssl"))
+    # 与 Web 侧同口径：草稿方言优先，无草稿时按 api_base host 推断已知自建
+    # 网关（同保存路径），仍未命中则回退持久化条目的方言，保证探测与
+    # 保存后的对话走同一条 core 路由。
+    persisted_mcc = resolve_persisted_mcc_for_validate(model)
+    endpoint_profile = (
+        params.get("endpoint_profile")
+        or effective_endpoint_profile(api_base)
+        or persisted_mcc.get("endpoint_profile")
+    )
 
     if not all([api_base, api_key, model, model_provider]):
         await channel.send_response(
@@ -959,14 +972,15 @@ async def config_validate_model_handler(
             model_name=model,
         )
     )
-    model_client_config = ModelClientConfig(
-        client_id="config-validate",
-        client_provider=model_provider,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=25.0,
-        max_retries=0,
+    # 探测以持久化条目为基线：custom_headers / ssl_cert 等配置页未暴露的
+    # write-only 字段随条目进入探测请求，与 Web 侧「测试连接」同口径。
+    model_client_config = build_probe_model_client_config(
+        model_provider,
+        api_key,
+        api_base,
+        endpoint_profile=endpoint_profile,
         verify_ssl=verify_ssl,
+        persisted_mcc=persisted_mcc,
     )
     llm = Model(
         model_config=model_request_config,
@@ -1016,8 +1030,10 @@ async def models_list_handler(
         models = await asyncio.to_thread(get_available_models, config)
         result = []
         for entry in models:
-            mcc = entry.get("model_client_config", {})
-            mco = entry.get("model_config_obj", {})
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config") or {}
+            mco = entry.get("model_config_obj") or {}
             model_name = str(mcc.get("model_name", "") or "").strip()
             result_entry = {
                 "model_name": model_name,

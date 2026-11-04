@@ -47,7 +47,7 @@ def _json(path):
     return value
 
 
-def _path(root, value, field, directory=False):
+def _path(root, value, field, directory=False, any_type=False):
     _text(value, field)
     relative = Path(value)
     invalid_root = relative.is_absolute() or bool(PureWindowsPath(value).drive)
@@ -62,7 +62,13 @@ def _path(root, value, field, directory=False):
         candidate /= part
         if candidate.is_symlink():
             _fail("INVALID_REFERENCE", field, "Symbolic links are not allowed")
-    if not (candidate.is_dir() if directory else candidate.is_file()):
+    if any_type:
+        # Markdown links may point at a directory (for example ``[docs](docs/)``);
+        # only require that the target exists inside the package.
+        exists = candidate.exists()
+    else:
+        exists = candidate.is_dir() if directory else candidate.is_file()
+    if not exists:
         _fail("MISSING_REFERENCE", field, "A declared file or directory is missing")
     return candidate
 
@@ -270,7 +276,7 @@ def _skill(root, identity, metadata):
             continue
         relative = unquote(target.split("#", 1)[0])
         if relative:
-            _path(root, relative, "SKILL.md.references")
+            _path(root, relative, "SKILL.md.references", any_type=True)
     changes = []
     for key, value in {
         "name": identity.package_name,
@@ -482,6 +488,27 @@ def normalize_and_validate(
                         message=("MCP URL must start with http:// or https://; "
                                  "keep the scheme outside declared placeholders"),
                     )
+        if package.credentials_type == "oauth" and package.integration_type == "remote-mcp":
+            # Migrate legacy packages in the private snapshot, never the installed copy.
+            # Hub treats placeholders as token-schema inputs; the host adds this header.
+            normalized = False
+            for server in config.get("mcpServers", {}).values():
+                if not isinstance(server, dict):
+                    continue
+                headers = server.get("headers", {})
+                if not isinstance(headers, dict):
+                    continue
+                for key in list(headers):
+                    if str(key).lower() == "authorization" and headers[key] == "Bearer ${OAUTH_ACCESS_TOKEN}":
+                        del headers[key]
+                        normalized = True
+                if "headers" in server and not headers:
+                    del server["headers"]
+            if normalized:
+                package.integration_file.write_text(
+                    json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+                changes.append("mcp.host_oauth_authorization")
         placeholders = set(_PLACEHOLDER.findall(json.dumps(config)))
         defined = set()
         if package.credentials_file:

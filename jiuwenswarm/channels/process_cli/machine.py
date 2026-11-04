@@ -14,7 +14,14 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
+from jiuwenswarm.channels.process_cli.duplex_control import DuplexControlError
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
+from jiuwenswarm.channels.process_cli.machine_policy import (
+    RunLimits,
+    parse_structured_output,
+    structured_prompt,
+    validate_output_schema,
+)
 from jiuwenswarm.channels.process_cli.machine_result import RunSummary
 from jiuwenswarm.channels.process_cli.machine_signals import (
     command_signals,
@@ -46,12 +53,26 @@ _INTERACTION_EVENTS = frozenset(
 )
 
 
+async def _flush_session_writes() -> None:
+    """Make one-shot history and metadata visible before the child exits."""
+    from jiuwenswarm.channels.process_cli.persistence import flush_session_writes
+
+    await flush_session_writes(timeout_seconds=SHUTDOWN_TIMEOUT_SECONDS)
+
+
 class MachineRunError(RuntimeError):
     """A stable failure of this noninteractive execution boundary."""
 
-    def __init__(self, message: str, *, code: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.details = details or {}
 
 
 def _exception_info(error: Exception) -> RuntimeErrorInfo:
@@ -62,13 +83,14 @@ def _exception_info(error: Exception) -> RuntimeErrorInfo:
     # Unknown dependency exceptions may contain credentials or full requests.
     message = (
         str(error)
-        if isinstance(error, (MachineRunError, SessionGuardError))
+        if isinstance(error, (MachineRunError, SessionGuardError, DuplexControlError))
         else "Runtime operation failed."
     )
     return RuntimeErrorInfo(
         code=code,
         message=message,
         retryable=getattr(error, "retryable", False) is True,
+        details=error.details if isinstance(error, MachineRunError) else {},
     )
 
 
@@ -131,11 +153,23 @@ class _MachineRun:
         control: DuplexController | None = None,
     ) -> None:
         self.run_input = run_input
+        from jiuwenswarm.runtime.run_context import RunContext
+        self.run_context = RunContext(
+            request_id=writer.request_id, max_turns=run_input.max_turns,
+            max_budget_usd=run_input.max_budget_usd, host_tools=run_input.host_tools,
+            tool_permissions=(tuple(run_input.permissions["tools"].items())
+                              if run_input.permissions is not None else None),
+        )
         self.writer = writer
         self.client: InProcessRuntimeClient | None = None
         self.request: AgentRequest | None = None
         self.stream: AsyncIterator[RuntimeEvent] | None = None
         self.summary = RunSummary()
+        self.limits = RunLimits(
+            max_turns=self.run_context.max_turns,
+            max_budget_usd=self.run_context.max_budget_usd,
+        )
+        self.output_json: dict[str, Any] | None = None
         self.error: RuntimeErrorInfo | None = None
         self.status = RunStatus.COMPLETED
         self.exit_code = 0
@@ -159,6 +193,44 @@ class _MachineRun:
     async def execute(
         self, client_factory: Callable[[], InProcessRuntimeClient]
     ) -> None:
+        if self.run_input.output_schema is not None:
+            try:
+                validate_output_schema(self.run_input.output_schema)
+            except ValueError as error:
+                raise MachineRunError(
+                    str(error),
+                    code="INVALID_OUTPUT_SCHEMA",
+                    details={"field": "/output_schema", "reason": "invalid_schema"},
+                ) from error
+        if self.run_input.host_tools:
+            from jiuwenswarm.channels.process_cli.host_tools import (
+                validate_host_tool_schemas,
+            )
+
+            try:
+                validate_host_tool_schemas(self.run_input.host_tools)
+            except ValueError as error:
+                raise MachineRunError(
+                    str(error),
+                    code="INVALID_HOST_TOOL",
+                    details={"field": "/host_tools", "reason": "invalid_schema"},
+                ) from error
+            if self.control is None or self.control.reader is None:
+                raise MachineRunError(
+                    "Host tools require --run-jsonl and a live SDK callback.",
+                    code="HOST_TOOLS_REQUIRE_DUPLEX",
+                )
+            if (
+                self.run_input.agent is not None
+                and self.run_input.agent.tools != ("*",)
+                and not {tool.name for tool in self.run_input.host_tools}.issubset(
+                    self.run_input.agent.tools
+                )
+            ):
+                raise MachineRunError(
+                    "Every host tool must appear in the Agent tool allowlist.",
+                    code="HOST_TOOL_NOT_ALLOWED",
+                )
         if self.run_input.session_id is not None:
             self.session_lease = SessionLease(self.run_input.session_id)
             self.session_lease.acquire()
@@ -181,6 +253,18 @@ class _MachineRun:
             self.client.validate_agent_definition(
                 self.run_input.agent.to_dict(), mode=mode.mode
             )
+        selected_model = (
+            self.client.resolve_model_capability(self.run_input.model)
+            if self.run_input.model is not None
+            else None
+        )
+        if self.run_input.mcp:
+            mcp_status = self.client.validate_mcp_references(self.run_input.mcp)
+            if not mcp_status.valid:
+                raise MachineRunError(
+                    "Selected MCP references are unavailable.",
+                    code="MCP_NOT_READY",
+                )
         session_id = await self.client.create_or_resume_session(
             channel_id=CHANNEL_ID,
             session_id=self.run_input.session_id,
@@ -197,15 +281,41 @@ class _MachineRun:
             resumed=descriptor is not None,
         )
         params = _workspace_params(self.run_input, resumed=descriptor is not None)
+        query = (
+            structured_prompt(self.run_input.input, self.run_input.output_schema)
+            if self.run_input.output_schema is not None
+            else self.run_input.input
+        )
         params.update(
             {
-                "query": self.run_input.input,
-                "content": self.run_input.input,
+                "query": query,
+                "content": query,
                 "mode": mode.mode,
                 "work_mode": mode.work_mode,
                 "supports_user_interaction": self.control is not None,
             }
         )
+        if selected_model is not None:
+            params["model_name"] = selected_model.selection_key
+        if self.run_input.skills is not None:
+            params["skills"] = list(self.run_input.skills)
+        if self.run_input.mcp is not None:
+            params["mcp"] = list(self.run_input.mcp)
+        if self.run_context.tool_permissions is not None:
+            from jiuwenswarm.common.permission_tools import (
+                normalize_permission_tool_name,
+            )
+
+            tool_levels: dict[str, str] = {}
+            for name, level in self.run_context.tool_permissions:
+                canonical = normalize_permission_tool_name(name)
+                if not canonical or canonical in tool_levels:
+                    raise MachineRunError(
+                        "Run permission tool names are ambiguous.",
+                        code="INVALID_RUN_PERMISSIONS",
+                    )
+                tool_levels[canonical] = level
+            params["run_permissions"] = {"tools": tool_levels}
         self.request = AgentRequest(
             request_id=self.writer.request_id,
             channel_id=CHANNEL_ID,
@@ -215,11 +325,41 @@ class _MachineRun:
             timestamp=time.time(),
             params=params,
         )
+        ready = None
+        if self.run_context.max_turns is not None or self.run_context.host_tools:
+
+            async def configure(agent: Any) -> None:
+                from jiuwenswarm.channels.process_cli.host_tools import HostCallbackTool
+
+                tools = (
+                    tuple(
+                        HostCallbackTool(spec, self.control.call_host_tool)
+                        for spec in self.run_context.host_tools
+                    )
+                    if self.control is not None
+                    else ()
+                )
+                await agent.configure_process_cli_run(
+                    max_turns=self.run_context.max_turns,
+                    host_tools=tools,
+                )
+
+            ready = configure
         if self.run_input.agent is None:
-            self.stream = self.client.stream(self.request)
+            self.stream = (
+                self.client.stream(self.request, on_agent_ready=ready)
+                if ready is not None
+                else self.client.stream(self.request)
+            )
         else:
-            self.stream = self.client.stream_agent(
-                self.request, self.run_input.agent.to_dict()
+            self.stream = (
+                self.client.stream_agent(
+                    self.request, self.run_input.agent.to_dict(), on_agent_ready=ready
+                )
+                if ready is not None
+                else self.client.stream_agent(
+                    self.request, self.run_input.agent.to_dict()
+                )
             )
         if self.control is not None:
             completed = await self.control.consume(
@@ -231,18 +371,51 @@ class _MachineRun:
         else:
             completed = await self.consume_noninteractive()
         if self.summary.error is not None:
-            self.fail(self.summary.error)
+            self.fail(self._normalize_run_error(self.summary.error))
         elif not completed:
             raise MachineRunError(
                 "Runtime stream ended without a completion event.",
                 code="INCOMPLETE_RUN",
             )
+        if self.run_input.output_schema is not None:
+            try:
+                self.output_json = parse_structured_output(
+                    self.summary.final_answer, self.run_input.output_schema
+                )
+            except ValueError as error:
+                raise MachineRunError(
+                    str(error), code="OUTPUT_SCHEMA_MISMATCH"
+                ) from error
+
+    def _normalize_run_error(self, error: RuntimeErrorInfo) -> RuntimeErrorInfo:
+        """Identify the Agent's iteration stop when this run requested the cap."""
+        max_turns = self.run_input.max_turns
+        at_turn_limit = max_turns is not None and self.limits.model_calls >= max_turns
+        is_iteration_error = error.code == "MAX_ITERATIONS_REACHED"
+        if at_turn_limit and is_iteration_error:
+            return replace(
+                error,
+                code="TURN_LIMIT_EXCEEDED",
+                message="Run reached max_turns before completion.",
+            )
+        return error
 
     def observe(self, event: RuntimeEvent) -> None:
         self.writer.write_event(event)
         self.summary.observe(event)
+        limit_error = self.limits.observe(event)
+        if limit_error is not None:
+            messages = {
+                "BUDGET_METER_UNAVAILABLE": "Model did not report a usable cost for the requested budget.",
+                "BUDGET_EXCEEDED": "Run exceeded max_budget_usd.",
+                "TURN_LIMIT_EXCEEDED": "Run exceeded max_turns.",
+            }
+            raise MachineRunError(
+                messages.get(limit_error, "Run exceeded a configured limit."),
+                code=limit_error,
+            )
         if self.summary.error is not None:
-            self.fail(self.summary.error)
+            self.fail(self._normalize_run_error(self.summary.error))
 
     async def consume_noninteractive(self) -> bool:
         completed = False
@@ -310,6 +483,8 @@ class _MachineRun:
                 ),
             )
         await self.cleanup_step("runtime_close", client.close)
+        if session_id is not None:
+            await self.cleanup_step("session_writes", _flush_session_writes)
         self._record_cleanup_errors()
 
     def _record_cleanup_errors(self) -> None:
@@ -335,7 +510,8 @@ class _MachineRun:
             status=self.status,
             exit_code=self.exit_code,
             output=self.summary.output,
-            usage=self.summary.usage,
+            output_json=self.output_json,
+            usage=self.limits.add_usage(self.summary.usage),
             error=self.error,
         )
 
@@ -353,6 +529,8 @@ async def run_machine(
     still active. A broken pipe is a failed run whose cleanup still happens.
     """
     run = _MachineRun(run_input, writer, control=control)
+    from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
+    context_token = CURRENT_RUN_CONTEXT.set(run.run_context)
     deadline = asyncio.timeout(run_input.timeout_seconds)
     try:
         if control is not None:
@@ -399,8 +577,11 @@ async def run_machine(
         try:
             await run.cleanup()
         finally:
-            if run.session_lease is not None:
-                run.session_lease.release()
+            try:
+                if run.session_lease is not None:
+                    run.session_lease.release()
+            finally:
+                CURRENT_RUN_CONTEXT.reset(context_token)
     return run.result()
 
 

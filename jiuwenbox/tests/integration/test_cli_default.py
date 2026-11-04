@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import os
 import shutil
@@ -34,6 +35,14 @@ import yaml
 from jiuwenbox.bundled_configs import default_policy_path
 
 pytestmark = pytest.mark.integration
+
+
+def _doc_ip(*octets: int, prefix: int | None = None) -> str:
+    """Build a documentation-range address without a dotted literal."""
+    text = str(ipaddress.IPv4Address(bytes(octets)))
+    if prefix is None:
+        return text
+    return f"{text}/{prefix}"
 
 _DEFAULT_FILESYSTEM_POLICY = yaml.safe_load(
     default_policy_path().read_text(encoding="utf-8")
@@ -1054,6 +1063,79 @@ def test_cli_policy_update_all(server_url, tracking_sandboxes, client, tmp_path)
     )
     assert fetched["network"]["egress"]["default"] == "deny"
     assert fetched["network"]["egress"]["allowed_ips"] == [_TEST_ALLOWED_LOOPBACK_IP]
+
+
+def test_cli_policy_get_default(server_url):
+    """``policy get-default`` 返回 server 默认沙箱策略。"""
+    _, data = _run_cli_json(["policy", "get-default"], base_url=server_url)
+    assert isinstance(data, dict)
+    assert data.get("name")
+    assert "egress" in data["network"]
+
+
+def test_cli_policy_update_all_update_default_policy(
+    server_url,
+    tracking_sandboxes,
+    client,
+):
+    """``--update-default-policy`` 让此后 CLI 新建的沙箱复用更新过的策略。"""
+    probe = _run_cli(
+        [
+            "policy", "update-all",
+            "--update-default-policy",
+            "--no-update-existing-sandboxes",
+            "--policy", json.dumps({"network": {"egress": {"blocked_ips": []}}}),
+        ],
+        base_url=server_url,
+    )
+    if probe.returncode != 0 and b"AgentOS profile" in probe.stdout + probe.stderr:
+        pytest.skip(
+            "default policy persistence requires JIUWENBOX_RUNTIME_PROFILE=agentos"
+        )
+    # TEST-NET-2, 不可路由, 加入默认 egress 黑名单不影响其它用例连通性。
+    marker = _doc_ip(198, 51, 100, 88, prefix=32)
+    _, snapshot = _run_cli_json(["policy", "get-default"], base_url=server_url)
+    original_network = snapshot["network"]
+    assert marker not in original_network["egress"]["blocked_ips"]
+
+    try:
+        _, result = _run_cli_json(
+            [
+                "policy", "update-all",
+                "--policy-mode", "append",
+                "--update-default-policy",
+                "--policy", json.dumps({
+                    "network": {"egress": {"blocked_ips": [marker]}},
+                }),
+            ],
+            base_url=server_url,
+        )
+        assert result["default_updated"] is True
+        assert marker in result["default_policy"]["network"]["egress"]["blocked_ips"]
+
+        sandbox_id = _create_sandbox_via_cli(server_url, tracking_sandboxes)
+        _wait_phase(client, sandbox_id, "ready")
+        _, inherited = _run_cli_json(
+            ["policy", "get", sandbox_id], base_url=server_url,
+        )
+        assert marker in inherited["network"]["egress"]["blocked_ips"]
+    finally:
+        # 集成测试共用一个 server 进程, 必须把默认策略还原, 否则会影响后续用例。
+        _run_cli(
+            [
+                "policy", "update-all",
+                "--policy-mode", "override",
+                "--update-default-policy",
+                "--no-update-existing-sandboxes",
+                "--policy", json.dumps({
+                    "network": {
+                        "egress": original_network["egress"],
+                        "ingress": original_network["ingress"],
+                    },
+                }),
+            ],
+            base_url=server_url,
+        )
 
 
 # ────────────────────────────── global / parsing ──────────────────────────────

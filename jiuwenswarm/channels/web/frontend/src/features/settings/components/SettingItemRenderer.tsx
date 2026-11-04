@@ -4,7 +4,7 @@ import { Button, Input, Select, Switch } from '../../../components/ui';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
-import { useSettingsSource } from '../services/SettingsSourceProvider';
+import { SettingsSourceProvider, useSettingsSource } from '../services/SettingsSourceProvider';
 import { useUnsavedChanges } from '../services/useUnsavedChanges';
 import { SettingRow } from './SettingRow';
 
@@ -100,6 +100,7 @@ function SimpleSettingItem({
   const { isConnected } = useSettingsServices();
   const source = useSettingsSource();
   const [editingSubItems, setEditingSubItems] = useState<ReadonlySet<string>>(() => new Set());
+  const [configuring, setConfiguring] = useState(false);
   const reportSubItemEditing = useCallback<EditingChange>((id, editing) => {
     setEditingSubItems((current) => {
       if (editing === current.has(id)) return current;
@@ -123,13 +124,26 @@ function SimpleSettingItem({
   let control;
 
   if (item.component === 'switch') {
+    const Configuration = item.configure;
     const checked = parseConfigBoolean(source.values[item.key]);
+    const buildSwitchUpdates = (next: boolean): Record<string, boolean> => {
+      const updates: Record<string, boolean> = { [item.key]: next };
+      if (!next && item.subItems?.uncheckWithParent) {
+        item.subItems.items.forEach((subItem) => {
+          if (subItem.component === 'switch') updates[subItem.key] = false;
+        });
+      }
+      return updates;
+    };
     control = (
       <Switch
         aria-label={title}
         checked={checked}
-        disabled={controlDisabled || editingSubItems.size > 0}
-        onChange={(next) => void source.save({ [item.key]: next }, item.id).catch(() => undefined)}
+        disabled={controlDisabled || configuring || editingSubItems.size > 0}
+        onChange={(next) => {
+          if (next && Configuration) setConfiguring(true);
+          else void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined);
+        }}
         data-testid="settings-switch"
         data-variant={item.id}
       />
@@ -137,24 +151,35 @@ function SimpleSettingItem({
     const showSubItems = item.subItems?.show === 'always' || checked;
     const subItemsDisabled = disabled || (item.subItems?.disabled === 'when-parent-unchecked' && !checked);
     return (
-      <SettingRow
-        title={title}
-        description={description}
-        subSettings={
-          item.subItems && showSubItems
-            ? item.subItems.items.map((subItem) => (
-                <SettingItemRenderer
-                  key={subItem.id}
-                  item={subItem}
-                  disabled={subItemsDisabled}
-                  onEditingChange={reportSubItemEditing}
-                />
-              ))
-            : undefined
-        }
-      >
-        {control}
-      </SettingRow>
+      <>
+        <SettingRow
+          className={item.rowClassName}
+          title={title}
+          description={description}
+          subSettings={
+            item.subItems && showSubItems
+              ? item.subItems.items.map((subItem) => (
+                  <SettingItemRenderer
+                    key={subItem.id}
+                    item={subItem}
+                    disabled={subItemsDisabled}
+                    onEditingChange={reportSubItemEditing}
+                  />
+                ))
+              : undefined
+          }
+        >
+          {control}
+        </SettingRow>
+        {configuring && Configuration ? (
+          <Configuration
+            onSave={async () => {
+              await source.save(buildSwitchUpdates(true), item.id, { optimistic: false });
+            }}
+            onClose={() => setConfiguring(false)}
+          />
+        ) : null}
+      </>
     );
   }
 
@@ -195,9 +220,26 @@ export function SettingItemRenderer({
   disabled?: boolean;
   onEditingChange?: EditingChange;
 }) {
+  const reportCustomEditing = useCallback(
+    (editing: boolean) => {
+      onEditingChange?.(item.id, editing);
+    },
+    [item.id, onEditingChange],
+  );
+  if (item.source) {
+    return (
+      <SettingsSourceProvider source={item.source}>
+        <SettingItemRenderer
+          item={{ ...item, source: undefined }}
+          disabled={disabled}
+          onEditingChange={onEditingChange}
+        />
+      </SettingsSourceProvider>
+    );
+  }
   if (item.component === 'custom') {
     const CustomItem = item.render;
-    return <CustomItem disabled={disabled} />;
+    return <CustomItem disabled={disabled} onEditingChange={reportCustomEditing} />;
   }
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
 }

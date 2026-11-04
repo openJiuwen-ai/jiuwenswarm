@@ -7,7 +7,7 @@ This document is intended for developers of the JiuwenSwarm project, covering ho
 | Dependency | Version Requirement | Description |
 |------------|---------------------|-------------|
 | Operating System | Windows 10/11, macOS 10.15+, Linux | Mainstream OS supported |
-| Python | ≥3.11, <3.14 | Python 3.11 recommended |
+| Python | ≥3.11 | Python 3.11 recommended |
 | Git | Latest | For cloning the repository |
 | Node.js | ≥18.x | For frontend interface |
 | Bun | Latest | For building TUI frontend packages |
@@ -35,7 +35,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ### Create a Virtual Environment
 
-Use `uv` to create a new virtual environment (supports Python 3.11, 3.12, or 3.13):
+Use `uv` to create a new virtual environment (supports Python 3.11, 3.12, 3.13, or 3.14):
 
 ```bash
 uv venv --python=3.11
@@ -282,8 +282,7 @@ The project contains two independent wheel packages:
 
 | Package | Description | Config File |
 |---------|-------------|-------------|
-| `jiuwenswarm` | Backend service main package (includes Web frontend build artifacts) | `pyproject.toml` |
-| `jiuwenswarm-tui` | TUI terminal interface sidecar package (includes Bun-compiled native binaries) | `packages/jiuwenswarm-tui/pyproject.toml` |
+| `workswarm` | Backend service main package (includes Web frontend build artifacts) | `pyproject.toml` |
 
 #### 6.1.1 Build All (Recommended)
 
@@ -296,12 +295,10 @@ bash scripts/build.sh
 
 The script will execute the following steps in order:
 1. Build the Web frontend (runs `npm run build` in `jiuwenswarm/channels/web/frontend`)
-2. Build the main package `jiuwenswarm.whl`
-3. If `bun` is detected, continue to build the TUI native binary and `jiuwenswarm-tui.whl`
+2. Build the main package `workswarm.whl`
 
-Artifacts are output to two directories:
-- `./dist/jiuwenswarm-<version>-py3-none-any.whl` (main package)
-- `./packages/jiuwenswarm-tui/dist/jiuwenswarm_tui-<version>-<platform>.whl` (TUI sidecar package)
+Artifacts are output to the following directory:
+- `./dist/workswarm-<version>-py3-none-any.whl` (main package)
 
 #### 6.1.2 Build the jiuwenbox Package Alone
 

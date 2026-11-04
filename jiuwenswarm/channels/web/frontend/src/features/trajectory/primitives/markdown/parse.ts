@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * The markdown renderer's two mdast grammars, one per rendering arm. Each
  * arm is internally consistent — the incremental tail parses, the one-shot

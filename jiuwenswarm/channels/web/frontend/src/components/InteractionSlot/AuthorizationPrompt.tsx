@@ -19,9 +19,10 @@ import { ShieldCheck, ChevronDown } from 'lucide-react';
 import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
 import { formatToolArguments } from '../../utils';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
-import { AutoReviewerDetails, AutoReviewerStatusBadge } from '../ChatPanel/AutoReviewerStatus';
+import { AutoReviewerDetails } from '../ChatPanel/AutoReviewerStatus';
 import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
 import { translatePermissionText } from './permissionTextI18n';
+import { isEnterprise } from '../../edition';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
@@ -76,7 +77,10 @@ export function buildAuthorizationAnswers(
       );
     const reject = question.options.find((option) => optionSemantic(option) === 'reject');
     const selected = match || (smart ? reject : question.options[0]);
-    return { selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label] };
+    return {
+      question: question.question,
+      selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label],
+    };
   });
 }
 
@@ -126,6 +130,18 @@ export function AuthorizationQuestionDetails({
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {translatePermissionText(question.question, i18n.language)}
           </ReactMarkdown>
+          {question.matched_rule && isEnterprise() && (
+            <p
+              className="mt-3 text-xs text-text-muted"
+              data-testid="interaction-slot-matched-rule"
+              data-variant={index}
+            >
+              <span data-testid="interaction-slot-matched-rule-label">
+                {t('authPrompt.matchedRule')}:{' '}
+              </span>
+              <code className="whitespace-pre-wrap break-words text-text">{question.matched_rule}</code>
+            </p>
+          )}
           {question.tool_payload !== undefined && (
             <details
               className="mt-3 rounded-lg border border-border bg-card p-3 text-xs"
@@ -193,7 +209,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const questions = pending.questions ?? [];
   const primary = questions[0];
   const smart = pending.source === 'permission_interrupt' && permissionQuestionKind(questions) === 'smart';
-  const reviewer = primary?.reviewer_metadata;
+
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
@@ -233,7 +249,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
 
   return (
     <div
-      className={smart ? 'auth-prompt auth-prompt--smart' : 'auth-prompt'}
+      className="auth-prompt"
       role="alertdialog"
       aria-label={title}
       data-testid="interaction-slot-auth-prompt"
@@ -276,7 +292,6 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
               ({count})
             </span>
           )}
-          {count === 1 && <AutoReviewerStatusBadge reviewer={reviewer} />}
           <ChevronDown
             className={`auth-prompt__chevron${expanded ? ' auth-prompt__chevron--open' : ''}`}
             size={14}

@@ -8,12 +8,10 @@ import type {
   DefinitionFileEntry,
   RequestStatus,
 } from '../../features/agentManagement';
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
-import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
-import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
+import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import { DetailPromptChip, DetailSection, EntityAvatar, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
 
 type AgentGroupDetailPageProps = {
@@ -29,8 +27,8 @@ type AgentGroupDetailPageProps = {
   fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
-  actionError: string | null;
   actionNotice: string | null;
+  actionNoticeError?: boolean;
   busy: boolean;
   onBack: () => void;
   onRetry: () => void;
@@ -56,8 +54,8 @@ export function AgentGroupDetailPage({
   fileContent,
   fileStatus,
   fileError,
-  actionError,
   actionNotice,
+  actionNoticeError,
   busy,
   onBack,
   onRetry,
@@ -82,7 +80,7 @@ export function AgentGroupDetailPage({
             <>
               <EntityHeader
                 testId="agent-management-detail-header"
-                avatar={<GroupAvatar item={loadingSummary} size="detail" />}
+                avatar={{ name: loadingSummary.displayName, iconUrl: loadingSummary.avatarUrl, testId: 'agent-management-detail-avatar' }}
                 title={loadingSummary.displayName}
                 titleTestId="agent-management-detail-name"
                 tags={[
@@ -95,9 +93,6 @@ export function AgentGroupDetailPage({
                   ...(loadingSummary.installed ? [t('agentManagement.states.installed')] : []),
                 ]}
               />
-              <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
-                <p>{loadingSummary.description || t('agentManagement.unknownDescription')}</p>
-              </DetailSection>
             </>
           ) : null}
           <div
@@ -148,10 +143,12 @@ export function AgentGroupDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
-        <PublicationDetailStatus kind="agent_group" localId={detail.id} />
         <EntityHeader
           testId="agent-management-detail-header"
-          avatar={<GroupAvatar item={detail} size="detail" />}
+          /* 头像走 EntityHeader 的结构化 EntityImageAvatar（共享 EntityAvatar 组件），与
+             agent 模板详情页（agent-management-detail-avatar）同款，不再用自定义 GroupAvatar
+             ReactNode：字母兜底取色与技能面板 / Agent 管理 / 连接器市场保持一致。 */
+          avatar={{ name: detail.displayName, iconUrl: detail.avatarUrl, testId: 'agent-management-detail-avatar' }}
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[
@@ -162,11 +159,13 @@ export function AgentGroupDetailPage({
             ...(detail.installed ? [t('agentManagement.states.installed')] : []),
           ]}
           actions={
-            <div className="agent-management-detail__actions">
+            /* 收敛到共享类 .detail-actions/.detail-action（index.css，与 plugin/MCP/agent 模板
+               详情页同款）。原 .agent-management-detail__actions 一套私有类已删除。 */
+            <div className="detail-actions">
               {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) ? (
                 <button
                   type="button"
-                  className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
+                  className="detail-action"
                   data-testid="agent-management-agent-group-publish"
                   onClick={() =>
                     openAssetPublish({
@@ -176,13 +175,14 @@ export function AgentGroupDetailPage({
                     })
                   }
                 >
+                  <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
               ) : null}
               {detail.installed && detail.capabilities.canUninstall ? (
                 <button
                   type="button"
-                  className="agent-management-detail-action agent-management-detail-action--uninstall"
+                  className="detail-action"
                   data-testid="agent-group-detail-action"
                   data-variant="uninstall"
                   disabled={busy}
@@ -198,7 +198,7 @@ export function AgentGroupDetailPage({
               {detail.installed ? (
                 <button
                   type="button"
-                  className="agent-management-button agent-management-button--secondary agent-management-detail-action--use"
+                  className="detail-action detail-action--use"
                   data-testid="agent-group-detail-action"
                   data-variant="use"
                   disabled={!canUse || busy}
@@ -212,7 +212,7 @@ export function AgentGroupDetailPage({
                   {canDelete ? (
                     <button
                       type="button"
-                      className="agent-management-detail-action agent-management-detail-action--uninstall"
+                      className="detail-action"
                       data-testid="agent-group-detail-action"
                       data-variant="delete"
                       disabled={busy}
@@ -226,7 +226,7 @@ export function AgentGroupDetailPage({
                   {detail.capabilities.canInstall ? (
                     <button
                       type="button"
-                      className="agent-management-button agent-management-button--primary agent-management-detail-action--install"
+                      className="detail-action detail-action--install"
                       data-testid="agent-group-detail-action"
                       data-variant="install"
                       disabled={busy}
@@ -243,13 +243,11 @@ export function AgentGroupDetailPage({
             </div>
           }
         />
-        {actionError ? (
-          <div className="agent-management-inline-error" role="alert">
-            {actionError}
-          </div>
-        ) : null}
         {actionNotice ? (
-          <div className="agent-management-inline-notice" role="status">
+          <div
+            className={`agent-management-inline-notice${actionNoticeError ? ' agent-management-inline-notice--error' : ''}`}
+            role="status"
+          >
             {actionNotice}
           </div>
         ) : null}
@@ -321,7 +319,6 @@ export function AgentGroupDetailPage({
                 <DetailPromptChip
                   key={`${index}-${prompt}`}
                   text={prompt}
-                  icon={<PromptSendIcon width={16} height={16} />}
                   disabled={!canUse || busy || !onUsePrompt}
                   onClick={() => onUsePrompt?.(detail.id, prompt)}
                   testId="agent-group-detail-prompt-send"

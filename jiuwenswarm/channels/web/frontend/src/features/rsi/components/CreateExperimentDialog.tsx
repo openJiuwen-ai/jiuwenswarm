@@ -5,9 +5,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import clsx from 'clsx';
 import { Check, Copy } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Input, Select } from '../../../components/ui';
 import { rsiDatasetValidate, rsiTaskCreate, rsiTaskList, rsiTrainingStart } from '../rsiApi';
 import type { RsiArtifactType, RsiScenario, RsiTaskCreateParams, RsiTaskListItem, RsiTaskStatus } from '../types';
 import { selectProjectDirectory } from '../../../features/workspace/projectDirectoryPicker';
@@ -354,11 +354,11 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
 
         {/* 基础字段 */}
         <Field label={t('rsi.createDialog.nameLabel')}>
-          <input
-            className="rsi-input"
+          <Input
             value={form.name}
-            onChange={(e) => update('name', e.target.value)}
+            onChange={(value) => update('name', value)}
             placeholder={t('rsi.createDialog.namePlaceholder')}
+            invalid={showErrors && Boolean(validationErrors.name)}
           />
           {showErrors && validationErrors.name && <Err text={validationErrors.name} />}
         </Field>
@@ -409,7 +409,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
 
         {branch === 'HARNESS' && (
           <Field label={t('rsi.createDialog.evaluationMethodLabel')}>
-            <RsiSelect
+            <Select
               value={form.evaluationMethod}
               onChange={(v) => update('evaluationMethod', v)}
               options={[
@@ -417,13 +417,14 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 {
                   value: 'script',
                   label: t('rsi.createDialog.evaluationMethodScript'),
+                  trailing: <span className="rsi-select__badge">{t('rsi.createDialog.evaluationMethodComingSoon')}</span>,
                   disabled: true,
-                  badge: t('rsi.createDialog.evaluationMethodComingSoon'),
+                  disabledReason: t('rsi.createDialog.evaluationMethodComingSoon'),
                 },
               ]}
-              placeholder={t('rsi.createDialog.evaluationMethodAgent')}
-              ariaLabel={t('rsi.createDialog.evaluationMethodLabel')}
+              aria-label={t('rsi.createDialog.evaluationMethodLabel')}
               disabled={submitting}
+              showSelectedCheck
             />
           </Field>
         )}
@@ -481,10 +482,9 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
             <Field
               label={t('rsi.createDialog.webProxyLabel')}
             >
-              <input
-                className="rsi-input"
+              <Input
                 value={form.webProxy}
-                onChange={(e) => update('webProxy', e.target.value)}
+                onChange={(value) => update('webProxy', value)}
                 placeholder={t('rsi.createDialog.webProxyPlaceholder')}
                 inputMode="url"
                 autoComplete="off"
@@ -701,7 +701,7 @@ function PathInput({
 }) {
   return (
     <div className="rsi-create-dialog__path-input">
-      <input className="rsi-input" value={value} readOnly placeholder={placeholder} />
+      <Input value={value} readOnly placeholder={placeholder} />
       <button type="button" className="rsi-create-dialog__path-btn" onClick={onPick} aria-label="browse">
         {icon === 'file' ? (
           <svg
@@ -745,219 +745,36 @@ function PathInput({
 function ModelSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const { t } = useTranslation();
   const availableModels = useSessionStore((s) => s.availableModels);
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  const selected = availableModels.find((m) => m.model_name === value) ?? null;
-
-  const handleSelect = (modelName: string) => {
-    setOpen(false);
-    onChange(modelName);
-  };
 
   const isFree = (m: ModelEntry) => m.is_free === true;
   // 免费模型由网关按会话注入凭据，RSI 实验配置无法持久化保存，这里不展示。
   const configuredModels = availableModels.filter((m) => !isFree(m));
 
-  const renderGroup = (label: string, models: ModelEntry[]) =>
-    models.length === 0 ? null : (
-      <>
-        <div className="model-select__section-header">{label}</div>
-        {models.map((m, idx) => {
-          const key = m.alias || m.model_name;
-          const active = m.model_name === value;
-          return (
-            <button
-              key={`${m.model_name}-${idx}`}
-              type="button"
-              onClick={() => handleSelect(m.model_name)}
-              className={clsx('chat-mode-select__option', active && 'chat-mode-select__option--active')}
-              role="menuitemradio"
-              aria-checked={active}
-            >
-              <span className="chat-mode-select__option-main">
-                <span className="chat-mode-select__icon" aria-hidden="true">
-                  <ModelProviderIcon model={m} />
-                </span>
-                <span className="chat-mode-select__label">{key}</span>
-              </span>
-              {active && (
-                <svg
-                  className="chat-mode-select__check"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  aria-hidden="true"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                </svg>
-              )}
-            </button>
-          );
-        })}
-      </>
-    );
+  const options = configuredModels.map((m) => ({
+    value: m.model_name,
+    label: (
+      <span className="rsi-model-select__value">
+        <ModelProviderIcon model={m} />
+        <span className="rsi-model-select__label">{m.alias || m.model_name}</span>
+      </span>
+    ),
+  }));
 
   return (
-    <div ref={rootRef} className="rsi-model-select">
-      <button
-        type="button"
-        className="rsi-model-select__trigger"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-      >
-        {selected ? (
-          <span className="rsi-model-select__value">
-            <ModelProviderIcon model={selected} />
-            <span className="rsi-model-select__label">{selected.alias || selected.model_name}</span>
-          </span>
-        ) : (
-          <span className="rsi-model-select__label rsi-model-select__placeholder">
-            {t('rsi.createDialog.modelPlaceholder')}
-          </span>
-        )}
-        <svg
-          className="rsi-model-select__chevron"
-          viewBox="0 0 20 20"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.5}
-          aria-hidden="true"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="chat-mode-select__menu model-select__menu rsi-model-select__menu" role="listbox">
-          {configuredModels.length === 0 ? (
-            <div className="model-select__section-header">{t('rsi.createDialog.modelPlaceholder')}</div>
-          ) : (
-            renderGroup(t('chat.modelSelector.configured'), configuredModels)
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface RsiSelectOption {
-  value: string;
-  label: string;
-  disabled?: boolean;
-  badge?: string;
-}
-
-function RsiSelect({
-  value,
-  onChange,
-  options,
-  placeholder,
-  ariaLabel,
-  disabled,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: RsiSelectOption[];
-  placeholder?: string;
-  ariaLabel?: string;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  const selected = options.find((option) => option.value === value) ?? null;
-
-  return (
-    <div ref={rootRef} className="rsi-select">
-      <button
-        type="button"
-        className="rsi-model-select__trigger rsi-create-dialog__select--rounded"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        disabled={disabled}
-      >
-        {selected ? (
-          <span className="rsi-model-select__label">{selected.label}</span>
-        ) : (
-          <span className="rsi-model-select__label rsi-model-select__placeholder">{placeholder}</span>
-        )}
-        <svg
-          className="rsi-model-select__chevron"
-          viewBox="0 0 20 20"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.5}
-          aria-hidden="true"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="chat-mode-select__menu model-select__menu rsi-model-select__menu" role="listbox">
-          {options.map((option) => {
-            const active = option.value === value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  onChange(option.value);
-                }}
-                className={clsx('chat-mode-select__option', active && 'chat-mode-select__option--active')}
-                role="menuitemradio"
-                aria-checked={active}
-                disabled={option.disabled}
-              >
-                <span className="chat-mode-select__option-main">
-                  <span className="chat-mode-select__label">{option.label}</span>
-                </span>
-                {option.badge ? (
-                  <span className="rsi-select__badge">{option.badge}</span>
-                ) : active ? (
-                  <svg
-                    className="chat-mode-select__check"
-                    viewBox="0 0 20 20"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    aria-hidden="true"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                  </svg>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    <Select
+      value={value}
+      onChange={onChange}
+      options={options}
+      placeholder={t('rsi.createDialog.modelPlaceholder')}
+      panelHeader={
+        // 与旧版一致：有模型显示"已配置模型"分组头；无模型时占位文案兼作分组头
+        <span className="rsi-create-dialog__group-header">
+          {configuredModels.length > 0 ? t('chat.modelSelector.configured') : t('rsi.createDialog.modelPlaceholder')}
+        </span>
+      }
+      showSelectedCheck
+      aria-label={t('rsi.createDialog.modelPlaceholder')}
+    />
   );
 }
 

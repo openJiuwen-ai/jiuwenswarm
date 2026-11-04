@@ -125,6 +125,13 @@ class TaskService:
         def same_scope(t):
             return (t["owner"], t["session"]) == (task["owner"], task["session"])
 
+        # A saved chat owns one Agent/context/output lease, including independent jobs.
+        if task["session"].startswith("task-duplex:") and any(
+            same_scope(t) and t["id"] != task["id"] and t in active
+            for t in tasks
+        ):
+            return False
+
         if not request.get("independent", False) and any(
             same_scope(t)
             and t["id"] != task["id"]
@@ -165,7 +172,9 @@ class TaskService:
             sequence=1,
             position=time.time_ns(),
             created_at=time.time(),
-            core_session_id="managed-task-" + task_id,
+            core_session_id=(session.removeprefix("task-duplex:")
+                             if session.startswith("task-duplex:")
+                             else "managed-task-" + task_id),
             request_id="task-" + uuid.uuid4().hex,
             changes=[],
             progress=[],

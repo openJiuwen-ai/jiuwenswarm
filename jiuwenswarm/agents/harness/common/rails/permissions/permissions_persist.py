@@ -148,6 +148,50 @@ def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool
     return success
 
 
+class PermissionApprovalInvalidated(ValueError):
+    """An approval no longer satisfies the current Host safety checks."""
+
+
+def _check_approval_accesses(
+    permissions: dict[str, Any], name: str, args: dict[str, Any],
+    root: str | Path | None,
+) -> tuple[Any, set[tuple[str, str]]]:
+    """Use Core's complete policy and the existing Host access projections."""
+    from openjiuwen.harness.security import PermissionEngine
+    from openjiuwen.harness.security.file_guard import build_file_guard_checker
+    from openjiuwen.harness.security.tiered_policy import strictest
+    from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
+        current_native_path_access,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.send_file_path_guard import (
+        SEND_FILE_TOOL_NAME, SendFilePathGuardEvaluator,
+    )
+
+    engine = PermissionEngine(permissions, workspace_root=root, trusted_dirs=())
+    access = current_native_path_access(name, args)
+    level, _ = engine.evaluate_global_policy_directly(
+        name, args, include_external_directory=access is None,
+    )
+    checker = build_file_guard_checker(engine.config, workspace_root=root, trusted_dirs=())
+    guard_name, guard_args = (access.guard_tool, access.guard_args) if access else (name, args)
+    if access is not None and checker is not None:
+        path_result = checker.evaluate(guard_name, guard_args)
+        if path_result is not None:
+            level = path_result.permission if level is None else strictest(level, path_result.permission)
+    asks = set(checker.collect_ask_accesses(guard_name, guard_args) if checker else ())
+    if name == SEND_FILE_TOOL_NAME:
+        result = SendFilePathGuardEvaluator().evaluate(
+            permissions=engine.config, workspace_root=root, trusted_dirs=(),
+            raw_paths=args.get("abs_file_path_list"),
+        )
+        if result.status == "unevaluable" or result.level == "deny":
+            raise PermissionApprovalInvalidated(result.reason)
+        asks.update(result.ask_accesses)
+    if getattr(level, "value", level) == "deny":
+        raise PermissionApprovalInvalidated("current_policy_denied")
+    return level, asks
+
+
 def persist_exact_permission_allow_rule(
     tool_name: str,
     tool_args: dict | str,
@@ -155,88 +199,101 @@ def persist_exact_permission_allow_rule(
     *,
     session_id: str | None = None,
     workspace_root: str | Path | None = None,
+    session_only: bool = False,
+    auto_mode: bool = False,
+    validate_only: bool = False,
+    raise_on_invalid: bool = False,
+    expected_global_permissions: dict[str, Any] | None = None,
 ) -> bool:
-    """Validate current layers and persist only this approval's User increment."""
+    """Validate one approval and save its standard User or Session increment."""
     from copy import deepcopy
-
-    from openjiuwen.harness.security.file_guard import build_file_guard_checker
     from openjiuwen.harness.security.models import PermissionLevel
     from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
-
     from jiuwenswarm.common.utils import get_workspace_dir
     from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
         compose_host_effective_permissions,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
 
-    name = str(tool_name or "").strip()
-    args = _normalize_tool_args(tool_args)
-    accesses = _normalize_exact_accesses(ask_accesses)
-    if not name or accesses is None:
-        return False
-
     try:
+        name = str(tool_name or "").strip()
+        args = _normalize_tool_args(tool_args)
+        accesses = _normalize_exact_accesses(ask_accesses)
+        if not name or accesses is None:
+            raise PermissionApprovalInvalidated("invalid_approval_scope")
+        if session_only and not session_id:
+            raise PermissionApprovalInvalidated("invalid_approval_scope")
         root = workspace_root if workspace_root is not None else get_workspace_dir()
         with layers.permission_storage_lock(session_id):
             global_perms, user, session = layers.read_permission_layers_locked(session_id)
+            if expected_global_permissions is not None:
+                from jiuwenswarm.common.config import resolve_env_vars
+                global_perms = resolve_env_vars(global_perms)
+                if not validate_only and global_perms != expected_global_permissions:
+                    raise PermissionApprovalInvalidated("installed_policy_changed")
 
-            def compose(user_layer):
+            def compose(user_layer, session_layer):
                 return compose_host_effective_permissions(
-                    global_permissions=global_perms,
-                    user_permissions=user_layer,
-                    session_permissions=session,
+                    global_permissions=global_perms, user_permissions=user_layer,
+                    session_permissions=session_layer, auto_mode=auto_mode,
                 )
 
-            effective = compose(user)
-            level, _ = evaluate_tiered_policy(effective, name, args)
-            checker = build_file_guard_checker(effective, workspace_root=root, trusted_dirs=())
-            file_result = checker.evaluate(name, args) if checker is not None else None
-            if level == PermissionLevel.DENY or (
-                file_result is not None and file_result.permission == PermissionLevel.DENY
-            ):
-                return False
-            current_asks = set(checker.collect_ask_accesses(name, args) if checker else ())
+            effective = compose(user, session)
+            current_level, current_asks = _check_approval_accesses(effective, name, args, root)
             if not current_asks.issubset(set(accesses)):
-                return False
+                raise PermissionApprovalInvalidated("approval_accesses_changed")
+            if validate_only:
+                return True
 
-            updated = deepcopy(user)
+            # User grants must survive without this session's existing grants.
+            baseline = effective if session_only else compose(user, {})
+            if not auto_mode and not session_only and current_level == PermissionLevel.ALLOW:
+                durable_level, durable_asks = _check_approval_accesses(baseline, name, args, root)
+                return durable_level == PermissionLevel.ALLOW and not durable_asks
+            _, target_asks = _check_approval_accesses(baseline, name, args, root)
+            if not target_asks.issubset(set(accesses)):
+                raise PermissionApprovalInvalidated("approval_target_scope_changed")
+            current = session if session_only else user
+            updated = deepcopy(current)
+            level, _ = evaluate_tiered_policy(baseline, name, args)
             if level == PermissionLevel.ASK:
-                merged, applied = merge_permission_allow_rule_into_permissions(effective, name, args)
+                merged, applied = merge_permission_allow_rule_into_permissions(baseline, name, args)
                 if not applied:
-                    return False
-                if (merged.get("tools") or {}).get(name) != (effective.get("tools") or {}).get(name):
+                    raise PermissionApprovalInvalidated("approval_rule_unavailable")
+                if (merged.get("tools") or {}).get(name) != (baseline.get("tools") or {}).get(name):
                     allow = list(updated.get("allow_tools") or [])
                     if name not in allow:
                         allow.append(name)
                     updated["allow_tools"] = allow
-                previous = effective.get("approval_overrides") or []
+                previous = baseline.get("approval_overrides") or []
                 additions = [item for item in merged.get("approval_overrides") or [] if item not in previous]
                 if additions:
                     updated["approval_overrides"] = list(updated.get("approval_overrides") or []) + additions
-
-            if current_asks:
-                updated, applied = merge_file_guard_access_allows(updated, sorted(current_asks))
+            if target_asks:
+                updated, applied = merge_file_guard_access_allows(updated, sorted(target_asks))
                 if not applied:
-                    return False
-
-            # A remembered grant must work without Session and must not be masked.
-            proposed = compose_host_effective_permissions(
-                global_permissions=global_perms,
-                user_permissions=updated,
-                session_permissions={},
-            )
-            proposed_level, _ = evaluate_tiered_policy(proposed, name, args)
-            proposed_checker = build_file_guard_checker(proposed, workspace_root=root, trusted_dirs=())
-            proposed_file = proposed_checker.evaluate(name, args) if proposed_checker else None
-            if proposed_level != PermissionLevel.ALLOW or (
-                proposed_file is not None and proposed_file.permission != PermissionLevel.ALLOW
-            ):
-                return False
-            if updated == user:
+                    raise PermissionApprovalInvalidated("approval_paths_unavailable")
+            proposed = compose(user, updated) if session_only else compose(updated, {})
+            proposed_level, proposed_asks = _check_approval_accesses(proposed, name, args, root)
+            if proposed_level != PermissionLevel.ALLOW or proposed_asks:
+                raise PermissionApprovalInvalidated("approval_not_covered")
+            if updated == current:
                 return True
-            return layers.save_user_permissions_locked(updated)
-    except Exception:
-        logger.exception("[PermissionPersist] exact permission persist failed")
+            try:
+                if session_only:
+                    return layers.save_session_permissions_locked(session_id, updated)
+                return layers.save_user_permissions_locked(updated)
+            except OSError:
+                logger.exception("[PermissionPersist] permission storage failed")
+                return False
+    except PermissionApprovalInvalidated:
+        if raise_on_invalid:
+            raise
+        return False
+    except Exception as exc:
+        logger.exception("[PermissionPersist] approval validation failed")
+        if raise_on_invalid:
+            raise PermissionApprovalInvalidated("approval_validation_failed") from exc
         return False
 
 

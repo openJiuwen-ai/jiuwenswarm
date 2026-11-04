@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 
 import pytest
 
@@ -11,6 +12,41 @@ from jiuwenswarm.channels.process_cli.ui import HumanRunUI, ProcessCliUI
 from jiuwenswarm.runtime.events import RuntimeEvent
 
 
+@pytest.mark.parametrize("output_format", ["human", "json", "jsonl"])
+def test_team_member_text_does_not_interleave_with_human_leader_answer(
+    output_format,
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    renderer = EventRenderer(
+        output_format,
+        stdout=stdout,
+        stderr=stderr,
+        show_reasoning=True,
+        show_tools=True,
+    )
+    for payload in (
+        {"event_type": "chat.delta", "role": "leader", "delta": "Leader "},
+        {"event_type": "chat.delta", "role": "teammate", "delta": "MEMBER_DELTA"},
+        {"event_type": "chat.reasoning", "role": "teammate", "text": "MEMBER_THINKING"},
+        {"event_type": "chat.final", "role": "teammate", "content": "MEMBER_FINAL"},
+        {"event_type": "chat.tool_result", "role": "teammate", "text": "MEMBER_TOOL"},
+        {"event_type": "chat.delta", "role": "leader", "delta": "answer."},
+        {"event_type": "chat.final", "role": "leader", "content": "Leader answer."},
+    ):
+        renderer.render(RuntimeEvent("request", "process_cli", "session", payload))
+    renderer.finish(session_id="session", request_id="request")
+    assert len(renderer.events) == 7
+    if output_format == "human":
+        assert stdout.getvalue().strip() == "Leader answer."
+        assert "MEMBER_THINKING" not in stderr.getvalue()
+        assert "MEMBER_TOOL" in stderr.getvalue()
+    else:
+        assert "MEMBER_DELTA" in stdout.getvalue()
+        assert "MEMBER_FINAL" in stdout.getvalue()
+        assert "MEMBER_THINKING" in stdout.getvalue()
+
+
 class TtyBuffer(io.StringIO):
     @property
     def encoding(self) -> str:
@@ -18,6 +54,179 @@ class TtyBuffer(io.StringIO):
 
     def isatty(self) -> bool:
         return True
+
+
+@pytest.mark.parametrize("unicode", [False, True])
+def test_reasoning_deltas_form_one_continuous_block(monkeypatch, unicode):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(ui_module, "_supports_unicode", lambda stream: unicode)
+    output = TtyBuffer()
+    renderer = EventRenderer("human", stdout=output, stderr=output, show_reasoning=True)
+    for text in ("The", " user is simply", " asking to", ' reply with "CLI', '_OK".'):
+        renderer.render(
+            RuntimeEvent(
+                request_id="request",
+                channel_id="process_cli",
+                session_id="session",
+                payload={"event_type": "chat.reasoning", "text": text},
+            )
+        )
+    renderer.render(
+        RuntimeEvent(
+            request_id="request",
+            channel_id="process_cli",
+            session_id="session",
+            payload={"event_type": "chat.delta", "delta": "CLI_OK"},
+        )
+    )
+    renderer.finish(session_id="session", request_id="request")
+    text = output.getvalue()
+    assert text.count("思考") == 1
+    assert 'The user is simply asking to reply with "CLI_OK".\nCLI_OK\n' in text
+
+
+@pytest.mark.parametrize("unicode", [False, True])
+def test_reasoning_preserves_line_breaks_split_across_chunks(monkeypatch, unicode):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(ui_module, "_supports_unicode", lambda stream: unicode)
+    output = TtyBuffer()
+    ui = HumanRunUI(output, output)
+    for text in ("first", "\r", "\n", "\n", " sec", "ond\n", "third"):
+        ui.reasoning(text)
+    ui.end_reasoning()
+    prefix = "  │  " if unicode else "     "
+    assert output.getvalue().count("思考") == 1
+    assert output.getvalue().endswith(
+        f"{prefix}first\r\n\n{prefix} second\n{prefix}third\n"
+    )
+
+
+@pytest.mark.parametrize("show_tools", [False, True])
+def test_tool_round_starts_a_new_reasoning_block(monkeypatch, show_tools):
+    monkeypatch.setenv("NO_COLOR", "1")
+    output = TtyBuffer()
+    renderer = EventRenderer(
+        "human",
+        stdout=output,
+        stderr=output,
+        show_reasoning=True,
+        show_tools=show_tools,
+    )
+    for payload in (
+        {"event_type": "chat.reasoning", "text": "Before tool."},
+        {"event_type": "context.usage", "tokens": 10},
+        {"event_type": "chat.reasoning", "text": " Still thinking."},
+        {"event_type": "chat.tool_call", "content": "read_file"},
+        {"event_type": "chat.tool_result", "content": "FILE_CONTENT"},
+        {"event_type": "chat.reasoning", "text": "After tool."},
+        {"event_type": "chat.final", "content": "ANSWER"},
+    ):
+        renderer.render(
+            RuntimeEvent(
+                request_id="request",
+                channel_id="process_cli",
+                session_id="session",
+                payload=payload,
+            )
+        )
+    renderer.finish(session_id="session", request_id="request")
+    text = output.getvalue()
+    assert text.count("思考") == 2
+    assert "Before tool. Still thinking.\n" in text
+    assert "After tool.\nANSWER\n" in text
+    assert ("FILE_CONTENT" in text) == show_tools
+
+
+@pytest.mark.parametrize("ending", ["finish", "error", "interrupt", "interaction"])
+def test_reasoning_closes_before_terminal_or_interaction_output(monkeypatch, ending):
+    monkeypatch.setenv("NO_COLOR", "1")
+    output = TtyBuffer()
+    renderer = EventRenderer("human", stdout=output, stderr=output, show_reasoning=True)
+    renderer.render(
+        RuntimeEvent(
+            request_id="request",
+            channel_id="process_cli",
+            session_id="session",
+            payload={"event_type": "chat.reasoning", "text": "Thinking"},
+        )
+    )
+    if ending == "error":
+        renderer.render(
+            RuntimeEvent.error(
+                request_id="request",
+                channel_id="process_cli",
+                session_id="session",
+                error=RuntimeError("failed"),
+            )
+        )
+    elif ending == "interrupt":
+        renderer.interrupted()
+    elif ending == "interaction":
+        renderer.prepare_interaction()
+        output.write("QUESTION\n")
+    else:
+        renderer.finish(
+            session_id="session", request_id="request", show_completion=False
+        )
+    text = output.getvalue()
+    assert "Thinking\n" in text
+    assert text.count("思考") == 1
+    if ending == "interaction":
+        assert "Thinking\nQUESTION\n" in text
+
+
+@pytest.mark.parametrize("output_format", ["json", "jsonl"])
+def test_machine_formats_keep_each_reasoning_event(output_format):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    renderer = EventRenderer(
+        output_format, stdout=stdout, stderr=stderr, show_reasoning=True
+    )
+    events = [
+        RuntimeEvent(
+            request_id="request",
+            channel_id="process_cli",
+            session_id="session",
+            payload={"event_type": "chat.reasoning", "text": text},
+        )
+        for text in ("first", " second")
+    ]
+    for event in events:
+        renderer.render(event)
+    renderer.finish(session_id="session", request_id="request")
+    if output_format == "json":
+        actual = json.loads(stdout.getvalue())["events"]
+    else:
+        actual = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert actual == [event.to_dict() for event in events]
+    assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize("show_reasoning", [False, True])
+def test_reasoning_keeps_stdout_answer_and_stderr_thoughts_separate(show_reasoning):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    renderer = EventRenderer(
+        "human", stdout=stdout, stderr=stderr, show_reasoning=show_reasoning
+    )
+    for payload in (
+        {"event_type": "chat.reasoning", "text": "seg"},
+        {"event_type": "chat.reasoning", "text": "ment"},
+        {"event_type": "chat.final", "content": "ANSWER"},
+    ):
+        renderer.render(
+            RuntimeEvent(
+                request_id="request",
+                channel_id="process_cli",
+                session_id="session",
+                payload=payload,
+            )
+        )
+    renderer.finish(session_id="session", request_id="request")
+    assert stdout.getvalue() == "ANSWER\n"
+    if show_reasoning:
+        assert stderr.getvalue().count("思考") == 1
+        assert stderr.getvalue().endswith("segment\n")
+    else:
+        assert stderr.getvalue() == ""
 
 
 def test_startup_uses_chinese_card_and_jiuwenswarm_title(monkeypatch) -> None:
@@ -105,9 +314,7 @@ def test_process_cli_diagnostics_use_the_configured_stream() -> None:
 
     ui.diagnostics(["worker failure", "trace tail"])
 
-    assert output.getvalue() == (
-        "\n工作进程诊断信息：\nworker failure\ntrace tail\n"
-    )
+    assert output.getvalue() == ("\n工作进程诊断信息：\nworker failure\ntrace tail\n")
 
 
 def test_process_cli_renders_installed_and_available_skills(monkeypatch) -> None:
@@ -227,6 +434,40 @@ def test_human_renderer_ignores_none_terminal_sentinel() -> None:
 
     assert output.getvalue() == ""
     assert renderer.events[0]["payload"] is None
+
+
+def test_human_renderer_summarizes_provider_denial_without_dumping_response() -> None:
+    output = TtyBuffer()
+    renderer = EventRenderer("human", stdout=output, stderr=output, concise_errors=True)
+    message = (
+        "[181001] model call failed: Error code: 400 - "
+        "{'error': {'message': 'Access denied, please check your account', "
+        "'details': '" + "x" * 500 + "'}}"
+    )
+
+    renderer.render(
+        RuntimeEvent(
+            request_id="denied-request",
+            channel_id="process_cli",
+            session_id="runtime-session",
+            payload={"event_type": "chat.error", "message": message},
+        )
+    )
+
+    assert "模型服务拒绝访问（HTTP 400）" in output.getvalue()
+    assert "please check your account" not in output.getvalue()
+    assert len(output.getvalue()) < 200
+
+    interactive_output = TtyBuffer()
+    EventRenderer("human", stdout=interactive_output, stderr=interactive_output).render(
+        RuntimeEvent(
+            request_id="interactive-denied-request",
+            channel_id="process_cli",
+            session_id="runtime-session",
+            payload={"event_type": "chat.error", "message": message},
+        )
+    )
+    assert "please check your account" in interactive_output.getvalue()
 
 
 def test_human_renderer_displays_skills_list_without_chat_completion(

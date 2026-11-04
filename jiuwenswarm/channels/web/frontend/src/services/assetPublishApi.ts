@@ -18,12 +18,6 @@ function request<T>(method: string, params: Record<string, unknown>) {
   );
 }
 export const assetPublishApi = {
-  localStatus: (ref: AssetReference) =>
-    webRequest<{ state: import('../features/assetPublication').PublicationState }>(
-      'assets.publish.local_status',
-      { ...ref },
-      { timeoutMs: 15_000 },
-    ),
   describe: (ref: AssetReference) => request<PublishDescription>('describe', ref),
   prepare: (ref: AssetReference, metadata: PublishMetadata, targetAssetId: string, force: boolean) =>
     request<PublishDraft>('prepare', {

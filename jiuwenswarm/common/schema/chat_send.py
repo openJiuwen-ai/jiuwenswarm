@@ -1,11 +1,11 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """chat.send 参数契约。
 
 本文件定义 chat.send 的参数结构。
 """
 
-from typing import TypedDict, NotRequired
+from typing import Literal, NotRequired, TypedDict
 
 # ── ``plan_entry_source`` 字面量契约常量 ──
 # 这些字面量是前后端共享的硬契约：
@@ -48,6 +48,7 @@ class ChatSendParams(TypedDict, total=False):
     """
 
     content: str
+    group_members: list[dict]
     """用户消息正文（主字段）。保留 /skill 等标记原样，不剥离。"""
 
     message: NotRequired[str]
@@ -86,6 +87,12 @@ class ChatSendParams(TypedDict, total=False):
 
     attachments: NotRequired[list[dict]]
     """附件列表（@file 等）。结构待统一定义。"""
+
+    media_items: NotRequired[list[dict]]
+    """Media records. Steer accepts only image paths returned by media.persist
+    for this Session; the server validates them and sends text references to
+    the active agent's image-reading tools instead of SDK attachments.
+    """
 
     files: NotRequired[dict]
     """文件更新字典（传统字段）。逐步迁出到 attachments，当前兼容保留。"""
@@ -139,8 +146,11 @@ class ChatSendParams(TypedDict, total=False):
     request_id: NotRequired[str]
     """请求 ID（interrupt resume / 问答回复场景关联）。"""
 
+    interrupt_id: NotRequired[str]
+    """所答中断的 id，取自 ``chat.ask_user_question`` 事件的同名字段；升级前挂起的会话没有。"""
+
     source: NotRequired[str]
-    """来源标识（如 permission_interrupt / confirm_interrupt / ask_user_interrupt / evolution_interrupt）。"""
+    """来源标识；回答中断时取 ``gateway.common.interrupt_resume.INTERRUPT_RESUME_SOURCES`` 之一。"""
 
     is_supplement: NotRequired[bool]
     """是否为补充请求（Gateway 用于判断 supplement 流程）。"""
@@ -168,6 +178,9 @@ class ChatSendParams(TypedDict, total=False):
 
     team: NotRequired[bool]
     """团队模式布尔标志。"""
+
+    target_team_id: NotRequired[str]
+    """当前用户消息明确指定的 Team；Owner 走常规路径，组织 Expert 走定向执行。"""
 
     run: NotRequired[dict]
     """Run 上下文结构（cron / 定时任务场景由 Gateway 注入）。"""
@@ -200,4 +213,27 @@ class ChatSendParams(TypedDict, total=False):
 
     Only meaningful when ``enable_swarmflow`` is True. Absent means use the
     server default budget.
+    """
+
+    team_dispatch_mode: NotRequired[Literal["autonomous", "scheduled"]]
+    """Session-level task dispatch mode of the Team (``TeamAgentSpec.dispatch_mode``).
+
+    ``"autonomous"`` puts tasks on the shared board for members to claim;
+    ``"scheduled"`` has the leader assign every task to a named member. The
+    mode is fixed once the session's team is built, so only the first request
+    of a session is expected to change it. Absent keeps the session's
+    persisted value (first request falls back to the team config's
+    ``dispatch_mode``).
+    """
+
+    team_bootstrap_mode: NotRequired[Literal["leader", "framework"]]
+    """Session-level team bootstrap mode (``TeamAgentSpec.bootstrap_mode``).
+
+    ``"leader"`` lets the leader build the team with its ``build_team`` tool;
+    ``"framework"`` has the runtime build a generic team on start, so the
+    leader starts from ``create_task`` with no ``build_team`` step. Only valid
+    together with ``team_dispatch_mode="scheduled"`` (the effective dispatch
+    mode must be scheduled). Fixed once the session's team is built, like
+    ``team_dispatch_mode``; absent keeps the session's persisted value (first
+    request falls back to the team config's ``bootstrap_mode``).
     """

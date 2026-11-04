@@ -1,0 +1,6 @@
+{
+  "package_type": "agent_group",
+  "name": "swarmflow-expert-fixture",
+  "instruction": "Leader dispatches every ticket to the echo expert.",
+  "agents": ["leader", "echo"]
+}

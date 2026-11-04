@@ -26,6 +26,7 @@ def information_question(payload):
             raise ValueError(error)
     return dict(
         request_id=payload["request_id"],
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=source,
         questions=deepcopy(questions),
         state="pending",
@@ -49,6 +50,7 @@ def native_approval_question(payload):
         raise ValueError("Invalid approval questions")
     return dict(
         request_id=request_id,
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=payload["source"],
         questions=deepcopy(questions),
         approval_schema=payload.get("approval_schema"),
@@ -62,7 +64,12 @@ def validate_native_approval_answers(interaction, answers):
         raise ValueError("Answer every approval question exactly once")
     result = []
     for question, answer in zip(interaction["questions"], answers):
-        if not isinstance(answer, dict) or answer.get("question") != question["question"]:
+        if not isinstance(answer, dict):
+            raise ValueError("Approval answer does not match the pending question")
+        answer_question = answer.get("question")
+        if answer_question is None:
+            answer_question = question["question"]
+        elif answer_question != question["question"]:
             raise ValueError("Approval answer does not match the pending question")
         text = answer.get("custom_input", answer.get("answer", ""))
         options = answer.get("selected_options", [])
@@ -75,7 +82,15 @@ def validate_native_approval_answers(interaction, answers):
             raise ValueError("Invalid approval answer")
         if not text.strip() and not options:
             raise ValueError("Approval answer is empty")
-        result.append(dict(question=question["question"], answer=text, selected_options=options))
+        item = dict(
+            question=question["question"], answer=text, selected_options=options
+        )
+        card_id = answer.get("card_id")
+        if isinstance(card_id, str):
+            card_id = card_id.strip()
+            if card_id and len(card_id) <= 128:
+                item["card_id"] = card_id
+        result.append(item)
     return result
 
 

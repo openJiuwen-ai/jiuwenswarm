@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
+import { installSkillWithPlan } from '../../components/SkillPanel/SkillPackInstallPlan';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { isClawHubOriginInstalled, normalizeSkillNetUrl } from '../../utils/skillNetUrl';
 
@@ -53,6 +54,7 @@ type OnlineSearchResponse = {
 };
 
 type InstallResponse = {
+  cancelled?: boolean;
   success: boolean;
   status?: string;
   detail?: string;
@@ -155,7 +157,12 @@ export function OnlineSkillSearchPanel({
     setExpandedKey(null);
     void (async () => {
       try {
-        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ q: query, limit: 20 }), { timeoutMs: 45_000 });
+        // 搜索是无状态读：不绑 session_id，避免已删会话拖垮广场搜索（#5886）。
+        const data = await webRequest<OnlineSearchResponse>(
+          'skills.online_search.search',
+          { q: query, limit: 20 },
+          { timeoutMs: 45_000 },
+        );
         if (requestSequence !== requestSequenceRef.current) return;
         setItems(data.items || []);
         setPartial(Boolean(data.partial));
@@ -175,7 +182,7 @@ export function OnlineSkillSearchPanel({
         });
       }
     })();
-  }, [externalSearchQuery, t, withSession]);
+  }, [externalSearchQuery, t]);
 
   const isInstalled = useCallback(
     (item: OnlineSearchItem) => {
@@ -251,7 +258,7 @@ export function OnlineSkillSearchPanel({
             }
             skillName = data.skill?.name || skillName;
           } else if (item.source === 'teamskillshub') {
-            const data = await webRequest<InstallResponse>(
+            const data = await installSkillWithPlan<InstallResponse>(
               'skills.teamskillshub.install',
               withSession({
                 asset_id: item.identifier,
@@ -259,8 +266,11 @@ export function OnlineSkillSearchPanel({
                 ...((item.display_name || item.name)
                   ? { display_name: item.display_name || item.name }
                   : {}),
-              })
+              }),
+              { timeoutMs: 180000 },
+              abortController.signal,
             );
+            if (data.cancelled) return;
             throwIfAborted(abortController.signal);
             if (!data.success) {
               throw new Error(data.detail_key ? t(data.detail_key) : data.detail || t('skills.onlineSearch.installFailed'));

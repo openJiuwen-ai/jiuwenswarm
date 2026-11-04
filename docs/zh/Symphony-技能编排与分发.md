@@ -37,7 +37,7 @@ Symphony（技能交响乐）是 JiuwenSwarm 面向海量已安装技能提供�
 
 #### 根据实际使用效果持续优化编排
 
-开启 **动态图谱** 后，Symphony 会参考已完成任务中的技能使用效果，调整后续相关任务的技能组合建议。关闭开关后，编排会恢复为只使用静态图谱，已积累的数据不会删除。
+开启 **动态图谱** 后，Core 的 Symphony Observation 会收集执行证据并生成运行时图快照，Flow 会将满足阈值的成功技能组合沉淀为候选技能包。用户确认候选包后，JiuwenSwarm 完成审核与安装。关闭开关后，编排使用静态图谱，已积累的数据不会删除。
 
 #### 它解决什么问题
 
@@ -413,7 +413,8 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: true
+    flow:
+      enabled: true
 
   orchestration:
     mode: fast
@@ -536,9 +537,53 @@ symphony:
 - [配置说明](配置信息.md)
 - [Agent Team 使用指南](AgentTeam.md)
 - [English: Symphony](../en/Symphony.md)
+
+### 开发与维护边界
+
+检索、指纹提取、图谱编排和演化算法由 `openjiuwen.symphony` 提供。JiuwenSwarm 的应用适配负责模型配置与用量、构建状态、Web/RPC、运行时工具以及技能包安装；配置解析位于 `jiuwenswarm/common/symphony_config.py`。部署升级需要包含对应公开接口的 openjiuwen 版本。删除无调用的 SDK 遗留不改变持久化图谱目录和用户配置路径。
 ---
 
 ## 返回导航
 
 - [返回文档首页](../README.md)
 - [返回项目首页](../../README_CN.md)
+
+## SkillPack：沉淀、复用与安装
+
+SkillPack 是单 Agent 使用的复合 Skill。根 `SKILL.md` 说明成员的执行顺序；成员仍是可以单独使用的普通 Skill，不包含 SwarmSkill 或嵌套 SkillPack。
+
+### 开启
+
+以下功能默认关闭，先在隔离的测试 Hub 验证：
+
+```sh
+export SKILLPACK_PRODUCTIZATION_ENABLED=true
+export SKILLPACK_DIRECT_ROUTE_MODE=confirm
+```
+
+`SKILLPACK_DIRECT_ROUTE_MODE` 支持 `off`、`shadow`（只判断和记录，不改变执行）和 `confirm`。也可以设置服务配置中的 `skillpack.direct_route_mode`；环境变量优先。
+
+### 使用
+
+- 对话中请求沉淀已完成的多 Skill 流程，Agent 调用 `skillpack_distill`。候选来自持久化的真实执行记录；查看成员和说明并确认后才安装。
+- 安装后在“我的技能”与任务“+ → 技能”中使用，卡片显示 SkillPack 类型。成员状态变化会影响整个 Pack 的可用性。
+- 新 query 完整匹配本地 Pack 时，先确认使用该 Pack；多个匹配由用户选择。确认后直接加载根说明与成员，跳过 Symphony 编排。部分匹配和不确定情况仍走原有流程。执行成员后失败不会自动再编排，以免重复副作用。
+- 显式选择一个 Pack 视为已确认；与普通 Skill 混选时再次选择使用方式。外部写入等权限仍按原有机制确认。
+
+### 安装和管理
+
+Pack ZIP 只包含外层 `plugin.yaml`、根说明和 `skillpack.lock.json`，不复制成员源码。锁定清单按顺序记录每个成员的 Hub asset ID、精确版本和原始 ZIP SHA-256。成员从同一 Hub 单独下载。
+
+技能广场安装 Pack 时，会先展示安装计划。来源、版本、ZIP 摘要和本地内容都一致的成员可复用；缺失成员下载；同名冲突或本地修改会阻断。全部内容校验通过后统一安装，并保存 `.archive` 副本。失败会恢复目录和登记状态；进程中断后在加载技能前恢复未完成事务。
+
+确认时若计划过期或本地库存变化，会重新展示一次最新计划，仍需用户再次确认；完整性校验失败不会自动重试。技能目录被其他操作占用时会提示稍后重试，不显示内部锁文件路径。
+
+卸载 Pack 只删除 Pack，不删除成员。普通 Skill 仍被已安装 Pack 引用时，卸载会被拒绝并列出引用方。
+
+### 运维边界
+
+若事务日志损坏、安装目录归属改变或备份缺失，启动会明确报告待修复的事务路径并停止加载该库存；不会删除事务后强行启动。运维应先保留现场，核对目录标记与状态备份后恢复，避免把半安装结果暴露给 Agent。
+
+安装计划和事务位于当前技能目录的 `.skillpack/`，Hub 来源记录位于各技能 `.archive/hub-provenance.json`。这些文件不随 Pack 发布。关闭产品开关会停止新的沉淀和 Pack 安装；已有普通 Skill 入口保留，直达路由有独立开关。
+
+部署必须同时使用本特性的 agent-core 和 JiuwenSwarm 改动。依赖与锁文件已使用 Core !3457 合入后的官方提交 `4dbaa84ca568af3f181da4f9cd26b713a5b73039`。真实 Hub 审核、实际模型和各桌面平台的验收结果应单独记录，不能由本地模拟测试替代。

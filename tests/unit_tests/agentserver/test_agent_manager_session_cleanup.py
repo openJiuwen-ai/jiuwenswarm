@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -120,10 +121,12 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 
 
 @pytest.mark.asyncio
-async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
+async def test_same_key_creation_waits_for_old_root_cleanup(tmp_path) -> None:
     manager = _SlowCreateAgentManager()
     old_agent = _BlockingRootCleanupAgent()
-    cache_key = "code:normal:/tmp/shared-project"
+    project_dir = str(tmp_path / "shared-project")
+    project_key = os.path.normcase(os.path.abspath(project_dir)).casefold()
+    cache_key = f"code:normal:{project_key}"
     manager.agents["tui"] = {cache_key: old_agent}
 
     cleanup_task = asyncio.create_task(
@@ -134,7 +137,7 @@ async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
     )
     await old_agent.cleanup_started.wait()
     create_task = asyncio.create_task(
-        manager.get_agent("tui", "code", "/tmp/shared-project", "normal")
+        manager.get_agent("tui", "code", project_dir, "normal")
     )
     await asyncio.sleep(0)
 

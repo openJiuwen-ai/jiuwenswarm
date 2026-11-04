@@ -143,7 +143,7 @@ _READY_BANNER = """\
   ✓ Gateway HTTP           http://localhost:20001
 ================================================================
 
-2026-08-05 11:48:17.399 INFO jiuwenswarm.gateway: something else
+2026-08-05 11:48:17.399 INFO gateway: something else
 """
 
 
@@ -600,7 +600,10 @@ def test_run_debug_clears_stale_state(debug_root: Path):
 
 
 def test_stop_without_state_is_noop(debug_root: Path):
-    assert stop_debug_service() == 0
+    with patch.object(debug_launcher, "_stop_resident_worker") as worker_stopper:
+        assert stop_debug_service() == 0
+
+    worker_stopper.assert_not_called()
 
 
 def test_stop_terminates_recorded_process(debug_root: Path):
@@ -608,19 +611,32 @@ def test_stop_terminates_recorded_process(debug_root: Path):
     alive = iter([True, False])
     with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
         with patch.object(debug_launcher, "_stop_process_tree", return_value=True) as stopper:
-            assert stop_debug_service(timeout=1.0) == 0
+            with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker_stopper:
+                assert stop_debug_service(timeout=1.0) == 0
 
     stopper.assert_called_once_with(5555, timeout=1.0)
+    worker_stopper.assert_called_once_with(timeout=1.0)
     assert read_debug_state() is None
+
+
+def test_stop_fails_when_resident_worker_survives(debug_root: Path):
+    write_debug_state(_state(pid=5555))
+    alive = iter([True, False])
+    with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
+        with patch.object(debug_launcher, "_stop_process_tree", return_value=True):
+            with patch.object(debug_launcher, "_stop_resident_worker", return_value=False):
+                assert stop_debug_service(timeout=1.0) == 1
 
 
 def test_stop_clears_state_when_already_dead(debug_root: Path):
     write_debug_state(_state(pid=5555))
     with patch.object(debug_launcher, "is_process_alive", return_value=False):
         with patch.object(debug_launcher, "_stop_process_tree") as stopper:
-            assert stop_debug_service() == 0
+            with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker_stopper:
+                assert stop_debug_service() == 0
 
     stopper.assert_not_called()
+    worker_stopper.assert_called_once()
     assert read_debug_state() is None
 
 
@@ -628,9 +644,62 @@ def test_stop_keeps_state_when_process_survives(debug_root: Path):
     write_debug_state(_state(pid=5555))
     with patch.object(debug_launcher, "is_process_alive", return_value=True):
         with patch.object(debug_launcher, "_stop_process_tree", return_value=False):
-            assert stop_debug_service() == 1
+            with patch.object(debug_launcher, "_stop_resident_worker") as worker_stopper:
+                assert stop_debug_service() == 1
 
+    worker_stopper.assert_not_called()
     assert read_debug_state().pid == 5555
+
+
+# --------------------------------------------------------------------------
+# Resident runtime worker teardown
+# --------------------------------------------------------------------------
+
+
+def _patch_worker_shutdown(result: int | None | Exception):
+    async def _fake(_socket_path: str) -> int | None:
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    return patch.object(debug_launcher, "request_resident_worker_shutdown", side_effect=_fake)
+
+
+def test_stop_resident_worker_noop_without_worker():
+    with _patch_worker_shutdown(None):
+        with patch.object(debug_launcher, "stop_process_by_pid") as killer:
+            assert debug_launcher._stop_resident_worker(timeout=1.0) is True
+
+    killer.assert_not_called()
+
+
+def test_stop_resident_worker_waits_for_graceful_exit():
+    alive = iter([True, False])
+    with _patch_worker_shutdown(7777):
+        with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
+            with patch.object(debug_launcher, "stop_process_by_pid") as killer:
+                assert debug_launcher._stop_resident_worker(timeout=5.0) is True
+
+    killer.assert_not_called()
+
+
+def test_stop_resident_worker_kills_after_timeout():
+    killed: list[int] = []
+    with _patch_worker_shutdown(7777):
+        with patch.object(debug_launcher, "is_process_alive", side_effect=lambda pid: pid not in killed):
+            with patch.object(
+                debug_launcher,
+                "stop_process_by_pid",
+                side_effect=lambda pid, timeout: killed.append(pid) or True,
+            ):
+                assert debug_launcher._stop_resident_worker(timeout=0.0) is True
+
+    assert killed == [7777]
+
+
+def test_stop_resident_worker_reports_unreachable_worker():
+    with _patch_worker_shutdown(RuntimeError("expected worker hello")):
+        assert debug_launcher._stop_resident_worker(timeout=1.0) is False
 
 
 # --------------------------------------------------------------------------

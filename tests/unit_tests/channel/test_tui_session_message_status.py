@@ -7,13 +7,13 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.common.session_message import (
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-from jiuwenswarm.gateway.routing.keys import RoutingKey
+from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
+from agent_gateway.routing.keys import RoutingKey
 
 
 class _Client:

@@ -11,7 +11,7 @@ Before installing JiuwenSwarm, ensure your system meets the following requiremen
 | Dependency | Version | Description |
 |------------|---------|-------------|
 | Operating System | Windows 10/11, macOS 10.15+, Linux | Supports mainstream operating systems |
-| Python | `≥3.11, <3.14` | Python 3.11 recommended |
+| Python | `≥3.11` | Python 3.11 recommended |
 | Node.js | 18.x or higher | For frontend interface |
 | Git | Latest | For source code installation |
 
@@ -35,7 +35,7 @@ jiuwenswarm\Scripts\activate
 source jiuwenswarm/bin/activate
 
 # Install JiuwenSwarm
-pip install jiuwenswarm
+pip install workswarm
 ```
 
 ## Start Service
@@ -61,6 +61,14 @@ After successful startup, the terminal will display a service port banner:
 ```
 
 When you see similar output, the service is ready. Open `http://localhost:5173` in your browser to use.
+
+Session links such as `/chat/new` and `/chat/<session_id>` support direct navigation and refresh. The built-in Python Web server and nginx deployment map `assets/` requests under nested routes to the frontend build assets; missing static resources such as JS and CSS return 404. The same relative-path build also supports access through the Manager's `/chat/` proxy prefix.
+
+### Find the application version and build date
+
+The update page shows the full current version with a secondary “Built on YYYY-MM-DD” label. WHL, Windows EXE, and macOS DMG packages use UTC+08:00 for the packaging date. Installing, starting, or checking for updates does not change it. Older packages and source checkouts without a build date show only the version.
+
+WHL users can also inspect `config/config.yaml` under the data directory, for example `config_version: "0.2.8 · 2026-10-26"`. The version retains daily build suffixes, and the date is language-neutral. This field records version information; configuration synchronization still follows the template. Update checks and protocol APIs continue to use the original version number.
 
 ### Remote Web UI Access on Linux (Optional)
 
@@ -133,7 +141,7 @@ cd jiuwenswarm
 ### Install via `uv`
 - Create a new virtual environment using `uv`
   ```bash
-  # Create virtual environment with uv (supports any of Python 3.11, 3.12, 3.13)
+  # Create virtual environment with uv (supports any of Python 3.11, 3.12, 3.13, 3.14)
   uv venv --python=3.11
   # or uv venv --python=3.12
   # or uv venv --python=3.13
@@ -177,7 +185,7 @@ cd jiuwenswarm
 ### Install via `conda`
 - Create a new virtual environment using `conda`
   ```bash
-  # Create virtual environment with Anaconda (supports any of Python 3.11, 3.12, 3.13)
+  # Create virtual environment with Anaconda (supports any of Python 3.11, 3.12, 3.13, 3.14)
   conda create -n JiuwenSwarm python=3.11
   # or conda create -n JiuwenSwarm python=3.12
   # or conda create -n JiuwenSwarm python=3.13

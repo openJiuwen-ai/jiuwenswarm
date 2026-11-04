@@ -1,0 +1,11 @@
+/* 气泡宿主页适配：面板与透明视图精确同尺寸（无阴影，视图不再留内边距）。
+   border-box 确保边框计入 100%，不会向右/下溢出 2px 被视图边缘裁切。 */
+.desktop-browser-download-panel {
+  box-sizing: border-box;
+  position: static;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+}

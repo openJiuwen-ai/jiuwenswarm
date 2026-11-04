@@ -77,10 +77,15 @@
 
 .file-preview-tree__entry-chevron {
   display: inline-flex;
-  width: 14px;
-  flex: 0 0 14px;
+  width: 16px;
+  flex: 0 0 16px;
   align-items: center;
   justify-content: center;
+  color: var(--color-text-meta);
+}
+
+.file-preview-tree__entry-chevron>svg {
+  flex: 0 0 auto;
 }
 
 .file-preview-tree__entry-icon {

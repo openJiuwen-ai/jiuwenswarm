@@ -9,12 +9,14 @@ import asyncio
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import SessionPermissionState
 
 
 def _make_adapter(session_id: str | None) -> JiuWenSwarmDeepAdapter:
     """Create a bare adapter carrying only the lazy-build bookkeeping state."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._instance = None
+    adapter._permission_state = SessionPermissionState()
     adapter._is_session_scoped_adapter = session_id is not None
     adapter._parent_session_id = session_id
     adapter._root_instance_requested = False
@@ -135,3 +137,27 @@ async def test_ensure_instance_forwards_subclass_create_arguments() -> None:
     await adapter.ensure_instance()
 
     assert captured == {"spec": sentinel}
+
+
+@pytest.mark.asyncio
+async def test_external_harness_does_not_build_a_deep_instance() -> None:
+    adapter = _make_adapter(None)
+    adapter._external_harness_binding = {"kind": "external_harness"}
+    calls: list[str] = []
+    _stub_create_instance(adapter, calls)
+
+    assert await adapter.ensure_instance() is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_isolated_adapter_rejects_external_harness_instance_access() -> None:
+    adapter = _make_adapter(None)
+    adapter._external_harness_binding = {"kind": "external_harness"}
+    adapter._permission_state.begin_permission_isolation()
+    calls: list[str] = []
+    _stub_create_instance(adapter, calls)
+
+    with pytest.raises(RuntimeError, match="permission_session_isolated"):
+        await adapter.ensure_instance()
+    assert calls == []

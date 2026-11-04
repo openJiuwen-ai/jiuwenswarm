@@ -4,7 +4,8 @@
  * 数据逻辑与 AgentManagementPanel（features/agentManagement）对齐：
  * - 列表仅在 idle 时拉取（切详情对象时重置为 idle），加载成功后自动选中第一个目录下的
  *   第一个可预览文件（无目录则取第一个可预览文件，与 FilePreviewTree 展示顺序一致）
- * - 文件内容拉取带 revision 竞态防护；loading 开始即清空旧内容
+ * - 文件内容拉取带 revision 竞态防护；切换文件时保留旧内容继续展示（stale-while-revalidate），
+ *   避免预览面板高度在「完整内容 ↔ loading 占位」间塌缩再回弹，引发详情页滚动跳动
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
@@ -78,7 +79,7 @@ export function useSkillFilesTab({ withSession }: UseSkillFilesTabParams) {
     async (skillName: string, filePath: string) => {
       const revision = ++filePreviewRevisionRef.current;
       setFilePreviewPath(filePath);
-      setFilePreview(null);
+      // 不清空旧 filePreview：loading 期间由调用方继续渲染旧文件内容，成功后再整体替换
       setFilePreviewStatus('loading');
       try {
         const data = await webRequest<SkillFilePreview>(

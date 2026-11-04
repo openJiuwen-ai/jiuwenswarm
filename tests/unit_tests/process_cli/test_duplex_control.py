@@ -27,25 +27,10 @@ from jiuwenswarm.channels.process_cli.protocol import (
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.interaction import InteractionAnswerInput
-from tests.unit_tests.process_cli.test_machine import FakeClient
-
-
-@pytest.fixture(autouse=True)
-def _isolate_persistent_session_guard(monkeypatch):
-    """Fake Runtime Sessions have no on-disk directory; guard has separate tests."""
-
-    class _Lease:
-        def __init__(self, session_id):
-            self.session_id = session_id
-
-        def acquire(self):
-            pass
-
-        def release(self):
-            pass
-
-    monkeypatch.setattr(machine, "SessionLease", _Lease)
-    monkeypatch.setattr(machine, "bind_agent", lambda *_args, **_kwargs: None)
+from tests.unit_tests.process_cli.test_machine import (
+    FakeClient,
+    _isolate_persistent_session_guard as _isolate_persistent_session_guard,
+)
 
 
 def _event(event_type: str, **payload: Any) -> RuntimeEvent:
@@ -310,6 +295,79 @@ async def test_normal_completion_closes_reader_with_parent_input_still_open(
 
 
 @pytest.mark.asyncio
+async def test_unattended_permission_rejects_and_continues_via_runtime(run_factory) -> None:
+    run = run_factory()
+    run.control = DuplexController(None, run.writer, unattended=True)
+    run.client.original.emit(_event(
+        "chat.ask_user_question", request_id="permission-card",
+        source="permission_interrupt",
+        questions=[{"options": [{"value": "allow"}, {"value": "reject"}]}],
+    ))
+    run.client.original.emit(None)
+    run.start()
+    answer, continuation = await asyncio.wait_for(run.client.answer_calls.get(), 1)
+    assert answer.answers == ({"selected_options": ["reject"]},)
+    assert answer.source == "permission_interrupt"
+    continuation.emit(_event("chat.final", content="permission denied; continued"))
+    continuation.emit(None)
+    result = await asyncio.wait_for(run.task, 1)
+    assert result.status == "completed"
+    assert result.output == "permission denied; continued"
+    assert any(record.get("event_type") == "interaction.auto_denied"
+               for record in run.output.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "questions", "code", "message"),
+    [
+        (
+            "ask_user_interrupt",
+            [{"question": "secret-user-prompt"}],
+            "INTERACTION_REQUIRED",
+            "A non-permission interaction needs a host answer.",
+        ),
+        (
+            "permission_interrupt",
+            [],
+            "INTERACTION_UNSUPPORTED",
+            "Permission card cannot be safely rejected.",
+        ),
+        (
+            "permission_interrupt",
+            [{"options": [{"value": "allow", "label": "secret-tool-input"}]}],
+            "INTERACTION_UNSUPPORTED",
+            "Permission card has no explicit reject option.",
+        ),
+    ],
+)
+async def test_unattended_interaction_preserves_safe_failure_reason(
+    source, questions, code, message, run_factory
+) -> None:
+    run = run_factory()
+    run.control = DuplexController(None, run.writer, unattended=True)
+    run.client.original.emit(
+        _event(
+            "chat.ask_user_question",
+            request_id="unattended-card",
+            source=source,
+            questions=questions,
+        )
+    )
+    run.start()
+
+    result = await asyncio.wait_for(run.task, timeout=1)
+
+    assert result.status == "failed"
+    assert result.error.code == code
+    assert result.error.message == message
+    assert "secret" not in result.error.message
+    assert run.client.answer_inputs == []
+    assert run.client.original.closed
+    assert run.client.calls[-3:] == ["cancel", "cleanup_session", "close"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "original_eof", [False, True], ids=["original-waiting", "original-eof"]
 )
@@ -418,6 +476,19 @@ async def test_answer_ack_or_null_completion_waits_for_original_continuation(
 
 
 @pytest.mark.asyncio
+async def test_fake_continuation_ignores_unrelated_persistence(monkeypatch, run_factory):
+    from jiuwenswarm.channels.process_cli import persistence
+
+    async def congested_real_writes(**_kwargs):
+        await asyncio.sleep(1.1)
+
+    monkeypatch.setattr(persistence, "flush_session_writes", congested_real_writes)
+    await test_answer_ack_or_null_completion_waits_for_original_continuation(
+        "chat.answer_accepted", run_factory,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["runtime.accepted", "chat.answer_accepted", "null"])
 async def test_answer_ack_or_null_completion_cannot_forge_success(
     kind: str, run_factory
@@ -455,6 +526,7 @@ async def test_typed_answer_copies_pending_source_metadata_card_and_owned_worksp
     )
     payload = {
         locator: "real-runtime-card",
+        "interrupt_id": "intr-card",
         "source": source,
         "approval_schema": "approval-v1",
         "evolution_meta": {"change": {"id": "approved-change"}},
@@ -483,6 +555,7 @@ async def test_typed_answer_copies_pending_source_metadata_card_and_owned_worksp
     assert answer.approval_schema == "approval-v1"
     assert answer.evolution_meta == {"change": {"id": "approved-change"}}
     assert answer.interaction_id == "real-runtime-card"
+    assert answer.interrupt_id == "intr-card"
     assert answer.channel_id == "process_cli"
     assert answer.session_id == "runtime-session"
     assert answer.mode == "agent.work.plan"
@@ -689,14 +762,26 @@ async def test_cancel_after_resume_targets_the_exact_session_not_original_operat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("after_answer", [False, True])
 async def test_deadline_covers_waiting_for_host_and_answer_continuation(
-    after_answer: bool, run_factory
+    after_answer: bool, run_factory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Expire the real command deadline after reaching the phase under test;
+    # CI scheduling must not consume the budget before the first card arrives.
+    deadline = asyncio.Timeout(None)
+    timeout_factory = asyncio.timeout
+
+    def controlled_timeout(delay: float | None) -> asyncio.Timeout:
+        return deadline if delay == 0.05 else timeout_factory(delay)
+
+    monkeypatch.setattr(machine.asyncio, "timeout", controlled_timeout)
     run = run_factory(run_input=OneShotRunInput(input="question", timeout_seconds=0.05))
     run.client.original.emit(_card())
     run.start()
     notice = await run.card()
     if after_answer:
-        await run.answer(notice)
+        _, continuation = await run.answer(notice)
+        await asyncio.wait_for(continuation.started.wait(), timeout=1)
+
+    deadline.reschedule(asyncio.get_running_loop().time())
 
     result = await run.finish()
 
@@ -940,7 +1025,11 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
             drained.set()
 
     monkeypatch.setattr(asyncio, "Queue", ObservedQueue)
-    monkeypatch.setattr(machine, "SHUTDOWN_TIMEOUT_SECONDS", 0.05)
+
+    async def flush_session_writes() -> None:
+        pass
+
+    monkeypatch.setattr(machine, "_flush_session_writes", flush_session_writes)
     client = DrainingCancelClient()
     run = run_factory(client=client)
     client.original.emit(
@@ -950,6 +1039,8 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
         client.original.emit(_event("chat.delta", delta="queued output"))
     run.start()
 
+    # finish() bounds the run to one second. Keep the production cleanup timeout
+    # so a healthy tail drain is not interrupted by a short CI scheduling delay.
     result = await run.finish()
 
     assert saturated.is_set()

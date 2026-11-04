@@ -53,6 +53,23 @@
   flex-shrink: 0;
 }
 
+.pc-graph__error--dismissible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pc-graph__error-close {
+  display: flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
 /* 统计 + 过滤芯片行 */
 .pc-graph__stats {
   display: flex;
@@ -183,27 +200,36 @@
   flex-shrink: 0;
 }
 
-/* 主区域：左侧面板 + 画布 + 右侧详情 */
+/* 主区域：画布铺满，左右面板浮动其上 */
 .pc-graph__main {
   flex: 1;
   min-height: 0;
-  display: flex;
-  gap: 12px;
+  position: relative;
   overflow: hidden;
 }
 
-/* 侧边面板：r16 白底带阴影 */
+/* 侧边面板：浮动于画布左上，r16 白底带阴影 */
+/* 左右不留白：水平 padding 下放到 header/content，滚动条才能贴住面板右缘（同 FilePreviewPanel） */
 .pc-graph__tree {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  bottom: 12px;
   width: 296px;
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
-  padding: 12px;
-  flex-shrink: 0;
+  padding: 12px 0 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  z-index: 2;
+}
+
+/* 树内容收起后：面板收缩到头部高度，不再铺满整列 */
+.pc-graph__tree--collapsed {
+  bottom: auto;
 }
 
 /* 固定头部：页签 + 搜索框，不随内容滚动 */
@@ -212,9 +238,12 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 0 12px;
 }
 
-/* 可滚动内容区 */
+/* 可滚动内容区：padding 在滚动容器自身，内容内缩但滚动条贴边；
+   margin-right 6px 让滚动条离面板右缘 6px，右 padding 同步 12→6 抵消，
+   内容右缘与 header 的 12px 对齐保持不变（滚动条宽度计入 margin 与 padding 之间） */
 .pc-graph__tree-content {
   flex: 1;
   min-height: 0;
@@ -222,6 +251,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-right: 6px;
+  padding: 0 6px 12px;
 }
 
 /* 侧边面板页签 */
@@ -232,7 +263,7 @@
 
 .pc-graph__tab {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
   padding: 4px 10px;
   border: none;
@@ -255,8 +286,38 @@
 
 .pc-graph__tab-count {
   font-size: 18px;
+  line-height: 1;
   font-weight: 600;
   color: #191919;
+}
+
+/* 树内容展开/收起按钮：靠右，24px 圆形描边；图标默认即黑色，hover 仅背景变灰、颜色不变 */
+.pc-graph__tree-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--color-surface-muted);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+
+.pc-graph__tree-collapse:hover {
+  background: var(--color-surface-hover);
+}
+
+.pc-graph__tree-collapse-icon {
+  transition: transform 0.15s ease;
+}
+
+.pc-graph__tree-collapse-icon--expanded {
+  transform: rotate(180deg);
 }
 
 .pc-graph__tree-list {
@@ -336,12 +397,12 @@
   white-space: nowrap;
 }
 
-/* 画布区域：r16 白底 */
+/* 画布区域：铺满主区域，r16 白底 */
 .pc-graph__canvas-wrap {
-  flex: 1;
-  min-width: 0;
+  position: absolute;
+  inset: 0;
   display: flex;
-  position: relative;
+  flex-direction: column;
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
@@ -367,19 +428,84 @@
   background: #ffffff;
 }
 
-/* 详情面板 */
+/* 图例：主区域底部居中，透明容器水平排布四项 */
+.pc-graph__legend {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 3;
+}
+
+/* 每个图例项：独立白底胶囊描边 */
+.pc-graph__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 22px;
+  border-radius: 99px;
+  background: #ffffff;
+  border: 1px solid #e6e6e6;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+/* 图例节点圆点：8×8，颜色对齐画布调色板（根=紫 / 目录=橙 / 文档=灰） */
+.pc-graph__legend-node {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pc-graph__legend-node--root {
+  background: #a5acff;
+}
+
+.pc-graph__legend-node--folder {
+  background: #ff9600;
+}
+
+.pc-graph__legend-node--doc {
+  background: #cccccc;
+}
+
+/* 图例边：12×0 的水平线（画布 belongs 边蓝） */
+.pc-graph__legend-edge {
+  width: 12px;
+  height: 1px;
+  background: #6fa9ff;
+  flex-shrink: 0;
+}
+
+.pc-graph__legend-text {
+  font-size: 12px;
+  line-height: 18px;
+  color: #191919;
+  white-space: nowrap;
+}
+
+/* 详情面板：浮动于画布右上 */
+/* 左右不留白：水平 padding 下放到子元素，滚动条才能贴住面板右缘（同 pc-graph__tree） */
 .pc-graph__detail {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  bottom: 12px;
   width: 420px;
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
-  padding: 16px;
-  flex-shrink: 0;
+  padding: 16px 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  position: relative;
+  z-index: 2;
 }
 
 /* 关闭按钮：右上角浮动 */
@@ -406,13 +532,14 @@
 }
 
 /* 节点名称：16px semibold */
+/* padding-right 48 = 原面板水平 padding 16 + 预留右上角关闭按钮 32 */
 .pc-graph__detail-name {
   font-size: 16px;
   font-weight: 600;
   color: #191919;
   line-height: 24px;
   margin: 0;
-  padding-right: 32px;
+  padding: 0 48px 0 16px;
   word-break: break-word;
 }
 
@@ -433,6 +560,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  padding: 0 16px;
 }
 
 /* 分割线 */
@@ -440,14 +568,60 @@
   height: 0;
   border: none;
   border-top: 1px solid #dbdbdb;
-  margin: 4px 0;
+  margin: 4px 16px;
 }
 
-/* 详细内容：可滚动 */
+/* 加载中 spinner：面板左右 padding 已下沉，左间距在这里补回 */
+.pc-graph__detail-loading {
+  margin-left: 16px;
+}
+
+/* 详细内容：可滚动；margin-right 6px 让滚动条离面板右缘 6px，
+   右 padding 10 抵消 margin（6+10=16），内容右缘与标题等子元素的 16px 对齐保持不变 */
 .pc-graph__detail-content {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  margin-right: 6px;
+  padding: 0 10px;
+}
+
+/* 详情 markdown 正文：复用 Tailwind prose 排版（行间距/标题/列表/代码），此处仅微调配色与链接 */
+.pc-graph__detail-content .pc-graph__markdown {
+  color: #191919;
+}
+
+/* 节点标题已由 .pc-graph__detail-name 显示，隐藏 markdown 内重复的 h1 */
+.pc-graph__detail-content .pc-graph__markdown h1 {
+  display: none;
+}
+
+.pc-graph__detail-content .pc-graph__markdown a {
+  color: #1476ff;
+  text-decoration: none;
+}
+
+.pc-graph__detail-content .pc-graph__markdown a:hover {
+  text-decoration: underline;
+}
+
+/* 详情 markdown 正文：复用 Tailwind prose 排版（行间距/标题/列表/代码），此处仅微调配色与链接 */
+.pc-graph__detail-content .pc-graph__markdown {
+  color: #191919;
+}
+
+/* 节点标题已由 .pc-graph__detail-name 显示，隐藏 markdown 内重复的 h1 */
+.pc-graph__detail-content .pc-graph__markdown h1 {
+  display: none;
+}
+
+.pc-graph__detail-content .pc-graph__markdown a {
+  color: #1476ff;
+  text-decoration: none;
+}
+
+.pc-graph__detail-content .pc-graph__markdown a:hover {
+  text-decoration: underline;
 }
 
 /* 旧类名兼容 */
@@ -461,6 +635,33 @@
   font-size: 14px;
   text-align: center;
   padding: 32px 8px;
+}
+
+/* 来源卡片悬浮弹窗：跟随鼠标，位于锚点下方；可交互（选中文本/点击链接），移入保持、移出延迟收起 */
+.pc-graph__source-popover {
+  position: fixed;
+  z-index: 100;
+  width: max-content;
+  max-width: 340px;
+  user-select: text;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+}
+
+.pc-graph__source-popover .pc-graph__source-card {
+  background: #ffffff;
+  border-color: #e6e6e6;
+}
+
+.pc-graph__source-popover-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  background: #ffffff;
+  border: 1px solid #e6e6e6;
+  border-radius: 12px;
+  color: #808080;
 }
 
 /* 来源详情卡片 */
@@ -489,16 +690,6 @@
   font-weight: 500;
 }
 
-.pc-graph__source-close {
-  background: transparent;
-  border: none;
-  font-size: 1rem;
-  line-height: 1;
-  cursor: pointer;
-  color: #808080;
-  padding: 0 4px;
-}
-
 .pc-graph__source-title {
   font-weight: 600;
   color: #191919;
@@ -513,7 +704,7 @@
   gap: 4px;
 }
 
-.pc-graph__source-meta > div {
+.pc-graph__source-meta>div {
   display: flex;
   gap: 8px;
 }
@@ -544,7 +735,9 @@
 }
 
 @keyframes pc-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 
@@ -710,16 +903,19 @@
   list-style: none;
 }
 
-/* 树行基础：r8，左侧图标 + 名称，右侧收起按钮 */
+/* 树行基础：r8，左侧图标 + 名称，右侧收起按钮（对齐 FilePreviewPanel 文件树：14px 字号、行高 36px、间距 4px） */
 .pc-graph__tree-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 8px;
+  min-height: 36px;
+  margin-bottom: 4px;
+  padding: 6px 8px;
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 24px;
   color: #191919;
   transition: background 0.12s ease;
   border: none;
@@ -733,11 +929,16 @@
 }
 
 .pc-graph__tree-row--active {
-  background: #f0f0f0;
+  background: #F0F7FF;
   font-weight: 500;
+  color: #1476FF;
 }
 
-/* 文件夹行：semibold */
+/* 文件夹行：semibold（字重保持现状），行高对齐文件预览树的 38px */
+.pc-graph__tree-row--dir {
+  min-height: 38px;
+}
+
 .pc-graph__tree-row--dir .pc-graph__tree-name {
   font-weight: 600;
 }
@@ -747,14 +948,17 @@
   color: #1476ff;
 }
 
-/* 左侧图标容器 */
+/* 左侧图标容器：文件/文件夹图标统一 12px，对齐 FilePreviewPanel */
 .pc-graph__tree-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.pc-graph__tree-icon>svg {
+  flex: 0 0 auto;
   width: 12px;
   height: 12px;
-  flex-shrink: 0;
 }
 
 .pc-graph__tree-name {
@@ -796,4 +1000,28 @@
 .pc-graph__search-result-title,
 .pc-graph__search-result-snippet {
   display: none;
+}
+
+/* 目录展开/收起全局切换 */
+.pc-graph__tree-toggle-all {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 4px 0 2px;
+}
+
+.pc-graph__tree-toggle-all-btn {
+  border: none;
+  background: transparent;
+  color: #808080;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.pc-graph__tree-toggle-all-btn:hover {
+  color: #1476ff;
+  background: #f5f8ff;
 }

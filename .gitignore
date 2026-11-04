@@ -1,3 +1,6 @@
+# ZCode 工作区
+.zcode/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -57,7 +60,9 @@ developerID_application.cer
 *.swp
 *.swo
 .DS_Store
-.claude
+.claude/*
+# Shared Claude Code rules are tracked; local overrides stay ignored.
+!.claude/rules/
 **/CLAUDE.md
 **/CLAUDE.local.md
 **/JIUWENCLAW.local.md
@@ -85,7 +90,11 @@ workspace/agent/memory/*.db-shm
 workspace/agent/memory/*.db-wal
 
 jiuwenswarm/workspace/.whatsapp-auth/
-jiuwenswarm/resources/agent/workspace/
+jiuwenswarm/resources/agent/workspace/*
+# Ship the in-repo designer AgentGroup (design team leader/worker templates).
+!jiuwenswarm/resources/agent/workspace/plugins/
+!jiuwenswarm/resources/agent/workspace/plugins/agent_groups/
+!jiuwenswarm/resources/agent/workspace/plugins/agent_groups/designer/
 jiuwenswarm/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui-bin/
@@ -106,3 +115,7 @@ report/index.html
 /sub_agents/
 /context/
 /.plans/
+/todo/
+
+# Local testing handoff documents are not versioned.
+/.agents/agent-docs/designs/testing/

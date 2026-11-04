@@ -22,7 +22,6 @@ from tests.unit_tests.agentserver.permissions.test_permission_lifecycle_integrat
 
 
 @pytest.mark.parametrize("persisted", [True, False, RuntimeError("write failed")])
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_exact_persist_notifies_only_after_success(monkeypatch, tmp_path, persisted):
     persist = Mock(side_effect=persisted if isinstance(persisted, Exception) else None,
                    return_value=persisted)
@@ -46,6 +45,8 @@ def test_exact_persist_notifies_only_after_success(monkeypatch, tmp_path, persis
     persist.assert_called_once_with(
         "bash", {"command": "git status"}, (),
         session_id="persist-session", workspace_root=tmp_path,
+        session_only=False, auto_mode=True, validate_only=False, raise_on_invalid=True,
+        expected_global_permissions=config["permissions"],
     )
     assert notify.call_count == (1 if persisted is True else 0)
 
@@ -73,10 +74,8 @@ def test_facade_propagates_permission_notifier_during_lazy_adapter_creation(monk
 @pytest.mark.parametrize("change", ["permissions", "model", "already_dirty"])
 @pytest.mark.parametrize("installed,desired", [(True, "auto"), (True, "manual"), (False, "auto")])
 async def test_permission_notification_preserves_child_reload_versions(
-    monkeypatch, include_legacy, change, installed, desired, request,
+    monkeypatch, include_legacy, change, installed, desired,
 ):
-    if desired == "auto":
-        request.getfixturevalue("internal_auto_mode")
     router = interface_deep.JiuWenSwarmDeepAdapter()
     config = {"permissions": {"enabled": True, "mode": desired}, "models": {"default": "old"}}
     smart = interface_deep.JiuWenSwarmDeepAdapter()

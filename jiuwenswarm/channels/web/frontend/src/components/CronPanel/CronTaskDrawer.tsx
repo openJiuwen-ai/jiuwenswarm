@@ -1,4 +1,4 @@
-import { useState, ReactNode } from 'react';
+import { useState, useRef, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -12,10 +12,13 @@ import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
+import { modelNameForSelection } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
-import type { AgentMode } from '../../types';
+import { isEnterprise } from '../../edition';
+import { useSessionStore } from '../../stores/sessionStore';
+import type { AgentMode, ModelSelection } from '../../types';
 import '../ChatPanel/ChatPanel.css';
 
 export { isDefaultLikeProject } from './cronProjectDisplay';
@@ -25,7 +28,7 @@ export { isDefaultLikeProject } from './cronProjectDisplay';
 // 等后端接口交付后再打开——代码/state（`CronTaskFormValue.effectiveDate`）都保留，不用重写
 const CRON_EFFECTIVE_DATE_UI_ENABLED = false;
 
-// 名称/描述最大长度：需与后端 jiuwenswarm/gateway/cron/models.py 里的
+// 名称/描述最大长度：需与后端 gateway/cron/models.py 里的
 // CRON_JOB_NAME_MAX_LENGTH / CRON_JOB_DESCRIPTION_MAX_LENGTH 保持一致，
 // 前端负责提前拦截+提示，后端负责兜底校验（防止绕过前端直接调 API/MCP 工具）。
 const CRON_NAME_MAX_LENGTH = 64;
@@ -43,6 +46,10 @@ export interface CronTaskFormValue {
   // work_mode 需由前端随 project_id 一并下发；见 index.tsx handleCreateSubmit）。
   workMode: WorkMode | null;
   modelName: string | null;
+  // 稳定模型选择（model_id），与 modelName 一起提交：执行会话按它直接定位模型。
+  // 只靠 model_name 的旧链路在目录里出现重名模型（多条目同 model_name）时，
+  // 执行侧反查会报 "ambiguous legacy model name" 导致任务秒败、无任何输出。
+  modelSelection: ModelSelection | null;
   description: string;
   /** 执行模式：单Agent('agent')/集群('team')，下发到后端 CronJob.mode（见 index.tsx handleCreateSubmit/handleEditSubmit） */
   mode: AgentMode;
@@ -62,6 +69,7 @@ function emptyForm(): CronTaskFormValue {
     projectId: null,
     workMode: null,
     modelName: null,
+    modelSelection: null,
     description: '',
     mode: 'agent',
     targets: 'web',
@@ -80,6 +88,7 @@ export function jobToForm(job: CronTaskUI): CronTaskFormValue {
     projectId: null,
     workMode: null,
     modelName: job.modelName,
+    modelSelection: job.modelSelection,
     description: job.description,
     mode: job.mode,
     targets: job.deliveryChannel,
@@ -98,6 +107,7 @@ export function templateToForm(tpl: CronTemplateUI, title: string, description: 
     projectId: null,
     workMode: null,
     modelName: null,
+    modelSelection: null,
     description,
     mode: 'agent',
     targets: 'web',
@@ -190,6 +200,18 @@ export default function CronTaskDrawer({
 }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
+  const models = useSessionStore((state) => state.chatAvailableModels);
+  const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
+  // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
+  const modelUnavailable = modelsLoaded && (form.modelSelection
+    ? !models.some((model) => model.model_id === form.modelSelection?.id)
+    : Boolean(form.modelName) && !models.some((model) => model.model_name === form.modelName));
+  // 修复"在名称/描述输入框里选中文字、拖动选区移出抽屉后松开鼠标，抽屉被误关"：
+  // 该手势的 mousedown 在抽屉内、mouseup 在遮罩上，浏览器会把产生的 click 派发到
+  // 两者的最近公共祖先（即遮罩层本身），click 不经过抽屉冒泡，抽屉上的
+  // stopPropagation 拦不住，遮罩的 onClick 便会直接关闭抽屉。因此记录按下起点，
+  // 只有"按下与松开都落在遮罩自身"（一次真正的点空白关闭）才执行 onClose。
+  const pressedOnOverlayRef = useRef(false);
 
   const handleModeChange = (nextMode: AgentMode) => {
     setForm((current) => ({ ...current, mode: nextMode }));
@@ -266,7 +288,7 @@ export default function CronTaskDrawer({
           workMode: matched?.work_mode ?? null,
         });
       },
-      condition: mode !== 'edit',
+      condition: !isEnterprise() && mode !== 'edit',
     },
     {
       testId: 'cron-simple-select-3',
@@ -291,7 +313,16 @@ export default function CronTaskDrawer({
     <div
       className="fixed inset-0 z-40 flex justify-end bg-overlay-cron-drawer"
       data-testid="cron-drawer-overlay"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        // 只有按下时起点就在遮罩自身（而非从抽屉内部元素冒泡上来）才记为"点空白"，
+        // 输入框内按下拖选文字移出抽屉松开的场景不会置位，click 时便不会误关
+        pressedOnOverlayRef.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (pressedOnOverlayRef.current && e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
     >
       <div
         className="relative flex h-full w-[560px] flex-col bg-card p-6 shadow-xl animate-slide-in-right"
@@ -427,10 +458,28 @@ export default function CronTaskDrawer({
                     <ModelPicker
                       testIdPrefix="cron-model-picker"
                       value={form.modelName}
-                      onChange={(modelName) => setForm({ ...form, modelName })}
+                      onChange={(modelName) => setForm({ ...form, modelSelection: null, modelName })}
+                      selection={form.modelSelection}
+                      onSelectionChange={(modelSelection) => {
+                        // 稳定选择与展示名同源：按 model_id 反查展示名（重名目录下
+                        // 也能拿到选中条目的名字），payload 继续携带 model_name
+                        // 兼容列表展示与旧执行链路
+                        const matchedName = modelNameForSelection(models, modelSelection);
+                        setForm({ ...form, modelSelection, modelName: matchedName });
+                      }}
+                      includeModelGroups={false}
                       disabled={proactiveLocked}
                     />
                   </div>
+                  {modelUnavailable && (
+                    <p
+                      className="min-w-0 break-words text-xs text-warn"
+                      role="status"
+                      data-testid="cron-drawer-model-unavailable-hint"
+                    >
+                      {t('cron.drawer.modelUnavailable', { model: form.modelName })}
+                    </p>
+                  )}
                 </div>
               )}
             />

@@ -7,8 +7,16 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import selectedInfoIcon from '../../../assets/rsi/rsi-icon.svg';
+import { CloseButton } from '../../../components/ui/CloseButton/CloseButton';
 import { useRsiStore } from '../rsiStore';
-import { formatArtifactScore, formatGain, nodeChangeDisplayLabel, nodeChangeGroup, nodeStageLocalizedLabel, presentRsiNode } from '../rsiPresentation';
+import {
+  formatArtifactScore,
+  formatGain,
+  nodeChangeDisplayLabel,
+  nodeChangeGroup,
+  nodeStageLocalizedLabel,
+  presentRsiNode,
+} from '../rsiPresentation';
 import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
 import { RsiArtifactDetailDialog } from './RsiArtifactDetailDialog';
 
@@ -54,11 +62,8 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
       })
     : null;
   const stageLabel = nodeStageLocalizedLabel(selected, t) ?? presentation.stageLabel;
-  const artifactSource = resolveRsiArtifactSource(selected, taskId);
-  const canViewArtifact =
-    task.scenario === 'HARNESS'
-      ? selected.type !== 'ROOT' && Boolean(selected.snapshot_artifact_id)
-      : artifactSource !== null;
+  const artifactSource = resolveRsiArtifactSource(selected, taskId, task.scenario);
+  const canViewArtifact = artifactSource !== null;
 
   // Harness 仍然按四个区域展示；产物优化直接展示结构化变更摘要。
   const changes = selected.changes ?? [];
@@ -96,14 +101,12 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
               {presentation.runtimeLabel}
             </span>
           </div>
-          <button
-            type="button"
-            className="rsi-selected-info__close"
+          <CloseButton
+            size={16}
             onClick={() => setSelectedNode(null)}
-            aria-label={t('rsi.detail.close', { defaultValue: '关闭' })}
-          >
-            ×
-          </button>
+            ariaLabel={t('rsi.detail.close', { defaultValue: '关闭' })}
+            testId="rsi-selected-info-close"
+          />
         </div>
 
         <div className="rsi-selected-info__body">
@@ -157,11 +160,15 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
             <div className="rsi-selected-info__metrics">
               <div>
                 <span>{t('rsi.detail.score', { defaultValue: '分数' })}</span>
-                <strong>{formatArtifactScore(presentation.score, task?.artifact_type)}</strong>
+                <strong data-testid="rsi-selected-node-score">
+                  {formatArtifactScore(presentation.score, task.artifact_type, task.scenario)}
+                </strong>
               </div>
               <div>
                 <span>{t('rsi.detail.parentScore', { defaultValue: '父节点' })}</span>
-                <strong>{formatArtifactScore(presentation.parentScore, task?.artifact_type)}</strong>
+                <strong data-testid="rsi-selected-parent-score">
+                  {formatArtifactScore(presentation.parentScore, task.artifact_type, task.scenario)}
+                </strong>
               </div>
               <div>
                 <span>{t('rsi.detail.scoreDelta', { defaultValue: '差值' })}</span>
@@ -179,7 +186,9 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
                   ? t('rsi.detail.failureReason', { defaultValue: '失败原因' })
                   : presentation.lifecycle === 'pruned'
                     ? t('rsi.detail.prunedReason', { defaultValue: '剪枝原因' })
-                  : t('rsi.detail.rejectionReason', { defaultValue: '未采用原因' })}
+                    : presentation.lifecycle === 'skipped'
+                      ? t('rsi.detail.skippedReason', { defaultValue: '跳过原因' })
+                      : t('rsi.detail.rejectionReason', { defaultValue: '未采用原因' })}
               </div>
               <div className="rsi-selected-info__reason-label">{presentation.reasonLabel}</div>
               {presentation.reasonDetail && (
@@ -217,6 +226,9 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
             <button type="button" className="rsi-selected-info__detail-btn" onClick={() => setDetailOpen(true)}>
               {t('rsi.detail.viewDetail', { defaultValue: '查看详情' })}
             </button>
+          )}
+          {!canViewArtifact && task.scenario === 'HARNESS' && (
+            <span className="rsi-selected-info__desc">{t('rsi.artifact.noHarnessSnapshot')}</span>
           )}
         </div>
       </div>
