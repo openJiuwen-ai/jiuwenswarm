@@ -857,8 +857,18 @@ def note_media_settings_gap(ctx: object, kind: str, where: str) -> str | None:
     Runs before every media node generates, so a first run and a regenerate
     both name the blocked node and the Settings > Agent fix instead of a bare
     "no image_path" / "no file" (#5266).
+
+    Settings > Agent writes only to ``.env``, so reload it first; otherwise a
+    slot the user just fixed is reported from stale ``os.environ`` values.
     """
+    from jiuwenswarm.common.utils import get_env_file
+    from jiuwenswarm.dotenv_early import load_dotenv_runtime
     from jiuwenswarm.server.runtime.designer import media_generation
+
+    try:
+        load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+    except Exception:
+        logger.debug("Failed to reload media generation env before Settings check", exc_info=True)
 
     problem = media_generation.note_generation_problem(kind, where)  # type: ignore[arg-type]
     emit = getattr(ctx, "emit_activity", None) if ctx is not None else None
