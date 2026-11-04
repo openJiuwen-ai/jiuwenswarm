@@ -784,7 +784,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
         // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
         ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
-        ...(value.modelName ? { model_name: value.modelName } : {}),
+        ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
+        // 模型字段：稳定选择存在时随 model_name 一并下发——执行会话按 model_id
+        // 定位模型，仅靠 model_name 反查在目录出现重名模型（多条目同 model_name）
+        // 时会报 "ambiguous legacy model name"，任务创建成功但到点秒败且无输出
+        ...cronModelPayloadFields(value),
         mode: value.mode,
         session_id: sessionId,
       });
@@ -904,17 +908,15 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // 推荐消息会自然出现在用户当前会话里，无需主动跳转。
       if (result.session_id && !isProactiveJob) {
         // 跳转会卸载 CronPanel，面板内 success state 活不到下一次渲染，用户看不到
-        // 「任务已触发立即执行」反馈。改由 App 根部常驻的命令式 toast 承载：ToastStack
-        // 通过 portal 挂在 body 上，不随 CronPanel 卸载，跳转后提示仍在目标会话顶部可见。
-        // 固定 id 去重，连续触发多个任务时不会叠出一排提示。testId 保持既有自动化锚点不变。
-        // proactive 分支不跳转、面板不卸载，继续用面板内 setSuccess（既有用例预期）。
-        // 视觉风格与位置均与「任务更新成功」等面板内提示保持一致：实心绿底、白字、无图标、
-        // 无关闭按钮、2s 自动消失。通过 panelRef.getBoundingClientRect() 取 CronPanel 容器
-        // 顶部居中坐标，用 position:fixed + transform 让 toast 精确落在面板内提示的同一位置
-        // （面板内提示是 absolute top-3 left-1/2 -translate-x-1/2，受左侧 ConversationSidebar
-        // 影响，其水平中心不是视口中心；toast 默认 fixed 视口居中会与面板内提示错位）。
-        // animation:none 禁用 toast 默认入场/退场动画，避免其 transform 覆盖 translateX(-50%)。
+        // 「任务已触发立即执行」反馈。改由 App 根部常驻的命令式 toast 承载。
         const panelRect = panelRef.current?.getBoundingClientRect();
+        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
+        try {
+          const reused = result.reused_pending_session || result.awaiting_approval;
+          await onSelectSession(result.session_id, reused ? undefined : job.description || job.name);
+        } catch {
+          throw new Error(t('cron.errors.sessionOpenFailed'));
+        }
         toast.open({
           id: 'cron-run-now-success',
           content: t('cron.success.runNow'),
@@ -937,8 +939,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             borderRadius: 'var(--radius-lg)',
           },
         });
-        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
-        onSelectSession(result.session_id);
       } else {
         // proactive 或后端未返回 session_id：面板不卸载，local state 提示生命周期足够
         setSuccess(t(isProactiveJob ? 'cron.success.proactiveRunNow' : 'cron.success.runNow'));

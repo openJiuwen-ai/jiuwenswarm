@@ -8,6 +8,11 @@ import { expertTeamId, ownerTeamId } from './conversation';
 import { useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
 import { MemberToolEventProjector } from './memberToolEvents';
+import { useSessionStore } from '../../stores/sessionStore';
+import { toTaskTimelineEntry } from '../../components/teamArea/groupChatTimeline';
+import { normalizeTaskEvent } from '../../stores/teamTaskNormalize';
+import { toOwnerTeamMessage } from '../../components/ChatPanel/teamEventUtils';
+import type { Message } from '../../types';
 import { clearOrganizationRequests, setOrganizationOwnerStopped } from './processing';
 import { expertProcessingSnapshot, finishExpertRequest, organizationProcessingRevision, reconcileOrganizationRequests, replaceExpertRequests, startExpertRequest, type OrganizationRequest } from './processing';
 
@@ -265,6 +270,8 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
+          // Request bookkeeping above owns busy state; a stale error must not
+          // clear another active request for the same expert.
         }
       }),
     );

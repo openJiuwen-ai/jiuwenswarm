@@ -282,6 +282,7 @@ begin
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
   begin
     Result := 'External CLI preservation failed; installation stopped before cleanup.';
+    AbortCliProgress;
     Exit;
   end;
   // Same-AppId per-user installs update in place. Only migrate an early admin install.
@@ -304,5 +305,6 @@ begin
     if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\resources\backend\{#BackendExecutableName}')) then
       RaiseException('External CLI configuration recovery failed.');
     #endif
+    FinishCliProgress;
   end;
 end;

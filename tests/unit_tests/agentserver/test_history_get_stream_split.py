@@ -162,9 +162,6 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch, tmp_
 
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
     SessionTokenUsageLedger(tmp_path / "sess-web", "sess-web").record("call-1", "main", 33, 11)
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     monkeypatch.setattr(
         "jiuwenswarm.server.handlers.session.get_conversation_history_cursor",
         lambda session_id, cursor, **_kwargs: {
@@ -203,12 +200,8 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch, tmp_
 async def test_web_cursor_stream_omits_unrecorded_session_usage(monkeypatch):
     from jiuwenswarm.server.control import history_service
 
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     monkeypatch.setattr(
-        server,
-        "get_conversation_history_cursor",
+        "jiuwenswarm.server.handlers.session.get_conversation_history_cursor",
         lambda session_id, cursor, **_kwargs: {
             "messages": [],
             "next_cursor": None,
@@ -236,7 +229,7 @@ async def test_web_cursor_stream_omits_unrecorded_session_usage(monkeypatch):
         params={"session_id": "sess-web-empty", "cursor": None, "limit": 50},
     )
 
-    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+    await _read_stream(ws, request)
 
     done = next(
         frame["payload"] for frame in ws.sent

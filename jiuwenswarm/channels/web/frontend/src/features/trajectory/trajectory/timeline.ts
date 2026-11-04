@@ -518,6 +518,51 @@ function deriveTimedTimeline(
 }
 
 /**
+ * Display realignment for wall-clock projections (`time` / `actual`).
+ *
+ * Duration mode relocates inside `deriveTimedTimeline` because idle compression
+ * already drops absolute wall identity. Wall-clock overviews still slide late
+ * prep for ledger-phase readability (including diagnosis selection). Brush
+ * selection uses pointer→domain coordinates on this display model; `toWall`
+ * converts those ends for the diagnosis scope.
+ */
+export function alignPrepSpansBeforeModel(
+  model: TrajectoryTimelineModel | null,
+  turns: readonly TrajectoryTurnModel[],
+): TrajectoryTimelineModel | null {
+  if (model === null || model.spans.length === 0) return model
+  const metaByIndex = new Map<number, { groupKey?: string; behaviorOrder?: number }>()
+  for (const turn of turns) {
+    for (const group of turn.groups) {
+      for (const cell of group.cells) {
+        if (cell.requestOnly === true) continue
+        const groupKey = requestGroupKey(cell)
+        metaByIndex.set(cell.index, {
+          ...(groupKey === undefined ? {} : { groupKey }),
+          ...(cell.behaviorOrder === undefined ? {} : { behaviorOrder: cell.behaviorOrder }),
+        })
+      }
+    }
+  }
+  const spans: PrepTimedSpan[] = model.spans.map((span) => {
+    const meta = metaByIndex.get(span.index)
+    return {
+      ...span,
+      ...(meta?.groupKey === undefined ? {} : { groupKey: meta.groupKey }),
+      ...(meta?.behaviorOrder === undefined ? {} : { behaviorOrder: meta.behaviorOrder }),
+    }
+  })
+  placePrepSpansBeforeModel(spans)
+  return {
+    ...model,
+    spans: spans.map((span): TrajectoryTimelineSpan => {
+      const { groupKey: _groupKey, behaviorOrder: _behaviorOrder, ...publicSpan } = span
+      return publicSpan
+    }),
+  }
+}
+
+/**
  * Place a lane on a shared domain.
  *
  * Without `mapTime`, span coordinates stay absolute and only the domain ends

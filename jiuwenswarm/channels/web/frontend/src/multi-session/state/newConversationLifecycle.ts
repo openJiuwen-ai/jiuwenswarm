@@ -66,6 +66,7 @@ function applyRuntimeSettings(
 
 export function resetNewConversationRuntime(settings: ConversationRuntimeSettings): void {
   const preservedDraft = useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '';
+  const preservedSkillPositions = useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputSkillPositions ?? [];
   // 草稿会话（'new'）的专家/专家团选择、技能选择与输入草稿一样只存在于内存 runtime
   // （sessionStore 对 'new' 刻意不落 localStorage），removeRuntime 重建会丢，
   // 表现为切到其他会话再回新建页时技能 tag / 专家 tag 消失而文字还在（#5771）。
@@ -91,12 +92,6 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   }
   if (preservedTeamGroupIdentity) {
     useSessionStore.getState().setTeamGroupIdentity(NEW_CONVERSATION_ID, preservedTeamGroupIdentity);
-  }
-  for (const skill of preservedSelectedSkills) {
-    useSessionStore.getState().addSelectedSkill(NEW_CONVERSATION_ID, skill);
-  }
-  if (preservedDraft) {
-    useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);
   }
   for (const skill of preservedSelectedSkills) {
     useSessionStore.getState().addSelectedSkill(NEW_CONVERSATION_ID, skill);

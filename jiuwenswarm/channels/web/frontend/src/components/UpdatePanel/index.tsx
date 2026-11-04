@@ -218,9 +218,17 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const hasUpdate = normalizeBoolean(status?.has_update);
   const installMode = normalizeString(status?.install_mode) || 'desktop';
   const isPipMode = installMode === 'pip';
-  const currentVersion = normalizeString(status?.current_version) || '-';
+  const currentVersionValue = normalizeString(status?.current_version);
+  const latestVersionValue = normalizeString(status?.latest_version);
+  const publishedAtValue = normalizeString(status?.published_at);
   const currentBuildDate = normalizeString(status?.current_build_date);
-  const latestVersion = normalizeString(status?.latest_version) || '-';
+  const currentVersion = currentVersionValue || '-';
+  const latestVersion = latestVersionValue || '-';
+  // A completed check reports the latest release even when the install is
+  // already up to date, so the "latest release" info is shown whenever the
+  // backend provides it instead of only when an update is pending.
+  const hasLatestRelease = latestVersionValue.length > 0;
+  const hasPublishedAt = publishedAtValue.length > 0;
   const releaseNotes = normalizeString(status?.release_notes);
   const publishedAt = formatPublishedAt(publishedAtValue, i18n.language);
   const downloadedBytes = normalizeNumber(status?.downloaded_bytes);

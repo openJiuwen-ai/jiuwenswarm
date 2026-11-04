@@ -15,6 +15,8 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
+import { useChatStore } from '../../stores/chatStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { TrajectoryExplorer, type TrajectoryViewState } from './client/TrajectoryExplorer';
 import { IconQuestionOutline14 } from './primitives/icons';
 import { JsonTree } from './primitives/JsonTree';
@@ -267,6 +269,14 @@ export interface TrajectoryPanelSummary {
    * "select all" summary stay in sync.
    */
   spans: number;
+  /** Scheduled Team control facts, when `main` contains task events. */
+  team?: {
+    members: number;
+    tasks: number;
+    completedTasks: number;
+    reviewRuns: number;
+    controlEvents: number;
+  };
 }
 
 function ignoreTimelineRange(): void {}
@@ -1332,8 +1342,26 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     onSummaryChangeRef.current?.({
       agents: lanes.length,
       spans: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
+      ...(scheduledTeamMode && scheduledTeamControlModel !== null
+        ? {
+          team: {
+            members: teamMemberCount,
+            tasks: scheduledTeamControlModel.tasks.length,
+            completedTasks: scheduledTeamControlModel.completedTaskCount,
+            reviewRuns: reviewRunCount,
+            controlEvents: scheduledTeamControlModel.controlRecordCount,
+          },
+        }
+        : {}),
     });
-  }, [diagnosisNodesKey, sharedTimeAxis]);
+  }, [
+    diagnosisNodesKey,
+    reviewRunCount,
+    scheduledTeamControlModel,
+    scheduledTeamMode,
+    sharedTimeAxis,
+    teamMemberCount,
+  ]);
   const exportArchiveRef = useRef<() => void>(() => {});
   const exitReplayRef = useRef<() => void>(() => {});
   const onArchiveActionsReadyRef = useRef(onArchiveActionsReady);
@@ -1837,9 +1865,23 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         active={active}
         groups={subjectGroups}
         messages={copy.toolbar}
+        workflowRuns={workflowRuns}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}
+        {...(sharedTimeAxis && scheduledTeamMode && scheduledTeamControlModel !== null
+          ? {
+            controlTimeline: {
+              model: scheduledTeamControlModel,
+              domain: timeAxis.domain,
+              viewport: timeAxis.viewport,
+              ...(timeAxis.mapSharedTime === undefined
+                ? {}
+                : { mapTime: timeAxis.mapSharedTime }),
+              live: active && replayArchive === null && sessionIsProcessing,
+            },
+          }
+          : {})}
         {...(analysisViewState === undefined ? {} : { externalViewState: analysisViewState })}
         {...(sharedTimeAxis
           ? {
@@ -1976,7 +2018,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                       ? (range: TrajectoryTimeRange | null) => selectOnLaneRange(subjectId, range)
                       : ignoreTimelineRange,
                     spanSelectsRange: selecting,
-                    lockTimelineViewport: true,
+                    // Pan with a grab cursor after zoom, like the duration overview.
+                    // Selection mode locks the viewport so a left-drag paints the brush.
+                    lockTimelineViewport: selecting,
                     sharedViewport: timeAxis.viewport,
                     onSharedViewportChange: timeAxis.updateViewport,
                     sharedViewportRef: timeAxis.viewportRef,

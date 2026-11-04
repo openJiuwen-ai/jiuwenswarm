@@ -197,6 +197,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--perf",
+        metavar="PERF_LOG",
+        default=None,
+        help=(
+            "Append per-step sandbox create timings to PERF_LOG. "
+            "Each line is 'start_ms<TAB>elapsed_ms<TAB>sandbox_id<TAB>step'. "
+            f"Falls back to ${ENV_PERF_LOG}; unset means no timings are "
+            "sampled or written."
+        ),
+    )
+    parser.add_argument(
         "--cleanup-orphans",
         action="store_true",
         help=(
@@ -238,6 +249,14 @@ def _resolve_save_logs_dir(cli_value: str | None) -> str | None:
     if not raw:
         return None
     return str(Path(raw).expanduser().resolve())
+
+
+def _resolve_perf_log(cli_value: str | None) -> str | None:
+    """Pick ``--perf`` over ``JIUWENBOX_PERF_LOG``; unset means no collection."""
+    raw = cli_value if cli_value else os.environ.get(ENV_PERF_LOG)
+    if not raw or not raw.strip():
+        return None
+    return str(Path(raw.strip()).expanduser().resolve())
 
 
 def _cleanup_orphans_best_effort(reason: str) -> None:

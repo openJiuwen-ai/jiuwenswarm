@@ -115,7 +115,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop, panelId]);
 
   useEffect(() => {
-    if (!desktop || !viewportRef.current) return;
+    if (!desktop || !panelId || !viewportRef.current) return;
     // 视口尺寸变化(窗口 resize、侧栏折叠等)后气泡锚点失准，直接收起；
     // 重新点击按钮会重新锚定。
     const handleViewportResize = () => {
@@ -219,7 +219,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     void desktop.browser.showDownloadBubble(anchor);
   }, [desktop, downloadBubbleVisible]);
 
-  if (!desktop) return null;
+  if (!desktop || !panelId) return null;
 
   const navigate = (event: FormEvent) => {
     event.preventDefault();

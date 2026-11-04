@@ -232,7 +232,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         >
           {state.text}
         </div>,
-        containerRef?.current ?? document.body
+        containerRef?.current ?? portalHost,
       )
     : null;
 
