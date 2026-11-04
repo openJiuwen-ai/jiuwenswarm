@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping
 from urllib.parse import parse_qs, quote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import (
+from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     allow_from_valid,
     dingtalk_apps,
 )
