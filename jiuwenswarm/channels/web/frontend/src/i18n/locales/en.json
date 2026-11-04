@@ -1857,8 +1857,8 @@
       "hotListListedAt": "Listed {{time}}",
       "viewHotListEntry": "See this trending item: {{source}}",
       "hotListEntry": "Trending",
-      "openNewsSearch": "Open related news",
-      "searchRelatedNews": "See related news",
+      "openNewsSearch": "Open the hot-search topic",
+      "searchRelatedNews": "Open hot search",
       "statusPreparing": "Getting a few topics ready. You can start chatting now.",
       "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
       "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
@@ -1867,6 +1867,7 @@
       "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
       "openSettings": "Check settings",
       "disabledHint": "For topics that understand you better, turn on recommendations in Settings - General.",
+      "disabledHintWithCards": "These are preset topics. Turn on topic recommendations in Settings to gradually replace them with personalized ones.",
       "retryPreparation": "Try again"
     },
     "promptSuggestionBox": {

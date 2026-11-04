@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 # Product defaults while YAML is ``null``. Flip these to change first-run behavior.
 DEFAULT_TOPIC_RECOMMENDATION_ENABLED = False
-DEFAULT_PROMPT_SUGGESTION_ENABLED = False
+DEFAULT_PROMPT_SUGGESTION_ENABLED = True
 
 _TOPIC_ENABLED_HOOKS: list[Callable[[float], None]] = []
 

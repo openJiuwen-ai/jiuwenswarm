@@ -622,7 +622,7 @@ test('General ignores legacy chat models and opens the connection form without a
   }
 });
 
-test('disabled homepage hides cached cards immediately and links to General; enabling restores cards', async () => {
+test('disabled homepage keeps preset cards and links to General; enabling refreshes toward personalized cards', async () => {
   let settingsOpens = 0;
   const panel = await mountWelcome('sess-topic-switch', {
     holdResponses: true, onOpenGeneralSettings: () => { settingsOpens += 1; },
@@ -634,19 +634,24 @@ test('disabled homepage hides cached cards immediately and links to General; ena
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: false },
     }) }));
-    assert.equal(visibleSuggestionTitles().length, 0, 'cards must disappear without waiting for a get response');
+    assert.equal(visibleSuggestionTitles().length, 4, 'preset/cached cards stay while recommendation is off');
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
     await react.act(async () => document.querySelector('[data-testid="chat-panel-topic-general-settings"]').click());
     assert.equal(settingsOpens, 1);
     await react.act(settle);
-    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, { available: false, reason: 'disabled' }));
+    await react.act(async () => liveSocket.reply(
+      starterRequests().at(-1).id,
+      { ...dynamicSlateResponse('sess-topic-switch', 'PRESET'), preparation_state: 'disabled' },
+    ));
     await react.act(settle);
+    assert.equal(visibleSuggestionTitles().length, 4);
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]').textContent.includes('preset'));
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
     }) }));
     await react.act(settle);
-    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null, 'enabled without cards must not show the disabled hint');
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null, 'enabled must not show the disabled hint');
     await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, dynamicSlateResponse('sess-topic-switch', 'BACK')));
     await react.act(settle);
     assert.equal(visibleSuggestionTitles().length, 4);

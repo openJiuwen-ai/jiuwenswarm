@@ -33,7 +33,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
     NEWS_PREFERRED_WINDOW_HOURS,
     HotListEntry,
     HotListPull,
-    search_page_url,
+    hot_list_open_url,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_retrieval import (
     NEWS_FRESHNESS_CLASS,
@@ -4888,8 +4888,8 @@ def _cold_start_hot_list_card(
         "evidence_bundle": {
             "candidate_id": candidate_id,
             "fetch_status": "success",
-            "source_url": search_page_url(entry.word),
-            "search_url": search_page_url(entry.word),
+            "source_url": hot_list_open_url(entry, pull),
+            "search_url": hot_list_open_url(entry, pull),
             "source_kind": HOT_LIST_SOURCE_KIND,
             "publisher": list_host,
             "document_revision_id": document_revision_id,

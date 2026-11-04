@@ -13,7 +13,7 @@ def test_null_yaml_follows_code_defaults():
     assert switches.is_topic_recommendation_enabled(config) is switches.DEFAULT_TOPIC_RECOMMENDATION_ENABLED
     assert switches.is_prompt_suggestion_enabled(config) is switches.DEFAULT_PROMPT_SUGGESTION_ENABLED
     assert switches.DEFAULT_TOPIC_RECOMMENDATION_ENABLED is False
-    assert switches.DEFAULT_PROMPT_SUGGESTION_ENABLED is False
+    assert switches.DEFAULT_PROMPT_SUGGESTION_ENABLED is True
 
 def test_explicit_true_and_false_override_defaults():
     on = {"recommendation": {"topic_enabled": True, "prompt_enabled": False}}
@@ -26,7 +26,8 @@ def test_explicit_true_and_false_override_defaults():
 def test_legacy_enabled_without_consent_stays_off():
     config = {"recommendation": {"enabled": True}}
     assert switches.is_topic_recommendation_enabled(config) is False
-    assert switches.is_prompt_suggestion_enabled(config) is False
+    # Prompt suggestion follows its own code default; legacy ``enabled`` is not consent.
+    assert switches.is_prompt_suggestion_enabled(config) is switches.DEFAULT_PROMPT_SUGGESTION_ENABLED
 
 def test_explicit_null_split_keys_ignore_legacy_enabled():
     config = {
@@ -38,7 +39,7 @@ def test_explicit_null_split_keys_ignore_legacy_enabled():
         }
     }
     assert switches.is_topic_recommendation_enabled(config) is False
-    assert switches.is_prompt_suggestion_enabled(config) is False
+    assert switches.is_prompt_suggestion_enabled(config) is switches.DEFAULT_PROMPT_SUGGESTION_ENABLED
 
 def test_save_topic_switch_records_history_boundary(user_config):
     switches.save_recommendation_switches(topic_enabled=True, now=12.5)
@@ -1726,22 +1727,28 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
     await asyncio.wait_for(connection, timeout=5.0)
 
 @pytest.mark.asyncio
-async def test_webchannel_reports_unavailable_when_service_is_disabled(
+async def test_webchannel_rebuilds_product_lane_when_free_search_is_off(
     enabled_recommendation_consent,
     monkeypatch,
+    tmp_path,
 ) -> None:
+    """Free-search toggles must not leave the homepage without a product lane."""
+
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "false")
     channel = WebChannel(
         WebChannelConfig(enabled=True), RobotMessageRouter()
     )
     channel.on_message(lambda _msg: False)
-    _register_panel(channel, service=None, store=None, queue=None)
+    store = TopicStarterStore(tmp_path / "webchannel-free-search-off.db")
+    # Simulate a prior build that left the product lane empty; ensure_services
+    # must recreate it even while both free-search engines are off.
+    _register_panel(channel, service=None, store=store, queue=None)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
     ws.request(
-        "get-unavailable",
+        "get-presets",
         "topic_starters.get",
         {
             "session_id": "visit-session",
@@ -1751,16 +1758,13 @@ async def test_webchannel_reports_unavailable_when_service_is_disabled(
         },
     )
 
-    response = await _wait_response(ws, "get-unavailable")
+    response = await _wait_response(ws, "get-presets")
     assert response["ok"] is True
-    assert response["payload"] == {
-        "available": False,
-        "reason": "topic_service_unavailable",
-        "session_id": "visit-session",
-        "policy_id": POLICY_ID,
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "project_id": None,
-    }
+    payload = response["payload"]
+    assert payload["available"] is True
+    assert payload["session_id"] == "visit-session"
+    assert payload["context_scope"] == GLOBAL_NEW_CHAT_SCOPE
+    assert 1 <= len(payload.get("topics") or []) <= 4
 
     ws.release()
     await asyncio.wait_for(connection, timeout=5.0)
@@ -1848,7 +1852,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
 )
 from jiuwenswarm.server.runtime import recommendation_host
 
-def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
+def test_gateway_builds_product_lane_without_free_search_engines(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1862,7 +1866,8 @@ def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
     )
 
     assert isinstance(prepare_service, TopicPrepareService)
-    assert product_service is None
+    assert isinstance(product_service, TopicService)
+    assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
     assert outcome_queue.pending_count == 0
 
 def test_gateway_startup_seeds_product_lane() -> None:
@@ -1898,7 +1903,9 @@ def test_gateway_builds_product_lane_when_native_search_chain_is_configured(
     assert isinstance(product_service, TopicService)
     assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
 
-def test_recommendation_host_recovers_after_search_is_enabled(monkeypatch, tmp_path) -> None:
+def test_recommendation_host_builds_once_even_when_free_search_is_off(
+    monkeypatch, tmp_path,
+) -> None:
     monkeypatch.delenv("TOPIC_STARTER_SEARCH_PROVIDER", raising=False)
     monkeypatch.delenv("TOPIC_STARTER_V6_SEARCH_PROVIDER", raising=False)
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
@@ -1906,24 +1913,18 @@ def test_recommendation_host_recovers_after_search_is_enabled(monkeypatch, tmp_p
     host = recommendation_host.RecommendationHost()
     host.store = TopicStarterStore(tmp_path / "recovery.db")
     host.ensure_services()
-    assert host.topic_service is None
+    assert isinstance(host.topic_service, TopicService)
     prepare = host.topic_prepare_service
     queue = host.topic_outcome_queue
-    host.ensure_services()
-    assert host.topic_prepare_service is prepare
+    service = host.topic_service
+    assert host.topic_service.on_prepared is not None
 
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "true")
-    host.ensure_services()
-    assert host.topic_service is None
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
     host.ensure_services()
-    assert isinstance(host.topic_service, TopicService)
+    assert host.topic_service is service
     assert host.topic_prepare_service is prepare
     assert host.topic_outcome_queue is queue
-    assert host.topic_service.on_prepared is not None
-    service = host.topic_service
-    host.ensure_services()
-    assert host.topic_service is service
 
 
 def test_cold_start_serve_shows_corpus_cards_without_history(tmp_path):
@@ -1952,6 +1953,86 @@ def test_cold_start_serve_shows_corpus_cards_without_history(tmp_path):
         assert all(topic["title"] and topic["prompt"] for topic in response["topics"])
     finally:
         pass
+
+
+def test_disabled_serve_still_returns_preset_cards(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-disabled.db"),
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: 1_700_000_000.0,
+    )
+    response = service.serve(
+        "session-disabled",
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        project_id=None,
+    )
+    assert response["available"] is True
+    assert response["preparation_state"] == "disabled"
+    assert 1 <= len(response["topics"]) <= 4
+
+
+def test_hot_list_open_url_prefers_topic_page_then_board():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
+        BAIDU_PROVIDER_ID,
+        BAIDU_REALTIME_URL,
+        WEIBO_HOT_BAND_URL,
+        WEIBO_HOT_LIST_PAGE_URL,
+        WEIBO_PROVIDER_ID,
+        HotListEntry,
+        HotListPull,
+        hot_list_open_url,
+        parse_weibo_hot_band,
+    )
+
+    pull = HotListPull(
+        receipt_id="pull-1",
+        provider_id=WEIBO_PROVIDER_ID,
+        list_url=WEIBO_HOT_BAND_URL,
+        pulled_at=1.0,
+        entries=(),
+    )
+    with_page = HotListEntry(
+        entry_id="weibo-hot-band:1",
+        provider_id=WEIBO_PROVIDER_ID,
+        rank=1,
+        word="甲",
+        page_url="https://s.weibo.com/weibo?q=%23甲%23",
+    )
+    without_page = HotListEntry(
+        entry_id="weibo-hot-band:2",
+        provider_id=WEIBO_PROVIDER_ID,
+        rank=2,
+        word="乙",
+    )
+    assert hot_list_open_url(with_page, pull) == with_page.page_url
+    assert hot_list_open_url(without_page, pull) == WEIBO_HOT_LIST_PAGE_URL
+    baidu_pull = HotListPull(
+        receipt_id="pull-2",
+        provider_id=BAIDU_PROVIDER_ID,
+        list_url=BAIDU_REALTIME_URL,
+        pulled_at=1.0,
+        entries=(),
+    )
+    baidu = HotListEntry(
+        entry_id="baidu-realtime:1",
+        provider_id=BAIDU_PROVIDER_ID,
+        rank=1,
+        word="丙",
+    )
+    assert hot_list_open_url(baidu, baidu_pull) == BAIDU_REALTIME_URL
+    band = parse_weibo_hot_band(
+        '{"data":{"band_list":[{"word":"丁","realpos":1,'
+        '"url":"https://s.weibo.com/weibo?q=%23丁%23","is_ad":0}]}}'
+    )
+    assert band[0].page_url == "https://s.weibo.com/weibo?q=%23丁%23"
 
 
 def test_corpus_avoids_anecdote_hunting_starters():

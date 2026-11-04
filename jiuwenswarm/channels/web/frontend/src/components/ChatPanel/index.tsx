@@ -1336,7 +1336,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
-  const visibleTopicSlate = recommendationState !== 'disabled' && dynamicSlate?.visitId === topicStarterVisitId
+  // Disabled still shows packaged cold-start cards; personalized generation waits on the switch.
+  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId
     ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
@@ -1995,8 +1996,8 @@ export const ChatPanel = React.memo(function ChatPanel({
         return;
       }
       acceptingDynamicRef.current = true;
-      if (payload.enabled && visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
-      if (!payload.enabled) setDynamicSlate(null);
+      // Keep whatever is on screen across the switch: presets while off, personalized while on.
+      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
       recommendationSwitchStateRef.current = payload.enabled ? 'preparing' : 'disabled';
       setRecommendationState(recommendationSwitchStateRef.current);
       setRecommendationRefresh(value => value + 1);
@@ -2686,7 +2687,9 @@ export const ChatPanel = React.memo(function ChatPanel({
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState === 'disabled' ? (
                   <p className="w-full text-sm text-text-muted" data-testid="chat-panel-topic-disabled-hint">
-                    {t('chat.topicStarter.disabledHint')}
+                    {t(visibleTopicSlate?.topics.length
+                      ? 'chat.topicStarter.disabledHintWithCards'
+                      : 'chat.topicStarter.disabledHint')}
                     <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
                       {t('chat.topicStarter.openSettings')}
                     </button>

@@ -41,8 +41,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
     HotListFeed,
     HotListPull,
     hot_event_key,
+    hot_list_open_url,
     normalize_news_query,
-    search_page_url,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
     RIDUserContextSnapshot,
@@ -1454,8 +1454,8 @@ def _hot_list_plan(plan: Mapping[str, Any], *, input_snapshot_id: str) -> dict[s
         "hot_list_evidence": {
             "candidate_id": candidate_id,
             "fetch_status": "success",
-            "source_url": search_page_url(entry.word),
-            "search_url": search_page_url(str(plan["primary_query"])),
+            "source_url": hot_list_open_url(entry, pull),
+            "search_url": hot_list_open_url(entry, pull),
             "source_kind": HOT_LIST_SOURCE_KIND,
             "publisher": (urlparse(pull.list_url).hostname or "").removeprefix("www."),
             "document_revision_id": document_revision_id,
@@ -6263,7 +6263,7 @@ class TopicPipeline:
         for entry in pulled:
             if card_copy_rejection_reason(_hot_list_title(entry.word)) is not None:
                 continue
-            if feedback.blocks_news(search_page_url(entry.word)):
+            if feedback.blocks_news(hot_list_open_url(entry, pull)):
                 continue
             if feedback.blocks_news_event(hot_event_key(entry.word)):
                 continue
