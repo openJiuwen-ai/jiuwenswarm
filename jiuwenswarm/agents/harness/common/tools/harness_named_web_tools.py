@@ -113,22 +113,131 @@ class JiuwenHarnessFetchWebpageTool(Tool):
         raise build_error(StatusCode.TOOL_STREAM_NOT_SUPPORTED, card=self._card)
 
 
+class JiuwenHarnessImageSearchTool(Tool):
+    """Search the web for images and download them to local paths."""
+
+    def __init__(
+        self,
+        language: str = "cn",
+        agent_id: Optional[str] = None,
+        cache: Any | None = None,
+    ) -> None:
+        lang = resolve_language(language or "cn")
+        card_id = "JiuwenHarnessImageSearch"
+        if agent_id:
+            card_id = f"{card_id}:{agent_id}"
+        super().__init__(
+            ToolCard(
+                id=card_id,
+                name="web_image_search",
+                description=_image_search_description(lang),
+                input_params=_image_search_input_params(lang),
+            )
+        )
+        self._cache = cache
+
+    async def invoke(self, inputs: Dict[str, Any], **kwargs) -> Any:
+        from openjiuwen.harness.tools.base_tool import ToolOutput
+
+        from jiuwenswarm.agents.harness.common.tools.web_search.image_search import (
+            search_images,
+        )
+
+        cache = kwargs.get("cache") or self._cache
+        outcome = await search_images(
+            str(inputs.get("query") or "").strip(),
+            max_images=inputs.get("max_images"),
+            max_pages=inputs.get("max_pages"),
+            search_mode=str(inputs.get("search_mode") or "default"),
+            cache=cache,
+            output_dir=inputs.get("output_dir"),
+        )
+        payload = outcome.as_dict()
+        data = {
+            "content": outcome.to_content(),
+            "images": payload["images"],
+            "stats": payload["stats"],
+        }
+        if outcome.error:
+            return ToolOutput(success=False, error=outcome.error, data=data)
+        return ToolOutput(success=True, data=data)
+
+    async def stream(self, inputs: Dict[str, Any], **kwargs) -> AsyncIterator[Any]:
+        yield "Stream is not supported for this tool."
+        raise build_error(StatusCode.TOOL_STREAM_NOT_SUPPORTED, card=self._card)
+
+
+def _image_search_description(lang: str) -> str:
+    return {
+        "cn": (
+            "联网检索图片并把候选配图下载到本地，返回文件路径与来源信息，"
+            "供图片理解工具与 PPT 配图等后续工具使用。"
+            "需要真实配图、或要确认网页里的图片内容时调用。"
+        ),
+        "en": (
+            "Search the web for images, download the best candidates to local paths and "
+            "return them with source metadata for image understanding and PPT image "
+            "placement. Use it when the task needs real pictures."
+        ),
+    }[lang]
+
+
+def _image_search_input_params(lang: str) -> Dict[str, Any]:
+    query_desc = {
+        "cn": "要找什么图，例如「华为东南大学 签约 现场」。",
+        "en": "What kind of image to find.",
+    }[lang]
+    return {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "minLength": 1, "description": query_desc},
+            "max_images": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8,
+                "default": 6,
+            },
+            "max_pages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "default": 3,
+            },
+            "search_mode": {
+                "type": "string",
+                "enum": ["default", "paid", "free"],
+            },
+            "output_dir": {
+                "type": "string",
+                "description": {
+                    "cn": "保存目录（可选）。传入已有工作目录时图片直接落到该目录；不传用默认检索图片目录。",
+                    "en": "Optional save directory; images are written there when provided.",
+                }[lang],
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+
 def build_jiuwen_harness_named_web_tools(
     *,
     agent_id: Optional[str],
     language: str = "cn",
     cache: Any | None = None,
 ) -> List[Tool]:
-    """Build ``web_search`` + ``fetch_webpage`` for a scoped ``agent_id``."""
+    """Build ``web_search`` + ``fetch_webpage`` + ``web_image_search`` for a scoped ``agent_id``."""
     lang = resolve_language(language or "cn")
     return [
         JiuwenHarnessWebSearchTool(language=lang, agent_id=agent_id, cache=cache),
         JiuwenHarnessFetchWebpageTool(language=lang, agent_id=agent_id, cache=cache),
+        JiuwenHarnessImageSearchTool(language=lang, agent_id=agent_id, cache=cache),
     ]
 
 
 __all__ = [
     "JiuwenHarnessFetchWebpageTool",
+    "JiuwenHarnessImageSearchTool",
     "JiuwenHarnessWebSearchTool",
     "build_jiuwen_harness_named_web_tools",
 ]

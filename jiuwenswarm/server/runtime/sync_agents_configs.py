@@ -31,6 +31,7 @@ SYNC_ENV_SCHEMA: frozenset[str] = frozenset(
         "EMBED_MODEL",
         "MODEL_NAME",
         "MODEL_PROVIDER",
+        "MODEL_MODALITIES",
         "MODEL_CONTEXT_WINDOW",
         "TOOL_CALLING_GUARD_ENABLED",
         "TOOL_CALLING_GUARD_DISABLE",
