@@ -252,6 +252,48 @@ async def test_get_job_uses_the_same_identity_defaults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_project_filter_matches_materialized_default() -> None:
+    """读侧空串与写侧物化的 default 等价；存量空串任务同样命中。
+
+    回归场景：create 入口把未选项目物化为 ``default``，随后 run_now/delete
+    仍携带空串，若按空串精确比对会误判 NOT_FOUND。
+    """
+    jobs = {
+        "materialized": _listed_job(
+            "materialized", project_id="default", user_id="", group_id="", bot_id=""
+        ),
+        "legacy": _listed_job(
+            "legacy", project_id="", user_id="", group_id="", bot_id=""
+        ),
+        "code_default": _listed_job(
+            "code_default", project_id="default_code", user_id="", group_id="", bot_id=""
+        ),
+    }
+
+    async def list_jobs():
+        return list(jobs.values())
+
+    async def get_job(job_id):
+        return jobs.get(job_id)
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs, get_job=get_job),
+        scheduler=_FakeScheduler(),
+    )
+
+    listed = await controller.list_jobs(
+        project_id="", user_id="", group_id="", bot_id=""
+    )
+    assert [job["id"] for job in listed] == ["materialized", "legacy"]
+
+    found = await controller.get_job("materialized", project_id="")
+    assert found is not None and found["id"] == "materialized"
+    assert await controller.get_job("materialized", project_id="default") is not None
+    # default_code 是 code 模式的默认项目，不与 work 模式默认项目混同。
+    assert await controller.get_job("code_default", project_id="") is None
+
+
+@pytest.mark.asyncio
 async def test_run_now_checks_tenant_before_trigger() -> None:
     """两边都先核对用户、群、机器人。对不上不触发。不传按空身份。不看项目编号。"""
     jobs = {
