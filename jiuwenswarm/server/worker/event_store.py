@@ -263,12 +263,21 @@ class WorkerEventStore:
         not stay "processing". Without this the next metadata query sees
         is_processing + a buffered ask_user frame and the forced after:0
         replay re-opens the popup.
+
+        A cancel with params.target_request_id retires only that request's
+        record: the same scope also carries the owner turn and other rounds
+        whose pending interactions must stay answerable. An already-returned
+        record still counts — its suspended ask_user is as unanswerable as a
+        live one once its round is the cancel target.
         """
         scope = request_scope(request)
+        target = str((request.params or {}).get("target_request_id") or "")
         for record in self.records.values():
             if record.scope != scope:
                 continue
             if record.is_passive_subscription:
+                continue
+            if target and str(record.request.request_id or "") != target:
                 continue
             record.interactions.clear()
             record.is_processing = False

@@ -81,6 +81,39 @@ def test_pending_goal_control_is_still_busy(action: str) -> None:
     assert store.snapshot(control)["is_processing"] is True
 
 
+def test_targeted_cancel_retires_only_the_target_dispatch() -> None:
+    """A targeted cancel must not retire other same-scope rounds' popups.
+
+    The owner turn and an expert round share the session scope; retiring the
+    whole scope on an expert-targeted cancel would drop ask_user popups that
+    are still answerable while their rounds keep running. A session-level
+    cancel (no target_request_id) still retires the whole scope.
+    """
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        return next(item["pending_interactions"] for item in store.snapshot(query)["dispatches"]
+                    if item["dispatch_id"] == dispatch_id)
+
+    targeted = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                       params={"target_request_id": "expert-turn"})
+    store.retire_session_interactions(targeted)
+    # is_processing is scope-wide: the owner round still holds work, so the
+    # session stays busy even though the expert round was retired.
+    assert store.snapshot(request("owner-turn"))["is_processing"] is True
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+    session_wide = replace(request("cancel-2", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(session_wide)
+    assert store.snapshot(request("owner-turn"))["is_processing"] is False
+    assert popup("owner", request("owner-turn")) == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "real_state", [None, "succeeded", "running", "waiting_for_input", "waiting_for_control", "queued"],
