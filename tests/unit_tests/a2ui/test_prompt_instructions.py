@@ -102,16 +102,20 @@ def test_a2ui_prompt_multiplechoice_single_select_max_one():
     assert "maxAllowedSelections 必须设为 1" in zh
 
 
-def test_a2ui_prompt_ok_cancel_button_row_not_right_aligned():
+def test_a2ui_prompt_action_button_row_order():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "Cancel (secondary) before OK (primary)" in en
+    assert "single horizontal Row" in en
+    assert "secondary buttons come before primary ones" in en
+    assert "only one primary button" in en
     assert 'distribution to "end"' not in en
     assert "aligned" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "取消（次要）在前、确定（主要）在后" in zh
+    assert "同一个 Row" in zh
+    assert "次要在前、主要在后" in zh
+    assert "主要按钮只设一个" in zh
     assert 'distribution="end"' not in zh
     assert "右对齐" not in zh
 
@@ -120,12 +124,12 @@ def test_a2ui_prompt_forbids_reset_and_clear_form_buttons():
     en = build_a2ui_autonomy_instruction("en")
 
     assert "Do NOT add buttons that reset or clear form values" in en
-    assert "dataModelUpdate-initialized values" in en
+    assert "dataModelUpdate-initialized values" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "清空表单值的按钮" in zh
-    assert "dataModelUpdate 初始化的值" in zh
+    assert "dataModelUpdate 初始化的值" not in zh
 
 
 def test_a2ui_prompt_title_usage_hint_structure():
@@ -147,6 +151,18 @@ def test_a2ui_prompt_title_usage_hint_structure():
     assert "没有分组" in zh
     assert "分组内每个输入组件正上方的标题必须用 usageHint \"h3\"" in zh
     assert "只有一个输入组件" not in zh
+
+
+def test_a2ui_prompt_cancel_button_only_when_needed():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "only when genuinely needed" in en
+    assert "do NOT add a Cancel button by default" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "确有需要" in zh
+    assert "默认不要添加" in zh
 
 
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
