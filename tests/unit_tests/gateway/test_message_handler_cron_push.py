@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
 
@@ -144,7 +144,7 @@ async def test_cron_push_create_replaces_default_tenant_with_chat_routing(
         },
     }
     monkeypatch.setattr(
-        "gateway.enterprise.is_enterprise",
+        "agent_gateway.enterprise.is_enterprise",
         lambda: True,
     )
 
@@ -188,7 +188,7 @@ async def test_cron_push_create_overwrites_forged_tenant_params(
             "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
         },
     }
-    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
 
     await handler._handle_cron_push_payload(
         payload={
@@ -239,7 +239,7 @@ async def test_cron_push_list_fills_tenant_from_chat_routing(
             "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
         },
     }
-    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     handler._push_cron_command_ack = AsyncMock()
 
     await handler._handle_cron_push_payload(
@@ -273,7 +273,7 @@ async def test_cron_push_list_fills_tenant_from_wire_owner_metadata(
     handler = _bare_handler(object(), controller)
     handler._stream_user_ids["req-wire"] = "zxy"
     handler._push_cron_command_ack = AsyncMock()
-    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
 
     wire = build_server_push_wire(
         {
@@ -343,13 +343,13 @@ async def test_cron_push_without_request_login_rejects_supplied_session(action) 
 
 @pytest.mark.asyncio
 async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, monkeypatch) -> None:
-    from gateway.auth import model_catalog as _model_catalog
-    from gateway.auth.model_catalog import LoginModel
-    from gateway.cron.controller import CronController
-    from gateway.cron.store import CronJobStore
+    from agent_gateway.auth import model_catalog as _model_catalog
+    from agent_gateway.auth.model_catalog import LoginModel
+    from agent_gateway.cron.controller import CronController
+    from agent_gateway.cron.store import CronJobStore
 
-    monkeypatch.setattr("gateway.common.config.get_model_config", lambda *a, **k: None)
-    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("agent_gateway.common.config.get_model_config", lambda *a, **k: None)
+    monkeypatch.setattr("agent_gateway.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries", lambda: []
     )
@@ -368,9 +368,9 @@ async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, 
         assert user_id == "huawei-openid"
         return credential_ref
 
-    monkeypatch.setattr("gateway.auth.service.live_session", live_session)
+    monkeypatch.setattr("agent_gateway.auth.service.live_session", live_session)
     monkeypatch.setattr(
-        "gateway.auth.login_credentials.credential_ref_for_user",
+        "agent_gateway.auth.login_credentials.credential_ref_for_user",
         credential_ref_for_user,
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")

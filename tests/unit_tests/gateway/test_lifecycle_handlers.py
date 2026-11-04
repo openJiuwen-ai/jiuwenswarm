@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from gateway.channel_manager.web import lifecycle_handlers
+from agent_gateway.channel_manager.web import lifecycle_handlers
 
 
 class _FakeChannel:

@@ -11,12 +11,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from agent_gateway.extensions.adx.config import load_router_config
+from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.router_client import AdxRouterClient
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse
-from gateway.extensions.adx.config import load_router_config
-from gateway.extensions.adx.control_client import AdxControlClient
-from gateway.extensions.adx.router_client import AdxRouterClient
 
 
 def _config(monkeypatch, **overrides):
@@ -259,7 +259,7 @@ def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
 
 
 async def test_registry_launch_spec_is_forwarded_to_environment_without_template_registration(monkeypatch):
-    from gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
+    from agent_gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
 
     router, _clients = _router(_config(monkeypatch, builtin_image='registry.example/builtin:1'))
     spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:8080']},
@@ -287,8 +287,8 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
 
 @pytest.mark.parametrize('existing', [False, True])
 async def test_native_placement_is_available_to_strict_registry_on_first_post(monkeypatch, existing):
-    from gateway.extensions.agentos.agentos_router.models import AgentInfo
-    from gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig
+    from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo
+    from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig
 
     api = EnvironmentAPI()
     identifier = 'test-alice+jiuwenswarm'

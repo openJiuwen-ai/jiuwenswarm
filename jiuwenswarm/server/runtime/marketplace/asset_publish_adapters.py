@@ -47,7 +47,7 @@ def _json(path):
     return value
 
 
-def _path(root, value, field, directory=False):
+def _path(root, value, field, directory=False, any_type=False):
     _text(value, field)
     relative = Path(value)
     invalid_root = relative.is_absolute() or bool(PureWindowsPath(value).drive)
@@ -62,7 +62,13 @@ def _path(root, value, field, directory=False):
         candidate /= part
         if candidate.is_symlink():
             _fail("INVALID_REFERENCE", field, "Symbolic links are not allowed")
-    if not (candidate.is_dir() if directory else candidate.is_file()):
+    if any_type:
+        # Markdown links may point at a directory (for example ``[docs](docs/)``);
+        # only require that the target exists inside the package.
+        exists = candidate.exists()
+    else:
+        exists = candidate.is_dir() if directory else candidate.is_file()
+    if not exists:
         _fail("MISSING_REFERENCE", field, "A declared file or directory is missing")
     return candidate
 
@@ -270,7 +276,7 @@ def _skill(root, identity, metadata):
             continue
         relative = unquote(target.split("#", 1)[0])
         if relative:
-            _path(root, relative, "SKILL.md.references")
+            _path(root, relative, "SKILL.md.references", any_type=True)
     changes = []
     for key, value in {
         "name": identity.package_name,

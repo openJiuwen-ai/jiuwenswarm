@@ -70,9 +70,19 @@ async def dispatch_recommendation(
     auth_session = params.pop("auth_session", None)
     if action == "prompt_suggestion_event":
         return await _prompt_suggestion_event(host, params)
+    if action == "prompt_suggestion_get":
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import current_suggestions
+
+        target_session = params.get("session_id") or session_id
+        if not isinstance(target_session, str) or not target_session.strip():
+            return _fail("session_id is required", "BAD_REQUEST")
+        return _ok(await asyncio.to_thread(current_suggestions, _prompt_store(host), target_session.strip()))
     if action == "status":
         host.ensure_services()
-        return _ok(await _status_payload(host, {"auth_session": auth_session}))
+        return _ok(await _status_payload(host, {
+            "auth_session": auth_session,
+            "include_api_key": params.get("include_api_key") is True,
+        }))
     if action == "select_model":
         host.ensure_services()
         return await _select_model(host, params, auth_session)
@@ -134,6 +144,7 @@ async def _status_payload(host: Any, params: dict[str, Any]) -> dict[str, Any]:
         load_recommendation_controls,
         recommendation_model_config,
         recommendation_model_options,
+        recommendation_model_configuration,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
         background_configuration_status,
@@ -147,7 +158,10 @@ async def _status_payload(host: Any, params: dict[str, Any]) -> dict[str, Any]:
     )
     auth_session = params.get("auth_session") or None
     models = await asyncio.to_thread(recommendation_model_options, auth_session)
-    return {**payload, **models, "enabled": load_recommendation_controls()["enabled"]}
+    return {**payload, **models, "model_config": recommendation_model_configuration(
+                include_api_key=params.get("include_api_key") is True,
+            ),
+            "enabled": load_recommendation_controls()["enabled"]}
 
 
 async def _select_model(
@@ -155,14 +169,28 @@ async def _select_model(
 ) -> RecommendationResult:
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         save_recommendation_model,
+        save_recommendation_model_configuration,
     )
 
     model = params.get("model")
-    if not isinstance(model, str) or not save_recommendation_model(model):
+    configuration = params.get("configuration")
+    if configuration is not None:
+        if not isinstance(configuration, dict) or not save_recommendation_model_configuration(configuration):
+            return _fail("invalid recommendation model configuration", "BAD_REQUEST")
+    elif not isinstance(model, str) or not save_recommendation_model(model):
         return _fail("model cannot prepare topics", "BAD_REQUEST")
     if host.topic_service is not None:
         await host.topic_service.reload_config()
-    return _ok(await _status_payload(host, {"auth_session": auth_session}))
+        if configuration is None and not model:
+            await host.topic_service.set_enabled(False, persist=False)
+    return _ok(
+        await _status_payload(host, {"auth_session": auth_session}),
+        events=(
+            [(TOPIC_STARTERS_CONTROL_CHANGED_EVENT, {"enabled": False})]
+            if configuration is None and not model
+            else None
+        ),
+    )
 
 
 def _profile(host: Any) -> RecommendationResult:

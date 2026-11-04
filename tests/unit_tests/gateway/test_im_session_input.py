@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from openjiuwen_protocol.message import Message, ReqMethod
-from gateway.im_pipeline.im_inbound import IMInboundPipeline
-from gateway.im_pipeline.im_session_input import (
+from agent_gateway.im_pipeline.im_inbound import IMInboundPipeline
+from agent_gateway.im_pipeline.im_session_input import (
     is_shared_im_channel,
     prepare_im_session_input,
     steer_busy_im_chat,

@@ -111,7 +111,7 @@ def ffmpeg_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[s
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.designer.handlers.compose._clip_video_usable",
         lambda path, ffmpeg=None: Path(path).is_file(),

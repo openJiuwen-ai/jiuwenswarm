@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from gateway.auth import session_store as store_mod
-from gateway.auth.account_kit import Credential, LoginOutcome
-from gateway.auth.session_store import AuthSessionStore
+from agent_gateway.auth import session_store as store_mod
+from agent_gateway.auth.account_kit import Credential, LoginOutcome
+from agent_gateway.auth.session_store import AuthSessionStore
 
 
 @pytest.fixture(autouse=True)

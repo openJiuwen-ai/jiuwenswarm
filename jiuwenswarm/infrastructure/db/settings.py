@@ -1,4 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Compatibility shim; implementation lives in ``gateway.enterprise.db``."""
+"""Compatibility shim; implementation lives in ``agent_gateway.enterprise.db``."""
 
-from gateway.enterprise.db.settings import *  # noqa: F403
+from agent_gateway.enterprise.db.settings import *  # noqa: F403

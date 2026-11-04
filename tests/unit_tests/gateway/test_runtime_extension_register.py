@@ -7,9 +7,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from agent_gateway.extensions.loader import ExtensionLoader
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
-from gateway.extensions.loader import ExtensionLoader
 from jiuwenswarm.extensions.runtime_management_extension.extension import (
     register_extensions,
     runtime_client_requested,

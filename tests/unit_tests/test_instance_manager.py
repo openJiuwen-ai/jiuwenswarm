@@ -100,7 +100,7 @@ def _try_acquire_lock_with_result(workspace_str: str, result_queue) -> None:
 
 def _try_acquire_gateway_lock(workspace_str: str, result_queue) -> None:
     """Try acquiring a GatewayLock in a subprocess (must be module-level for Windows)."""
-    from gateway.gateway_lock import GatewayLock
+    from agent_gateway.gateway_lock import GatewayLock
 
     _lock = GatewayLock(Path(workspace_str))
     result = _lock.acquire(timeout=0.5)
@@ -126,7 +126,7 @@ def _hold_gateway_lock(
             parent never sets ``release_event``; tests that wait for a timed
             release rely on it.
     """
-    from gateway.gateway_lock import GatewayLock
+    from agent_gateway.gateway_lock import GatewayLock
 
     lock = GatewayLock(Path(workspace_str))
     ok = lock.acquire(timeout=5.0)
@@ -140,7 +140,7 @@ def _concurrent_stale_takeover(
     workspace_str: str, result_queue, hold_seconds: float = 3.0
 ) -> None:
     """Race two processes for a stale GatewayLock (module-level for Windows spawn)."""
-    from gateway.gateway_lock import GatewayLock
+    from agent_gateway.gateway_lock import GatewayLock
 
     lock = GatewayLock(Path(workspace_str))
     ok = lock.acquire(timeout=1.5)
@@ -1561,7 +1561,7 @@ class TestGatewayLock:
     @staticmethod
     def test_acquire_and_release(tmp_path):
         """Acquire writes our pid; release clears it but keeps the file."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock = GatewayLock(tmp_path)
         assert lock.acquire(timeout=1.0) is True
@@ -1579,7 +1579,7 @@ class TestGatewayLock:
     @staticmethod
     def test_reacquire_after_release(tmp_path):
         """A released lock can be re-acquired immediately."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock = GatewayLock(tmp_path)
         assert lock.acquire(timeout=1.0) is True
@@ -1590,7 +1590,7 @@ class TestGatewayLock:
     @staticmethod
     def test_second_acquire_fails_while_live(tmp_path):
         """A lock held by a LIVE foreign process refuses a second acquire."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1627,7 +1627,7 @@ class TestGatewayLock:
         """
         import multiprocessing
 
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         # Seed a stale lock file (holder PID dead, no OS lock held).
         (tmp_path / ".gateway.lock").write_text(
@@ -1672,7 +1672,7 @@ class TestGatewayLock:
         os.execv, reusing the same PID; the fresh process must be allowed to
         acquire the lock left behind by its previous image.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         (tmp_path / ".gateway.lock").write_text(
             json.dumps(
@@ -1696,7 +1696,7 @@ class TestGatewayLock:
     @staticmethod
     def test_takeover_when_holder_dead(tmp_path):
         """A lock held by a DEAD pid is taken over without waiting."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         (tmp_path / ".gateway.lock").write_text(
             json.dumps(
@@ -1720,7 +1720,7 @@ class TestGatewayLock:
     @staticmethod
     def test_acquire_waits_for_release(tmp_path):
         """Acquire waits (up to timeout) for a foreign live holder to exit."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1750,7 +1750,7 @@ class TestGatewayLock:
     @staticmethod
     def test_find_holder_live_and_dead(tmp_path):
         """find_holder reports None for dead pid or live pid without OS lock."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock_path = tmp_path / ".gateway.lock"
         # Dead pid -> no holder.
@@ -1786,7 +1786,7 @@ class TestGatewayLock:
         A subprocess acquires the GatewayLock (writes its PID + holds the OS
         lock); the main process then calls find_holder and must see the holder.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1817,7 +1817,7 @@ class TestGatewayLock:
         process: the OS lock is released, so preflight must NOT report a
         holder despite the stale metadata showing a live PID.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         # Stale metadata: crashed Gateway's PID happens to match a live process.
         (tmp_path / ".gateway.lock").write_text(
@@ -1838,7 +1838,7 @@ class TestGatewayLock:
         """A second PROCESS cannot acquire the same workspace lock."""
         import multiprocessing
 
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock = GatewayLock(tmp_path)
         assert lock.acquire(timeout=1.0) is True
@@ -1870,7 +1870,7 @@ class TestGatewayLock:
         hand-edited or partially written holder file would crash the desktop
         preflight. Mirrors Electron's ``Number(data.pid) || 0`` tolerance.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock_path = tmp_path / ".gateway.lock"
         for bad_pid in ("abc", "12.5", [1], {"x": 1}):
@@ -1894,7 +1894,7 @@ class TestGatewayLock:
         pid="abc": the AlreadyLocked branch must treat it as an unknown
         holder and time out instead of propagating ValueError.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1941,7 +1941,7 @@ class TestGatewayLock:
 
         repo_root = Path(__file__).resolve().parents[2]
         code = (
-            "import sys; import gateway.gateway_lock; "
+            "import sys; import agent_gateway.gateway_lock; "
             "sys.exit(0 if 'jiuwenswarm.instance_manager' not in sys.modules "
             "else 1)"
         )
@@ -1956,7 +1956,7 @@ class TestGatewayLock:
             cwd=str(repo_root),
         )
         assert result.returncode == 0, (
-            "gateway.gateway_lock must not load jiuwenswarm.instance_manager: "
+            "agent_gateway.gateway_lock must not load jiuwenswarm.instance_manager: "
             f"{result.stderr.strip()}"
         )
 

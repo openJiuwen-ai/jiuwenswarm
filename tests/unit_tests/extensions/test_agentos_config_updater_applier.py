@@ -6,7 +6,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
-from gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier
+from agent_gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier
 
 
 @dataclass

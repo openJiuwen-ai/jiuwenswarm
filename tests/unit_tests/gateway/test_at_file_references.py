@@ -3,7 +3,7 @@
 import os
 import tempfile
 
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 class TestResolveAtFileReferences:

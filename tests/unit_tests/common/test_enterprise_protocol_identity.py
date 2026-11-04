@@ -18,7 +18,7 @@ def test_rpc_members_share_identity_across_protocol_consumers(name):
 
 @pytest.mark.asyncio
 async def test_application_plugin_awaits_host_attachment_persistence():
-    from gateway.extensions.sdk import ApplicationPluginServices
+    from agent_gateway.extensions.sdk import ApplicationPluginServices
     from jiuwenswarm.extensions.sdk import ApplicationPluginServices as LegacyServices
 
     assert LegacyServices is ApplicationPluginServices

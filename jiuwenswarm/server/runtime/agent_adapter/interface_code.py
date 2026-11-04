@@ -55,6 +55,7 @@ from openjiuwen.harness.tools import (
     is_paid_search_enabled,
 )
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
+from agent_gateway.common.mode_matrix import supports_single_agent_permission_profile
 
 from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
@@ -135,7 +136,6 @@ from jiuwenswarm.common.task_loop_config import (
 from jiuwenswarm.common.runtime_workspace import (
     resolve_runtime_workspace_paths, resolve_bound_runtime_workspace_paths,
 )
-from gateway.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PermissionRailGroup,
 )

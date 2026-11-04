@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
-
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.foundation.llm import (
     AssistantMessage, ModelClientConfig, ModelRequestConfig, ToolCall, ToolMessage, UserMessage,
@@ -31,6 +30,9 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness import DeepAgent, create_deep_agent
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from openjiuwen.harness.schema.state import DeepAgentState, PlanModeState
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion, topic_controls
@@ -38,9 +40,6 @@ from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import P
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -49,6 +48,28 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 from jiuwenswarm.server.runtime.session import session_history
 
 SESSION = "web_suggestion_session"
+
+
+def test_current_suggestions_recovers_only_latest_unconsumed_candidates(tmp_path, monkeypatch) -> None:
+    store = TopicStarterStore(tmp_path / "recovery.db")
+    monkeypatch.setattr(prompt_suggestion, "consent_epoch", lambda: 0.0)
+    monkeypatch.setattr(prompt_suggestion, "_latest_completed_request", lambda session_id: "request-1")
+    candidate = {"session_id": SESSION, "request_id": "request-1", "suggestion_id": "a" * 32,
+                 "text": "Compare these options", "outcome": "candidate"}
+    row = {"session_id": SESSION, "slate_id": "prompt-suggestion:request-1",
+           "topic_id": "prompt-suggestion:" + "a" * 32, "policy_id": POLICY_ID,
+           "event_type": "prompt_suggestion_generation", "created_at": 10.0, "payload": candidate}
+    assert store.record_event(row)
+    response = prompt_suggestion.current_suggestions(store, SESSION)
+    assert response["enabled"] is True
+    assert response["suggestions"][0]["text"] == "Compare these options"
+    assert prompt_suggestion.current_suggestions(store, "other-session")["suggestions"] == []
+    assert store.record_event({**row, "event_type": "prompt_suggestion_ignored"})
+    assert prompt_suggestion.current_suggestions(store, SESSION)["suggestions"] == []
+    monkeypatch.setattr(prompt_suggestion, "_latest_completed_request", lambda session_id: "request-2")
+    assert prompt_suggestion.current_suggestions(store, SESSION)["suggestions"] == []
+    monkeypatch.setattr(prompt_suggestion, "consent_epoch", lambda: None)
+    assert prompt_suggestion.current_suggestions(store, SESSION) == {"enabled": False, "suggestions": []}
 
 
 def _usage(prompt: int, cached: int, completion: int) -> UsageMetadata:
@@ -752,7 +773,7 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.models import E2AResponse
-    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     server = AgentWebSocketServer()

@@ -173,4 +173,23 @@ foundation `5c5b09d468e2132a91aa091057bd8e74892ca363`，本轮八个文件定向
 
 ## 遗留与重验条件
 
+原 PR 新增修复推送为 `7e01951bff54f0f82b4065cdb965c6e6b8d00ed5` 后，远端主干继续
+推进至 `5111fbffbf8e83e5a7371689956de0e52d1e3209`，并已拆出 `agent_gateway` 独立依赖。
+此次合入仅两个生成索引冲突，按当前同步工具重建，保留 Gateway 迁移、协议更新及 Team
+显示身份修复。Worker 入口、服务收尾与 IPC 文件相对上述修复提交未变化，AgentServer
+保留相同的启动任务收尾修复。固定 WHL 仍是前述 `b9f5d8a5`，未追随移动主干重打包。
+
+合入后定向复验为 314 passed，Electron 为 99 passed、1 skipped；AgentServer 加载中和
+就绪后的两次源码真实控制台中断均确认 Worker 退出 0、无残留和原有清理异常。没有重复
+已经验证且合入未改变的长时间 IPC 卡顿故障计时用例，其 331 passed、3 skipped 结果仍
+限定为合入前 `7e01951bf` 候选。
+
+本轮还发现主干声明的 `agent-gateway @ develop` 未进入 `uv.lock`。正常 `uv sync --locked`
+解析其当前提交 `a9e4d447033f0eadf5e8583c06cfb8993e01e539` 时，与根项目的 Core 引用
+产生 `4dbaa84c` / `c8c621b` URL 冲突。独立未修改 `5111fbffb` checkout 执行相同安装
+命令复现同一错误，PR 的依赖声明及 uv 配置与该基线一致。本次不改动这些依赖引用；合入
+验证环境先消费主干冻结锁文件，再以 `--no-deps` 补装该 Gateway 明确提交。实际 Core 为
+`c8c621b`、protocol 为 `cbbadde9`、foundation 为 `d4a8761c`。这是明示的验证补充条件，
+不能把上述通过结果解释为原始 locked 安装已修复或原生平台、云端 CodeCheck 已验收。
+
 原生 DMG/EXE 的真实打包退出及升级，需要对应平台使用该 PR 当前提交构建后复验。#5964 原机器的物理内存/SDK 初始化触发原因仍需要同进程时间线与系统事件证据；本修复覆盖已复现的日志 sink 阻塞风险和不可自行恢复的状态机。

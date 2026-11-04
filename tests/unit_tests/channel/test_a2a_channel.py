@@ -3,7 +3,7 @@ import time
 import pytest
 from openjiuwen_protocol.message import EventType, Message
 
-from gateway.channel_manager.protocol.a2a.a2a_connect import (
+from agent_gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2A_THOUGHT_METADATA_KEY,
     A2AChannel,
     A2AChannelConfig,
@@ -251,7 +251,7 @@ async def test_executor_empty_query_emits_failed_task_lifecycle():
     pytest.importorskip("a2a.types")
     from a2a.types import Message, Part, Role, Task, TaskState, TaskStatusUpdateEvent
 
-    from gateway.channel_manager.protocol.a2a.a2a_connect import _A2AAgentExecutor
+    from agent_gateway.channel_manager.protocol.a2a.a2a_connect import _A2AAgentExecutor
 
     class MockEventQueue:
         def __init__(self) -> None:

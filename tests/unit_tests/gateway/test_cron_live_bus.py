@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from starlette.responses import JSONResponse
 
-from gateway.cron.live_bus import CronLiveBus
+from agent_gateway.cron.live_bus import CronLiveBus
 
 
 def test_late_subscriber_replays_cron_final() -> None:
@@ -30,14 +30,14 @@ def test_late_subscriber_replays_cron_final() -> None:
 
 
 def test_http_stream_marks_replay_but_not_new_frames(monkeypatch) -> None:
-    from gateway.channel_manager.web.web_http_routes import register_web_http_api_routes
+    from agent_gateway.channel_manager.web.web_http_routes import register_web_http_api_routes
 
     async def _run() -> None:
         bus = CronLiveBus()
-        monkeypatch.setattr("gateway.cron.live_bus._redis_client", lambda: None)
-        monkeypatch.setattr("gateway.cron.live_bus.cron_live_bus", bus)
+        monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: None)
+        monkeypatch.setattr("agent_gateway.cron.live_bus.cron_live_bus", bus)
         lookup = AsyncMock(return_value=JSONResponse({"ok": True, "data": {"cron_id": "job"}}))
-        monkeypatch.setattr("gateway.channel_manager.web.web_http_routes._unary", lookup)
+        monkeypatch.setattr("agent_gateway.channel_manager.web.web_http_routes._unary", lookup)
         app = FastAPI()
         channel = object()
         register_web_http_api_routes(app, channel, enterprise=True)
@@ -81,13 +81,13 @@ def test_replay_marker_does_not_leak_into_live_fanout_or_stored_frames() -> None
 
 
 def test_redis_backlog_also_marks_replayed_frames(monkeypatch) -> None:
-    from gateway.cron.live_bus import _encode_wire
+    from agent_gateway.cron.live_bus import _encode_wire
 
     async def _run() -> None:
         frame = {"event": "chat.final", "payload": {"content": "remote answer", "live_seq": 7}}
         client = AsyncMock()
         client.lrange.return_value = [_encode_wire(origin="other-pod", frame=frame)]
-        monkeypatch.setattr("gateway.cron.live_bus._redis_client", lambda: client)
+        monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: client)
         bus = CronLiveBus()
         queue = asyncio.Queue()
         await bus._redis_replay_into("cron_remote_replay", queue)

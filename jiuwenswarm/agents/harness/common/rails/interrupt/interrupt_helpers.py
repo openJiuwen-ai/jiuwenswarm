@@ -19,7 +19,7 @@ from copy import deepcopy
 
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 
-from gateway.common.interrupt_resume import answers_paused_calls
+from agent_gateway.common.interrupt_resume import answers_paused_calls
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,

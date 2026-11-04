@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 

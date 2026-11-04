@@ -11,11 +11,11 @@ from openjiuwen_protocol.cron_models import (
     CronTarget as _ProtocolCronTarget,
     CronTargetChannel,
 )
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
 )
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     deprecate_mode,
@@ -558,7 +558,7 @@ class CronJob(_ProtocolCronJob):
         selection_raw = data.get("model_selection")
         job_model_selection = None
         if isinstance(selection_raw, dict):
-            from gateway.common.model_selection import ModelSelection
+            from agent_gateway.common.model_selection import ModelSelection
             job_model_selection = ModelSelection.model_validate(selection_raw).model_dump()
         # mcp：老数据兜底（无 mcp 字段 → None，行为与改造前一致）
         job_mcp = normalize_cron_job_mcp(data.get("mcp", None))

@@ -18,6 +18,10 @@ import {
   type TeamMemberLaneModel,
 } from './teamTrajectoryLanes';
 import {
+  groupTeamMemberLanesByWorkflowRun,
+  type WorkflowRunLaneSummary,
+} from './teamTrajectoryWorkflowGroups';
+import {
   buildScheduledTeamLaneSections,
   scheduledMemberDisplayName,
   type ScheduledReviewerLane,
@@ -41,6 +45,13 @@ export interface TeamTrajectoryWorkspaceProps {
   active: boolean;
   groups: TrajectorySubjectGroups;
   messages?: Partial<Record<TrajectoryKey, string>>;
+  /**
+   * Swarmflow run summaries from the session store. Lanes whose member name
+   * opens with a run slug collapse into one collapsible group per run, headed
+   * by the run's task name; absent summaries still group by the untracked
+   * `wf-<12hex>` member-name pattern.
+   */
+  workflowRuns?: readonly WorkflowRunLaneSummary[];
   /** Currently expanded member subject id, or `null` when every lane is collapsed. */
   selectedSubjectId: string | null;
   onSelectSubject: (subjectId: string | null) => void;
@@ -209,6 +220,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   active,
   groups,
   messages,
+  workflowRuns,
   selectedSubjectId,
   onSelectSubject,
   memberView,
@@ -238,6 +250,13 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     ),
     [flatLanes, laneSections],
   );
+  // Swarmflow worker lanes collapse into one collapsible group per run,
+  // headed by the run's task name. Scheduled control sessions keep their own
+  // lane sections instead, so grouping only feeds the plain lanes branch.
+  const { ungrouped, groups: workflowGroups } = groupTeamMemberLanesByWorkflowRun(
+    flatLanes,
+    workflowRuns ?? [],
+  );
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
   const [actualDuration, setActualDuration] = useState(false);
   const [actualTime, setActualTime] = useState(false);
@@ -248,6 +267,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const laneRowsRef = useRef(new Map<string, HTMLDivElement>());
   const [pinToken, setPinToken] = useState(0);
   const [collapsedTasks, setCollapsedTasks] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
   const localViewState = useMemo<TrajectoryViewState>(() => ({
     actualDuration,
     actualTime,
@@ -379,6 +399,67 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     );
   };
 
+  const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
+    // The selected member's group stays expanded so its lane never disappears
+    // behind a collapse the toggle cannot undo.
+    const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
+    const expanded = expandedGroups.has(group.runId) || selected;
+    const toggle = () => {
+      setExpandedGroups((current) => {
+        const next = new Set(current);
+        if (next.has(group.runId)) next.delete(group.runId);
+        else next.add(group.runId);
+        return next;
+      });
+    };
+    return (
+      <div
+        key={group.runId}
+        role="listitem"
+        className={`${css.workflowGroup} ${selected ? css.workflowGroupSelected : ''}`}
+        data-testid="team-trajectory-workflow-group"
+        data-variant={group.runId}
+        data-status={group.status}
+      >
+        <button
+          type="button"
+          className={css.workflowGroupHeader}
+          aria-expanded={expanded}
+          aria-label={t('trajectory.team.workflowGroupAria', {
+            name: group.name,
+            count: group.lanes.length,
+          })}
+          title={group.runId}
+          data-testid="team-trajectory-workflow-group-header"
+          data-variant={group.runId}
+          onClick={toggle}
+        >
+          <span className={`${css.statusDot} ${css[`status_${group.status}`]}`} aria-hidden="true" />
+          <span className={css.workflowGroupName} title={group.name}>{group.name}</span>
+          <span className={css.workflowGroupShortId}>{group.shortId}</span>
+          <span
+            className={css.workflowGroupCount}
+            data-testid="team-trajectory-workflow-group-count"
+            data-variant={group.runId}
+          >
+            {t('trajectory.team.workflowGroupOperators', { count: group.lanes.length })}
+          </span>
+          <span
+            className={`${css.chevron} ${expanded ? css.chevronExpanded : ''}`}
+            aria-hidden="true"
+          >
+            {'>'}
+          </span>
+        </button>
+        {expanded ? (
+          <div className={css.workflowGroupLanes} role="list">
+            {group.lanes.map(renderLane)}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div
       className={`${css.root} jiuwenTrajectoryTheme`}
@@ -447,7 +528,10 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
             )}
           </>
         ) : (
-          flatLanes.map(renderLane)
+          <>
+            {ungrouped.map(renderLane)}
+            {workflowGroups.map(renderWorkflowGroup)}
+          </>
         )}
       </div>
     </div>

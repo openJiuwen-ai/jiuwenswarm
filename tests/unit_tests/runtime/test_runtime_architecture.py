@@ -16,15 +16,15 @@ PROJECT_ROOT = Path(__file__).parents[3]
 # 无状态共享件以 gateway 为唯一真源，runtime 允许引用；其余 gateway 子包属传输层。
 # 扩展治理层 registry/manager/loader 同为单份实现（进程内单例，双份会状态分裂）。
 ALLOWED_IMPORT_PREFIXES = (
-    "gateway.common",
-    "gateway.extensions.registry",
-    "gateway.extensions.manager",
-    "gateway.extensions.loader",
-    "gateway.extensions.sdk",
-    "gateway.extensions.types",
-    "gateway.extensions.callback_compat",
+    "agent_gateway.common",
+    "agent_gateway.extensions.registry",
+    "agent_gateway.extensions.manager",
+    "agent_gateway.extensions.loader",
+    "agent_gateway.extensions.sdk",
+    "agent_gateway.extensions.types",
+    "agent_gateway.extensions.callback_compat",
 )
-ALLOWED_IMPORT_MODULES = ("gateway", "gateway.extensions")
+ALLOWED_IMPORT_MODULES = ("gateway", "agent_gateway.extensions")
 FORBIDDEN_IMPORT_PREFIXES = (
     "gateway",
     "jiuwenswarm.server.agent_ws_server",
@@ -154,14 +154,14 @@ from jiuwenswarm.runtime import AgentRuntime
 
 ALLOWED = (
     'gateway',
-    'gateway.extensions',
-    'gateway.common',
-    'gateway.extensions.registry',
-    'gateway.extensions.manager',
-    'gateway.extensions.loader',
-    'gateway.extensions.sdk',
-    'gateway.extensions.types',
-    'gateway.extensions.callback_compat',
+    'agent_gateway.extensions',
+    'agent_gateway.common',
+    'agent_gateway.extensions.registry',
+    'agent_gateway.extensions.manager',
+    'agent_gateway.extensions.loader',
+    'agent_gateway.extensions.sdk',
+    'agent_gateway.extensions.types',
+    'agent_gateway.extensions.callback_compat',
 )
 
 def _is_transport(name):

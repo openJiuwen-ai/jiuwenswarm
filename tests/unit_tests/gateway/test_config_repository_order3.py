@@ -8,27 +8,27 @@ from typing import Any
 
 import pytest
 
-from gateway.config.channel.access import (
+from agent_gateway.config.channel.access import (
     clear_channel_config_repository,
     get_channel_config_repository,
 )
-from gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
-from gateway.config.logging.access import (
+from agent_gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
+from agent_gateway.config.logging.access import (
     clear_logging_config_repository,
     get_logging_config_repository,
 )
-from gateway.config.permissions.access import (
+from agent_gateway.config.permissions.access import (
     clear_permissions_config_repository,
     get_permissions_config_repository,
 )
-from gateway.routing.session_map_access import (
+from agent_gateway.routing.session_map_access import (
     clear_session_map_repository,
     get_session_map_repository,
 )
-from gateway.storage.access import clear_persistent_store, get_persistent_store
-from gateway.storage.backends.memory_ephemeral import MemoryEphemeralBackend
-from gateway.storage.context import StorageContext
-from gateway.storage_assembly.setup import (
+from agent_gateway.storage.access import clear_persistent_store, get_persistent_store
+from agent_gateway.storage.backends.memory_ephemeral import MemoryEphemeralBackend
+from agent_gateway.storage.context import StorageContext
+from agent_gateway.storage_assembly.setup import (
     create_channel_config_repository,
     create_enterprise_record_repositories,
     create_logging_config_repository,
@@ -177,7 +177,7 @@ async def test_setup_wires_and_teardown(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("GATEWAY_SESSION_MAP_REPOSITORY", raising=False)
     ctx = _test_ctx()
     monkeypatch.setattr(
-        "gateway.storage_assembly.setup.create_gateway_storage_context",
+        "agent_gateway.storage_assembly.setup.create_gateway_storage_context",
         lambda cfg=None: ctx,
     )
     wired = await setup_gateway_storage_repositories({})
@@ -214,7 +214,7 @@ async def test_start_gateway_storage_skips_personal(
         return _test_ctx()
 
     monkeypatch.setattr(
-        "gateway.storage_assembly.setup.setup_gateway_storage_repositories",
+        "agent_gateway.storage_assembly.setup.setup_gateway_storage_repositories",
         _setup,
     )
     assert await start_gateway_storage({}) is None
@@ -232,7 +232,7 @@ async def test_start_gateway_storage_wires_enterprise(
     monkeypatch.delenv("GATEWAY_SESSION_MAP_REPOSITORY", raising=False)
     ctx = _test_ctx()
     monkeypatch.setattr(
-        "gateway.storage_assembly.setup.create_gateway_storage_context",
+        "agent_gateway.storage_assembly.setup.create_gateway_storage_context",
         lambda cfg=None: ctx,
     )
     wired = await start_gateway_storage({})
@@ -243,10 +243,10 @@ async def test_start_gateway_storage_wires_enterprise(
         assert get_logging_config_repository() is not None
         assert get_session_map_repository() is not None
         assert get_persistent_store() is not None
-        from gateway.config.enterprise.access import (
+        from agent_gateway.config.enterprise.access import (
             get_enterprise_record_repository,
         )
-        from gateway.config.memory.access import (
+        from agent_gateway.config.memory.access import (
             get_memory_config_repository,
         )
 
@@ -258,7 +258,7 @@ async def test_start_gateway_storage_wires_enterprise(
 
 
 def test_enterprise_schema_catalogue_covers_audit_and_tenant_cron() -> None:
-    from gateway.config.enterprise.tables.table_init import ALL_TABLE_DEFINITIONS
+    from agent_gateway.config.enterprise.tables.table_init import ALL_TABLE_DEFINITIONS
 
     definitions = {table.table_name: table for table in ALL_TABLE_DEFINITIONS}
     assert "audit_log_config" in definitions
@@ -271,7 +271,7 @@ def test_enterprise_schema_catalogue_covers_audit_and_tenant_cron() -> None:
 async def test_gateway_startup_does_not_load_execution_memory(monkeypatch):
     import builtins
 
-    from gateway.storage_assembly.setup import wire_enterprise_persistent_repositories_async
+    from agent_gateway.storage_assembly.setup import wire_enterprise_persistent_repositories_async
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.delenv("GATEWAY_STORAGE_REPOSITORIES", raising=False)
@@ -288,7 +288,7 @@ async def test_gateway_startup_does_not_load_execution_memory(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", reject_execution_memory)
     ctx = _test_ctx()
     monkeypatch.setattr(
-        "gateway.storage_assembly.setup.create_gateway_storage_context",
+        "agent_gateway.storage_assembly.setup.create_gateway_storage_context",
         lambda cfg=None: ctx,
     )
     wired = await setup_gateway_storage_repositories({})

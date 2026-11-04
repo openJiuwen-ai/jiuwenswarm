@@ -27,7 +27,7 @@ from openjiuwen.core.foundation.tool import ClientToolResult
 from openjiuwen.core.single_agent.interrupt import InterruptKind
 from pydantic import ValidationError
 
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from jiuwenswarm.common.schema.message import EventType
 
 

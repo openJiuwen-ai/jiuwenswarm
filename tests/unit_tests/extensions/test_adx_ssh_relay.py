@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway.extensions.adx.config import load_router_config
-from gateway.extensions.adx.extension import AdxRouter
-from gateway.extensions.adx.ssh_relay import AdxSshRelay
+from agent_gateway.extensions.adx.config import load_router_config
+from agent_gateway.extensions.adx.extension import AdxRouter
+from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 
 
 def settings(monkeypatch, tmp_path):
@@ -42,7 +42,7 @@ class Writer:
 
 @pytest.mark.asyncio
 async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monkeypatch,tmp_path):
-    import gateway.extensions.adx.ssh_relay as module
+    import agent_gateway.extensions.adx.ssh_relay as module
     config=settings(monkeypatch,tmp_path)
     relay=AdxSshRelay(config)
     monkeypatch.setattr(relay,'_resolve_client_keys',lambda user:['unit-key'])
@@ -64,7 +64,7 @@ async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monk
 
 @pytest.mark.asyncio
 async def test_ssh_connect_uses_pinned_host_and_closes_both_pumps(monkeypatch,tmp_path):
-    import gateway.extensions.adx.ssh_relay as module
+    import agent_gateway.extensions.adx.ssh_relay as module
     config=settings(monkeypatch,tmp_path);relay=AdxSshRelay(config)
     monkeypatch.setattr(relay,'_resolve_client_keys',lambda user:['unit-key'])
     ingress_reader=asyncio.StreamReader();ingress_reader.feed_data(b'HTTP/1.1 200 OK\r\n\r\n')
@@ -102,7 +102,7 @@ async def test_ssh_rejects_unpinned_hosts_and_header_injection(monkeypatch,tmp_p
 
 
 def test_adx_extension_delegates_third_party_and_key_issuer(monkeypatch,tmp_path):
-    import gateway.extensions.adx.extension as module
+    import agent_gateway.extensions.adx.extension as module
     router=Mock()
     monkeypatch.setattr(module,'AdxRouterClient',lambda *args,**kwargs:router)
     extension=AdxRouter(settings(monkeypatch,tmp_path))
@@ -113,7 +113,7 @@ def test_adx_extension_delegates_third_party_and_key_issuer(monkeypatch,tmp_path
 
 @pytest.mark.asyncio
 async def test_restart_policy_and_rootfs_mounts_are_forwarded_only_when_configured(monkeypatch,tmp_path):
-    from gateway.extensions.adx.control_client import AdxControlClient
+    from agent_gateway.extensions.adx.control_client import AdxControlClient
     policy={'maxAttempts':3,'initialBackoffSeconds':1,'maxBackoffSeconds':5}
     config=replace(settings(monkeypatch,tmp_path),restart_policy=policy)
     control=AdxControlClient(config)
@@ -133,8 +133,8 @@ async def test_restart_policy_and_rootfs_mounts_are_forwarded_only_when_configur
 @pytest.mark.asyncio
 async def test_delete_evidence_requires_acknowledged_native_response(monkeypatch,tmp_path,caplog):
     import httpx
-    from gateway.extensions.adx.control_client import AdxControlClient,AdxControlError
-    from gateway.extensions.adx.control_client import logger
+    from agent_gateway.extensions.adx.control_client import AdxControlClient,AdxControlError
+    from agent_gateway.extensions.adx.control_client import logger
     caplog.set_level('INFO',logger=logger.name)
     # The full suite configures non-propagating application loggers.
     monkeypatch.setattr(logger,'handlers',[caplog.handler])
@@ -163,8 +163,8 @@ async def test_delete_evidence_requires_acknowledged_native_response(monkeypatch
 
 @pytest.mark.asyncio
 async def test_authenticated_switch_waits_for_background_ssh_setup(monkeypatch, tmp_path):
-    from gateway.extensions.adx.router_client import AdxRouterClient
-    from gateway.extensions.agentos.agentos_router.config import load_ssh_channel_endpoint
+    from agent_gateway.extensions.adx.router_client import AdxRouterClient
+    from agent_gateway.extensions.agentos.agentos_router.config import load_ssh_channel_endpoint
 
     config = settings(monkeypatch, tmp_path)
     endpoint = load_ssh_channel_endpoint({'channels': {'ssh': {
