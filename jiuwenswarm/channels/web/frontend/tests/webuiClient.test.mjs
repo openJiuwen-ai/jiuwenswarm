@@ -15,10 +15,10 @@ const websocket = { type: 'websocket', source: { key: 'record', path: ['credenti
   target: { location: 'message', path: ['request_context', 'headers', 'Authorization'], prefix: 'Bearer ' } };
 const declarations = (bindings = [http, websocket], id = 'gateway-one') => ({ clientProtocolVersion: 1,
   gatewayInstanceId: id, connectionEpoch: 'connection-1', packages: [
-    { packageId: 'pkg.one', activationGeneration: 'generation-1', grants: ['local_storage.write', 'request.bind.gateway'], requestBindings: bindings },
-    { packageId: 'pkg.two', activationGeneration: 'generation-2', grants: ['local_storage.write'], requestBindings: [] },
+    { packageId: 'pkg.one', activationGeneration: 'generation-1', requestBindings: bindings },
+    { packageId: 'pkg.two', activationGeneration: 'generation-2', requestBindings: [] },
   ] });
-const operation = (value, extra = {}) => ({ clientProtocolVersion: 1, operation_id: 'op', invocation_id: 'control-request',
+const operation = (value, extra = {}) => ({ clientProtocolVersion: 1, invocation_id: 'control-request',
   connection_epoch: 'connection-1', package_id: 'pkg.one', activation_generation: 'generation-1',
   method: 'local_storage.set', params: { key: 'record', value }, deadline: Date.now() + 30_000, ...extra });
 async function setup(bindings = [http, websocket], options = {}) {
@@ -76,15 +76,12 @@ test('finite JSON, key/size/depth limits and native storage failures never chang
   assert.deepEqual([...app.storage.data], before);
 });
 
-test('rejects missing grants, stale packages/connections, unknown methods, and expired commands', async () => {
+test('rejects stale packages/connections, unknown methods, and expired commands', async () => {
   const app = await setup([]);
   for (const change of [{ package_id: 'other' }, { activation_generation: 'old' }, { connection_epoch: 'old' },
     { method: 'local_storage.clear' }, { deadline: Date.now() - 1 }, { params: { key: 'x', value: 1, extra: true } }]) {
     assert.equal(app.host.acceptOperation(operation('x', change)), false);
   }
-  const snapshot = declarations([]); snapshot.packages[0].grants = [];
-  app.host.configure(snapshot);
-  assert.equal(app.host.acceptOperation(operation('x')), false);
   assert.equal(app.storage.data.size, 0);
 });
 
@@ -363,7 +360,7 @@ const turn = () => new Promise((resolve) => setImmediate(resolve));
 const reloadOperation = (extra = {}) => operation(undefined, { method: 'page.reload', params: {}, ...extra });
 async function setupReload(options = {}) {
   const app = await setup([], options);
-  const snapshot = declarations([]); snapshot.packages[0].grants.push('page.reload');
+  const snapshot = declarations([]);
   app.host.configure(snapshot); await Promise.resolve();
   return { ...app, snapshot };
 }
@@ -392,15 +389,13 @@ test('page reload runs immediately after storage without waiting for the invocat
   assert.deepEqual(stored, [JSON.stringify({ credential: 'persisted' })]);
 });
 
-test('page reload requires its own grant, an available host action, empty parameters and current ownership', async () => {
+test('page reload requires an available host action, empty parameters and current ownership', async () => {
   let reloads = 0;
   const app = await setupReload({ reloadPage: () => { reloads++; } });
   for (const extra of [{ package_id: 'unknown' }, { activation_generation: 'old' }, { connection_epoch: 'old' },
     { params: { key: 'record' } }, { deadline: Date.now() - 1 }, { extra: true }]) {
     assert.equal(app.host.acceptOperation(reloadOperation(extra)), false);
   }
-  const noGrant = await setup([], { reloadPage: () => { reloads++; } });
-  assert.equal(noGrant.host.acceptOperation(reloadOperation()), false);
   const noAction = await setupReload();
   assert.equal(noAction.host.acceptOperation(reloadOperation()), false);
   assert.equal(noAction.host.getError(), 'CAPABILITY_UNAVAILABLE');
