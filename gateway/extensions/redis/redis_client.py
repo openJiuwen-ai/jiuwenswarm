@@ -21,7 +21,7 @@ def _require_redis_async() -> Any:
         import redis.asyncio as redis_async  # noqa: PLC0415
     except ImportError as e:
         raise ImportError(
-            "分布式网关需要 Redis 异步客户端。请安装可选依赖：pip install 'jiuwenswarm[redis]' "
+            "分布式网关需要 Redis 异步客户端。请安装可选依赖：pip install 'jiuwenswarm-gateway[redis]' "
             "或 pip install 'redis>=5.0.0'"
         ) from e
     return redis_async

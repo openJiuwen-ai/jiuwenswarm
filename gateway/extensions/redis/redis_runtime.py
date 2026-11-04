@@ -194,7 +194,7 @@ async def init_gateway_redis_from_config(full_cfg: dict[str, Any] | None) -> Non
         await client.open()
     except ImportError:
         logger.exception(
-            "[GatewayRedis] Redis package missing; install optional extra redis (e.g. pip install 'jiuwenswarm[redis]')"
+            "[GatewayRedis] Redis package missing; install optional extra redis (e.g. pip install 'jiuwenswarm-gateway[redis]')"
         )
         await client.close()
         _effective_distributed_redis = False
