@@ -285,6 +285,7 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
                 "client_provider": "OpenAI",
                 "api_key": SECRET,
                 "api_base": "https://example.invalid/v1",
+                "vendor_key": "deepseek",
             },
             "model_config_obj": {},
             "is_default": True,
@@ -295,9 +296,27 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
     catalog = web_adapter.configured_model_catalog()
 
     assert [item["model_name"] for item in catalog["models"]] == ["deepseek"]
+    assert catalog["models"][0]["vendor_key"] == "deepseek"
     assert catalog["current_selection"] == catalog["models"][0]["selection_key"]
     assert SECRET not in json.dumps(catalog)
     assert "api_base" not in json.dumps(catalog)
+
+
+def test_team_model_list_omits_placeholders_but_keeps_model_selection_indexes(monkeypatch):
+    entries = [
+        {"model_client_config": {"model_name": "your-model-name", "client_provider": "OpenAI",
+                                 "api_key": "sk-xxxxxxxxx", "api_base": "https://example.com/compatible-mode/v1"}},
+        {"model_client_config": {"model_name": "deepseek", "client_provider": "OpenAI",
+                                 "api_key": SECRET, "api_base": "https://example.invalid/v1", "vendor_key": "deepseek"}},
+    ]
+    monkeypatch.setattr("jiuwenswarm.common.config.get_default_models", lambda: entries)
+
+    catalog = web_adapter.configured_model_catalog()
+
+    assert [item["selection_key"] for item in catalog["models"]] == ["deepseek#1"]
+    assert catalog["models"][0]["vendor_key"] == "deepseek"
+    assert catalog["current_selection"] == "deepseek#1"
+    assert SECRET not in json.dumps(catalog)
 
 
 def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
