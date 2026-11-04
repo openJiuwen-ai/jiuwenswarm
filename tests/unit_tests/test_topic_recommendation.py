@@ -1914,10 +1914,11 @@ def test_recommendation_host_recovers_after_search_is_enabled(monkeypatch, tmp_p
 
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "true")
     host.ensure_services()
-    assert host.topic_service is None
+    assert isinstance(host.topic_service, TopicService)
+    service = host.topic_service
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
     host.ensure_services()
-    assert isinstance(host.topic_service, TopicService)
+    assert host.topic_service is service
     assert host.topic_prepare_service is prepare
     assert host.topic_outcome_queue is queue
     assert host.topic_service.on_prepared is not None

@@ -135,17 +135,14 @@ def background_configuration_status(
         missing = []
         context = config.context_window_tokens or 0
     engines = {
-        name: str(values.get(f"FREE_SEARCH_{name.upper()}_ENABLED") or "").strip().lower() == "true"
+        name: str(values.get(f"FREE_SEARCH_{name.upper()}_ENABLED") or "").strip().lower()
+        in {"1", "true", "yes", "on", "enabled"}
         for name in ("ddg", "bing")
     }
     # The search lane itself needs no setting: unset selects the native free-search lane. The
     # toggles below are the user-facing search switches, on the settings page.
-    _source_items = (
-        ("FREE_SEARCH_DDG_ENABLED=true", engines["ddg"]),
-        ("FREE_SEARCH_BING_ENABLED=true", engines["bing"]),
-    )
-    search_missing = [
-        setting for setting, present in _source_items if not present
+    search_missing = [] if any(engines.values()) else [
+        "FREE_SEARCH_DDG_ENABLED=true OR FREE_SEARCH_BING_ENABLED=true"
     ]
     return {
         "provider": "ark",

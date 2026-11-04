@@ -286,11 +286,9 @@ def build_openjiuwen_native_search(
 
 
 def _require_native_free_search(values: Mapping[str, str]) -> None:
-    if (
-        str(values.get("FREE_SEARCH_DDG_ENABLED") or "").strip().lower()
-        != "true"
-        or str(values.get("FREE_SEARCH_BING_ENABLED") or "").strip().lower()
-        != "true"
+    if not any(
+        str(values.get(name) or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        for name in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED")
     ):
         raise OpenJiuwenNativeSearchContractError(
             "openjiuwen_native_search_requires_free_engines"
