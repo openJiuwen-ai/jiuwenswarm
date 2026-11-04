@@ -3495,6 +3495,9 @@ function AppContent({
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
       }
+      if (pendingRuntime?.independentGitIdentity !== undefined) {
+        sessionStore.setIndependentGitIdentity(newSid, pendingRuntime.independentGitIdentity);
+      }
       const pendingDispatchMode = resolveNewSessionDispatchMode(pendingRuntime?.teamDispatchMode);
       if (pendingDispatchMode) {
         sessionStore.setTeamDispatchMode(newSid, pendingDispatchMode);
@@ -3746,6 +3749,9 @@ function AppContent({
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
+        }
+        if (newConvSwarmflow?.independentGitIdentity !== undefined) {
+          useSessionStore.getState().setIndependentGitIdentity(newSid, newConvSwarmflow.independentGitIdentity);
         }
         // 调度模式同理，且在这里落成显式值：团队按首条消息建好后就不能再改。
         const newConvDispatchMode = resolveNewSessionDispatchMode(newConvSwarmflow?.teamDispatchMode);

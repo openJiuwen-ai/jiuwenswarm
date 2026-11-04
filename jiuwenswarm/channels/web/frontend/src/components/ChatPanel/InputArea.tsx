@@ -56,6 +56,8 @@ import ChatModelSelector from './ChatModelSelector';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
+import { restoredGitIdentity, saveIndependentGitIdentity } from './executionSettings';
+import { GitIdentityOption } from './GitIdentityOption';
 import {
   markUploadDispatched,
   unmarkUploadDispatched,
@@ -1652,6 +1654,51 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
+
+  const independentGitIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.independentGitIdentity ?? false,
+  );
+  const gitIdentitySessionRef = useRef(activeSessionId);
+  gitIdentitySessionRef.current = activeSessionId;
+  const [gitIdentityPending, setGitIdentityPending] = useState(false);
+  const [gitIdentityError, setGitIdentityError] = useState(false);
+  useEffect(() => { setGitIdentityError(false); }, [activeSessionId]);
+  useEffect(() => {
+    if (gitIdentityPending || !isTeamMode || workMode !== 'code' || !activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
+    let cancelled = false;
+    webRequest<{ settings: { independent_git_identity: boolean }; version: number }>('session.execution_settings', {
+      session_id: activeSessionId,
+      mode: 'team',
+    }).then((result) => {
+      if (!cancelled) {
+        const store = useSessionStore.getState();
+        const draft = store.getRuntime(activeSessionId)?.independentGitIdentity ?? false;
+        store.setIndependentGitIdentity(activeSessionId, restoredGitIdentity(result, draft));
+      }
+    }).catch(() => {
+      if (!cancelled) setGitIdentityError(true);
+    });
+    return () => { cancelled = true; };
+  }, [activeSessionId, isTeamMode, workMode, attachMenuOpen, gitIdentityPending]);
+
+  const toggleIndependentGitIdentity = async (next: boolean) => {
+    if (!activeSessionId || gitIdentityPending) return;
+    const sessionId = activeSessionId;
+    setGitIdentityError(false);
+    if (sessionId === NEW_CONVERSATION_ID) {
+      useSessionStore.getState().setIndependentGitIdentity(sessionId, next);
+      return;
+    }
+    setGitIdentityPending(true);
+    try {
+      const saved = await saveIndependentGitIdentity(webRequest, sessionId, next);
+      useSessionStore.getState().setIndependentGitIdentity(sessionId, saved.settings.independent_git_identity);
+    } catch {
+      if (gitIdentitySessionRef.current === sessionId) setGitIdentityError(true);
+    } finally {
+      setGitIdentityPending(false);
+    }
+  };
 
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
@@ -4995,6 +5042,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
+                        <GitIdentityOption
+                          visible={isTeamMode && workMode === 'code'}
+                          checked={independentGitIdentity}
+                          pending={gitIdentityPending}
+                          error={gitIdentityError}
+                          label={t('gitIdentity.label')}
+                          hint={t('gitIdentity.hint')}
+                          savingLabel={t('common.saving')}
+                          errorLabel={t('gitIdentity.error')}
+                          onChange={toggleIndependentGitIdentity}
+                        />
                         {isTeamMode && teamScheduledDispatchEnabled && (
                           <div
                             className={cx(

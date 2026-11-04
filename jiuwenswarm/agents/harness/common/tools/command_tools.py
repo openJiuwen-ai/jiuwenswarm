@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """Command execution tools implemented with openjiuwen @tool style."""
 
@@ -995,6 +995,16 @@ def _kill_drain_writers(proc: subprocess.Popen[Any], pgid: int | None) -> None:
         os.killpg(pgid, signal.SIGKILL)
 
 
+def _execution_process_environment() -> dict[str, str]:
+    """Merge the current tool overlay without mutating process-global state."""
+    from openjiuwen.core.sys_operation.execution_environment import (
+        apply_environment_overlay,
+        execution_environment_overlay,
+    )
+
+    return apply_environment_overlay(os.environ, execution_environment_overlay())
+
+
 def _run_command_sync(
     command: str,
     timeout_seconds: int,
@@ -1014,6 +1024,7 @@ def _run_command_sync(
         cwd=str(workdir),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=_execution_process_environment(),
         **popen_kw,
     )
     sid = (session_id or "").strip()
@@ -1128,6 +1139,7 @@ def _run_command_background(
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=_execution_process_environment(),
         **popen_kw,
     )
     try:
@@ -1173,6 +1185,8 @@ async def _run_command_in_bound_sandbox(
     shell_type: str,
     background: bool,
 ) -> str:
+    from openjiuwen.core.sys_operation.execution_environment import execution_environment_overlay
+
     fallback_reason = _sandbox_host_fallback_reason(sys_operation)
     if fallback_reason:
         return f"[ERROR]: command execution failed closed: {fallback_reason}."
@@ -1188,6 +1202,7 @@ async def _run_command_in_bound_sandbox(
             result = await execute(
                 command,
                 cwd=str(workdir),
+                environment=execution_environment_overlay(),
                 grace=5.0,
                 shell_type=shell_type,
             )
@@ -1198,6 +1213,7 @@ async def _run_command_in_bound_sandbox(
             result = await execute(
                 command,
                 cwd=str(workdir),
+                environment=execution_environment_overlay(),
                 timeout=timeout_seconds,
                 shell_type=shell_type,
             )

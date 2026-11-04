@@ -3765,6 +3765,13 @@ async def _process_team_message_stream(
             bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
         )
+        from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
+
+        await prepare_session_execution(
+            session_id,
+            team_spec,
+            params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
+        )
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",

@@ -2432,6 +2432,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
           ...(requestMetadata ? { metadata: requestMetadata } : {}),
+          ...(outgoingMode.startsWith('team') && getSessionWorkMode(sessionId) === 'code' && sessionRt?.independentGitIdentity !== undefined
+            ? { execution_settings: { independent_git_identity: sessionRt.independentGitIdentity } }
+            : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }

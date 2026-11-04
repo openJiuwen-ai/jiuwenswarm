@@ -46,6 +46,11 @@
     "refreshed": "The installation plan has changed. Review the members and confirm again.",
     "validationFailed": "SkillPack validation failed. Download it again and check its members."
   },
+  "gitIdentity": {
+    "label": "Independent Git identity",
+    "hint": "Sign Git commits with each member name and an @jiuwenswarm.com email. Changes apply to new tool calls.",
+    "error": "Settings could not be synchronized. Please retry."
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",

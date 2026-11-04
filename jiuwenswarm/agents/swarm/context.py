@@ -20,6 +20,7 @@ from typing import Any
 
 from openjiuwen.agent_teams import paths as ojw_paths
 from openjiuwen.agent_teams.schema.build_context import BuildContext
+from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment
 
 
 _heartbeat_job_service: Any | None = None
@@ -103,6 +104,24 @@ class SwarmBuildContext(BuildContext):
         the member document as the only visibility authority.
     """
 
+    async def resolve_execution_environment(self) -> ExecutionEnvironment:
+        """Read committed session policy for this member at each tool boundary."""
+        from openjiuwen.agent_teams.rails.team_context import get_team_backend
+        from jiuwenswarm.server.runtime.session.execution_settings import member_environment
+
+        backend = get_team_backend(self)
+        if not self.execution_settings_managed:
+            return ExecutionEnvironment()
+        if backend is None:
+            raise RuntimeError("Team execution environment requires a member backend")
+        if not self.mode.startswith("team"):
+            return ExecutionEnvironment()
+        current = await backend.db.session_settings.get(self.session_id)
+        if current is None:
+            raise RuntimeError("Team session execution settings are not initialized")
+        return member_environment(current["settings"], self.member_name)
+
+    execution_settings_managed: bool = False
     session_id: str = ""
     request_id: str | None = None
     user_id: str | None = None
@@ -208,6 +227,7 @@ class SwarmBuildContext(BuildContext):
             A plain mapping of serializable primitives.
         """
         return {
+            "execution_settings_managed": self.execution_settings_managed,
             "session_id": self.session_id,
             "request_id": self.request_id,
             "user_id": self.user_id,
@@ -246,6 +266,7 @@ class SwarmBuildContext(BuildContext):
             non-serializable handles sourced from the receiving process.
         """
         return cls(
+            execution_settings_managed=seed.get("execution_settings_managed", False),
             session_id=seed.get("session_id", ""),
             request_id=seed.get("request_id"),
             user_id=seed.get("user_id"),

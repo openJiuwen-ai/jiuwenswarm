@@ -30,6 +30,13 @@ PLAN_ENTRY_SOURCES: frozenset[str] = frozenset(
 """``plan_entry_source`` 字段的合法取值集合（防重入闸门只认这几种）。"""
 
 
+class ExecutionSettings(TypedDict, total=False):
+    """Initial team-session environment policy supplied by the host UI."""
+
+    independent_git_identity: bool
+    environment: dict[str, str | None]
+
+
 class ChatSendParams(TypedDict, total=False):
     """chat.send 参数契约（TypedDict，供类型标注与文档）。
 
@@ -210,6 +217,13 @@ class ChatSendParams(TypedDict, total=False):
 
     plugin_names: NotRequired[list[str]]
     """Desired plugin package names for this turn ([] clears all)."""
+
+    execution_settings: NotRequired[ExecutionSettings]
+    """Initial code-team execution policy; existing sessions use the settings RPC.
+
+    Supports independent_git_identity (bool) and environment (string/null values).
+    A later chat turn never overwrites an already committed settings record.
+    """
 
     enable_swarmflow: NotRequired[bool]
     """Whether Swarmflow is enabled for this session's Team mode.

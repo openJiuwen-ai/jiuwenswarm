@@ -706,6 +706,11 @@ export interface SessionRuntime {
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
   /**
+   * 本会话 team 成员是否使用独立 Git 身份（会话级，code 模式随 chat.send 下发）。
+   * undefined = 用户未拨过：不随请求发送，后端沿用已提交的会话设置。
+   */
+  independentGitIdentity?: boolean;
+  /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
    */
@@ -899,6 +904,7 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
+  setIndependentGitIdentity: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
@@ -2240,6 +2246,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           },
         },
       };
+    });
+  },
+
+  setIndependentGitIdentity: (sessionId, enabled) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...rt, independentGitIdentity: enabled } } };
     });
   },
 

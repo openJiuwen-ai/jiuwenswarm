@@ -46,6 +46,11 @@
     "refreshed": "安装计划已更新，请重新检查成员并确认。",
     "validationFailed": "技能包校验失败，请重新下载并检查成员状态。"
   },
+  "gitIdentity": {
+    "label": "独立 Git 身份",
+    "hint": "使用成员名称和 @jiuwenswarm.com 邮箱署名 Git 提交；切换后对新工具调用生效。",
+    "error": "设置未同步，请重试。"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",

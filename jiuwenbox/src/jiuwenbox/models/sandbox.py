@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Sandbox data models."""
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ class BackgroundExecRequest(BaseModel):
     command: list[str]
     job_id: str | None = None
     workdir: str | None = None
-    env: dict[str, str] | None = None
+    env: dict[str, str | None] | None = None
     stdin: str | None = None
     timeout_seconds: int | None = None
 
@@ -135,8 +135,8 @@ class BackgroundExecRequest(BaseModel):
     @classmethod
     def reject_reserved_environment(
         cls,
-        value: dict[str, str] | None,
-    ) -> dict[str, str] | None:
+        value: dict[str, str | None] | None,
+    ) -> dict[str, str | None] | None:
         if value is not None and SANDBOX_IP_ENV in value:
             raise ValueError(f"{SANDBOX_IP_ENV} is reserved by the sandbox runtime")
         return value
