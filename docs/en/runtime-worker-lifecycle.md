@@ -20,6 +20,13 @@ Instances sharing a data directory retain distinct endpoint and deployment ident
 python -m jiuwenswarm.server.supervisor.shutdown --shutdown-worker --timeout 30
 ```
 
+On Windows, Ctrl+C can also reach a Worker sharing the console. The Worker converts the signal into
+one task cancellation and waits for Runtime, background tasks, and in-flight IPC I/O cleanup before
+exiting. Repeated Ctrl+C does not interrupt cleanup already in progress. The launcher may return 130
+for user interruption; complete Worker shutdown still requires no cleanup errors and observed process
+exit. Ordinary Front disconnection continues to preserve a resident Worker, and OS termination cannot
+guarantee cleanup.
+
 An old Python Worker without deployment identity cannot be attributed to an installation solely from its shared interpreter. Startup isolates that old endpoint and continues, logging the old PID. After checking its interpreter, command line, installation, and data directory, an operator can select it explicitly:
 
 ```bash

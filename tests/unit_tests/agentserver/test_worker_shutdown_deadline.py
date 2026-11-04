@@ -19,6 +19,35 @@ from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
+async def test_interrupted_cold_load_uses_remaining_shared_shutdown_budget():
+    """A load beyond ten seconds can still drain inside the total deadline."""
+    from jiuwenswarm.server.worker.service import _close_worker
+
+    runtime = SimpleNamespace(shutdown=AsyncMock())
+    loaded = {"runtime": None}
+    dispatcher = SimpleNamespace(drain=AsyncMock(return_value=True))
+    server = SimpleNamespace(close=AsyncMock())
+
+    async def load():
+        await asyncio.sleep(10.1)
+        loaded["runtime"] = runtime
+        return runtime
+
+    task = asyncio.create_task(load())
+    started = time.monotonic()
+    try:
+        await _close_worker(dispatcher, task, loaded, server, total_timeout=12)
+        assert task.done() and not task.cancelled()
+        runtime.shutdown.assert_awaited_once()
+        server.close.assert_awaited_once()
+        assert time.monotonic() - started < 12
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("validated", [False, True])
 async def test_final_stop_reserves_time_to_reap_owned_child(monkeypatch, validated):
     clock = [0.0]

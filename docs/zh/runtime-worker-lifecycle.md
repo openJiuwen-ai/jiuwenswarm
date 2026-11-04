@@ -22,6 +22,11 @@ IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。
 python -m jiuwenswarm.server.supervisor.shutdown --shutdown-worker --timeout 30
 ```
 
+Windows 同一控制台中的 Ctrl+C 也可能直接送达 Worker。Worker 会将中断转换成一次任务取消，
+等待 Runtime、后台任务和在途 IPC I/O 清理后再退出；连续按 Ctrl+C 不会打断已经开始的清理。
+启动器可用 130 表示用户中断，Worker 的完整关闭仍应无清理异常并确认实际退出。
+这不改变普通 Front 断开时保留 resident Worker 的行为，也不能保证系统强杀时运行清理。
+
 历史 Python Worker 没有部署身份时，不能仅凭共同解释器和数据目录推断安装来源。新部署会隔离这个旧端点并继续启动，日志给出旧 PID。操作者核对该 PID 的解释器、完整启动参数、安装来源及数据目录后，可显式关闭：
 
 ```bash

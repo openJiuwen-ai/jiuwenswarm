@@ -240,7 +240,7 @@ async def _close_worker(
     server: Any,
     *,
     dispatch_timeout: float = _DISPATCH_SHUTDOWN_TIMEOUT,
-    load_timeout: float = _RUNTIME_LOAD_SHUTDOWN_TIMEOUT,
+    load_timeout: float | None = None,
     runtime_timeout: float = _RUNTIME_SHUTDOWN_TIMEOUT,
     total_timeout: float = SHUTDOWN_TIMEOUT,
 ) -> None:
@@ -260,7 +260,10 @@ async def _close_worker(
             "[Worker] dispatch still running after shutdown timeout; skipping runtime shutdown"
         )
         raise WorkerForceExit("dispatch still running")
-    runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=remaining(load_timeout))
+    # An interrupted cold import can need more than the old per-stage cap.
+    # Let it finish within the same total deadline before closing its Runtime.
+    load_limit = total_timeout if load_timeout is None else load_timeout
+    runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=remaining(load_limit))
     if runtime is not None:
         await _shutdown_runtime(runtime, timeout=remaining(runtime_timeout))
     # Python 3.12+ Server.wait_closed waits for accepted transports too.

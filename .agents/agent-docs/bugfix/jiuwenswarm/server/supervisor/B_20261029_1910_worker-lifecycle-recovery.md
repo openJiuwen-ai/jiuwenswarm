@@ -7,6 +7,7 @@ author_email: liuyu524@huawei.com
 modules:
   - jiuwenswarm/server/supervisor
   - jiuwenswarm/server/worker
+  - jiuwenswarm/server/ipc
   - jiuwenswarm/channels/desktop
   - tests/unit_tests/agentserver
 files:
@@ -14,6 +15,16 @@ files:
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
   - jiuwenswarm/server/supervisor/shutdown.py
   - jiuwenswarm/server/supervisor/identity.py
+  - jiuwenswarm/server/worker/main.py
+  - jiuwenswarm/server/worker/service.py
+  - jiuwenswarm/server/ipc/stream.py
+  - jiuwenswarm/server/agent_ws_server.py
+  - tests/unit_tests/agentserver/test_worker_entrypoint.py
+  - tests/unit_tests/agentserver/test_ipc_backpressure.py
+  - tests/unit_tests/agentserver/test_worker_shutdown_deadline.py
+  - tests/unit_tests/runtime/test_runtime_service.py
+  - pyproject.toml
+  - MANIFEST.in
   - jiuwenswarm/debug_launcher.py
   - jiuwenswarm/channels/desktop/electron/main.cjs
   - scripts/jiuwenswarm.spec
@@ -97,6 +108,68 @@ Windows 扩展回归初轮为 9948 passed、23 skipped、64 failed、6 errors。
 本次推送后 develop 继续推进到 `4512240b4242da3ff329c8b17fddc993f79cc9be`，重新合入时仅五份生成索引冲突；使用当前同步工具重建并保留双方源文档。新增的 Worker 启动补丁、TTSE 插件和会话清理路径纳入复验，合并候选为 424 passed、8 skipped、2 failed；失败仍为上述两项 Windows 下的 POSIX 信号模拟。四个 CodeCheck 修改文件没有被此次主干合并改变。
 
 旧云端 Linux UT 报告的四项历史 Worker 失败还暴露两类测试夹具缺陷：xdist 的长临时目录使 AF_UNIX 路径超过系统长度限制；真实退出后由测试持有的 Popen 子进程尚未回收，`pid_exists()` 仍能看到 zombie。历史端点用例现使用短、独立的临时 workspace，仍按实际旧端点规则生成路径；处置后先通过持有的进程句柄回收子进程，再检查 PID。没有把 zombie 当作存活 Runtime，也没有放宽进程归属或退出断言。该文件 9 项 Windows 回归通过，原生 Linux 结果仍需云端确认。
+
+## 2026-11-04 Windows WHL 控制台中断清理
+
+在固定 Swarm `a2abceccfba89ab25a518568916152865fa28acd`、core
+`5a35c39f0163a4e6190800df53ad7e24848756eb`，模拟合入 PR !9259 并补齐打包资源的
+`248874ee66a27c3bbf6c2b19f2a6465168b66170` 上，重新安装原 WHL 复现：
+正常 `jiuwenswarm-start all` 就绪后 Ctrl+C，Worker 返回 `0xC000013A`，并留下
+`KeyboardInterrupt` 和 SDK pending-task 销毁日志。启动期间中断还可出现 Windows
+Overlapped I/O 未完成就销毁的错误。此退出码本身表示 Ctrl+C；缺陷依据是异步资源未完成清理。
+
+Worker 入口原先忽略 Windows 不支持的 `loop.add_signal_handler()`，没有安装替代处理；
+`KeyboardInterrupt` 穿过 `run_until_complete()` 后直接 `loop.close()`，跳过服务取消清理及
+SDK 后台任务收尾。现在 Windows 使用 `signal.signal()` 将中断安全投递到事件循环，
+只取消 Worker 任务一次，连续信号不打断正在进行的关闭。使用 `asyncio.Runner` 完成
+后台任务、异步生成器和执行器收尾；信号处理覆盖日志收尾。未中断退出恢复原处理器；
+Windows 已中断的进程在解释器退出期间继续忽略 SIGINT，避免第二次 Ctrl+C 在资源已清理、
+进程尚未消失的窗口触发系统默认的 `0xC000013A` 终止。已有 `WorkerForceExit` 仍在
+Runner 收尾前执行有诊断的强制退出，保留不可取消加载/调度的有界失败路径。
+
+首次无字节码的隔离安装还观察到 SDK 冷导入超过旧的 10 秒加载收尾上限；Worker 会受控
+退出为 1，未留下进程，但不能作为优雅关闭通过。默认加载收尾现使用总期限剩余预算，
+保持整个服务关闭的 30 秒上限。测试实际等待超过 10 秒的加载完成并确认 Runtime 被关闭，
+已有显式短期限与不可取消任务的失败路径继续回归。最终安装同时记录字节码编译条件。
+
+命名管道的 `poll()` 本身也持有 Overlapped read；并发 `CloseHandle` 会与其完成收集竞争。
+连接关闭先停止接收，并异步等待当前 native poll/read 退出后关闭原生句柄，不占用可能饱和的
+默认执行器。并发关闭共享同一个清理任务，调用者取消后重试仍等待真正关闭完成。
+
+源码真实进程检查中，就绪后中断的 Worker 退出码为 0；IPC 就绪、Runtime 尚未就绪时中断，
+Worker 等待加载与清理后退出码为 0，未再出现上述清理异常。新增入口测试覆盖 Windows
+信号回退、连续中断和 SDK 后台任务完成；管道测试覆盖在途 poll 与取消关闭后重试。
+最终 WHL 仍须从本候选构建、隔离安装后，以真实控制台 Ctrl+C、PID/创建时间和进程句柄重验。
+
+隔离安装复测进一步发现：外层 Runtime 加载完成不代表 `runtime-start` 已完成。原收尾先关闭
+准备注册表，初始化任务随后调用 `mark_minimum_ready()`，产生 `preparation registry is closed`
+和未读取任务异常。启动任务现先取消并等待结束，再关闭其依赖资源；即便任务已结束也读取
+异常。定向 Runtime 服务、启动优先级与共享期限回归为 189 passed，覆盖冷启动关闭竞态、
+已结束启动失败的消费及正常 stop/start。最终安装成品的进程验证仍单独记录。
+
+真实就绪进程的连续信号复测保留了一次退出码 `0xC000013A` 的失败：第一次中断已关闭
+Runtime，第二次到达解释器退出窗口，未出现异步清理异常。上述 Windows 退出信号处理
+覆盖这一窗口，新增用例在 `main()` 返回后再送 SIGINT，并要求仍不抛异常。
+
+最终 WHL 冻结构建为 `b9f5d8a58c07354e6d1786a57f059cb5147278e2`，上游仍为
+`a2abceccfba89ab25a518568916152865fa28acd`、core 仍为上述 `5a35c39f`，不是原 PR 的
+依赖升级。SHA256 为 `c2944c549b6aa424adf63ff344a4dbb33f6527287ff3e18f039eb589e02e9b63`。
+独立安装环境的 AgentServer / 完整服务分别在启动中及就绪后接受真实 Ctrl+C，四项均确认
+Worker 退出码为 0、无作用域内残留、无原有清理异常。另验证 Front 丢失后复用同一 Worker、
+最终关闭应答成功且实际 PID 退出为 0，相关 TCP 监听消失。测试没有调用真实模型。
+
+成品同时验证 2601 项 RECORD 哈希、2574 项源码与运行资源、255 个前端文件和 14 个入口。
+测试生成的资源根 `.env` 与 `*.lock` 通过 manifest 和 package-data 双重排除，保留
+`.env.template`；成品检查明确拒绝这类运行时文件。构建资源补齐和固定依赖等既有本地
+装配项未因此进入原 PR，原 PR 只接入本轮中断修复、排除规则及对应测试和文档。
+
+原 PR checkout 使用自身 Core `c8c621b22f1ad5da6acee0ceee33778007c06efb` 与验证环境中
+foundation `5c5b09d468e2132a91aa091057bd8e74892ca363`，本轮八个文件定向回归为
+331 passed、3 skipped，覆盖真实日志、背压、卡顿故障、入口、关闭期限、Runtime 归属及
+启停、loopback 和附属 Worker 最终关闭。没有将这组结果扩展为全仓或云端 CodeCheck 通过。
+
+普通 Front 断开与控制台直接中断 Worker 仍是两个场景；没有改动 resident 模式保留 Runtime 的
+断开/重连契约，也没有把 Windows 结果当作 #6063 的 openEuler 原环境验收。
 
 ## 遗留与重验条件
 

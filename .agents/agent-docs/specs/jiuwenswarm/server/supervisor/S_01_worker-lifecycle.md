@@ -7,11 +7,16 @@ author_email: liuyu524@huawei.com
 modules:
   - jiuwenswarm/server/supervisor
   - jiuwenswarm/server/worker
+  - jiuwenswarm/server/ipc
   - jiuwenswarm/channels/desktop
 files:
   - jiuwenswarm/server/supervisor/runtime_supervisor.py
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
   - jiuwenswarm/server/supervisor/shutdown.py
+  - jiuwenswarm/server/worker/main.py
+  - jiuwenswarm/server/worker/service.py
+  - jiuwenswarm/server/ipc/stream.py
+  - jiuwenswarm/server/agent_ws_server.py
 ---
 
 # Runtime Worker 生命周期与恢复规约
@@ -34,6 +39,10 @@ Supervisor 负责连接、验证、故障分类及恢复；Worker 负责 Runtime
 3. 各关闭阶段共用一个期限并为强制退出观察预留时间。收到负应答、缺少所需应答或只能强杀时，不得报告完整持久化成功。
 4. 升级须持有本次退出的成功结果文件；不存在、pending 或 failed 均禁止替换后端。关闭失败保留 debug 状态，以供重试。
 5. 最终退出可以关闭通过验证后重连的 Worker；不以当前 Supervisor 是否亲自创建进程决定清理权限。
+6. Worker 收到控制台中断时，将信号转换成一次任务取消，等待 Runtime 和 SDK 后台任务收尾后再关闭事件循环；Windows 不支持 loop 信号回调时须安装等价处理。连续中断不取消进行中的清理，已中断的 Windows 进程在日志和解释器退出阶段继续保护 SIGINT；原有有界强制退出失败语义仍有效。
+7. Windows 命名管道关闭须先等待在途 native poll/read 完成，再释放句柄。并发或被取消的关闭调用共享并等待实际清理，不以关闭标志代替原生 I/O 完成；默认执行器饱和时仍可收尾。
+8. 中断冷启动时，默认等待加载的阶段使用总关闭期限的剩余预算，再关闭已构造的 Runtime；不因独立的 10 秒阶段上限提前放弃，也不延长总期限。显式阶段期限继续按调用者要求执行。
+9. AgentServer 关闭准备注册表、心跳和 Runtime 前，须先取消并等待 Runtime 启动任务结束；已结束的启动任务也须读取其异常，避免关闭后继续发布 ready 或访问已释放资源。
 
 ## 重试与恢复
 

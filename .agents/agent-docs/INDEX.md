@@ -34,16 +34,17 @@ generated: true
 | [jiuwenswarm/observability](#module-17) |
 | [jiuwenswarm/resources/plugins/ttse](#module-18) |
 | [jiuwenswarm/server](#module-19) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-20) |
-| [jiuwenswarm/server/supervisor](#module-21) |
-| [jiuwenswarm/server/worker](#module-22) |
-| [scripts](#module-23) |
-| [tests/fixtures/ttse_plugin](#module-24) |
-| [tests/unit_tests/agentserver](#module-25) |
-| [tests/unit_tests/gateway](#module-26) |
-| [tests/unit_tests/personal_context](#module-27) |
-| [tests/unit_tests/server/extensions](#module-28) |
-| [未分类](#module-29) |
+| [jiuwenswarm/server/ipc](#module-20) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-21) |
+| [jiuwenswarm/server/supervisor](#module-22) |
+| [jiuwenswarm/server/worker](#module-23) |
+| [scripts](#module-24) |
+| [tests/fixtures/ttse_plugin](#module-25) |
+| [tests/unit_tests/agentserver](#module-26) |
+| [tests/unit_tests/gateway](#module-27) |
+| [tests/unit_tests/personal_context](#module-28) |
+| [tests/unit_tests/server/extensions](#module-29) |
+| [未分类](#module-30) |
 
 <a id="module-1"></a>
 
@@ -148,8 +149,8 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
-| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py | — |
+| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, tests/unit_tests/agentserver/test_worker_entrypoint.py, tests/unit_tests/agentserver/test_ipc_backpressure.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/runtime/test_runtime_service.py, pyproject.toml, MANIFEST.in, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
+| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
 
 <a id="module-13"></a>
 
@@ -217,6 +218,15 @@ generated: true
 
 <a id="module-20"></a>
 
+## jiuwenswarm/server/ipc
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, tests/unit_tests/agentserver/test_worker_entrypoint.py, tests/unit_tests/agentserver/test_ipc_backpressure.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/runtime/test_runtime_service.py, pyproject.toml, MANIFEST.in, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
+| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
+
+<a id="module-21"></a>
+
 ## jiuwenswarm/server/runtime/agent_adapter
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -231,25 +241,25 @@ generated: true
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 | [S_03_native-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-21"></a>
+<a id="module-22"></a>
 
 ## jiuwenswarm/server/supervisor
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
-| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py | — |
+| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, tests/unit_tests/agentserver/test_worker_entrypoint.py, tests/unit_tests/agentserver/test_ipc_backpressure.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/runtime/test_runtime_service.py, pyproject.toml, MANIFEST.in, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
+| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
 
-<a id="module-22"></a>
+<a id="module-23"></a>
 
 ## jiuwenswarm/server/worker
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
-| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py | — |
+| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, tests/unit_tests/agentserver/test_worker_entrypoint.py, tests/unit_tests/agentserver/test_ipc_backpressure.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/runtime/test_runtime_service.py, pyproject.toml, MANIFEST.in, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
+| [S_01_worker-lifecycle](specs/jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
 
-<a id="module-23"></a>
+<a id="module-24"></a>
 
 ## scripts
 
@@ -257,7 +267,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-24"></a>
+<a id="module-25"></a>
 
 ## tests/fixtures/ttse_plugin
 
@@ -265,17 +275,17 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-25"></a>
+<a id="module-26"></a>
 
 ## tests/unit_tests/agentserver
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
+| [B_20261029_1910_worker-lifecycle-recovery](bugfix/jiuwenswarm/server/supervisor/B_20261029_1910_worker-lifecycle-recovery.md) | B | 修复常驻 Worker 退出、历史端点兼容和耗尽重试后的恢复 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop, tests/unit_tests/agentserver | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/supervisor/identity.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, tests/unit_tests/agentserver/test_worker_entrypoint.py, tests/unit_tests/agentserver/test_ipc_backpressure.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/runtime/test_runtime_service.py, pyproject.toml, MANIFEST.in, jiuwenswarm/debug_launcher.py, jiuwenswarm/channels/desktop/electron/main.cjs, scripts/jiuwenswarm.spec, tests/unit_tests/agentserver/test_worker_legacy_compatibility.py | 无独立 D：修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。 |
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 | [B_20261031_1048_ttse-core-dependent-ut](bugfix/tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | tests/unit_tests/agentserver | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 
-<a id="module-26"></a>
+<a id="module-27"></a>
 
 ## tests/unit_tests/gateway
 
@@ -283,7 +293,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-27"></a>
+<a id="module-28"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -291,7 +301,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-28"></a>
+<a id="module-29"></a>
 
 ## tests/unit_tests/server/extensions
 
@@ -299,7 +309,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-29"></a>
+<a id="module-30"></a>
 
 ## 未分类
 

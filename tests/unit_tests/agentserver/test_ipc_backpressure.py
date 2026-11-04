@@ -22,6 +22,7 @@ import pytest
 from jiuwenswarm.server.ipc.client import connect
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.ipc.stream import PipeConnection
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
@@ -69,6 +70,57 @@ async def _saturated_default_pool():
     finally:
         release.set()
         await asyncio.gather(*blockers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first_close", [False, True])
+async def test_pipe_close_waits_for_native_poll_completion(cancel_first_close: bool) -> None:
+    """Keep an in-flight native read alive until its owner has collected it."""
+    entered = threading.Event()
+    release = threading.Event()
+    in_flight = threading.Event()
+    closed = threading.Event()
+    closed_while_reading = []
+
+    class NativePipe:
+        def poll(self, _timeout):
+            in_flight.set()
+            entered.set()
+            try:
+                assert release.wait(2)
+                return False
+            finally:
+                in_flight.clear()
+
+        def close(self):
+            closed_while_reading.append(in_flight.is_set())
+            closed.set()
+
+    connection = PipeConnection(NativePipe())
+    read = asyncio.create_task(connection.recv())
+    first_close = None
+    try:
+        async with asyncio.timeout(1):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        first_close = asyncio.create_task(connection.close())
+        await asyncio.sleep(0.02)
+        assert not first_close.done()
+        assert not closed.is_set()
+        if cancel_first_close:
+            first_close.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_close
+        release.set()
+        await asyncio.wait_for(connection.close(), 1)
+        assert closed.is_set()
+        assert closed_while_reading == [False]
+        with pytest.raises(ConnectionError):
+            await read
+    finally:
+        release.set()
+        await connection.close()
+        await asyncio.gather(read, *([first_close] if first_close is not None else []), return_exceptions=True)
 
 
 @pytest.mark.asyncio

@@ -214,6 +214,8 @@ jiuwenbox = [
 
 [tool.setuptools.exclude-package-data]
 jiuwenswarm = [
+    "resources/.env",
+    "resources/*.lock",
     "channels/web/frontend/node_modules/**",
     "channels/web/frontend/node_modules/*",
     "resources/agent/workspace/skills/project-maintainer/**/*",

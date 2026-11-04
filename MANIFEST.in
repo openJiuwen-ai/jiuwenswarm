@@ -1,5 +1,8 @@
 # 包含 package resources 目录
 recursive-include jiuwenswarm/resources *
+# Keep generated local configuration and advisory locks out of distributions.
+exclude jiuwenswarm/resources/.env
+exclude jiuwenswarm/resources/*.lock
 include jiuwenswarm/agents/harness/common/rsi/harness_config.yaml
 include OPEN_SOURCE_SOFTWARE_NOTICE.md
 include scripts/build_config.py
