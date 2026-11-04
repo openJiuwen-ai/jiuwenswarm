@@ -72,6 +72,86 @@ def test_indexes_link_features_and_bugs_to_designs(sync_module: ModuleType, tmp_
     assert before == after
 
 
+def test_resync_includes_later_documents_without_reassigning_index_authors(
+    sync_module: ModuleType, tmp_path: Path,
+) -> None:
+    """Rebuild navigation from all current sources while retaining its creator."""
+    write_doc(
+        tmp_path, "designs/proposals/D-20261026-1200-topic/design.md",
+        "---\nid: D-20261026-1200-topic\nmodules: [runtime]\n---\n\n# Topic\n",
+    )
+    write_doc(tmp_path, "features/F_01_first.md", "---\nmodules: [runtime]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# First\n")
+    creator = sync_module.GitIdentity("creator", "creator@example.invalid")
+    sync_module.synchronize(tmp_path, creator)
+
+    write_doc(tmp_path, "features/legacy/F_02_later.md", "---\nmodules: [runtime]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# Later\n")
+    editor = sync_module.GitIdentity("editor", "editor@example.invalid")
+    sync_module.synchronize(tmp_path, editor)
+
+    for relative in ("INDEX.md", "designs/INDEX.md", "features/INDEX.md", "bugfix/INDEX.md", "specs/INDEX.md"):
+        index = tmp_path / relative
+        assert metadata(index)["author"] == "creator"
+        assert metadata(index)["author_email"] == "creator@example.invalid"
+    for relative in ("INDEX.md", "features/INDEX.md"):
+        text = (tmp_path / relative).read_text(encoding="utf-8")
+        assert "F_01_first" in text
+        assert "F_02_later" in text
+
+
+def test_reindex_without_git_identity_preserves_existing_attribution(
+    sync_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refreshing existing indexes never requires a new document author."""
+    write_doc(tmp_path, "specs/S_01_first.md", "---\nmodules: [runtime]\n---\n\n# First\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
+    write_doc(tmp_path, "specs/S_02_later.md", "---\nmodules: [runtime]\n---\n\n# Later\n")
+
+    def missing_identity(path: Path) -> object:
+        raise AssertionError("Reindexing must not request a Git identity")
+
+    monkeypatch.setattr(sync_module, "git_identity", missing_identity)
+    assert sync_module.main(["--root", str(tmp_path)]) == 0
+    assert metadata(tmp_path / "INDEX.md")["author"] == "creator"
+    assert metadata(tmp_path / "specs/INDEX.md")["author"] == "creator"
+    assert "S_02_later" in (tmp_path / "specs/INDEX.md").read_text(encoding="utf-8")
+
+
+def test_existing_index_does_not_pair_original_author_with_editor_email(
+    sync_module: ModuleType, tmp_path: Path,
+) -> None:
+    """An absent historical email remains unknown after another editor syncs."""
+    write_doc(tmp_path, "specs/S_01_contract.md", "# Contract\n")
+    write_doc(tmp_path, "specs/INDEX.md", "---\nauthor: original\ngenerated: true\n---\n")
+    editor = sync_module.GitIdentity("editor", "editor@example.invalid")
+    sync_module.synchronize(tmp_path, editor)
+    index = metadata(tmp_path / "specs/INDEX.md")
+    assert index["author"] == "original"
+    assert index["author_email"] is None
+
+
+def test_unattributed_existing_index_can_be_rebuilt_without_git_identity(
+    sync_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy index without attribution remains searchable and unclaimed."""
+    write_doc(tmp_path, "specs/S_01_contract.md", "# Contract\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
+    write_doc(tmp_path, "specs/INDEX.md", "---\ntitle: Old index\ngenerated: true\n---\n")
+
+    def missing_identity(path: Path) -> object:
+        raise AssertionError("An existing index must not claim the current editor")
+
+    monkeypatch.setattr(sync_module, "git_identity", missing_identity)
+    assert sync_module.main(["--root", str(tmp_path)]) == 0
+    index = tmp_path / "specs/INDEX.md"
+    assert metadata(index)["author"] is None
+    assert metadata(index)["author_email"] is None
+    assert metadata(index)["author_note"]
+    assert "S_01_contract" in index.read_text(encoding="utf-8")
+    before = index.read_bytes()
+    assert sync_module.main(["--root", str(tmp_path)]) == 0
+    assert index.read_bytes() == before
+
+
 def test_explicit_no_design_and_unknown_history_are_distinct(sync_module: ModuleType, tmp_path: Path) -> None:
     """An unknown relationship cannot silently become an assertion of no design."""
     unknown = write_doc(tmp_path, "features/F_01_old.md", "# Old\n")

@@ -244,16 +244,30 @@ async def test_session_delete_delegates_heartbeat_lifecycle_to_agentserver() -> 
 
         async def send_request(self, env):  # noqa: ANN001
             self.requests.append(env)
-            return SimpleNamespace(ok=True, payload={"session_id": "tui-session"})
+            return SimpleNamespace(ok=True, payload={"session_id": "tui-session", "project_id": "project-a"})
 
     channel = _TuiChannel()
+    registrations = []
+    register = channel.register_local_handler
+
+    def record_registration(path, method, handler):
+        registrations.append((path, method))
+        register(path, method, handler)
+
+    channel.register_local_handler = record_registration
     agent = Agent()
+    deleted_from_projects = []
+
+    async def on_session_left_project(project_id: str, session_id: str) -> None:
+        deleted_from_projects.append((project_id, session_id))
+
     register_cli_handlers(
         CliHandlersBindParams(
             channel=channel,
             agent_client=agent,
             message_handler=object(),
             path="/tui",
+            on_session_left_project=on_session_left_project,
         )
     )
 
@@ -268,6 +282,83 @@ async def test_session_delete_delegates_heartbeat_lifecycle_to_agentserver() -> 
     assert len(agent.requests) == 1
     assert agent.requests[0].method == "session.delete"
     assert agent.requests[0].params == {"session_id": "tui-session"}
+    assert registrations.count(("/tui", "session.delete")) == 1
+    assert deleted_from_projects == [("project-a", "tui-session")]
+
+
+@pytest.mark.asyncio
+async def test_session_delete_does_not_leave_project_when_agent_rejects() -> None:
+    class Agent:
+        async def send_request(self, env):  # noqa: ANN001
+            return SimpleNamespace(
+                ok=False,
+                payload={"session_id": "tui-session", "project_id": "project-a", "error": "delete failed"},
+            )
+
+    deleted_from_projects = []
+
+    async def on_session_left_project(project_id: str, session_id: str) -> None:
+        deleted_from_projects.append((project_id, session_id))
+
+    channel = _TuiChannel()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=channel,
+            agent_client=Agent(),
+            path="/tui",
+            on_session_left_project=on_session_left_project,
+        )
+    )
+
+    await channel.local_handlers["/tui"]["session.delete"](
+        object(), "req-delete", {"session_id": "tui-session"}, "current"
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert deleted_from_projects == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        (method, params)
+        for method in ("session.delete", "session.archive", "session.unarchive")
+        for params in (None, {}, {"session_ids": []}, {"session_ids": [""]})
+        if not (method == "session.delete" and params == {})
+    ],
+)
+async def test_tui_session_lifecycle_rejects_invalid_params(method, params) -> None:
+    channel = _TuiChannel()
+    register_cli_handlers(CliHandlersBindParams(channel=channel, path="/tui"))
+
+    await channel.local_handlers["/tui"][method](object(), "req", params, "current")
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_session_delete_defaults_to_bound_session() -> None:
+    class Agent:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def send_request(self, env):  # noqa: ANN001
+            self.requests.append(env)
+            return SimpleNamespace(ok=True, payload={"session_id": "current"})
+
+    agent = Agent()
+    channel = _TuiChannel()
+    register_cli_handlers(CliHandlersBindParams(channel=channel, agent_client=agent, path="/tui"))
+
+    await channel.local_handlers["/tui"]["session.delete"](object(), "req", {}, "current")
+
+    assert channel.responses[-1]["ok"] is True
+    assert len(agent.requests) == 1
+    assert agent.requests[0].method == "session.delete"
+    assert agent.requests[0].session_id == "current"
+    assert agent.requests[0].params == {}
 
 
 @pytest.mark.asyncio
@@ -285,6 +376,7 @@ async def test_session_list_current_dir_includes_top_level_only_session(
             return SimpleNamespace(
                 ok=True,
                 payload={
+                    "total": 3,
                     "sessions": [
                         {
                             "session_id": "tui_old_no_channel_meta",
@@ -297,6 +389,13 @@ async def test_session_list_current_dir_includes_top_level_only_session(
                             "channel_id": "tui",
                             "project_dir": str(tmp_path / "other"),
                             "last_message_at": 90.0,
+                        },
+                        {
+                            "session_id": "current-sid",
+                            # The current TUI session can lack a channel_id in
+                            # older metadata; include_current must still expose it.
+                            "project_dir": project_dir,
+                            "last_message_at": 110.0,
                         },
                     ]
                 },
@@ -323,3 +422,21 @@ async def test_session_list_current_dir_includes_top_level_only_session(
     sessions = resp["payload"]["sessions"]
     assert [s["session_id"] for s in sessions] == ["tui_old_no_channel_meta"]
     assert sessions[0]["project_dir"] == os.path.realpath(project_dir)
+
+    await channel.local_handlers["/tui"]["session.list"](
+        object(),
+        "req-list-with-current",
+        {"project_dir": project_dir, "limit": 20, "include_current": True},
+        "current-sid",
+    )
+
+    resp = channel.responses[-1]
+    assert resp["ok"] is True
+    assert [s["session_id"] for s in resp["payload"]["sessions"]] == [
+        "current-sid",
+        "tui_old_no_channel_meta",
+    ]
+    assert resp["payload"]["total"] == 3
+    # The upstream page contained three rows; local filtering returned two.
+    # page_count is the upstream row count, not ceil(total / limit).
+    assert resp["payload"]["page_count"] == 3

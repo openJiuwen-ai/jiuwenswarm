@@ -81,7 +81,7 @@ def updated_text(doc: Document, metadata: dict) -> str:
     return f"---\n{header}\n---\n\n{doc.body}"
 
 
-def prepare_metadata(doc: Document, identity: GitIdentity, current: Path | None, adopt: bool) -> dict:
+def prepare_metadata(doc: Document, identity: GitIdentity | None, current: Path | None, adopt: bool) -> dict:
     """Migrate historical owner values to author without losing attribution."""
     data = dict(doc.metadata)
     legacy_author = data.pop("owner", None)
@@ -98,6 +98,8 @@ def prepare_metadata(doc: Document, identity: GitIdentity, current: Path | None,
     data.setdefault("title", title.group(1).strip() if title else doc.path.stem)
     if "author" not in data or (data["author"] is None and ((doc.path == current and not data.get("author_note")) or adopt)):
         if adopt or doc.path == current:
+            if identity is None:
+                raise ValueError("Git identity is required to attribute a document")
             data["author"] = identity.name
             data["author_email"] = identity.email
         else:
@@ -185,9 +187,41 @@ def index_row(doc: Document, parent: Path, designs: dict[str, Document]) -> str:
     return "| " + " | ".join(fields) + " |"
 
 
-def render_index(path: Path, title: str, docs: list[Document], identity: GitIdentity, designs: dict[str, Document]) -> str:
+def index_metadata(path: Path, title: str, identity: GitIdentity | None) -> dict:
+    """Retain the creator of an existing generated index on later syncs."""
+    if not path.is_file():
+        if identity is None:
+            raise ValueError(f"{path}: Git identity is required to create a new index")
+        return {
+            "title": title,
+            "author": identity.name,
+            "author_email": identity.email,
+            "generated": True,
+        }
+
+    previous = {}
+    match = _FRONTMATTER.match(path.read_text(encoding="utf-8"))
+    if match:
+        parsed = yaml.safe_load(match.group(1))
+        previous = {} if parsed is None else parsed
+        if not isinstance(previous, dict):
+            raise ValueError(f"{path}: frontmatter must be a mapping")
+    metadata = {
+        "title": title,
+        "author": previous.get("author") or None,
+        "author_email": previous.get("author_email"),
+        "generated": True,
+    }
+    if "author_note" in previous:
+        metadata["author_note"] = previous["author_note"]
+    if metadata["author"] is None and not metadata.get("author_note"):
+        metadata["author_note"] = "历史生成索引作者待确认；缺少可靠创建署名"
+    return metadata
+
+
+def render_index(path: Path, title: str, docs: list[Document], identity: GitIdentity | None, designs: dict[str, Document]) -> str:
     """Generate module navigation and document listings without global totals."""
-    metadata = {"title": title, "author": identity.name, "author_email": identity.email, "generated": True}
+    metadata = index_metadata(path, title, identity)
     header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     unique_docs = list({doc.path: doc for doc in docs}.values())
     grouped: dict[str, list[Document]] = {}
@@ -224,7 +258,7 @@ def render_index(path: Path, title: str, docs: list[Document], identity: GitIden
     return "\n".join(lines).rstrip() + "\n"
 
 
-def synchronize(root: Path, identity: GitIdentity, current_document: Path | None = None, adopt_legacy_author: bool = False) -> int:
+def synchronize(root: Path, identity: GitIdentity | None, current_document: Path | None = None, adopt_legacy_author: bool = False) -> int:
     """Prepare all changes before writing metadata or replacing generated indexes."""
     root = root.resolve()
     current = current_document.resolve() if current_document else None
@@ -258,8 +292,8 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
                 record.parse_error = None
         timestamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="minutes")
         index_body = generate_index.build_index(records, timestamp)
-        index_metadata = {"title": "设计文档索引", "author": identity.name, "author_email": identity.email, "generated": True}
-        header = yaml.safe_dump(index_metadata, allow_unicode=True, sort_keys=False).rstrip()
+        metadata = index_metadata(design_root / "INDEX.md", "设计文档索引", identity)
+        header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
         writes[design_root / "INDEX.md"] = f"---\n{header}\n---\n\n{index_body}"
     for path, content in writes.items():
         if not path.exists() or path.read_text(encoding="utf-8") != content:
@@ -269,7 +303,7 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Synchronize metadata and all managed indexes from the repository identity."""
+    """Synchronize documents, retaining existing index authors on refresh."""
     repo = Path(__file__).resolve().parents[4]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=repo / ".agents/agent-docs")
@@ -280,7 +314,13 @@ def main(argv: list[str] | None = None) -> int:
         identity_root = args.root.resolve()
         while not identity_root.is_dir() and identity_root.parent != identity_root:
             identity_root = identity_root.parent
-        identity = git_identity(identity_root)
+        index_paths = [args.root / section / "INDEX.md" for section in ("features", "bugfix", "specs")]
+        index_paths.append(args.root / "INDEX.md")
+        if (args.root / "designs").is_dir():
+            index_paths.append(args.root / "designs/INDEX.md")
+        # Existing indexes with missing attribution remain unclaimed on refresh.
+        needs_identity = bool(args.document or args.adopt_legacy_author or any(not path.is_file() for path in index_paths))
+        identity = git_identity(identity_root) if needs_identity else None
         count = synchronize(args.root, identity, args.document, args.adopt_legacy_author)
         print(f"Updated document metadata and indexes: {count} source documents")
         return 0

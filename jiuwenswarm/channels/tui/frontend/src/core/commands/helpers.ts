@@ -1,4 +1,5 @@
 import type { HistoryItem, DiffMeta } from "../types.js";
+import type { CommandContext } from "./types.js";
 
 function now(): string {
   return new Date().toISOString();
@@ -35,11 +36,37 @@ export function addCommandEcho(sessionId: string, content: string): HistoryItem 
   return makeItem(sessionId, "command_echo", content);
 }
 
-export function addDiff(
-  sessionId: string,
-  content: string,
-  meta: DiffMeta,
-): HistoryItem {
+/** Read every server page; the TUI gateway filters each page after fetching it. */
+export async function listAllActiveSessions(request: CommandContext["request"]): Promise<unknown[]> {
+  const sessions: unknown[] = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await request<{ sessions?: unknown; total?: number; page_count?: number }>("session.list", {
+      include_current: true,
+      limit: 200,
+      offset,
+    });
+    if (Array.isArray(page.sessions)) sessions.push(...page.sessions);
+    // page_count is the number of upstream rows in this page, before TUI filtering.
+    const sourceRowCount = page.page_count ?? (Array.isArray(page.sessions) ? page.sessions.length : 0);
+    if (typeof page.total === "number" ? offset + 200 >= page.total : sourceRowCount < 200) break;
+  }
+  return sessions;
+}
+
+export async function listAllArchivedSessions(request: CommandContext["request"]): Promise<unknown[]> {
+  const sessions: unknown[] = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await request<{ sessions?: unknown; has_more?: boolean }>("session.archived.list", {
+      limit: 200,
+      offset,
+    });
+    if (Array.isArray(page.sessions)) sessions.push(...page.sessions);
+    if (!page.has_more) break;
+  }
+  return sessions;
+}
+
+export function addDiff(sessionId: string, content: string, meta: DiffMeta): HistoryItem {
   const id = `diff-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   return { kind: "diff", id, sessionId, content, meta, at: now() };
 }

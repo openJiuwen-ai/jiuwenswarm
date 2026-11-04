@@ -14,6 +14,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from pathlib import Path
@@ -1448,6 +1449,24 @@ def _enqueue_history_item(
             WRITE_QUEUE.put(
                 (session_id, item, normalized_subagent_id, receipt, generation, context)
             )
+
+
+def append_session_mode_changed(
+    *, session_id: str, channel_id: str, previous_mode: str | None, mode: str,
+) -> None:
+    """Record a routing transition without creating a chat turn."""
+    _enqueue_history_item(
+        session_id,
+        {
+            "id": f"mode:{uuid.uuid4().hex}",
+            "event_type": "session.mode_changed",
+            "request_id": "",
+            "channel_id": channel_id,
+            "timestamp": time.time(),
+            "previous_mode": previous_mode,
+            "mode": mode,
+        },
+    )
 
 
 def resolve_final_record_timestamp(

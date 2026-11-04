@@ -1802,8 +1802,20 @@ async def test_direct_delete_commit_failure_retries_after_directory_removed(dele
 
 @pytest.mark.parametrize("state", ["idle", "running", "disabled", "none"])
 async def test_product_delete_prepares_heartbeat_before_strict_cleanup(delete_chain, state):
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
     chain = await delete_chain(state)
     try:
+        if state == "running":
+            with pytest.raises(lc.LifecycleError) as error:
+                await chain.service.session(SESSION, "delete", "web")
+            assert error.value.code == "SESSION_BUSY"
+            assert chain.directory.exists()
+            assert lc.state("session", SESSION).get("blocked") is False
+            chain.heartbeat.begin_session_delete.assert_not_awaited()
+            chain.agent.release.set()
+            await _settle(chain)
+
         result = await chain.service.session(SESSION, "delete", "web")
         assert result["ok"] and not chain.directory.exists()
         chain.heartbeat.begin_session_delete.assert_awaited_once_with(SESSION)
