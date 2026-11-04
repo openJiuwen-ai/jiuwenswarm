@@ -24,6 +24,8 @@ def _clear_bound_turns():
     bootstrap._deferred_direct.clear()
     bootstrap._proxy_tools.clear()
     bootstrap._accepted_plans.clear()
+    bootstrap._open_organization_turns.clear()
+    bootstrap._organization_run_attempts.clear()
 
 
 MEMBERS = [
@@ -1717,6 +1719,88 @@ async def test_early_card_only_for_multi_team_mentions(monkeypatch):
     assert len(store.calls) == 1
     assert store.calls[0][1]["organization_stage"] == "starting"
     assert store.calls[0][1]["only_if_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_unstarted_round_closes_and_live_rounds_stay(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"},
+    )
+    plan_id = "org"
+    bootstrap.note_organization_turn_started(SESSION, "business", plan_id)
+    bootstrap.note_organization_turn_started(SESSION, "insight", plan_id)
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    assert bootstrap._plan_record(SESSION, plan_id)["status"] == "pending"
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, plan_id)["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert store.calls[-1][1]["phase"] == "failed"
+    assert store.calls[-1][1]["organization_stage"] is None
+
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Live", "client_message_id": "live"},
+    )
+    hold = asyncio.create_task(asyncio.Event().wait())
+    bootstrap._owner_runs[(SESSION, "live")] = hold
+    bootstrap.note_organization_turn_started(SESSION, "business", "live")
+    bootstrap.note_organization_turn_started(SESSION, "insight", "live")
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, "live")["status"] == "pending"
+    hold.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await hold
+    bootstrap._owner_runs.pop((SESSION, "live"), None)
+
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Queued", "client_message_id": "queued"},
+    )
+    queued = asyncio.create_task(asyncio.Event().wait())
+    bootstrap._queued_plans[(SESSION, "queued", "business")] = queued
+    bootstrap.note_organization_turn_started(SESSION, "business", "queued")
+    bootstrap.note_organization_turn_started(SESSION, "insight", "queued")
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, "queued")["status"] == "pending"
+    assert "queued" in bootstrap._member_turns[(SESSION, "business")]
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    bootstrap._queued_plans.pop((SESSION, "queued", "business"), None)
+
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Retry", "client_message_id": "retry"},
+    )
+    bootstrap.note_organization_turn_started(SESSION, "business", "retry")
+    bootstrap.note_organization_run_attempt(SESSION, "business", "retry")
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    assert bootstrap._plan_record(SESSION, "retry")["status"] == "pending"
+    assert "retry" in bootstrap._member_turns[(SESSION, "business")]
+
+
+@pytest.mark.asyncio
+async def test_failed_recording_round_closes_before_proxy_turns(monkeypatch):
+    from jiuwenswarm.agents.swarm.group_org_bootstrap import fail_unstarted_organization_round
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"},
+    )
+    bootstrap.note_organization_turn_started(SESSION, "business", "org")
+    await fail_unstarted_organization_round(SESSION, "org")
+    assert bootstrap._plan_record(SESSION, "org")["status"] == "pending"
+    bootstrap._open_organization_turns.clear()
+    await fail_unstarted_organization_round(SESSION, "org")
+    assert bootstrap._plan_record(SESSION, "org")["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert store.calls[-1][1]["phase"] == "failed"
+    assert bootstrap.peek_member_turn(SESSION, "business") is None
 
 
 @pytest.mark.asyncio
