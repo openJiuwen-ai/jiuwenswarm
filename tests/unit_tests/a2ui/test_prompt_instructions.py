@@ -39,19 +39,15 @@ def test_a2ui_prompt_discourages_nested_templates():
 def test_a2ui_prompt_titles_input_components_with_text():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert 'TextField\'s "label" MUST be present but empty' in en
+    assert 'the inline label of TextField, CheckBox, and Slider MUST' in en
     assert '{"literalString": ""}' in en
-    assert "avoiding a doubled label" not in en
     assert "Wrap each Text title and its input component together in a Column." in en
-    assert "(title first, input second)" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert '"label" 必须存在但置空' in zh
+    assert "TextField、CheckBox、Slider 的内联 label" in zh
     assert '{"literalString": ""}' in zh
-    assert "避免双重标签" not in zh
     assert "共同包在一个 Column 里。" in zh
-    assert "标题在前、输入在后" not in zh
 
 
 def test_a2ui_prompt_heading_text_is_plain_text():
@@ -59,13 +55,11 @@ def test_a2ui_prompt_heading_text_is_plain_text():
 
     assert "Titles MUST be plain text" in en
     assert "MUST NOT contain any Markdown syntax" in en
-    assert "parsed as a bullet list" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "标题必须是纯文本" in zh
     assert "禁止任何 Markdown 语法" in zh
-    assert "会被解析成无序列表" not in zh
 
 
 def test_a2ui_prompt_component_fit():
@@ -86,12 +80,14 @@ def test_a2ui_prompt_wraps_outermost_ui_in_card():
     assert "outermost structured UI MUST be wrapped in a Card" in en
     assert "single component id" in en
     assert "Column for vertical" in en
+    assert "do not wrap the List of Cards in an extra outer Card" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "最外层结构化 UI 统一用 Card 作为容器壳承载" in zh
     assert "child 只收一个组件 id" in zh
     assert "纵向 Column、横向 Row、重复列表 List" in zh
+    assert "card-list 请求时不要再在外层包额外 Card" in zh
 
 
 def test_a2ui_prompt_enforces_single_parent_tree():
@@ -121,16 +117,17 @@ def test_a2ui_prompt_action_button_row_order():
 
     assert "MUST go into a horizontal Row" in en
     assert "the primary button goes first" in en
+    assert "Candidate-selection buttons inside a card list" in en
     assert "Do not add a Divider above the button row" in en
     assert "only one primary button" not in en
     assert "bottom of the Card" not in en
     assert 'distribution to "end"' not in en
-    assert "aligned" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "必须放进一个 Row" in zh
     assert "主要按钮放第一位" in zh
+    assert "候选选择按钮" in zh
     assert "不要在表单底部按钮行上方添加 Divider" in zh
     assert "主要按钮只设一个" not in zh
     assert "放在 Card 底部" not in zh
@@ -142,12 +139,10 @@ def test_a2ui_prompt_forbids_reset_and_clear_form_buttons():
     en = build_a2ui_autonomy_instruction("en")
 
     assert "Do NOT add buttons that reset or clear form values" in en
-    assert "dataModelUpdate-initialized values" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "清空表单值的按钮" in zh
-    assert "dataModelUpdate 初始化的值" not in zh
 
 
 def test_a2ui_prompt_title_usage_hint_structure():
@@ -158,8 +153,6 @@ def test_a2ui_prompt_title_usage_hint_structure():
     assert 'usageHint "h3"' in en
     assert "no section grouping" in en
     assert 'inside the section MUST use usageHint "h3"' in en
-    assert "MUST always use" not in en
-    assert "exactly one input component" not in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
@@ -168,7 +161,6 @@ def test_a2ui_prompt_title_usage_hint_structure():
     assert 'usageHint "h3"' in zh
     assert "没有分组" in zh
     assert "分组内每个输入组件正上方的标题必须用 usageHint \"h3\"" in zh
-    assert "只有一个输入组件" not in zh
 
 
 def test_a2ui_prompt_cancel_button_only_when_needed():
@@ -188,13 +180,11 @@ def test_a2ui_prompt_cancel_button_only_when_needed():
 def test_a2ui_prompt_image_url_reachable_rule():
     en = build_a2ui_autonomy_instruction("en")
 
-    assert "Every image URL MUST be a valid, reachable link." in en
-    assert "obtained from the user or a tool result" not in en
+    assert "do not claim a URL is reachable if you have not verified it" in en
 
     zh = build_a2ui_autonomy_instruction("zh")
 
-    assert "图片 URL 必须是有效可访问的链接。" in zh
-    assert "须来自用户提供或工具返回" not in zh
+    assert "未经验证不要声称链接可达" in zh
 
 
 def test_a2ui_prompt_forbids_emoji_in_ui_text():
