@@ -16,8 +16,10 @@ from jiuwenswarm.extensions_v2.event_types.session_start import register_session
 from jiuwenswarm.extensions_v2.event_types.session_queries import register_session_query_events
 from jiuwenswarm.extensions_v2.event_types.session_receive import register_session_receive_event
 from jiuwenswarm.extensions_v2.event_types.session_compact import register_session_compact_event
+from jiuwenswarm.extensions_v2.event_types.session_authorize import register_session_authorize_event
 from jiuwenswarm.extensions_v2.event_types.session_send import register_session_send_event
 from jiuwenswarm.extensions_v2.event_handlers.session_queries import register_session_query_handlers
+from jiuwenswarm.extensions_v2.event_handlers.session_authorize import register_authorization_lifecycle_handlers
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import SessionFileService, register_session_ops
 
 if TYPE_CHECKING:
@@ -42,6 +44,7 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
     register_session_send_event(bus)
     register_session_receive_event(bus)
     register_session_compact_event(bus)
+    register_session_authorize_event(bus)
     _register_team_event_types(bus)
 
 
@@ -51,12 +54,15 @@ def register_handlers(
     *,
     file_service: SessionFileService | None = None,
     compact_service=None,
+    authorization_service=None,
 ) -> None:
     """Register BUILTIN handlers for existing event types."""
 
     webui.register_handlers(bus)
     register_session_query_handlers(bus)
-    register_session_ops(bus, file_service=file_service, compact_service=compact_service)
+    register_session_ops(bus, file_service=file_service, compact_service=compact_service,
+                         authorization_service=authorization_service)
+    register_authorization_lifecycle_handlers(bus, authorization_service)
     _register_team_ops(bus)
 
 

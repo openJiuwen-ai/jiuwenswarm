@@ -224,6 +224,7 @@ def register_session_ops(
     *,
     file_service: SessionFileService | None = None,
     compact_service=None,
+    authorization_service=None,
 ) -> None:
     """Register session capabilities before Registry initializes Ops once."""
 
@@ -256,6 +257,8 @@ def register_session_ops(
         builder = await session_ops_build(event, ops, next_handler, bus=bus)
         builder.add_method("session", "files", files)
         builder.add_method("session", "read_file", read_file)
+        from jiuwenswarm.extensions_v2.handler_ops.session_authorize import add_session_authorize_method
+        add_session_authorize_method(builder, authorization_service)
         async def compact(ops, *, instructions=None):
             if compact_service is None:
                 from openjiuwen.core.context_engine import CompactionError
