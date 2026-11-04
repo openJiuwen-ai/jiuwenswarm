@@ -259,7 +259,6 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import (
     _model_reload_fingerprint,
     _models_config_fingerprint,
     _prepare_multimodal_image_inputs,
-    _prepare_react_image_tool_prompt,
     _resolve_enable_read_image_multimodal,
     _stable_reload_fingerprint,
     _system_prompt_reload_fingerprint,
@@ -907,7 +906,6 @@ from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
     parse_agent_skill_prebuilt,
 )
 from jiuwenswarm.common.utils import (
-    DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
     fill_template_defaults,
     get_agent_evolution_trajectories_dir,
     get_agent_root_dir,
@@ -4721,6 +4719,7 @@ class JiuWenSwarmDeepAdapter:
             model = _build_model_from_entry(
                 mcc,
                 entry.get("model_config_obj") or {},
+                entry.get("modalities"),
             )
         except Exception as exc:
             logger.warning(
@@ -4828,7 +4827,13 @@ class JiuWenSwarmDeepAdapter:
             or {}
         )
         try:
-            model = _build_model_from_entry(mcc, mco)
+            model = _build_model_from_entry(
+                mcc,
+                mco,
+                modalities=default_model_config.get("modalities")
+                if default_model_config.get("modalities") is not None
+                else react_config.get("modalities"),
+            )
             self._model_cache[model_name] = model
             model_ref = build_model_identity_reference(model_name, mcc)
             self._model_identity_to_keys.setdefault(model_ref, []).append(model_name)
@@ -4919,7 +4924,7 @@ class JiuWenSwarmDeepAdapter:
             mcc = entry.get("model_client_config") or {}
             model_name = str(mcc.get("model_name") or "")
             try:
-                model = _build_model_from_entry(mcc, entry.get("model_config_obj") or {})
+                model = _build_model_from_entry(mcc, entry.get("model_config_obj") or {}, entry.get("modalities"))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] 保留重载前模型失败 %s: %s", model_name, exc
@@ -5113,10 +5118,43 @@ class JiuWenSwarmDeepAdapter:
         return model
 
 
+    @staticmethod
+    def _resolve_enable_read_image_multimodal(
+        config: dict[str, Any], model: Any | None = None
+    ) -> bool:
+        """薄封装：唯一真源在 ``deep.model_factory``，保留类方法供子类/测试调用。"""
+        return _resolve_enable_read_image_multimodal(config, model)
+
     def _native_image_input_enabled(self, config: dict[str, Any], model: Any | None) -> bool:
-        # read_file 默认不读取图片：不把图片字节内联进主模型对话，改走 image_reading / VQA 工具。
-        # 仅当 config.yaml 显式设置 enable_read_image_multimodal 时遵从配置；模型名启发式已移除。
-        return _resolve_enable_read_image_multimodal(config)
+        # 看图能力只由逐模型 modalities 是否含 image 决定（未声明即不支持）。
+        return _resolve_enable_read_image_multimodal(config, model)
+
+    @staticmethod
+    def _validate_checkpointer_consistency(
+        freeze_checkpointer: Any,
+        recover_checkpointer: Any,
+    ) -> None:
+        """冻结侧（实例级）与恢复侧（session/进程默认）checkpointer 不一致时告警。
+
+        纯检查 + 日志，不改变任何赋值/绑定/创建逻辑。实例相同或底层 ``_kv_store``
+        相同视为一致，不告警。
+        """
+        if freeze_checkpointer is None or recover_checkpointer is None:
+            return
+        if freeze_checkpointer is recover_checkpointer:
+            return
+        freeze_kv = getattr(freeze_checkpointer, "_kv_store", None)
+        recover_kv = getattr(recover_checkpointer, "_kv_store", None)
+        if freeze_kv is None or recover_kv is None:
+            return
+        if freeze_kv is recover_kv:
+            return
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] checkpointer consistency mismatch on "
+            "freeze/recover: freeze_kv=%r recover_kv=%r",
+            freeze_kv,
+            recover_kv,
+        )
 
 
     def _apply_model_to_react_agent(self, model: Model) -> None:
@@ -5177,6 +5215,21 @@ class JiuWenSwarmDeepAdapter:
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] failed to sync deep_config.model",
+                    exc_info=True,
+                )
+            # 主模型切换后必须同步看图能力位：否则文本模型会继承上一个视觉模型的
+            # enable_read_image_multimodal=True，导致 rail 误注入 + 摘掉 VQA。
+            # 与自动路由（ModelRoutingRail.before_invoke 直接 set_llm）共用同一 helper
+            # 收敛，避免换模入口漏同步。
+            try:
+                from jiuwenswarm.agents.harness.common.rails.model_routing.image_capability_sync import (
+                    sync_agent_image_capability,
+                )
+
+                sync_agent_image_capability(self._instance, model)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] failed to sync deep_config.enable_read_image_multimodal",
                     exc_info=True,
                 )
 
@@ -7873,7 +7926,11 @@ class JiuWenSwarmDeepAdapter:
                 "_multimodal_image_rail",
                 _build_multimodal_image_rail,
                 {
-                    "enable_image_multimodal": _resolve_enable_read_image_multimodal(config),
+                    # 请求时回退到 deep_config.enable_read_image_multimodal（由模型能力解析写入）。
+                    "enable_image_multimodal": None,
+                    "max_total_bytes": config.get("multimodal_image_budget"),
+                    "max_visual_tokens": config.get("multimodal_image_token_budget"),
+                    "max_count": config.get("multimodal_image_max_count"),
                 },
             ),
             _RailBuildInfo(
@@ -8152,7 +8209,7 @@ class JiuWenSwarmDeepAdapter:
             rails=rails,
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
-            enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config),
+            enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config, model),
             completion_timeout=config.get("completion_timeout", 21600.0),
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
@@ -9116,7 +9173,7 @@ class JiuWenSwarmDeepAdapter:
                     kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
                     vision_model_config=self._vision_model_config,
                     audio_model_config=self._audio_model_config,
-                    enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config),
+                    enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config, model),
                     enable_llm_retry_rail=((config_base.get("execution_guard") or {}).get("llm_retry_rail") or {}).get(
                         "enabled", False
                     ),
@@ -10819,6 +10876,10 @@ class JiuWenSwarmDeepAdapter:
             return
         if not _cron_session_has_context(cron_inner):
             try:
+                self._validate_checkpointer_consistency(
+                    self._get_adapter_checkpointer(),
+                    _cron_execution_checkpointer(cron_inner),
+                )
                 await _cron_execution_checkpointer(cron_inner).pre_agent_execute(
                     cron_inner, None
                 )
@@ -11502,6 +11563,13 @@ class JiuWenSwarmDeepAdapter:
                 if context_engine is not None and freeze_session is not None:
                     actual_session = getattr(freeze_session, "_parent", freeze_session) or freeze_session
                     await context_engine.save_contexts(actual_session)
+                    recover_inner = getattr(
+                        getattr(self._instance, "_interaction_session", None), "_inner", None
+                    )
+                    self._validate_checkpointer_consistency(
+                        self._get_adapter_checkpointer(),
+                        _cron_execution_checkpointer(recover_inner),
+                    )
                     await post_agent_execute_for_session(freeze_session, self._checkpointer)
             except Exception as exc:
                 logger.warning(
@@ -15390,18 +15458,15 @@ class JiuWenSwarmDeepAdapter:
                 self._config_cache,
                 resolved_model,
             )
-            inputs = _prepare_react_image_tool_prompt(
-                request,
-                inputs,
-                enable_read_image_multimodal=enable_read_image_multimodal,
-            )
-            from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            from jiuwenswarm.agents.harness.common.multimodal import (
                 set_current_multimodal_image_files,
+                store_current_multimodal_image_files_on_agent,
             )
 
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
+            image_files = inputs.pop("_multimodal_image_files", []) or []
+            image_files_token = set_current_multimodal_image_files(image_files)
+            # ContextVar 不跨「请求协程 → agent 任务」边界，镜像到 DeepAgent 实例跨边界读。
+            store_current_multimodal_image_files_on_agent(self._instance, image_files)
             # Sync single-agent / coding-agent observability with current
             # config before running, and open a root span so OtelCallbackHandler
             # has a parent for LLM/tool spans (see streaming path for details).
@@ -15544,7 +15609,7 @@ class JiuWenSwarmDeepAdapter:
                     ("run_span", lambda: close_agent_run_span(_run_span, session_id=session_id))
                 )
             if image_files_token is not None:
-                from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+                from jiuwenswarm.agents.harness.common.multimodal import (
                     reset_current_multimodal_image_files,
                 )
                 cleanup_steps.append(
@@ -16004,6 +16069,7 @@ class JiuWenSwarmDeepAdapter:
                 mode=mode,
             )
             perf_summary_status = "ok"
+            team_image_files_token = None
             try:
                 resolved_model = self._resolve_model_for_request(request)
                 self._apply_model_to_react_agent(resolved_model)
@@ -16012,11 +16078,27 @@ class JiuWenSwarmDeepAdapter:
                     self._config_cache,
                     resolved_model,
                 )
-                inputs = _prepare_react_image_tool_prompt(
+                image_tool_fallback_notice = _build_image_tool_fallback_notice(
                     request,
-                    inputs,
                     enable_read_image_multimodal=enable_read_image_multimodal,
+                    model=resolved_model,
+                    query=inputs.get("query") if isinstance(inputs.get("query"), str) else None,
                 )
+                from jiuwenswarm.agents.harness.common.multimodal import (
+                    set_current_multimodal_image_files,
+                    store_current_multimodal_image_files_on_agent,
+                )
+
+                image_files = inputs.pop("_multimodal_image_files", []) or []
+                team_image_files_token = set_current_multimodal_image_files(image_files)
+                store_current_multimodal_image_files_on_agent(self._instance, image_files)
+                if image_tool_fallback_notice is not None:
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=image_tool_fallback_notice,
+                        is_complete=False,
+                    )
                 resolved_language = self._resolve_runtime_language()
                 resolved_channel = str(cid or self._resolve_prompt_channel(session_id) or "web").strip() or "web"
                 if self._runtime_prompt_rail:
@@ -16084,6 +16166,12 @@ class JiuWenSwarmDeepAdapter:
                 _LLM_TRACE_REQUEST_ID.reset(token_trace_rid)
                 _LLM_TRACE_ITERATION.reset(token_trace_iter)
                 _LLM_TRACE_MODEL_NAME.reset(token_trace_model)
+                if team_image_files_token is not None:
+                    from jiuwenswarm.agents.harness.common.multimodal import (
+                        reset_current_multimodal_image_files,
+                    )
+
+                    reset_current_multimodal_image_files(team_image_files_token)
             return
 
         # Auto-Harness 模式处理
@@ -16638,11 +16726,7 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
                 model=resolved_model,
-            )
-            inputs = _prepare_react_image_tool_prompt(
-                request,
-                inputs,
-                enable_read_image_multimodal=enable_read_image_multimodal,
+                query=inputs.get("query") if isinstance(inputs.get("query"), str) else None,
             )
             if image_tool_fallback_notice is not None:
                 yield AgentResponseChunk(
@@ -16651,13 +16735,15 @@ class JiuWenSwarmDeepAdapter:
                     payload=image_tool_fallback_notice,
                     is_complete=False,
                 )
-            from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            from jiuwenswarm.agents.harness.common.multimodal import (
                 set_current_multimodal_image_files,
+                store_current_multimodal_image_files_on_agent,
             )
 
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
+            image_files = inputs.pop("_multimodal_image_files", []) or []
+            image_files_token = set_current_multimodal_image_files(image_files)
+            # ContextVar 不跨「请求协程 → agent 任务」边界，镜像到 DeepAgent 实例跨边界读。
+            store_current_multimodal_image_files_on_agent(self._instance, image_files)
             # Resolve debug-trace settings early: its otel_enabled drives the
             # OTel force-enable below. Best-effort (config read never raises).
             from jiuwenswarm.server.runtime.debug_trace.config import (
@@ -17642,7 +17728,7 @@ class JiuWenSwarmDeepAdapter:
                     )
                 )
             if image_files_token is not None:
-                from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+                from jiuwenswarm.agents.harness.common.multimodal import (
                     reset_current_multimodal_image_files,
                 )
                 cleanup_steps.append(

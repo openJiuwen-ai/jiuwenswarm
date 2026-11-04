@@ -609,14 +609,14 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
         ("acp", None, None, "workspace_acp"),
     ],
 )
-async def test_team_stream_injects_image_tool_context_for_non_vision_model(
+async def test_team_stream_keeps_image_reference_for_non_vision_model(
     monkeypatch,
     channel_id,
     service_id,
     agent_id,
     expected_workspace_key,
 ):
-    """Team mode must preserve the same local-image tool context as agent mode."""
+    """Team mode must preserve the same local-image reference lines as agent mode."""
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = SimpleNamespace()  # pylint: disable=protected-access
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
@@ -667,11 +667,35 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
         is_stream=True,
     )
 
-    async for _ in adapter.process_message_stream_impl(request, {"query": "解析图片内容"}):
-        pass
+    chunks = []
+    async for chunk in adapter.process_message_stream_impl(
+        request, {"query": "解析图片内容"}
+    ):
+        chunks.append(chunk)
 
-    assert "jiuwenswarm_image_tool_context" in captured["query"]
+    # 非视觉模型：query 保留 [image #n] 引用行（可按原文件出图）；
+    # 原生 vs VQA 的多模态策略由 MultimodalImageRail 按模型能力写入系统提示，
+    # 不再向 query 注入 jiuwenswarm_image_tool_context 工具上下文。
+    assert "jiuwenswarm_image_tool_context" not in captured["query"]
     assert "agent/sessions/sess-team-image/uploads/persisted.png" in captured["query"]
+
+    # 团队路径与单代理路径一致：解析为不支持原生图片时下发 fallback notice，
+    # 且本次请求绑定的图片快照在请求结束后复位。
+    notices = [
+        chunk.payload
+        for chunk in chunks
+        if isinstance(getattr(chunk, "payload", None), dict)
+        and chunk.payload.get("notice_type") == "image_tool_fallback"
+    ]
+    assert len(notices) == 1
+    assert notices[0]["image_count"] == 1
+    assert notices[0]["request_id"] == "req-team-image"
+
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files,
+    )
+
+    assert current_multimodal_image_files() == []
     from jiuwenswarm.common.utils import resolve_tenant_sessions_dir
     from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 

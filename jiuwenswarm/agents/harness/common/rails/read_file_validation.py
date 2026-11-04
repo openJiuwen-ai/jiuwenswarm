@@ -93,6 +93,26 @@ _BINARY_RESULT_MARKERS = (
 
 _PATH_KEYS = ("path", "file_path", "file", "target_file")
 
+# 视觉理解工具：主模型可原生看图时这些工具应被跳过，图片像素已随消息提供。
+# ``image_ocr`` 是 agent-core 的真实工具名（``vision.py`` 的
+# ``build_tool_card("image_ocr", ...)``），``ImageOCR`` 是前端 / 权限投影里的显示名。
+# 本仓 multimodal_image_rail 的提示、permission_rail、code_agent_rail 归一后都用前者；
+# 漏登记会让"原生看图仍去调 OCR"的矛盾态从这个工具复活。
+VISION_TOOL_NAMES = frozenset(
+    {
+        "visual_question_answering",
+        "vision_qa",
+        "VisionQA",
+        "image_reading",
+        "image_ocr",
+        "ImageOCR",
+    }
+)
+
+
+def is_vision_tool(tool_name: str) -> bool:
+    return str(tool_name or "").strip() in VISION_TOOL_NAMES
+
 
 def is_read_file_tool(tool_name: str) -> bool:
     return str(tool_name or "").strip() in READ_FILE_TOOL_NAMES
@@ -129,6 +149,30 @@ def extract_path_from_arguments(arguments: Any) -> str | None:
     return None
 
 
+def extract_paths_from_arguments(arguments: Any) -> list[str]:
+    """Extract all file paths from tool arguments, including ``file_paths`` lists."""
+    data = _coerce_arguments_dict(arguments)
+    if data is None:
+        single = extract_path_from_arguments(arguments)
+        return [single] if single else []
+
+    paths: list[str] = []
+    raw_paths = data.get("file_paths")
+    if isinstance(raw_paths, (list, tuple)):
+        paths.extend(
+            str(item).strip()
+            for item in raw_paths
+            if isinstance(item, str) and item.strip()
+        )
+    elif isinstance(raw_paths, str) and raw_paths.strip():
+        paths.append(raw_paths.strip())
+    for key in _PATH_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+    return list(dict.fromkeys(paths))
+
+
 def is_image_file_path(path: str) -> bool:
     if not path:
         return False
@@ -142,6 +186,66 @@ def is_non_text_file_path(path: str) -> bool:
     if ext in _IMAGE_EXTENSIONS or ext in _NON_TEXT_EXTENSIONS:
         return True
     return False
+
+
+# 视觉工具的目标参数键：``image_ocr`` / ``visual_question_answering`` 用
+# ``image_path_or_url``（本地路径或公网 http(s) URL），``image_reading`` 用
+# ``local_url`` / ``remote_url``。这里只取字符串值，缺参 / 非字符串一律视为
+# "没有目标"。
+_VISION_TOOL_TARGET_KEYS = (
+    "image_path_or_url",
+    "image_url",
+    "image_path",
+    "local_url",
+    "remote_url",
+)
+
+
+def is_remote_image_url(value: str) -> bool:
+    """HTTP(S) 地址是远程图片，主模型原生像素不可能已随消息提供。
+
+    远程图片只能由视觉工具自行拉取分析，不能因为"本轮提供了本地图片"就封禁
+    对它调用 VQA / OCR 的兜底路径。
+    """
+    text = str(value or "").strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def vision_tool_image_targets(tool_name: str, arguments: Any) -> list[str]:
+    """返回视觉工具本次调用要分析的目标图片（本地路径或 URL）列表。
+
+    提取不到目标（未附带图片 / 参数缺失 / 非字符串）时返回空列表，调用方按
+    "未知目标"放行——不能既拦调用又让模型拿不到兜底路径。
+    """
+    data = _coerce_arguments_dict(arguments)
+    if data is None:
+        return []
+    targets: list[str] = []
+    for key in _VISION_TOOL_TARGET_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            targets.append(value.strip())
+    return targets
+
+
+def vision_tool_targets_all_provided(
+    tool_name: str, arguments: Any, provided_paths: Any
+) -> bool:
+    """视觉工具调用是否**全部**落在"已随消息提供像素"的本地路径上。
+
+    仅当至少有一个目标、且每个目标都是已提供的本地路径时返回 True（该调用是对
+    已到手像素的重复分析）。远程 URL / 未知目标 / 未提供的本地路径 → False（放行，
+    保留视觉工具兜底路径）。
+    """
+    targets = vision_tool_image_targets(tool_name, arguments)
+    if not targets:
+        return False
+    from jiuwenswarm.agents.harness.common.multimodal import is_provided_image_path
+
+    return all(
+        not is_remote_image_url(target) and is_provided_image_path(target, provided_paths)
+        for target in targets
+    )
 
 
 def build_non_text_read_error(path: str, *, language: str = "cn") -> str:
@@ -168,6 +272,46 @@ def build_non_text_read_error(path: str, *, language: str = "cn") -> str:
 def is_read_file_error_message(message: str) -> bool:
     text = str(message or "").lstrip()
     return text.startswith(READ_FILE_ERROR_PREFIX)
+
+
+def build_provided_image_read_error(path: str, *, language: str = "cn") -> str:
+    """拒绝读取已随消息提供像素的图片。"""
+
+    target = path or "<unknown>"
+    if language == "cn":
+        return (
+            f"{READ_FILE_ERROR_PREFIX} 「{target}」已作为图像内容随本次消息直接提供，"
+            "无需再调用 read_file 读取；请直接使用已提供的图片像素。"
+        )
+    return (
+        f"{READ_FILE_ERROR_PREFIX} '{target}' is already provided as image content "
+        "in this request; do not call read_file for it. Use the provided image pixels directly."
+    )
+
+
+def build_native_image_tool_error(*, language: str = "cn") -> str:
+    """拒绝在原生看图模型下调用视觉理解工具（VQA / image_reading / image_ocr）。"""
+
+    if language == "cn":
+        return (
+            "[VISION_TOOL_SKIPPED] 当前模型支持原生看图，用户上传的图片已作为图像内容"
+            "随消息直接提供，无需调用 visual_question_answering、image_reading 或 "
+            "image_ocr。"
+            "请直接使用已提供的图片像素回答；其他本地图片请用 read_file 读取。"
+        )
+    return (
+        "[VISION_TOOL_SKIPPED] The current model supports native image understanding and "
+        "user-uploaded images are provided directly as image content. "
+        "Do not call visual_question_answering, image_reading or image_ocr. "
+        "Answer using the provided image pixels; for other local images use read_file."
+    )
+
+
+def reject_vision_tool_for_native_image(
+    ctx: "AgentCallbackContext", *, language: str = "cn"
+) -> None:
+    """Skip a vision tool call when the main model already received the pixels."""
+    reject_read_file(ctx, build_native_image_tool_error(language=language))
 
 
 def _unwrap_tool_output(result: Any) -> Any:

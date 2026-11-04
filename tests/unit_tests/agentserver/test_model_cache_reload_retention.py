@@ -58,7 +58,7 @@ def _adapter(monkeypatch) -> tuple[JiuWenSwarmDeepAdapter, list[str]]:
     adapter._instance = SimpleNamespace(_react_agent=SimpleNamespace())
     built: list[str] = []
 
-    def _build(mcc, _mco):
+    def _build(mcc, _mco, *_args, **_kwargs):
         built.append(mcc["model_name"])
         return Model(
             model_client_config=ModelClientConfig(
