@@ -681,7 +681,7 @@ class ClipNodeHandler:
         cfg = dict(cfg)
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             extract_last_frame,
-            resolve_gated_last_frame_chain,
+            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
             stamp_last_frame_onto_next_clips,
             stamp_scene_last_frame_chain,
@@ -695,7 +695,7 @@ class ClipNodeHandler:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_files = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=ctx)
+        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, ctx)
         if scene_chain:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg

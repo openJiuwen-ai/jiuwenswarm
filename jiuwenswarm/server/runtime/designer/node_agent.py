@@ -1101,7 +1101,7 @@ class DesignerGraphToolkit:
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             extract_last_frame,
-            resolve_gated_last_frame_chain,
+            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
             stamp_last_frame_onto_next_clips,
             stamp_scene_last_frame_chain,
@@ -1129,7 +1129,7 @@ class DesignerGraphToolkit:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=self.ctx)
+        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, self.ctx)
         if scene_chain:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg

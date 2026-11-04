@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-import dataclasses
 import logging
 import os
 import re
@@ -39,7 +37,11 @@ from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
     is_silent_music_placeholder,
 )
 from jiuwenswarm.server.runtime.designer.handlers.common import role_output_text
-from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
+from jiuwenswarm.server.runtime.designer.handlers.types import (
+    NodeExecutionContext,
+    NodeResult,
+    thread_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -874,17 +876,6 @@ def _mux_overlay_audio(ffmpeg: str, video: Path, audio: Path, dest: Path) -> boo
     return True
 
 
-def _thread_snapshot(ctx: NodeExecutionContext) -> NodeExecutionContext:
-    """Private copy of ``ctx`` for a worker thread: the loop keeps mutating the live records."""
-    return dataclasses.replace(
-        ctx,
-        graph=copy.deepcopy(ctx.graph),
-        run=copy.deepcopy(ctx.run),
-        emit_activity=None,
-        on_prompt_artifact=None,
-    )
-
-
 def _probe_clip_inputs(ctx: NodeExecutionContext, expected: int) -> tuple[list[Path], list[str]]:
     """Shot clip files in film order, plus the ones that are empty/0:00 stubs (blocking probes)."""
     paths = collect_clip_video_paths(ctx)
@@ -968,7 +959,7 @@ class ComposeNodeHandler:
                         + ", ".join(not_ready[:8])
                     )
                 paths, bad = await run_off_loop(
-                    _probe_clip_inputs, _thread_snapshot(ctx), len(expected_clips)
+                    _probe_clip_inputs, thread_snapshot(ctx), len(expected_clips)
                 )
                 if expected_clips and len(paths) < len(expected_clips):
                     raise RuntimeError(
@@ -1004,7 +995,7 @@ class ComposeNodeHandler:
         ) / f"{stem}.mp4"
         brief = role_output_text(ctx, NODE_ROLE_BRIEF) or ""
         scored = await run_off_loop(
-            _assemble_film, _thread_snapshot(ctx), paths, dest, stem, brief
+            _assemble_film, thread_snapshot(ctx), paths, dest, stem, brief
         )
         output_ref: AssetRef = {
             "kind": NODE_TYPE_VIDEO,

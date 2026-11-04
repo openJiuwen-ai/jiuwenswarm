@@ -14,13 +14,22 @@ Prior speech is stamped as already-delivered — next clip must not restate it.
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import shutil
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.server.runtime.designer.ffmpeg_runner import PROBE_TIMEOUT_S, run_ffmpeg
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
+    PROBE_TIMEOUT_S,
+    run_ffmpeg,
+    run_off_loop,
+)
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -518,6 +527,20 @@ def resolve_gated_last_frame_chain(
             }
         ]
     return []
+
+
+async def resolve_gated_last_frame_chain_off_loop(
+    cfg: dict[str, Any] | None,
+    ctx: NodeExecutionContext,
+) -> list[dict[str, Any]]:
+    """:func:`resolve_gated_last_frame_chain` on a worker thread: it may grab frames with ffmpeg."""
+    from jiuwenswarm.server.runtime.designer.handlers.types import thread_snapshot
+
+    snapshot = thread_snapshot(ctx)
+    graph = snapshot.graph if isinstance(snapshot.graph, dict) else {}
+    return await run_off_loop(
+        partial(resolve_gated_last_frame_chain, copy.deepcopy(cfg), graph=graph, ctx=snapshot)
+    )
 
 
 def chain_paths_newest_first(chain: list[dict[str, Any]] | None) -> list[Path]:
