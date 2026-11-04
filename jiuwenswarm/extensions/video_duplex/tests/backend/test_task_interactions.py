@@ -263,8 +263,7 @@ async def test_reorder_receipt_replays_before_version_check(system):
 @pytest.mark.parametrize(
     "source", ["permission_interrupt", "confirm_interrupt", "evolution_interrupt"]
 )
-def test_approval_cards_are_not_information_forms(source):
-    # Voice approvals go through the native approval answer path, never the information form path.
+def test_voice_never_accepts_approval(source):
     with pytest.raises(ValueError):
         information_question(
             dict(
@@ -302,13 +301,11 @@ def test_native_approval_accepts_authorization_prompt_answers():
         )
 
 
-@pytest.mark.parametrize("mode,work_mode", [("agent", "work"), ("team.design", "")])
-def test_answer_input_preserves_permission_card_id(mode, work_mode):
+def test_answer_input_preserves_permission_card_id():
     request = AgentTaskExecutor.answer_input({
         "request_id": "video-core-1",
         "core_session_id": "core-session",
         "resume_answer": True,
-        "request": {"execution_target": {"mode": mode, "work_mode": work_mode, "project_dir": "design-project"}},
         "interaction": {
             "request_id": "core-approval",
             "interrupt_id": "intr-approval",
@@ -330,9 +327,6 @@ def test_answer_input_preserves_permission_card_id(mode, work_mode):
     },)
     assert request.interrupt_id == "intr-approval"
     assert request.to_agent_request().params["interrupt_id"] == "intr-approval"
-    assert request.mode == mode
-    assert request.work_mode == work_mode
-    assert request.project_dir == "design-project"
 
 
 def test_projected_questions_keep_the_interrupt_id_of_the_event():
@@ -376,7 +370,7 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
         await until(lambda: store.read(task["id"])["status"] == "waiting_user"
                     and store.read(task["id"])["output_closed"])
         answer = [{"question": "允许执行？", "custom_input": "", "selected_options": ["allow"]}]
-        with pytest.raises(ValueError, match="manual click"):
+        with pytest.raises(ValueError, match="native user interface"):
             await service.answer("user", "voice", task["id"], "voice-answer", token(service, task), answers=answer)
         with pytest.raises(ValueError):
             await service.answer("other", "voice", task["id"], "wrong-owner", token(service, task),

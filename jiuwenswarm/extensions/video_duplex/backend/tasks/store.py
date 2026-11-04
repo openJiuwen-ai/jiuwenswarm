@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 import sqlite3
 
-from .errors import TaskNotFound
-
 
 def task_database():
     from jiuwenswarm.common.utils import get_agent_root_dir
@@ -33,10 +31,6 @@ class TaskStore:
                     owner TEXT NOT NULL, session TEXT NOT NULL, id TEXT NOT NULL,
                     fingerprint TEXT NOT NULL, task_id TEXT NOT NULL, body TEXT NOT NULL,
                     PRIMARY KEY(owner,session,id));
-                CREATE TABLE IF NOT EXISTS task_queue_versions (
-                    owner TEXT NOT NULL, session TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL, version INTEGER NOT NULL,
-                    PRIMARY KEY(owner,session));
             """)
 
     @contextmanager
@@ -59,11 +53,11 @@ class TaskStore:
             "SELECT * FROM managed_tasks WHERE id=?", (task_id,)
         ).fetchone()
         if not row:
-            raise TaskNotFound("Task not found in this conversation")
+            raise ValueError("Task not found in this conversation")
         if owner is not None and row["owner"] != owner:
-            raise TaskNotFound("Task not found in this conversation")
+            raise ValueError("Task not found in this conversation")
         if session is not None and row["session"] != session:
-            raise TaskNotFound("Task not found in this conversation")
+            raise ValueError("Task not found in this conversation")
         return json.loads(row["body"])
 
     @staticmethod
