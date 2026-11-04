@@ -66,8 +66,9 @@ async def host(tmp_path, monkeypatch):
         builder.add_method("probe", "record", record)
         return builder
 
-    def register(bus, webui, *, file_service=None, compact_service=None):
-        original_build(bus, webui, file_service=file_service, compact_service=compact_service)
+    def register(bus, webui, *, file_service=None, compact_service=None, authorization_service=None):
+        original_build(bus, webui, file_service=file_service, compact_service=compact_service,
+                       authorization_service=authorization_service)
         bus.register_event_handler("ops.build", build, {}, HandlerLevel.BUILTIN)
 
     monkeypatch.setattr(assembly.bootstrap, "register_handlers", register)
