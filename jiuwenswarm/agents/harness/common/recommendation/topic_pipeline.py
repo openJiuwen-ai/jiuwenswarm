@@ -173,6 +173,7 @@ from jiuwenswarm.server.runtime.session.project_store import list_projects
 from jiuwenswarm.server.runtime.session.session_history import (
     SESSION_REQUEST_COMPLETED_EVENT,
     CompletedSessionPrefix,
+    SessionCompletionBoundary,
     project_completed_session_prefix,
     project_completed_session_records,
 )
@@ -2716,13 +2717,17 @@ def _session_summary_materialization_receipt(
 ) -> dict[str, Any]:
     summary_ids = [summary.session_summary_id for summary in summaries]
     generated = list(generated_summary_ids)
+    generated_set = set(generated)
+    # Reused summaries keep the provenance of the call that wrote them; only
+    # summaries minted in this run must carry the current config version.
     _rejected3 = (
-        len(generated) != len(set(generated))
-        or not set(generated).issubset(summary_ids)
+        len(generated) != len(generated_set)
+        or not generated_set.issubset(summary_ids)
         or not summary_config_version
         or any(
             summary.summary_config_version != summary_config_version
             for summary in summaries
+            if summary.session_summary_id in generated_set
         )
     )
     if (
@@ -2731,7 +2736,6 @@ def _session_summary_materialization_receipt(
         raise TerminalGenerationRejection(
             "session_summary_materialization_contract_failed"
         )
-    generated_set = set(generated)
     return {
         "schema_version": SESSION_SUMMARY_MATERIALIZATION_RECEIPT_VERSION,
         "input_snapshot_id": snapshot.input_snapshot_id,
@@ -3010,11 +3014,10 @@ def _latest_session_summaries(
 ) -> dict[str, Mapping[str, Any]]:
     """The newest stored summary in a scope of each of the given sessions.
 
-    A summary configuration upgrade rewrites a session at the same completion
-    boundary, and a turn that completes while the shared state is prepared
-    leaves a summary of that boundary without it; at such a tie the summary
-    written under the current configuration version, then the one covering
-    more turns, is read.
+    Summaries are content-keyed: a model or prompt-config change does not force
+    a rewrite. When several rows share a completion boundary (legacy digests),
+    prefer the one whose config version matches the current schema prefix, then
+    the one covering more turns.
     """
 
     latest: dict[str, Mapping[str, Any]] = {}
@@ -3500,6 +3503,60 @@ def _session_identity_payload(
             for message, content, answer in selected
         ],
     }
+
+
+def _session_summary_content_identity(
+    *,
+    context_scope: str,
+    session_payload: Mapping[str, Any],
+    source_event_ids: Sequence[str],
+    source_locators: Sequence[SessionSourceLocator],
+    completion_boundary: SessionCompletionBoundary,
+) -> dict[str, Any]:
+    """Content-only identity: conversation coverage, not summarizer model/config."""
+
+    return {
+        "context_scope": context_scope,
+        "session": session_payload,
+        "source_event_ids": list(source_event_ids),
+        "source_locators": [item.as_payload() for item in source_locators],
+        "completion_boundary": completion_boundary.as_payload(),
+    }
+
+
+def _session_summary_content_digest(identity: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _session_summary_content_matches(
+    artifact: SessionSummaryArtifact,
+    *,
+    session_id: str,
+    context_scope: str,
+    input_origin: str,
+    assistance_origin: str,
+    source_event_ids: Sequence[str],
+    source_locators: Sequence[SessionSourceLocator],
+    completion_boundary: SessionCompletionBoundary,
+    completed_at: float,
+) -> bool:
+    return (
+        artifact.session_id == session_id
+        and artifact.context_scope == context_scope
+        and artifact.input_origin == input_origin
+        and artifact.assistance_origin == assistance_origin
+        and artifact.source_event_ids == tuple(source_event_ids)
+        and artifact.source_locators == tuple(source_locators)
+        and artifact.completion_boundary == completion_boundary
+        and float(artifact.completed_at) == float(completed_at)
+    )
 
 
 def _clip_summary_text(value: str | None, limit: int) -> str | None:
@@ -5579,6 +5636,72 @@ class TopicPipeline:
         if not fitted:
             raise TerminalGenerationRejection("rid_context_limit")
 
+    def _load_reusable_session_summary(
+        self,
+        *,
+        summary_id: str,
+        session_id: str,
+        context_scope: str,
+        input_origin: str,
+        assistance_origin: str,
+        source_event_ids: Sequence[str],
+        source_locators: Sequence[SessionSourceLocator],
+        completion_boundary: SessionCompletionBoundary,
+        completed_at: float,
+    ) -> SessionSummaryArtifact | None:
+        """Return a stored summary for the same conversation content, if any.
+
+        Exact content digests hit first. Legacy rows whose id still embedded
+        summarizer model/config are reused when turns and completion boundary
+        match, so a model switch does not rewrite history.
+        """
+
+        rows = self.store.query_events(
+            event_type="session_summary",
+            topic_id=summary_id,
+            policy_id=POLICY_ID,
+            limit=2,
+            newest_first=True,
+        )
+        payload: Mapping[str, Any] | None = None
+        if rows:
+            if len(rows) != 1 or not isinstance(rows[0].get("payload"), dict):
+                raise TerminalGenerationRejection(
+                    "session_summary_persistence_conflict"
+                )
+            payload = rows[0]["payload"]
+        else:
+            latest = _latest_session_summaries(
+                self.store, context_scope, {session_id},
+            ).get(session_id)
+            if isinstance(latest, Mapping):
+                payload = latest
+        if payload is None:
+            return None
+        try:
+            cached = SessionSummaryArtifact.from_payload(payload)
+        except ValueError as exc:
+            raise TerminalGenerationRejection(
+                "session_summary_persistence_conflict"
+            ) from exc
+        if not _session_summary_content_matches(
+            cached,
+            session_id=session_id,
+            context_scope=context_scope,
+            input_origin=input_origin,
+            assistance_origin=assistance_origin,
+            source_event_ids=source_event_ids,
+            source_locators=source_locators,
+            completion_boundary=completion_boundary,
+            completed_at=completed_at,
+        ):
+            if rows:
+                raise TerminalGenerationRejection(
+                    "session_summary_persistence_conflict"
+                )
+            return None
+        return cached
+
     async def _summarize_sessions(
         self,
         snapshot: V6ContextSnapshot,
@@ -5653,25 +5776,17 @@ class TopicPipeline:
                 )
                 for item in covered
             )
-            semantic_identity = {
-                "context_scope": snapshot.context_scope,
-                "session": session_payload,
-                "source_event_ids": list(source_event_ids),
-                "source_locators": [item.as_payload() for item in source_locators],
-                "completion_boundary": boundary.as_payload(),
-                "summary_provider_id": "ark",
-                "summary_provider_version": provider_version,
-                "summary_config_version": summary_config_version,
-            }
-            semantic_digest = hashlib.sha256(
-                json.dumps(
-                    semantic_identity,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-            ).hexdigest()
-            summary_id = f"summary:{session_id}:{semantic_digest}"
+            content_identity = _session_summary_content_identity(
+                context_scope=snapshot.context_scope,
+                session_payload=session_payload,
+                source_event_ids=source_event_ids,
+                source_locators=source_locators,
+                completion_boundary=boundary,
+            )
+            summary_id = (
+                f"summary:{session_id}:"
+                f"{_session_summary_content_digest(content_identity)}"
+            )
             metadata = {
                 "session_summary_id": summary_id,
                 "session_id": session_id,
@@ -5686,31 +5801,18 @@ class TopicPipeline:
                 "summary_provider_version": provider_version,
                 "summary_config_version": summary_config_version,
             }
-            rows = self.store.query_events(
-                event_type="session_summary",
-                topic_id=summary_id,
-                policy_id=POLICY_ID,
-                limit=2,
-                newest_first=True,
+            cached = self._load_reusable_session_summary(
+                summary_id=summary_id,
+                session_id=session_id,
+                context_scope=snapshot.context_scope,
+                input_origin=input_origin,
+                assistance_origin=assistance_origin,
+                source_event_ids=source_event_ids,
+                source_locators=source_locators,
+                completion_boundary=boundary,
+                completed_at=boundary.completed_at,
             )
-            if rows:
-                if len(rows) != 1 or not isinstance(rows[0].get("payload"), dict):
-                    raise TerminalGenerationRejection(
-                        "session_summary_persistence_conflict"
-                    )
-                try:
-                    cached = SessionSummaryArtifact.from_payload(rows[0]["payload"])
-                except ValueError as exc:
-                    raise TerminalGenerationRejection(
-                        "session_summary_persistence_conflict"
-                    ) from exc
-                if any(
-                    getattr(cached, field) != value
-                    for field, value in metadata.items()
-                ):
-                    raise TerminalGenerationRejection(
-                        "session_summary_persistence_conflict"
-                    )
+            if cached is not None:
                 artifacts_by_session[session_id] = cached
                 continue
             pending_sessions.append(_session_model_payload(session_id, messages))
@@ -5885,9 +5987,10 @@ class TopicPipeline:
         waits for it and reuses its summaries. A conversation is summarized
         again once a completed turn of it is missing from its latest summary.
         Only the summaries are written: no coverage receipt, as no generation
-        consumed them. A summary configuration upgrade, and a scope with more
-        than ``_PREPARED_SUMMARY_LIMIT`` such conversations (a first
-        preparation with history), are left to that scope's own generation.
+        consumed them. A scope with more than ``_PREPARED_SUMMARY_LIMIT`` such
+        conversations (a first preparation with history) is left to that
+        scope's own generation. Model or summarizer-config changes reuse
+        content-matched summaries instead of rewriting them.
         """
 
         try:

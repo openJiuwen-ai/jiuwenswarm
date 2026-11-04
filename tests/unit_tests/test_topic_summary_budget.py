@@ -514,3 +514,100 @@ def test_fit_recent_finalizer_drops_trailing_documents_then_candidates() -> None
     original_docs = sum(len(item["documents"]) for item in candidates)
     fitted_docs = sum(len(item["documents"]) for item in fitted)
     assert fitted_docs < original_docs or len(fitted) < len(candidates)
+
+
+def test_session_summary_content_digest_ignores_summarizer_config() -> None:
+    messages = (_message("s1", 0, "hello", "world"),)
+    session_payload = pipeline._session_identity_payload("s1", messages)
+    boundary = SessionCompletionBoundary(
+        session_id="s1",
+        event_id="s1:completed",
+        request_id="request-s1",
+        ordinal=10_000,
+        completed_at=1_000.0,
+        status="success",
+    )
+    locators = (
+        pipeline.SessionSourceLocator(session_id="s1", ordinal=0, event_id="s1:0"),
+    )
+    identity = pipeline._session_summary_content_identity(
+        context_scope="global_new_chat",
+        session_payload=session_payload,
+        source_event_ids=("s1:0",),
+        source_locators=locators,
+        completion_boundary=boundary,
+    )
+    digest = pipeline._session_summary_content_digest(identity)
+    # Model/config are intentionally absent from the content identity.
+    assert "summary_config_version" not in identity
+    assert "summary_provider_version" not in identity
+    assert digest == pipeline._session_summary_content_digest(identity)
+
+
+@pytest.mark.asyncio
+async def test_summarize_sessions_reuses_content_matched_summary_after_model_change() -> None:
+    messages = (_message("s1", 0, "qing emperors", "twelve"),)
+    snapshot = _snapshot(messages)
+    first_calls: list[str] = []
+
+    async def first_invoke(stage: str, system_prompt: str, payload: str) -> dict[str, Any]:
+        import json
+        first_calls.append(stage)
+        parsed = json.loads(payload)
+        return {
+            "summaries": [
+                {"session_id": session["session_id"], "summary": "qing summary"}
+                for session in parsed["sessions"]
+            ]
+        }
+
+    class _EmptyStore:
+        def query_events(self, **kwargs: Any) -> list[Any]:
+            return []
+
+    topic = object.__new__(pipeline.TopicPipeline)
+    topic.store = _EmptyStore()
+    topic._now = lambda: 1_010.0
+    config_a = ArkBackgroundConfig(
+        api_key="key",
+        model="model-a",
+        base_url="https://a.example",
+        context_window_tokens=128_000,
+    )
+    batch_a = await topic._summarize_sessions(
+        snapshot, config=config_a, invoke_stage=first_invoke,
+    )
+    assert first_calls == ["v6_session_summarizer"]
+    assert len(batch_a.artifacts) == 1
+    stored = batch_a.artifacts[0].as_payload()
+
+    second_calls: list[str] = []
+
+    async def second_invoke(stage: str, system_prompt: str, payload: str) -> dict[str, Any]:
+        second_calls.append(stage)
+        raise AssertionError("content-matched summary must not be rewritten")
+
+    class _ReuseStore:
+        def query_events(self, **kwargs: Any) -> list[Any]:
+            topic_id = kwargs.get("topic_id")
+            if topic_id == stored["session_summary_id"]:
+                return [{"payload": stored, "created_at": 1.0}]
+            if kwargs.get("event_type") == "session_summary":
+                # Latest-summary scan for legacy digests.
+                return [{"payload": stored, "created_at": 1.0}]
+            return []
+
+    topic.store = _ReuseStore()
+    config_b = ArkBackgroundConfig(
+        api_key="key",
+        model="model-b",
+        base_url="https://b.example",
+        context_window_tokens=262_144,
+    )
+    batch_b = await topic._summarize_sessions(
+        snapshot, config=config_b, invoke_stage=second_invoke,
+    )
+    assert second_calls == []
+    assert batch_b.generated_summary_ids == ()
+    assert batch_b.artifacts[0].summary_text == "qing summary"
+    assert batch_b.artifacts[0].session_summary_id == stored["session_summary_id"]
