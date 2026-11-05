@@ -191,13 +191,14 @@ class A2UIProtocolSpec:
         invalid_content: str,
         validation_error: str,
         user_query: str | None = None,
+        channel: str | None = None,
     ) -> str:
         query_section = (
             f"Original user request:\n{user_query}\n\n"
             if user_query
             else ""
         )
-        schema_prompt = self.build_prompt(language="en")
+        schema_prompt = self.build_prompt(language="en", channel=channel)
         return (
             "Your previous A2UI response was invalid. "
             f"Validation error: {validation_error}\n\n"

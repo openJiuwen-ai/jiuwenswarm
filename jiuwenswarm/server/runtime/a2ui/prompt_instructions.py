@@ -413,7 +413,7 @@ def build_a2ui_autonomy_instruction(language: str = "en", channel: str | None = 
         )
         # officeclaw 专属组件规则：web channel 不注入（防止影响 web channel）；
         # channel=None（repair 等拿不到 channel 的场景）默认注入以保持向后兼容。
-        if channel != "web":
+        if str(channel or "").strip().lower() != "web":
             base += officeclaw_component_rules_zh
         return base
     base = (
@@ -422,7 +422,7 @@ def build_a2ui_autonomy_instruction(language: str = "en", channel: str | None = 
         + autonomy_rule_en
         + requested_component_rule_en
     )
-    if channel != "web":
+    if str(channel or "").strip().lower() != "web":
         base += " " + officeclaw_component_rules_en
     return base
 
