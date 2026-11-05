@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-29 |>>>>>>> bd08d5be2 (feat(security): 会话/Skill 权限配置改由写入侧发布并修正生命周期)
+| 最近一次修订日期 | 2026-10-29 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界

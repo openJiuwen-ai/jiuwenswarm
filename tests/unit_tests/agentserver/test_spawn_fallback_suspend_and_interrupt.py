@@ -83,7 +83,7 @@ def test_suspend_does_not_patch_host_snapshot() -> None:
     )
     subagent = _FakeSubagent([rail])
 
-    restore = _suspend_subagent_permission_rails(subagent)>>>>>>> bb9ba7d35 (feat(security): W1a 权限 rail 统一 key/发布与 skill 临时 config=)
+    restore = _suspend_subagent_permission_rails(subagent)
 
     assert rail.engine_config["enabled"] is False
     assert rail._host.get_permissions_snapshot() == {"enabled": True}

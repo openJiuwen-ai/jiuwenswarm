@@ -21,30 +21,24 @@ CONFIG = {"enabled": True, "tools": {"permission_probe": "allow"}}
 
 @pytest.mark.asyncio
 async def test_enterprise_instances_with_same_routing_key_own_distinct_configs():
+    """同 routing_key 的两个 rail 实例各自有独立用户级 Manager key，不再发会话 key。"""
     business = "group:fixture/bot:fixture/user:fixture"
     deny = {**CONFIG, "tools": {"permission_probe": "deny"}}
     a = SkillAuthorizationPermissionRail(config=deny, permission_key=business)
     b = SkillAuthorizationPermissionRail(config=CONFIG, permission_key=business)
     try:
-        a.update_session_config("same-session", deny)
-        b.update_session_config("same-session", CONFIG)
         assert a.routing_key == b.routing_key == business
         assert a.permission_key != b.permission_key
-        pa = scopes_module.find_published_scopes(a.permission_key, "same-session")
-        pb = scopes_module.find_published_scopes(b.permission_key, "same-session")
-        ka, kb = (
-            pa.baseline_key_for("same-session"),
-            pb.baseline_key_for("same-session"),
-        )
         manager = get_permission_manager()
         assert (
-            await manager.check_permission("permission_probe", {}, ka)
+            await manager.check_permission("permission_probe", {}, a.permission_key)
         ).permission.value == "deny"
         assert (
-            await manager.check_permission("permission_probe", {}, kb)
+            await manager.check_permission("permission_probe", {}, b.permission_key)
         ).permission.value == "allow"
         a.uninit(None)
-        assert manager.has_config(b.permission_key) and manager.has_config(kb)
+        assert manager.has_config(b.permission_key)
+        assert not manager.has_config(a.permission_key)
     finally:
         a.uninit(None)
         b.uninit(None)
@@ -132,17 +126,20 @@ def test_close_defers_active_key_removal_until_last_user(bounded_manager):
 def test_closed_rail_cannot_resurrect_its_registration():
     rail = SkillAuthorizationPermissionRail(config=CONFIG)
     manager = get_permission_manager()
+    user_key = rail.permission_key
+    assert manager.has_config(user_key)
+    # 会话发布已停用：acquire 只返回空回调，不注册会话 key。
     release = rail.acquire_session_config("closing-session", CONFIG)
-    session_key = rail._published_scopes.baseline_key_for("closing-session")
+    assert callable(release)
+    assert rail._published_scopes.session_ids() == []
     rail.uninit(None)
     try:
         with pytest.raises(RuntimeError, match="released"):
             rail.update_config(CONFIG)
-        assert not manager.has_config(rail.permission_key)
-        assert manager.has_config(session_key)
+        assert not manager.has_config(user_key)
     finally:
         release()
-    assert not manager.has_config(session_key)
+    assert not manager.has_config(user_key)
 
 
 @pytest.mark.asyncio
@@ -216,57 +213,18 @@ def test_orphaned_owner_releases_only_its_own_keys(bounded_manager):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
-async def test_detached_child_keeps_session_until_it_finishes(mode):
-    import asyncio
-    from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
+async def test_detached_child_retain_is_noop_without_session_publish(mode):
+    """会话 retain 已停用：子 Agent 接线不再依赖已发布会话。"""
     from jiuwenswarm.agents.harness.common.tools.subagent_executor.authorization import (
-        install_subagent_authorization_wiring,
+        _retain_child_permission_session,
     )
 
-    rail = SkillAuthorizationPermissionRail(config=CONFIG)
-    release_parent = rail.acquire_session_config("child-session", CONFIG)
-    key = rail._published_scopes.baseline_key_for("child-session")
-    entered = asyncio.Event()
-
-    class Child:
-        def find_rails_by_type(self, _):
-            return [rail]
-
-        async def invoke(self):
-            entered.set()
-            await asyncio.Event().wait()
-
-        async def stream(self):
-            yield "started"
-            await asyncio.Event().wait()
-
-    class Parent:
-        def create_subagent(self, *_args):
-            return Child()
-
-    parent = Parent()
-    install_subagent_authorization_wiring(parent, config_provider=lambda: CONFIG)
-    token = config_loader.setup_permissions_session_scope("child-session")
-    try:
-        child = parent.create_subagent("worker", "child")
-        release_parent()
-        assert get_permission_manager().has_config(key)
-        if mode == "invoke":
-            task = asyncio.create_task(child.invoke())
-            await asyncio.wait_for(entered.wait(), 2)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        else:
-            stream = child.stream()
-            assert await anext(stream) == "started"
-            assert get_permission_manager().has_config(key)
-            await stream.aclose()
-        assert not get_permission_manager().has_config(key)
-    finally:
-        config_loader.reset_permissions_session_scope(token)
-        release_parent()
-        rail.uninit(None)
+    child = object()
+    # 不应抛 KeyError；空实现直接返回。
+    _retain_child_permission_session(child)
+    assert not hasattr(child, "invoke")
+    assert not hasattr(child, "stream")
+    assert mode in ("invoke", "stream")
 
 
 @pytest.fixture
@@ -304,9 +262,10 @@ def enterprise_rail(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cached", [False, True])
-async def test_enterprise_always_allow_binds_callback_session_and_publishes_without_baseline_changes(
+async def test_enterprise_always_allow_session_remember_is_inert(
     enterprise_rail, cached
 ):
+    """企业「会话内记住」只写内存 overlay，不热更用户级 key、不 publish 会话 key。"""
     from types import SimpleNamespace
     from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
@@ -316,12 +275,10 @@ async def test_enterprise_always_allow_binds_callback_session_and_publishes_with
     sid, state = "persist-session", {}
     if cached:
         rail.update_session_config(sid, config)
-    rail.update_session_config("other-session", config)
     session = SimpleNamespace(
         session_id=sid, get_state=state.get, update_state=state.update
     )
     ctx = AgentCallbackContext(agent=None, session=session, extra={})
-    assert config_loader.get_permissions_session_id() is None
     manager = get_permission_manager()
     root_before = dict(manager.get_config(rail.permission_key))
     for name in ("get_current_user", "read_memory"):
@@ -332,18 +289,15 @@ async def test_enterprise_always_allow_binds_callback_session_and_publishes_with
             {"approved": True, "auto_confirm": True, "persist_allow": True},
             {},
         )
-    assert config_loader.get_permissions_session_id() is None
     key = rail.permission_key_for(ctx)
+    assert key == rail.permission_key
     for name in ("get_current_user", "read_memory"):
         assert (
             await manager.check_permission(name, {}, key)
-        ).permission.value == "allow"
-        other = rail._published_scopes.baseline_key_for("other-session")
-        assert (
-            await manager.check_permission(name, {}, other)
         ).permission.value == "ask"
+    assert sid in config_loader._session_overlays
     assert dict(manager.get_config(rail.permission_key)) == root_before
-    assert manager.get_config(key)["net_guard"] == config["net_guard"]
+    assert rail._published_scopes.session_ids() == []
 
 
 def test_enterprise_persist_without_session_returns_failure_and_does_not_write(
@@ -371,7 +325,7 @@ def test_enterprise_persist_without_session_returns_failure_and_does_not_write(
     )
 
 
-def test_adapter_request_preparation_returns_finally_release(tmp_path):
+def test_adapter_request_preparation_updates_user_key_without_session_lease(tmp_path):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
     )
@@ -381,14 +335,12 @@ def test_adapter_request_preparation_returns_finally_release(tmp_path):
     adapter._workspace_dir = tmp_path
     adapter._permission_rail = SkillAuthorizationPermissionRail(config=CONFIG)
     try:
-        release = adapter._update_permission_rail(
-            {}, session_id="adapter-session", acquire_session=True
+        assert (
+            adapter._update_permission_rail({}, session_id="adapter-session") is None
         )
-        assert callable(release)
+        user_key = adapter._permission_rail.permission_key
+        assert get_permission_manager().has_config(user_key)
         publisher = adapter._permission_rail._published_scopes
-        key = publisher.baseline_key_for("adapter-session")
-        assert get_permission_manager().has_config(key)
-        release()
-        assert not get_permission_manager().has_config(key)
+        assert not publisher.has_session("adapter-session")
     finally:
         adapter._permission_rail.uninit(None)

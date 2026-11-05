@@ -326,7 +326,9 @@ class SubagentPermissionRail(ConfirmInterruptRail):
 
             bind_session_file_context(session_id, self._sessions_root)
         read_execution = getattr(
-            self._grant_store, "get_active_skill_execution_for_permission", self._grant_store.get_active_skill_execution,
+            self._grant_store,
+            "get_active_skill_execution_for_permission",
+            self._grant_store.get_active_skill_execution,
         )
         active_skill_name = read_execution(
             session_id,
@@ -346,10 +348,9 @@ class SubagentPermissionRail(ConfirmInterruptRail):
             return
 
         from openjiuwen.harness.security.permission_checks import check_tool_permission
-        from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import find_published_scopes
 
-        publisher = find_published_scopes(self._permission_key, session_id)
-        key = publisher.key_for(session_id, agent_scope_id)
+        # 无会话 Manager key：子 Agent 与主 Agent 共用用户级 key。
+        key = self._permission_key or "default"
         normalized = TOOL_NAME_ALIASES.get(tool_name, tool_name)
         result = await check_tool_permission(normalized, tool_args, key)
 
@@ -357,7 +358,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         try:
             perm_ctx = TOOL_PERMISSION_CONTEXT.get()
             if perm_ctx is not None and perm_ctx.principal_user_id:
-                config = publisher.projection_config(session_id)
+                config = self._config_provider() if callable(self._config_provider) else {}
                 owner_scopes = config.get("owner_scopes", {}) if isinstance(config, dict) else {}
                 cid = perm_ctx.channel_id.strip()
                 uid = perm_ctx.principal_user_id.strip()

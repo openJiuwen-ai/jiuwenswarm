@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-10-30 |>>>>>>> bd08d5be2 (feat(security): 会话/Skill 权限配置改由写入侧发布并修正生命周期)
+| 最近一次修订日期 | 2026-10-30 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界

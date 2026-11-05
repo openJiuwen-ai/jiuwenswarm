@@ -101,8 +101,18 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 "Invalid Flash action or resources",
             )
         results = [outer]
+        skill_cfg = self._compose_unpublished_skill_config(ctx)
         for operation in operations:
-            result = await check_tool_permission(operation.name, operation.args, self.permission_key_for(ctx))
+            if skill_cfg is not None:
+                from agent_shield.tool_permission import get_permission_manager
+
+                result = await get_permission_manager().check_permission(
+                    operation.name, operation.args, config=skill_cfg
+                )
+            else:
+                result = await check_tool_permission(
+                    operation.name, operation.args, self.permission_key_for(ctx)
+                )
             if _requires_explicit_approval(
                 operation, result.permission, result.matched_rule
             ):
@@ -397,7 +407,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 changed |= updated
         if not changed:
             return False
-        # 1B: host persist refreshes via rail.update_config; yaml path publishes here.
+        # 1B: host persist refreshes via rail.update_config; yaml path does the same.
         if self._host.persist_allow_rule is not None:
             try:
                 return bool(self._host.persist_allow_rule(config))
@@ -413,5 +423,5 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             )
         )
         if saved:
-            self._publish_persisted(config)
+            self.update_config(config)
         return saved

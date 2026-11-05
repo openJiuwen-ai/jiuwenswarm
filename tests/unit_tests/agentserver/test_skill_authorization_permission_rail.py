@@ -228,7 +228,7 @@ def active_skill_permissions(tmp_path, monkeypatch):
         "skill_authorization": {"enabled": True},
     }
     rail = SkillAuthorizationPermissionRail(config=baseline)
-    rail.update_session_config("session-1", baseline)
+    # 会话 publish 已停用：Skill overlay 走临时 config=，无需 update_session_config。
     gate = SkillAuthorizationRail(permission_key=rail.permission_key, grant_store=store)
     rail.set_skill_scope_resolver(gate.resolve_scope)
     ctx = SimpleNamespace(session=SimpleNamespace(session_id="session-1"))
@@ -247,12 +247,15 @@ async def test_active_skill_overlay_survives_missing_task_context(active_skill_p
     assert rail._static_config == original
 
 
-def test_permission_composition_reads_one_snapshot(active_skill_permissions):
+@pytest.mark.asyncio
+async def test_permission_composition_reads_one_snapshot(active_skill_permissions):
     rail, ctx, store, _, _ = active_skill_permissions
     with patch.object(store, "get_active", wraps=store.get_active) as read:
-        # Reading selects the published key; composition ran at publication.
-        rail.permission_key_for(ctx)
-    read.assert_called_once_with("session-1", "main")
+        # 无会话 publish：permission_key_for 直接用户级 key；
+        # Skill overlay 在 _check_tool_permission 里用临时 config= 合成时读 grant。
+        assert rail.permission_key_for(ctx) == rail.permission_key
+        await rail._check_tool_permission("get_current_user", {}, ctx)
+    read.assert_called_with("session-1", "main")
 
 
 @pytest.mark.parametrize(
@@ -448,4 +451,4 @@ async def test_subagent_tool_permission_card_leads_with_intent_headline(monkeypa
         "> 发起方：子 Agent `child-sess`（当前 Skill：`weekly-report`）"
         in captured["question"]
     )
-    assert [opt["label"] for opt in captured["options"]] == ["本次允许", "拒绝"]>>>>>>> bb9ba7d35 (feat(security): W1a 权限 rail 统一 key/发布与 skill 临时 config=)
+    assert [opt["label"] for opt in captured["options"]] == ["本次允许", "拒绝"]

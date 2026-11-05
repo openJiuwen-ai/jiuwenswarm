@@ -729,9 +729,8 @@ def build_permission_rail(
                         )
                     finally:
                         reset_permissions_agent_base(token)
-                    # Explicitly publish even if the request had no cached
-                    # session entry. Never replace the tenant/Agent baseline.
-                    publish_session(sid, effective)
+                    # 会话级记住已停用：只留内存 overlay，不再 publish / 热更 Manager。
+                    _ = effective
                 else:
                     persist_permissions_mutate(
                         mutate, persist_scope="base", persist_target_agent_id=persist_target,

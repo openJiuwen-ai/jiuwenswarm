@@ -6,7 +6,8 @@
 调用完成门禁裁决后，会在 ``ctx.extra`` 写入 ``SKILL_AUTHORIZATION_GATE_HANDLED_KEY``
 标记；本 rail（priority=90）命中标记即跳过，避免同一次调用重复弹权限审批卡。
 
-会话与 ACTIVE Skill 配置由写入侧发布；工具判定只选择已发布的 key。
+用户级配置登记在 Manager 的 routing/instance key 上。ACTIVE Skill 在未发布
+会话快照时用临时 ``config=`` 合成判定，不再要求会话级 Manager key。
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any, Callable, Optional
 from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
-from openjiuwen.harness.security.models import PermissionResult
+from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
 from openjiuwen.harness.security.permission_checks import fail_closed_permission_callback
 
 from jiuwenswarm.common.audit_emit import emit_audit_evt
@@ -59,7 +60,7 @@ def _permission_choice_label(payload: Any) -> str:
 
 
 class SkillAuthorizationPermissionRail(PermissionInterruptRail):
-    """Skill 门禁已裁决的调用跳过；其余调用使用已发布的会话/Skill key。"""
+    """Skill 门禁已裁决的调用跳过；其余调用用用户级 key，Skill 临时 config=。"""
 
     def __init__(self, config=None, tool_names=None, llm=None, model_name=None, host=None, permission_key=None):
         from uuid import uuid4
@@ -82,20 +83,16 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
             raise
 
     def update_session_config(self, session_id, config):
-        """宿主请求/配置写入口发布会话快照，保留 Agent runtime 字段。"""
-        config = copy.deepcopy(config)
-        config.setdefault("runtime", copy.deepcopy(self._static_config.get("runtime", {})))
-        self._published_scopes.publish_session(session_id, config)
+        """会话级配置不再发布到 Manager；仅保留用户级 key。"""
+        return
 
     def acquire_session_config(self, session_id, config):
-        """Publish a request policy and return an idempotent finally release."""
-        config = copy.deepcopy(config)
-        config.setdefault("runtime", copy.deepcopy(self._static_config.get("runtime", {})))
-        return self._published_scopes.acquire_session(session_id, config)
+        """会话租约已停用；返回空释放回调以兼容旧调用方。"""
+        return lambda: None
 
     def retain_permission_session(self, session_id):
-        """Keep a parent's existing session policy alive for a detached child."""
-        return self._published_scopes.retain_session(session_id)
+        """会话租约已停用；子 Agent 走用户级 key。"""
+        return lambda: None
 
     def update_config(self, config, tool_names=None):
         from .published_scopes import publish_with_key_budget
@@ -106,14 +103,8 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
             publisher = getattr(self, "_published_scopes", None)
             if publisher is not None:
                 publisher.ensure_open()
-            publish_base(config, tool_names)
-            if publisher is not None:
-                from .config_loader import merge_session_permissions_overlay
-
                 publisher.base_config = copy.deepcopy(self._static_config)
-                for sid in publisher.session_ids():
-                    if publisher.has_session(sid):
-                        publisher.publish_session(sid, merge_session_permissions_overlay(self._static_config, sid))
+            publish_base(config, tool_names)
 
         publish_with_key_budget(publish)
 
@@ -155,21 +146,78 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         if scope is None:
             return self._key
         if not self._published_scopes.has_session(scope[0]):
-            # An ordinary agent without session policy still uses its published
-            # baseline. An ACTIVE grant must never silently lose its policy.
-            if scope[1] and self._published_scopes.has_active_grant(*scope):
-                raise KeyError("Active Skill session configuration has not been published")
+            # 无会话发布：走用户级 key；ACTIVE Skill 由
+            # ``_compose_unpublished_skill_config`` + ``config=`` 收紧。
             return self._key
         return self._published_scopes.key_for(*scope)
 
     def permission_baseline_key_for(self, ctx):
-        """Skill 加载门禁读取会话基线，不能用当前 Skill overlay 自授权。"""
+        """Skill 加载门禁读取用户/已发布基线，不能用当前 Skill overlay 自授权。"""
         scope = self._permission_scope(ctx)
         if scope is None or not self._published_scopes.has_session(scope[0]):
             return self._key
         return self._published_scopes.baseline_key_for(scope[0])
 
+    def _compose_unpublished_skill_config(self, ctx) -> dict[str, Any] | None:
+        """无会话 Manager key 时，把 ACTIVE Skill overlay 合成临时 config。"""
+        from openjiuwen.harness.security.skill_authorization import (
+            compose_skill_permissions,
+        )
+
+        scope = self._permission_scope(ctx)
+        if scope is None or not scope[1]:
+            return None
+        if self._published_scopes.has_session(scope[0]):
+            return None
+        if not self._published_scopes.has_active_grant(*scope):
+            return None
+        active = self._published_scopes.get_active(*scope)
+        if active is None or not active.overlay_snapshot:
+            return None
+        return compose_skill_permissions(
+            copy.deepcopy(self._static_config), active.overlay_snapshot
+        )
+
+    async def _check_tool_permission(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        ctx: AgentCallbackContext,
+    ) -> PermissionResult:
+        skill_cfg = self._compose_unpublished_skill_config(ctx)
+        if skill_cfg is None:
+            return await super()._check_tool_permission(tool_name, tool_args, ctx)
+        from agent_shield.tool_permission import get_permission_manager
+        from openjiuwen.harness.security.permission_checks import (
+            _FETCH_TOOLS,
+            merge_permission_results,
+        )
+
+        manager = get_permission_manager()
+        if tool_name in _FETCH_TOOLS:
+            urls = tool_args.get("url")
+            if isinstance(urls, list):
+                if not urls or any(
+                    not isinstance(url, str) or not url.strip() for url in urls
+                ):
+                    return PermissionResult(
+                        PermissionLevel.DENY,
+                        "host:invalid_urls",
+                        "Invalid fetch URL list",
+                    )
+                results = [
+                    await manager.check_permission(
+                        tool_name, {**tool_args, "url": url}, config=skill_cfg
+                    )
+                    for url in urls
+                ]
+                return merge_permission_results(results)
+        return await manager.check_permission(tool_name, tool_args, config=skill_cfg)
+
     def projection_config_for(self, ctx):
+        skill_cfg = self._compose_unpublished_skill_config(ctx)
+        if skill_cfg is not None:
+            return skill_cfg
         scope = self._permission_scope(ctx)
         if scope is None or not self._published_scopes.has_session(scope[0]):
             return self._static_config
@@ -240,14 +288,6 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
                 choice=choice,
             )
         return decision
-
-    async def _check_tool_permission(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        ctx: AgentCallbackContext,
-    ) -> PermissionResult:
-        return await super()._check_tool_permission(tool_name, tool_args, ctx)
 
     def _skill_authorization_gate_handled(self, ctx: AgentCallbackContext) -> bool:
         """本次 skill_tool/skill_complete 是否已被动态授权门禁接管。"""

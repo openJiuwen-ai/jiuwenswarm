@@ -1150,7 +1150,7 @@ class AgentWebSocketServer:
         配置页保存后 agent 会 reload。这里只在开关和进程状态不一致时动作：
         已在跑的不重复拉起，没拉起过的关闭也不去停。
         """
-        from jiuwenswarm.common.config import clear_config_cache, get_sandbox_runtime
+        from jiuwenswarm.common.config import clear_config_cache
         from jiuwenswarm.server.sandbox_lifecycle import shutdown_jiuwenbox_sandboxes
 
         try:

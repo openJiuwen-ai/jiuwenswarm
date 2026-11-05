@@ -1012,7 +1012,7 @@ class JiuWenSwarmDeepAdapter:
         if is_enterprise() or sys.platform != "win32":
             return
         try:
-            from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+            from jiuwenswarm.common.config import get_file_soft_delete_settings
 
             enabled, archive = get_file_soft_delete_settings(
                 get_config(),
@@ -8268,15 +8268,12 @@ class JiuWenSwarmDeepAdapter:
             raw = getattr(request, "metadata", None)
             meta = raw if isinstance(raw, dict) else None
         identity = web_routing_identity(meta)
-        self._permission_routing = {
-            key: value
-            for key, value in (
-                ("group_id", identity.get("group_id")),
-                ("bot_id", identity.get("bot_id")),
-                ("user_id", identity.get("user_id")),
-            )
-            if isinstance(value, str) and value.strip()
-        }
+        routing = {}
+        for key in ("group_id", "bot_id", "user_id"):
+            value = identity.get(key)
+            if isinstance(value, str) and value.strip():
+                routing[key] = value
+        self._permission_routing = routing
 
     def _permission_key_dims(self) -> dict[str, str | None]:
         """Args for ``resolve_permission_key`` / ``make_key`` (personal → all None)."""
@@ -8289,22 +8286,30 @@ class JiuWenSwarmDeepAdapter:
             "user_id": routing.get("user_id"),
         }
 
+    def permission_key_dims(self) -> dict[str, str | None]:
+        """Public dims for callers outside this class (codecheck G.CLS.11)."""
+        return self._permission_key_dims()
+
     def _update_permission_rail(
         self,
         config_base: dict[str, Any] | None,
         *,
         session_id: str | None = None,
-        acquire_session: bool = False,
-    ) -> Callable[[], None] | None:
+    ) -> None:
         """原地更新已有 PermissionRail 配置，或在首次启用时新建。
 
         企业版优先使用 Agent template_ref.permissions 模板 body（与模型槽位同级）。
         个人版 / 企业版同一路径；key 仅由 ``resolve_permission_key`` 的入参区分。
+
+        不发布会话级 Manager key / 不持有请求租约：权限只有用户级（三元组或
+        ``default``）登记；Skill 收紧走临时 ``config=``。``session_id`` 仅保留给
+        子类校验等宿主用途，不触发 session publish。
         """
         from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
             resolve_permission_key,
         )
 
+        _ = session_id  # 保留形参兼容 Flash 等覆写；不再用于会话级发布
         permission_config = self._resolve_permission_config_for_agent(
             session_id=""
         )
@@ -8361,13 +8366,6 @@ class JiuWenSwarmDeepAdapter:
                     )
             else:
                 raise RuntimeError("Permission rail could not be constructed")
-
-        if self._permission_rail is not None and session_id and permission_config.get("enabled", False):
-            effective = self._resolve_permission_config_for_agent(session_id=session_id)
-            if acquire_session:
-                return self._permission_rail.acquire_session_config(session_id, effective)
-            self._permission_rail.update_session_config(session_id, effective)
-        return None
 
     def _resolve_permission_config_for_agent(
         self,
@@ -8437,7 +8435,8 @@ class JiuWenSwarmDeepAdapter:
                     exc_info=True,
                 )
 
-    def _permission_rail_factory(self) -> Any | None:
+    @staticmethod
+    def _permission_rail_factory() -> Any | None:
         """Optional rail class/factory; None → default SkillAuthorization/PermissionInterrupt rail."""
         return None
 
@@ -15435,7 +15434,6 @@ class JiuWenSwarmDeepAdapter:
         token_perm = None
         token_perm_sid = None
         token_perm_agent = None
-        permission_session_release = None
         request_env_tokens = None
         session_active = False
         session_task_registered = False
@@ -15460,9 +15458,7 @@ class JiuWenSwarmDeepAdapter:
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
             await self._maybe_apply_pending_reload()
-            permission_session_release = self._update_permission_rail(
-                self._config_base_cache, session_id=session_id, acquire_session=True
-            )
+            self._update_permission_rail(self._config_base_cache)
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
             session_active = True
@@ -15498,8 +15494,6 @@ class JiuWenSwarmDeepAdapter:
                 cleanup_steps.append(
                     lambda: self._reset_request_env_bindings(*request_env_tokens)
                 )
-            if permission_session_release is not None:
-                cleanup_steps.append(permission_session_release)
             if token_perm_agent is not None:
                 cleanup_steps.append(lambda: reset_permissions_agent_base(token_perm_agent))
             if token_perm_sid is not None:
@@ -15783,8 +15777,6 @@ class JiuWenSwarmDeepAdapter:
                         lambda: self._reset_request_env_bindings(*request_env_tokens),
                     )
                 )
-            if permission_session_release is not None:
-                cleanup_steps.append(("permission_session_keys", permission_session_release))
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     (
@@ -16653,7 +16645,6 @@ class JiuWenSwarmDeepAdapter:
         token_perm = None
         token_perm_sid = None
         token_perm_agent = None
-        permission_session_release = None
         request_env_tokens = None
         session_active = False
         session_task_registered = False
@@ -16680,9 +16671,7 @@ class JiuWenSwarmDeepAdapter:
                 self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
             await self._maybe_apply_pending_reload()
-            permission_session_release = self._update_permission_rail(
-                self._config_base_cache, session_id=session_id, acquire_session=True
-            )
+            self._update_permission_rail(self._config_base_cache)
             # 按请求选择模型（企业配置已在 create_instance 合并）
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
@@ -17912,8 +17901,6 @@ class JiuWenSwarmDeepAdapter:
                         lambda: self._reset_request_env_bindings(*request_env_tokens),
                     )
                 )
-            if permission_session_release is not None:
-                cleanup_steps.append(("permission_session_keys", permission_session_release))
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     (

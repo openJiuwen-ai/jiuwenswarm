@@ -169,61 +169,8 @@ def _find_child_permission_key(child: Any) -> str | None:
 
 
 def _retain_child_permission_session(child: Any) -> None:
-    """A detached child keeps its parent's policy until invoke/stream finishes."""
-    import weakref
-    from functools import partial
-    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import get_permissions_session_id
-    from openjiuwen.harness.security.skill_authorization import get_skill_authorization_context
-
-    rail = _find_child_permission_rail(child)
-    retain_method = getattr(rail, "retain_permission_session", None)
-    if not callable(retain_method) or not rail.enabled:
-        return
-    retain = partial(retain_method)
-    authorization = get_skill_authorization_context()
-    sid = get_permissions_session_id() or (authorization.session_id if authorization is not None else None)
-    if not sid:
-        return
-    identity = rail.permission_key, sid
-    previous = getattr(child, "_permission_session_owner", None)
-    if previous is not None:
-        if previous != identity:
-            raise ValueError("Child permission session owner changed")
-        return
-    initial_release = retain(sid)
-    try:
-        finish_initial = weakref.finalize(child, initial_release)
-    except BaseException:
-        initial_release()
-        raise
-    original_invoke = getattr(child, "invoke", None)
-    if callable(original_invoke):
-        async def invoke_with_permission_session(*args, **kwargs):
-            release = None
-            try:
-                release = retain(sid)
-                finish_initial()
-                return await original_invoke(*args, **kwargs)
-            finally:
-                finish_initial()
-                if release is not None:
-                    release()
-        child.invoke = invoke_with_permission_session
-    original_stream = getattr(child, "stream", None)
-    if callable(original_stream):
-        async def stream_with_permission_session(*args, **kwargs):
-            release = None
-            try:
-                release = retain(sid)
-                finish_initial()
-                async for item in original_stream(*args, **kwargs):
-                    yield item
-            finally:
-                finish_initial()
-                if release is not None:
-                    release()
-        child.stream = stream_with_permission_session
-    setattr(child, "_permission_session_owner", identity)
+    """会话级权限已停用；子 Agent 与主 Agent 共用用户级 key，无需 retain。"""
+    return
 
 
 def _child_workspace_root(child: Any) -> str | None:
@@ -306,12 +253,9 @@ def build_subagent_authorization_rails(
             config_provider=effective_config_provider,
             session_config_merger=merge_session_permissions_overlay,
         )
-        if main_session_id:
-            from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import find_published_scopes
-
-            gate_rail.set_permission_key_resolver(lambda _ctx: find_published_scopes(
-                permission_key or "default", main_session_id,
-            ).baseline_key_for(main_session_id))
+        if permission_key:
+            # 无会话 Manager key：Skill 门禁读用户级 key。
+            gate_rail.set_permission_key_resolver(lambda _ctx: permission_key)
         permission_rail = SubagentPermissionRail(
             agent_scope_id=scope,
             session_id=main_session_id,

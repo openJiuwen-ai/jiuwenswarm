@@ -432,7 +432,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
 
-    def _permission_rail_factory(self):
+    @staticmethod
+    def _permission_rail_factory():
         """Same build path as Deep; only the rail class differs (projection)."""
         from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
             FlashPermissionRail,
