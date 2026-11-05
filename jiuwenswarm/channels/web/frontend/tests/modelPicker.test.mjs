@@ -958,7 +958,7 @@ test('design selectors hide model groups and persist an ordinary model fallback'
   await withFixture(async ({ mount, click, byId }) => {
     setupStableCatalog();
     useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-stable' });
-    await mount(createElement(ChatModelSelector, { sessionId, allowModelGroups: false }));
+    await mount(createElement(ChatModelSelector, { sessionId, includeModelGroups: false }));
     await act(async () => {});
     assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection,
       { type: 'model', id: 'mdl-a' });
