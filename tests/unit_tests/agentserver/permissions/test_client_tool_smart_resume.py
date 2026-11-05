@@ -164,7 +164,7 @@ def _bash() -> ToolCall:
 
 def _approval(card) -> InteractiveInput:
     query = InteractiveInput()
-    query.update(card.key.invocation_id, {"approved": True, "auto_confirm": False, "feedback": ""})
+    query.update(card.key.tool_call_id, {"approved": True, "auto_confirm": False, "feedback": ""})
     return query
 
 

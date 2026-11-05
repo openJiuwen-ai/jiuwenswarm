@@ -22,6 +22,7 @@ from jiuwenswarm.runtime.cron.models import (
     normalize_cron_job_mode,
     normalize_target_channel_id,
 )
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.utils import get_cron_jobs_path
 from jiuwenswarm.common.host_services import send_runtime_push
 
@@ -594,6 +595,13 @@ class CronTools:
         )
         session_kw: dict[str, Any] = {}
         r = self._route()
+        # AgentOS 路由按 user_id 归属任务；route 丢身份时建出来的任务无主，
+        # Gateway 也无法把命令 ACK 路由回来（现场表现为 15s 超时 + 任务到点执行失败）。
+        # legacy 单用户部署不受影响（无 JIUWENSWARM_RUNTIME_PROFILE=agentos）。
+        if not str(r.user_id or "").strip() and is_agentos_runtime():
+            raise RuntimeError(
+                "cron owner identity is missing; refuse to create an ownerless job"
+            )
         sid = r.session_id
         if isinstance(sid, str) and sid.strip():
             session_kw["session_id"] = sid.strip()

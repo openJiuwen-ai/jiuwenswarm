@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   buildScheduledTeamLaneSections,
+  groupScheduledTaskRuns,
   reviewerIdentity,
   scheduledMemberDisplayName,
+  scheduledTaskMember,
 } from '../node_modules/.cache/trajectory-lanes/scheduledTrajectoryLanes.mjs';
 
 function group(id, label = id, kind = 'team_member') {
@@ -46,6 +48,136 @@ test('task assignee resolves to the same member label shown on its lane', () => 
     scheduledMemberDisplayName('py-algo-dev', sections.members),
     'Python 算法工程师',
   );
+});
+
+test('task resolves to the member trace nested under its task group', () => {
+  const sections = buildScheduledTeamLaneSections([
+    group('team-member:sess:team:spec-architect', 'Spec architect'),
+    group('team-member:sess:team:cli-developer', 'CLI developer'),
+  ]);
+  const task = {
+    taskId: 'spec-model',
+    taskIndex: 1,
+    assignee: 'spec-architect',
+    rounds: [],
+    runCount: 2,
+  };
+
+  assert.equal(
+    scheduledTaskMember(task, sections.members)?.subjectId,
+    'team-member:sess:team:spec-architect',
+  );
+});
+
+test('consecutive same-member tasks share one run without reordering tasks', () => {
+  const sections = buildScheduledTeamLaneSections([
+    group('team-member:sess:team:cli-developer', 'CLI developer'),
+  ]);
+  const tasks = [
+    { taskId: 't1', taskIndex: 1, assignee: 'cli-developer', rounds: [], runCount: 0 },
+    { taskId: 't2', taskIndex: 2, assignee: 'cli-developer', rounds: [], runCount: 0 },
+    { taskId: 't3', taskIndex: 3, rounds: [], runCount: 0 },
+    { taskId: 't4', taskIndex: 4, assignee: 'cli-developer', rounds: [], runCount: 0 },
+  ];
+
+  const runs = groupScheduledTaskRuns(sections.members, tasks);
+
+  assert.deepEqual(runs.map(run => run.tasks.map(task => task.taskId)), [
+    ['t1', 't2'],
+    ['t3'],
+    ['t4'],
+  ]);
+  assert.equal(runs[0].member?.label, 'CLI developer');
+  assert.equal(runs[1].member, undefined);
+  assert.equal(runs[2].member?.label, 'CLI developer');
+});
+
+test('a running assigned task is grouped before its review lanes exist', () => {
+  const sections = buildScheduledTeamLaneSections([
+    group('team-member:sess:team:step-b-executor', 'Step B executor'),
+  ], {
+    tasks: [{
+      taskId: 'dep-task-b',
+      phase: 'running',
+      assignee: 'step-b-executor',
+      events: [],
+      reviews: [],
+    }],
+    anomalies: [],
+    controlRecordCount: 0,
+    knownEventCount: 1,
+    reworkCount: 0,
+    completedTaskCount: 0,
+  });
+
+  assert.deepEqual(
+    sections.tasks.map(task => [task.taskId, task.taskIndex, task.rounds.length]),
+    [['dep-task-b', 1, 0]],
+  );
+  assert.equal(
+    scheduledTaskMember(sections.tasks[0], sections.members)?.subjectId,
+    'team-member:sess:team:step-b-executor',
+  );
+});
+
+test('a cancelled task without review evidence is omitted from detailed lanes', () => {
+  const sections = buildScheduledTeamLaneSections([
+    group('team-member:sess:team:cli-developer', 'CLI developer'),
+  ], {
+    tasks: [{
+      taskId: 'cli-impl',
+      phase: 'cancelled',
+      assignee: 'cli-developer',
+      events: [{
+        eventId: 'started',
+        recordId: 'started',
+        kind: 'started',
+        spanName: 'event.task.started',
+        timestampMs: 2,
+        taskId: 'cli-impl',
+      }, {
+        eventId: 'cancelled',
+        recordId: 'cancelled',
+        kind: 'cancelled',
+        spanName: 'task.cli-impl.cancelled',
+        timestampMs: 3,
+        taskId: 'cli-impl',
+      }],
+      reviews: [],
+    }],
+    anomalies: [],
+    controlRecordCount: 0,
+    knownEventCount: 2,
+    reworkCount: 0,
+    completedTaskCount: 0,
+  });
+
+  assert.deepEqual(sections.tasks, []);
+  assert.deepEqual(
+    sections.members.map(member => member.subjectId),
+    ['team-member:sess:team:cli-developer'],
+  );
+});
+
+test('a cancelled task with review evidence keeps its detailed lane', () => {
+  const sections = buildScheduledTeamLaneSections([
+    group('team-reviewer:sess:team:cli-impl:verifier_1:r1', 'verifier'),
+  ], {
+    tasks: [{
+      taskId: 'cli-impl',
+      phase: 'cancelled',
+      assignee: 'cli-developer',
+      events: [],
+      reviews: [],
+    }],
+    anomalies: [],
+    controlRecordCount: 0,
+    knownEventCount: 0,
+    reworkCount: 0,
+    completedTaskCount: 0,
+  });
+
+  assert.deepEqual(sections.tasks.map(task => task.taskId), ['cli-impl']);
 });
 
 test('scheduled lanes group by task and round while preserving physical ids', () => {
