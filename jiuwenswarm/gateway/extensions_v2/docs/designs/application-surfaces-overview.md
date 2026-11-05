@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-11-05 |
 | 责任人 | Song Haoran |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/`，并涉及 `jiuwenswarm/channels/web/`（`app_web.py` 与前端 `features/webui/`）及 `jiuwenswarm/channels/desktop/electron/` |
-| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md) |
+| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md) |
 | 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-12` |
 | 关联文档 | [运行时规约](../specs/S_01_gateway-extension-runtime.md)、[渲染规约](../specs/S_02_ui-render.md)、[浏览器桥接规约](../specs/S_06_local-browser-bridge.md)、[S_17 组件 Props 规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) |
 | 关键假设与待确认项 | 见第 1.3 节及各 feature；agent-core 锁定版本与当前导入不一致的问题记录在开发计划第 6 节 |
@@ -164,7 +164,7 @@ stateDiagram-v2
 | 条目 | 能力 | 状态 |
 | --- | --- | --- |
 | EXTV2-GW-07 | 应用级 UI 包与素材交付 | 已实现，单元验证通过 |
-| EXTV2-GW-08 | Gateway 存储与包数据目录 | 待建档 |
+| EXTV2-GW-08 | Gateway 存储与包数据目录 | 已实现，单元验证通过 |
 | EXTV2-GW-09 | 媒体容器渲染器与沙箱通信 | 待建档 |
 | EXTV2-GW-10 | 应用背景与受控外观 | 待建档 |
 | EXTV2-GW-11 | 启动门控与开场队列 | 待建档 |

@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 
 DEFAULT_INSTALL_DIR = "extension_pkgs"
 BUNDLED_EXAMPLES = Path("extensions_v2") / "examples"
+#: Gateway package store and data files, relative to the user workspace.
+DEFAULT_DATA_DIR = "extension/gateway"
 DEFAULT_HTTP_TIMEOUT_MS = 3000
 DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024
 MAX_HTTP_TIMEOUT_MS = 5000
@@ -84,6 +86,7 @@ class GatewayExtensionConfig:
 
     enabled: bool = True
     install_dir: Path = Path(DEFAULT_INSTALL_DIR)
+    data_dir: Path = Path(DEFAULT_DATA_DIR)
     http: HttpPolicy = HttpPolicy()
 
 
@@ -100,9 +103,13 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
     install_dir = gateway.get("install_dir")
     if not isinstance(install_dir, str) or not install_dir.strip():
         install_dir = DEFAULT_INSTALL_DIR
+    data_dir = gateway.get("data_dir")
+    if not isinstance(data_dir, str) or not data_dir.strip():
+        data_dir = DEFAULT_DATA_DIR
     return GatewayExtensionConfig(
         enabled=enabled if isinstance(enabled, bool) else True,
         install_dir=_resolve_dir(install_dir),
+        data_dir=_resolve_dir(data_dir),
         http=_read_http_policy(gateway.get("http")),
     )
 

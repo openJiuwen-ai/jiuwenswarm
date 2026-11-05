@@ -30,6 +30,9 @@ from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_eve
 
 SLOTS = frozenset({"application.entry", "application.sidebar.footer"})
 ASSET_PREFIX = "/extension-assets/"
+#: Marks a generation segment that addresses the package data ``public/`` directory.
+DATA_GENERATION_SUFFIX = ".data"
+ASSET_SOURCES = frozenset({"package", "data"})
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~\da-z-]+$", re.IGNORECASE | re.ASCII)
 FORBIDDEN = frozenset({"__proto__", "prototype", "constructor"})
@@ -266,10 +269,15 @@ class BrowserBridge:
         return dispatch_request
 
     def build_ops_handler(self):
-        async def asset_url(ops, path: str):
+        async def asset_url(ops, path: str, *, source: str = "package"):
+            if source not in ASSET_SOURCES:
+                raise ValueError("asset source must be 'package' or 'data'")
             package = self._package_caller(ops)
-            self.asset_file(package.package_id, self.generations[package.package_id], path)
-            return f"{ASSET_PREFIX}{package.package_id}/{self.generations[package.package_id]}/{path}"
+            generation = self.generations[package.package_id]
+            if source == "data":
+                generation += DATA_GENERATION_SUFFIX
+            self.asset_file(package.package_id, generation, path)
+            return f"{ASSET_PREFIX}{package.package_id}/{generation}/{path}"
         async def storage_set(ops, key: str, value: Any):
             return await self.operation(ops, "local_storage.set", {"key": key, "value": value})
         async def storage_delete(ops, key: str):
@@ -404,14 +412,23 @@ class BrowserBridge:
         return set(data) == fields
 
     def asset_file(self, package_id: str, generation: str, relative: str) -> Path:
+        """Resolve one readable asset of an active application package.
+
+        ``<generation>`` addresses the package ``assets/`` directory and
+        ``<generation>.data`` the package data ``public/`` directory.
+        """
+        data = generation.endswith(DATA_GENERATION_SUFFIX)
+        if data:
+            generation = generation[:-len(DATA_GENERATION_SUFFIX)]
         if self.generations.get(package_id) != generation:
             raise ValueError("inactive package asset")
         package = self._active_application_package(package_id)
         if package is None:
             raise ValueError("inactive package asset")
-        root = (package.root / "assets").resolve()
+        owner = self.runtime.package_data_dir(package_id) if data else package.root
+        root = ((owner / "public") if data else (owner / "assets")).resolve()
         path = (root / relative).resolve()
-        if not root.is_relative_to(package.root.resolve()) or not path.is_relative_to(root) or path == root or not path.is_file():
+        if not root.is_relative_to(owner.resolve()) or not path.is_relative_to(root) or path == root or not path.is_file():
             raise ValueError("asset path is outside the package")
         return path
 
