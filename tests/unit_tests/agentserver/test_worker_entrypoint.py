@@ -121,6 +121,7 @@ def test_windows_console_interrupt_drains_runtime_and_sdk_tasks(
     runner_type = asyncio.Runner
     previous_handler = signal.getsignal(signal.SIGINT)
     order = []
+    background_tasks = []
 
     def unsupported(*_args):
         raise NotImplementedError
@@ -147,7 +148,9 @@ def test_windows_console_interrupt_drains_runtime_and_sdk_tasks(
             order.append("sdk_stopped")
 
     async def serve(*_args, **_kwargs):
-        asyncio.create_task(sdk_background())
+        # asyncio only keeps weak Task references. Own this SDK fixture until
+        # Runner.close can cancel it, including when CI runs a GC cycle.
+        background_tasks.append(asyncio.create_task(sdk_background()))
         loop.call_soon(signal.raise_signal, signal.SIGINT)
         try:
             await asyncio.Future()
@@ -157,11 +160,15 @@ def test_windows_console_interrupt_drains_runtime_and_sdk_tasks(
                 loop.call_soon(signal.raise_signal, signal.SIGINT)
             await asyncio.sleep(0.02)
             order.append("runtime_stopped")
+            import gc
+
+            gc.collect()
 
     monkeypatch.setattr(worker_service, "serve_worker", serve)
     worker_main.main()
 
     assert order == ["runtime_stopping", "runtime_stopped", "sdk_stopped"]
+    assert all(task.done() for task in background_tasks)
     assert loop.is_closed()
     if sys.platform == "win32":
         assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
