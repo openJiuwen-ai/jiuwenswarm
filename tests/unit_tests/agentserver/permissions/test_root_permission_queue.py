@@ -64,7 +64,7 @@ def _interaction(card):
 def _answer(card, *, approved: bool = True) -> InteractiveInput:
     incoming = InteractiveInput()
     incoming.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {
             "approved": approved,
             "auto_confirm": False,
@@ -176,8 +176,8 @@ def test_non_head_multi_and_foreign_answers_fail_closed() -> None:
 
     multiple = _answer(first)
     multiple.update(
-        second.key.invocation_id,
-        dict(_answer(second).user_inputs[second.key.invocation_id]),
+        second.key.tool_call_id,
+        dict(_answer(second).user_inputs[second.key.tool_call_id]),
     )
     with pytest.raises(RootPermissionQueueError, match="one_answer_required"):
         queue.reserve_answer("root-session", multiple)

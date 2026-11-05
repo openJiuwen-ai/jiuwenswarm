@@ -53,9 +53,121 @@
   border-left: 2px solid var(--dsw-alias-border-l2);
 }
 
+.taskSection {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  padding-top: 8px;
+}
+
+.taskRunIndex {
+  flex: none;
+  color: var(--dsw-alias-state-business-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.taskRunAssignee {
+  min-width: 0;
+  max-width: 12rem;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskRunReviews {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 4px;
+}
+
+.taskReviewSection {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.taskReviewSection + .taskReviewSection {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  padding-top: 6px;
+}
+
+.taskReviewToggle {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 4px 2px 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.taskReviewToggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.taskReviewToggle:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.taskReviewToggle .taskName {
+  flex: 0 1 auto;
+}
+
+.taskReviewToggle .sectionMeta {
+  flex: none;
+  margin-left: 0;
+}
+
+.taskReviewCount {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.taskReviewEmpty {
+  flex: none;
+  margin-left: 0;
+  padding: 2px 6px;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.taskBody {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 0;
+}
+
 .roundSection {
   padding-left: 8px;
   border-left: 1px solid var(--dsw-alias-border-l1);
+}
+
+.taskBody .roundSection {
+  border-left: 0;
+  padding-left: 0;
 }
 
 .memberSectionHeader,
@@ -88,6 +200,44 @@
   text-align: left;
 }
 
+.taskHeader {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.taskHeaderToggle {
+  display: flex;
+  min-width: 0;
+  min-height: 30px;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 4px 3px 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.taskHeaderToggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.taskHeaderToggle:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
 .sectionHeader:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
@@ -111,6 +261,7 @@
 .sectionTitle {
   display: inline-flex;
   min-width: 0;
+  flex: 0 1 auto;
   align-items: center;
   gap: 6px;
 }
@@ -124,6 +275,7 @@
 
 .taskName {
   min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--dsw-alias-label-primary);
   text-overflow: ellipsis;
@@ -134,10 +286,48 @@
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
+  margin-left: 4px;
   color: var(--dsw-alias-label-secondary);
   font: var(--dsw-font-xxxs-11);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.taskAssignee {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12);
+}
+
+.taskAssignee strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskHeaderToggle .disclosureIcon,
+.taskReviewToggle .disclosureIcon {
+  width: 16px;
+  height: 16px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.disclosureIcon {
+  flex: none;
+  color: var(--dsw-alias-label-caption);
+  transform-origin: center;
+  transition: transform 0.14s ease;
+}
+
+.disclosureIconOpen {
+  transform: rotate(90deg);
 }
 
 .roundHeader {
