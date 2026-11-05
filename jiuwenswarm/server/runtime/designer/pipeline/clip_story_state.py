@@ -536,11 +536,11 @@ def infer_crowd_state(
 ) -> dict[str, Any]:
     """Per-shot crowd disposition for story-form prompts (domain-agnostic).
 
-    The disposition comes from the shot's agent-authored crowd declaration, or
-    from the prior shot's when the group carries over. ``prior_text`` and
-    ``events`` are accepted for call-site compatibility: reading prose here made
-    the decision language-dependent (the root cause of #10377), and a crowd has no
-    character id, so it never produces a structured event.
+    The disposition comes from the shot's agent-authored crowd declaration, from a
+    structured ``crowd_exit`` event, or from the prior shot's declaration when the
+    group carries over. ``prior_text`` is accepted for call-site compatibility but
+    is no longer scanned: reading prose here made the decision language-dependent
+    and was the root cause of #10377.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     prior = prior_cfg if isinstance(prior_cfg, dict) else {}
@@ -562,9 +562,10 @@ def infer_crowd_state(
         rule = str(bible["crowd"].get("rule") or "").strip()
 
     # Structured events are agent-declared facts; never inferred from prose here.
-    # A crowd has no character id, so a crowd exit arrives as the shot's own
-    # disposition (or the prior shot's), never as an event.
-    if str(prior_crowd.get("disposition") or "").lower() == "exited":
+    if any(str(e.get("type") or "") == "crowd_exit" for e in (events or [])):
+        disposition = "exited"
+        present = False
+    elif str(prior_crowd.get("disposition") or "").lower() == "exited":
         # Carry exited unless this shot's lock says they returned.
         if present is True or disposition in {"in_frame", "background_hold", "returned"}:
             disposition = disposition or "in_frame"
