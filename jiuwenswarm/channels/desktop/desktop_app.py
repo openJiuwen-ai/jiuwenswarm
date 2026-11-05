@@ -3659,54 +3659,68 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
     spawn an external console process, avoiding console window flashes on
     Windows (console=False builds).
     """
-    try:
-        import psutil
+    import psutil
 
+    try:
         parent = psutil.Process(pid)
-        # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
+    except psutil.NoSuchProcess:
+        return
+    errors = []
+    try:
         children = parent.children(recursive=True)
-        # Runtime lives in a separate process session on POSIX. On Windows a
-        # recursive psutil termination must similarly preserve that subtree
-        # during Front/Gateway restart; final exit uses explicit Worker IPC.
-        retained = set()
-        by_pid = {child.pid: child for child in children}
-        for child in children:
-            try:
-                argv = child.cmdline()
-                if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.Error as exc:
-                raise RuntimeError("Desktop process tree ownership could not be established") from exc
-        for child in children:
-            try:
-                ancestor = child.ppid()
-                while ancestor in by_pid and ancestor not in retained:
-                    ancestor = by_pid[ancestor].ppid()
-                if ancestor in retained:
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.Error as exc:
-                raise RuntimeError("Desktop process tree ownership could not be established") from exc
-        kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-        # 先杀子孙，再杀父进程，避免子孙变成孤儿
-        for child in reversed(children):
-            if child.pid in retained:
-                continue
-            try:
-                kill_fn(child)
-            except psutil.NoSuchProcess:
-                pass
+    except psutil.NoSuchProcess:
+        return
+    except psutil.Error as exc:
+        children = []
+        errors.append(exc)
+    # Preserve Worker and uninspectable branches while still attempting
+    # every proven service sibling and the trusted launcher itself.
+    retained = set()
+    parents = {}
+    by_pid = {child.pid: child for child in children}
+    for child in children:
         try:
-            kill_fn(parent)
+            argv = child.cmdline()
+            if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
+                retained.add(child.pid)
+            parents[child.pid] = child.ppid()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as exc:
+            retained.add(child.pid)
+            errors.append(exc)
+    for child in children:
+        ancestor = parents.get(child.pid)
+        visited = {child.pid}
+        while ancestor in by_pid and ancestor not in retained:
+            if ancestor in visited:
+                retained.add(child.pid)
+                errors.append(RuntimeError("Desktop process ancestry contains a cycle"))
+                break
+            visited.add(ancestor)
+            ancestor = parents.get(ancestor)
+        if ancestor in retained:
+            retained.add(child.pid)
+    kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
+    for child in reversed(children):
+        if child.pid in retained:
+            continue
+        try:
+            kill_fn(child)
         except psutil.NoSuchProcess:
             pass
+        except psutil.Error as exc:
+            errors.append(exc)
+    try:
+        kill_fn(parent)
     except psutil.NoSuchProcess:
         pass
     except psutil.Error as exc:
-        raise RuntimeError("Desktop process tree termination incomplete") from exc
+        errors.append(exc)
+    if errors:
+        raise RuntimeError(
+            "Desktop process tree termination incomplete; ownership or termination checks failed"
+        ) from errors[0]
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:

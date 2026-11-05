@@ -765,10 +765,11 @@ function signalServiceTree(child, signal) {
         ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
         child.frontDetachPromise = new Promise((resolve, reject) => {
+          // The helper starts its own budget after Python has initialized.
           const timer = setTimeout(() => {
             helper.kill();
             reject(new Error('Front detach helper exceeded deadline'));
-          }, timeout);
+          }, timeout + 2_000);
           helper.once('error', error => { clearTimeout(timer); reject(error); });
           helper.once('exit', code => {
             clearTimeout(timer);
@@ -837,7 +838,7 @@ async function terminateService(child) {
     if (!signaled) throw new Error('Failed to start service shutdown');
     const stopped = await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS);
     await child.frontDetachPromise;
-    if (stopped) return;
+    if (stopped || !serviceTreeRunning(child)) return;
   } catch (error) {
     console.warn('[electron] graceful Front detach incomplete', error);
     if (!serviceTreeRunning(child)) throw error;

@@ -293,17 +293,20 @@ class RuntimeSupervisor:
                 "[Supervisor] reload requested while runtime FAILED; restarting worker: %s",
                 self._fatal_reason or "unknown failure",
             )
-            # Clear the sticky failure so the supervise loop may bring the
-            # Worker up again, then tear the broken Worker process down.
-            self._fatal = False
-            self._fatal_reason = ""
-            self._restart_count = 0
-            self._retryable_failure = False
-            self._readiness.mark_recovering("reload requested after runtime failure")
             # Hold the session lock so a background restart inside a live
             # supervise loop cannot reattach to the dying Worker socket.
             async with self._session_lock:
-                await self._terminate_failed_worker()
+                if not await self._terminate_failed_worker():
+                    return False
+                if self._stopping or self._closing or self._readiness.state is ReadinessState.DRAINING:
+                    return False
+                # Publish recovery only after retirement succeeded. Refused
+                # ownership or an unobserved exit must leave FAILED sticky.
+                self._fatal = False
+                self._fatal_reason = ""
+                self._restart_count = 0
+                self._retryable_failure = False
+                self._readiness.mark_recovering("reload requested after runtime failure")
                 task = self._loop_task
                 if task is not None and not task.done():
                     # The loop is parked in _pump/recv; closing the connection
@@ -333,8 +336,8 @@ class RuntimeSupervisor:
                 )
                 return False
 
-    async def _terminate_failed_worker(self) -> None:
-        """Shut the FAILED Worker down, including a reattached resident one."""
+    async def _terminate_failed_worker(self) -> bool:
+        """Retire a FAILED Worker; refuse replacement when cleanup cannot be proved."""
         conn = self._conn
         try:
             # Keep the IPC pump alive for shutdown.done. Closing immediately
@@ -345,6 +348,9 @@ class RuntimeSupervisor:
             except WorkerShutdownIncomplete:
                 # The failed process is gone; recovery may start a fresh one.
                 logger.warning("[Supervisor] failed Worker exited without complete persistence", exc_info=True)
+            except (OSError, RuntimeError):
+                logger.warning("[Supervisor] failed Worker retirement refused or incomplete", exc_info=True)
+                return False
         finally:
             self._conn = None
             self._validated_conn = None
@@ -353,8 +359,9 @@ class RuntimeSupervisor:
                     await conn.close()
                 except Exception:  # noqa: BLE001
                     logger.debug("[Supervisor] worker shutdown close failed", exc_info=True)
-            self._process = None
-            self._owns_process = False
+        self._process = None
+        self._owns_process = False
+        return True
 
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
@@ -603,10 +610,12 @@ class RuntimeSupervisor:
             async with startup_lock(self._socket_path, deadline):
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")
-                await self._migrate_legacy_workers()
+                await self._migrate_legacy_workers(deadline=deadline)
                 for attempt in range(2):
                     if self._stopping or self._terminating:
                         raise RuntimeError("Worker startup cancelled by supervisor stop")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Worker election startup deadline exhausted")
                     launch_identity = None
                     existing = None
                     process = None
@@ -827,7 +836,7 @@ class RuntimeSupervisor:
         if self._gateway_ws is not None:
             await conn.send({"kind": KIND_GATEWAY_ATTACH})
 
-    async def _migrate_legacy_workers(self) -> None:
+    async def _migrate_legacy_workers(self, *, deadline: float) -> None:
         """Retire verified predecessors; unrelated historical IPC cannot block boot."""
         from jiuwenswarm.server.supervisor.worker_process import legacy_socket_paths
         from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, worker_process
@@ -835,22 +844,31 @@ class RuntimeSupervisor:
         if self._socket_path != default_socket_path():
             return
         for path in legacy_socket_paths():
-            connection = await try_connect(path, timeout=.05)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            connection = await try_connect(path, timeout=min(.05, remaining))
             if connection is None:
                 continue
             try:
-                hello = await asyncio.wait_for(connection.recv(), timeout=.25)
+                remaining = max(0, deadline - time.monotonic())
+                hello = await asyncio.wait_for(connection.recv(), timeout=min(.25, remaining))
                 try:
                     worker_process(hello, path, allow_legacy=True)
                 except RuntimeError as exc:
                     logger.warning("[Supervisor] leaving historical Worker isolated at %s: %s", path, exc)
                     continue
                 await retire_worker(connection, hello, path,
-                    deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
+                    deadline=min(deadline, time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT), allow_legacy=True)
             except (OSError, RuntimeError, asyncio.IncompleteReadError) as exc:
                 logger.warning("[Supervisor] historical Worker retirement incomplete at %s: %s", path, exc)
             finally:
-                await connection.close()
+                try:
+                    await asyncio.wait_for(connection.close(), timeout=max(.001, deadline - time.monotonic()))
+                except (OSError, RuntimeError, asyncio.IncompleteReadError):
+                    logger.warning(
+                        "[Supervisor] historical Worker connection cleanup incomplete at %s", path, exc_info=True,
+                    )
 
 
     async def _pump(self) -> None:

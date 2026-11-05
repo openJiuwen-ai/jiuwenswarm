@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { installedBundle, launchMacUpdate } = require('../../jiuwenswarm/channels/desktop/electron/macos_update.cjs');
+const { completeShutdownReceipt } = require('../../jiuwenswarm/channels/desktop/electron/update_shutdown.cjs');
 
 test('bundle is derived from Electron, not its nested Python backend', () => {
   assert.equal(installedBundle('/Applications/Work Swarm.app/Contents/MacOS/workswarm'), '/Applications/Work Swarm.app');
@@ -61,6 +62,41 @@ test('preflight failure rejects rather than reporting a successful update', asyn
     return child;
   }), /preparation failed/);
 });
+
+test('helper exit after READY preserves the receipt for the application shutdown writer', async t => {
+  const options = await fixture(t);
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.unref = () => {};
+  const removed = [];
+  const remove = fs.rm;
+  t.mock.method(fs, 'rm', (...args) => {
+    removed.push(args[0]);
+    return remove(...args);
+  });
+  const result = await launchMacUpdate(options, () => {
+    process.nextTick(() => child.stdout.write('READY\n'));
+    return child;
+  });
+  child.emit('exit', 1);
+  assert.equal(removed.includes(path.dirname(result.shutdownReceipt)), false);
+  await completeShutdownReceipt(result.shutdownReceipt, true);
+  assert.equal(await fs.readFile(result.shutdownReceipt, 'utf8'), 'ok\n');
+});
+
+for (const failure of ['throw', 'error']) {
+  test(`pre-READY ${failure} cleans its own preparation directory`, async t => {
+    const options = await fixture(t);
+    await assert.rejects(launchMacUpdate(options, () => {
+      if (failure === 'throw') throw new Error('spawn refused');
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      process.nextTick(() => child.emit('error', new Error('spawn refused')));
+      return child;
+    }), /spawn refused/);
+    assert.deepEqual((await fs.readdir(options.updatesDir)).filter(name => name.startsWith('electron-update-')), []);
+  });
+}
 
 test('a symlink escaping the download directory is rejected before spawning', async t => {
   const options = await fixture(t);

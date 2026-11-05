@@ -39,48 +39,54 @@ async function launchMacUpdate({ installerPath, executable, backendExecutable, p
   await fs.mkdir(logDir, { recursive: true });
   // Copy outside the old .app: the script must survive the bundle swap.
   const helperDir = await fs.mkdtemp(path.join(root, 'electron-update-'));
-  const helperPath = path.join(helperDir, 'install.sh');
-  const shutdownReceipt = await createShutdownReceipt(helperDir);
-  await fs.copyFile(path.join(__dirname, 'install_macos_update.sh'), helperPath);
-  const args = [helperPath, installer, bundle, String(parentPid), childPids.join(','),
-    ports.join(','), path.join(logDir, 'electron-update.log'),
-    arch === 'x64' ? 'x86_64' : arch, backend, shutdownReceipt];
-  return new Promise((resolve, reject) => {
-    let ready = false;
-    let settled = false;
-    let output = '';
-    const child = spawnProcess('/bin/bash', args, {
-      detached: true, stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
-    });
-    const timeout = setTimeout(() => {
-      child.kill('SIGTERM');
-      fail(new Error('Timed out preparing the macOS update; see electron-update.log'));
-    }, 180_000);
-    function fail(error) {
-      clearTimeout(timeout);
-      if (!settled) {
-        settled = true;
-        reject(error);
-      }
-    }
-    child.once('error', fail);
-    child.once('exit', code => {
-      if (!ready) fail(new Error(`macOS update preparation failed (${code}); see electron-update.log`));
-      void fs.rm(helperDir, { recursive: true, force: true }).catch(() => {});
-    });
-    child.stdout.on('data', data => {
-      output += data.toString();
-      if (!settled && output.includes('READY\n')) {
-        ready = true;
-        settled = true;
+  let ready = false;
+  try {
+    const helperPath = path.join(helperDir, 'install.sh');
+    const shutdownReceipt = await createShutdownReceipt(helperDir);
+    await fs.copyFile(path.join(__dirname, 'install_macos_update.sh'), helperPath);
+    const args = [helperPath, installer, bundle, String(parentPid), childPids.join(','),
+      ports.join(','), path.join(logDir, 'electron-update.log'),
+      arch === 'x64' ? 'x86_64' : arch, backend, shutdownReceipt];
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      let output = '';
+      const child = spawnProcess('/bin/bash', args, {
+        detached: true, stdio: ['ignore', 'pipe', 'ignore'],
+        env: { ...process.env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+      });
+      const timeout = setTimeout(() => {
+        child.kill('SIGTERM');
+        fail(new Error('Timed out preparing the macOS update; see electron-update.log'));
+      }, 180_000);
+      function fail(error) {
         clearTimeout(timeout);
-        child.stdout.destroy();
-        child.unref();
-        resolve({ shutdownReceipt });
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
       }
+      child.once('error', fail);
+      child.once('exit', code => {
+        if (!ready) fail(new Error(`macOS update preparation failed (${code}); see electron-update.log`));
+        // After READY the application may still be recording final shutdown.
+        // The helper owns cleanup once it has observed the parent exit.
+      });
+      child.stdout.on('data', data => {
+        output += data.toString();
+        if (!settled && output.includes('READY\n')) {
+          ready = true;
+          settled = true;
+          clearTimeout(timeout);
+          child.stdout.destroy();
+          child.unref();
+          resolve({ shutdownReceipt });
+        }
+      });
     });
-  });
+  } catch (error) {
+    if (!ready) await fs.rm(helperDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 module.exports = { installedBundle, launchMacUpdate };

@@ -15,6 +15,10 @@ Successful shutdown requires a successful acknowledgement and observed PID exit.
 
 Instances sharing a data directory retain distinct endpoint and deployment identities through `JIUWENSWARM_RUNTIME_INSTANCE` (preferred) or `HOSTNAME`. Stop commands must retain that instance's environment. Historical Workers owned by another instance are left running.
 
+Historical endpoint discovery includes the POSIX temporary-directory fallback used by long workspace paths. Migration shares the current startup election deadline. If failed-Worker retirement is refused or its exit cannot be observed, recovery returns failure, retains the FAILED state and owned process handle for retry, and does not start a replacement.
+
+Desktop process-tree cleanup continues for proven service branches when another branch cannot be inspected; it preserves Worker and unproven branches and reports incomplete cleanup. On macOS, an update helper exiting after READY must leave the shutdown receipt available to the application writer. The helper removes its attempt files only after observing the application's exit.
+
 `jiuwenswarm-stop` manages the state created by `jiuwenswarm-start debug`. Failed cleanup preserves that state for retry; no debug state remains a no-op. For a regular wheel service, stop its Front through its terminal/service manager, then use the same installation environment:
 
 ```bash
@@ -27,6 +31,8 @@ exiting. Repeated Ctrl+C does not interrupt cleanup already in progress. The lau
 for user interruption; complete Worker shutdown still requires no cleanup errors and observed process
 exit. Ordinary Front disconnection continues to preserve a resident Worker, and OS termination cannot
 guarantee cleanup.
+
+If first-time Runtime preparation exceeds the default 30-second shutdown budget, the Worker reports incomplete shutdown and exits nonzero. An absent process alone does not establish successful graceful cleanup.
 
 An old Python Worker without deployment identity cannot be attributed to an installation solely from its shared interpreter. Startup isolates that old endpoint and continues, logging the old PID. After checking its interpreter, command line, installation, and data directory, an operator can select it explicitly:
 
