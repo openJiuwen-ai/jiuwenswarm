@@ -78,7 +78,7 @@ def get_merged_config_dict() -> dict[str, Any]:
 
     [PERF] 实测双 YAML 重读+合并 ~150ms,且经 RuntimePromptRail 的
     模型名兜底路径被**每次模型调用**触发(每次聊天多付 ~150ms)。按
-    (路径, mtime_ns) 缓存合并结果:文件未变直接复用;配置写入方走
+    (路径, mtime_ns, size) 缓存合并结果:文件未变直接复用;配置写入方走
     invalidate_merged_config_cache() 主动失效(写文件本身也会变 mtime,
     双保险)。注意:调用方不应修改返回的 dict(共享缓存对象)。
     """
@@ -86,12 +86,7 @@ def get_merged_config_dict() -> dict[str, Any]:
     tpl_path = resolve_shipped_template_config_path()
     usr_path = _current_config_yaml_path()
     try:
-        key = (
-            str(tpl_path),
-            tpl_path.stat().st_mtime_ns if tpl_path.exists() else None,
-            str(usr_path),
-            usr_path.stat().st_mtime_ns if usr_path.exists() else None,
-        )
+        key = (str(tpl_path), _merged_part_stamp(tpl_path), str(usr_path), _merged_part_stamp(usr_path))
     except OSError:
         key = None
     if key is not None and key == _MERGED_CONFIG_CACHE_KEY and _MERGED_CONFIG_CACHE is not None:
@@ -103,6 +98,16 @@ def get_merged_config_dict() -> dict[str, Any]:
         _MERGED_CONFIG_CACHE_KEY = key
         _MERGED_CONFIG_CACHE = merged
     return merged
+
+
+def _merged_part_stamp(path: Path) -> tuple[int, int] | None:
+    # 与 YAML 解析缓存同口径 (mtime_ns, size)；文件不存在返回 None（缺失也可缓存，
+    # load_yaml_dict 此时得 {}），其余 stat 失败抛 OSError，由调用方放弃缓存。
+    try:
+        stat_result = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return stat_result.st_mtime_ns, stat_result.st_size
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -444,7 +449,9 @@ def clear_config_cache(
         ]
         for key in keys_to_remove:
             _resolved_config_by_ns.pop(key, None)
-        invalidate_merged_config_cache()
+        # 合并配置只取决于两份 YAML（按路径 + mtime 校验），与 ns 的环境变量无关；
+        # 这里不再连带清掉它，否则每次 tip 写入（如每个会话 create_instance 加载 .env）
+        # 都要重新解析双 YAML。全量清理分支仍会清掉。
         if sid == "default" and aid == "default":
             _resolved_config_by_ns.pop(None, None)
             unbound_overlay_keys = [
