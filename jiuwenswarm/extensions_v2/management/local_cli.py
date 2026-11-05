@@ -50,19 +50,7 @@ async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
         req_method=method, params=params,
     )
     response = await PackageManagementAdapter().handle(request)
-    payload = response.payload
-    if action == "install" and response.ok:
-        succeeded = [report["package_id"] for report in payload.get("reports", []) if report.get("status") == "SUCCESS"]
-        if succeeded:
-            from jiuwenswarm.extensions_v2.assembly import get_webui_runtime
-
-            runtime = get_webui_runtime()
-            if runtime is not None:
-                try:
-                    payload["ui_notified"] = await runtime.notify_packages_installed(succeeded)
-                except Exception:  # noqa: BLE001 - keep the successful installation report
-                    payload["ui_notified"] = False
-    return {"ok": response.ok, "payload": payload}
+    return {"ok": response.ok, "payload": response.payload}
 
 
 def _error(code: str, message: str) -> dict[str, Any]:

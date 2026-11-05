@@ -68,6 +68,8 @@ Installation accepts only existing `.zip` files at absolute paths; directories a
 Paths containing spaces can be pasted directly; surrounding quotes are also supported.
 This reads a file by path and does not upload it through the browser. For remote deployments,
 place the ZIP where the running service can read it first.
+After an AgentServer package is installed, WebUI slots in open conversations automatically send ready again;
+the plugin interface can appear without manually refreshing the page.
 After installation, edit code in the returned **Installation directory**, then run `/extension reload demo.pkg`.
 The directory is configured by `extensions.install_dir` in `config.yaml`, defaulting to
 `~/.jiuwenswarm/extension_pkgs/<package_id>/<version>/`; use the actual path in the response.
