@@ -96,7 +96,7 @@ function isTrustedRequest(request, parent, frontendUrl) {
     return request.frame.top === mainFrame
       && new URL(mainFrame.url).origin === expected.origin
       && new URL(request.frame.url).origin === expected.origin
-      && request.securityOrigin === expected.origin;
+      && new URL(request.securityOrigin).origin === expected.origin;
   } catch {
     return false;
   }

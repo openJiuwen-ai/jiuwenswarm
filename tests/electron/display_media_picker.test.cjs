@@ -51,8 +51,11 @@ test('requests without video, with no sources, or with capture errors are denied
 });
 
 
-for (const platform of ['win32', 'darwin']) {
-  test(`${platform} fallback picker grants the selected screen exactly once`, async () => {
+for (const [platform, securityOrigin] of ['win32', 'darwin', 'linux'].flatMap(targetPlatform => [
+  [targetPlatform, 'http://127.0.0.1:5173'],
+  [targetPlatform, 'http://127.0.0.1:5173/'],
+])) {
+  test(`${platform} fallback picker grants the selected screen exactly once for ${securityOrigin}`, async () => {
     const screen = { id: 'screen:1:0', name: 'Screen' };
     const window = { id: 'window:1:0', name: 'Window' };
     let picker;
@@ -73,7 +76,7 @@ for (const platform of ['win32', 'darwin']) {
       }
     }
     const registered = register(platform, async () => [window, screen], PickerWindow);
-    const result = await registered.request({ videoRequested: true });
+    const result = await registered.request({ videoRequested: true, securityOrigin });
     assert.deepEqual(result, { video: screen });
     assert.equal(picker.destroyed, true);
     assert.equal(registered.callbackCount, 1);
@@ -103,7 +106,12 @@ for (const platform of ['win32', 'darwin', 'linux']) {
     ]) {
       assert.equal(await registered.request({ videoRequested: true, frame }), null);
     }
-    assert.equal(await registered.request({ videoRequested: true, securityOrigin: 'null' }), null);
+    for (const securityOrigin of [
+      'null', '', 'invalid-url', 'http://127.0.0.1:5174/',
+      'https://127.0.0.1:5173/', 'http://localhost:5173/', 'https://login.example.com/',
+    ]) {
+      assert.equal(await registered.request({ videoRequested: true, securityOrigin }), null);
+    }
     registered.parent.isDestroyed = () => true;
     assert.equal(await registered.request({ videoRequested: true }), null);
     assert.equal(enumerated, 0);
