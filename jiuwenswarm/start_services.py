@@ -34,6 +34,7 @@ parse_dotenv_early("jiuwenswarm-start")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.utils import get_env_file, get_root_dir, get_user_workspace_dir, is_package_installation
+from jiuwenswarm.common.process_supervision import application_shutdown, terminate_service_tree
 from jiuwenswarm.instance_manager import (
     InstanceConfig,
     InstanceLock,
@@ -48,8 +49,8 @@ from jiuwenswarm.instance_manager import (
     get_instance_status,
     is_port_available,
     list_all_instances,
+    read_pid_file,
     stop_instance_process,
-    stop_process_by_pid,
     validate_instance_name,
     write_pid_file,
     PORT_TYPES,
@@ -475,8 +476,13 @@ def do_stop_instance(cmd: InstanceCommand) -> int:
     pid = cmd.status.pid
     logging.info(f"[start_services] Stopping instance '{cmd.name}' (PID={pid})...")
 
-    if cmd.is_default:
-        success = stop_process_by_pid(pid, timeout=10.0)
+    if cmd.is_default and read_pid_file(cmd.config) is None:
+        try:
+            terminate_service_tree(pid, timeout=10.0)
+        except (OSError, RuntimeError) as exc:
+            logging.error("[start_services] Service tree cleanup incomplete: %s", exc)
+            return 1
+        success = stop_instance_process(cmd.config, timeout=10.0)
     else:
         success = stop_instance_process(cmd.config, timeout=10.0)
 
@@ -500,6 +506,8 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
         Exit code
     """
     processes: dict[str, subprocess.Popen[bytes]] = {}
+    cleanup_ok = False
+    exit_code = 1
     try:
         for cmd_name, cmd_args, cwd in commands:
             processes[cmd_name] = _start_process(
@@ -520,19 +528,15 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
 
         _wait_for_services_ready(config.ports, processes)
 
-        while True:
-            for cmd_name, proc in processes.items():
-                code = proc.poll()
-                if code is not None:
-                    logging.info(f"[start_services] {cmd_name} exited with code {code}")
-                    return code
-            time.sleep(0.5)
+        exit_code = _wait_for_process_exit(processes)
 
     except KeyboardInterrupt:
         logging.info("\n[start_services] Keyboard interrupt received, shutting down...")
-        return 130
+        exit_code = 130
     finally:
-        _terminate_processes(processes)
+        with application_shutdown():
+            cleanup_ok = _shutdown_services(processes, commands, config.workspace)
+    return exit_code if cleanup_ok else 1
 
 
 def _launcher_create_time() -> float:
@@ -617,7 +621,7 @@ def _build_commands(mode: str, dotenv_path: Path | None = None) -> list[tuple[st
     dotenv_arg = ["--dotenv", str(dotenv_path)] if dotenv_path else []
 
     if mode in ("all", "app", "dev"):
-        cmd = [python_cmd, "-m", "jiuwenswarm.app"] + dotenv_arg
+        cmd = [python_cmd, "-m", "jiuwenswarm.app", "--keep-worker"] + dotenv_arg
         commands.append(("app", cmd, DATA_ROOT))
 
     if mode in ("all", "web"):
@@ -694,22 +698,41 @@ def _start_process(
 
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
-    """Terminate all running processes gracefully."""
+    """Stop owned Front/service trees without killing their resident Workers."""
+    errors = []
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-            proc.terminate()
+            try:
+                terminate_service_tree(proc.pid, timeout=8.0)
+            except (OSError, RuntimeError) as exc:
+                errors.append(exc)
+    if errors:
+        raise RuntimeError("Service tree cleanup incomplete") from errors[0]
 
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        if all(proc.poll() is not None for proc in processes.values()):
-            return
-        time.sleep(0.2)
 
-    for name, proc in processes.items():
-        if proc.poll() is None:
-            logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            proc.kill()
+def _shutdown_services(processes: dict[str, subprocess.Popen[bytes]],
+                       commands: list[tuple[str, list[str], Path]], workspace: Path) -> bool:
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    try:
+        _terminate_processes(processes)
+    except (OSError, RuntimeError) as exc:
+        logging.error("[start_services] Cannot retire Worker while Front cleanup is incomplete: %s", exc)
+        return False
+    if any(name == "app" for name, _, _ in commands):
+        return shutdown_application_worker(workspace=workspace)
+    return True
+
+
+def _wait_for_process_exit(processes: dict[str, subprocess.Popen[bytes]]) -> int:
+    while True:
+        for name, proc in processes.items():
+            code = proc.poll()
+            if code is not None:
+                logging.info(f"[start_services] {name} exited with code {code}")
+                return code
+        time.sleep(0.5)
 
 
 def _resolve_runtime_ports() -> dict[str, int]:
@@ -882,24 +905,22 @@ def _run_processes(
         Exit code
     """
     processes: dict[str, subprocess.Popen[bytes]] = {}
+    cleanup_ok = False
+    exit_code = 1
     try:
         for name, cmd, cwd in commands:
             processes[name] = _start_process(name, cmd, cwd, ports=ports)
 
         _wait_for_services_ready(ports, processes)
 
-        while True:
-            for name, proc in processes.items():
-                code = proc.poll()
-                if code is not None:
-                    logging.info(f"[start_services] {name} exited with code {code}")
-                    return code
-            time.sleep(0.5)
+        exit_code = _wait_for_process_exit(processes)
     except KeyboardInterrupt:
         logging.info("\n[start_services] keyboard interrupt received, shutting down...")
-        return 130
+        exit_code = 130
     finally:
-        _terminate_processes(processes)
+        with application_shutdown():
+            cleanup_ok = _shutdown_services(processes, commands, get_user_workspace_dir())
+    return exit_code if cleanup_ok else 1
 
 
 def _run(mode: str) -> int:

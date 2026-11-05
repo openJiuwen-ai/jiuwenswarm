@@ -30,6 +30,7 @@ MAX_DELEGATION_CONTEXT_ITEMS = 6
 MAX_DELEGATION_CONTEXT_CHARS = 8_000
 MAX_DELEGATION_RESULT_CHARS = 2_400
 
+
 def _normalized_task(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
@@ -274,7 +275,6 @@ async def execute_core_agent(
     interaction_answer: Any = None,
     managed_task_binding: dict[str, str] | None = None,
     execution_target: dict[str, Any] | None = None,
-    model_auth: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields

@@ -1,5 +1,8 @@
 """Session-wide voice receipts use transport identity, never model-written IDs."""
 
+# These tests verify subscription expiry and the wire projection boundary.
+# pylint: disable=protected-access
+
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -33,7 +36,8 @@ def activate(sid="chat", token="token"):
 @pytest.mark.parametrize("legacy", [False, True])
 def test_summary_is_taken_from_current_answer_without_matching_task_id(legacy):
     tag = ":previous-task" if legacy else ""
-    output = "Video is still running.\n" + f"[[JIUWEN_BRIEF_BEGIN{tag}]]Still generating; no file yet.[[JIUWEN_BRIEF_END{tag}]]"
+    output = ("Video is still running.\n"
+              + f"[[JIUWEN_BRIEF_BEGIN{tag}]]Still generating; no file yet.[[JIUWEN_BRIEF_END{tag}]]")
     result = present_core_agent_result(output, nonce="current-task", question="video")
     assert result["display_result"] == "Video is still running."
     assert result["realtime_brief"]["source"] == "core_agent"
@@ -91,6 +95,11 @@ def test_runtime_policy_survives_native_answer_without_overwriting_answer(mode):
     receipts.apply_summary_policy(builder, "chat")
     builder.remove_section.assert_called_once_with("video_duplex.voice_receipt")
     builder.add_section.assert_not_called()
+
+
+def test_runtime_policy_allows_attachment_only_agents():
+    activate()
+    receipts.apply_summary_policy(None, "chat")
 
 
 @pytest.mark.parametrize("mode", ["agent.work.normal", "agent.code.normal", "team.design"])
@@ -151,7 +160,8 @@ async def test_text_final_is_delivered_once_as_receipt_without_changing_chat(mon
     assert req.params["query"] == "Write code"
     assert req.params["duplex_original_question"] == "Write code"
     event = RuntimeEvent(request_id=req.request_id, session_id="chat", channel_id="web",
-        payload={"event_type": "chat.final", "content": "Code is ready.\n[[JIUWEN_BRIEF_BEGIN]]Code tested.[[JIUWEN_BRIEF_END]]"})
+        payload={"event_type": "chat.final",
+                 "content": "Code is ready.\n[[JIUWEN_BRIEF_BEGIN]]Code tested.[[JIUWEN_BRIEF_END]]"})
     original = dict(event.payload)
     await receipts.publish_result(req, event)
     await receipts.publish_result(req, event)

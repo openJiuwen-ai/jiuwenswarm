@@ -3781,19 +3781,24 @@ class TestReservedSandboxPaths:
 
 class TestBwrapFilesystem:
     @staticmethod
-    def test_read_rules_do_not_mount_host_paths():
+    def test_read_rules_do_not_mount_host_paths(tmp_path):
+        source_ro = tmp_path / "host-source-ro"
+        source_ro.mkdir()
+        source_rw = tmp_path / "host-source-rw"
+        source_rw.mkdir()
+
         policy = SecurityPolicy.model_validate({
             "filesystem_policy": {
                 "read_only": ["/host-read-only"],
                 "read_write": ["/host-read-write"],
                 "bind_mounts": [
                     {
-                        "host_path": "/host-source-ro",
+                        "host_path": str(source_ro),
                         "sandbox_path": "/sandbox-target-ro",
                         "mode": "ro",
                     },
                     {
-                        "host_path": "/host-source-rw",
+                        "host_path": str(source_rw),
                         "sandbox_path": "/sandbox-target-rw",
                         "mode": "rw",
                     },
@@ -3805,8 +3810,27 @@ class TestBwrapFilesystem:
 
         assert not _has_mount(args, "--ro-bind", "/host-read-only", "/host-read-only")
         assert not _has_mount(args, "--bind", "/host-read-write", "/host-read-write")
-        assert _has_mount(args, "--ro-bind", "/host-source-ro", "/sandbox-target-ro")
-        assert _has_mount(args, "--bind", "/host-source-rw", "/sandbox-target-rw")
+        assert _has_mount(args, "--ro-bind", str(source_ro), "/sandbox-target-ro")
+        assert _has_mount(args, "--bind", str(source_rw), "/sandbox-target-rw")
+
+    @staticmethod
+    def test_missing_bind_mount_host_path_is_skipped(tmp_path):
+        """An unusable host_path is dropped instead of failing the whole start."""
+        missing = tmp_path / "not-created"
+
+        policy = SecurityPolicy.model_validate({
+            "filesystem_policy": {
+                "bind_mounts": [{
+                    "host_path": str(missing),
+                    "sandbox_path": "/sandbox-target-missing",
+                    "mode": "ro",
+                }],
+            },
+        })
+
+        args = BwrapConfig.from_policy(policy, ["true"]).to_args()
+
+        assert not _has_mount(args, "--ro-bind", str(missing), "/sandbox-target-missing")
 
     @staticmethod
     def test_nested_bind_targets_create_parent_directories():
