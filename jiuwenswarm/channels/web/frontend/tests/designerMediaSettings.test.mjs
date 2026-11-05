@@ -104,7 +104,10 @@ test('audio duration fields accept any positive total and reject zero', () => {
   assert.equal(parseAudioDurationFields('1', '90'), 150);
   assert.equal(parseAudioDurationFields('1000', '0'), 60000);
   assert.equal(parseAudioDurationFields('0', '0'), null);
-  assert.equal(parseAudioDurationFields('', '12'), null);
+  assert.equal(parseAudioDurationFields('', '12'), 12);
+  assert.equal(parseAudioDurationFields('2', ' '), 120);
+  assert.equal(parseAudioDurationFields('', ''), null);
+  assert.equal(parseAudioDurationFields('', 'x'), null);
   assert.equal(parseAudioDurationFields('-1', '10'), null);
   assert.equal(parseAudioDurationFields('1.5', '0'), null);
 });

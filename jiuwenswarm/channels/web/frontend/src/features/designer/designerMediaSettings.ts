@@ -83,12 +83,12 @@ export function audioDurationLabelForm(totalSeconds: number): 'minutes' | 'secon
 }
 
 /**
- * Minutes and seconds fields as one length. Seconds may be 60 or more.
- * Zero and non-integers are rejected; there is no maximum.
+ * Minutes and seconds fields as one length. An empty field counts as zero; seconds may be 60 or more.
+ * A zero total and non-integers are rejected; there is no maximum.
  */
 export function parseAudioDurationFields(minutesRaw: string, secondsRaw: string): number | null {
-  const minutes = parseNonNegativeInt(minutesRaw);
-  const seconds = parseNonNegativeInt(secondsRaw);
+  const minutes = minutesRaw.trim() ? parseNonNegativeInt(minutesRaw) : 0;
+  const seconds = secondsRaw.trim() ? parseNonNegativeInt(secondsRaw) : 0;
   if (minutes === null || seconds === null) return null;
   const total = minutes * 60 + seconds;
   if (!Number.isSafeInteger(total) || total <= 0) return null;
