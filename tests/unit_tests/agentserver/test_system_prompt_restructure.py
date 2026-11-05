@@ -1435,6 +1435,11 @@ async def test_runtime_attachment_tracks_request_mode_change(tmp_path, monkeypat
 async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     rail = BrowserTaskPromptRail()
     assert rail is not None
+    assert rail._channel is None
+    rail.set_channel(" a2a ")
+    assert rail._channel == "a2a"
+    rail.set_channel(None)
+    assert rail._channel is None
     rail.tools = [object()]
     rail.system_prompt_builder = SystemPromptBuilder(language="en")
 
