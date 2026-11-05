@@ -738,6 +738,18 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
 });
 
+test('scheduled team lanes retain swarmflow grouping for regular members', () => {
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /const workflowGroupingLanes = laneSections === null \? flatLanes : standaloneMembers;/);
+  assert.match(
+    workspaceSource,
+    /data-testid="team-trajectory-member-group"[\s\S]*?ungrouped\.map\(renderLane\)[\s\S]*?workflowGroups\.map\(renderWorkflowGroup\)/,
+  );
+});
+
 test('diagnosis sub-page folds finished stages and offers record management', () => {
   const dir = '../src/features/trajectory/diagnosis/';
   const subpage = readFileSync(new URL(`${dir}DiagnosisSubpage.tsx`, import.meta.url), 'utf8');
