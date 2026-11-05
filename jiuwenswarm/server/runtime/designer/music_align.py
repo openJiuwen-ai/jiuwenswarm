@@ -149,7 +149,7 @@ def analyze(samples: np.ndarray, *, bpm: float, expected_climax: float | None, f
         for beat in beats:
             at = _seconds_to_frame(beat)
             if low <= beat <= high and at - before >= 0 and at + after <= db.size:
-                rises.append((float(beat), float(db[at:at+after].mean() - db[at-before:at].mean())))
+                rises.append((float(beat), float(db[at:at + after].mean() - db[at - before:at].mean())))
         best_rise = max((rise for _, rise in rises), default=0.0)
         if best_rise >= _MIN_CLIMAX_RISE_DB:
             # Near-equal rises: trust the beat closest to where the prompt asked for the hit.
