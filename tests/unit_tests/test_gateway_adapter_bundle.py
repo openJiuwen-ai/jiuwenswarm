@@ -73,14 +73,31 @@ def gateway_extensions(tmp_path, monkeypatch):
 @pytest.mark.filterwarnings("ignore:__package__ != __spec__.parent:ImportWarning")
 def test_verifier_loads_physical_extensions_with_relative_imports(gateway_extensions):
     verifier.verify_gateway_extensions()
+    prefix = "agent_gateway.loaded_extension."
+    loaded = {
+        name.removeprefix(prefix)
+        for name in verifier.sys.modules
+        if name.startswith(prefix) and "." not in name.removeprefix(prefix)
+    }
+    assert loaded == {"adx", "agentos", "agent_client"}
+    for name in loaded:
+        module = verifier.sys.modules[prefix + name]
+        assert Path(module.__file__) == gateway_extensions / name / "extension.py"
+        assert module.register_extensions is verifier.sys.modules[prefix + name + ".provider"].register_extensions
 
 
 @pytest.mark.parametrize("filename", ["extension.yaml", "extension.py", "provider.py"])
 @pytest.mark.filterwarnings("ignore:__package__ != __spec__.parent:ImportWarning")
 def test_verifier_rejects_missing_extension_resources(gateway_extensions, filename):
     (gateway_extensions / "adx" / filename).unlink()
-    with pytest.raises((RuntimeError, ModuleNotFoundError)):
-        verifier.verify_gateway_extensions()
+    if filename == "provider.py":
+        with pytest.raises(ModuleNotFoundError) as exc:
+            verifier.verify_gateway_extensions()
+        assert exc.value.name == "agent_gateway.loaded_extension.adx.provider"
+    else:
+        with pytest.raises(RuntimeError, match="Missing frozen Gateway extension resource:") as exc:
+            verifier.verify_gateway_extensions()
+        assert str(gateway_extensions / "adx" / filename) in str(exc.value)
 
 
 def test_verifier_rejects_empty_extension_manifest(gateway_extensions):
