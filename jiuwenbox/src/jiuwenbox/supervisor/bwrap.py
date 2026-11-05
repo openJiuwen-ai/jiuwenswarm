@@ -34,6 +34,30 @@ logger = logging.getLogger(__name__)
 BWRAP_BINARY = "bwrap"
 
 
+def _classify_bind_source(host_path: str) -> str | None:
+    """Classify whether a bind source can be handed to bwrap.
+
+    Returns ``None`` when the source resolves (symlinks followed) and may be
+    passed to ``--ro-bind``/``--bind``; otherwise returns a short reason for
+    the caller's warning.
+
+    ``Path.exists()`` swallows only a limited errno set, so unrelated
+    ``OSError`` (e.g. ``EACCES``) is caught here: the guard itself must not
+    become a new startup failure. A dangling symlink is reported separately
+    from an absent path because bwrap rejects both, but the remediation
+    differs (fix the link target vs. drop or provide the entry).
+    """
+    path = Path(host_path)
+    try:
+        if path.exists():
+            return None
+        if path.is_symlink():
+            return "broken symlink"
+        return "does not exist"
+    except OSError as exc:
+        return f"cannot stat: {exc}"
+
+
 def _normalize_capability(capability: str) -> str:
     capability = capability.strip().upper()
     if capability == "ALL" or capability.startswith("CAP_"):
@@ -173,11 +197,33 @@ class BwrapConfig:
         # wildcard parent re-binding the path back to ro afterwards.
         for spec in fs.bind_root_entries:
             BwrapConfig._apply_bind_root_entries(cfg, spec)
+        skipped_binds: list[str] = []
         for mount in fs.bind_mounts:
+            # A single unusable source must not fail the whole sandbox start:
+            # bwrap aborts with "Can't find source path" on the first missing
+            # entry. Skipping only narrows what the sandbox can see, and the
+            # read_only/Landlock enforcement is independent of binds.
+            reason = _classify_bind_source(mount.host_path)
+            if reason is not None:
+                skipped_binds.append(
+                    f"{mount.host_path!r} ({reason}; "
+                    f"sandbox_path={mount.sandbox_path}, mode={mount.mode})"
+                )
+                continue
             if mount.mode == "ro":
                 cfg.ro_binds.append((mount.host_path, mount.sandbox_path))
             else:
                 cfg.rw_binds.append((mount.host_path, mount.sandbox_path))
+        if skipped_binds:
+            # One aggregated warning per build: a permanent layout mismatch
+            # (e.g. no /lib64 on Debian-style arm64) is reported once per
+            # sandbox build instead of once per entry, while every skipped
+            # entry is still named for diagnosis.
+            logger.warning(
+                "bind_mounts: skipping %d unusable host path(s): %s",
+                len(skipped_binds),
+                "; ".join(skipped_binds),
+            )
         for device in fs.device:
             cfg.device_binds.append((device.host_path, device.sandbox_path))
 
