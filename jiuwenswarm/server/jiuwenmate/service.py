@@ -806,6 +806,19 @@ class PersistentAgentService:
             published_at=published_at,
         )
 
+    def validate_request_model(self, namespace_id: str, agent_id: str) -> None:
+        """Require a live model for new input without invalidating accepted Requests' snapshots."""
+        definition = self._require(namespace_id, agent_id)
+        snapshot = self.current_snapshot(namespace_id, agent_id)
+        if definition.published_settings is not None:
+            selection = definition.published_settings.capabilities.model
+        else:
+            # Legacy rows may not record published settings; do not validate an unpublished model draft.
+            selection = snapshot.load_spec().model.model_client_config.model_name
+        if selection is None:
+            raise PersistentAgentError("no model is configured for this colleague", code="MODEL_NOT_CONFIGURED")
+        self._models.resolve(selection, client_id=f"jiuwenmate:{agent_id}")
+
     def current_snapshot(self, namespace_id: str, agent_id: str) -> ConfigSnapshot:
         """The version a newly accepted Request must be pinned to."""
         definition = self._require(namespace_id, agent_id)

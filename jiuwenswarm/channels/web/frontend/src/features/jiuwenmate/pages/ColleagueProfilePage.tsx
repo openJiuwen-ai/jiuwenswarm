@@ -1421,9 +1421,10 @@ function ProfileSectionDetail({
 
   if (section === 'model') {
     const selectedModelId = model || modelCatalog.defaultModelId;
-    const choices = modelCatalog.models.some((item) => item.id === model) || model.length === 0
-      ? modelCatalog.models
-      : [{ id: model, label: model, provider: '' }, ...modelCatalog.models];
+    const choices = modelCatalog.models;
+    const modelAvailable = choices.some((item) => item.id === model);
+    const savedModel = colleague.capabilities.model;
+    const modelUnavailable = savedModel.length > 0 && !choices.some((item) => item.id === savedModel);
     const dirty = model !== colleague.capabilities.model;
     if (choices.length === 0) {
       return (
@@ -1455,15 +1456,23 @@ function ProfileSectionDetail({
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
+        {modelUnavailable ? (
+          <p className="jiuwenmate-profile__model-empty-hint" role="status" data-testid="jiuwenmate-profile-model-unavailable">
+            {t('jiuwenmate.profile.modelUnavailableHint')}
+          </p>
+        ) : null}
         <div className="jiuwenmate-profile__model-list" role="radiogroup" aria-label={title}>
           {choices.map((choice) => (
-            <label key={choice.id} className="jiuwenmate-profile__model-option" data-selected={selectedModelId === choice.id}>
+            <label key={choice.id} className="jiuwenmate-profile__model-option" data-selected={selectedModelId === choice.id}
+              data-testid="jiuwenmate-profile-model-option" data-variant={choice.id}>
               <input
                 type="radio"
                 name="jiuwenmate-profile-model"
                 value={choice.id}
                 checked={selectedModelId === choice.id}
                 onChange={() => onModelChange(choice.id)}
+                data-testid="jiuwenmate-profile-model-radio"
+                data-variant={choice.id}
               />
               <img
                 className="jiuwenmate-profile__model-icon"
@@ -1482,8 +1491,9 @@ function ProfileSectionDetail({
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
-            disabled={!dirty || savingResources || model.length === 0}
+            disabled={!dirty || savingResources || !modelAvailable}
             onClick={() => onSaveSettings?.({ model })}
+            data-testid="jiuwenmate-profile-model-save"
           >
             {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
           </button>
