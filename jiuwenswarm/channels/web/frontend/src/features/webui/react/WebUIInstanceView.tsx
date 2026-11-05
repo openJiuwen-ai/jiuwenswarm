@@ -10,6 +10,7 @@ import { createComponentStateStore } from '../renderer/componentState.ts';
 import type { WebUIRendererRegistry, WebUIStyleOverrides } from '../renderer/types.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 import { WebUIInstanceErrorBoundary } from './WebUIInstanceErrorBoundary.tsx';
+import { browserClientCapabilities } from '../client/browserClient.ts';
 import { requestPanelOpen } from '../client/panelNavigation.ts';
 import { useClientPreference } from '../client/preferences.ts';
 import type { WebUINormalizedRenderFrame } from '../contracts/normalized.ts';
@@ -31,6 +32,13 @@ export function WebUIInstanceView({ runtime, registry, instanceKey, mountLeaseId
   );
   const instance = runtime.getInstance(instanceKey);
   const frame = instance?.frame;
+  const clientFrameActive = useSyncExternalStore(
+    browserClientCapabilities.subscribe,
+    () => !frame?.activationGeneration || browserClientCapabilities.acceptsFrame({
+      target: { package_id: frame.target.packageId }, activation_generation: frame.activationGeneration,
+    }),
+    () => !frame?.activationGeneration,
+  );
   const hasFrame = !!frame;
   const componentState = useMemo(() => createComponentStateStore(),
     [runtime, instanceKey, mountLeaseId, instance?.connected, instance?.lifetimeId, hasFrame]);
@@ -70,7 +78,7 @@ export function WebUIInstanceView({ runtime, registry, instanceKey, mountLeaseId
       />
     );
   }, [frame, registry, runtime, instanceKey, instance?.connected, instance?.localFrameId, mountLeaseId, componentState, styles, selected]);
-  if (!instance) {
+  if (!instance || !clientFrameActive) {
     return null;
   }
 

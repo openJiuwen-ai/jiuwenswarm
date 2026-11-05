@@ -97,6 +97,11 @@ export function processRenderFrame(
     return protocolReject('SCHEMA_ERROR', 'invalid visible_when preference binding');
   }
 
+  if (input.activation_generation !== undefined && (typeof input.activation_generation !== 'string'
+    || !input.activation_generation.trim())) {
+    return protocolReject('SCHEMA_ERROR', 'invalid activation_generation');
+  }
+
   if (input.root === null || input.root === undefined) {
     return protocolReject('SCHEMA_ERROR', 'render tree is required');
   }
@@ -120,6 +125,7 @@ export function processRenderFrame(
 
   return protocolOk({
     kind: 'render',
+    ...(typeof input.activation_generation === 'string' ? { activationGeneration: input.activation_generation } : {}),
     target: target.value,
     revision: revision.value,
     schemaVersion: input.schema_version,

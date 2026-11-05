@@ -59,6 +59,10 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 定向用例位于 `tests/unit_tests/gateway/extensions_v2/test_gateway_browser_bridge.py`。
 用例使用通用组件和策略，独立于插件示例及其素材。
 
+client.declarations 仅约束参与浏览器能力协议的 Gateway 包的命令、请求绑定和界面激活状态，不作为所有插件文件的准入表。插件文件 URL 不根据该表判断可读性；文件所属后端执行路径、归属和激活校验。前端按界面实例卸载取消请求并释放 Blob，携带凭据的普通接口请求继续跟随请求上下文。
+
+前端规范化保留 Gateway 客户端帧的 activation_generation，界面实例随所属激活失效而卸载；资源请求跟随界面卸载取消，不通过解析文件 URL 查包清单。普通 AgentServer 界面帧不因 Gateway 客户端声明错误而被拒绝。
+
 普通 UI 包不加入 client.declarations。仅客户端能力包的帧携带 activation_generation；失活调用不得通过移除标记重新进入普通 UI 通路。
 
 ## English contract summary

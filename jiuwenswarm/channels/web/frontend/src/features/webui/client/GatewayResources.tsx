@@ -1,30 +1,28 @@
 import { useEffect, useState, useSyncExternalStore, type ImgHTMLAttributes, type VideoHTMLAttributes, type IframeHTMLAttributes } from 'react';
+import { isPluginResourceURL, resolvePluginResourceURL } from '../resources/urls.ts';
 import { gatewayFetch } from '../../../services/gatewayFetch';
 import { downloadBlob } from '../../../utils/desktopSave';
 import { browserClientCapabilities as host } from './browserClient.ts';
 
 export function needsGatewayResource(url: string): boolean {
-  return host.getPackageAssetState(url) !== null
+  return isPluginResourceURL(url, host.getGatewayUrl())
     || ((host.hasHTTPBindings() || host.isUnavailable()) && host.isGateway(url));
 }
 
-/** Retain each Blob only for its package activation or request context and component mount. */
+/** Retain each Blob for its URL and component lifetime; authenticated requests also track credential changes. */
 export function useGatewayResourceState(url?: string): { url?: string; pending: boolean } {
-  const getRevision = () => {
-    const asset = url ? host.getPackageAssetState(url) : null;
-    if (asset) return asset.status === 'active' ? `package:${asset.version}` : 'package:inactive';
-    return `request:${host.getEpoch()}:${host.isChanging()}`;
-  };
+  url = url ? resolvePluginResourceURL(url) : undefined;
+  const published = Boolean(url && typeof window !== 'undefined' && isPluginResourceURL(url, host.getGatewayUrl()));
+  const getRevision = () => published ? `file:${url}` : `request:${host.getEpoch()}:${host.isChanging()}`;
   const revision = useSyncExternalStore(
     (listener) => host.subscribe(() => listener()),
     getRevision,
     getRevision,
   );
-  const bound = Boolean(url && needsGatewayResource(url));
+  const bound = Boolean(url && typeof window !== 'undefined' && needsGatewayResource(url));
   const [resource, setResource] = useState<{ url: string; revision: string; objectUrl?: string } | null>(null);
   useEffect(() => {
-    const asset = url ? host.getPackageAssetState(url) : null;
-    if (!url || !bound || asset?.status === 'inactive' || (!asset && host.isChanging())) return;
+    if (!url || !bound || (!published && host.isChanging())) return;
     const controller = new AbortController();
     let objectUrl: string | undefined;
     let active = true;
@@ -36,7 +34,7 @@ export function useGatewayResourceState(url?: string): { url?: string; pending: 
       setResource({ url, revision, objectUrl });
     }).catch(() => { if (active) setResource({ url, revision }); });
     return () => { active = false; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [url, bound, revision]);
+  }, [url, bound, published, revision]);
   if (!bound) return { url, pending: false };
   const current = resource && resource.url === url && resource.revision === revision ? resource : null;
   return { url: current?.objectUrl, pending: current === null };
@@ -60,7 +58,7 @@ export function GatewayFrame(props: IframeHTMLAttributes<HTMLIFrameElement>) {
 }
 
 export async function downloadGatewayResource(url: string, filename: string): Promise<void> {
-  const response = await gatewayFetch(url);
+  const response = await gatewayFetch(resolvePluginResourceURL(url));
   if (!response.ok) throw new Error('RESOURCE_UNAVAILABLE');
   downloadBlob(await response.blob(), filename);
 }

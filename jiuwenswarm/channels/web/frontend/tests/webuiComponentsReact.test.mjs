@@ -155,7 +155,7 @@ for (const loaded of [true, false]) {
       { component: 'Image', props: { src: prefix + 'promotion.png', alt: 'Promotion', preview: false } },
       { component: 'Image', props: { src: '/protected-account-image', alt: 'Account', preview: false } },
       { component: 'Input', props: { placeholder: 'Username' } },
-    ] });
+    ] }, { ...target, package_id: 'asset-package' }, {}, { activation_generation: 'asset-generation' });
     const container = document.createElement('div'); document.body.append(container);
     const raw = createRoot(container);
     const complete = async (requests) => {
@@ -208,9 +208,9 @@ for (const loaded of [true, false]) {
       else next.packages = [];
       await act(async () => host.configure(next));
       assert.equal(app.container.querySelector('img[alt="Promotion"]'), null);
-      assert.equal(container.querySelector('img'), null);
-      assert.equal(box.style.backgroundImage, '');
-      assert.ok(urls.every((url) => revoked.includes(url)));
+      assert.equal(container.querySelector('img').src, urls[1], 'standalone resource follows its own mount lifetime');
+      assert.equal(box.isConnected, false, 'the inactive Gateway plugin view is unmounted');
+      assert.ok(revoked.includes(urls[0]));
       assert.ok(pending.every((item) => !item.url.startsWith(prefix)), 'old activations are never requested again');
     } finally {
       ready?.();
@@ -467,7 +467,7 @@ async function pressKey(element, name, code) {
   await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', init)));
   await act(async () => element.dispatchEvent(new window.KeyboardEvent('keyup', init)));
 }
-async function setup(tree, scope = target, transportOptions = {}) {
+async function setup(tree, scope = target, transportOptions = {}, frameExtra = {}) {
   const transport = createMockTransport(transportOptions);
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
@@ -478,12 +478,12 @@ async function setup(tree, scope = target, transportOptions = {}) {
     createElement(WebUIContentActivity, { active },
       createElement(WebUIHost, { sessionId: scope.session_id, slotId: scope.slot_id }))));
   await act(async () => render());
-  await act(async () => transport.injectRenderFrame(frame(tree, 1, scope)));
+  await act(async () => transport.injectRenderFrame({ ...frame(tree, 1, scope), ...frameExtra }));
   return {
     container, runtime, transport,
     business: () => transport.dispatches.filter((request) => request.event !== 'ui.ready'),
     async replace(next, revision = 2) {
-      await act(async () => transport.injectRenderFrame(frame(next, revision, scope)));
+      await act(async () => transport.injectRenderFrame({ ...frame(next, revision, scope), ...frameExtra }));
     },
     async activity(value) { active = value; await act(async () => render()); },
     async close() { await act(async () => root.unmount()); runtime.dispose(); container.remove(); },

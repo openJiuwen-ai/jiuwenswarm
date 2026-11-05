@@ -30,6 +30,8 @@ export interface WebUINormalizedNode {
 
 export interface WebUINormalizedRenderFrame {
   kind: 'render';
+  /** Host-supplied lifetime of a Gateway client package, independent of resource URLs. */
+  activationGeneration?: string;
   target: WebUINormalizedTarget;
   revision: number;
   schemaVersion: number;

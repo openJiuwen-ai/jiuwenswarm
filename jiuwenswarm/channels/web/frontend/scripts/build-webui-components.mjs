@@ -6,6 +6,7 @@ await build({
   entryPoints: ['tests/fixtures/webuiComponents.ts'],
   outfile: 'node_modules/.cache/webui-components/components.mjs',
   bundle: true, packages: 'external', platform: 'node', format: 'esm',
+  define: { 'import.meta.env': '{}' },
   loader: { '.css': 'empty', '.svg': 'dataurl' },
   plugins: [{
     name: 'webui-test-svg',
