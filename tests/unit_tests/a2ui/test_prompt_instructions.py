@@ -373,3 +373,33 @@ def test_a2ui_prompt_section_passes_channel_through():
     oc_section = build_a2ui_prompt_section("en", channel="officeclaw")
     assert "outermost structured UI MUST be wrapped in a Card" not in web_section
     assert "outermost structured UI MUST be wrapped in a Card" in oc_section
+
+
+def test_a2ui_channel_normalization_not_web():
+    """CR-12: channel 归一化——大小写/空白变体视作 web，不注入 officeclaw 规则。"""
+    for variant in ("WEB", "Web", " web ", "WEB "):
+        en = build_a2ui_autonomy_instruction("en", channel=variant)
+        assert "outermost structured UI MUST be wrapped in a Card" not in en, variant
+        assert "for TextField and Slider the inline label MUST" not in en, variant
+
+
+def test_a2ui_repair_prompt_respects_channel():
+    """CR-11: repair 路径透传 channel——web 的 repair prompt 不含 officeclaw 专属规则。"""
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+    spec = get_protocol_spec()
+    web_repair = spec.build_repair_prompt(
+        invalid_content="<a2ui-json>[]</a2ui-json>",
+        validation_error="test error",
+        user_query="test",
+        channel="web",
+    )
+    assert "outermost structured UI MUST be wrapped in a Card" not in web_repair
+    assert "for TextField and Slider the inline label MUST" not in web_repair
+
+    oc_repair = spec.build_repair_prompt(
+        invalid_content="<a2ui-json>[]</a2ui-json>",
+        validation_error="test error",
+        user_query="test",
+        channel="officeclaw",
+    )
+    assert "outermost structured UI MUST be wrapped in a Card" in oc_repair

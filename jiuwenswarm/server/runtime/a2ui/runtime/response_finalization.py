@@ -43,6 +43,7 @@ async def finalize_a2ui_assistant_content(
     repair_call: RepairCall | None,
     a2ui_enabled: bool,
     retry_without_a2ui_call: RetryWithoutA2UI | None = None,
+    channel: str | None = None,
 ) -> str:
     """Validate and repair a complete assistant response when A2UI is enabled.
     
@@ -92,6 +93,7 @@ async def finalize_a2ui_assistant_content(
                 user_query=user_query,
                 request_id=request_id,
                 repair_call=repair_call,
+                channel=channel,
             ),
             timeout=_A2UI_FINALIZATION_TIMEOUT_SECONDS,
         )
