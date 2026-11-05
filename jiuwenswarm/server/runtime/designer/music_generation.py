@@ -307,7 +307,7 @@ def _lyria_audio_pieces(chunk: dict[str, Any], model: str) -> tuple[list[bytes],
             # Each piece is its own base64 string; decode before joining.
             try:
                 pieces.append(base64.b64decode(str(audio["data"])))
-            except (binascii.Error, ValueError) as exc:
+            except ValueError as exc:
                 raise _MusicError(f"OpenRouter {model}: audio piece is not base64") from exc
         finish = str(choice.get("finish_reason") or finish)
     return pieces, finish

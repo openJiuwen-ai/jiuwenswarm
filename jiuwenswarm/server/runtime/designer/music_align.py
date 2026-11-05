@@ -136,7 +136,7 @@ def analyze(samples: np.ndarray, *, bpm: float, expected_climax: float | None, f
     db = 20 * np.log10(smooth + 1e-9)
     loud = np.nonzero(db > db.max() - _END_FLOOR_DB)[0]
     music_end = _frame_to_seconds(loud[-1] + 1) if loud.size else _frame_to_seconds(db.size)
-    tail = db[-max(1, _seconds_to_frame(_TRUNCATED_TAIL_SECONDS)) :]
+    tail = db[-max(1, _seconds_to_frame(_TRUNCATED_TAIL_SECONDS)):]
     truncated = bool(tail.mean() > np.percentile(db, 90) - _TRUNCATED_WITHIN_DB)
 
     climax_hit = None
@@ -149,7 +149,7 @@ def analyze(samples: np.ndarray, *, bpm: float, expected_climax: float | None, f
         for beat in beats:
             at = _seconds_to_frame(beat)
             if low <= beat <= high and at - before >= 0 and at + after <= db.size:
-                rises.append((float(beat), float(db[at : at + after].mean() - db[at - before : at].mean())))
+                rises.append((float(beat), float(db[at:at+after].mean() - db[at-before:at].mean())))
         best_rise = max((rise for _, rise in rises), default=0.0)
         if best_rise >= _MIN_CLIMAX_RISE_DB:
             # Near-equal rises: trust the beat closest to where the prompt asked for the hit.
@@ -193,7 +193,9 @@ def plan_alignment(features: MusicFeatures, sheet: CueSheet) -> AlignPlan:
             else:
                 segments[-1].append(jump[0])
                 segments.append(list(jump[1:]))
-                notes.append(f"spliced {jump[1][0]:.2f}s in at {jump[0][1]:.2f}s so the hit {hit:.2f}s lands on {climax:.2f}s")
+                notes.append(
+                    f"spliced {jump[1][0]:.2f}s in at {jump[0][1]:.2f}s so the hit {hit:.2f}s lands on {climax:.2f}s"
+                )
 
     src_a, dst_a = segments[-1][-1]
     remaining_src = features.music_end - src_a
@@ -381,6 +383,9 @@ def align_music(ffmpeg: str, source: Path, sheet: CueSheet, dest: Path) -> tuple
         return None, ["could not decode the BGM track"]
     features = analyze(samples, bpm=sheet.bpm, expected_climax=sheet.climax_start, film_end=sheet.total)
     plan = plan_alignment(features, sheet)
-    notes = [f"tempo {features.bpm:.1f} BPM (asked {sheet.bpm}), source {samples.size / _SAMPLE_RATE:.1f}s", *plan.notes]
+    notes = [
+        f"tempo {features.bpm:.1f} BPM (asked {sheet.bpm}), source {samples.size / _SAMPLE_RATE:.1f}s",
+        *plan.notes,
+    ]
     aligned = render(ffmpeg, source, plan, sheet.total, dest)
     return aligned, notes
