@@ -26,7 +26,7 @@ dependencies = [
     "filelock>=3.25.0,<4",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/m056838700/agent-gateway.git@f5d36cc780b215fe092f49974fcb25899de05ad1",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@a9e4d447033f0eadf5e8583c06cfb8993e01e539",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -221,7 +221,7 @@ jiuwenswarm = [
 default-groups = ['dev']
 # Keep SDK and protocol transitive dependencies on this project's pinned revisions.
 # Overrides replace extras too; the conditional entries preserve each opt-in extra.
-# Candidate dependencies are for editable development only; release builds reject forks.
+# Keep Core and Gateway on official revisions; release builds reject forks.
 override-dependencies = [
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04",
     "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@79f6ec656f513dadc412aaafa13f60ecf7f0fc04 ; extra == 'claude'",
@@ -233,7 +233,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/m056838700/agent-gateway.git", rev = "f5d36cc780b215fe092f49974fcb25899de05ad1" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "a9e4d447033f0eadf5e8583c06cfb8993e01e539" }
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "79f6ec656f513dadc412aaafa13f60ecf7f0fc04" }
 openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "cbbadde9101db6e3d75e4ef2b9bdb6029fd92088", subdirectory = "openjiuwen-protocol" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }

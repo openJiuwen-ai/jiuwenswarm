@@ -24,6 +24,10 @@ validate_release_dependencies = runpy.run_path(str(ROOT / "scripts/release_depen
 ]
 
 
+def test_repository_dependencies_pass_the_release_gate():
+    validate_release_dependencies(ROOT)
+
+
 def _project(root: Path, repository: str = OFFICIAL) -> None:
     requirement = f"openjiuwen @ git+{repository}@{REVISION}"
     (root / "pyproject.toml").write_text(
