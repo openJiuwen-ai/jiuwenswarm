@@ -184,7 +184,7 @@ def build_a2ui_browser_workflow_instruction() -> str:
     )
 
 
-def build_a2ui_autonomy_instruction(language: str = "en") -> str:
+def build_a2ui_autonomy_instruction(language: str = "en", channel: str | None = None) -> str:
     # --- en rules ---
     image_url_rule_en = (
         " Do not invent image URLs. Use user-provided HTTPS URLs or verified "
@@ -241,6 +241,34 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "a universal fallback. For a single object detail request, build a "
         "single object detail layout, not a multi-card demo. Do not substitute "
         "a fixed demo for the requested component. "
+        "[Selections] For MultipleChoice, selections MUST be an object with a "
+        "\"path\" key (e.g. selections={\"path\":\"/form/cabinClass\"}) and "
+        "the default selection MUST be provided via dataModelUpdate on that "
+        "path. When MultipleChoice is used for single-select, set "
+        "maxAllowedSelections to 1. "
+        "[Id-uniqueness] MultipleChoice option values MUST NOT share a name with ANY component id "
+        "(e.g. if a component id is \"anonymous\", use option value \"anon\" not \"anonymous\" — "
+        "matching a component id causes circular dependency). "
+        "No Button.action.context \"key\" may equal ANY component id in the same surface. "
+        "The A2UI component tree is single-parent: every component id is "
+        "referenced by exactly one parent; a component referenced via "
+        "Button/Card/Tabs child MUST NOT also appear in any Column/Row/List "
+        "children.explicitList. "
+        "[Repeat-data] For repeated list/card data, dataModelUpdate keys must not repeat; "
+        "encode arrays as one collection key with indexed valueMap entries "
+        "(\"0\", \"1\"); each item contains nested valueMap fields. Use item-relative "
+        "paths inside templates (name, price, or /item/name). Do not use collection "
+        "absolute paths inside templates (e.g. /phones/name). Do not nest templates "
+        "inside template-rendered components in A2UI; flatten repeated item details "
+        "into fields on the outer item, or use explicit child components bound to "
+        "those fields."
+        + image_url_rule_en
+        + unsupported_component_rule_en
+    )
+    # officeclaw 专属组件规则：web channel 不注入（channel != "web" 时拼入），
+    # 防止影响 web channel。含 Card 布局壳 / 输入绑定与标题 / 标题 usageHint /
+    # 文本纯净 / 按钮行 / 重置清空 / 取消按钮。
+    officeclaw_component_rules_en = (
         "[Layout] The outermost structured UI MUST be wrapped in a Card as a container "
         "shell (this is distinct from card-list presentation, which is only "
         "for card/card-list requests above); Card's child takes a single "
@@ -267,12 +295,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "usageHint \"h2\". When input components are grouped into sections, the "
         "section title Text MUST use usageHint \"h2\", and the title Text directly "
         "above each input component inside the section MUST use usageHint \"h3\". "
-        "For MultipleChoice, selections MUST be an object with a "
-        "\"path\" key (e.g. selections={\"path\":\"/form/cabinClass\"}) and "
-        "the default selection MUST be provided via dataModelUpdate on that "
-        "path. "
-        "When MultipleChoice is used for single-select, set maxAllowedSelections "
-        "to 1. "
         "[Text-purity] Titles MUST be plain text and MUST NOT contain any "
         "Markdown syntax. Emoji MUST NOT be used anywhere in A2UI UI text. "
         "[Buttons] Button MUST use \"child\" to reference a component id (e.g. a Text "
@@ -288,25 +310,7 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "when genuinely needed (e.g. the user asks for a confirm/cancel choice, "
         "or cancelling has a real effect); do NOT add a Cancel button by default. "
         "Do not add no-op buttons with no real effect (e.g., \"Not now\", "
-        "\"Maybe later\", \"暂不需要\"). "
-        "[Id-uniqueness] MultipleChoice option values MUST NOT share a name with ANY component id "
-        "(e.g. if a component id is \"anonymous\", use option value \"anon\" not \"anonymous\" — "
-        "matching a component id causes circular dependency). "
-        "No Button.action.context \"key\" may equal ANY component id in the same surface. "
-        "The A2UI component tree is single-parent: every component id is "
-        "referenced by exactly one parent; a component referenced via "
-        "Button/Card/Tabs child MUST NOT also appear in any Column/Row/List "
-        "children.explicitList. "
-        "[Repeat-data] For repeated list/card data, dataModelUpdate keys must not repeat; "
-        "encode arrays as one collection key with indexed valueMap entries "
-        "(\"0\", \"1\"); each item contains nested valueMap fields. Use item-relative "
-        "paths inside templates (name, price, or /item/name). Do not use collection "
-        "absolute paths inside templates (e.g. /phones/name). Do not nest templates "
-        "inside template-rendered components in A2UI; flatten repeated item details "
-        "into fields on the outer item, or use explicit child components bound to "
-        "those fields."
-        + image_url_rule_en
-        + unsupported_component_rule_en
+        "\"Maybe later\", \"暂不需要\")."
     )
     # --- zh rules ---
     image_url_rule_zh = (
@@ -348,6 +352,27 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         " [组件匹配] 必须匹配用户请求的组件类型：只有用户要求卡片或卡片列表时才生成 "
         "card list；Card/list 不是万能 fallback。单个对象详情请求应生成单对象"
         "详情布局，不要生成多卡片 demo。不要用固定 demo 替代用户请求的组件。"
+        " [选择] MultipleChoice 尤其要注意：selections 必须是带 \"path\" 键的对象"
+        "（如 selections={\"path\":\"/form/cabinClass\"}），默认选中值必须通过 "
+        "dataModelUpdate 在该路径上设置。"
+        "MultipleChoice 用作单选时 maxAllowedSelections 必须设为 1。"
+        " [id唯一] MultipleChoice 的 option value 不要跟任何组件 id 同名"
+        "（如组件 id=\"anonymous\" 时 option value 用 \"anon\" 而非 \"anonymous\"，否则会致循环依赖）。"
+        "Button.action.context 的每个 \"key\" 不得与同一 surface 内任何组件 id 同名。"
+        "A2UI 组件树是单亲树：每个组件 id 只能被一个父级引用一次；"
+        "Button/Card/Tabs 的 child 引用过的组件，"
+        "不得再出现在任何 Column/Row/List 的 children.explicitList 里。"
+        " [重复数据] List 或卡片列表展示重复数据时，dataModelUpdate 的 key 不能重复，"
+        "请把数组编码为集合 key 并用索引项（\"0\"、\"1\"），每个 item 含嵌套 "
+        "valueMap 字段，模板内用 item-relative path。"
+        "不要在模板内使用集合绝对路径（如 /phones/name）。"
+        "不要在模板渲染出的组件内部嵌套 template；"
+        "请把重复 item 的明细拍平成外层 item 字段，或使用显式子组件绑定这些字段。"
+        + image_url_rule_zh
+        + unsupported_component_rule_zh
+    )
+    # officeclaw 专属组件规则（中文）：web channel 不注入，channel != "web" 时拼入。
+    officeclaw_component_rules_zh = (
         " [布局] 最外层结构化 UI 统一用 Card 作为容器壳承载"
         "（区别于上文的 card-list 展示模式，后者仅用于卡片/卡片列表请求）；"
         "Card 的 child 只收一个组件 id，"
@@ -368,10 +393,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "表单没有分组时（如单个输入组件），每个输入组件的标题必须用 usageHint \"h2\"；"
         "输入组件归入分组时，分组标题 Text 必须用 usageHint \"h2\"，"
         "分组内每个输入组件正上方的标题必须用 usageHint \"h3\"。"
-        "MultipleChoice 尤其要注意：selections 必须是带 \"path\" 键的对象"
-        "（如 selections={\"path\":\"/form/cabinClass\"}），默认选中值必须通过 "
-        "dataModelUpdate 在该路径上设置。"
-        "MultipleChoice 用作单选时 maxAllowedSelections 必须设为 1。"
         " [文本纯净] 标题必须是纯文本，禁止任何 Markdown 语法。"
         "A2UI 界面全面禁止使用 emoji。"
         " [按钮] Button 必须用 \"child\" 引用一个组件 id（如 Text 组件）作为按钮文字，不要用 \"label\" 字段。"
@@ -382,34 +403,28 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "禁止添加\"重置\"、\"清空\"等恢复或清空表单值的按钮；"
         "\"取消\"按钮只有确有需要时才添加（如用户明确要求确认/取消选择，或取消有实际效果），默认不要添加。"
         "禁止添加\"暂不需要\"、\"以后再说\"等无实际效果的无意义按钮（点击后没有任何真实动作）。"
-        " [id唯一] MultipleChoice 的 option value 不要跟任何组件 id 同名"
-        "（如组件 id=\"anonymous\" 时 option value 用 \"anon\" 而非 \"anonymous\"，否则会致循环依赖）。"
-        "Button.action.context 的每个 \"key\" 不得与同一 surface 内任何组件 id 同名。"
-        "A2UI 组件树是单亲树：每个组件 id 只能被一个父级引用一次；"
-        "Button/Card/Tabs 的 child 引用过的组件，"
-        "不得再出现在任何 Column/Row/List 的 children.explicitList 里。"
-        " [重复数据] List 或卡片列表展示重复数据时，dataModelUpdate 的 key 不能重复，"
-        "请把数组编码为集合 key 并用索引项（\"0\"、\"1\"），每个 item 含嵌套 "
-        "valueMap 字段，模板内用 item-relative path。"
-        "不要在模板内使用集合绝对路径（如 /phones/name）。"
-        "不要在模板渲染出的组件内部嵌套 template；"
-        "请把重复 item 的明细拍平成外层 item 字段，或使用显式子组件绑定这些字段。"
-        + image_url_rule_zh
-        + unsupported_component_rule_zh
     )
 
     if language in {"zh", "cn"}:
-        return (
+        base = (
             "如果决策树判定使用 A2UI，输出一段很短的说明后跟合法的 a2ui-json block。"
             + autonomy_rule_zh
             + requested_component_rule_zh
         )
-    return (
+        # officeclaw 专属组件规则：web channel 不注入（防止影响 web channel）；
+        # channel=None（repair 等拿不到 channel 的场景）默认注入以保持向后兼容。
+        if channel != "web":
+            base += officeclaw_component_rules_zh
+        return base
+    base = (
         "If the decision tree determines A2UI is appropriate, output a very "
         "short intro followed by a valid a2ui-json block. "
         + autonomy_rule_en
         + requested_component_rule_en
     )
+    if channel != "web":
+        base += " " + officeclaw_component_rules_en
+    return base
 
 
 __all__ = [

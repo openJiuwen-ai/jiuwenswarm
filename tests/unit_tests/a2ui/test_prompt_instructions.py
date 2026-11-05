@@ -313,3 +313,61 @@ def test_a2ui_zh_client_event_prompt_is_readable():
     assert "张三" in prompt
     assert "submit_form" in prompt
     assert "浣犳敹" not in prompt
+
+
+def test_a2ui_officeclaw_component_rules_scoped_by_channel():
+    """七条组件规则按 channel 分流：officeclaw 含、web 不含、默认(None)含（向后兼容 repair）。
+
+    移出主段的 7 条：Card 布局壳 / 输入绑定与标题 / 标题 usageHint / 文本纯净 /
+    按钮行 / 重置清空 / 取消按钮。selections path + maxAllowed 留公共主段。
+    """
+    # 默认（None）= 向后兼容，含全部 7 条（repair 场景拿不到 channel，需完整规则）
+    default_en = build_a2ui_autonomy_instruction("en")
+    assert "outermost structured UI MUST be wrapped in a Card" in default_en
+    assert "for TextField and Slider the inline label MUST" in default_en
+    assert "Do NOT add buttons that reset or clear form values" in default_en
+
+    # officeclaw 含 7 条
+    oc_en = build_a2ui_autonomy_instruction("en", channel="officeclaw")
+    assert "outermost structured UI MUST be wrapped in a Card" in oc_en
+    assert "for TextField and Slider the inline label MUST" in oc_en
+    assert 'usageHint "h1"' in oc_en
+    assert "Titles MUST be plain text" in oc_en
+    assert "MUST go into a horizontal Row" in oc_en
+    assert "Do NOT add buttons that reset or clear form values" in oc_en
+    assert "do NOT add a Cancel button by default" in oc_en
+
+    oc_zh = build_a2ui_autonomy_instruction("zh", channel="officeclaw")
+    assert "最外层结构化 UI 统一用 Card 作为容器壳承载" in oc_zh
+    assert "TextField 与 Slider 的内联 label" in oc_zh
+    assert '禁止添加"重置"、"清空"' in oc_zh
+
+    # web 不含 7 条（防止影响 web channel）—— 用整句带上下文反向断言，不用泛词
+    web_en = build_a2ui_autonomy_instruction("en", channel="web")
+    assert "outermost structured UI MUST be wrapped in a Card" not in web_en
+    assert "for TextField and Slider the inline label MUST" not in web_en
+    assert 'usageHint "h1"' not in web_en
+    assert "Titles MUST be plain text" not in web_en
+    assert "MUST go into a horizontal Row" not in web_en
+    assert "Do NOT add buttons that reset or clear form values" not in web_en
+    assert "do NOT add a Cancel button by default" not in web_en
+
+    web_zh = build_a2ui_autonomy_instruction("zh", channel="web")
+    assert "最外层结构化 UI 统一用 Card 作为容器壳承载" not in web_zh
+    assert "TextField 与 Slider 的内联 label" not in web_zh
+    assert '禁止添加"重置"、"清空"' not in web_zh
+
+    # 公共规则（selections path / maxAllowed / Id-uniqueness / Repeat-data）对所有 channel 都在
+    for ch in (None, "web", "officeclaw"):
+        en = build_a2ui_autonomy_instruction("en", channel=ch)
+        assert "single-select, set maxAllowedSelections to 1" in en
+        assert "single-parent" in en
+        assert "Do not nest templates" in en
+
+
+def test_a2ui_prompt_section_passes_channel_through():
+    """build_a2ui_prompt_section 透传 channel：web 版不含 7 条，officeclaw 版含。"""
+    web_section = build_a2ui_prompt_section("en", channel="web")
+    oc_section = build_a2ui_prompt_section("en", channel="officeclaw")
+    assert "outermost structured UI MUST be wrapped in a Card" not in web_section
+    assert "outermost structured UI MUST be wrapped in a Card" in oc_section
