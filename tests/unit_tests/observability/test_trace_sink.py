@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import queue
@@ -411,6 +412,60 @@ def test_slow_overflow_logger_does_not_hold_ingress_lock(tmp_path: Path, monkeyp
         release_logging.set()
         store.release_write.set()
         assert sink.close(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_overflow_flood_keeps_event_loop_heartbeat_moving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocked writer logger must not block an async model-frame producer."""
+    from jiuwenswarm.observability import sink as sink_module
+
+    store = _BlockingStore()
+    sink = TrajectoryRecordSink(
+        _settings(tmp_path / "trajectory.sqlite3", queue_size=1, batch_size=1),
+        store=store,
+    )
+    logging_started = threading.Event()
+    release_logging = threading.Event()
+    running = True
+    ticks = 0
+
+    def warn(*args: object) -> None:
+        logging_started.set()
+        release_logging.wait(timeout=5)
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while running:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(sink_module.logger, "warning", warn)
+    sink.start()
+    pulse = asyncio.create_task(heartbeat())
+    try:
+        sink.consume(_record())
+        assert await asyncio.to_thread(store.write_started.wait, 2)
+        sink.consume_stream_frame(_frame(0))
+        sink.consume_stream_frame(_frame(1))
+        store.release_write.set()
+        assert await asyncio.to_thread(logging_started.wait, 2)
+        before = ticks
+        for batch in range(25):
+            for item in range(100):
+                sink.consume_stream_frame(_frame(2 + batch * 100 + item))
+            await asyncio.sleep(0)
+        assert ticks >= before + 25
+        assert sink.stats().dropped_frames >= 2400
+        assert not release_logging.is_set()
+    finally:
+        running = False
+        release_logging.set()
+        store.release_write.set()
+        await pulse
+        assert await asyncio.to_thread(sink.close, timeout=5)
 
 
 def test_sink_coalesces_pending_live_snapshots_by_identity(tmp_path: Path) -> None:
