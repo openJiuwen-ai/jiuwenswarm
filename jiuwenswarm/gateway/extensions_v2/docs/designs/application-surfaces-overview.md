@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-11-05 |
 | 责任人 | Song Haoran |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/`，并涉及 `jiuwenswarm/channels/web/`（`app_web.py` 与前端 `features/webui/`）及 `jiuwenswarm/channels/desktop/electron/` |
-| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md) |
+| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md) |
 | 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-12` |
 | 关联文档 | [运行时规约](../specs/S_01_gateway-extension-runtime.md)、[渲染规约](../specs/S_02_ui-render.md)、[浏览器桥接规约](../specs/S_06_local-browser-bridge.md)、[S_17 组件 Props 规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) |
 | 关键假设与待确认项 | 见第 1.3 节及各 feature；agent-core 锁定版本与当前导入不一致的问题记录在开发计划第 6 节 |
@@ -98,7 +98,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 应用级 UI 包 | 在 Gateway 应用级槽位声明贡献的包 | Gateway 运行时的活动包与其 manifest `ui` 段 | 不代表包具有浏览器请求绑定或客户端操作能力 |
 | 激活代次 | 一次发布对应的随机标识 | Gateway 运行时 | 不同代次之间的迟到消息与素材互不通用 |
-| 开场提供者顺序 | 依次播放的开场列表 | 宿主设置；当前外观提供者默认排在首位 | 不代表各提供者本次一定播放 |
+| 开场提供者顺序 | 依次播放的开场列表 | Gateway 保存的宿主设置（[S_10](../specs/S_10_application-settings.md)）；用户未调整时当前外观提供者排在首位 | 不代表各提供者本次一定播放 |
 | 启动标识 | 一次应用启动的标识 | Electron 主进程；浏览器模式使用会话存储 | 刷新、重连与新窗口不产生新的启动 |
 | 插件偏好与数据 | 插件自身的业务状态 | Core `JsonStore` 与包数据目录 | 卸载后不保留 |
 
@@ -168,6 +168,6 @@ stateDiagram-v2
 | EXTV2-GW-09 | 媒体容器、沙箱通信与应用背景槽位（[F_10](../features/F_10_media-surface-and-background.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-10 | 受控外观（[F_11](../features/F_11_controlled-appearance.md)、[S_08](../specs/S_08_appearance.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-11 | 启动门控与开场队列（[F_12](../features/F_12_startup-gate-and-splash.md)、[S_09](../specs/S_09_startup-splash.md)） | 已实现，单元与浏览器验证通过 |
-| EXTV2-GW-12 | 应用级设置页 | 待建档 |
+| EXTV2-GW-12 | 应用级设置页、开场顺序与停用、文件导入与导出（[F_13](../features/F_13_application-settings-page.md)、[S_10](../specs/S_10_application-settings.md)） | 已实现，单元与浏览器验证通过 |
 
 负责人、进度与验证证据以[开发计划](extensions-v2-development-plan.md)为唯一维护位置。

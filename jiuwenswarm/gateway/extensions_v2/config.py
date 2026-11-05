@@ -25,6 +25,9 @@ DEFAULT_HTTP_TIMEOUT_MS = 3000
 DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024
 MAX_HTTP_TIMEOUT_MS = 5000
 MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024
+#: Total bytes of one file import (S_10 section 8).
+DEFAULT_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +91,8 @@ class GatewayExtensionConfig:
     install_dir: Path = Path(DEFAULT_INSTALL_DIR)
     data_dir: Path = Path(DEFAULT_DATA_DIR)
     http: HttpPolicy = HttpPolicy()
+    #: ``uploads.max_bytes``: total size of one file import.
+    upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES
 
 
 def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExtensionConfig:
@@ -111,6 +116,10 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
         install_dir=_resolve_dir(install_dir),
         data_dir=_resolve_dir(data_dir),
         http=_read_http_policy(gateway.get("http")),
+        upload_max_bytes=_bounded_int(
+            (gateway.get("uploads") if isinstance(gateway.get("uploads"), Mapping) else {}).get("max_bytes"),
+            DEFAULT_UPLOAD_MAX_BYTES, MAX_UPLOAD_BYTES,
+        ),
     )
 
 

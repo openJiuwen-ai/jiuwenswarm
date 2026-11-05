@@ -475,7 +475,35 @@
       "channels": "Channels",
       "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
-      "experimental": "Experimental"
+      "experimental": "Experimental",
+      "extensions": "Extensions"
+    },
+    "extensions": {
+      "description": "Startup splashes and settings pages provided by extensions",
+      "unavailable": "The extension service is not connected",
+      "loading": "Loading…",
+      "splash": {
+        "title": "Startup splash",
+        "orderTitle": "Play order",
+        "description": "When several extensions provide a startup splash, they play in this order. Turning one off only affects its splash, not its background or colors.",
+        "empty": "No extension provides a startup splash.",
+        "skippable": "Skippable, up to {{seconds}} s",
+        "notSkippable": "Cannot be skipped, up to {{seconds}} s",
+        "moveUp": "Move {{name}} up",
+        "moveDown": "Move {{name}} down",
+        "toggle": "Play the splash of {{name}}",
+        "defaultOrder": "Default order: the extension providing the current appearance first, the rest in install order.",
+        "customOrder": "Custom order.",
+        "reset": "Restore default order",
+        "loadFailed": "Cannot load the splash settings",
+        "saveFailed": "Cannot save the splash settings"
+      },
+      "pages": {
+        "title": "Extension settings",
+        "empty": "No extension provides a settings page.",
+        "ariaLabel": "Extension settings pages",
+        "loadFailed": "Cannot load the extension settings pages"
+      }
     },
     "feedback": {
       "loadFailed": "Failed to load settings",
@@ -5389,6 +5417,13 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
+  },
+  "webuiFileImport": {
+    "uploading": "Uploading {{percent}}%",
+    "failed": "Import failed. Try again.",
+    "tooLarge": "The files are too large to import",
+    "localOnly": "Importing works only on this computer",
+    "inactive": "The page changed. Pick the files again."
   },
   "webuiSplash": {
     "holdToSkip": "Hold Space to skip"

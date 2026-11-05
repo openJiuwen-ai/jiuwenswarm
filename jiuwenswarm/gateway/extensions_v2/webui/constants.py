@@ -34,6 +34,7 @@ FRAME_RENDER: Final[str] = "webui.render"
 FRAME_CLEAR: Final[str] = "webui.render.clear"
 FRAME_RENDER_ERROR: Final[str] = "webui.render.error"
 FRAME_APPEARANCE: Final[str] = "webui.appearance"
+FRAME_DOWNLOAD: Final[str] = "webui.download"
 
 # Upstream events: all enter the event chain through the single method webui.dispatch.
 UPSTREAM_EVENTS: Final[frozenset[str]] = frozenset(
@@ -81,13 +82,15 @@ def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION) -> SlotSpec:
 # content and does not depend on a chat session.
 # ``application.background`` is the full-window layer below the workspace and
 # ``application.splash`` the startup layer above it; both only accept a
-# ``MediaSurface`` root.
+# ``MediaSurface`` root. ``application.settings.page`` holds one settings page
+# per package in the host Extensions settings module (S_10).
 SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
     {
         "application.entry": _slot("single", SlotScope.APPLICATION),
         "application.sidebar.footer": _slot("list", SlotScope.APPLICATION),
         "application.background": _slot("single", SlotScope.APPLICATION),
         "application.splash": _slot("single", SlotScope.APPLICATION),
+        "application.settings.page": _slot("list", SlotScope.APPLICATION),
     }
 )
 

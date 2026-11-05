@@ -22,7 +22,9 @@ from uuid import uuid4
 from openjiuwen.core.events import Event, EventHandlerOps, EventHandlerOpsBuilder, SessionContext
 
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
-from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestInput, GatewayRequestOutput, WEBUI_DISPATCH_METHOD
+from jiuwenswarm.gateway.extensions_v2.models import (
+    GatewayRequestInput, GatewayRequestOutput, WEBUI_DISPATCH_METHOD, gateway_session_id,
+)
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiRenderInput, UiRenderOutput,
 )
@@ -30,8 +32,12 @@ from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, W
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
 from jiuwenswarm.gateway.extensions_v2.webui.call_context import trusted_connection
+from jiuwenswarm.gateway.extensions_v2.webui.host_settings import SplashPreferences
+from jiuwenswarm.gateway.extensions_v2.webui.transfers import TransferManager
 
-SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash"})
+SETTINGS_PAGE_SLOT = "application.settings.page"
+SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash",
+                   SETTINGS_PAGE_SLOT})
 SPLASH_SLOT = "application.splash"
 #: Display-only slots whose lifecycle frames bypass request policy (S_09 section 3).
 PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})
@@ -116,6 +122,8 @@ class BrowserBridge:
         self._appearance_locks: dict[str, asyncio.Lock] = {}
         # Browser notifications started from synchronous package release.
         self._tasks: set[asyncio.Task] = set()
+        self.splash_preferences = SplashPreferences(runtime.config.data_dir)
+        self.transfers = TransferManager(runtime)
         self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
 
     @property
@@ -147,6 +155,22 @@ class BrowserBridge:
 
     def _active_application_package(self, package_id: str):
         return next((package for package in self.application_packages() if package.package_id == package_id), None)
+
+    def active_application_package(self, package_id: str):
+        """Return the active application package with this id, or None."""
+        return self._active_application_package(package_id)
+
+    def package_title(self, package_id: str) -> str:
+        """Navigation title: manifest ``displayName``, else the package id."""
+        package = self._active_application_package(package_id)
+        return (getattr(package, "display_name", "") if package is not None else "") or package_id
+
+    def settings_pages(self) -> list[dict[str, str]]:
+        """Packages contributing ``application.settings.page``, in publication order (S_10 section 3.1)."""
+        return [{"package_id": package.package_id, "title": self.package_title(package.package_id)}
+                for package in self.application_packages()
+                if any(isinstance(item, Mapping) and item.get("type") == "web.slot.contribution"
+                       and item.get("slot") == SETTINGS_PAGE_SLOT for item in package.ui.get("items", []))]
 
     def validate_package(self, package) -> None:
         """Validate browser declarations before publication."""
@@ -229,15 +253,17 @@ class BrowserBridge:
                            "declared_max_duration_ms": maximum}
         return declaration
 
-    def splash_providers(self) -> list[dict[str, Any]]:
-        """Active splash providers in publication order."""
-        providers = []
+    def splash_providers(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
+        """Active splash providers in effective order; disabled ones only on request (S_10 section 4)."""
+        declared = {}
         for package in self.application_packages():
             declaration = self.splash_declaration(package)
             if declaration is not None:
-                providers.append({"package_id": package.package_id, "skippable": declaration["skippable"],
-                                  "max_duration_ms": declaration["max_duration_ms"]})
-        return providers
+                declared[package.package_id] = {"package_id": package.package_id, "skippable": declaration["skippable"],
+                                                "max_duration_ms": declaration["max_duration_ms"]}
+        preferences = self.splash_preferences
+        return [declared[package_id] for package_id in preferences.ordered(declared)
+                if include_disabled or preferences.enabled(package_id)]
 
     @staticmethod
     def is_platform_frame(method: str, params: Any) -> bool:
@@ -254,7 +280,7 @@ class BrowserBridge:
     async def platform_frame(self, request, context: SessionContext) -> dict[str, Any]:
         """Answer one platform frame; package handlers share the request time budget."""
         if request.method == SPLASH_PROVIDERS_METHOD:
-            return {"providers": self.splash_providers()}
+            return {"providers": self.splash_providers(), "customized": self.splash_preferences.customized}
         try:
             receipt = await asyncio.wait_for(self._lifecycle(request, context), timeout=PLATFORM_TIMEOUT_S)
         except asyncio.TimeoutError:
@@ -309,8 +335,37 @@ class BrowserBridge:
         return UiActionOutput(accepted=True, status="closed")
 
     def published(self, package_id: str, generation: str) -> None:
-        if self._active_application_package(package_id) is not None:
+        package = self._active_application_package(package_id)
+        if package is not None:
             self.generations[package_id] = generation
+            if self.splash_declaration(package) is not None:
+                self.splash_preferences.note_installed(package_id)
+
+    async def close_splashes(self, package_id: str, reason: str) -> int:
+        """Close a package's live splash instances and tell it why (S_10 section 5).
+
+        The browser closes first through the clear frame; the package hears
+        ``ui.closed`` afterwards and is never waited on beyond the platform limit.
+        """
+        closed = 0
+        for instance in self.runtime.registry.snapshot():
+            target = instance.target
+            if target.slot_id != SPLASH_SLOT or target.package_id != package_id or instance.root is None:
+                continue
+            frame = self.runtime.registry.retire_instance(target, reason)
+            if frame is None:
+                continue
+            await self.runtime.webui.transport.send_clear(frame)
+            context = SessionContext(gateway_session_id(target.connection_id), None,
+                                     {"connection_id": target.connection_id, "channel_id": "web"})
+            try:
+                await asyncio.wait_for(self.runtime.bus.trigger(Event(WebUIEvent.CLOSED.value, UiActionInput(
+                    WebUIEvent.CLOSED.value, target, MappingProxyType({"reason": reason}),
+                )), context), timeout=PLATFORM_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 - the host has already closed the splash
+                logger.warning("[GatewayExtensions] ui.closed(%s) for %s failed: %s", reason, package_id, exc)
+            closed += 1
+        return closed
 
     def frame_generation(self, package_id: str) -> str | None:
         """Keep client frames attributed to the activation that initiated them.
@@ -352,6 +407,8 @@ class BrowserBridge:
         revokes = self.appearance.release(package_id)
         if clears or revokes:
             self._spawn(self._notify_release(package_id, clears, revokes))
+        for upload in self.transfers.release(package_id=package_id):
+            self._spawn(self.transfers.discard(upload))
 
     async def _notify_release(self, package_id: str, clears, revokes) -> None:
         transport = self.runtime.webui.transport
@@ -423,6 +480,8 @@ class BrowserBridge:
         self.connections.pop(connection_id, None)
         self.appearance.drop_connection(connection_id)
         self._appearance_locks.pop(connection_id, None)
+        for upload in self.transfers.release(connection_id=connection_id):
+            self._spawn(self.transfers.discard(upload))
 
     def register_events(self, bus) -> None:
         async def core(event, ops, next_handler):
@@ -467,12 +526,18 @@ class BrowserBridge:
             return await self.operation(ops, "page.reload", {})
         async def appearance_apply(ops, appearance: Mapping[str, Any] | None = None):
             return await self.apply_appearance(ops, appearance)
+        async def download(ops, path: str, *, filename: str | None = None):
+            package = self._package_caller(ops)
+            return await self.transfers.offer_download(
+                package.package_id, self.generations[package.package_id], trusted_connection(ops), path, filename,
+            )
         async def build(event, ops, next_handler):
             del ops
             builder = await next_handler(event)
             if not isinstance(builder, EventHandlerOpsBuilder):
                 raise TypeError("ops.build must return EventHandlerOpsBuilder")
             builder.add_method("ui", "asset_url", asset_url)
+            builder.add_method("ui", "download", download)
             builder.add_namespace("client")
             builder.add_method("client", "local_storage_set", storage_set)
             builder.add_method("client", "local_storage_delete", storage_delete)
@@ -578,9 +643,20 @@ class BrowserBridge:
         if (not action or payload["action_id"] != action["id"] or payload["args"] != action.get("args", {})
                 or not self._valid_action(node, event_name, payload["data"], nodes)):
             return UiActionOutput(accepted=False, status="invalid_action", code="SCHEMA_ERROR")
-        result = await self.runtime.bus.trigger(Event(event_name, UiActionInput(
-            event_name, scoped, MappingProxyType(payload), request.request_context,
-        )), context)
+        upload = None
+        if node.component == "FileImport":
+            # The browser only proves completion; the handler gets the host's own record (S_10 section 6.4).
+            upload = self.transfers.claim(payload["data"]["upload_id"], scoped, payload["node_key"])
+            if upload is None:
+                return UiActionOutput(accepted=False, status="invalid_action", code="SCHEMA_ERROR")
+            payload = {**payload, "data": upload.descriptor()}
+        try:
+            result = await self.runtime.bus.trigger(Event(event_name, UiActionInput(
+                event_name, scoped, MappingProxyType(payload), request.request_context,
+            )), context)
+        finally:
+            if upload is not None:
+                self._spawn(self.transfers.discard(upload))
         return result if isinstance(result, UiActionOutput) else UiActionOutput(accepted=False, status="unhandled")
 
     @staticmethod

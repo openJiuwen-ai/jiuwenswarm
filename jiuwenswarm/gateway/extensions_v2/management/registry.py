@@ -155,7 +155,7 @@ class GatewayPackageManager:
         async with self._lock:
             reports: list[ActivationReport] = []
             for path in paths:
-                reports.append(self._install_one(Path(path)))
+                reports.append(await self._install_one(Path(path)))
             return reports
 
     async def reload(self, package_id: str) -> ActivationReport:
@@ -170,7 +170,9 @@ class GatewayPackageManager:
                     operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
                 )
             try:
-                self._runtime.publish(load_gateway_package(root))
+                package = load_gateway_package(root)
+                await self._close_splashes(package_id)
+                self._runtime.publish(package)
             except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
                 logger.exception("[GatewayExtensions] cannot reload %s", package_id)
                 return _failure(
@@ -185,6 +187,7 @@ class GatewayPackageManager:
 
         async with self._lock:
             versions = self.gateway_installed(package_id)
+            await self._close_splashes(package_id)
             released = self._runtime.unpublish(package_id)
             if not versions and not released:
                 return _failure(
@@ -221,7 +224,13 @@ class GatewayPackageManager:
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _install_one(self, path: Path) -> ActivationReport:
+    async def _close_splashes(self, package_id: str) -> None:
+        """Tell a package its playing splash ends before its handlers go away (S_10 section 5)."""
+
+        if self._runtime.is_active_package(package_id):
+            await self._runtime.browser.close_splashes(package_id, "removed")
+
+    async def _install_one(self, path: Path) -> ActivationReport:
         package_id = ""
         try:
             with self._store.open_source(path) as opened:
@@ -237,7 +246,9 @@ class GatewayPackageManager:
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
         try:
-            self._runtime.publish(load_gateway_package(root))
+            package = load_gateway_package(root)
+            await self._close_splashes(package_id)
+            self._runtime.publish(package)
         except Exception as exc:  # noqa: BLE001 - roll back the copy we just made
             logger.exception("[GatewayExtensions] cannot publish %s", package_id)
             try:

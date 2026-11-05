@@ -47,6 +47,8 @@ class LoadedPackage:
     handlers: tuple[HandlerDeclaration, ...]
     ui: Mapping[str, Any] = field(default_factory=dict)
     client: Mapping[str, Any] = field(default_factory=dict)
+    #: ``package.displayName``; the host shows it in navigation, never as code.
+    display_name: str = ""
 
 
 def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
@@ -88,6 +90,7 @@ def _package_from(
         handlers=tuple(handlers),
         ui=manifest["ui"],
         client=manifest["client"],
+        display_name=manifest["display_name"],
     )
 
 
@@ -124,7 +127,17 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         "modules": _modules(raw.get("extensions"), root),
         "ui": _optional_mapping(raw.get("ui"), "ui"),
         "client": _optional_mapping(raw.get("client"), "client"),
+        "display_name": _display_name(package.get("displayName")),
     }
+
+
+def _display_name(value: object) -> str:
+    """Read the optional display name; anything but a short string is ignored."""
+
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    return text if len(text.encode("utf-8")) <= 200 else ""
 
 
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any]:

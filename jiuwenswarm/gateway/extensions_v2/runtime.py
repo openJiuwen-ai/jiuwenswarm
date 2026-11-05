@@ -56,6 +56,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.registry import ActiveRenderRegistr
 from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
 from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
 from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
+from jiuwenswarm.gateway.extensions_v2.webui.host_settings import HOST_METHODS
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class GatewayRuntime:
         bootstrap.register_event_types(self.bus, self)
         self._builtin_ids.extend(bootstrap.register_handlers(self.bus, self))
         self._bind_package_data()
+        self.browser.splash_preferences.load()
         await self.bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
         for package in load_gateway_packages(self.config.install_dir):
             try:
@@ -114,6 +116,7 @@ class GatewayRuntime:
                     package.package_id,
                     exc,
                 )
+        await self.browser.transfers.purge(package.package_id for package in self._packages)
         self._started = True
         logger.info(
             "[GatewayExtensions] started: packages=%d handlers=%d install_dir=%s",
@@ -144,6 +147,7 @@ class GatewayRuntime:
         self.browser.connections.clear()
         self.browser.generations.clear()
         self.browser.appearance.clear()
+        self.browser.transfers.clear()
         self._started = False
 
     @property
@@ -292,6 +296,8 @@ class GatewayRuntime:
         directory = self.package_data_dir(package_id)
         if directory.exists():
             await asyncio.to_thread(shutil.rmtree, directory)
+        # Host settings about the package share its data lifecycle (S_10 section 4).
+        self.browser.splash_preferences.forget(package_id)
 
     def active_packages(self) -> tuple[LoadedPackage, ...]:
         """Return the packages currently published on this runtime."""
@@ -321,7 +327,9 @@ class GatewayRuntime:
         """
 
         platform = self._started and self.browser.is_platform_frame(method, params)
-        if not self.active and not platform:
+        # Host methods are answered by the Gateway even without USER handlers (S_10 section 3).
+        host = self._started and method in HOST_METHODS
+        if not self.active and not platform and not host:
             return False, dict(params)
         connection_id = await self._connection_id(ws)
         if not connection_id:

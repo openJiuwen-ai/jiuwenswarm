@@ -229,7 +229,16 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "loop": BOOL, "muted": BOOL, "dim": {"kind": "number", "min": 0, "max": 0.9},
         "blur": {"kind": "number", "min": 0, "max": 40}, "opacity": {"kind": "number", "min": 0.1, "max": 1},
     }, "required": ("kind", "src", "title")},
+    # Host-mediated import (S_10 section 6); the data is the host-issued upload id.
+    "FileImport": {"props": {
+        "label": {"kind": "string", "minBytes": 1, "maxBytes": 200}, "accept": array(TEXT),
+        "multiple": BOOL, "directory": BOOL, "disabled": BOOL,
+    }, "required": ("label",), "events": {"ui.change": obj({"upload_id": TEXT}, "upload_id")}},
 }
+
+#: One ``accept`` entry, for example ``.zip``.
+FILE_SUFFIX = re.compile(r"^\.[A-Za-z0-9][A-Za-z0-9._-]{0,15}$")
+UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 def finite_number(value: Any) -> bool:
@@ -553,6 +562,15 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "invalid preview URL"
     if component in ("Panel", "MediaSurface") and not props["title"].strip():
         return "title is required"
+    if component == "FileImport":
+        if not props["label"].strip():
+            return "label is required"
+        accept = props.get("accept")
+        if accept is not None and (not 1 <= len(accept) <= 16 or not all(FILE_SUFFIX.fullmatch(item) for item in accept)
+                                   or not _unique([item.lower() for item in accept])):
+            return "invalid FileImport accept"
+        if props.get("directory") and ("accept" in props or "multiple" in props):
+            return "directory import does not take accept or multiple"
     if component == "MediaSurface" and any(
         key in props and not valid_media_url(props[key]) for key in ("src", "poster")
     ):
@@ -655,6 +673,8 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
             return _selection_allowed(value, values, props.get("treeCheckable", False) or props.get("multiple", False))
         return any(type(value) is type(item) and value == item or finite_number(value) and finite_number(item) and value == item
                    for item in values)
+    if component == "FileImport":
+        return bool(UPLOAD_ID.fullmatch(data["upload_id"]))
     if component == "FileTree":
         if props.get("status") not in (None, "ready"):
             return False

@@ -17,6 +17,7 @@ export {
   SPLASH_TIMEOUTS,
   createSplashController,
   orderProviders,
+  parseCustomized,
   parseProviders,
 } from './controller.ts';
 export type {

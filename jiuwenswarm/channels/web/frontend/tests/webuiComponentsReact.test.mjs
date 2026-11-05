@@ -3430,3 +3430,311 @@ test('WebUISplashGate holds the workspace and entry until the queue ends and ski
     document.getElementById('workswarm-neutral')?.remove();
   }
 });
+
+// ── Application settings and file transfers (Gateway F_13) ───────────────────
+
+const {
+  transfersModule, applicationSettingsModule, WebUIUploadContext, SplashProviderSettings,
+  ExtensionSettingsPages,
+} = await import('../node_modules/.cache/webui-components/components.mjs');
+
+const SETTINGS_SLOT = 'application.settings.page';
+const importTree = (props = { label: 'Import theme', accept: ['.zip'] }) => ({ component: 'Box', children: [
+  { component: 'FileImport', props, events: { 'ui.change': { id: 'import' } } },
+] });
+
+function settingsRequest(handler) {
+  const calls = [];
+  return { calls, request: async (method, params) => { calls.push([method, params]); return handler(method, params); } };
+}
+
+async function mounted(element) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(element));
+  await act(async () => settle());
+  return { container, async unmount() { await act(async () => root.unmount()); container.remove(); } };
+}
+
+test('application settings answers are validated and the shown order follows the saved choice', () => {
+  const { parseSettingsPages, parseSplashSettings, displayedProviders, movedOrder, toggledDisabled } = applicationSettingsModule;
+  assert.deepEqual(parseSettingsPages({ pages: [
+    { package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.a', title: 'Again' }, { package_id: '', title: 'x' },
+    { package_id: 'pkg.b' }, 'pkg.c',
+  ] }), [{ packageId: 'pkg.a', title: 'Aurora' }]);
+  assert.deepEqual(parseSettingsPages(null), []);
+  const settings = parseSplashSettings({ customized: false, providers: [
+    { package_id: 'pkg.a', title: 'A', skippable: true, max_duration_ms: 9500, enabled: true },
+    { package_id: 'pkg.b', title: 'B', skippable: false, max_duration_ms: 60000, enabled: false },
+    { package_id: 'pkg.c', title: 'C', skippable: false, max_duration_ms: 60000, enabled: true },
+    { package_id: 'pkg.d', title: 'D', skippable: false, max_duration_ms: 1.5, enabled: true },
+  ] });
+  assert.deepEqual(settings.providers.map((provider) => provider.packageId), ['pkg.a', 'pkg.b', 'pkg.c']);
+  assert.equal(parseSplashSettings({ providers: [] }), null);
+  assert.deepEqual(displayedProviders(settings, 'pkg.c').map((provider) => provider.packageId), ['pkg.c', 'pkg.a', 'pkg.b']);
+  assert.deepEqual(displayedProviders({ ...settings, customized: true }, 'pkg.c').map((provider) => provider.packageId),
+    ['pkg.a', 'pkg.b', 'pkg.c']);
+  assert.deepEqual(movedOrder(settings.providers, 'pkg.b', -1), ['pkg.b', 'pkg.a', 'pkg.c']);
+  assert.equal(movedOrder(settings.providers, 'pkg.a', -1), null);
+  assert.equal(movedOrder(settings.providers, 'pkg.c', 1), null);
+  assert.deepEqual(toggledDisabled(settings.providers, 'pkg.a', false), ['pkg.a', 'pkg.b']);
+  assert.deepEqual(toggledDisabled(settings.providers, 'pkg.b', true), []);
+});
+
+test('a saved splash order plays as saved instead of putting the appearance provider first', async () => {
+  const app = splashSetup({
+    answers: { 'pkg.a': 'skip', 'pkg.b': 'skip' },
+    providers: { ...providerList(['pkg.a'], ['pkg.b']), customized: true },
+    preferred: 'pkg.b',
+  });
+  await app.controller.start();
+  assert.deepEqual(app.readies(), ['pkg.a', 'pkg.b']);
+  assert.equal(splashModule.parseCustomized({ customized: 'yes' }), false);
+  assert.equal(splashModule.parseCustomized({ customized: true }), true);
+  app.runtime.dispose();
+});
+
+test('upload service starts from the current frame, sends each file and returns the ticket', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const handle = runtime.mountSlot('', SETTINGS_SLOT, { packageId: 'pkg.theme', instanceKey: 'main', notifyReady: false });
+  transport.render('pkg.theme', importTree(), SETTINGS_SLOT);
+  const key = runtime.getScopeSnapshot('', SETTINGS_SLOT).instanceKeys[0];
+  const id = 'a'.repeat(32);
+  const requests = [];
+  const puts = [];
+  const service = transfersModule.createUploadService({
+    runtime,
+    request: async (method, params) => { requests.push([method, params]); return { upload_id: id, url: `/extension-uploads/${id}/` }; },
+    put: async (url, body) => { puts.push([url, body.size]); return 204; },
+  });
+  const progress = [];
+  const files = transfersModule.describePickedFiles([
+    { name: 'theme one.json', webkitRelativePath: 'hive/theme one.json', size: 2 },
+    { name: '媒体.png', webkitRelativePath: 'hive/媒体.png', size: 3 },
+  ]).map((file) => ({ ...file, body: new Blob(['x'.repeat(file.size)]) }));
+  try {
+    assert.equal(await service.upload(key, '0.0', files, (step) => progress.push(step.sentBytes)), id);
+    assert.deepEqual(requests, [['webui.upload.begin', {
+      target: { scope: 'application', slot_id: SETTINGS_SLOT, package_id: 'pkg.theme', instance_key: 'main' },
+      node_key: '0.0', revision: runtime.getInstance(key).frame.revision,
+      files: [{ path: 'hive/theme one.json', size: 2 }, { path: 'hive/媒体.png', size: 3 }],
+    }]]);
+    assert.deepEqual(puts, [
+      [`/extension-uploads/${id}/hive/theme%20one.json`, 2], [`/extension-uploads/${id}/hive/%E5%AA%92%E4%BD%93.png`, 3],
+    ]);
+    assert.deepEqual(progress, [0, 2, 5]);
+    const failing = (request, put) => transfersModule.createUploadService({ runtime, request, put });
+    const ticket = async () => ({ upload_id: id, url: `/extension-uploads/${id}/` });
+    await assert.rejects(failing(async () => { throw Object.assign(new Error('large'), { code: 'UPLOAD_TOO_LARGE' }); },
+      async () => 204).upload(key, '0.0', files), { code: 'UPLOAD_TOO_LARGE' });
+    await assert.rejects(failing(async () => ({ upload_id: id, url: '/elsewhere/' }), async () => 204)
+      .upload(key, '0.0', files), { code: 'UPLOAD_FAILED' });
+    await assert.rejects(failing(ticket, async () => 403).upload(key, '0.0', files), { code: 'LOCAL_ONLY' });
+    await assert.rejects(failing(ticket, async () => { throw new Error('offline'); }).upload(key, '0.0', files),
+      { code: 'UPLOAD_FAILED' });
+    await assert.rejects(service.upload('missing', '0.0', files), { code: 'TARGET_INACTIVE' });
+  } finally {
+    handle.release();
+    runtime.dispose();
+  }
+});
+
+test('FileImport uploads picked files through the host service and emits the ticket', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const id = 'b'.repeat(32);
+  const calls = [];
+  let outcome = 'ok';
+  const service = {
+    async upload(instanceKey, nodeKey, files, onProgress) {
+      calls.push([nodeKey, files.map((file) => [file.path, file.size])]);
+      onProgress?.({ sentBytes: 1, totalBytes: 2 });
+      if (outcome !== 'ok') throw new transfersModule.WebUIUploadError(outcome);
+      return id;
+    },
+  };
+  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(WebUIUploadContext.Provider, { value: service },
+      createElement(WebUIHost, { slotId: SETTINGS_SLOT, packageId: 'pkg.theme', instanceKey: 'main' }))));
+  const find = (testId) => view.container.querySelector(`[data-testid="${testId}"]`);
+  const pick = async (files) => {
+    const input = find('webui-file-import-input');
+    Object.defineProperty(input, 'files', { configurable: true, value: files });
+    await act(async () => input.dispatchEvent(new window.Event('change', { bubbles: true })));
+    await act(async () => settle());
+  };
+  try {
+    await act(async () => transport.render('pkg.theme', importTree(), SETTINGS_SLOT));
+    await act(async () => settle());
+    assert.equal(find('webui-file-import-input').getAttribute('accept'), '.zip');
+    assert.equal(find('webui-file-import-input').multiple, false);
+    assert.equal(find('webui-file-import-btn').textContent, 'Import theme');
+    assert.equal(find('webui-file-import-btn').disabled, false);
+    await pick([new window.File(['zip!'], 'aurora.zip')]);
+    assert.deepEqual(calls, [['0.0', [['aurora.zip', 4]]]]);
+    assert.deepEqual(transport.dispatches.filter((request) => request.event === 'ui.change')
+      .map((request) => request.payload.data), [{ upload_id: id }]);
+    assert.equal(find('webui-file-import').dataset.variant, 'done');
+    outcome = 'UPLOAD_TOO_LARGE';
+    await pick([new window.File(['zip!'], 'big.zip')]);
+    assert.equal(find('webui-file-import').dataset.variant, 'error');
+    assert.match(find('webui-file-import-status').textContent, /太大|too large/);
+    assert.equal(transport.dispatches.filter((request) => request.event === 'ui.change').length, 1);
+    await act(async () => transport.render('pkg.theme', importTree({ label: 'Import folder', directory: true }), SETTINGS_SLOT));
+    await act(async () => settle());
+    assert.equal(find('webui-file-import-input').hasAttribute('webkitdirectory'), true);
+    assert.equal(find('webui-file-import-input').multiple, true);
+  } finally {
+    await view.unmount();
+    runtime.dispose();
+  }
+});
+
+test('FileImport stays disabled without a host import service', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(WebUIHost, { slotId: SETTINGS_SLOT, packageId: 'pkg.theme', instanceKey: 'main' })));
+  try {
+    await act(async () => transport.render('pkg.theme', importTree(), SETTINGS_SLOT));
+    await act(async () => settle());
+    assert.equal(view.container.querySelector('[data-testid="webui-file-import-btn"]').disabled, true);
+  } finally {
+    await view.unmount();
+    runtime.dispose();
+  }
+});
+
+test('download offers are validated and go to the desktop dialog or a download link', async () => {
+  const { readDownloadOffer, startDownload } = transfersModule;
+  const good = { package_id: 'pkg.theme', url: `/extension-downloads/${'c'.repeat(32)}`, filename: '备份.zip', size: 12 };
+  assert.deepEqual(readDownloadOffer(good), { packageId: 'pkg.theme', url: good.url, filename: '备份.zip', size: 12 });
+  for (const bad of [
+    { ...good, url: 'https://example.invalid/x' }, { ...good, url: '/extension-assets/a/b/c' }, { ...good, filename: '../x' },
+    { ...good, filename: ' ' }, { ...good, size: -1 }, { ...good, package_id: '' }, null,
+  ]) assert.equal(readDownloadOffer(bad), null, JSON.stringify(bad));
+  const offer = readDownloadOffer(good);
+  const saved = [];
+  await startDownload(offer, { desktopDownload: async (url, name) => saved.push([url, name]), document });
+  assert.deepEqual(saved, [[good.url, '备份.zip']]);
+  const clicks = [];
+  const listener = (event) => {
+    if (!(event.target instanceof window.HTMLAnchorElement)) return;
+    clicks.push([event.target.getAttribute('href'), event.target.download]);
+    event.preventDefault();
+  };
+  document.addEventListener('click', listener);
+  try {
+    await startDownload(offer, { document });
+  } finally {
+    document.removeEventListener('click', listener);
+  }
+  assert.deepEqual(clicks, [[good.url, '备份.zip']]);
+  assert.equal(document.querySelector('a[download]'), null);
+});
+
+test('Extensions settings lists splash providers and saves order, switches and reset', async () => {
+  window.localStorage.setItem('workswarm.appearance.provider', 'pkg.b');
+  let state = { customized: false, providers: [
+    { package_id: 'pkg.a', title: 'Aurora', skippable: true, max_duration_ms: 9500, enabled: true },
+    { package_id: 'pkg.b', title: 'Hive', skippable: false, max_duration_ms: 60000, enabled: true },
+  ] };
+  const services = settingsRequest((method, params) => {
+    if (method === 'webui.splash.settings.update' && 'order' in params) {
+      state = params.order === null ? { ...state, customized: false }
+        : { customized: true, providers: params.order.map((id) => state.providers.find((item) => item.package_id === id)) };
+    }
+    if (method === 'webui.splash.settings.update' && 'disabled' in params) {
+      state = { ...state, providers: state.providers.map((item) => ({ ...item, enabled: !params.disabled.includes(item.package_id) })) };
+    }
+    return state;
+  });
+  const view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: services.request }, createElement(SplashProviderSettings, { disabled: false })));
+  const all = (testId) => [...view.container.querySelectorAll(`[data-testid="${testId}"]`)];
+  const items = () => all('settings-extensions-splash-item').map((node) => node.dataset.variant);
+  const control = (testId, packageId) => all(testId).find((node) => node.dataset.variant === packageId);
+  const click = async (node) => { await act(async () => node.click()); await act(async () => settle()); };
+  try {
+    assert.deepEqual(items(), ['pkg.b', 'pkg.a'], 'without a saved order the appearance provider is shown first');
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-order"]').dataset.variant, 'default');
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-reset-btn"]'), null);
+    assert.equal(control('settings-extensions-splash-up-btn', 'pkg.b').disabled, true);
+    assert.match(all('settings-extensions-splash-item')[1].closest('.setting-row').textContent, /可跳过，最长 10 秒|Skippable, up to 10 s/);
+
+    await click(control('settings-extensions-splash-down-btn', 'pkg.b'));
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { order: ['pkg.a', 'pkg.b'] }]);
+    assert.deepEqual(items(), ['pkg.a', 'pkg.b']);
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-order"]').dataset.variant, 'custom');
+
+    await click(control('settings-extensions-splash-switch', 'pkg.a'));
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { disabled: ['pkg.a'] }]);
+    assert.equal(control('settings-extensions-splash-switch', 'pkg.a').getAttribute('aria-checked'), 'false');
+
+    await click(view.container.querySelector('[data-testid="settings-extensions-splash-reset-btn"]'));
+    assert.deepEqual(services.calls.at(-1), ['webui.splash.settings.update', { order: null }]);
+    assert.deepEqual(items(), ['pkg.b', 'pkg.a']);
+  } finally {
+    await view.unmount();
+    window.localStorage.removeItem('workswarm.appearance.provider');
+  }
+});
+
+test('Extensions settings shows its empty and disconnected states', async () => {
+  const offline = settingsRequest(() => ({ providers: [], customized: false }));
+  let view = await mounted(createElement(SettingsServicesProvider, { isConnected: false, connectionState: 'closed',
+    request: offline.request }, createElement(SplashProviderSettings, { disabled: false }),
+  createElement(ExtensionSettingsPages, { disabled: false })));
+  assert.equal(view.container.querySelector('[data-testid="settings-extensions-splash-status"]').dataset.variant, 'disconnected');
+  assert.equal(view.container.querySelector('[data-testid="settings-extensions-pages-status"]').dataset.variant, 'disconnected');
+  assert.deepEqual(offline.calls, []);
+  await view.unmount();
+  const empty = settingsRequest((method) => (method === 'webui.settings.pages' ? { pages: [] } : { providers: [], customized: false }));
+  view = await mounted(createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready',
+    request: empty.request }, createElement(SplashProviderSettings, { disabled: false }),
+  createElement(ExtensionSettingsPages, { disabled: false })));
+  assert.ok(view.container.querySelector('[data-testid="settings-extensions-splash-empty"]'));
+  assert.ok(view.container.querySelector('[data-testid="settings-extensions-pages-empty"]'));
+  await view.unmount();
+});
+
+test('Extensions settings pages mount only the selected package page', async () => {
+  const transport = splashTransport({});
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const services = settingsRequest(() => ({ pages: [{ package_id: 'pkg.a', title: 'Aurora' }, { package_id: 'pkg.b', title: 'Hive' }] }));
+  const view = await mounted(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(SettingsServicesProvider, { isConnected: true, connectionState: 'ready', request: services.request },
+      createElement(ExtensionSettingsPages, { disabled: false }))));
+  const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready' && request.target.slotId === SETTINGS_SLOT)
+    .map((request) => [request.target.packageId, request.target.instanceKey]);
+  const page = (packageId, value) => act(async () => {
+    transport.render(packageId, { component: 'Text', props: { value } }, SETTINGS_SLOT);
+    await settle();
+  });
+  try {
+    assert.deepEqual(services.calls, [['webui.settings.pages', {}]]);
+    assert.deepEqual(readies(), [['pkg.a', 'main']]);
+    assert.deepEqual([...view.container.querySelectorAll('[data-testid="settings-extensions-pages-tab"]')]
+      .map((tab) => tab.textContent), ['Aurora', 'Hive']);
+    await page('pkg.a', 'Aurora page');
+    assert.match(view.container.textContent, /Aurora page/);
+    const hive = [...view.container.querySelectorAll('[data-testid="settings-extensions-pages-tab"]')][1];
+    await act(async () => hive.click());
+    await act(async () => settle());
+    assert.deepEqual(readies(), [['pkg.a', 'main'], ['pkg.b', 'main']]);
+    assert.equal(view.container.querySelector('[data-testid="settings-extensions-pages-host"]').dataset.variant, 'pkg.b');
+    await page('pkg.a', 'Late Aurora page');
+    await page('pkg.b', 'Hive page');
+    assert.match(view.container.textContent, /Hive page/);
+    assert.doesNotMatch(view.container.textContent, /Aurora page/);
+  } finally {
+    await view.unmount();
+    runtime.dispose();
+  }
+});

@@ -1,0 +1,401 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Host-mediated file import and export for application UI packages (F_13)."""
+
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from fastapi import FastAPI
+
+from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
+from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
+from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+from jiuwenswarm.gateway.extensions_v2.webui import transfers as transfers_module
+from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
+from jiuwenswarm.gateway.extensions_v2.webui.http import attach_browser_routes
+from jiuwenswarm.gateway.extensions_v2.webui.models import (
+    RenderMode, RenderNode, RenderTarget, UiActionOutput, UiRenderInput,
+)
+
+PACKAGE = "test.theme"
+SLOT = "application.settings.page"
+LOCAL = ("127.0.0.1", 50000)
+TARGET = RenderTarget(session_id="", slot_id=SLOT, package_id=PACKAGE, instance_key="main", scope="application",
+                      connection_id="browser-1")
+
+
+def _channel():
+    responses, events, sockets = [], [], {}
+
+    async def ensure_ws_id(ws):
+        ws._jiuwen_ws_id = getattr(ws, "name", "browser-1")
+        sockets[ws._jiuwen_ws_id] = ws
+        return ws._jiuwen_ws_id
+
+    async def send_event(ws, event, payload):
+        events.append((ws._jiuwen_ws_id, event, payload))
+
+    async def send_response(ws, req_id, *, ok, payload=None, error=None, code=None):
+        responses.append({"ok": ok, "payload": payload, "error": error, "code": code})
+
+    return SimpleNamespace(channel_id="web", responses=responses, events=events, ensure_ws_id=ensure_ws_id,
+                           connection_user_id=lambda ws: None, ws_by_id=sockets.get,
+                           send_event=send_event, send_response=send_response)
+
+
+class ThemePackage:
+    """A settings page with an import control and an export button."""
+
+    def __init__(self, picker: dict | None = None) -> None:
+        self.picker = picker or {"label": "Import theme", "accept": [".zip"]}
+        self.imports: list = []
+        self.kept: list = []
+        self.offers: list = []
+        self.export = "exports/backup.zip"
+        self.filename = "备份 1.zip"
+
+    def root(self) -> RenderNode:
+        return RenderNode(component="Box", children=(
+            RenderNode(component="FileImport", props=self.picker, events={"ui.change": {"id": "import"}}),
+            RenderNode(component="Button", props={"value": "Export"}, events={"ui.click": {"id": "export"}}),
+        ))
+
+    async def ready(self, event, ops, next_handler):
+        await ops.ui.render(UiRenderInput(target=RenderTarget(session_id="", slot_id=SLOT, instance_key="main"),
+                                          root=self.root(), mode=RenderMode.REPLACE))
+        return UiActionOutput(accepted=True, status="ready")
+
+    async def change(self, event, ops, next_handler):
+        data = dict(event.event_input.payload["data"])
+        self.imports.append(data)
+        root = await ops.data.root()
+        for item in data["files"]:
+            source = root / data["path"] / item["path"]
+            self.kept.append(source.read_bytes())
+        # Keep the first import by moving it out of the host directory.
+        destination = root / "themes" / data["upload_id"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        (root / data["path"]).rename(destination)
+        (root / data["path"]).mkdir()
+        (root / data["path"] / "leftover.txt").write_text("host removes this")
+        return UiActionOutput(accepted=True, status="imported")
+
+    async def click(self, event, ops, next_handler):
+        try:
+            self.offers.append(await ops.ui.download(self.export, filename=self.filename))
+        except ValueError as exc:
+            self.offers.append(str(exc))
+        return UiActionOutput(accepted=True, status="clicked")
+
+    def loaded(self, root: Path) -> LoadedPackage:
+        root.mkdir(parents=True, exist_ok=True)
+        match = {"target.package_id": PACKAGE}
+        return LoadedPackage(
+            package_id=PACKAGE, version="1.0.0", root=root, client={},
+            ui={"apiVersion": 1, "items": [{"type": "web.slot.contribution", "slot": SLOT}]},
+            handlers=(HandlerDeclaration("ui.ready", self.ready, match, "ready"),
+                      HandlerDeclaration("ui.change", self.change, match, "change"),
+                      HandlerDeclaration("ui.click", self.click, match, "click")),
+        )
+
+
+async def _start(tmp_path: Path, **config) -> GatewayRuntime:
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(
+        install_dir=tmp_path / "install", data_dir=tmp_path / "data", **config))
+    await runtime.start()
+    return runtime
+
+
+async def _call(runtime, method, params, ws=None):
+    await runtime.intercept(ws or SimpleNamespace(closed=False), "req", method, params)
+    return runtime.channel.responses[-1]
+
+
+async def _mount(runtime, package: ThemePackage, tmp_path: Path, ws=None) -> int:
+    runtime.publish(package.loaded(tmp_path / "theme"))
+    await _call(runtime, "webui.dispatch", {"event": "ui.ready", "payload": {}, "target": {
+        "scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": "main"}}, ws)
+    return runtime.registry.get(TARGET).revision
+
+
+def _begin(revision, files, node_key="0.0"):
+    return {"target": {"scope": "application", "slot_id": SLOT, "package_id": PACKAGE, "instance_key": "main"},
+            "node_key": node_key, "revision": revision, "files": files}
+
+
+def _event(event, revision, node_key, action_id, data):
+    return {"event": event, "target": {"scope": "application", "slot_id": SLOT, "package_id": PACKAGE,
+                                       "instance_key": "main"},
+            "payload": {"node_key": node_key, "revision": revision, "action_id": action_id, "args": {}, "data": data}}
+
+
+def _client(runtime, peer=LOCAL):
+    app = FastAPI()
+    attach_browser_routes(app, lambda: runtime)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=peer), base_url="http://test")
+
+
+async def test_import_round_trip_gives_the_package_a_relative_path_and_cleans_up(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        body = bytes(range(256)) * 300
+        response = await _call(runtime, "webui.upload.begin", _begin(revision, [{"path": "Aurora.ZIP", "size": len(body)}]))
+        assert response["ok"] is True
+        upload_id, url = response["payload"]["upload_id"], response["payload"]["url"]
+        assert url == f"/extension-uploads/{upload_id}/"
+        async with _client(runtime) as client:
+            assert (await client.put(url + "Aurora.ZIP", content=body)).status_code == 204
+            assert (await client.put(url + "Aurora.ZIP", content=body)).status_code == 409
+        response = await _call(runtime, "webui.dispatch", _event("ui.change", revision, "0.0", "import",
+                                                                 {"upload_id": upload_id}))
+        assert response["payload"] == {"accepted": True, "status": "imported"}
+        await runtime.browser.settle()
+        assert package.imports == [{"upload_id": upload_id, "path": f".uploads/{upload_id}",
+                                    "total_bytes": len(body), "files": [{"path": "Aurora.ZIP", "size": len(body)}]}]
+        assert package.kept == [body]
+        data = runtime.package_data_dir(PACKAGE)
+        assert (data / "themes" / upload_id / "Aurora.ZIP").read_bytes() == body
+        assert not (data / ".uploads" / upload_id).exists()
+        # The ticket is single-use.
+        response = await _call(runtime, "webui.dispatch", _event("ui.change", revision, "0.0", "import",
+                                                                 {"upload_id": upload_id}))
+        assert response["payload"]["accepted"] is False and len(package.imports) == 1
+    finally:
+        await runtime.shutdown()
+
+
+async def test_directory_import_writes_nested_files(tmp_path):
+    package = ThemePackage({"label": "Import folder", "directory": True})
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        files = {"hive/theme.json": b"{}", "hive/media/bg.png": b"\x89PNG"}
+        response = await _call(runtime, "webui.upload.begin", _begin(
+            revision, [{"path": path, "size": len(body)} for path, body in files.items()]))
+        upload_id, url = response["payload"]["upload_id"], response["payload"]["url"]
+        async with _client(runtime) as client:
+            for path, body in files.items():
+                assert (await client.put(url + path, content=body)).status_code == 204
+        response = await _call(runtime, "webui.dispatch", _event("ui.change", revision, "0.0", "import",
+                                                                 {"upload_id": upload_id}))
+        assert response["payload"]["accepted"] is True
+        assert sorted(package.kept) == sorted(files.values())
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("picker,files,code", [
+    (None, [], "BAD_REQUEST"),
+    (None, [{"path": "a.zip", "size": 1}, {"path": "b.zip", "size": 1}], "BAD_REQUEST"),
+    (None, [{"path": "a.txt", "size": 1}], "BAD_REQUEST"),
+    (None, [{"path": "../a.zip", "size": 1}], "BAD_REQUEST"),
+    (None, [{"path": "dir/a.zip", "size": 1}], "BAD_REQUEST"),
+    (None, [{"path": "a.zip", "size": -1}], "BAD_REQUEST"),
+    (None, [{"path": "a.zip", "size": True}], "BAD_REQUEST"),
+    (None, [{"path": "a:b.zip", "size": 1}], "BAD_REQUEST"),
+    (None, [{"path": "a.zip", "size": 1, "mode": 1}], "BAD_REQUEST"),
+    (None, [{"path": "a.zip", "size": 2048}], "UPLOAD_TOO_LARGE"),
+    ({"label": "Many", "multiple": True}, [{"path": "a.zip", "size": 1}, {"path": "A.zip", "size": 1}], "BAD_REQUEST"),
+    ({"label": "Folder", "directory": True}, [{"path": "a.zip", "size": 1}], "BAD_REQUEST"),
+    ({"label": "Folder", "directory": True}, [{"path": "x/a", "size": 1}, {"path": "y/b", "size": 1}], "BAD_REQUEST"),
+    ({"label": "Folder", "directory": True}, [{"path": "x/a", "size": 1}, {"path": "x/a/b", "size": 1}], "BAD_REQUEST"),
+    ({"label": "Off", "disabled": True}, [{"path": "a.zip", "size": 1}], "TARGET_INACTIVE"),
+])
+async def test_begin_rejects_manifests_outside_the_control(tmp_path, picker, files, code):
+    package = ThemePackage(picker)
+    runtime = await _start(tmp_path, upload_max_bytes=1024)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        response = await _call(runtime, "webui.upload.begin", _begin(revision, files))
+        assert response["ok"] is False and response["code"] == code
+        assert runtime.browser.transfers.uploads == {}
+    finally:
+        await runtime.shutdown()
+
+
+async def test_begin_requires_the_current_import_node(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        files = [{"path": "a.zip", "size": 1}]
+        for params in (_begin(revision + 1, files), _begin(revision, files, node_key="0.1"),
+                       _begin(revision, files, node_key="0.9")):
+            response = await _call(runtime, "webui.upload.begin", params)
+            assert response["code"] == "TARGET_INACTIVE", params
+        other = await _call(runtime, "webui.upload.begin", _begin(revision, files), SimpleNamespace(closed=False,
+                                                                                                 name="browser-2"))
+        assert other["code"] == "TARGET_INACTIVE"
+        response = await _call(runtime, "webui.upload.begin", {**_begin(revision, files), "extra": 1})
+        assert response["code"] == "BAD_REQUEST"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_transfer_route_refuses_remote_peers_and_wrong_bodies(tmp_path):
+    package = ThemePackage({"label": "Many", "multiple": True})
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        response = await _call(runtime, "webui.upload.begin", _begin(revision, [
+            {"path": "a.zip", "size": 4}, {"path": "b.zip", "size": 4}]))
+        upload_id, url = response["payload"]["upload_id"], response["payload"]["url"]
+        async with _client(runtime, ("203.0.113.7", 1)) as remote:
+            assert (await remote.put(url + "a.zip", content=b"1234")).status_code == 403
+        async with _client(runtime) as client:
+            assert (await client.put(url + "c.zip", content=b"1234")).status_code == 404
+            assert (await client.put("/extension-uploads/" + "0" * 32 + "/a.zip", content=b"1234")).status_code == 404
+            assert (await client.put(url + "a.zip", content=b"12345")).status_code == 413
+            assert (await client.put(url + "a.zip", content=b"12")).status_code == 400
+            assert (await client.put(url + "a.zip", content=b"1234")).status_code == 204
+        # Incomplete imports cannot be handed to the package.
+        response = await _call(runtime, "webui.dispatch", _event("ui.change", revision, "0.0", "import",
+                                                                 {"upload_id": upload_id}))
+        assert response["payload"]["accepted"] is False and package.imports == []
+        directory = runtime.package_data_dir(PACKAGE) / ".uploads" / upload_id
+        assert sorted(path.name for path in directory.iterdir()) == ["a.zip"]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_tickets_expire_and_close_with_the_connection(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    clock = [1000.0]
+    runtime.browser.transfers._clock = lambda: clock[0]
+    try:
+        ws = SimpleNamespace(closed=False)
+        revision = await _mount(runtime, package, tmp_path, ws)
+        files = [{"path": "a.zip", "size": 1}]
+        first = (await _call(runtime, "webui.upload.begin", _begin(revision, files), ws))["payload"]["upload_id"]
+        uploads = runtime.package_data_dir(PACKAGE) / ".uploads"
+        clock[0] += transfers_module.UPLOAD_TTL_S + 1
+        async with _client(runtime) as client:
+            assert (await client.put(f"/extension-uploads/{first}/a.zip", content=b"1")).status_code == 404
+        assert not (uploads / first).exists()
+        opened = [(await _call(runtime, "webui.upload.begin", _begin(revision, files), ws))["payload"]["upload_id"]
+                  for _ in range(transfers_module.MAX_OPEN_UPLOADS + 1)]
+        assert sorted(runtime.browser.transfers.uploads) == sorted(opened[1:])
+        assert not (uploads / opened[0]).exists()
+        await runtime.on_disconnect(ws)
+        await runtime.browser.settle()
+        assert runtime.browser.transfers.uploads == {} and list(uploads.iterdir()) == []
+    finally:
+        await runtime.shutdown()
+
+
+async def test_start_removes_imports_left_by_an_earlier_process(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    leftover = runtime.package_data_dir(PACKAGE) / ".uploads" / ("f" * 32)
+    leftover.mkdir(parents=True)
+    (leftover / "a.zip").write_bytes(b"old")
+    await runtime.shutdown()
+    install = tmp_path / "install" / PACKAGE / "1.0.0"
+    (install / "theme").mkdir(parents=True)
+    (install / "manifest.yaml").write_text(
+        f"schemaVersion: 1\npackage:\n  id: {PACKAGE}\n  version: 1.0.0\ndomain: gateway\n"
+        "extensions:\n  - id: theme\n    runtime: backend\n    module: theme/extension.py\n"
+        f"ui:\n  apiVersion: 1\n  items:\n    - type: web.slot.contribution\n      slot: {SLOT}\n",
+        encoding="utf-8")
+    (install / "theme" / "extension.py").write_text(
+        "class Extension:\n    def register(self, registrar):\n        pass\n\n\n"
+        "def create_extension():\n    return Extension()\n", encoding="utf-8")
+    restarted = await _start(tmp_path)
+    try:
+        assert restarted.is_active_package(PACKAGE)
+        assert not (restarted.package_data_dir(PACKAGE) / ".uploads").exists()
+    finally:
+        await restarted.shutdown()
+    del package
+
+
+async def test_download_is_single_use_for_the_calling_connection(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        data = runtime.package_data_dir(PACKAGE)
+        (data / "exports").mkdir(parents=True)
+        (data / "exports" / "backup.zip").write_bytes(b"backup-bytes")
+        response = await _call(runtime, "webui.dispatch", _event("ui.click", revision, "0.1", "export", {}))
+        assert response["payload"]["accepted"] is True and package.offers == [{"status": "offered"}]
+        connection, event, payload = runtime.channel.events[-1]
+        assert (connection, event) == ("browser-1", "webui.download")
+        assert payload["package_id"] == PACKAGE and payload["filename"] == "备份 1.zip" and payload["size"] == 12
+        url = payload["url"]
+        assert url.startswith("/extension-downloads/")
+        async with _client(runtime, ("203.0.113.7", 1)) as remote:
+            assert (await remote.get(url)).status_code == 404
+        async with _client(runtime) as client:
+            assert (await client.head(url)).status_code == 200
+            answer = await client.get(url)
+            assert answer.status_code == 200 and answer.content == b"backup-bytes"
+            assert answer.headers["content-type"] == "application/octet-stream"
+            assert answer.headers["content-disposition"] == "attachment; filename*=UTF-8''%E5%A4%87%E4%BB%BD%201.zip"
+            assert answer.headers["cache-control"] == "no-store"
+            assert answer.headers["x-content-type-options"] == "nosniff"
+            assert answer.headers["content-security-policy"] == "sandbox"
+            assert (await client.get(url)).status_code == 404
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.parametrize("export,filename", [
+    ("../outside.zip", None), ("/etc/passwd", None), ("exports", None), ("exports/missing.zip", None),
+    ("link/backup.zip", None), ("exports/backup.zip", "/"), ("exports/backup.zip", 3),
+])
+async def test_download_refuses_paths_outside_the_data_directory(tmp_path, export, filename):
+    package = ThemePackage()
+    package.export, package.filename = export, filename
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        data = runtime.package_data_dir(PACKAGE)
+        (data / "exports").mkdir(parents=True)
+        (data / "exports" / "backup.zip").write_bytes(b"x")
+        (tmp_path / "outside.zip").write_bytes(b"secret")
+        (data / "link").symlink_to(data / "exports", target_is_directory=True)
+        await _call(runtime, "webui.dispatch", _event("ui.click", revision, "0.1", "export", {}))
+        assert len(package.offers) == 1 and isinstance(package.offers[0], str)
+        assert not any(event == "webui.download" for _, event, _ in runtime.channel.events)
+    finally:
+        await runtime.shutdown()
+
+
+async def test_release_invalidates_tickets_and_downloads(tmp_path):
+    package = ThemePackage()
+    runtime = await _start(tmp_path)
+    try:
+        revision = await _mount(runtime, package, tmp_path)
+        data = runtime.package_data_dir(PACKAGE)
+        (data / "exports").mkdir(parents=True)
+        (data / "exports" / "backup.zip").write_bytes(b"x")
+        upload_id = (await _call(runtime, "webui.upload.begin", _begin(revision, [{"path": "a.zip", "size": 1}])))[
+            "payload"]["upload_id"]
+        await _call(runtime, "webui.dispatch", _event("ui.click", revision, "0.1", "export", {}))
+        url = runtime.channel.events[-1][2]["url"]
+        runtime.unpublish(PACKAGE)
+        await runtime.browser.settle()
+        assert not (data / ".uploads" / upload_id).exists()
+        async with _client(runtime) as client:
+            assert (await client.get(url)).status_code == 404
+            assert (await client.put(f"/extension-uploads/{upload_id}/a.zip", content=b"1")).status_code == 404
+    finally:
+        await runtime.shutdown()
+    shutil.rmtree(tmp_path / "data", ignore_errors=True)
+
+
+@pytest.mark.parametrize("data,allowed", [
+    ({"upload_id": "a" * 32}, True), ({"upload_id": "A" * 32}, False), ({"upload_id": "a" * 31}, False),
+    ({"upload_id": "../x"}, False), ({"upload_id": 7}, False), ({}, False), ({"upload_id": "a" * 32, "path": "x"}, False),
+])
+def test_file_import_change_data_carries_only_a_host_upload_id(data, allowed):
+    assert validate_event_data("FileImport", "ui.change", data, {"label": "Import"}) is allowed
+    assert validate_event_data("FileImport", "ui.change", {"upload_id": "a" * 32}, {"label": "x", "disabled": True}) is False

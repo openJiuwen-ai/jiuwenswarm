@@ -9,10 +9,10 @@
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon、MediaSurface。字段、默认值、必填与事件数据统一遵循
+Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon、MediaSurface、FileImport。字段、默认值、必填与事件数据统一遵循
 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`task.function` 与 `task.function.main`；
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.settings.page`、`task.function` 与 `task.function.main`；
 其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
 
 ## 表单、菜单与应用插槽
@@ -40,6 +40,7 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
 - application.sidebar.footer 是应用级单实例显示槽位，不依赖聊天 session，沿用已合入的槽位目录；宿主为底部保留 12px 间距。
 - application.background 是 Gateway 应用级单实例槽位，只接受 MediaSurface 根（槽位规则 strictRoot）。WebUIBackgroundHost 在应用根部全窗口底层挂载该槽位，不接收输入与焦点；宿主策略与消息协议见 [Gateway S_07](../../../../../../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)。
 - application.splash 同样只接受 MediaSurface 根，由 WebUISplashGate 播放；门控开放前 application.entry 的对话框不弹出，见 [Gateway S_09](../../../../../../../../gateway/extensions_v2/docs/specs/S_09_startup-splash.md)。
+- application.settings.page 是 Gateway 应用级列表槽位，设置页“扩展”模块每个包一个页签，只挂载选中的包。FileImport 由宿主注入的导入服务（WebUIUploadContext）取得凭据并上传，完成后派发 `ui.change` 的 `upload_id`；没有导入服务时禁用。`webui.download` 由应用根交给桌面保存对话框或下载链接。见 [Gateway S_10](../../../../../../../../gateway/extensions_v2/docs/specs/S_10_application-settings.md)。
 
 ### English contract summary
 

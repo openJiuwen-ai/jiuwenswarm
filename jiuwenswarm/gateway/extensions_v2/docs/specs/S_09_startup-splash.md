@@ -8,7 +8,7 @@
 | 编号 / slug | `S_09 / startup-splash` |
 | 所属模块 | Gateway `webui/`（声明、提供者、平台帧与 `ui.closed`）；`channels/web/app_web.py`（候选提示）；Electron 主进程与预加载（启动标识）；Web 前端 `features/webui/`（门控与开场队列） |
 | 最近一次修订日期 | 2026-11-05 |
-| 契约状态 | 已实现；开场顺序与停用的用户设置在 EXTV2-GW-12 补充 |
+| 契约状态 | 已实现；开场顺序、停用与 `disabled` / `removed` 原因见 [S_10](S_10_application-settings.md)（EXTV2-GW-12） |
 | 关联文档 | [F_12](../features/F_12_startup-gate-and-splash.md)、[S_07 媒体容器](S_07_media-surface.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_08 受控外观](S_08_appearance.md) |
 
 ## 1. 声明
@@ -48,10 +48,11 @@ ui:
 参数为空，返回：
 
 ```json
-{ "providers": [ { "package_id": "pkg.theme", "skippable": true, "max_duration_ms": 9500 } ] }
+{ "providers": [ { "package_id": "pkg.theme", "skippable": true, "max_duration_ms": 9500 } ], "customized": false }
 ```
 
-列出声明 `application.splash` 的活动包，按发布顺序；`max_duration_ms` 已按第 1 节取值。
+列出声明 `application.splash` 且未被用户停用的活动包，按生效顺序；`max_duration_ms` 已按第 1 节取值；
+`customized` 表示用户是否保存过顺序。顺序与停用的规则见 [S_10 第 4 节](S_10_application-settings.md)。
 
 ### 3.2 显示型槽位的 `ui.ready` 与 `ui.closed`
 
@@ -89,14 +90,14 @@ ui:
 | --- | --- |
 | 首帧 | `index.html` 显示与 Electron 加载页一致的中性层；脚本启动后由门控接管 |
 | 判定 | 本启动已完成，或提示为否：立即开放。提示为是：等待连接至多 30 秒后查询提供者。无法取得提示：等待连接并查询至多 3 秒 |
-| 顺序 | 最近一次的外观提供者（S_08）排在首位，其余按提供者列表顺序 |
+| 顺序 | `customized` 为 false 时，最近一次的外观提供者（S_08）排在首位，其余按提供者列表顺序；为 true 时按列表顺序 |
 | 准备 | 依次向每个提供者发送定向 `ui.ready`；5 秒内无回执或回执不是 `playing` 时转到下一个 |
 | 播放 | 只显示当前提供者的开场实例；媒体就绪时限 10 秒 |
 | 心跳 | 页面就绪后 5 秒内既无 `heartbeat` 也无 `complete`，或视频 5 秒内无播放进度，按 `timeout` 结束 |
 | 上限 | 自就绪起超过提供者的 `max_duration_ms` 按 `timeout` 结束；图片显示 3 秒（上限更短时取上限）后按 `complete` 结束 |
 | 完成 | 页面 `complete` 或视频播放结束：`complete`；页面 `error` 或媒体失败：`error`；提供者清除实例或包被释放：结束且不发送 `ui.closed` |
 | 跳过 | `skippable` 为 true 时显示“长按空格跳过”与进度环；长按空格或在提示上按住 0.8 秒：`skip`。只跳过当前开场 |
-| 结束 | 先在本地关闭容器（停止声音），再发送 `ui.closed`，不等待回执，转到下一个；`disabled`、`removed` 留给设置页停用与包释放（GW-12） |
+| 结束 | 先在本地关闭容器（停止声音），再发送 `ui.closed`，不等待回执，转到下一个；`disabled`、`removed` 由 Gateway 在停用与包释放时发出，前端只收到清除帧（[S_10 第 5 节](S_10_application-settings.md)） |
 | 开放 | 记录本启动已完成，移除中性层与界面的 `inert`，登录入口此后才可显示 |
 
 开场容器中，`MediaSurface` 遵循插件的 `muted`，视频不循环，不做减少动态替换（提供者已在 `ui.ready` 中收到该设置）。
