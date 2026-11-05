@@ -146,7 +146,15 @@ class GroupChatRepository(SQLiteStore):
                 "revision=agent_group_access.revision+1 WHERE agent_group_access.status='unknown' "
                 "AND agent_group_access.source_ref LIKE 'binding:%' "
                 "AND excluded.verified_at>=agent_group_access.verified_at",
-                (namespace_id, agent_id, group_id, app_id, utc_time(visible_from or observed_at).isoformat(), stamp, source_ref),
+                (
+                    namespace_id,
+                    agent_id,
+                    group_id,
+                    app_id,
+                    utc_time(visible_from or observed_at).isoformat(),
+                    stamp,
+                    source_ref,
+                ),
             )
 
     def update_membership(self, namespace_id: str, agent_id: str, group_id: str, app_id: str,
@@ -166,9 +174,12 @@ class GroupChatRepository(SQLiteStore):
             ).fetchone()
             if row is not None and stamp < row["verified_at"]:
                 return
-            if row is not None and stamp == row["verified_at"] and row["status"] != "active" and status == "active":
+            same_verification = row is not None and stamp == row["verified_at"]
+            if same_verification and row["status"] != "active" and status == "active":
                 return
-            visible = stamp if row is None or (row["status"] != "active" and status == "active") else row["visible_from"]
+            visible = (
+                stamp if row is None or (row["status"] != "active" and status == "active") else row["visible_from"]
+            )
             revision = 1 if row is None else row["revision"] + 1
             conn.execute("INSERT OR REPLACE INTO agent_group_access VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (*key, status, visible, stamp, source_ref, revision))

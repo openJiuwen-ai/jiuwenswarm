@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
+
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     ENDED_OUTCOMES,
     AccessSnapshot,
@@ -38,7 +40,6 @@ from jiuwenswarm.server.jiuwenmate.failure_notices import failure_notice_text
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, shared_output_file_name, workspace_output_key
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
-from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
 
 
 def _notice_delivery_job(job: Mapping[str, object], notice_text: str) -> dict[str, object]:
@@ -302,8 +303,8 @@ class ExecutionRepository(SQLiteStore):
     @staticmethod
     def _handoff_permission_origin(conn, session, request_input, route) -> PermissionOrigin | None:
         """Resolve a human only through a delivered host output naming this receiving Agent."""
-        if (request_input.kind != "group_message" or request_input.source.sender_kind != "agent"
-                or route is None or route.channel != "feishu"):
+        not_agent_message = request_input.kind != "group_message" or request_input.source.sender_kind != "agent"
+        if not_agent_message or route is None or route.channel != "feishu":
             return None
         rows = conn.execute(
             "SELECT r.record_json, o.payload_json FROM result_deliveries d "
@@ -319,9 +320,12 @@ class ExecutionRepository(SQLiteStore):
             parent = RequestRecord.from_dict(json.loads(row["record_json"]))
             parent_route = parent.route_snapshot
             text = json.loads(row["payload_json"]).get("text")
-            if (parent.request_input.kind != "group_message" or parent_route is None
-                    or (parent_route.channel, parent_route.target_id) != (route.channel, route.target_id)
-                    or not isinstance(text, str) or f"[[agent:{session.agent_id}]]" not in text):
+            invalid_parent_route = (
+                parent.request_input.kind != "group_message"
+                or parent_route is None
+                or (parent_route.channel, parent_route.target_id) != (route.channel, route.target_id)
+            )
+            if invalid_parent_route or not isinstance(text, str) or f"[[agent:{session.agent_id}]]" not in text:
                 continue
             origin = parent.permission_origin
             if origin is None and parent.request_input.source.sender_kind == "human":
@@ -721,8 +725,8 @@ class ExecutionRepository(SQLiteStore):
         base = (record.namespace_id, record.agent_id, record.session_id, source_group_id)
         if share_mode in FILE_SHARE_MODES:
             file_path, file_ref, file_size = payload.get("file_path"), payload.get("file_ref"), payload.get("file_size")
-            if (not isinstance(file_path, str) or not isinstance(file_ref, str)
-                    or isinstance(file_size, bool) or not isinstance(file_size, int)):
+            missing_file_identity = not isinstance(file_path, str) or not isinstance(file_ref, str)
+            if missing_file_identity or isinstance(file_size, bool) or not isinstance(file_size, int):
                 return
             file_name = file_path.rsplit("/", 1)[-1]
             snippet = payload.get("text")
@@ -755,10 +759,14 @@ class ExecutionRepository(SQLiteStore):
                 port = parsed.port
             except ValueError:
                 continue
-            if (parsed.scheme.lower() != "https" or parsed.username is not None or parsed.password is not None
-                    or port is not None or not any(host == domain or host.endswith("." + domain)
-                                                             for domain in _DOCUMENT_HOSTS)
-                    or not any(marker in parsed.path.lower() for marker in _DOCUMENT_PATH_MARKERS)):
+            invalid_authority = (
+                parsed.scheme.lower() != "https" or parsed.username is not None or parsed.password is not None
+            )
+            if invalid_authority or (
+                port is not None
+                or not any((host == domain or host.endswith("." + domain) for domain in _DOCUMENT_HOSTS))
+                or (not any((marker in parsed.path.lower() for marker in _DOCUMENT_PATH_MARKERS)))
+            ):
                 continue
             artifact_id = "art_" + hashlib.sha256(
                 f"{record.namespace_id}\0{record.agent_id}\0{record.session_id}\0{output_id}\0{url}".encode()
@@ -1201,11 +1209,9 @@ class ExecutionRepository(SQLiteStore):
                 ):
                     return dict(row)
                 raise PersistentAgentError("result delivery already has a terminal outcome", code="CONFLICT")
-            if (
-                row["status"] == "pending"
-                and outcome == "pending"
-                and row["external_message_id"] == external_message_id
-                and row["error_code"] == error_code
+            still_pending = row["status"] == "pending" and outcome == "pending"
+            if still_pending and (
+                row["external_message_id"] == external_message_id and row["error_code"] == error_code
             ):
                 return dict(row)
             if row["status"] not in {"sending", "unknown"}:

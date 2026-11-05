@@ -12,6 +12,14 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from openjiuwen.harness.persistent_agent import (
+    BudgetAdmission,
+    BudgetReport,
+    ExecutionContext,
+    InvocationRef,
+    ModelUsage,
+)
+
 from jiuwenswarm.server.jiuwenmate.budget_repository import (
     BudgetAccountRef,
     BudgetRepository,
@@ -20,13 +28,6 @@ from jiuwenswarm.server.jiuwenmate.budget_repository import (
 )
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
-from openjiuwen.harness.persistent_agent import (
-    BudgetAdmission,
-    BudgetReport,
-    ExecutionContext,
-    InvocationRef,
-    ModelUsage,
-)
 
 # Placeholder until real calls are measured (JM-07).
 DEFAULT_RESERVATION_TOKENS = 4096

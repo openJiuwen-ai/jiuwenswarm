@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 def _clean_title(title):
     """Display-only task name: one line, at most 80 characters."""
-    if not isinstance(title, str) or len(title) > 80 or "\n" in title or "\r" in title:
+    valid_length = isinstance(title, str) and len(title) <= 80
+    if not valid_length or "\n" in title or "\r" in title:
         raise ValueError("Invalid title")
     return title.strip()
 
@@ -69,9 +70,9 @@ class TaskService:
         """Recover only the requested conversation before dispatching its queue."""
         if self.closed:
             raise RuntimeError("Task service is closed")
-        if (owner is not None or session is not None) and (
-            not isinstance(owner, str) or not isinstance(session, str) or not session
-        ):
+        scoped = owner is not None or session is not None
+        valid_scope = isinstance(owner, str) and isinstance(session, str) and bool(session)
+        if scoped and not valid_scope:
             raise ValueError("Task owner must be a string and conversation is required")
         if self.started and (owner is None or (owner, session) in self.active_scopes):
             return
@@ -226,15 +227,13 @@ class TaskService:
                 return held
 
         if not request.get("independent", False):
-            earlier = [
-                t for t in tasks
-                if same_scope(t)
-                and t["id"] != task["id"]
-                and (
-                    t in active
-                    or (t["position"] < task["position"] and t["status"] not in TERMINAL)
-                )
-            ]
+            earlier = []
+            for other in tasks:
+                if not same_scope(other) or other["id"] == task["id"]:
+                    continue
+                waiting = other["position"] < task["position"] and other["status"] not in TERMINAL
+                if other in active or waiting:
+                    earlier.append(other)
             if earlier:
                 return earlier
         # Missing declarations mean unknown resources, not a proven conflict.
@@ -259,7 +258,8 @@ class TaskService:
                 self.interrupt_settled()
 
     @staticmethod
-    def _new(owner, session, instruction, request, *, parent=None):
+    def new_task_record(owner, session, instruction, request, *, parent=None):
+        """Build a queued record without writing it or scheduling execution."""
         task_id = uuid.uuid4().hex
         return dict(
             id=task_id,
@@ -336,7 +336,7 @@ class TaskService:
                 }
             for dependency in request.get("depends_on", []):
                 self.store.get(db, dependency, owner, session)
-            task = self._new(owner, session, instruction.strip(), request)
+            task = self.new_task_record(owner, session, instruction.strip(), request)
             self.store.put(db, task)
             self.store.command(
                 db,
@@ -362,7 +362,8 @@ class TaskService:
             tasks = self.store.rows(db, owner, session)
         if status:
             tasks = [t for t in tasks if t["status"] == status]
-        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold() or query.casefold() in t.get("title", "").casefold()]
+        term = query.casefold()
+        tasks = [t for t in tasks if term in t["instruction"].casefold() or term in t.get("title", "").casefold()]
         end = offset + limit
         return tasks[offset:end], (end if len(tasks) > end else None)
 
@@ -442,7 +443,7 @@ class TaskService:
         # A successor is a new execution, not a replay of the original call_id.
         for key in ("tool_call_id", "turn_id", "frame_data_url"):
             request.pop(key, None)
-        child = self._new(
+        child = self.new_task_record(
             task["owner"],
             task["session"],
             task["instruction"] + "\n" + adopted + "\nUser revision: " + instruction,
@@ -668,7 +669,8 @@ class TaskService:
                     receipt = dict(
                         task_id=task_id, operation_id=command_id, state="already_answered",
                         applied=False, task_state=task["status"],
-                        message="This exact card already has the same recorded answer. Nothing was resubmitted. Report task_state; do not infer continued execution or completion.",
+                        message="This exact card already has the same recorded answer. Nothing was resubmitted. Report "
+                            "task_state; do not infer continued execution or completion.",
                     )
                     self.store.command(db, task, command_id, fingerprint, receipt)
                     return receipt
@@ -773,11 +775,8 @@ class TaskService:
 
     def _waiting_on(self, task, all_tasks):
         """Name the tasks a waiting task is held behind, using kick()'s rules."""
-        active = [
-            t for t in all_tasks
-            if t["status"] in {"running", "cancelling", "unknown", "waiting_user"}
-            or t["id"] in self.workers
-        ]
+        active_states = {"running", "cancelling", "unknown", "waiting_user"}
+        active = [t for t in all_tasks if t["status"] in active_states or t["id"] in self.workers]
         blockers = self._blockers(task, all_tasks, active)
         if not blockers:
             counted = [t for t in active if self._holds_capacity(t)]

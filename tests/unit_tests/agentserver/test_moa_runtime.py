@@ -687,7 +687,7 @@ async def test_preparing_runtime_closes_old_transport_before_replacement(moa_con
     await adapter._prepare_moa_for_build(moa_config)
     old.aclose.assert_awaited_once()
     assert adapter._moa_runtime is not old
-    await adapter._close_moa_runtime()
+    await adapter.close_moa_runtime()
 
 
 @pytest.mark.asyncio

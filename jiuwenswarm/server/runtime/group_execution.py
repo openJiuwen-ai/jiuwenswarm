@@ -89,11 +89,12 @@ class GroupExecutions:
 
     def background_runs(self, member_name: str) -> list[dict]:
         """Return the member's unfinished private-team runs, oldest first."""
-        records = [
-            record for record in self.read().values()
-            if record.get("background") and record.get("member_name") == member_name
-            and record["status"] not in TERMINAL
-        ]
+        records = []
+        for record in self.read().values():
+            if not record.get("background") or record.get("member_name") != member_name:
+                continue
+            if record["status"] not in TERMINAL:
+                records.append(record)
         records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
         return copy.deepcopy(records)
 
@@ -163,14 +164,8 @@ class GroupExecutions:
                     None if created else current.get("message_id")
                 ),
             }
-            if not created and (
-                current.get("status") == record["status"]
-                and current.get("phase") == record["phase"]
-                and current.get("tasks") == record["tasks"]
-                and current.get("task_details") == record["task_details"]
-                and current.get("message_id") == record["message_id"]
-                and current.get("title") == record["title"]
-            ):
+            fields = ("status", "phase", "tasks", "task_details", "message_id", "title")
+            if not created and all(current.get(key) == record[key] for key in fields):
                 return copy.deepcopy(current)
             records[execution_id] = record
             self.save(records)

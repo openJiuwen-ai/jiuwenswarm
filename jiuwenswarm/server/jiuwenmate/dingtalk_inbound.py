@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -57,11 +58,12 @@ class DingTalkInboundEvent:
             _text(getattr(self, field), field)
         if not isinstance(self.received_at, datetime) or self.received_at.tzinfo is None:
             raise ValueError("DingTalk received_at must be timezone-aware")
-        if self.platform_created_at is not None and (
-            not isinstance(self.platform_created_at, datetime) or self.platform_created_at.utcoffset() is None
-            or self.platform_created_at > self.received_at + timedelta(minutes=5)
-        ):
-            raise ValueError("invalid DingTalk platform creation time")
+        created_at = self.platform_created_at
+        if created_at is not None:
+            if not isinstance(created_at, datetime) or created_at.utcoffset() is None:
+                raise ValueError("invalid DingTalk platform creation time")
+            if created_at > self.received_at + timedelta(minutes=5):
+                raise ValueError("invalid DingTalk platform creation time")
         if self.conversation_type not in {"1", "2"}:
             raise ValueError("invalid DingTalk conversation type")
         if not isinstance(self.receiver_bot_mentioned, bool):
@@ -87,13 +89,14 @@ class DingTalkInboundEvent:
             raise ValueError("invalid DingTalk text")
         staff_id = _text(data.get("senderStaffId"), "senderStaffId")
         mentions = data.get("atUsers", ())
-        mention_ids = tuple(dict.fromkeys(
-            item.get("dingtalkId") or item.get("staffId")
-            for item in mentions
-            if isinstance(item, Mapping)
-            and isinstance(item.get("dingtalkId") or item.get("staffId"), str)
-            and (item.get("dingtalkId") or item.get("staffId")).strip()
-        )) if isinstance(mentions, (list, tuple)) else ()
+        observed_mentions = {}
+        if isinstance(mentions, (list, tuple)):
+            for item in mentions:
+                if isinstance(item, Mapping):
+                    user_id = item.get("dingtalkId") or item.get("staffId")
+                    if isinstance(user_id, str) and user_id.strip():
+                        observed_mentions[user_id] = None
+        mention_ids = tuple(observed_mentions)
         chatbot_user_id = data.get("chatbotUserId")
         mentions_everyone = any(item.casefold() in {"all", "@_all"} for item in mention_ids)
         # DingTalk's Stream bot-message callback is only delivered for an @ to that bot in a group.
@@ -106,9 +109,9 @@ class DingTalkInboundEvent:
         received_at = datetime.now(timezone.utc)
         platform_created_at = None
         created = data.get("createAt")
-        if not isinstance(created, bool) and (
-            isinstance(created, int) or (isinstance(created, str) and created.isdecimal())
-        ):
+        integer_timestamp = isinstance(created, int) and not isinstance(created, bool)
+        decimal_timestamp = isinstance(created, str) and created.isdecimal()
+        if integer_timestamp or decimal_timestamp:
             try:
                 candidate = datetime.fromtimestamp(int(created) / 1000, timezone.utc)
                 if candidate.year >= 2000 and candidate <= received_at + timedelta(minutes=5):
@@ -131,8 +134,11 @@ class DingTalkInboundEvent:
 
     def to_payload(self) -> dict[str, Any]:
         return {
-            **asdict(self), "received_at": self.received_at.isoformat(),
-            "platform_created_at": self.platform_created_at.isoformat() if self.platform_created_at is not None else None,
+            **asdict(self),
+            "received_at": self.received_at.isoformat(),
+            "platform_created_at": self.platform_created_at.isoformat()
+            if self.platform_created_at is not None
+            else None,
         }
 
     @classmethod
@@ -170,11 +176,9 @@ def configured_dingtalk_bindings(config: Mapping[str, Any] | None = None) -> tup
         if not app["enabled"] or not app_id or not agent_id:
             continue
         bindings.append(DingTalkBinding(app_id=app_id, agent_id=agent_id, robot_code=app["robot_code"] or app_id))
-    return tuple(
-        binding for binding in bindings
-        if sum(item.app_id == binding.app_id for item in bindings) == 1
-        and sum(item.agent_id == binding.agent_id for item in bindings) == 1
-    )
+    app_counts = Counter(binding.app_id for binding in bindings)
+    agent_counts = Counter(binding.agent_id for binding in bindings)
+    return tuple(binding for binding in bindings if app_counts[binding.app_id] == agent_counts[binding.agent_id] == 1)
 
 
 class DingTalkInboundHandler:
@@ -188,6 +192,21 @@ class DingTalkInboundHandler:
         self._sessions = sessions
         self._manager = agent_manager
         self._config_loader = config_loader
+
+    def matches_connection(self, binding: DingTalkBinding) -> bool:
+        connection = self._service.connection_of(binding.namespace_id, binding.agent_id)
+        return connection is not None and (connection.channel, connection.connection_key) == (
+            "dingtalk",
+            binding.app_id,
+        )
+
+    def accepts_group_polling(self, binding: DingTalkBinding) -> bool:
+        ns, agent = binding.namespace_id, binding.agent_id
+        if not self._service.get_colleague(ns, agent).enabled:
+            return False
+        return self._service.read_settings(ns, agent).group_reply_mode == "adaptive" and self.matches_connection(
+            binding
+        )
 
     async def handle(self, event: DingTalkInboundEvent) -> InboundDisposition:
         return await self._handle(event)
@@ -347,7 +366,11 @@ class DingTalkInboundHandler:
                                 if item["client_id"] == binding.app_id), None)
                     allowed = app.get("allow_from", []) if app is not None else []
                     # A staffId-only allowlist cannot be satisfied by guessing an open ID mapping.
-                    if allowed and "*" not in allowed and event.sender_staff_id.removeprefix("dingtalk-open:") not in allowed:
+                    if (
+                        allowed
+                        and "*" not in allowed
+                        and event.sender_staff_id.removeprefix("dingtalk-open:") not in allowed
+                    ):
                         return InboundDisposition.HANDLED
                 else:
                     group = await asyncio.to_thread(
@@ -418,11 +441,11 @@ class DingTalkInboundHandler:
                         return InboundDisposition.HANDLED
                     raise
 
-                if is_history and (
-                    history_sender_kind != "human" or "@" in event.text or "＠" in event.text
-                    or history_dispatch_after is None or received_at <= history_dispatch_after
-                ):
-                    return InboundDisposition.HANDLED
+                if is_history:
+                    if history_sender_kind != "human" or "@" in event.text or "＠" in event.text:
+                        return InboundDisposition.HANDLED
+                    if history_dispatch_after is None or received_at <= history_dispatch_after:
+                        return InboundDisposition.HANDLED
 
                 if event.receiver_bot_mentioned:
                     source = source.model_copy(update={

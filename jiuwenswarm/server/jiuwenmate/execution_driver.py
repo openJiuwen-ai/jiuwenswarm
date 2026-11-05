@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from openjiuwen.harness import persistent_agent as core
+
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
@@ -34,7 +36,6 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAc
 from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, MembershipVerifier, unavailable_membership
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from openjiuwen.harness import persistent_agent as core
 from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
 from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
@@ -117,7 +118,7 @@ class ExecutionHandle:
         if self._context is not None:
             await self._abort(self._context, reason=reason)
 
-    async def _attach(self, context: core.PersistentBuildContext) -> None:
+    async def attach(self, context: core.PersistentBuildContext) -> None:
         self._context = context
         if self.reason is not None:
             await self._abort(context, reason=self.reason)
@@ -207,9 +208,16 @@ class ExecutionDriver:
                 enforce_session_boundary=record.request_input.kind == "group_message",
             )
             group_chat_port = None
-            if (record.request_input.kind in ("direct_message", "group_message") and self._groups is not None and
-                    self._group_archive is not None and self._group_search is not None and
-                    self._group_search_cursors is not None and self._sessions is not None):
+            can_read_groups = (
+                record.request_input.kind in ("direct_message", "group_message")
+                and self._groups is not None
+                and (self._group_archive is not None)
+            )
+            if can_read_groups and (
+                self._group_search is not None
+                and self._group_search_cursors is not None
+                and (self._sessions is not None)
+            ):
                 group_chat_port = HostGroupChatPort(
                     self._groups, self._group_archive, self._sessions,
                     namespace_id=record.namespace_id, agent_id=record.agent_id,
@@ -258,15 +266,14 @@ class ExecutionDriver:
                         )
                         roster = []
                     guidance = build_group_execution_guidance(roster)
-            addenda = [
-                item for item in (
-                    guidance,
-                    dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
-                    welink_execution_guidance(record.route_snapshot),
-                    _session_workspace_guidance(record.session_id, session_workspace, output_dir),
-                    vision_guidance(),
-                ) if item
-            ]
+            guidance_sections = (
+                guidance,
+                dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
+                welink_execution_guidance(record.route_snapshot),
+                _session_workspace_guidance(record.session_id, session_workspace, output_dir),
+                vision_guidance(),
+            )
+            addenda = [item for item in guidance_sections if item]
             spec, context = build_invocation(
                 snapshot,
                 record,
@@ -300,7 +307,7 @@ class ExecutionDriver:
                 permission_profile=getattr(spec, "permission_profile", permission_profile),
                 group_cli=group_cli,
             )
-            await handle._attach(context)
+            await handle.attach(context)
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:
                 trigger = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)

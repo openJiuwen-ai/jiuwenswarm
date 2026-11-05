@@ -65,11 +65,11 @@ def fanout(tmp_path, monkeypatch):
     groups = GroupChatRepository(tmp_path / "groups.sqlite3")
     archive = ConversationArchive(tmp_path / "archive", groups)
     modes = {"a": "adaptive", "b": "adaptive"}
-    return SimpleNamespace(_groups=groups, _clock=lambda: NOW + timedelta(minutes=1), modes=modes,
-        _agent_manager=SimpleNamespace(group_archive=archive, scheduler=SimpleNamespace(accept=AsyncMock()),
+    return SimpleNamespace(groups=groups, clock=lambda: NOW + timedelta(minutes=1), modes=modes,
+        agent_manager=SimpleNamespace(group_archive=archive, scheduler=SimpleNamespace(accept=AsyncMock()),
             group_participant_roster=lambda *args: ()),
-        _sessions=SimpleNamespace(resolve_session=lambda ns, agent, *args, **kwargs: SimpleNamespace(agent_id=agent)),
-        _service=SimpleNamespace(connection_of=lambda *args: SimpleNamespace(channel="welink", connection_key="reader"),
+        sessions=SimpleNamespace(resolve_session=lambda ns, agent, *args, **kwargs: SimpleNamespace(agent_id=agent)),
+        service=SimpleNamespace(connection_of=lambda *args: SimpleNamespace(channel="welink", connection_key="reader"),
             get_colleague=lambda *args: SimpleNamespace(enabled=True),
             current_snapshot=lambda ns, agent: SimpleNamespace(agent_id=agent),
             read_settings=lambda ns, agent: SimpleNamespace(group_reply_mode=modes[agent])))
@@ -79,7 +79,7 @@ def fanout(tmp_path, monkeypatch):
 async def test_private_chat_opens_a_direct_request_for_that_colleague(fanout):
     message = event(chat_type="p2p", chat_id="p2p:person", message_id="dm1", text="介绍一下你自己")
     assert (await inbound.accept_welink_message(fanout, message)).value == "handled"
-    call = fanout._agent_manager.scheduler.accept.call_args
+    call = fanout.agent_manager.scheduler.accept.call_args
     request = call.kwargs["request_input"]
     assert request.kind == "direct_message"
     assert request.reply_target == "p2p:person"
@@ -88,29 +88,29 @@ async def test_private_chat_opens_a_direct_request_for_that_colleague(fanout):
     assert call.kwargs["route_snapshot"].source_message_id == "dm1"
     echo = event(chat_type="p2p", chat_id="p2p:person", message_id="dm2", sender_kind="agent")
     assert (await inbound.accept_welink_message(fanout, echo)).value == "handled"
-    assert fanout._agent_manager.scheduler.accept.call_count == 1
+    assert fanout.agent_manager.scheduler.accept.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_shared_archive_schedules_both_colleagues_without_overwriting_time(fanout):
     assert (await inbound.accept_welink_message(fanout, event())).value == "handled"
     assert (await inbound.accept_welink_message(fanout, event("b", received_at=NOW+timedelta(seconds=10)))).value == "handled"
-    calls = fanout._agent_manager.scheduler.accept.call_args_list
+    calls = fanout.agent_manager.scheduler.accept.call_args_list
     assert [call.args[0].agent_id for call in calls] == ["a", "b"]
     assert [call.kwargs["route_snapshot"].app_id for call in calls] == ["ak-a", "ak-b"]
     assert calls[1].kwargs["request_input"].source.received_at == NOW
-    group = fanout._groups.resolve("local", "welink", "g", now=NOW)
-    assert fanout._groups.access_for("local", "b", group.group_chat_id).visible_from == NOW
+    group = fanout.groups.resolve("local", "welink", "g", now=NOW)
+    assert fanout.groups.access_for("local", "b", group.group_chat_id).visible_from == NOW
 
 
 @pytest.mark.asyncio
 async def test_passive_archives_only_but_verified_invoke_schedules(fanout):
     fanout.modes["a"] = "passive"
     await inbound.accept_welink_message(fanout, event(text="@a do this"))
-    assert fanout._agent_manager.scheduler.accept.await_count == 0
+    assert fanout.agent_manager.scheduler.accept.await_count == 0
     await inbound.accept_welink_message(fanout, event(text="@a do this", mentioned=True))
-    assert fanout._agent_manager.scheduler.accept.await_count == 1
-    assert fanout._agent_manager.scheduler.accept.call_args.kwargs["request_input"].source.mention_ids == ("a",)
+    assert fanout.agent_manager.scheduler.accept.await_count == 1
+    assert fanout.agent_manager.scheduler.accept.call_args.kwargs["request_input"].source.mention_ids == ("a",)
 
 
 @pytest.mark.asyncio
@@ -119,12 +119,12 @@ async def test_catchup_boundary_covers_batch_without_moving_existing_agent(fanou
     oldest = NOW-timedelta(minutes=2)
     await inbound.accept_welink_message(fanout, event("b", first_observation=True, visible_from=oldest))
     await inbound.accept_welink_message(fanout, event("b", message_id="older", received_at=oldest))
-    group = fanout._groups.resolve("local", "welink", "g", now=NOW)
-    assert fanout._groups.access_for("local", "a", group.group_chat_id).visible_from == NOW
-    assert fanout._groups.access_for("local", "b", group.group_chat_id).visible_from == oldest
-    assert fanout._agent_manager.scheduler.accept.await_count == 3
+    group = fanout.groups.resolve("local", "welink", "g", now=NOW)
+    assert fanout.groups.access_for("local", "a", group.group_chat_id).visible_from == NOW
+    assert fanout.groups.access_for("local", "b", group.group_chat_id).visible_from == oldest
+    assert fanout.agent_manager.scheduler.accept.await_count == 3
     await inbound.accept_welink_message(fanout, event(message_id="older", received_at=oldest, mentioned=True))
-    assert fanout._agent_manager.scheduler.accept.await_count == 3
+    assert fanout.agent_manager.scheduler.accept.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -132,12 +132,12 @@ async def test_wrong_assistant_and_conflicting_content_never_schedule(fanout):
     assert (await inbound.accept_welink_message(fanout, event(assistant_credential_id="ak-b"))).value == "rejected"
     await inbound.accept_welink_message(fanout, event())
     await inbound.accept_welink_message(fanout, event("b", text="conflicting new body", received_at=NOW+timedelta(seconds=10)))
-    assert fanout._agent_manager.scheduler.accept.await_count == 1
+    assert fanout.agent_manager.scheduler.accept.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_queue_failure_remains_retryable(fanout):
-    fanout._agent_manager.scheduler.accept.side_effect = RuntimeError("queue unavailable")
+    fanout.agent_manager.scheduler.accept.side_effect = RuntimeError("queue unavailable")
     assert (await inbound.accept_welink_message(fanout, event())).value == "retryable"
 
 
@@ -145,13 +145,13 @@ async def test_queue_failure_remains_retryable(fanout):
 async def test_confirmed_handoff_reuses_history_with_request_only_agent_identity(fanout):
     fanout.modes["b"] = "passive"
     await inbound.accept_welink_message(fanout, event("b", sender_id="assistant-account"))
-    assert fanout._agent_manager.scheduler.accept.await_count == 0
+    assert fanout.agent_manager.scheduler.accept.await_count == 0
     await inbound.accept_welink_message(fanout, event("b", sender_id="a", sender_name="Colleague A",
         sender_kind="agent", mentioned=True))
-    source = fanout._agent_manager.scheduler.accept.call_args.kwargs["request_input"].source
+    source = fanout.agent_manager.scheduler.accept.call_args.kwargs["request_input"].source
     assert (source.sender_id, source.sender_kind, source.mention_ids) == ("a", "agent", ("b",))
-    group = fanout._groups.resolve("local", "welink", "g", now=NOW)
-    archived, = fanout._agent_manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))
+    group = fanout.groups.resolve("local", "welink", "g", now=NOW)
+    archived, = fanout.agent_manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))
     assert archived.sender_id == "assistant-account" and archived.sender_kind == "human"
 
 
@@ -174,11 +174,11 @@ async def test_office_binding_resolves_to_its_welink_connection(tmp_path, monkey
         return SimpleNamespace(agent_id=agent)
 
     fanout = SimpleNamespace(
-        _groups=groups, _clock=lambda: NOW + timedelta(minutes=1),
-        _agent_manager=SimpleNamespace(group_archive=archive, scheduler=SimpleNamespace(accept=AsyncMock()),
+        groups=groups, clock=lambda: NOW + timedelta(minutes=1),
+        agent_manager=SimpleNamespace(group_archive=archive, scheduler=SimpleNamespace(accept=AsyncMock()),
             group_participant_roster=lambda *args: ()),
-        _sessions=SimpleNamespace(resolve_session=lambda ns, agent, *args, **kwargs: SimpleNamespace(agent_id=agent)),
-        _service=SimpleNamespace(
+        sessions=SimpleNamespace(resolve_session=lambda ns, agent, *args, **kwargs: SimpleNamespace(agent_id=agent)),
+        service=SimpleNamespace(
             connection_of=lambda *args: None,
             connections=lambda *args: [SimpleNamespace(
                 channel="welink", connection_key=f"reader:{office}", agent_id=connection_agent)],
@@ -188,7 +188,7 @@ async def test_office_binding_resolves_to_its_welink_connection(tmp_path, monkey
     message = event(office, assistant_credential_id="ak-office")
     assert (await inbound.accept_welink_message(fanout, message)).value == "handled"
     assert seen == [connection_agent]
-    assert fanout._agent_manager.scheduler.accept.call_args.args[0].agent_id == connection_agent
+    assert fanout.agent_manager.scheduler.accept.call_args.args[0].agent_id == connection_agent
 
 
 def test_transient_inbound_failure_is_not_a_permanent_rejection(monkeypatch):
@@ -205,15 +205,15 @@ def test_transient_inbound_failure_is_not_a_permanent_rejection(monkeypatch):
                           received_at=now, text="hello")
     scheduler = SimpleNamespace(accept=AsyncMock(side_effect=PersistentAgentError('queue full', code='QUEUE_FULL')))
     fanout = SimpleNamespace(
-        _clock=lambda: now,
-        _service=SimpleNamespace(connection_of=lambda *args: SimpleNamespace(channel="welink", connection_key="reader"), get_colleague=lambda *args: SimpleNamespace(enabled=True),
+        clock=lambda: now,
+        service=SimpleNamespace(connection_of=lambda *args: SimpleNamespace(channel="welink", connection_key="reader"), get_colleague=lambda *args: SimpleNamespace(enabled=True),
                                  current_snapshot=lambda *args: SimpleNamespace(agent_id='mate'),
                                  read_settings=lambda *args: SimpleNamespace(group_reply_mode='adaptive')),
-        _groups=SimpleNamespace(resolve=lambda *args, **kwargs: SimpleNamespace(group_chat_id='group'),
+        groups=SimpleNamespace(resolve=lambda *args, **kwargs: SimpleNamespace(group_chat_id='group'),
                                 observe_access=lambda *args, **kwargs: None,
                                 access_for=lambda *args: SimpleNamespace(status="active", visible_from=now)),
-        _sessions=SimpleNamespace(resolve_session=lambda *args, **kwargs: SimpleNamespace(session_id='session')),
-        _agent_manager=SimpleNamespace(scheduler=scheduler,
+        sessions=SimpleNamespace(resolve_session=lambda *args, **kwargs: SimpleNamespace(session_id='session')),
+        agent_manager=SimpleNamespace(scheduler=scheduler,
             group_archive=SimpleNamespace(append=lambda *args, **kwargs: None, current_messages=lambda *args: (source,)),
             group_participant_roster=lambda *args: ()),
     )

@@ -37,13 +37,12 @@ def cli_preview_root(root: Path, namespace_id: str, agent_id: str) -> Path:
 
 def _write_private_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    with tempfile.TemporaryDirectory(dir=path.parent) as directory:
+        temporary = Path(directory) / "pending"
+        with temporary.open("x", encoding="utf-8") as stream:
             stream.write(text)
+        os.chmod(temporary, 0o600)
         os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -211,8 +210,9 @@ class FeishuCliRuntime:
                       "+messages-resources-download"}
         raw_message = (len(argv) >= 3 and argv[:2] == ["api", "GET"]
                        and re.fullmatch(r"/open-apis/im/v1/messages/om_[A-Za-z0-9_-]+", argv[2]) is not None)
-        if (not raw_message and (len(argv) < 2 or argv[0] != "im" or argv[1] not in operations)
-                or any(flag in argv for flag in ("--profile", "--config", "--download-resources"))):
+        shortcut = len(argv) >= 2 and argv[0] == "im" and argv[1] in operations
+        forbidden_flags = {"--profile", "--config", "--download-resources"}
+        if (not raw_message and not shortcut) or forbidden_flags.intersection(argv):
             raise ValueError("unsupported host CLI preview")
         if self.status(namespace_id, agent_id).get("status") != "ready":
             raise RuntimeError("Agent Feishu CLI is not ready")
@@ -348,7 +348,10 @@ class FeishuCliRuntime:
                     output = await self._run([str(binary), "--version"], "", env)
                     match = re.search(r"\b\d+\.\d+\.\d+\b", output)
                     if match is None or match.group() != manifest.min_version:
-                        raise ValueError("Private Feishu CLI version does not match the package; remove its private installation and retry")
+                        raise ValueError(
+                            "Private Feishu CLI version does not match the package; "
+                            "remove its private installation and retry"
+                        )
                 if self._binding(namespace_id, agent_id) != binding:
                     raise ValueError("Feishu binding changed during preparation")
                 if self.status(namespace_id, agent_id).get("status") == "ready":

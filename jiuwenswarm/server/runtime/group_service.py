@@ -209,12 +209,11 @@ def upsert_group_organization_team(
         stored = []
     else:
         stored = state.get("organization_teams") or []
-    teams = [
-        item
-        for item in stored
-        if isinstance(item, dict)
-        and item.get("member_name") != entry.get("member_name")
-    ]
+    member_name = entry.get("member_name")
+    teams = []
+    for item in stored:
+        if isinstance(item, dict) and item.get("member_name") != member_name:
+            teams.append(item)
     teams.append(copy.deepcopy(entry))
     state["organization_id"] = organization_id
     state["organization_teams"] = teams
@@ -349,7 +348,7 @@ def _public(state: dict) -> dict:
     result = {}
     for key in keys:
         result[key] = copy.deepcopy(state[key])
-    for member in result["members"]:
+    for member in result.get("members", []):
         definition = state.get("compiled", {}).get(member["member_name"], {})
         external = definition.get("member", {}).get("external_cli") or {}
         if external.get("cli_agent") in {"claude", "codex"}:

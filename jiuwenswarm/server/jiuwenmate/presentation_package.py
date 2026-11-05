@@ -30,16 +30,16 @@ def install_presentation_handoff() -> None:
     """Normalize a presentation before core reads it for the shared-output digest."""
     from openjiuwen.harness.persistent_agent.execution import handoff
 
-    if getattr(handoff, "_presentation_normalized", False):
-        return
     original = handoff.read_for_handoff
+    if getattr(original, "jiuwenmate_normalizes_presentation", False):
+        return
 
     def read_for_handoff(resolved, max_bytes):
         normalize_presentation_package(resolved.path)
         return original(resolved, max_bytes)
 
+    read_for_handoff.jiuwenmate_normalizes_presentation = True
     handoff.read_for_handoff = read_for_handoff
-    handoff._presentation_normalized = True
 
 
 def normalize_presentation_package(path: Path) -> bool:
@@ -104,7 +104,7 @@ def _revise_slide_size(original: bytes) -> bytes:
         attrs["type"] = name
     rendered = " ".join(f'{key}="{value}"' for key, value in attrs.items())
     tag = f"<{match.group('prefix')}:sldSz {rendered}/>"
-    return (text[: match.start()] + tag + text[match.end() :]).encode("utf-8")
+    return (text[:match.start()] + tag + text[match.end():]).encode("utf-8")
 
 
 def _nearest_preset(width: int, height: int) -> tuple[str, int, int] | None:

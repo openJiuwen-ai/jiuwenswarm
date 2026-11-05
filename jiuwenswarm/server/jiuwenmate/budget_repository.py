@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from openjiuwen.harness.persistent_agent import InvocationRef, ModelUsage
+
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
-from openjiuwen.harness.persistent_agent import InvocationRef, ModelUsage
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_accounts (

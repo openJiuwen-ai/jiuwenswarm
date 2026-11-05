@@ -123,6 +123,34 @@ def _history_title(
     return conversation_titles.get((session["agent_id"], session["conversation_key"]), "")
 
 
+def _channel_bucket(channels: dict[str, dict[str, int]], name: str) -> dict[str, int]:
+    bucket = channels.get(name)
+    if bucket is None:
+        bucket = {"calls": 0, "tokens": 0, "tasks": 0, "replies": 0, "failures": 0}
+        channels[name] = bucket
+    return bucket
+
+
+def _group_bucket(
+    group_rows: dict[str, dict[str, object]], group_names: Mapping[str, Mapping[str, str]], session: Mapping[str, str]
+) -> dict[str, object]:
+    key = session["conversation_key"]
+    bucket = group_rows.get(key)
+    if bucket is None:
+        mapped = group_names.get(key)
+        bucket = {
+            "group_chat_id": key,
+            "name": _group_label(mapped, key),
+            "platform": mapped["platform"] if mapped is not None else "",
+            "artifacts": 0,
+            "tokens": 0,
+            "tasks": 0,
+            "last_response_at": None,
+        }
+        group_rows[key] = bucket
+    return bucket
+
+
 def assemble_activity(
     *,
     colleagues: Sequence[Mapping[str, str]],
@@ -177,30 +205,6 @@ def assemble_activity(
         channels: dict[str, dict[str, int]] = {}
         group_rows: dict[str, dict[str, object]] = {}
 
-        def channel_bucket(name: str) -> dict[str, int]:
-            bucket = channels.get(name)
-            if bucket is None:
-                bucket = {"calls": 0, "tokens": 0, "tasks": 0, "replies": 0, "failures": 0}
-                channels[name] = bucket
-            return bucket
-
-        def group_bucket(session: Mapping[str, str]) -> dict[str, object]:
-            key = session["conversation_key"]
-            bucket = group_rows.get(key)
-            if bucket is None:
-                mapped = group_names.get(key)
-                bucket = {
-                    "group_chat_id": key,
-                    "name": _group_label(mapped, key),
-                    "platform": mapped["platform"] if mapped is not None else "",
-                    "artifacts": 0,
-                    "tokens": 0,
-                    "tasks": 0,
-                    "last_response_at": None,
-                }
-                group_rows[key] = bucket
-            return bucket
-
         own_requests = [row for row in requests if row["agent_id"] == agent_id]
         for request in own_requests:
             request_id = str(request["request_id"])
@@ -253,21 +257,21 @@ def assemble_activity(
                 }
             )
             if transport_channel:
-                bucket = channel_bucket(transport_channel)
+                bucket = _channel_bucket(channels, transport_channel)
                 bucket["tasks"] += 1
                 if outcome == "completed":
                     bucket["replies"] += 1
                 elif outcome == "failed":
                     bucket["failures"] += 1
             if session is not None and session["kind"] == "group":
-                group = group_bucket(session)
+                group = _group_bucket(group_rows, group_names, session)
                 group["tasks"] = int(group["tasks"]) + 1
             if outcome == "completed" and request["updated_at"]:
                 updated = _aware(str(request["updated_at"]))
                 if last_response is None or updated > last_response:
                     last_response = updated
                 if session is not None and session["kind"] == "group":
-                    group = group_bucket(session)
+                    group = _group_bucket(group_rows, group_names, session)
                     previous = group["last_response_at"]
                     if not isinstance(previous, str) or updated.isoformat() > previous:
                         group["last_response_at"] = updated.isoformat()
@@ -297,11 +301,11 @@ def assemble_activity(
             if session is not None:
                 transport_channel = _transport_channel(session, group_names)
                 if transport_channel:
-                    bucket = channel_bucket(transport_channel)
+                    bucket = _channel_bucket(channels, transport_channel)
                     bucket["calls"] += 1
                     bucket["tokens"] += amount
                 if session["kind"] == "group":
-                    group = group_bucket(session)
+                    group = _group_bucket(group_rows, group_names, session)
                     group["tokens"] = int(group["tokens"]) + amount
 
         for delivery in deliveries:
@@ -313,7 +317,7 @@ def assemble_activity(
             session = by_session.get(str(request["session_id"]))
             if session is None or session["kind"] != "group":
                 continue
-            group = group_bucket(session)
+            group = _group_bucket(group_rows, group_names, session)
             group["artifacts"] = int(group["artifacts"]) + 1
 
         for item in history_rows:
@@ -387,20 +391,22 @@ class ActivityQuery:
                     "FROM requests WHERE namespace_id = ?",
                     (namespace_id,),
                 ).fetchall()
+                conversation_rows = conn.execute(
+                    "SELECT agent_id, conversation_id, title FROM web_conversations "
+                    "WHERE namespace_id = ? AND deleted_at IS NULL",
+                    (namespace_id,),
+                )
                 conversation_titles = {
                     (row["agent_id"], row["conversation_id"]): str(row["title"] or "")
-                    for row in conn.execute(
-                        "SELECT agent_id, conversation_id, title FROM web_conversations "
-                        "WHERE namespace_id = ? AND deleted_at IS NULL",
-                        (namespace_id,),
-                    )
+                    for row in conversation_rows
                 }
+                plan_rows = conn.execute(
+                    "SELECT plan_id, name FROM scheduled_plans WHERE namespace_id = ?",
+                    (namespace_id,),
+                )
                 plan_names = {
                     row["plan_id"]: str(row["name"] or "")
-                    for row in conn.execute(
-                        "SELECT plan_id, name FROM scheduled_plans WHERE namespace_id = ?",
-                        (namespace_id,),
-                    )
+                    for row in plan_rows
                 }
                 executions = conn.execute(
                     "SELECT execution_id, request_id, started_at FROM executions WHERE namespace_id = ?",
@@ -436,7 +442,11 @@ class ActivityQuery:
             except json.JSONDecodeError:
                 ref = {}
             parsed_calls.append(
-                {"status": row["status"], "charged_tokens": row["charged_tokens"], "ref": ref if isinstance(ref, dict) else {}}
+                {
+                    "status": row["status"],
+                    "charged_tokens": row["charged_tokens"],
+                    "ref": ref if isinstance(ref, dict) else {},
+                }
             )
         return assemble_activity(
             colleagues=colleagues,

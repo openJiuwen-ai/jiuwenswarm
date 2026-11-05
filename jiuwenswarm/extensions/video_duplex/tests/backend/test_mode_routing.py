@@ -47,13 +47,14 @@ async def test_admission_uses_server_route_even_if_scheduling_supplies_another_t
 
     metadata = {"user_id": "alice", "mode": "agent", "work_mode": "code", "project_dir": "/code"}
     client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload=metadata)))
-    manager = VideoSearchManager(None, client, log_event=lambda *_: None, qwen_active=lambda: True,
-                                 authorize=lambda ws, scope: ("alice", scope))
     submitted = []
+
     def submit(owner, scope, command, text, request):
         submitted.append(request)
-        return TaskService._new(owner, scope, text, request)
-    manager._service = SimpleNamespace(submit=submit)
+        return TaskService.new_task_record(owner, scope, text, request)
+
+    manager = VideoSearchManager(None, client, log_event=lambda *_: None, qwen_active=lambda: True,
+                                 authorize=lambda ws, scope: ("alice", scope), service=SimpleNamespace(submit=submit))
     await manager.start(object(), question="Fix bug", query="Fix bug", search_session_id="task-duplex:chat",
                         scheduling={"execution_target": {"mode": "agent", "project_dir": "/other"}})
     assert submitted[0]["execution_target"]["mode"] == "agent.code.normal"
@@ -63,12 +64,13 @@ async def test_admission_uses_server_route_even_if_scheduling_supplies_another_t
 @pytest.mark.parametrize("mode,work", [("agent.code.plan", "code"), ("team.design", "design")])
 async def test_native_cancel_routes_to_the_bound_mode_and_project(tmp_path, mode, work):
     store = TaskStore(tmp_path / "cancel.sqlite")
-    task = TaskService._new("alice", "task-duplex:chat", "Task", {
+    task = TaskService.new_task_record("alice", "task-duplex:chat", "Task", {
         "execution_target": {"mode": mode, "work_mode": work, "project_dir": "/original"},
     })
     with store.transaction() as db:
         store.put(db, task)
     requests = []
+
     async def send(env):
         requests.append(e2a_to_agent_request(env))
         store.update(task["id"], lambda t: t.update(execution_settled=True))
@@ -83,7 +85,9 @@ async def test_native_cancel_routes_to_the_bound_mode_and_project(tmp_path, mode
     await executor.close()
 
 
-@pytest.mark.parametrize("mode,work", [("agent.code.normal", "code"), ("agent.code.plan", "code"), ("team.design", "design")])
+@pytest.mark.parametrize("mode,work", [
+    ("agent.code.normal", "code"), ("agent.code.plan", "code"), ("team.design", "design"),
+])
 async def test_executor_routes_same_session_and_project_and_rejects_changed_binding(tmp_path, mode, work):
     requests = []
     metadata = {"user_id": "alice", "mode": mode, "work_mode": work, "project_id": "p", "project_dir": "/project"}
@@ -96,9 +100,11 @@ async def test_executor_routes_same_session_and_project_and_rejects_changed_bind
 
     executor = AgentTaskExecutor(SimpleNamespace(send_request=send), TaskStore(tmp_path / "tasks.sqlite"), None)
     target = execution_target(metadata)
-    task = TaskService._new("alice", "task-duplex:chat", "Update this project", {"execution_target": target})
-    result = await executor._run(task, AsyncMock(), [])
-    request = requests[-1]
+    task = TaskService.new_task_record("alice", "task-duplex:chat", "Update this project", {"execution_target": target})
+    with executor.store.transaction() as db:
+        executor.store.put(db, task)
+    result = await executor.run(task, AsyncMock())
+    request = next(req for req in requests if req.req_method == ReqMethod.CHAT_SEND)
     assert result["answer"]
     assert request.params["mode"] == mode
     assert request.params["project_dir"] == "/project"
@@ -109,14 +115,14 @@ async def test_executor_routes_same_session_and_project_and_rejects_changed_bind
     metadata["project_dir"] = "/other"
     count = len(requests)
     with pytest.raises(ValueError, match="changed"):
-        await executor._run(task, AsyncMock(), [])
+        await executor.run(task, AsyncMock())
     assert len(requests) == count + 1, "metadata check must fail before execution"
     await executor.close()
 
 
 @pytest.mark.parametrize("mode,work", [("agent.code.normal", "code"), ("team.design", "design")])
 def test_interaction_answer_keeps_mode_and_project(mode, work):
-    task = TaskService._new("alice", "task-duplex:chat", "Task", {
+    task = TaskService.new_task_record("alice", "task-duplex:chat", "Task", {
         "execution_target": {"mode": mode, "work_mode": work, "project_dir": "/project"},
     })
     task["interaction"] = {"operation_id": "op", "request_id": "question", "source": "ask_user_interrupt",
@@ -132,21 +138,21 @@ def design_host(monkeypatch, tmp_path):
     import jiuwenswarm.agents.harness.team as team_module
 
     monkeypatch.setattr(team_module, "get_team_manager", lambda *_: SimpleNamespace(is_round_active=lambda _: False))
-    design_execution._rounds.clear()
+    monkeypatch.setattr(design_execution, "_rounds", {})
     install_bridge(monkeypatch)
     store = TaskStore(tmp_path / "tasks.sqlite")
     from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 
     endpoint = GatewayTaskEndpoint(store)
-    task = TaskService._new("alice", "task-duplex:design-chat", "Update scene", {})
+    task = TaskService.new_task_record("alice", "task-duplex:design-chat", "Update scene", {})
     task.update(status="running", checkpoint_open=True)
     with store.transaction() as db:
         store.put(db, task)
     request = SimpleNamespace(user_id="alice", session_id="design-chat", request_id=task["request_id"],
-                              channel_id="video_tool", params={"mode": "team.design", "managed_task_binding": endpoint.binding(task)})
+                              channel_id="video_tool", params={"mode": "team.design",
+                                  "managed_task_binding": endpoint.binding(task)})
     yield store, task, request
     endpoint.close()
-    design_execution._rounds.clear()
 
 
 async def test_design_round_reports_native_binding_and_settlement(design_host):
@@ -193,6 +199,7 @@ async def test_real_team_stream_entry_uses_design_binding(monkeypatch, design_ho
     store, task, request = design_host
     expected = AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id,
                                   payload={"event_type": "chat.delta", "content": "native-design-output"})
+
     async def native_stream(*_):
         assert store.read(task["id"])["execution_bound"]
         yield expected
@@ -225,7 +232,8 @@ async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, 
         _bind_permission_request_context=lambda _: nullcontext(),
         _process_message_stream_impl=lambda req, inputs: team_helpers.process_team_message_stream(req, inputs, None),
         _is_session_scoped_adapter=True,
-        task_execution_binding=(SimpleNamespace(_react_agent=object(), active_round=None), SimpleNamespace(managed_tasks={})),
+        task_execution_binding=(SimpleNamespace(_react_agent=object(), active_round=None), SimpleNamespace(
+            managed_tasks={})),
     )
     chunks = [chunk async for chunk in JiuWenSwarmDeepAdapter.process_message_stream_impl(adapter, request, {})]
     assert chunks == [expected]
@@ -240,18 +248,24 @@ async def test_real_team_cancel_entry_requires_exact_round_and_native_ack(monkey
     store, task, request = design_host
     manager = SimpleNamespace(is_round_active=lambda _: False, cancel_session_runtime=AsyncMock(return_value=True))
     monkeypatch.setattr(team_module, "get_team_manager", lambda *_: manager)
-    host = SimpleNamespace(_session_manager=SimpleNamespace(cancel_session_task=AsyncMock()),
-                           _build_interrupt_result_response=lambda req, **result: result)
+    class InterruptHost(SimpleNamespace, JiuWenSwarm):
+        pass
+
+    host = InterruptHost(
+        _session_manager=SimpleNamespace(cancel_session_task=AsyncMock(), get_session_id=lambda sid: sid),
+        _build_interrupt_result_response=lambda req, **result: result,
+    )
     async with design_execution.bind_design_voice_task(request):
         store.update(task["id"], lambda t: t.update(status="cancelling"))
-    control = SimpleNamespace(user_id="alice", session_id="design-chat", channel_id="video_tool", metadata={}, params={
+    control = SimpleNamespace(req_method=ReqMethod.CHAT_CANCEL, user_id="alice", session_id="design-chat",
+                              channel_id="video_tool", metadata={}, params={
         "mode": "team.design", "managed_task_request": "wrong",
     })
     with pytest.raises(ValueError, match="STALE"):
-        await JiuWenSwarm._process_team_interrupt(host, request=control, intent="cancel", session_id="design-chat")
+        await host.process_message(control)
     manager.cancel_session_runtime.assert_not_awaited()
     control.params["managed_task_request"] = task["request_id"]
-    result = await JiuWenSwarm._process_team_interrupt(host, request=control, intent="cancel", session_id="design-chat")
+    result = await host.process_message(control)
     assert result["success"] is True
     assert store.read(task["id"])["execution_cancelled"]
     assert store.read(task["id"])["execution_settled"]
@@ -265,7 +279,8 @@ async def test_design_information_answer_reuses_team_input_and_preserves_questio
     monkeypatch.setattr(team_module, "get_team_manager", lambda *_: manager)
     native_answer = object()
     async with design_execution.bind_design_voice_task(request):
-        control = SimpleNamespace(user_id="alice", session_id="design-chat", request_id="answer", channel_id="video_tool", params={
+        control = SimpleNamespace(user_id="alice", session_id="design-chat", request_id="answer",
+            channel_id="video_tool", params={
             "mode": "team.design", "managed_task_request": task["request_id"], "answers": [{"answer": "Scene two"}],
         })
         result = await design_execution.answer_design_task(control, lambda _: ({"query": native_answer}, None, None))
@@ -273,7 +288,9 @@ async def test_design_information_answer_reuses_team_input_and_preserves_questio
         manager.interact.assert_awaited_once_with("design-chat", native_answer)
 
 
-async def test_design_voice_context_is_bounded_background_and_does_not_replace_current_request(monkeypatch, design_host):
+async def test_design_voice_context_is_bounded_background_and_does_not_replace_current_request(
+    monkeypatch, design_host,
+):
     from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn, TEAM_USER_TURN_KEY
     from jiuwenswarm.server.runtime.session import session_history
 
@@ -299,7 +316,8 @@ async def test_design_voice_context_is_bounded_background_and_does_not_replace_c
 
 async def test_design_history_prepare_failure_is_settled_before_any_native_work(monkeypatch, design_host):
     store, task, request = design_host
-    monkeypatch.setattr(design_execution, "add_voice_context", AsyncMock(side_effect=RuntimeError("History still saving")))
+    restore = AsyncMock(side_effect=RuntimeError("History still saving"))
+    monkeypatch.setattr(design_execution, "add_voice_context", restore)
     with pytest.raises(RuntimeError, match="History"):
         async with design_execution.bind_design_voice_task(request, {}):
             pytest.fail("native work must not start")
@@ -315,4 +333,4 @@ async def test_typed_design_turn_also_receives_saved_voice_context(monkeypatch, 
     inputs = {"query": "Use the color I mentioned"}
     async with design_execution.bind_design_voice_task(request, inputs):
         restore.assert_awaited_once_with(request, inputs)
-    assert not design_execution._rounds
+    assert design_execution.control_target(request) is None

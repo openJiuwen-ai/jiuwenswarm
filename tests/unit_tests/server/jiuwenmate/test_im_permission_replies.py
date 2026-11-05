@@ -324,14 +324,14 @@ async def test_cancel_accepted_during_preflight_wins_over_saved_im_approval(host
     approval, _, resumed = await pause(host, monkeypatch)
     attached = asyncio.Event()
     proceed = asyncio.Event()
-    original_attach = execution_driver.ExecutionHandle._attach
+    original_attach = execution_driver.ExecutionHandle.attach
 
     async def attach(handle, context):
         await original_attach(handle, context)
         attached.set()
         await proceed.wait()
 
-    monkeypatch.setattr(execution_driver.ExecutionHandle, "_attach", attach)
+    monkeypatch.setattr(execution_driver.ExecutionHandle, "attach", attach)
     monkeypatch.setattr(host.manager._scheduler._driver, "_abort", AsyncMock())
     await host.inbound.handle(replace(_event(), message_id="decision-1", text="批准"))
     await asyncio.wait_for(attached.wait(), timeout=5)

@@ -32,7 +32,8 @@ _DINGTALK_EXECUTION_GUIDANCE = (
     "普通 OpenAPI 使用渠道配置的应用 App Token。全群日程优先使用当前员工已授权的独立钉钉账号，"
     "完整读取群名单并通过用户日历邀请全体成员；openDingTalkId 不会当作企业 staffId。不会启动登录或授权流程。\n"
     "在线文档使用当前员工授权账号：先 search_online_documents 获取真实 nodeId，多候选请用户选择；"
-    "修改前先 read_online_document，用户明确要求 append 时可直接追加；replace_text 的 old_text/new_text 各最多 4000 字符。在线文档只用 edit_online_document，"
+    "修改前先 read_online_document，用户明确要求 append 时可直接追加；replace_text 的 old_text/new_text 各最多 4000 字符。在线文档只用 "
+    "edit_online_document，"
     "edit_group_document 仅用于 DOCX。编辑失败或部分成功时不得盲目重写、新建替代或重复提交。\n"
     "聊天历史中的旧回复不是本次调用结果。用户明确要求重试时，本次必须调用 dingtalk_cli 一次；禁止通过 shell、Bash、Python、curl、npx 或 DWS 命令代替，也不得只复述历史。"
     "当 dingtalk_cli 返回 DINGTALK_CLI_API_FORBIDDEN 或 stop_retrying=true 时，停止本轮相关 API 操作。"
@@ -214,9 +215,11 @@ class DingTalkCliTool(Tool):
                     "`operation=edit_group_document` with its `dentry_id` and the complete replacement `content`; "
                     "partial append is not supported. The tool verifies the file belongs to the current group. "
                     "The shared default application's credentials are configured automatically from the DingTalk "
-                    "channel settings for raw OpenAPI calls. Online group document creation requires user authorization "
+                    "channel settings for raw OpenAPI calls. Online group document creation requires user "
+                    "authorization "
                     "in this employee's DingTalk channel settings and uses that authorized account as the owner. "
-                    "If authorization is missing, report the tool's error and stop retrying. To put an existing employee "
+                    "If authorization is missing, report the tool's error and stop retrying. To put an "
+                    "existing employee "
                     "output file in the current group's Files "
                     "list, use `operation=upload_group_file` with `file_path` like `output/report.pptx`; it uploads "
                     "the original bytes and returns a real `dentryId` only after DingTalk confirms the commit. "
@@ -225,10 +228,12 @@ class DingTalkCliTool(Tool):
                     "Reading a preview link is separate; if that fails, the result still "
                     "reports creation and marks `linkUnavailable`. Product commands such as `dws doc create` still "
                     "require user OAuth. "
-                    "To find existing online text documents, use operation=search_online_documents with query, optional "
+                    "To find existing online text documents, use operation=search_online_documents with "
+                    "query, optional "
                     "cursor and limit (1-30). Use the returned real nodeId; never invent one or select the first of "
                     "multiple matching candidates without asking the user. Use operation=read_online_document with "
-                    "node_id to read Markdown, then operation=edit_online_document with the same node_id and edit_mode. "
+                    "node_id to read Markdown, then operation=edit_online_document with the same node_id and "
+                    "edit_mode. "
                     "These operations use this employee's authorized account in Web or DingTalk conversations and do "
                     "not require a DingTalk message sender. Read the document before editing, except when the user "
                     "explicitly requests append. append and overwrite require content; overwrite replaces the entire "
@@ -240,7 +245,8 @@ class DingTalkCliTool(Tool):
                     "Never supply profiles, credentials, local paths or shell commands for these operations. "
                     "If DingTalk returns a missing scope, report it only when the scope is verified for that endpoint; "
                     "for the InnerGroup member query, report the endpoint and error code without guessing a permission "
-                    "name or requesting authorization. Then stop; never claim the operation succeeded. If any call fails, explain the returned error instead "
+                    "name or requesting authorization. Then stop; never claim the operation succeeded. If any "
+                    "call fails, explain the returned error instead "
                     "of probing DingTalk with Bash, curl, or another tool. If a tool result sets `stop_retrying` "
                     "to true, do not call this tool again during the request. To create a calendar event on the "
                     "trusted sender's primary calendar, use `operation=create_calendar_event` with a title, ISO-8601 "
@@ -255,7 +261,8 @@ class DingTalkCliTool(Tool):
                     "the official DWS group roster and calendar commands. It preserves openDingTalkId identities "
                     "for invitations, including cross-organization members, and creates one event on the authorized "
                     "account's primary calendar. Without employee authorization, only the configured app-token "
-                    "path is available; the host's shared user session is never used. The host never starts a login flow. "
+                    "path is available; the host's shared user session is never used. The host never starts a "
+                    "login flow. "
                     "The complete paginated roster is required before creating anything. If roster lookup fails, "
                     "report that the complete roster was unavailable and do not create the event. Known "
                     "attendees can instead be passed explicitly. Never "
@@ -316,10 +323,11 @@ class DingTalkCliTool(Tool):
         if group_context is None:
             return ""
         if group_context.sender_staff_id.startswith('dingtalk-open:'):
+            open_id = group_context.sender_staff_id.removeprefix('dingtalk-open:')
             return (
                 "\n\nTrusted context from employee-authorized DingTalk group history:\n"
                 f"- conversationId: {json.dumps(group_context.conversation_id, ensure_ascii=False)}\n"
-                f"- senderOpenDingTalkId: {json.dumps(group_context.sender_staff_id.removeprefix('dingtalk-open:'), ensure_ascii=False)}\n"
+                f"- senderOpenDingTalkId: {json.dumps(open_id, ensure_ascii=False)}\n"
                 "This is an open identity, not a verified organization staffId or unionId. Do not use it in "
                 "staffId-only APIs. User-authorized online document operations remain available. For an operation "
                 "requiring a verified sender staffId, ask the sender to @ this employee so its bot callback "
@@ -329,7 +337,8 @@ class DingTalkCliTool(Tool):
             "\n\nTrusted context from the accepted DingTalk group message (do not infer or substitute IDs):\n"
             f"- conversationId: {json.dumps(group_context.conversation_id, ensure_ascii=False)}\n"
             f"- senderStaffId: {json.dumps(group_context.sender_staff_id, ensure_ascii=False)}\n"
-            "The conversationId is the current group target. senderStaffId is the organization user ID from the callback; "
+            "The conversationId is the current group target. senderStaffId is the organization user ID from "
+            "the callback; "
             "it is not a verified unionId/operatorId."
         )
 
@@ -344,7 +353,10 @@ class DingTalkCliTool(Tool):
             try:
                 if operation == "search_online_documents":
                     return await self._service.search_online_documents(
-                        self._scope, query=payload.get("query"), cursor=payload.get("cursor"), limit=payload.get("limit", 10),
+                        self._scope,
+                        query=payload.get("query"),
+                        cursor=payload.get("cursor"),
+                        limit=payload.get("limit", 10),
                     )
                 if operation == "read_online_document":
                     return await self._service.read_online_document(self._scope, node_id=payload.get("node_id"))
@@ -361,7 +373,8 @@ class DingTalkCliTool(Tool):
             if self._sender_staff_id is None:
                 return {"error": "calendar_event_requires_a_trusted_dingtalk_message_sender"}
             event_id, title = payload.get("event_id"), payload.get("title")
-            if not isinstance(event_id, str) or not event_id.strip() or not isinstance(title, str) or not title.strip():
+            missing_event_id = not isinstance(event_id, str) or not event_id.strip()
+            if missing_event_id or not isinstance(title, str) or not title.strip():
                 return {"error": "missing_calendar_update_fields", "required_fields": ["event_id", "title"]}
             try:
                 return await self._service.update_calendar_event(self._scope, event_id=event_id, title=title)
@@ -382,14 +395,16 @@ class DingTalkCliTool(Tool):
             attendee_staff_ids = payload.get("attendee_staff_ids", [])
             create_video_meeting = payload.get("create_video_meeting", False)
             include_group_members = payload.get("include_group_members", False)
-            if (
-                not isinstance(description, str)
-                or (reminder_minutes is not None and (isinstance(reminder_minutes, bool) or not isinstance(reminder_minutes, int)))
-                or not isinstance(attendee_staff_ids, list)
-                or any(not isinstance(item, str) for item in attendee_staff_ids)
-                or not isinstance(create_video_meeting, bool)
-                or not isinstance(include_group_members, bool)
-            ):
+            valid_reminder = reminder_minutes is None or (
+                isinstance(reminder_minutes, int) and not isinstance(reminder_minutes, bool)
+            )
+            valid_attendees = isinstance(attendee_staff_ids, list) and all(
+                isinstance(v, str) for v in attendee_staff_ids
+            )
+            valid_options = all(isinstance(value, bool) for value in (create_video_meeting, include_group_members))
+            if not isinstance(description, str) or not valid_reminder:
+                return {"error": "invalid_calendar_event_request"}
+            if not valid_attendees or not valid_options:
                 return {"error": "invalid_calendar_event_request"}
             if include_group_members and self._group_context is None:
                 return {"error": "group_calendar_event_requires_a_trusted_dingtalk_group_message"}
@@ -501,18 +516,22 @@ class DingTalkCliTool(Tool):
             }
         if api_path is not None:
             method = argv[1].upper()
-            if (
-                method in {"POST", "PUT", "PATCH", "DELETE"}
-                and (
-                    (api_path.startswith("/v1.0/calendar/users/") and "/calendars/" in api_path and "/events" in api_path)
-                    or api_path in {
-                        "/topapi/calendar/v2/event/create", "/topapi/calendar/v2/event/update",
-                        "/topapi/calendar/v2/event/delete", "/topapi/calendar/v2/event/cancel",
-                    }
-                )
+            calendar_event_path = (
+                api_path.startswith("/v1.0/calendar/users/") and "/calendars/" in api_path and "/events" in api_path
+            )
+            if method in {"POST", "PUT", "PATCH", "DELETE"} and (
+                calendar_event_path
+                or api_path
+                in {
+                    "/topapi/calendar/v2/event/create",
+                    "/topapi/calendar/v2/event/update",
+                    "/topapi/calendar/v2/event/delete",
+                    "/topapi/calendar/v2/event/cancel",
+                }
             ):
                 error = (
-                    "Use operation=create_calendar_event to create or update_calendar_event to rename an existing event; raw calendar writes are disabled."
+                    "Use operation=create_calendar_event to create or update_calendar_event to rename an "
+                    "existing event; raw calendar writes are disabled."
                 )
                 code = "DINGTALK_CLI_USE_CALENDAR_EVENT_OPERATION"
                 self._invocation_state.stopped_error = (error, code)

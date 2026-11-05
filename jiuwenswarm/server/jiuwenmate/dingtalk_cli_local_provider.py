@@ -29,7 +29,7 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     dingtalk_apps,
 )
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope, valid_document_search
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 
 _CLI_VERSION = "1.0.65"
@@ -62,6 +62,24 @@ _PERMISSION_PURPOSES = {
     "Wiki.Node.Read": "知识库目录读取权限",
     "Calendar.Event.Write": "日历应用中日程写权限",
 }
+
+
+def _nonblank(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _calendar_options_valid(description: str, reminder: int | None, video: bool) -> bool:
+    if not isinstance(description, str) or len(description) > 4000 or not isinstance(video, bool):
+        return False
+    if reminder is None:
+        return True
+    return isinstance(reminder, int) and not isinstance(reminder, bool) and 0 <= reminder <= 10080
+
+
+def _valid_upload_credentials(key: Any, urls: Any, headers: Any) -> bool:
+    if not isinstance(key, str) or not key or not isinstance(headers, dict):
+        return False
+    return isinstance(urls, list) and bool(urls) and isinstance(urls[0], str)
 
 
 def _safe_api_path(value: str) -> str:
@@ -204,20 +222,15 @@ class LocalDingTalkCliRuntime:
         self._oauth_locks: dict[str, threading.RLock] = {}
 
     def _read_group_output_file(self, scope: DingTalkCliScope, file_path: str) -> tuple[str, bytes]:
-        if (
-            not isinstance(file_path, str)
-            or len(file_path) > 512
-            or "\\" in file_path
-            or "\x00" in file_path
-        ):
+        invalid_path_length = not isinstance(file_path, str) or len(file_path) > 512
+        if invalid_path_length or '\\' in file_path or '\x00' in file_path:
             raise PersistentAgentError(
                 "Only shared output files can be uploaded", code="DINGTALK_CLI_UPLOAD_FILE_INVALID"
             )
         parts = file_path.split("/")
+        invalid_output_path = len(parts) != 2 or parts[0] != 'output' or parts[1] in ('', '.', '..')
         if (
-            len(parts) != 2
-            or parts[0] != "output"
-            or parts[1] in ("", ".", "..")
+            invalid_output_path
             or len(parts[1]) > 255
             or any(ord(char) < 32 or char in '/\\:*?"<>|' for char in parts[1])
         ):
@@ -246,7 +259,8 @@ class LocalDingTalkCliRuntime:
                 raise ValueError("upload source is not a regular file")
             if before.st_size > _MAX_GROUP_FILE_SIZE:
                 raise ValueError("upload source exceeds the file size limit")
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            descriptor = os.open(path, flags, mode=0o600)
             try:
                 opened = os.fstat(descriptor)
                 if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
@@ -585,13 +599,17 @@ class LocalDingTalkCliRuntime:
                         value = member.get("userId") or member.get("userid") or member.get("user_id")
                 else:
                     kind, value = "staff", None
-                if not isinstance(value, str) or not value.strip() or "," in value or any(char.isspace() for char in value):
+                missing_identity = not isinstance(value, str) or not value.strip()
+                if missing_identity or ',' in value or any(char.isspace() for char in value):
                     raise PersistentAgentError("群成员缺少有效身份 ID，未创建日程", code="DINGTALK_CLI_GROUP_MEMBERS_UNAVAILABLE")
                 if (kind, value) not in seen:
                     seen.add((kind, value))
                     (open_ids if kind == "open" else staff_ids).append(value)
                 if len(seen) > 500:
-                    raise PersistentAgentError("当前群人数超过用户日历单次 500 人上限，未创建日程", code="DINGTALK_CLI_GROUP_MEMBERS_UNAVAILABLE")
+                    raise PersistentAgentError(
+                        "当前群人数超过用户日历单次 500 人上限，未创建日程",
+                        code="DINGTALK_CLI_GROUP_MEMBERS_UNAVAILABLE",
+                    )
             if not has_more:
                 if not seen:
                     raise PersistentAgentError("当前群成员列表为空，未创建日程", code="DINGTALK_CLI_GROUP_MEMBERS_UNAVAILABLE")
@@ -680,20 +698,14 @@ class LocalDingTalkCliRuntime:
             raise PersistentAgentError(
                 "No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
             )
-        if (
-            not isinstance(summary, str) or not summary.strip() or len(summary.strip()) > 512
-            or not isinstance(conversation_id, str) or not conversation_id.strip()
-            or not isinstance(sender_staff_id, str) or not sender_staff_id.strip()
-            or not isinstance(time_zone, str) or not time_zone.strip()
-            or not isinstance(start_datetime, str) or not isinstance(end_datetime, str)
-            or not isinstance(description, str) or len(description) > 4000
-            or isinstance(reminder_minutes, bool)
-            or (reminder_minutes is not None and (not isinstance(reminder_minutes, int) or not 0 <= reminder_minutes <= 10080))
-            or not isinstance(create_video_meeting, bool)
-            or (extra_attendee_staff_ids is not None and (
-                not isinstance(extra_attendee_staff_ids, list)
-                or any(not isinstance(item, str) or not item.strip() for item in extra_attendee_staff_ids)
-            ))
+        required_text = (summary, conversation_id, sender_staff_id, time_zone)
+        valid_text = all(_nonblank(value) for value in required_text) and len(summary.strip()) <= 512
+        valid_times = isinstance(start_datetime, str) and isinstance(end_datetime, str)
+        valid_options = _calendar_options_valid(description, reminder_minutes, create_video_meeting)
+        if not valid_text or not valid_times or not valid_options:
+            raise PersistentAgentError("Invalid DingTalk group calendar event request", code="BAD_REQUEST")
+        if extra_attendee_staff_ids is not None and (
+            not isinstance(extra_attendee_staff_ids, list) or not all(_nonblank(v) for v in extra_attendee_staff_ids)
         ):
             raise PersistentAgentError("Invalid DingTalk group calendar event request", code="BAD_REQUEST")
         start = self._calendar_datetime(start_datetime, time_zone, "start_datetime")
@@ -790,13 +802,11 @@ class LocalDingTalkCliRuntime:
     async def _upload_signed_url(url: str, headers: Mapping[str, str], data: bytes) -> None:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()
-        if (
-            parsed.scheme != "https"
-            or not host.endswith((".aliyuncs.com", ".alibabausercontent.com", ".dingtalk.com"))
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.fragment
-        ):
+        untrusted_host = parsed.scheme != "https" or not host.endswith(
+            (".aliyuncs.com", ".alibabausercontent.com", ".dingtalk.com")
+        )
+        has_credentials = parsed.username is not None or parsed.password is not None
+        if untrusted_host or has_credentials or parsed.fragment:
             raise RuntimeError("DingTalk returned an unsupported upload URL")
         if any(not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()):
             raise RuntimeError("DingTalk returned invalid upload headers")
@@ -870,12 +880,12 @@ class LocalDingTalkCliRuntime:
             return None
         auth = await self.dingtalk_auth_status(scope)
         if auth.get("status") == "error":
-            raise PersistentAgentError("DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE")
+            raise PersistentAgentError(
+                "DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE"
+            )
         profile = auth.get("_profile")
-        if (
-            auth.get("status") != "connected" or not isinstance(profile, str) or not profile.strip()
-            or len(profile) > 512 or any(ord(char) < 32 for char in profile)
-        ):
+        missing_profile = auth.get('status') != 'connected' or not isinstance(profile, str) or not profile.strip()
+        if missing_profile or len(profile) > 512 or any(ord(char) < 32 for char in profile):
             return None
         return hashlib.sha256(profile.encode("utf-8")).hexdigest()
 
@@ -883,25 +893,31 @@ class LocalDingTalkCliRuntime:
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
     ) -> dict[str, Any]:
         """Read bounded history for a host-verified group, without exposing a model tool."""
-        if (
+        invalid_conversation_id = (
             not isinstance(conversation_id, str) or not conversation_id.strip() or len(conversation_id) > 512
-            or any(char.isspace() or char == '\x00' for char in conversation_id)
-        ):
+        )
+        if invalid_conversation_id or any(char.isspace() or char == '\x00' for char in conversation_id):
             raise PersistentAgentError("Invalid group history target", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
         try:
             boundary = datetime.fromisoformat(since.replace('Z', '+00:00'))
             if boundary.utcoffset() is None or boundary.year < 2000:
                 raise ValueError("A time zone is required")
         except (AttributeError, TypeError, ValueError, OverflowError) as exc:
-            raise PersistentAgentError("Invalid group history boundary", code="DINGTALK_CLI_GROUP_HISTORY_INVALID") from exc
+            raise PersistentAgentError(
+                "Invalid group history boundary", code="DINGTALK_CLI_GROUP_HISTORY_INVALID"
+            ) from exc
         if not self.is_available(scope):
             raise PersistentAgentError("DingTalk app is unavailable", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
         auth = await self.dingtalk_auth_status(scope)
         if auth.get('status') == 'error':
-            raise PersistentAgentError("DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE")
+            raise PersistentAgentError(
+                "DingTalk authorization check failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE"
+            )
         profile = auth.get('_profile')
         if auth.get('status') != 'connected' or not isinstance(profile, str) or not profile:
-            raise PersistentAgentError("Employee DingTalk authorization is required", code="DINGTALK_CLI_USER_AUTH_REQUIRED")
+            raise PersistentAgentError(
+                "Employee DingTalk authorization is required", code="DINGTALK_CLI_USER_AUTH_REQUIRED"
+            )
         config = self._config()
         channels = config.get('channels') if isinstance(config, Mapping) else None
         raw = channels.get('dingtalk') if isinstance(channels, Mapping) else None
@@ -910,7 +926,9 @@ class LocalDingTalkCliRuntime:
             if app['enabled'] and app['persistent_agent_id'] == scope.agent_id
         ]
         if len(scoped_apps) != 1:
-            raise PersistentAgentError("Employee DingTalk bot binding is unavailable", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT")
+            raise PersistentAgentError(
+                "Employee DingTalk bot binding is unavailable", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT"
+            )
         robot_code = scoped_apps[0]['robot_code'] or scoped_apps[0]['client_id']
         bot_response = await self._execute_oauth_command(
             scope, ['chat', 'group', 'bots', '--group', conversation_id], profile,
@@ -923,21 +941,27 @@ class LocalDingTalkCliRuntime:
         sender_candidates: dict[str, list[str]] = {}
         for bot in bots:
             code = bot.get('robotCode') if isinstance(bot, dict) else None
-            if (
-                not isinstance(code, str) or not code or len(code) > 512
-                or any(char.isspace() or ord(char) < 32 for char in code)
-            ):
-                raise PersistentAgentError("Invalid DingTalk group bot identity", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+            invalid_code = not isinstance(code, str) or not code or len(code) > 512
+            if invalid_code or any(char.isspace() or ord(char) < 32 for char in code):
+                raise PersistentAgentError(
+                    "Invalid DingTalk group bot identity", code="DINGTALK_CLI_GROUP_HISTORY_INVALID"
+                )
             bot_codes.append(code)
             sender = bot.get('botOpenDingTalkId')
-            if (isinstance(sender, str) and sender and len(sender) <= 512
-                    and not any(char.isspace() or ord(char) < 32 for char in sender)):
+            has_sender_id = isinstance(sender, str) and sender and (len(sender) <= 512)
+            if has_sender_id and (not any(char.isspace() or ord(char) < 32 for char in sender)):
                 sender_candidates.setdefault(code, []).append(sender)
-        bot_senders = {code: senders[0] for code, senders in sender_candidates.items()
-                       if len(senders) == 1 and bot_codes.count(code) == 1
-                       and sum(senders[0] in other for other in sender_candidates.values()) == 1}
+        bot_senders = {}
+        for code, senders in sender_candidates.items():
+            if len(senders) != 1 or bot_codes.count(code) != 1:
+                continue
+            sender = senders[0]
+            if sum(sender in other for other in sender_candidates.values()) == 1:
+                bot_senders[code] = sender
         if not robot_code or robot_code not in bot_codes:
-            raise PersistentAgentError("Employee DingTalk bot is not in this group", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT")
+            raise PersistentAgentError(
+                "Employee DingTalk bot is not in this group", code="DINGTALK_CLI_GROUP_BOT_NOT_PRESENT"
+            )
         local_boundary = boundary.astimezone(ZoneInfo('Asia/Shanghai')).isoformat(
             sep=' ', timespec='milliseconds',
         )[:-6]
@@ -948,10 +972,8 @@ class LocalDingTalkCliRuntime:
         ], profile)
         messages = payload.get('messages')
         complete, has_more = payload.get('complete'), payload.get('hasMore')
-        if (
-            not isinstance(messages, list) or len(messages) > 150
-            or not isinstance(complete, bool) or not isinstance(has_more, bool)
-        ):
+        invalid_messages = not isinstance(messages, list) or len(messages) > 150
+        if invalid_messages or not isinstance(complete, bool) or not isinstance(has_more, bool):
             raise PersistentAgentError("Invalid group history response", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
         safe_messages = []
         fields = (
@@ -963,16 +985,20 @@ class LocalDingTalkCliRuntime:
                 raise PersistentAgentError("Invalid group history message", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
             message_id = message.get('messageId') or message.get('openMessageId')
             group_id = message.get('openConversationId') or message.get('conversationId')
-            if (
+            missing_message_identity = (
                 group_id != conversation_id or not isinstance(message_id, str) or not message_id
+            )
+            if (
+                missing_message_identity
                 or len(message_id) > 512
-                or message.get('openMessageId', message_id) != message_id
+                or message.get("openMessageId", message_id) != message_id
             ):
                 raise PersistentAgentError("Group history identity mismatch", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
             safe_messages.append({key: message[key] for key in fields if key in message})
         result = payload.get('result')
         cursor = result.get('nextCursor') if isinstance(result, dict) else None
-        if cursor is not None and (isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0):
+        valid_cursor = isinstance(cursor, int) and not isinstance(cursor, bool) and cursor >= 0
+        if cursor is not None and not valid_cursor:
             raise PersistentAgentError("Invalid group history cursor", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
         return {
             'readerKey': hashlib.sha256(profile.encode('utf-8')).hexdigest(),
@@ -990,12 +1016,15 @@ class LocalDingTalkCliRuntime:
                 raise PersistentAgentError(
                     'Invalid online document URL', code='DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID',
                 ) from exc
+            untrusted_authority = parsed.hostname != 'alidocs.dingtalk.com' or parsed.username or parsed.password
             if (
-                parsed.hostname != 'alidocs.dingtalk.com' or parsed.username or parsed.password
-                or parsed.netloc not in {'alidocs.dingtalk.com', 'alidocs.dingtalk.com:443'}
-                or not parsed.path.startswith('/i/nodes/')
+                untrusted_authority
+                or parsed.netloc not in {"alidocs.dingtalk.com", "alidocs.dingtalk.com:443"}
+                or not parsed.path.startswith("/i/nodes/")
             ):
-                raise PersistentAgentError('Invalid online document URL', code='DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID')
+                raise PersistentAgentError(
+                    "Invalid online document URL", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID"
+                )
             value = parsed.path.removeprefix('/i/nodes/').rstrip('/')
         if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', value):
             raise PersistentAgentError('Invalid online document ID', code='DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID')
@@ -1006,7 +1035,9 @@ class LocalDingTalkCliRuntime:
             raise PersistentAgentError('DingTalk app is unavailable', code='DINGTALK_CLI_ONLINE_DOC_UNAVAILABLE')
         auth = await self.dingtalk_auth_status(scope)
         if auth.get('status') == 'error':
-            raise PersistentAgentError('Unable to check employee authorization', code='DINGTALK_CLI_ONLINE_DOC_UNAVAILABLE')
+            raise PersistentAgentError(
+                "Unable to check employee authorization", code="DINGTALK_CLI_ONLINE_DOC_UNAVAILABLE"
+            )
         if auth.get('status') != 'connected' or not isinstance(auth.get('_profile'), str) or not auth['_profile']:
             raise PersistentAgentError(
                 '请先在该 AI 员工的钉钉渠道设置中完成用户授权', code='DINGTALK_CLI_USER_AUTH_REQUIRED',
@@ -1032,23 +1063,15 @@ class LocalDingTalkCliRuntime:
         if len(stdout.encode('utf-8', errors='replace')) > _MAX_OUTPUT_BYTES:
             raise PersistentAgentError('钉钉在线文档结果超出大小限制', code=error_code)
         payload = self._json_response(stdout)
-        if (
-            result.returncode != 0 or not isinstance(payload, dict)
-            or payload.get('status') != 'success' or payload.get('success') is False
-        ):
+        command_failed = result.returncode != 0 or not isinstance(payload, dict)
+        if command_failed or payload.get('status') != 'success' or payload.get('success') is False:
             raise PersistentAgentError('钉钉在线文档操作未确认成功，请勿重复写入', code=error_code)
         return payload
 
     async def search_online_documents(
         self, scope: DingTalkCliScope, *, query: str, cursor: str | None = None, limit: int = 10,
     ) -> dict[str, Any]:
-        if (
-            not isinstance(query, str) or not query.strip() or len(query) > 512 or '\x00' in query
-            or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 30
-            or (cursor is not None and (
-                not isinstance(cursor, str) or not cursor or len(cursor) > 2048 or '\x00' in cursor
-            ))
-        ):
+        if not valid_document_search(query, cursor, limit):
             raise PersistentAgentError('Invalid document search', code='DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID')
         profile = await self._online_document_profile(scope)
         command = ['doc', '+search', '--query', query, '--extensions', 'adoc', '--limit', str(limit)]
@@ -1060,21 +1083,24 @@ class LocalDingTalkCliRuntime:
         documents = payload.get('documents')
         has_more, complete = payload.get('hasMore'), payload.get('complete')
         next_cursor, failures = payload.get('nextCursor'), payload.get('failures', [])
-        if (
-            not isinstance(documents, list) or len(documents) > limit
-            or not isinstance(has_more, bool) or not isinstance(complete, bool)
-            or not isinstance(failures, list)
-            or (has_more and (not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor))
-        ):
+        valid_lists = isinstance(documents, list) and len(documents) <= limit and isinstance(failures, list)
+        valid_flags = isinstance(has_more, bool) and isinstance(complete, bool)
+        valid_next = isinstance(next_cursor, str) and bool(next_cursor) and next_cursor != cursor
+        valid_pagination = valid_flags and (not has_more or valid_next)
+        if not valid_lists or not valid_pagination:
             raise PersistentAgentError('Invalid document search result', code='DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID')
         candidates = []
         for item in documents:
             if not isinstance(item, dict) or item.get('docType') != 'adoc' or not isinstance(item.get('name'), str):
-                raise PersistentAgentError('Invalid online document candidate', code='DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID')
+                raise PersistentAgentError(
+                    "Invalid online document candidate", code="DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID"
+                )
             try:
                 node_id = self._online_node_id(item.get('nodeId'))
             except PersistentAgentError as exc:
-                raise PersistentAgentError('Invalid document identity', code='DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID') from exc
+                raise PersistentAgentError(
+                    "Invalid document identity", code="DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID"
+                ) from exc
             candidates.append({
                 'nodeId': node_id, 'name': item['name'], 'docType': 'adoc',
                 'url': f'https://alidocs.dingtalk.com/i/nodes/{node_id}',
@@ -1093,12 +1119,14 @@ class LocalDingTalkCliRuntime:
             error_code='DINGTALK_CLI_ONLINE_DOC_READ_FAILED',
         )
         content, target = payload.get('content'), payload.get('target')
-        if (
-            payload.get('complete') is not True or not isinstance(content, dict) or not isinstance(target, dict)
-            or target.get('canonicalId') != node_id or target.get('product') != 'doc'
-            or content.get('nodeId') != node_id or content.get('success') is not True
-            or not isinstance(content.get('markdown'), str) or not isinstance(content.get('title'), str)
-        ):
+        valid_target = (
+            isinstance(target, dict) and target.get("canonicalId") == node_id and target.get("product") == "doc"
+        )
+        valid_content = (
+            isinstance(content, dict) and content.get("nodeId") == node_id and content.get("success") is True
+        )
+        has_text = valid_content and all(isinstance(content.get(key), str) for key in ('markdown', 'title'))
+        if payload.get('complete') is not True or not valid_target or not has_text:
             raise PersistentAgentError('Invalid document read result', code='DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID')
         return {
             'nodeId': node_id, 'title': content['title'], 'content': content['markdown'],
@@ -1115,18 +1143,15 @@ class LocalDingTalkCliRuntime:
         command = ['doc', '+update', '--node', node_id]
         input_text = None
         if edit_mode in {'append', 'overwrite'}:
-            if (
-                not isinstance(content, str) or not content.strip() or len(content) > 100_000
-                or old_text is not None or new_text is not None
-            ):
+            invalid_content = not isinstance(content, str) or not content.strip() or len(content) > 100000
+            if invalid_content or old_text is not None or new_text is not None:
                 raise PersistentAgentError('Invalid document content', code='DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID')
             command.extend(['--command', edit_mode, '--content', '-'])
             input_text = content
         elif edit_mode == 'replace_text':
-            if (
-                content is not None or not isinstance(old_text, str) or not old_text or len(old_text) > 4_000
-                or not isinstance(new_text, str) or len(new_text) > 4_000
-            ):
+            valid_original = isinstance(old_text, str) and 1 <= len(old_text) <= 4_000
+            valid_replacement = isinstance(new_text, str) and len(new_text) <= 4_000
+            if content is not None or not valid_original or not valid_replacement:
                 raise PersistentAgentError('Invalid text replacement', code='DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID')
             command.extend(['--command', 'str_replace', '--old', old_text, '--new', new_text])
         else:
@@ -1138,12 +1163,10 @@ class LocalDingTalkCliRuntime:
         )
         data = payload.get('data')
         verification = data.get('verification') if isinstance(data, dict) else None
-        if (
-            payload.get('ok') is not True or payload.get('complete') is not True
-            or not isinstance(data, dict) or data.get('nodeId') != node_id
-            or data.get('verified') is not True or not isinstance(verification, dict)
-            or verification.get('verified') is not True
-        ):
+        operation_incomplete = payload.get('ok') is not True or payload.get('complete') is not True
+        verified_node = isinstance(data, dict) and data.get("nodeId") == node_id and data.get("verified") is True
+        confirmed = isinstance(verification, dict) and verification.get("verified") is True
+        if operation_incomplete or not verified_node or not confirmed:
             raise PersistentAgentError(
                 '文档可能已修改，但回读未完整确认；请先读取现状，不要重复写入',
                 code='DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID',
@@ -1161,13 +1184,17 @@ class LocalDingTalkCliRuntime:
     ) -> dict[str, Any]:
         """Create a real online document and verify its entry in the current group."""
         if not self.is_available(scope):
-            raise PersistentAgentError("No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
+            raise PersistentAgentError(
+                "No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+            )
         clean_title = title.strip()
-        if (
-            not clean_title or len(clean_title) > 120
-            or any(char in clean_title for char in "\\/:*?\"<>|\r\n\t")
-            or clean_title.endswith(".") or not isinstance(content, str) or len(content) > 100_000
-        ):
+        invalid_title = (
+            not clean_title
+            or len(clean_title) > 120
+            or any(char in clean_title for char in '\\/:*?"<>|\r\n\t')
+            or clean_title.endswith(".")
+        )
+        if invalid_title or not isinstance(content, str) or len(content) > 100000:
             raise PersistentAgentError("Invalid DingTalk group document title or content", code="BAD_REQUEST")
         auth = await self.dingtalk_auth_status(scope)
         account_id = auth.get("_user_id")
@@ -1215,20 +1242,19 @@ class LocalDingTalkCliRuntime:
                 info_command.extend(["--profile", profile])
             info = await self._execute_oauth_command(scope, info_command)
             detail = info.get("result") if isinstance(info.get("result"), dict) else {}
-            if (
-                detail.get("nodeId") != node_id or detail.get("name") != clean_title
+            different_document = (
+                detail.get("nodeId") != node_id
+                or detail.get("name") != clean_title
                 or detail.get("workspaceId") != space_id
-                or str(detail.get("type") or detail.get("contentType")).upper() != "ALIDOC"
-            ):
+            )
+            if different_document or str(detail.get('type') or detail.get('contentType')).upper() != 'ALIDOC':
                 raise PersistentAgentError("钉钉未确认在线文档的标题、类型或目标群空间", code="DINGTALK_CLI_CREATE_RESULT_INVALID")
             source = await self._execute_internal_api(scope, [
                 "api", "GET", f"/v2.0/doc/dentries/{quote(node_id, safe='')}/queryDentryId",
                 "--params", json.dumps({"operatorId": union_id}),
             ])
-            if (
-                source.get("dentryUuid") != node_id or source.get("spaceId") != space_id
-                or not isinstance(source.get("dentryId"), str) or not source["dentryId"]
-            ):
+            different_source = source.get('dentryUuid') != node_id or source.get('spaceId') != space_id
+            if different_source or not isinstance(source.get('dentryId'), str) or not source['dentryId']:
                 raise PersistentAgentError("钉钉未确认在线文档存储于当前群", code="DINGTALK_CLI_CREATE_RESULT_INVALID")
             file_id = source["dentryId"]
             visible = False
@@ -1274,11 +1300,9 @@ class LocalDingTalkCliRuntime:
         self, scope: DingTalkCliScope, *, event_id: str, title: str,
     ) -> dict[str, Any]:
         """Rename one existing user-calendar event and verify the preserved details."""
-        if (
-            not isinstance(event_id, str) or not event_id or len(event_id) > 512
-            or event_id.startswith("-") or any(char.isspace() or ord(char) < 32 for char in event_id)
-            or not isinstance(title, str) or not title.strip() or len(title.strip()) > 120
-        ):
+        valid_id = isinstance(event_id, str) and 1 <= len(event_id) <= 512 and not event_id.startswith("-")
+        valid_title = _nonblank(title) and len(title.strip()) <= 120
+        if not valid_id or not valid_title or any(char.isspace() or ord(char) < 32 for char in event_id):
             raise PersistentAgentError("日程 ID 或新标题无效", code="BAD_REQUEST")
         auth = await self.dingtalk_auth_status(scope)
         if auth.get("status") != "connected":
@@ -1360,17 +1384,15 @@ class LocalDingTalkCliRuntime:
                 "日程时间无效：请提供带时区偏移的开始和结束时间，并使用有效的 IANA 时区。",
                 code="DINGTALK_CLI_CALENDAR_REQUEST_INVALID",
             ) from exc
-        if (
-            not isinstance(sender_staff_id, str) or not sender_staff_id.strip()
-            or not isinstance(title, str) or not title.strip() or len(title.strip()) > 200
-            or not isinstance(description, str) or len(description) > 4000
-            or isinstance(reminder_minutes, bool)
-            or (reminder_minutes is not None and (not isinstance(reminder_minutes, int) or not 0 <= reminder_minutes <= 10080))
-            or not isinstance(create_video_meeting, bool)
-            or not isinstance(include_group_members, bool)
-            or not isinstance(attendee_staff_ids, list) or len(attendee_staff_ids) > 100
-            or any(not isinstance(item, str) or not item.strip() for item in attendee_staff_ids)
-        ):
+        valid_title = _nonblank(title) and len(title.strip()) <= 200
+        valid_options = _calendar_options_valid(description, reminder_minutes, create_video_meeting)
+        if not _nonblank(sender_staff_id) or not valid_title or not valid_options:
+            raise PersistentAgentError("日程信息无效", code="DINGTALK_CLI_CALENDAR_REQUEST_INVALID")
+        valid_attendees = (
+            isinstance(attendee_staff_ids, list) and len(attendee_staff_ids) <= 100
+            and all(_nonblank(value) for value in attendee_staff_ids)
+        )
+        if not isinstance(include_group_members, bool) or not valid_attendees:
             raise PersistentAgentError("日程信息无效", code="DINGTALK_CLI_CALENDAR_REQUEST_INVALID")
 
         if include_group_members:
@@ -1569,11 +1591,8 @@ class LocalDingTalkCliRuntime:
         signature = upload_info.get("headerSignatureInfo")
         urls = signature.get("resourceUrls") if isinstance(signature, dict) else None
         headers = signature.get("headers") if isinstance(signature, dict) else None
-        if (
-            not isinstance(upload_key, str) or not upload_key
-            or not isinstance(urls, list) or not urls or not isinstance(urls[0], str)
-            or not isinstance(headers, dict)
-            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items())
+        if not _valid_upload_credentials(upload_key, urls, headers) or any(
+            not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()
         ):
             raise PersistentAgentError(
                 "钉钉未返回可用的群文件上传凭证", code="DINGTALK_CLI_UPLOAD_INFO_INVALID"
@@ -1594,10 +1613,8 @@ class LocalDingTalkCliRuntime:
         dentry = committed.get("dentry") if isinstance(committed.get("dentry"), dict) else {}
         dentry_id = dentry.get("id")
         dentry_uuid = dentry.get("uuid")
-        if (
-            isinstance(dentry_id, bool) or dentry_id is None or not str(dentry_id).strip()
-            or not isinstance(dentry_uuid, str) or not dentry_uuid
-        ):
+        invalid_entry_id = isinstance(dentry_id, bool) or dentry_id is None or not str(dentry_id).strip()
+        if invalid_entry_id or not isinstance(dentry_uuid, str) or not dentry_uuid:
             raise PersistentAgentError(
                 "钉钉未确认群文件上传结果；请勿自动重试", code="DINGTALK_CLI_UPLOAD_RESULT_INVALID"
             )
@@ -1621,11 +1638,11 @@ class LocalDingTalkCliRuntime:
     ) -> dict[str, Any]:
         """Replace the contents of a DOCX file after verifying it belongs to this group."""
         if not self.is_available(scope):
-            raise PersistentAgentError("No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
-        if (
-            not isinstance(dentry_id, str) or not dentry_id.strip() or len(dentry_id) > 256
-            or not isinstance(content, str) or len(content) > 100_000
-        ):
+            raise PersistentAgentError(
+                "No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+            )
+        invalid_entry_id = not isinstance(dentry_id, str) or not dentry_id.strip() or len(dentry_id) > 256
+        if invalid_entry_id or not isinstance(content, str) or len(content) > 100000:
             raise PersistentAgentError("Invalid DingTalk group document edit request", code="BAD_REQUEST")
 
         user = await self._execute_internal_api(scope, [
@@ -1670,13 +1687,11 @@ class LocalDingTalkCliRuntime:
         file_name = dentry.get("name")
         extension = dentry.get("extension")
         storage_driver = dentry.get("storageDriver")
-        if (
-            not isinstance(dentry_uuid, str) or not dentry_uuid
-            or parent_id is None or not isinstance(file_name, str) or not file_name
-            or str(extension or "").lower() != "docx"
-            or str(storage_driver or "").upper() != "DINGTALK"
-            or dentry.get("version") is None
-        ):
+        missing_entry_identity = not isinstance(dentry_uuid, str) or not dentry_uuid or parent_id is None
+        has_name = isinstance(file_name, str) and bool(file_name)
+        supported_document = str(extension or "").lower() == "docx" and str(storage_driver or "").upper() == "DINGTALK"
+        valid_metadata = has_name and dentry.get("version") is not None
+        if missing_entry_identity or not valid_metadata or not supported_document:
             raise PersistentAgentError(
                 "当前群文件不是可安全覆写的 DOCX 文件，未执行写入",
                 code="DINGTALK_CLI_DOCUMENT_TYPE_UNSUPPORTED",
@@ -1705,10 +1720,7 @@ class LocalDingTalkCliRuntime:
         signature = upload_info.get("headerSignatureInfo")
         urls = signature.get("resourceUrls") if isinstance(signature, dict) else None
         headers = signature.get("headers") if isinstance(signature, dict) else None
-        if (
-            not isinstance(upload_key, str) or not upload_key or not isinstance(urls, list) or not urls
-            or not isinstance(urls[0], str) or not isinstance(headers, dict)
-        ):
+        if not _valid_upload_credentials(upload_key, urls, headers):
             raise PersistentAgentError("钉钉未返回可用的文档上传凭证", code="DINGTALK_CLI_UPLOAD_INFO_INVALID")
         try:
             await self._signed_upload(urls[0], headers, document)
@@ -1723,11 +1735,11 @@ class LocalDingTalkCliRuntime:
             "--params", json.dumps({"unionId": union_id}), "--data", "{}",
         ])
         latest = latest_result.get("dentry") if isinstance(latest_result.get("dentry"), dict) else {}
-        if (
-            latest.get("id") != dentry_id or latest.get("spaceId") != space_id
-            or latest.get("uuid") != dentry_uuid or latest.get("parentId") != parent_id
-            or latest.get("name") != file_name or latest.get("version") != dentry.get("version")
-        ):
+        different_entry = (
+            latest.get("id") != dentry_id or latest.get("spaceId") != space_id or latest.get("uuid") != dentry_uuid
+        )
+        same_location = latest.get("parentId") == parent_id and latest.get("name") == file_name
+        if different_entry or not same_location or latest.get("version") != dentry.get("version"):
             raise PersistentAgentError(
                 "目标文档在上传期间已变化，未提交覆盖；请重新确认文档版本",
                 code="DINGTALK_CLI_DOCUMENT_CHANGED",
@@ -1762,7 +1774,9 @@ class LocalDingTalkCliRuntime:
         """Keep signed upload URLs intact inside a composite request; never return them to the model."""
         checked = self._validate_argv(argv)
         if self._binding(scope) is None:
-            raise PersistentAgentError("No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
+            raise PersistentAgentError(
+                "No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+            )
         return await asyncio.to_thread(self._execute, scope, checked, redact_sensitive=False)
 
     @staticmethod
@@ -1828,7 +1842,9 @@ class LocalDingTalkCliRuntime:
     def _oauth_root(self, scope: DingTalkCliScope) -> Path:
         binding = self._binding(scope)
         if binding is None:
-            raise PersistentAgentError("No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
+            raise PersistentAgentError(
+                "No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+            )
         revision = hashlib.sha256(f"{binding[0]}\0{binding[1]}".encode()).hexdigest()[:16]
         root = self._scope_root(scope) / "user-oauth" / revision
         private_dir(root)
@@ -1837,7 +1853,9 @@ class LocalDingTalkCliRuntime:
     def _oauth_environment(self, scope: DingTalkCliScope) -> dict[str, str]:
         binding = self._binding(scope)
         if binding is None:
-            raise PersistentAgentError("No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
+            raise PersistentAgentError(
+                "No enabled DingTalk application is available", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+            )
         # The organization must register/allow this application as a CLI Agent.
         # User OAuth and App Token share the app identity, never their token stores.
         return self._environment_for_root(self._oauth_root(scope), binding)
@@ -1918,7 +1936,9 @@ class LocalDingTalkCliRuntime:
                 return {"status": "error", "cli_version": _CLI_VERSION}
             if profile_result.returncode != 0:
                 return {"status": "error", "cli_version": _CLI_VERSION}
-            profile_payload = self._json_response(profile_result.stdout if isinstance(profile_result.stdout, str) else "")
+            profile_payload = self._json_response(
+                profile_result.stdout if isinstance(profile_result.stdout, str) else ""
+            )
             profile_data = profile_payload.get("data") if isinstance(profile_payload, dict) else None
             profiles = profile_payload.get("profiles") if isinstance(profile_payload, dict) else None
             if not isinstance(profiles, list):
@@ -1947,10 +1967,9 @@ class LocalDingTalkCliRuntime:
                     status["account"] = account
                 if isinstance(organization, str) and len(organization) <= 200:
                     status["organization"] = organization
-            if status.get('_profile') and (
-                not status.get('account') or status.get('account') == status.get('_user_id')
-                or not status.get('organization') or status.get('organization') == selected.get('corpId')
-            ):
+            missing_account = not status.get('account') or status.get('account') == status.get('_user_id')
+            missing_org = not status.get('organization') or status.get('organization') == selected.get('corpId')
+            if status.get('_profile') and (missing_account or missing_org):
                 try:
                     identity_result = self._run_cli(
                         ['--profile', status['_profile'], 'contact', '+me', '--format', 'json',
@@ -1959,11 +1978,17 @@ class LocalDingTalkCliRuntime:
                     )
                     identity_payload = self._json_response(identity_result.stdout)
                     identity = identity_payload.get('data') if isinstance(identity_payload, dict) else None
-                    if (identity_result.returncode == 0 and isinstance(identity_payload, dict)
-                            and identity_payload.get('ok') is True
-                            and identity_payload.get('outcome') == 'success' and isinstance(identity, dict)
-                            and isinstance(identity.get('userId'), str) and identity['userId'].strip()
-                            and (not selected.get('userId') or selected['userId'] == identity['userId'])):
+                    identity_lookup_succeeded = (
+                        identity_result.returncode == 0
+                        and isinstance(identity_payload, dict)
+                        and (identity_payload.get("ok") is True)
+                        and (identity_payload.get("outcome") == "success")
+                    )
+                    user_id = identity.get("userId") if isinstance(identity, dict) else None
+                    valid_identity = _nonblank(user_id) and (
+                        not selected.get("userId") or selected["userId"] == user_id
+                    )
+                    if identity_lookup_succeeded and valid_identity:
                         # These names are display metadata, not group-reading authorization.
                         for source, target in [('name', 'account'), ('org', 'organization')]:
                             value = identity.get(source)
@@ -1975,7 +2000,9 @@ class LocalDingTalkCliRuntime:
                 operation_id = self._oauth_current(scope).read_text(encoding="utf-8").strip()
             except OSError:
                 operation_id = ""
-            if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(f"{self._scope_digest(scope)}."):
+            if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(
+                f"{self._scope_digest(scope)}."
+            ):
                 self._clear_dingtalk_auth(scope, operation_id)
             return status
         current_path = self._oauth_current(scope)
@@ -2125,7 +2152,9 @@ class LocalDingTalkCliRuntime:
             operation_id = self._oauth_current(scope).read_text(encoding="utf-8").strip()
         except OSError:
             operation_id = ""
-        if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(f"{self._scope_digest(scope)}."):
+        if _DINGTALK_AUTH_OPERATION.fullmatch(operation_id) and operation_id.startswith(
+            f"{self._scope_digest(scope)}."
+        ):
             self._cancel_dingtalk_auth(scope, operation_id)
         shutil.rmtree(root, ignore_errors=True)
         return {"status": "not_connected", "cli_version": _CLI_VERSION}
@@ -2161,12 +2190,8 @@ class LocalDingTalkCliRuntime:
             if len(employee_apps) != 1:
                 return None
             app = employee_apps[0]
-        if (
-            not app["enabled"]
-            or not app["client_id"]
-            or not app["client_secret"]
-            or not allow_from_valid(app)
-        ):
+        missing_credentials = not app['enabled'] or not app['client_id'] or not app['client_secret']
+        if missing_credentials or not allow_from_valid(app):
             return None
         if sum(item["client_id"] == app["client_id"] for item in apps) != 1:
             return None
@@ -2355,7 +2380,10 @@ class LocalDingTalkCliRuntime:
             ):
                 method = argv[1].upper() if len(argv) > 1 else "API"
                 endpoint = _safe_api_path(argv[2]) if len(argv) > 2 else "unknown endpoint"
-                message = f"DingTalk rejected {method} {endpoint} with HTTP 403; the configured app is not authorized for this API"
+                message = (
+                    f"DingTalk rejected {method} {endpoint} with HTTP 403; "
+                    "the configured app is not authorized for this API"
+                )
                 if "Forbidden.AccessDenied.AccessTokenPermissionDenied" in error_text:
                     scope_match = re.search(
                         r"(?:permission|权限)[^\[]{0,80}\[([A-Za-z][A-Za-z0-9_.-]{0,127})\]",
@@ -2414,14 +2442,13 @@ class LocalDingTalkCliRuntime:
             port = parsed.port
         except ValueError:
             return False
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname not in {"api.dingtalk.com", "oapi.dingtalk.com"}
-            or parsed.username is not None
-            or parsed.password is not None
-            or port not in {None, 443}
-            or parsed.fragment
-        ):
+        untrusted_endpoint = parsed.scheme != "https" or parsed.hostname not in {
+            "api.dingtalk.com",
+            "oapi.dingtalk.com",
+        }
+        has_credentials = parsed.username is not None or parsed.password is not None
+        valid_authority = not untrusted_endpoint and not has_credentials and port in {None, 443}
+        if not valid_authority or parsed.fragment:
             return False
         if base_url and (parsed.path not in {"", "/"} or parsed.query):
             return False

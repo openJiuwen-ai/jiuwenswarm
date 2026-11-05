@@ -68,13 +68,8 @@ def validate_file_name(value) -> str:
     if not isinstance(value, str):
         raise ValueError("invalid name")
     name = value.strip()
-    if (
-        not name
-        or len(name) > FILE_NAME_MAX
-        or name in {".", ".."}
-        or any(char in name for char in "/\\")
-        or any(ord(char) < 32 for char in name)
-    ):
+    invalid_name = not name or len(name) > FILE_NAME_MAX or name in {".", ".."}
+    if invalid_name or any(char in "/\\" or ord(char) < 32 for char in name):
         raise ValueError("invalid name")
     return name
 

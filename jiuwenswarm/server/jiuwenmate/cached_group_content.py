@@ -40,7 +40,7 @@ class CachedGroupContent:
         )
         local_rows = [row for row in rows if row['session_id'] == execution.session_id]
         named = [row for row in local_rows if mentioned(row['file_path'], text, execution.session_id)]
-        inspector = getattr(self.sharing._files, 'current_file_fact', None)
+        inspector = getattr(self.sharing.files, 'current_file_fact', None)
         if inspector is not None:
             checked = []
             for row in named:
@@ -87,8 +87,8 @@ class CachedGroupContent:
                        and row['file_size'] == artifact['file_size'] for row in local_rows):
                     public_import |= mentioned(path, text, execution.session_id)
                     continue
-                same_blob = [row for row in named if row['file_ref'] == artifact['file_digest']
-                             and row['file_size'] == artifact['file_size']]
+                blob = (artifact['file_digest'], artifact['file_size'])
+                same_blob = any((row['file_ref'], row['file_size']) == blob for row in named)
                 derived = [row for row in named if row.get('request_id') == receipt['request_id']]
                 if mentioned(path, text, execution.session_id) or same_blob or derived:
                     selected.append((receipt, artifact))
@@ -165,12 +165,12 @@ class CachedGroupContent:
             return True, blocked('所有者已拒绝或审批已过期，本次请求不再读取或分享该来源文件，请直接告知提问者。')
         if snapshots:
             approvals.extend(await asyncio.to_thread(
-                self.sharing.repository.create_or_get_batch, snapshots, now=self.sharing._clock(),
+                self.sharing.repository.create_or_get_batch, snapshots, now=self.sharing.now(),
             ))
         for row in approvals:
             if row['status'] == 'pending':
                 row = await asyncio.to_thread(
-                    self.sharing.repository.authorize_from_grants, row['approval_id'], now=self.sharing._clock(),
+                    self.sharing.repository.authorize_from_grants, row['approval_id'], now=self.sharing.now(),
                 )
                 row = await asyncio.to_thread(self.sharing.repository.get, row['approval_id'])
             if row['status'] == 'pending':
@@ -183,14 +183,7 @@ class CachedGroupContent:
                 _result_content_types(row['result']),
             ):
                 return True, blocked()
-            if row['result'].get('kind') == 'cli_group_read':
-                from jiuwenswarm.server.jiuwenmate.cli_group_sharing import verify_cli_snapshot
-                from jiuwenswarm.server.jiuwenmate.cli_group_snapshot import CliReadSnapshot
-
-                valid = await verify_cli_snapshot(self.sharing._cli, CliReadSnapshot.model_validate(row['result']))
-            else:
-                frozen = core.GroupMessageSearchResult.model_validate(row['result'])
-                valid = await self.sharing._unchanged(execution.namespace_id, frozen)
-            if not valid:
+            frozen = await self.sharing.verified_snapshot(execution.namespace_id, row['result'])
+            if frozen is None:
                 return True, blocked()
         return True, None

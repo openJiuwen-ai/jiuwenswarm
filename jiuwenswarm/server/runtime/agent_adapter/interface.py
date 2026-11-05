@@ -4057,7 +4057,9 @@ class JiuWenSwarm:
             return
         # should_record 判定（与 process_message_stream 一致）：
         # chat.* 或 context.usage 落盘；其余不落盘。
-        should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
+        should_record = (
+                                et.startswith("chat.") and et != "chat.moa_status"
+                            ) or et == "context.usage"
         if not should_record:
             return
         # chat.delta / chat.reasoning 增量不落盘（与 process_message_stream 一致）。

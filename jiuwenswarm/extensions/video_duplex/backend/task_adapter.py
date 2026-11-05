@@ -376,15 +376,20 @@ class AgentTaskExecutor:
             session_id=task["core_session_id"],
             req_method=ReqMethod.CHAT_CANCEL,
             user_id=task["owner"] or None,
-            params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
-                    "managed_task_request": task["request_id"],
-                    **({"managed_task_probe": True} if probe else {})},
+            params={
+                "intent": "cancel",
+                **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
+                "managed_task_request": task["request_id"],
+                **({"managed_task_probe": True} if probe else {}),
+            },
             is_stream=False,
             timestamp=time.time(),
         )
         trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
         response = await asyncio.wait_for(client.send_request(request), 20)
-        trace_task("cancel_rpc_response", task=task_state(task), ok=response.ok, payload=receipt_state(response.payload))
+        trace_task(
+            "cancel_rpc_response", task=task_state(task), ok=response.ok, payload=receipt_state(response.payload),
+        )
         if not response.ok or (response.payload or {}).get("success") is False:
             detail = str((response.payload or {}).get("code") or (response.payload or {}).get("error") or "")[:500]
             raise RuntimeError("Agent has not confirmed the stop request" + (": " + detail if detail else ""))
@@ -428,11 +433,12 @@ class VideoSearchManager:
         path=None,
         authorize=task_identity,
         scheduled_jobs=gateway_scheduled_jobs,
+        service=None,
     ):
         self.channel, self.log_event, self.qwen_active = channel, log_event, qwen_active
         self.client, self.normalize_media = agent_client, normalize_media_attachments
         self.path, self.authorize, self.concurrency = path, authorize, max_concurrency
-        self._service = None
+        self._service = service
         self.list_scheduled_jobs = scheduled_jobs
         self.subscribers = {}
         self._approval_cards = {}
@@ -666,7 +672,8 @@ class VideoSearchManager:
         if not session_id:
             return
         if event_name == "chat.ask_user_question":
-            if payload.get("duplex_job_id") or payload.get("source") not in {"permission_interrupt", "confirm_interrupt"}:
+            approval_sources = {"permission_interrupt", "confirm_interrupt"}
+            if payload.get("duplex_job_id") or payload.get("source") not in approval_sources:
                 return
             self._chat_cards[session_id] = {
                 key: payload.get(key) for key in ("request_id", "source", "questions", "approval_schema")
@@ -760,7 +767,8 @@ class VideoSearchManager:
         chosen = [a["selected_options"][0] for a in bound]
         if not resumed.is_set():
             return dict(job_id="", interaction_id=interaction_id, state="submitted", applied=False, answers=chosen,
-                        message="Submitted, but Core has not resumed the task yet; query again before saying it was approved")
+                        message="Submitted, but Core has not resumed the task yet; query again before saying it was "
+                            "approved")
         self._chat_cards.pop(session, None)
         closed = {"session_id": session, "request_id": interaction_id}
         await asyncio.gather(*(
@@ -777,7 +785,9 @@ class VideoSearchManager:
             task["session"].startswith("task-duplex:")
             and task["status"] == "waiting_user"
             and interaction.get("state") == "pending"
-            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", ""}
+            and interaction.get("source") in {
+                "permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", "",
+            }
         )
         if pending:
             if self._approval_cards.get(card_key) == interaction["id"]:
@@ -969,12 +979,14 @@ class VideoSearchManager:
                     "state": "rejected", "applied": False, "code": "TASK_NOT_FOUND",
                     "attempted_job_id": args["job_id"], "retryable": True,
                     "message": (
-                        "No operation was performed. This ID does not identify a Core invocation in the current conversation. "
+                        "No operation was performed. This ID does not identify a Core invocation in the current "
+                        "conversation. "
                         "Do not infer that the resulting resource was deleted or that the user request is impossible. "
                         "Query jiuwen_task_query without job_id, locate the intended invocation from its requirement "
                         "and result, and copy its exact job_id and revision before trying a corrected operation. "
                         "IDs inside result text identify external resources, not Core invocations; send such IDs "
-                        "to Core in the follow-up instruction, never as job_id. If the target remains ambiguous, ask the user. "
+                        "to Core in the follow-up instruction, never as job_id. If the target remains ambiguous, ask "
+                        "the user. "
                         "Never repeat this rejected ID, operate on another conversation, or recreate the resource."
                     ),
                 }

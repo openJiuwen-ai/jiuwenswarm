@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
+from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
+
 from jiuwenswarm.server.jiuwenmate.models import (
     ColleagueDefinition,
     ColleagueSettings,
@@ -27,7 +29,6 @@ from jiuwenswarm.server.jiuwenmate.models import (
 )
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore, private_dir
-from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS colleagues (
@@ -306,7 +307,9 @@ class PersistentAgentRepository(SQLiteStore):
             ).fetchone()
         return self._definition(row)
 
-    def set_enabled(self, namespace_id: str, agent_id: str, *, enabled: bool, updated_at: datetime) -> ColleagueDefinition:
+    def set_enabled(
+        self, namespace_id: str, agent_id: str, *, enabled: bool, updated_at: datetime
+    ) -> ColleagueDefinition:
         with self._transaction() as conn:
             changed = conn.execute(
                 "UPDATE colleagues SET enabled = ?, updated_at = ? WHERE namespace_id = ? AND agent_id = ?",
@@ -369,11 +372,12 @@ class PersistentAgentRepository(SQLiteStore):
             row = conn.execute(
                 "SELECT revision FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, config_id)
             ).fetchone()
+            connection_rows = conn.execute(
+                "SELECT agent_id FROM colleague_connections WHERE namespace_id = ? AND config_id = ?",
+                (namespace_id, config_id),
+            )
             owned = {
-                item["agent_id"] for item in conn.execute(
-                    "SELECT agent_id FROM colleague_connections WHERE namespace_id = ? AND config_id = ?",
-                    (namespace_id, config_id),
-                )
+                item["agent_id"] for item in connection_rows
             }
             if row is None or row["revision"] != revision or owned | {config_id} != {item[0] for item in changes}:
                 raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
@@ -478,7 +482,9 @@ class PersistentAgentRepository(SQLiteStore):
                 "DELETE FROM colleague_connections WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
             )
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_group_access'").fetchone():
-                conn.execute("DELETE FROM agent_group_access WHERE namespace_id=? AND agent_id=?", (namespace_id, agent_id))
+                conn.execute(
+                    "DELETE FROM agent_group_access WHERE namespace_id=? AND agent_id=?", (namespace_id, agent_id)
+                )
             if removed and record_removal:
                 conn.execute(
                     "INSERT OR IGNORE INTO removed_colleagues (namespace_id, agent_id, removed_at) VALUES (?, ?, ?)",

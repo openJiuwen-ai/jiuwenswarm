@@ -314,8 +314,12 @@ class PermissionApprovalRepository(SQLiteStore):
         with closing(self._connect()) as conn:
             rows = conn.execute(query + " ORDER BY created_at", values).fetchall()
         approvals = [self._approval(row) for row in rows]
-        return [item for item in approvals if item.route is not None
-                and (item.route.channel, item.route.app_id, item.route.target_id) == (channel, app_id, target_id)]
+        matching = []
+        for item in approvals:
+            route = item.route
+            if route is not None and (route.channel, route.app_id, route.target_id) == (channel, app_id, target_id):
+                matching.append(item)
+        return matching
 
     def reply_approval(
         self, *, namespace_id: str, agent_id: str, channel: str, app_id: str,
@@ -409,9 +413,10 @@ class PermissionApprovalRepository(SQLiteStore):
     @staticmethod
     def _require_current_pause(conn: sqlite3.Connection, approval: PermissionApproval) -> None:
         """Check the host request, predecessor and exact paused batch in the decision transaction."""
-        tables = {row["name"] for row in conn.execute(
+        table_rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('request_controls','requests')"
-        )}
+        )
+        tables = {row["name"] for row in table_rows}
         identity = (approval.namespace_id, approval.request_id)
         if "request_controls" in tables and conn.execute(
             "SELECT 1 FROM request_controls WHERE namespace_id=? AND request_id=? AND status='accepted'",
@@ -476,7 +481,9 @@ class PermissionApprovalRepository(SQLiteStore):
                 or approval.route.target_id != target_id
                 or approval.route.app_id != app_id
             ):
-                raise PersistentAgentError("permission approval belongs to another channel or conversation", code="FORBIDDEN")
+                raise PersistentAgentError(
+                    "permission approval belongs to another channel or conversation", code="FORBIDDEN"
+                )
             if approval.status != "pending":
                 approved_call = next(
                     (item["tool_call_id"] for item in (approval.reply or {}).get("responses", ())
@@ -576,7 +583,9 @@ class PermissionApprovalRepository(SQLiteStore):
                 " WHERE approval_id = ? AND status = 'pending'",
                 (status, "approve" if allowed else "reject", json.dumps(reply, ensure_ascii=False), approval_id),
             )
-            updated = conn.execute("SELECT * FROM permission_approvals WHERE approval_id = ?", (approval_id,)).fetchone()
+            updated = conn.execute(
+                "SELECT * FROM permission_approvals WHERE approval_id = ?", (approval_id,)
+            ).fetchone()
         return self._approval(updated)
 
     def resume_reply(self, namespace_id: str, request_id: str) -> PermissionApproval | None:

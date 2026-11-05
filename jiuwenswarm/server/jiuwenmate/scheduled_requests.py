@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from openjiuwen.harness import persistent_agent as core
+
 from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime, validate_cron_expression
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, RequestRouteSnapshot
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -28,7 +30,6 @@ from jiuwenswarm.server.jiuwenmate.session_scheduler import SessionScheduler
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
-from openjiuwen.harness import persistent_agent as core
 
 CATCH_UP_LIMIT = 48
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -264,7 +265,9 @@ class ScheduleStore(SQLiteStore):
             ).fetchone()
         return None if row is None else str(row["request_id"])
 
-    def record_fire(self, namespace_id: str, plan_id: str, scheduled_for: datetime, request_id: str, *, manual: bool = False) -> None:
+    def record_fire(
+        self, namespace_id: str, plan_id: str, scheduled_for: datetime, request_id: str, *, manual: bool = False
+    ) -> None:
         table = "scheduled_manual_fires" if manual else "scheduled_fires"
         with self._transaction() as conn:
             conn.execute(
@@ -415,17 +418,21 @@ class ScheduleService:
         try:
             ZoneInfo(zone)
             start, end, run = (_input_time(value) for value in (starts_at, ends_at, run_at))
-            if end and (end <= now or (start and end <= start)):
+            effective_start = max(now, start) if start else now
+            if end and end <= effective_start:
                 raise ValueError("invalid effective period")
             if schedule_kind == "cron":
                 validate_cron_expression(cron_expr, timezone=zone)
-                cursor = occurrence_after(cron_expr, max(now, start - timedelta(microseconds=1)) if start else now, zone)
+                cursor = occurrence_after(
+                    cron_expr, max(now, start - timedelta(microseconds=1)) if start else now, zone
+                )
             elif schedule_kind == "interval":
                 if isinstance(interval_seconds, bool) or not isinstance(interval_seconds, int) or interval_seconds < 1:
                     raise ValueError("interval_seconds must be a positive integer")
                 cursor = start if start and start > now else now + timedelta(seconds=interval_seconds)
             elif schedule_kind == "once":
-                if not run or run <= now or (start and run < start):
+                outside_start = start and run and run < start
+                if not run or run <= now or outside_start:
                     raise ValueError("one-time schedule must be in the future and effective period")
                 cursor = run
             else:
@@ -457,14 +464,25 @@ class ScheduleService:
                starts_at: str | datetime | None = None, ends_at: str | datetime | None = None) -> ScheduledPlan:
         with self._claim(namespace_id, plan_id):
             old = self._store.get(namespace_id, plan_id)
-            plan = self._build(namespace_id, old.agent_id, name=name, prompt=prompt, cron_expr=cron_expr,
-                               timezone_name=timezone_name, schedule_kind=schedule_kind, interval_seconds=interval_seconds,
-                               run_at=run_at, starts_at=starts_at, ends_at=ends_at)
+            plan = self._build(
+                namespace_id,
+                old.agent_id,
+                name=name,
+                prompt=prompt,
+                cron_expr=cron_expr,
+                timezone_name=timezone_name,
+                schedule_kind=schedule_kind,
+                interval_seconds=interval_seconds,
+                run_at=run_at,
+                starts_at=starts_at,
+                ends_at=ends_at,
+            )
             plan = replace(plan, plan_id=old.plan_id, created_at=old.created_at, enabled=old.enabled)
             self._store.save(plan)
             return self._describe(plan)
 
-    def _next(self, plan: ScheduledPlan, cursor: datetime) -> datetime | None:
+    @staticmethod
+    def _next(plan: ScheduledPlan, cursor: datetime) -> datetime | None:
         if plan.schedule_kind == "once":
             return None
         value = (cursor + timedelta(seconds=plan.interval_seconds) if plan.schedule_kind == "interval"
@@ -477,8 +495,11 @@ class ScheduleService:
             now = _utc(self._clock())
             cursor = plan.next_fire_at
             if enabled:
-                if (plan.ends_at and plan.ends_at <= now) or (plan.schedule_kind == "once" and (not cursor or cursor <= now)):
-                    raise PersistentAgentError("schedule expired or completed; edit its execution time", code="SCHEDULE_INVALID")
+                expired = plan.ends_at and plan.ends_at <= now
+                if expired or plan.schedule_kind == "once" and (not cursor or cursor <= now):
+                    raise PersistentAgentError(
+                        "schedule expired or completed; edit its execution time", code="SCHEDULE_INVALID"
+                    )
                 if cursor is None or cursor <= now:
                     cursor = self._next(plan, now)
                 if cursor is None:
@@ -507,7 +528,9 @@ class ScheduleService:
                 status = state.outcome if state.outcome in {"completed", "failed"} else "stopped"
             runs.append({"request_id": row["request_id"], "scheduled_for": row["scheduled_for"],
                          "status": status, "description": state.outcome or ""})
-        return sorted(runs, key=lambda run: self._sessions.get_request(plan.namespace_id, run["request_id"]).seq, reverse=True)
+        return sorted(
+            runs, key=lambda run: self._sessions.get_request(plan.namespace_id, run["request_id"]).seq, reverse=True
+        )
 
     def history(self, namespace_id: str, plan_id: str) -> dict[str, object]:
         plan = self._store.get(namespace_id, plan_id)

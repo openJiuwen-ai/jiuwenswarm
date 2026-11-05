@@ -187,10 +187,17 @@ class ConnectionPort:
         if value.get('receiver') != query.get('receiver'):
             raise ValueError('Native inspection changed the selected receiver relationship')
         primitives = tuple(
-            Primitive(p["id"], p["unit"], Channel(p["channel"]), Knowledge(p["supported"]), readiness=Knowledge(
-                p["readiness"]), pending=tuple(p["pending"]), background_preparation=Knowledge(
-                    p["backgroundPreparation"]), action=p.get("action", {}).get("name"), action_description=p.get(
-                        "action", {}).get("description"), unavailable_reason=p.get("unavailableReason")) for p in value["primitives"])
+            Primitive(
+                p["id"], p["unit"], Channel(p["channel"]), Knowledge(p["supported"]),
+                readiness=Knowledge(p["readiness"]),
+                pending=tuple(p["pending"]),
+                background_preparation=Knowledge(p["backgroundPreparation"]),
+                action=p.get("action", {}).get("name"),
+                action_description=p.get("action", {}).get("description"),
+                unavailable_reason=p.get("unavailableReason"),
+            )
+            for p in value["primitives"]
+        )
         if launch:
             return Facts(decode_binding(value['binding']), value['observed'], value['targetLabel'], Knowledge.YES,
                          Knowledge.YES, Knowledge.YES, (), primitives, platform=self.platform)

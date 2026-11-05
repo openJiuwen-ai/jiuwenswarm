@@ -1343,6 +1343,8 @@ class AgentWebSocketServer:
         self._feishu_group_fanout = None
         self._feishu_agent_manager = None
         self._dingtalk_group_poller = None
+        self._feishu_group_waiters: dict[str, tuple] = {}
+        self._thinking_notice_waiters: dict[str, asyncio.Future] = {}
         self._result_delivery_waiters: dict[str, asyncio.Future] = {}
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
@@ -2490,13 +2492,12 @@ class AgentWebSocketServer:
                 await manager.start()
                 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
 
-                channels = frozenset(
-                    name for name, enabled in (
-                        ("feishu", bool(feishu_bindings)),
-                        ("dingtalk", bool(dingtalk_bindings)),
-                        ("welink", bool(welink_bindings)),
-                    ) if enabled
+                channel_bindings = (
+                    ("feishu", feishu_bindings),
+                    ("dingtalk", dingtalk_bindings),
+                    ("welink", welink_bindings),
                 )
+                channels = frozenset(name for name, configured in channel_bindings if configured)
                 namespaces = {item.namespace_id for item in bindings}
                 namespaces.update(item.namespace_id for item in welink_bindings)
                 for namespace_id in sorted(namespaces or {WEB_NAMESPACE}):
@@ -2537,7 +2538,9 @@ class AgentWebSocketServer:
                 if manager is not None:
                     await manager.aclose()
 
-    async def _inspect_feishu_group(self, app_id: str, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, object]:
+    async def _inspect_feishu_group(
+        self, app_id: str, chat_id: str, message_ids: tuple[str, ...] = (),
+    ) -> dict[str, object]:
         """Ask the owning Gateway to verify current membership; never authorize from history alone."""
         from uuid import uuid4
 
@@ -2667,7 +2670,6 @@ class AgentWebSocketServer:
             "channel_id": job.get("channel", "feishu"),
             "payload": {
                 "event_type": "jiuwenmate.delivery.send",
-                "channel": job.get("channel", "feishu"),
                 "is_direct_message": job.get("is_direct_message", False),
                 "delivery_id": delivery_id,
                 "stage": "send",
@@ -3219,7 +3221,7 @@ class AgentWebSocketServer:
         """Accept one polled WeLink group message for the bound colleague."""
         from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
         from jiuwenswarm.server.jiuwenmate.welink_inbound import (
-            WelinkInboundEvent, accept_welink_message, welink_binding_for_agent,
+            WelinkInboundEvent, welink_binding_for_agent,
         )
 
         disposition = InboundDisposition.RETRYABLE
@@ -3239,7 +3241,7 @@ class AgentWebSocketServer:
                 else:
                     fanout = await self._ensure_persistent_group_fanout()
                     if fanout is not None:
-                        disposition = await accept_welink_message(fanout, event)
+                        disposition = await fanout.accept_welink_message(event)
             except Exception as exc:
                 logger.warning(
                     "[AgentWebSocketServer] WeLink inbound temporarily unavailable: error_type=%s",
@@ -3256,6 +3258,7 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(response, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
     @staticmethod
     def _request_requires_sandbox_bootstrap(request: AgentRequest) -> bool:
         """Only configured internal Sandbox execution shares its startup barrier.

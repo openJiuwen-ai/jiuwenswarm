@@ -10,10 +10,11 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
 from openjiuwen.harness.persistent_agent import ExecutionContext, OutputPayload
 from openjiuwen.harness.persistent_agent.workspace import resolve_read_path, validate_read_scope
+
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
 
 FILE_SHARE_MODES = frozenset({"upload", "attachment"})
 
@@ -37,13 +38,9 @@ def approved_import_path(session_id: str, artifact_id: str, file_name: str) -> s
 def shared_output_file_name(file_path: object, file_ref: object, file_size: object) -> str:
     """Validate the Session-scoped output contract and return its basename."""
     parts = file_path.split("/") if isinstance(file_path, str) else []
-    if (
-        len(parts) != 4
-        or parts[0] != "sessions"
-        or not _IDENTIFIER.fullmatch(parts[1])
-        or parts[2] != "output"
-        or parts[3] in ("", ".", "..")
-        or any(char in parts[3] for char in ("\\", ":", "\x00"))
+    invalid_session_path = len(parts) != 4 or parts[0] != "sessions" or not _IDENTIFIER.fullmatch(parts[1])
+    if invalid_session_path or (
+        parts[2] != "output" or parts[3] in ("", ".", "..") or any((char in parts[3] for char in ("\\", ":", "\x00")))
     ):
         raise PersistentAgentError(
             "shared files must be under sessions/<session_id>/output/<file name>", code="OUTPUT_FILE_INVALID"
@@ -81,7 +78,7 @@ def _open_regular(path: Path) -> int:
     if not stat.S_ISREG(before.st_mode):
         raise PersistentAgentError("shared path is not a regular file", code="OUTPUT_FILE_MISMATCH")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    descriptor = os.open(path, flags)
+    descriptor = os.open(path, flags, 0o600)
     opened = os.fstat(descriptor)
     if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
         os.close(descriptor)
@@ -144,12 +141,8 @@ class WorkspaceOutputFiles:
         """Verify the request-authorized shared output without creating a retained copy."""
         if output.share_mode not in FILE_SHARE_MODES:
             return
-        if (
-            not isinstance(output.file_path, str)
-            or not isinstance(output.file_ref, str)
-            or isinstance(output.file_size, bool)
-            or not isinstance(output.file_size, int)
-        ):
+        missing_file_identity = not isinstance(output.file_path, str) or not isinstance(output.file_ref, str)
+        if missing_file_identity or isinstance(output.file_size, bool) or not isinstance(output.file_size, int):
             raise PersistentAgentError("shared file candidate is incomplete", code="OUTPUT_FILE_INVALID")
         if _output_session_id(output.file_path) != execution.session_id:
             raise PersistentAgentError(
@@ -227,7 +220,8 @@ class WorkspaceOutputFiles:
             expected_session_id=expected_session_id,
         )
 
-    def search_text(self, path: Path, file_name: str) -> str:
+    @staticmethod
+    def search_text(path: Path, file_name: str) -> str:
         """Read a bounded text preview from a verified output file for literal search."""
         suffix = Path(file_name).suffix.lower()
         try:
@@ -280,7 +274,7 @@ class WorkspaceOutputFiles:
         except FileNotFoundError:
             metadata = None
         if metadata is not None:
-            if self._workspaces._is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
+            if self._workspaces.is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
                 raise PersistentAgentError("approved import path is not a regular file", code="OUTPUT_FILE_MISMATCH")
             _verify_file(destination, file_ref, file_size)
             return f"sessions/{target_session_id}/imports/{destination_name}"

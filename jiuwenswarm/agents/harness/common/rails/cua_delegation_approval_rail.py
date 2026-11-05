@@ -51,12 +51,8 @@ _MAX_TASK_PREVIEW_CHARS = 800
 _ENABLED_CUA_TOOLS = frozenset(
     resolve_cua_capabilities(DEFAULT_CUA_AGENT_CAPABILITY_NAMES).allowed_tool_names
 )
-GATED_CUA_TOOLS: tuple[str, ...] = tuple(
-    tool
-    for rule in CUA_PERMISSION_RULES
-    for tool in rule["tools"]
-    if tool in _ENABLED_CUA_TOOLS
-)
+_rule_tools = (tool for rule in CUA_PERMISSION_RULES for tool in rule["tools"])
+GATED_CUA_TOOLS: tuple[str, ...] = tuple(tool for tool in _rule_tools if tool in _ENABLED_CUA_TOOLS)
 
 _ACTION_LABELS = {
     "cn": {"launch_app": "启动应用", "type_text": "输入文本", "kill_app": "强制关闭应用"},
@@ -97,8 +93,14 @@ _OPTIONS_CN = [
 ]
 _OPTIONS_EN = [
     {"value": ALLOW_ONCE, "label": "Allow once", "description": "Allow this desktop task only"},
-    {"value": SESSION_ALLOW, "label": "Session allow", "description": "Do not ask again for cua_agent tasks this session"},
-    {"value": ALWAYS_ALLOW, "label": "Always allow", "description": "Save to config; never ask again for cua_agent tasks"},
+    {
+        "value": SESSION_ALLOW, "label": "Session allow",
+        "description": "Do not ask again for cua_agent tasks this session",
+    },
+    {
+        "value": ALWAYS_ALLOW, "label": "Always allow",
+        "description": "Save to config; never ask again for cua_agent tasks",
+    },
     {"value": REJECT, "label": "Reject", "description": "Do not run this desktop task"},
 ]
 

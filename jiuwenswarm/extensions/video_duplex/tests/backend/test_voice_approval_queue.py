@@ -199,9 +199,8 @@ class FakeChannel:
 def manager_for(service, core, channel):
     manager = video_search.VideoSearchManager(
         channel, None, log_event=lambda _: None, qwen_active=lambda: True,
-        authorize=lambda ws, scope: ("alice", scope),
+        authorize=lambda ws, scope: ("alice", scope), service=service,
     )
-    manager._service = service
 
     async def query(client, method, params, session, owner):
         assert session == "chat" and owner == "alice"
@@ -234,7 +233,7 @@ async def test_voice_answers_typed_card_through_click_path(system, monkeypatch, 
         name="jiuwen_task_query", arguments={}, call_id="q"))
     card = receipt["chat_approval"]
     assert card["job_id"] == "" and card["interaction_id"] == "typed-approval"
-    assert [o["label"] for o in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
+    assert [option["label"] for option in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
 
     answer = SimpleNamespace(name="jiuwen_task_answer", call_id="a", arguments={
         "job_id": "", "interaction_id": "typed-approval", "answers": ["可以吧"]})
@@ -281,8 +280,9 @@ async def test_typed_card_answer_is_not_reported_applied_until_core_resumes(syst
 
 async def test_joyai_may_answer_approval_cards_but_not_information_forms(system):
     service, core, store = system
-    manager = object.__new__(video_search.VideoSearchManager)
-    manager._service = service
+    manager = video_search.VideoSearchManager(
+        None, None, log_event=lambda *_: None, qwen_active=lambda: True, service=service,
+    )
     service.start()
     task = submit(service, "trip", "规划行程")
     service.store.update(task["id"], lambda t: t.update(status="waiting_user", interaction={
@@ -294,37 +294,39 @@ async def test_joyai_may_answer_approval_cards_but_not_information_forms(system)
         await manager.operate("alice", SCOPE, call, approvals_only=True)
 
 
-def test_web_channel_reports_card_and_turn_pushes_to_listeners():
-    from agent_gateway.channel_manager.web.web_connect import WebChannel
+async def test_web_channel_reports_card_and_turn_pushes_to_listeners():
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from openjiuwen_protocol.message import Message
 
-    channel = WebChannel.__new__(WebChannel)
-    channel._session_busy, channel._session_event_listeners = {}, []
-    channel._expert_processing_requests = {}
+    channel = WebChannel(WebChannelConfig(), None)
     seen = []
     channel.add_session_event_listener(lambda *event: seen.append(event))
     for name, payload in [("chat.ask_user_question", {"request_id": "r"}),
                           ("chat.processing_status", {"is_processing": False}),
                           ("chat.delta", {"content": "x"})]:
-        channel._track_session_busy(SimpleNamespace(
-            type="event", event_type=None, session_id="chat", payload={"event_type": name, **payload}))
+        await channel.send(Message(
+            id="event", type="event", channel_id="web", session_id="chat", params={}, timestamp=0, ok=True,
+            payload={"event_type": name, **payload},
+        ))
     assert [(name, sid) for name, sid, _ in seen] == [
         ("chat.ask_user_question", "chat"), ("chat.processing_status", "chat")]
     assert channel.is_session_busy("chat") is False
 
 
 async def test_web_channel_replays_request_through_its_own_dispatch():
-    import json
-    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from unittest.mock import Mock
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
-    channel = WebChannel.__new__(WebChannel)
-    frames = []
-
-    async def handle(ws, raw, query):
-        frames.append((json.loads(raw), query))
-
-    channel._handle_raw_message = handle
-    ws = SimpleNamespace(_jiuwen_query={"app_id": ["default"]})
+    channel = WebChannel(WebChannelConfig(), None)
+    capture = Mock(return_value=True)
+    channel.on_message(capture)
+    ws = Mock(
+        spec=["_jiuwen_query", "remote_address"],
+        _jiuwen_query={"app_id": ["voice"]}, remote_address=("127.0.0.1", 1234),
+    )
     await channel.dispatch_client_request(ws, "chat.send", {"session_id": "chat"})
-    frame, query = frames[0]
-    assert frame["type"] == "req" and frame["method"] == "chat.send"
-    assert frame["params"] == {"session_id": "chat"} and query == {"app_id": ["default"]}
+    capture.assert_called_once()
+    message = capture.call_args.args[0]
+    assert message.type == "req" and message.req_method.value == "chat.send"
+    assert message.params == {"session_id": "chat"}
+    assert message.app_id == "voice" and message.metadata["query"] == {"app_id": ["voice"]}

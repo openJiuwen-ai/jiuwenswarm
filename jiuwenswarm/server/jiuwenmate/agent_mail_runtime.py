@@ -75,19 +75,26 @@ class AgentMailScope:
 class AgentMailRuntimePort(Protocol):
     """Operations supported by an employee-isolated Agent Mail runtime provider."""
 
-    async def status(self, scope: AgentMailScope) -> dict[str, Any]: ...
+    async def status(self, scope: AgentMailScope) -> dict[str, Any]:
+        ...
 
-    async def begin_auth(self, scope: AgentMailScope) -> dict[str, Any]: ...
+    async def begin_auth(self, scope: AgentMailScope) -> dict[str, Any]:
+        ...
 
-    async def poll_auth(self, scope: AgentMailScope, operation_id: str) -> dict[str, Any]: ...
+    async def poll_auth(self, scope: AgentMailScope, operation_id: str) -> dict[str, Any]:
+        ...
 
-    async def cancel_auth(self, scope: AgentMailScope, operation_id: str) -> dict[str, Any]: ...
+    async def cancel_auth(self, scope: AgentMailScope, operation_id: str) -> dict[str, Any]:
+        ...
 
-    async def disconnect(self, scope: AgentMailScope) -> dict[str, Any]: ...
+    async def disconnect(self, scope: AgentMailScope) -> dict[str, Any]:
+        ...
 
-    async def execute(self, scope: AgentMailScope, operation: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+    async def execute(self, scope: AgentMailScope, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
 
-    async def remove_runtime(self, scope: AgentMailScope) -> None: ...
+    async def remove_runtime(self, scope: AgentMailScope) -> None:
+        ...
 
 
 class AgentMailRuntimeStore(SQLiteStore):
@@ -212,7 +219,9 @@ class AgentMailRuntimeService:
         email = result.get("email")
         if status == "connected":
             if not isinstance(email, str) or "@" not in email or len(email.strip()) > 320:
-                raise PersistentAgentError("Agent Mail runtime did not return a verified mailbox", code="AGENT_MAIL_RUNTIME_ERROR")
+                raise PersistentAgentError(
+                    "Agent Mail runtime did not return a verified mailbox", code="AGENT_MAIL_RUNTIME_ERROR"
+                )
             safe["email"] = email.strip()
         operation_id = result.get("operation_id")
         if status == "authorizing":
@@ -267,16 +276,9 @@ class AgentMailRuntimeService:
             or parsed_url.hostname == "tencent.com"
             or parsed_url.hostname.endswith(".tencent.com")
         )
-        if (
-            safe["status"] != "authorizing"
-            or parsed_url is None
-            or parsed_url.scheme != "https"
-            or not trusted_host
-            or len(auth_url) > 4096
-            or not isinstance(operation_id, str)
-            or not operation_id
-            or len(operation_id) > 512
-        ):
+        secure_url = trusted_host and parsed_url.scheme == "https" and len(auth_url) <= 4096
+        valid_operation = isinstance(operation_id, str) and 0 < len(operation_id) <= 512
+        if safe["status"] != "authorizing" or not secure_url or not valid_operation:
             raise PersistentAgentError("invalid Agent Mail authorization response", code="AGENT_MAIL_RUNTIME_ERROR")
         self._store.put(scope, safe["status"], safe.get("cli_version"), None)
         return {

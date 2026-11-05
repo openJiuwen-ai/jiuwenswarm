@@ -34,9 +34,8 @@ class GatewayTaskEndpoint(_GatewayTaskEndpoint):
             )
             if replay is not None:
                 return replay
-            if action == "bind" and not task.get("execution_bound") and (
-                task.get("execution_cancelled") or task["status"] == "cancelling"
-            ):
+            binding = action == "bind" and not task.get("execution_bound")
+            if binding and (task.get("execution_cancelled") or task["status"] == "cancelling"):
                 # A delayed request may arrive after its admission was revoked.
                 # Return a normal ACK so the remote owner can exit before Core
                 # starts, rather than failing the checkpoint transport.

@@ -6,16 +6,8 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 
 
 def test_resolve_model_reloads_cache_for_newly_saved_model(monkeypatch) -> None:
-    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
-    adapter._model_cache = {}
-    adapter._model_name_to_keys = {}
-    adapter._global_index_to_cache_key = {}
-    adapter._last_models_config_fingerprint = None
-    adapter._model = None
-    adapter._model_client_config = None
-    adapter._model_request_config = None
-    adapter._selected_model_context_window_tokens = None
-    adapter._default_model_name = ""
+    adapter = JiuWenSwarmDeepAdapter()
+    assert adapter.model_for_catalog_name("new-model") is None
     config = {
         "models": {
             "defaults": [
@@ -38,8 +30,11 @@ def test_resolve_model_reloads_cache_for_newly_saved_model(monkeypatch) -> None:
         lambda: config,
     )
 
-    resolved = adapter._resolve_model_by_name("new-model")
+    # Checking a warm session's requested profile goes through normal model resolution.
+    adapter.skill_retrieval_model_profile_matches("new-model")
+    resolved = adapter.model_for_catalog_name("new-model")
 
     assert resolved is not None
-    assert JiuWenSwarmDeepAdapter._model_looks_usable(resolved)
-    assert adapter._has_valid_model_config("new-model")
+    assert resolved.model_config.model_name == "new-model"
+    assert resolved.model_client_config.api_base == "https://example.test/v1"
+    assert resolved.model_client_config.api_key == "sk-test"

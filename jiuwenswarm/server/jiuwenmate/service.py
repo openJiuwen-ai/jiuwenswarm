@@ -22,6 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
+from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
+
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import (
     CapabilitySelection,
@@ -36,7 +39,11 @@ from jiuwenswarm.server.jiuwenmate.models import (
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
-from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, ResourceCatalog, assemble_resources
+from jiuwenswarm.server.jiuwenmate.resource_assembly import (
+    InstalledResourceCatalog,
+    ResourceCatalog,
+    assemble_resources,
+)
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.server.jiuwenmate.spec_provider import (
     ConfigSnapshot,
@@ -55,8 +62,6 @@ from jiuwenswarm.server.jiuwenmate.bash_runtime import (
 )
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.resource_assembly import apply_feishu_skills
-from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
-from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -776,7 +781,9 @@ class PersistentAgentService:
             # Legacy installs share this directory with the reader. Removing the
             # colleague must not sign every remaining assistant out.
             shared_reader = Path(reader_dir).expanduser().resolve() if reader_dir else None
-            if shared_reader is None or (credentials.resolve() != shared_reader and credentials.resolve() not in shared_reader.parents):
+            if shared_reader is None or (
+                credentials.resolve() != shared_reader and credentials.resolve() not in shared_reader.parents
+            ):
                 shutil.rmtree(credentials, ignore_errors=True)
                 if credentials.exists():
                     raise PersistentAgentError("WeLink credentials could not be removed", code="CLEANUP_FAILED")

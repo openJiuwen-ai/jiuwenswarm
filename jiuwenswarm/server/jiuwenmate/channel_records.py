@@ -89,7 +89,9 @@ def _event_view(event) -> tuple[str, str, str, int, int] | None:
     return None
 
 
-def _finish_reply(stamped: list[tuple[datetime, dict[str, object]]], open_reply: dict[str, object] | None) -> str | None:
+def _finish_reply(
+    stamped: list[tuple[datetime, dict[str, object]]], open_reply: dict[str, object] | None
+) -> str | None:
     """Close one streamed reply. An empty fragment run is dropped."""
     if open_reply is None:
         return None

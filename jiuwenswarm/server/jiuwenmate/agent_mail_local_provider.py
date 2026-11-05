@@ -178,14 +178,12 @@ class LocalAgentMailRuntime:
         roots = [root for root in cls._credential_agent_roots(home) if root.is_dir()]
         if any((root / _WORKSPACE).exists() for root in roots):
             return
-        slugs = [
-            name for name in dict.fromkeys(
-                child.name
-                for root in roots
-                for child in root.iterdir()
-                if child.is_dir() and child.name != _WORKSPACE
-            )
-        ]
+        names = {}
+        for root in roots:
+            for child in root.iterdir():
+                if child.is_dir() and child.name != _WORKSPACE:
+                    names[child.name] = None
+        slugs = list(names)
         if len(slugs) != 1:
             return
         slug = slugs[0]
@@ -394,10 +392,10 @@ class LocalAgentMailRuntime:
                 exit_path.write_text(str(completed), encoding='utf-8')
             try:
                 return self._authorization_from_log(scope, operation_id)
-            except RuntimeError:
+            except RuntimeError as exc:
                 if completed is not None:
                     self._clear_auth(scope, operation_id)
-                    raise RuntimeError('Agent Mail CLI did not return an authorization URL')
+                    raise RuntimeError('Agent Mail CLI did not return an authorization URL') from exc
                 time.sleep(0.2)
         self._cancel_auth(scope, operation_id)
         raise RuntimeError('Agent Mail CLI did not return an authorization URL')
@@ -518,14 +516,26 @@ class LocalAgentMailRuntime:
         if operation not in commands:
             raise RuntimeError('unsupported Agent Mail operation')
         allowed = {
-            'mail.list': {'limit', 'cursor', 'dir', 'after', 'before', 'has_attachments', 'is_unread'},
-            'mail.search': {'q', 'search_in', 'from', 'to', 'limit', 'cursor', 'dir', 'after', 'before', 'has_attachments', 'is_unread'},
-            'mail.read': {'id'},
-            'mail.attachment.read': {'msg', 'att'},
-            'mail.send': {'to', 'cc', 'bcc', 'subject', 'body'},
-            'mail.reply': {'id', 'cc', 'bcc', 'body'},
-            'mail.forward': {'id', 'to', 'cc', 'bcc', 'body'},
-            'mail.delete': {'id'},
+            "mail.list": {"limit", "cursor", "dir", "after", "before", "has_attachments", "is_unread"},
+            "mail.search": {
+                "q",
+                "search_in",
+                "from",
+                "to",
+                "limit",
+                "cursor",
+                "dir",
+                "after",
+                "before",
+                "has_attachments",
+                "is_unread",
+            },
+            "mail.read": {"id"},
+            "mail.attachment.read": {"msg", "att"},
+            "mail.send": {"to", "cc", "bcc", "subject", "body"},
+            "mail.reply": {"id", "cc", "bcc", "body"},
+            "mail.forward": {"id", "to", "cc", "bcc", "body"},
+            "mail.delete": {"id"},
         }[operation]
         if set(payload) - allowed:
             raise RuntimeError('invalid Agent Mail operation payload')
@@ -569,7 +579,8 @@ class LocalAgentMailRuntime:
             value = payload.get(key)
             if value is None:
                 continue
-            if key not in allowed or not isinstance(value, str) or not value or len(value) > 2048:
+            invalid_parameter = key not in allowed or not isinstance(value, str)
+            if invalid_parameter or not value or len(value) > 2048:
                 raise RuntimeError('invalid Agent Mail operation payload')
             args.extend([flag, value])
         limit = payload.get('limit')

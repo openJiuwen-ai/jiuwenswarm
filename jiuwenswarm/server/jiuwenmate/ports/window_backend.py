@@ -13,15 +13,16 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.foundation.store.base_kv_store import BasedKVStorePipeline, BaseKVStore
+
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import require_identifier
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
-from openjiuwen.core.foundation.store.base_kv_store import BasedKVStorePipeline, BaseKVStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS window_entries (
@@ -103,17 +104,19 @@ class WindowBackendStore(SQLiteStore):
 
     # The methods below run in a worker thread on behalf of one bound backend.
 
-    def _get(self, scope: Scope, keys: Sequence[str]) -> list[str | bytes | None]:
+    def get(self, scope: Scope, keys: Sequence[str]) -> list[str | bytes | None]:
         now = self._clock()
         with self._transaction() as conn:
             return [self._read(conn, scope, key, now) for key in keys]
 
-    def _read(self, conn: sqlite3.Connection, scope: Scope, key: str, now: float) -> str | bytes | None:
+    @staticmethod
+    def _read(conn: sqlite3.Connection, scope: Scope, key: str, now: float) -> str | bytes | None:
         row = conn.execute(f"SELECT * FROM window_entries WHERE {_SCOPE} AND key = ?", (*scope, key)).fetchone()
         return _decode(row) if _live(row, now) else None
 
+    @staticmethod
     def _write(
-        self, conn: sqlite3.Connection, scope: Scope, key: str, value: str | bytes, expires_at: float | None, now: float
+        conn: sqlite3.Connection, scope: Scope, key: str, value: str | bytes, expires_at: float | None, now: float
     ) -> None:
         data, is_text = _encode(value)
         conn.execute(
@@ -124,11 +127,11 @@ class WindowBackendStore(SQLiteStore):
             (*scope, key, data, is_text, expires_at, now),
         )
 
-    def _set(self, scope: Scope, key: str, value: str | bytes) -> None:
+    def set(self, scope: Scope, key: str, value: str | bytes) -> None:
         with self._transaction() as conn:
             self._write(conn, scope, key, value, None, self._clock())
 
-    def _exclusive_set(self, scope: Scope, key: str, value: str | bytes, expiry: int | None) -> bool:
+    def exclusive_set(self, scope: Scope, key: str, value: str | bytes, expiry: int | None) -> bool:
         now = self._clock()
         with self._transaction() as conn:
             row = conn.execute(
@@ -139,14 +142,14 @@ class WindowBackendStore(SQLiteStore):
             self._write(conn, scope, key, value, None if expiry is None else now + expiry, now)
             return True
 
-    def _delete(self, scope: Scope, keys: Sequence[str]) -> int:
+    def delete(self, scope: Scope, keys: Sequence[str]) -> int:
         with self._transaction() as conn:
             return sum(
                 conn.execute(f"DELETE FROM window_entries WHERE {_SCOPE} AND key = ?", (*scope, key)).rowcount
                 for key in keys
             )
 
-    def _get_by_prefix(self, scope: Scope, prefix: str) -> dict[str, str | bytes]:
+    def get_by_prefix(self, scope: Scope, prefix: str) -> dict[str, str | bytes]:
         now = self._clock()
         with self._transaction() as conn:
             rows = conn.execute(
@@ -155,13 +158,13 @@ class WindowBackendStore(SQLiteStore):
             ).fetchall()
         return {row["key"]: _decode(row) for row in rows if _live(row, now)}
 
-    def _delete_by_prefix(self, scope: Scope, prefix: str) -> int:
+    def delete_by_prefix(self, scope: Scope, prefix: str) -> int:
         with self._transaction() as conn:
             return conn.execute(
                 f"DELETE FROM window_entries WHERE {_SCOPE} AND substr(key, 1, ?) = ?", (*scope, len(prefix), prefix)
             ).rowcount
 
-    def _execute(self, scope: Scope, operations: Sequence[tuple[Any, ...]]) -> list[Any]:
+    def execute(self, scope: Scope, operations: Sequence[tuple[Any, ...]]) -> list[Any]:
         now = self._clock()
         results: list[Any] = []
         with self._transaction() as conn:
@@ -203,58 +206,63 @@ class SessionWindowBackend(BaseKVStore):
         return self._key(prefix)
 
     async def set(self, key: str, value: str | bytes) -> None:
-        await asyncio.to_thread(self._store._set, self._scope, self._key(key), value)
+        await asyncio.to_thread(self._store.set, self._scope, self._key(key), value)
 
     async def exclusive_set(self, key: str, value: str | bytes, expiry: int | None = None) -> bool:
-        return await asyncio.to_thread(self._store._exclusive_set, self._scope, self._key(key), value, expiry)
+        return await asyncio.to_thread(self._store.exclusive_set, self._scope, self._key(key), value, expiry)
 
     async def get(self, key: str) -> str | bytes | None:
-        return (await asyncio.to_thread(self._store._get, self._scope, [self._key(key)]))[0]
+        return (await asyncio.to_thread(self._store.get, self._scope, [self._key(key)]))[0]
 
     async def exists(self, key: str) -> bool:
         return await self.get(key) is not None
 
     async def delete(self, key: str) -> None:
-        await asyncio.to_thread(self._store._delete, self._scope, [self._key(key)])
+        await asyncio.to_thread(self._store.delete, self._scope, [self._key(key)])
 
     async def get_by_prefix(self, prefix: str) -> dict[str, str | bytes]:
         if not isinstance(prefix, str):
             raise PersistentContractError("window key prefix must be str")
-        rows = await asyncio.to_thread(self._store._get_by_prefix, self._scope, self._prefix(prefix))
-        return {self._key_prefix + key[len(self._storage_prefix):]: value for key, value in rows.items()
-                if not key[len(self._storage_prefix):].startswith('grant_epoch:')}
+        rows = await asyncio.to_thread(self._store.get_by_prefix, self._scope, self._prefix(prefix))
+        visible = {}
+        for key, value in rows.items():
+            suffix = key[len(self._storage_prefix):]
+            if not suffix.startswith("grant_epoch:"):
+                visible[self._key_prefix + suffix] = value
+        return visible
 
     async def delete_by_prefix(self, prefix: str, batch_size: int | None = None) -> None:
         if not isinstance(prefix, str):
             raise PersistentContractError("window key prefix must be str")
-        await asyncio.to_thread(self._store._delete_by_prefix, self._scope, self._prefix(prefix))
+        await asyncio.to_thread(self._store.delete_by_prefix, self._scope, self._prefix(prefix))
 
     async def mget(self, keys: list[str]) -> list[str | bytes | None]:
-        return await asyncio.to_thread(self._store._get, self._scope, [self._key(key) for key in keys])
+        return await asyncio.to_thread(self._store.get, self._scope, [self._key(key) for key in keys])
 
     async def batch_delete(self, keys: list[str], batch_size: int | None = None) -> int:
-        return await asyncio.to_thread(self._store._delete, self._scope, [self._key(key) for key in keys])
+        return await asyncio.to_thread(self._store.delete, self._scope, [self._key(key) for key in keys])
 
     def pipeline(self) -> BasedKVStorePipeline:
         """Queued set / get / exists run together in one transaction."""
-        return _Pipeline(self)
+        async def execute(operations: list[tuple[Any, ...]]) -> list[Any]:
+            return await asyncio.to_thread(self._store.execute, self._scope, operations)
+
+        return _Pipeline(self._key, execute)
 
 
 class _Pipeline(BasedKVStorePipeline):
-    def __init__(self, backend: SessionWindowBackend) -> None:
-        self._backend = backend
-        super().__init__(self._run)
+    def __init__(
+        self, storage_key: Callable[[Any], str], execute: Callable[[list[tuple[Any, ...]]], Awaitable[list[Any]]]
+    ) -> None:
+        self._storage_key = storage_key
+        super().__init__(execute)
 
     async def set(self, key: str, value: str | bytes, ttl: int | None = None) -> None:
         _encode(value)
-        await super().set(self._backend._key(key), value, ttl)
+        await super().set(self._storage_key(key), value, ttl)
 
     async def get(self, key: str) -> None:
-        await super().get(self._backend._key(key))
+        await super().get(self._storage_key(key))
 
     async def exists(self, key: str) -> None:
-        await super().exists(self._backend._key(key))
-
-    async def _run(self, operations: list[tuple[Any, ...]]) -> list[Any]:
-        backend = self._backend
-        return await asyncio.to_thread(backend._store._execute, backend._scope, operations)
+        await super().exists(self._storage_key(key))
