@@ -633,6 +633,10 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: false },
     }) }));
     assert.equal(visibleSuggestionTitles().length, 4, 'preset/cached cards stay while recommendation is off');
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="chat-panel-welcome-suggestion"]').dispatchEvent(
+      new window.MouseEvent('mouseover', { bubbles: true }),
+    ));
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
     await react.act(async () => document.querySelector('[data-testid="chat-panel-topic-general-settings"]').click());
     assert.equal(settingsOpens, 1);
@@ -646,7 +650,8 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
     const disabledHint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
     assert.ok(disabledHint.textContent.includes('Settings - General'));
-    assert.equal(disabledHint, document.querySelector('[data-testid="chat-panel-welcome-suggestions"]').lastElementChild);
+    assert.ok(document.querySelector('[data-testid="chat-panel-welcome-banner-bubble"]').contains(disabledHint));
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]').className, 'chat-welcome__campaign-claim');
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
     }) }));
