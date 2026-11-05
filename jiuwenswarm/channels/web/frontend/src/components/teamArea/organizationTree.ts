@@ -22,8 +22,26 @@ export interface OrganizationTaskNode {
   total: number;
 }
 
+/** Organization members are children of the Owner, including the system Summary Team. */
+export function buildOrganizationTeamTree<T extends { team_id?: string | null; is_owner?: boolean }>(
+  teams: T[], ownerTeamId?: string | null,
+): { key: string; team: T; children: { key: string; team: T }[] }[] {
+  const nodes = teams.map((team, index) => ({
+    key: team.team_id || `missing-team-${index}`,
+    team,
+    children: [] as { key: string; team: T }[],
+  }));
+  const owner = nodes.find((node) => ownerTeamId ? node.team.team_id === ownerTeamId : node.team.is_owner);
+  if (!owner) return nodes;
+  owner.children = nodes.filter((node) => node !== owner);
+  return [owner];
+}
+
 /** Preserve server order and every task, including missing parents and malformed cycles. */
 export function buildOrganizationTaskTree(tasks: OrganizationTask[]): OrganizationTaskNode[] {
+  // Summary Tasks bind to a root without a persisted parent; nest them for display only.
+  const parentId = (task: OrganizationTask) => task.parent_task_id?.trim() ||
+    (task.task_type === 'organization.summary' ? task.root_task_id?.trim() : '') || '';
   const nodes = tasks.map((task, index) => ({
     key: task.task_id || `missing-id-${index}`,
     task,
@@ -34,7 +52,7 @@ export function buildOrganizationTaskTree(tasks: OrganizationTask[]): Organizati
   const byId = new Map(nodes.filter((node) => node.task.task_id).map((node) => [node.task.task_id!, node]));
   const roots: OrganizationTaskNode[] = [];
   for (const node of nodes) {
-    let parent = byId.get(node.task.parent_task_id?.trim() || '');
+    let parent = byId.get(parentId(node.task));
     const visited = new Set([node]);
     let cursor = parent;
     while (cursor) {
@@ -43,7 +61,7 @@ export function buildOrganizationTaskTree(tasks: OrganizationTask[]): Organizati
         break;
       }
       visited.add(cursor);
-      cursor = byId.get(cursor.task.parent_task_id?.trim() || '');
+      cursor = byId.get(parentId(cursor.task));
     }
     if (parent) parent.children.push(node);
     else roots.push(node);

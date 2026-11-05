@@ -11,7 +11,7 @@ import {
   resolveOrganizationTeamLabel,
   useOrganizationGroupCatalog,
 } from '../../features/teamOrganization/teamIdentity';
-import { buildOrganizationTaskTree, type OrganizationTask, type OrganizationTaskNode } from './organizationTree';
+import { buildOrganizationTaskTree, buildOrganizationTeamTree, type OrganizationTask, type OrganizationTaskNode } from './organizationTree';
 
 interface OrgTeamHandle {
   available?: boolean;
@@ -163,6 +163,28 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   const leaders = [...(organization?.leaders ?? [])].sort((a, b) =>
     Number(b.team_id === organization?.owner_team_id) - Number(a.team_id === organization?.owner_team_id));
   const reviews = snapshot?.pending_reviews ?? [];
+  const teamTree = buildOrganizationTeamTree(leaders, organization?.owner_team_id);
+  const renderTeam = (leader: OrgTeamHandle, id: string) => {
+    const runtime = byTeam.get(id);
+    const identity = resolveOrganizationTeamIdentity(runtime, groups);
+    const ownTasks = (tasks ?? []).filter((task) => task.assignment?.team_id === id);
+    return <details className="organization-tree__node" data-testid="team-area-org-info-team-row" data-variant={organization?.owner_team_id === id ? 'owner' : 'sub'}>
+      <summary className="organization-tree__row" data-testid="team-area-org-team-toggle" data-variant={id}>
+        <ChevronRight size={16} className="organization-tree__chevron" aria-hidden="true" />
+        {identity?.avatarUrl ? <img src={identity.avatarUrl} alt="" className="h-5 w-5 shrink-0 rounded-full object-contain" data-testid="team-area-org-info-team-avatar" data-variant={id} /> : <Users size={16} className="shrink-0 text-text-muted" aria-hidden="true" />}
+        <span className="min-w-0 flex-1 text-sm text-text" data-testid="team-area-org-info-team-name" data-variant={id}>{teamLabel(id)}</span>
+        {(leader.available === false || runtime?.available === false) && <span className="text-xs text-danger" data-testid="team-area-org-info-team-unavailable" data-variant={id}>{t('chat.teamSelect.unavailable')}</span>}
+        <span className="text-xs tabular-nums text-text-muted">{ownTasks.length} {t('team.org.taskPool')}</span>
+      </summary>
+      <div className="organization-tree__fields">
+        <InfoRow label={t('team.org.leadMember')} value={leader.leader_member_name || leader.leader_id || runtime?.leader_id} />
+        <InfoRow label={t('team.org.capabilities')} value={(leader.capabilities?.length ? leader.capabilities : runtime?.capabilities)?.join(' · ')} />
+        <InfoRow label={t('team.org.executionModel')} value={runtime?.execution_model_name} />
+        <InfoRow label={t('team.org.taskTitle')} value={ownTasks.map((task) => task.title || task.task_id).join('\n')} />
+        <InfoRow label={t('team.org.taskTeam')} value={leader.team_id} />
+      </div>
+    </details>;
+  };
   if (!enabled || !sessionId) return null;
   return (
     <div className={clsx('flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card', className)} data-testid="team-area-org-info-panel">
@@ -208,30 +230,14 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
             <InfoRow label={t('team.org.organizationId')} value={organization.organization_id} />
           </section>
           <div className="organization-tree__children" data-testid="team-area-org-info-teams">
-            {leaders.map((leader, index) => {
-              const id = leader.team_id || String(index);
-              const runtime = byTeam.get(id);
-              const identity = resolveOrganizationTeamIdentity(runtime, groups);
-              const ownTasks = (tasks ?? []).filter((task) => task.assignment?.team_id === id);
-              return <div className="organization-tree__branch" key={id}>
-                <details className="organization-tree__node" data-testid="team-area-org-info-team-row" data-variant={organization.owner_team_id === id ? 'owner' : 'sub'}>
-                  <summary className="organization-tree__row" data-testid="team-area-org-team-toggle" data-variant={id}>
-                    <ChevronRight size={16} className="organization-tree__chevron" aria-hidden="true" />
-                    {identity?.avatarUrl ? <img src={identity.avatarUrl} alt="" className="h-5 w-5 shrink-0 rounded-full object-contain" data-testid="team-area-org-info-team-avatar" data-variant={id} /> : <Users size={16} className="shrink-0 text-text-muted" aria-hidden="true" />}
-                    <span className="min-w-0 flex-1 text-sm text-text" data-testid="team-area-org-info-team-name" data-variant={id}>{teamLabel(id)}</span>
-                    {(leader.available === false || runtime?.available === false) && <span className="text-xs text-danger" data-testid="team-area-org-info-team-unavailable" data-variant={id}>{t('chat.teamSelect.unavailable')}</span>}
-                    <span className="text-xs tabular-nums text-text-muted">{ownTasks.length} {t('team.org.taskPool')}</span>
-                  </summary>
-                  <div className="organization-tree__fields">
-                    <InfoRow label={t('team.org.leadMember')} value={leader.leader_member_name || leader.leader_id || runtime?.leader_id} />
-                    <InfoRow label={t('team.org.capabilities')} value={(leader.capabilities?.length ? leader.capabilities : runtime?.capabilities)?.join(' · ')} />
-                    <InfoRow label={t('team.org.executionModel')} value={runtime?.execution_model_name} />
-                    <InfoRow label={t('team.org.taskTitle')} value={ownTasks.map((task) => task.title || task.task_id).join('\n')} />
-                    <InfoRow label={t('team.org.taskTeam')} value={leader.team_id} />
-                  </div>
-                </details>
-              </div>;
-            })}
+            {teamTree.map((node) => <div className="organization-tree__branch" key={node.key}>
+              {renderTeam(node.team, node.key)}
+              {node.children.length > 0 && <div className="organization-tree__children" data-testid="team-area-org-info-subteams" data-variant={node.key}>
+                {node.children.map((child) => <div className="organization-tree__branch" key={child.key}>
+                  {renderTeam(child.team, child.key)}
+                </div>)}
+              </div>}
+            </div>)}
           </div>
         </details>}
       </div>
