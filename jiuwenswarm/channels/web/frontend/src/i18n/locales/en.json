@@ -1882,6 +1882,7 @@
       "statusNoCards": "Getting topics ready. You can start chatting now.",
       "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
       "openSettings": "Check settings",
+      "trySettings": "Try it",
       "disabledHintWithCards": "Want topics that understand you better? Turn on topic recommendations in Settings - General."
     },
     "promptSuggestionBox": {

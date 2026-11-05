@@ -1822,6 +1822,7 @@
       "statusNoCards": "正在准备话题，你也可以直接开始聊。",
       "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
+      "trySettings": "去试试",
       "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。"
     },
     "promptSuggestionBox": {
