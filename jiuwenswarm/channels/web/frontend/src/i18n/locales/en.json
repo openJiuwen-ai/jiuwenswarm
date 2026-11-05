@@ -5996,6 +5996,8 @@
       "failed": "Message failed: {{reason}}",
       "modelNotConfigured": "Configure a usable model in Settings → Models before chatting with this employee.",
       "modelPending": "Pending",
+      "modelUnavailable": "Select a model",
+      "modelUnavailableHint": "The previous model was removed or is unavailable. Select and save an available model for this employee before sending messages.",
       "notPublished": "Save and publish the employee configuration in employee management before chatting.",
       "noReply": "The employee sent no reply",
       "file": {
@@ -6233,6 +6235,7 @@
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
+      "modelUnavailableHint": "The previously configured model was removed or is unavailable. Select a model and save.",
       "catalogLoading": "Loading installed resources",
       "catalogFailed": "Installed resources could not be loaded. Current selections can still be removed.",
       "catalogEmptySkills": "No installed skill can be assigned",

@@ -33,6 +33,7 @@ import {
   chatPhase,
   errorMessage,
   formatSharedFileSize,
+  findModel,
   isPending,
   latestSharedFiles,
   sharedFileKey,
@@ -633,12 +634,15 @@ export function ColleagueWorkspacePage({
     );
   };
 
-  const modelSetupNotice = colleague.currentVersion === null
-    ? t(colleague.capabilities.model ? 'jiuwenmate.chat.notPublished' : 'jiuwenmate.chat.modelNotConfigured')
-    : null;
+  const modelSetupNotice = modelCatalog.models.length === 0
+    ? t('jiuwenmate.chat.modelNotConfigured')
+    : colleague.currentVersion === null
+      ? t(colleague.capabilities.model ? 'jiuwenmate.chat.notPublished' : 'jiuwenmate.chat.modelNotConfigured')
+      : !findModel(modelCatalog, colleague.capabilities.model) ? t('jiuwenmate.chat.modelUnavailableHint') : null;
   const requestSetupNotice = privateChat.errorCode === 'MODEL_NOT_CONFIGURED'
     ? t('jiuwenmate.chat.modelNotConfigured')
-    : privateChat.errorCode === 'NOT_PUBLISHED' ? t('jiuwenmate.chat.notPublished') : null;
+    : privateChat.errorCode === 'MODEL_NOT_FOUND' ? t('jiuwenmate.chat.modelUnavailableHint')
+      : privateChat.errorCode === 'NOT_PUBLISHED' ? t('jiuwenmate.chat.notPublished') : null;
 
   const sendDraft = async () => {
     const text = draft.trim();
