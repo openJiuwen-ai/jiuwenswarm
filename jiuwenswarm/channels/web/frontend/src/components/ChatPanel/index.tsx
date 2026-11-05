@@ -2583,14 +2583,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {recommendationState === 'disabled' && visibleTopicSlate?.topics.length ? (
-                  <p className="chat-suggestions__title w-full" data-testid="chat-panel-topic-disabled-hint">
-                    {t('chat.topicStarter.disabledHintWithCards')}
-                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
-                      {t('chat.topicStarter.openSettings')}
-                    </button>
-                  </p>
-                ) : recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
+                {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
                   <div
                     className="chat-suggestions__title"
                     role="status"
@@ -2633,6 +2626,14 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   );
                 })}
+                {recommendationState === 'disabled' && visibleTopicSlate?.topics.length ? (
+                  <p className="chat-suggestions__title w-full" data-testid="chat-panel-topic-disabled-hint">
+                    {t('chat.topicStarter.disabledHintWithCards')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </p>
+                ) : null}
               </div>
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
