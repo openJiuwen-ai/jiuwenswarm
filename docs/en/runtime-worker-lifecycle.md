@@ -6,6 +6,7 @@ A resident Worker keeps Runtime loaded across Front restarts for desktop and ord
 - In HarmonyOS's default `front_loopback` mode, Supervisor `stop()` shuts down and reaps its attached Worker.
 - Final desktop exit and upgrade stop the Front, then explicitly drain the current deployment's Worker, including a reattached Worker.
 - Closing a macOS window retains the existing hide/background behavior. Quit performs final cleanup.
+- Quit during workspace preparation cancels subsequent service startup. Full desktop mode also checks for a resident Worker before AgentServer has started; frontend-only mode leaves its external backend running.
 - OS termination, power loss, and interpreter crashes cannot guarantee cleanup. The next launch validates identity and handles old endpoints.
 
 Endpoints are scoped by installation, Python environment, data directory, and runtime profile. HELLO validates code/build identity, installed dependencies, and process creation time. Changed source, dependencies, or native build instances cannot silently reuse old code. Each wheel or native backend build receives a fresh ID, even with identical inputs. Wheels validate contents at build time; startup reads the artifact manifest and observes installed dependencies. Source checkouts continue content validation.
