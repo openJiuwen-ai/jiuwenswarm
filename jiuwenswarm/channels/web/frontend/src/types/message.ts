@@ -78,7 +78,7 @@ export interface AutoReviewerMetadata {
 }
 
 export interface ContextCompressionRuntime {
-  status: 'running' | 'completed' | 'unchanged' | 'failed';
+  status: 'running' | 'completed' | 'unchanged' | 'failed' | 'cancelled' | 'paused';
   summary: string;
   operationId: string;
   phase?: string;

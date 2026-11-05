@@ -245,6 +245,8 @@ HOT_LIST_MATCH_LIMIT = 50
 HOT_LIST_TIMEOUT_SECONDS = 5
 WEIBO_PROVIDER_ID = "weibo-hot-band"
 WEIBO_HOT_BAND_URL = "https://weibo.com/ajax/statuses/hot_band"
+# The AJAX band feed is not a page users open; the public board is.
+WEIBO_HOT_LIST_PAGE_URL = "https://s.weibo.com/top/summary"
 BAIDU_PROVIDER_ID = "baidu-realtime"
 BAIDU_REALTIME_URL = "https://top.baidu.com/board?tab=realtime"
 _BAIDU_DATA = re.compile(r"<!--s-data:(.*?)-->", re.DOTALL)
@@ -266,6 +268,8 @@ class HotListEntry:
     word: str
     summary: str | None = None
     listed_at: float | None = None
+    # Absolute http(s) topic page when the list publishes one; else the board is used.
+    page_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +285,35 @@ def hot_event_key(word: str) -> str:
     """One event however a list writes its term: width, case, spacing and punctuation set aside."""
 
     return "".join(char for char in unicodedata.normalize("NFKC", word).casefold() if char.isalnum())
+
+
+def _http_page_url(*candidates: Any) -> str | None:
+    for value in candidates:
+        url = str(value or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            return url
+    return None
+
+
+def hot_list_board_url(provider_id: str, list_url: str = "") -> str:
+    """The public hot-list board users can open in a browser."""
+
+    if provider_id == WEIBO_PROVIDER_ID:
+        return WEIBO_HOT_LIST_PAGE_URL
+    if provider_id == BAIDU_PROVIDER_ID:
+        return BAIDU_REALTIME_URL
+    fallback = _http_page_url(list_url)
+    return fallback or list_url
+
+
+def hot_list_open_url(entry: HotListEntry, pull: HotListPull) -> str:
+    """Topic page from the list when present; otherwise the public hot-list board.
+
+    Card links must not depend on free-search engines or Bing News search pages.
+    """
+
+    return entry.page_url or hot_list_board_url(entry.provider_id, pull.list_url)
 
 
 def load_hot_list_pull(store: TopicStarterStore, receipt_id: Any) -> HotListPull | None:
@@ -339,6 +372,7 @@ def parse_weibo_hot_band(text: str) -> list[HotListEntry]:
                 rank=rank,
                 word=word,
                 listed_at=float(onboard) if type(onboard) in (int, float) else None,
+                page_url=_http_page_url(item.get("url"), item.get("scheme")),
             )
         )
     return entries
@@ -369,6 +403,9 @@ def parse_baidu_realtime(html: str) -> list[HotListEntry]:
                 rank=index + 1,
                 word=word,
                 summary=str(item.get("desc") or "").strip() or None,
+                page_url=_http_page_url(
+                    item.get("rawUrl"), item.get("url"), item.get("appUrl"),
+                ),
             )
         )
     return entries
@@ -484,11 +521,25 @@ class HotListFeed:
         return None
 
 
+def _recorded_entry(raw: Mapping[str, Any]) -> HotListEntry:
+    summary = raw.get("summary")
+    listed_at = raw.get("listed_at")
+    return HotListEntry(
+        entry_id=str(raw["entry_id"]),
+        provider_id=str(raw["provider_id"]),
+        rank=int(raw["rank"]),
+        word=str(raw["word"]),
+        summary=(str(summary).strip() or None) if summary not in (None, "") else None,
+        listed_at=float(listed_at) if type(listed_at) in (int, float) else None,
+        page_url=_http_page_url(raw.get("page_url")),
+    )
+
+
 def _recorded_pull(payload: Mapping[str, Any]) -> HotListPull:
     return HotListPull(
         receipt_id=str(payload["receipt_id"]),
         provider_id=str(payload["provider_id"]),
         list_url=str(payload["list_url"]),
         pulled_at=float(payload["pulled_at"]),
-        entries=tuple(HotListEntry(**entry) for entry in payload["entries"]),
+        entries=tuple(_recorded_entry(entry) for entry in payload["entries"]),
     )

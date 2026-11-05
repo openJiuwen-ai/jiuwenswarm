@@ -194,6 +194,33 @@ def freeze_consent_boundary(now: float) -> None:
         )
 
 
+def repair_missing_consent_boundary(now: float | None = None) -> bool:
+    """Freeze a missing boundary when topics are already enabled.
+
+    ``topic_enabled`` can land in YAML without the store-side freeze (settings write through
+    ``common.recommendation_switches`` before the agent hook is registered). Across restarts the
+    switch stays on while ``history_after`` stays ``None``, so every turn is excluded and
+    generation abstains with ``no_eligible_history``. Repair freezes at ``now``; earlier turns
+    stay outside the boundary unless the user opts into include-history.
+    """
+
+    from jiuwenswarm.agents.harness.common.recommendation.switches import (
+        is_topic_recommendation_enabled,
+    )
+
+    if not is_topic_recommendation_enabled():
+        return False
+    if _consent_state()["history_after"] is not None:
+        return False
+    moment = time.time() if now is None else now
+    freeze_consent_boundary(moment)
+    logger.info(
+        "[Recommendation] repaired missing consent boundary at history_after=%s",
+        moment,
+    )
+    return True
+
+
 def migrate_legacy_recommendation_switches() -> bool:
     """Retire ``recommendation.enabled`` onto the two switches it used to drive.
 
@@ -337,9 +364,18 @@ def recommendation_model_configuration(*, include_api_key: bool = False) -> dict
     stored = section.get("model_config") if isinstance(section, dict) else None
     if not isinstance(stored, dict):
         return {}
-    return {key: value for key, value in stored.items() if key != "api_key" or include_api_key} | {
-        "has_api_key": bool(stored.get("api_key")),
+    payload = {
+        key: value
+        for key, value in stored.items()
+        if key != "api_key" or include_api_key
     }
+    payload["has_api_key"] = bool(stored.get("api_key"))
+    # Settings always edits an explicit window; legacy rows fall back here.
+    payload["context_window_tokens"] = (
+        parse_positive_int(stored.get("context_window_tokens"))
+        or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+    )
+    return payload
 
 
 def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
@@ -352,6 +388,9 @@ def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
         return False
     if not clean["api_base"].startswith(("http://", "https://")) or len(clean["api_base"]) > 512:
         return False
+    context_window_tokens = parse_positive_int(values.get("context_window_tokens"))
+    if context_window_tokens is None:
+        return False
     section = get_config().get("recommendation") or {}
     previous = (section.get("model_config") or {}) if isinstance(section, dict) else {}
     if not clean["api_key"] and isinstance(previous, dict):
@@ -359,6 +398,7 @@ def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
             clean["api_key"] = str(previous.get("api_key") or "")
     if not clean["api_key"] or len(clean["api_key"]) > 2048:
         return False
+    clean["context_window_tokens"] = context_window_tokens
 
     def mutate(config: dict[str, Any]) -> dict[str, Any]:
         target = config.get("recommendation")
@@ -391,8 +431,13 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
         if not all(dedicated.get(key) for key in ("api_key", "api_base", "model")):
             return None
         return ArkBackgroundConfig(
-            api_key=dedicated["api_key"], model=dedicated["model"], base_url=dedicated["api_base"],
-            context_window_tokens=131072,
+            api_key=dedicated["api_key"],
+            model=dedicated["model"],
+            base_url=dedicated["api_base"],
+            context_window_tokens=(
+                parse_positive_int(dedicated.get("context_window_tokens"))
+                or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+            ),
         )
     entries = [entry for entry in get_default_models(config) if _model_name(entry)]
     entry = _chosen_entry(config, entries)

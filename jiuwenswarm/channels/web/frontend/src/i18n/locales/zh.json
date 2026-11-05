@@ -1128,14 +1128,17 @@
         "collapse": "收起调度控制",
         "expand": "展开调度控制",
         "summary": "{{tasks}} 个任务 · {{completed}} 个完成 · {{reviews}} 次 Review · {{reworks}} 次返工",
-        "controlRecords": "{{count}} 条调度记录",
         "anomalies": "{{count}} 个调度异常",
         "blockedLegend": "浅灰段：等待依赖",
         "blockedLegendHint": "浅灰时间轴表示任务正在等待前置任务完成，依赖解除后会继续执行。",
         "assignee": "承担者",
+        "assigneeValue": "承担者：{{name}}",
         "unassigned": "未指派",
         "unknownMember": "未知成员",
         "closeTask": "关闭任务详情",
+        "reviewRecords": "评审记录",
+        "expandReviews": "展开评审记录",
+        "collapseReviews": "收起评审记录",
         "noReviews": "暂无 Review 记录",
         "reviewCount_one": "{{count}} 次评审",
         "reviewCount_other": "{{count}} 次评审",
@@ -1503,6 +1506,8 @@
       "running": "正在压缩上下文",
       "completed": "上下文压缩完成 {{count}} 次",
       "failed": "上下文压缩失败",
+      "cancelled": "上下文压缩已取消",
+      "paused": "上下文压缩已暂停",
       "close": "关闭上下文压缩提示"
     },
     "elapsed": {
@@ -1785,7 +1790,7 @@
       "nextStep": "帮我把一个想法变成可执行的下一步。"
     },
     "topicStarter": {
-      "statusMissingConfiguration": "话题推荐模型未配置完整，请前往常规设置检查。",
+      "statusMissingConfiguration": "话题推荐暂不可用，请前往设置检查。",
       "recommendedForYou": "为你推荐",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",
@@ -1797,17 +1802,16 @@
       "hotListListedAt": "上榜 {{time}}",
       "viewHotListEntry": "看看这条热搜：{{source}}",
       "hotListEntry": "热搜",
-      "openNewsSearch": "打开相关新闻",
-      "searchRelatedNews": "看看相关新闻",
+      "openNewsSearch": "打开热搜话题",
+      "searchRelatedNews": "打开热搜",
       "statusPreparing": "正在准备话题，你也可以直接开始聊。",
-      "statusPreparingWithCards": "正在换一批更贴你的话题，这些还可以先点。",
-      "statusUpdateIncomplete": "新话题还没就绪，先用这些也行。",
-      "statusNeedsSettings": "想让话题更懂你，可以去设置-常规里打开。",
-      "statusNoCards": "这会儿没有合适的话题，直接打字开始也行。",
-      "providerRefusal": "个性化这边暂时接不上，细节在设置里。",
+      "statusPreparingWithCards": "正在准备话题，你也可以直接开始聊。",
+      "statusUpdateIncomplete": "正在准备话题，你也可以直接开始聊。",
+      "statusNeedsSettings": "话题推荐暂不可用，请前往设置检查。",
+      "statusNoCards": "正在准备话题，你也可以直接开始聊。",
+      "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
-      "disabledHint": "想让话题更懂你，可以去设置-常规里打开。",
-      "retryPreparation": "再试试"
+      "disabledHintWithCards": "下面是预置话题。打开设置里的话题推荐后，会逐步换成更贴你的话题。"
     },
     "promptSuggestionBox": {
       "label": "下一步：",
@@ -1981,6 +1985,8 @@
       "minutesSeconds": "已等待 {{minutes}} 分 {{seconds}} 秒",
       "hoursMinutes": "已等待 {{hours}} 小时 {{minutes}} 分"
     },
+    "contextCompressionCancelled": "上下文压缩已取消，将在下次请求时重新评估",
+    "contextCompressionPaused": "上下文压缩已暂停，恢复任务后将重新评估",
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
       "loadingMore": "加载中…",

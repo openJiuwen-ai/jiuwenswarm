@@ -568,7 +568,7 @@ def test_permission_interrupt_exposes_only_reviewer_ui_metadata(
         "always_allow",
         "reject",
     ]
-    assert question["card_id"] == "invocation:tool-call-17"
+    assert question["card_id"] == "tool-call-17"
     assert "tool_call_id" not in question
     assert "tool_invocation_key" not in question
     assert question["reviewer_metadata"] == {
@@ -645,7 +645,7 @@ def test_verified_permission_card_keeps_core_locator_backend_only() -> None:
     assert result is not None
     assert result["request_id"] == "tool-call-fail-closed"
     question = result["questions"][0]
-    assert question["card_id"] == "invocation:tool-call-fail-closed"
+    assert question["card_id"] == "tool-call-fail-closed"
     assert "tool_call_id" not in question
     assert "tool_invocation_key" not in question
 
@@ -766,7 +766,7 @@ def test_permission_interrupt_projects_only_opaque_live_card_id() -> None:
     )
 
     question = result["questions"][0]
-    assert question["card_id"] == "invocation:tool-call-17"
+    assert question["card_id"] == "tool-call-17"
     assert "tool_invocation_key" not in question
     assert "tool_call_id" not in question
 

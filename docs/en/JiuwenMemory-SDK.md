@@ -146,7 +146,7 @@ pip install JiuwenMemory
 Verify:
 
 ```bash
-python -c "from api import assemble; print('agent-memory OK')"
+python -c "from jiuwen_memory.api import assemble; print('agent-memory OK')"
 ```
 
 > ⚠️ If missing or installed in the wrong env, startup logs show a `RuntimeError` prompting `pip install JiuwenMemory` and the rail won't mount (main flow is not blocked). If you launch JiuwenSwarm with `uv`/a venv, run `pip install` in the **same environment**.
@@ -400,7 +400,7 @@ If the mount failed, run these two first:
 
 ```bash
 # 1. Confirm the agent-memory kernel is installed
-python -c "from api import assemble; print('agent-memory OK')"
+python -c "from jiuwen_memory.api import assemble; print('agent-memory OK')"
 
 # 2. Confirm the top-level Embedding config (required for SDK)
 python -c "import os; print('EMBED_API_KEY:', bool(os.environ.get('EMBED_API_KEY'))); print('EMBED_API_BASE:', os.environ.get('EMBED_API_BASE')); print('EMBED_MODEL:', os.environ.get('EMBED_MODEL'))"
@@ -486,7 +486,7 @@ build_external_memory_rail(config)
 
 ```
 _SDKBackend.initialize()
-  ├─ from api import assemble
+  ├─ from jiuwen_memory.api import assemble
   ├─ cfg = Config.from_dict(config_dict)   # empty dict / failure → default, warn only
   ├─ self._api = assemble(config=cfg)       # failure raises RuntimeError, caught by builder
   └─ caches Scope / Modality / Context / DisclosureLevel types
@@ -565,7 +565,7 @@ Different `(tenant_id, user_id)` pairs are mutually invisible. For multi-user sc
 Follow this to complete setup:
 
 - [ ] Main app JiuwenSwarm can chat normally (prerequisite)
-- [ ] `pip install JiuwenMemory`, and verify with `python -c "from api import assemble"`
+- [ ] `pip install JiuwenMemory`, and verify with `python -c "from jiuwen_memory.api import assemble"`
 - [ ] Top-level `EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL` set (§4.1, required for SDK)
 - [ ] Deploy Redis / Milvus / Elasticsearch and confirm addresses are reachable (§3.3)
 - [ ] Fill the SDK config in the `memory` section of `config.yaml`; replace the three `*_url` with real addresses (§4.2)

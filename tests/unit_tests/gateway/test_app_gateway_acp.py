@@ -195,7 +195,7 @@ class _ProcessExited(Exception):
     pass
 
 
-def _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls):
+def _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls, getppid=os.getppid):
     """Swap the module's ``os`` for a local stub.
 
     Patching attributes on ``gateway_module.os`` mutates the real, process-wide
@@ -215,7 +215,7 @@ def _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls):
         SimpleNamespace(
             environ=os.environ,
             getpid=os.getpid,
-            getppid=os.getppid,
+            getppid=getppid,
             _exit=fake_exit,
             execv=lambda executable, argv: execv_calls.append(argv),
         ),
@@ -227,10 +227,16 @@ def test_exec_gateway_restart_exits_to_supervisor(monkeypatch):
 
     exit_codes = []
     execv_calls = []
-    _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
-    # The real parent (pytest) is alive and older than us, so the live
-    # supervisor check passes without stubbing psutil.
-    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+    # The check needs a live process that is not younger than us, and the real
+    # parent is one. os.getppid() returns 0 when this process is PID 1, which
+    # it is inside a container that has no init shim, and PID 0 is not a
+    # process. PID 1 always exists and always starts first, so it stands in.
+    # Either way psutil stays real and the liveness and age checks both run.
+    supervisor_pid = os.getppid() or 1
+    _install_fake_os(
+        monkeypatch, gateway_module, exit_codes, execv_calls, getppid=lambda: supervisor_pid
+    )
+    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(supervisor_pid))
 
     with pytest.raises(_ProcessExited):
         gateway_module._exec_gateway_restart()

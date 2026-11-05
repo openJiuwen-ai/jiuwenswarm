@@ -49,7 +49,7 @@ test('updates one card in place and consumes only that card', () => {
 
 test('rejects malformed and multi-question permission payloads', () => {
   assert.deepEqual(enqueuePendingQuestions([], permission('')), []);
-  assert.deepEqual(enqueuePendingQuestions([], permission('x'.repeat(129))), []);
+  assert.deepEqual(enqueuePendingQuestions([], permission('x'.repeat(513))), []);
   assert.deepEqual(
     enqueuePendingQuestions([], {
       ...permission('card-a'),
@@ -134,7 +134,18 @@ for (const count of [1, 2]) {
   });
 }
 
-for (const card of [undefined, null, '', ' ', 12, {}, 'x'.repeat(129)]) {
+for (const size of [128, 129, 512]) {
+  test(`call-ID alias of ${size} characters retains identity and binding`, () => {
+    const callId = 'c'.repeat(size);
+    const payload = { ...permission(callId), request_id: callId };
+    assert.equal(enqueuePendingQuestions([], payload).length, 1);
+    assert.deepEqual(bindPendingPermissionCard([{ selected_options: ['allow_once'] }], payload.questions), [
+      { selected_options: ['allow_once'], card_id: callId },
+    ]);
+  });
+}
+
+for (const card of [undefined, null, '', ' ', 12, {}, 'x'.repeat(513)]) {
   test(`an explicit invalid card (${String(card)}) never downgrades to legacy`, () => {
     const payload = permission(card);
     assert.deepEqual(enqueuePendingQuestions([], payload), []);

@@ -6,6 +6,7 @@ import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
+import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
 import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import { toast } from '../../../components/ui';
@@ -142,6 +143,17 @@ export function DesignerChatPanel() {
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
+  const ensureDuplexSession = useCallback(async () => {
+    if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
+    try {
+      await useDesignerStore.getState().flushSave();
+      bindDesignerChatSession(sessionId);
+      return sessionId;
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : t('designer.loadErrorFallback'));
+      return null;
+    }
+  }, [sessionId, domainGraph, t]);
 
   // Design has no model switch: a missing chat model means no leader round can
   // run at all, so warn here instead of failing only after the user sends
@@ -315,6 +327,13 @@ export function DesignerChatPanel() {
       const interruptId =
         pendingQuestion?.request_id === requestId ? pendingQuestion.interruptId : undefined;
       try {
+        if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
+          await webClient.request('video.search.answer', {
+            session_id: sessionId, job_id: pendingQuestion.duplexJobId, request_id: requestId, answers,
+          });
+          useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
+          return true;
+        }
         await webClient.request('chat.send', {
           session_id: sessionId,
           query: '',
@@ -446,6 +465,21 @@ export function DesignerChatPanel() {
               /* No model switch on the canvas: show the model Design runs on (#5266). */
               <DesignerModelBadge sessionId={sessionId} />
             ) : null}
+            <ApplicationPluginTaskInputActions
+              eligible={
+                Boolean(sessionId && domainGraph?.graph_id && !isDesignerPreviewGraph(domainGraph)) &&
+                !chatBusy && attachments.length === 0
+              }
+              hasTextDraft={Boolean(draft.trim())}
+              sessionId={sessionId}
+              ensureSession={ensureDuplexSession}
+              labels={{
+                start: t('chat.taskFullDuplexStart'),
+                starting: t('chat.taskFullDuplexStarting'),
+                stop: t('chat.taskFullDuplexStop'),
+              }}
+              fallback={
+                <>
             {isProcessing ? (
               <button
                 type="button"
@@ -482,6 +516,9 @@ export function DesignerChatPanel() {
                 )}
               </button>
             )}
+                </>
+              }
+            />
           </div>
         </div>
       </div>
