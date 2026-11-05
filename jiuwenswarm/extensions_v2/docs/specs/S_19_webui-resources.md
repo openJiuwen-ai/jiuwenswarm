@@ -1,7 +1,7 @@
 # AgentServer WebUI 文件资源
 
 最近修订：2026-11-05。组件字段以 [S_17](S_17_webui-component-props.md) 为准。
-本文件是 AgentServer 文件资源 API 的契约。
+本文件是 AgentServer 文件资源 API 的契约；实施与验证记录见 [Token Weather 改造](../features/F_30_token-weather-glass.md#2026-11-05-文件资源改造开发中)。
 
 ## API 与职责
 
@@ -55,4 +55,4 @@ HTTP 对 HTML 等活动内容施加与 Iframe 相同的 CSP sandbox，不包含 
 - R-06：不扩大 srcDoc/帧预算，不裁剪 HTML，不以 file:// 或 Blob URL 代替资源链路。
 - R-07：释放、作用域关闭及停机从清理入口开始保护取消，包括等候资源锁、写入结束和实际目录删除；连续取消不打断已接受的操作。关闭服务还须完成临时根目录的清理及句柄释放。删除失败时保留已撤销登记以供后续显式清理，旧地址不可读取，不自动重试 I/O。
 
-验证入口：`test_resources.py`、`tests/integration/test_webui_resource_browser.py`、共享 `webuiPanelDocumentCases.json` 和前端组件/客户端测试。
+验证入口：`test_resources.py`、`test_token_weather_glass.py`、`tests/integration/test_webui_resource_browser.py`、共享 `webuiPanelDocumentCases.json` 和前端组件/客户端测试。
