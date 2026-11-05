@@ -1792,6 +1792,43 @@ def _try_add_cache_control(msg: Any) -> None:
             last_block["cache_control"] = {"type": "ephemeral"}
 
 
+def _resolve_cron_session_identity(
+    execution_request: Any | None,
+    session_id: str,
+) -> tuple[str, str]:
+    """Resolve the cron owner identity for a session-scoped adapter.
+
+    Identity comes from the authenticated AgentServer request first.  When the
+    adapter is created outside a chat turn (lazy rebuild, resume, sub-agent),
+    the session metadata written by ``session.create`` is the fallback.  The
+    value is only *carried* to the cron tool route; the Gateway remains the
+    authority that validates ownership.
+    """
+    sid = str(session_id or "").strip()
+    user_id = ""
+    if execution_request is not None:
+        user_id = str(getattr(execution_request, "user_id", "") or "").strip()
+    if not user_id and sid:
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_metadata,
+            )
+
+            metadata = get_session_metadata(sid) or {}
+            user_id = str(metadata.get("user_id") or "").strip()
+            if not user_id:
+                channel_metadata = metadata.get("channel_metadata")
+                if isinstance(channel_metadata, dict):
+                    user_id = str(channel_metadata.get("user_id") or "").strip()
+        except Exception:  # noqa: BLE001 - fallback must not block adapter creation
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] cron owner lookup failed: session_id=%s",
+                sid,
+                exc_info=True,
+            )
+    return sid, user_id
+
+
 class _RuntimeCronToolContext:
     """Stable cron tool context proxy backed by per-task contextvars."""
 
@@ -1803,13 +1840,51 @@ class _RuntimeCronToolContext:
         self._fallback_mode: str | None = None
         self._fallback_user_id: str | None = None
 
+    def bind_session(self, *, session_id: str, user_id: str) -> None:
+        """Pin the owning session/user resolved when the adapter is created.
+
+        Cron tools may execute in a task or thread that never inherited the
+        per-turn contextvars (observed on AgentOS: tool calls reported an empty
+        request/session/user route, so jobs were persisted without an owner and
+        the Gateway command ACK could not be routed back).  The session-scoped
+        adapter therefore remembers the identity once, and the properties below
+        fall back to it when the contextvars are unavailable.
+        """
+        sid = str(session_id or "").strip()
+        uid = str(user_id or "").strip()
+        if sid:
+            self._fallback_session_id = sid
+        if not uid:
+            return
+        if self._fallback_user_id and self._fallback_user_id != uid:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] cron owner mismatch on session adapter: "
+                "session_id=%s existing=%s incoming=%s",
+                sid,
+                self._fallback_user_id,
+                uid,
+            )
+            return
+        self._fallback_user_id = uid
+
     def remember_current_binding(self) -> None:
-        self._fallback_channel_id = _CRON_TOOL_CHANNEL_ID.get()
-        self._fallback_session_id = _CRON_TOOL_SESSION_ID.get()
+        # Only overwrite with non-empty values so a per-turn empty binding
+        # cannot erase the identity pinned by ``bind_session``.
+        channel_id = _CRON_TOOL_CHANNEL_ID.get()
+        if channel_id:
+            self._fallback_channel_id = channel_id
+        session_id = _CRON_TOOL_SESSION_ID.get()
+        if session_id:
+            self._fallback_session_id = session_id
         metadata = _CRON_TOOL_METADATA.get()
-        self._fallback_metadata = dict(metadata) if isinstance(metadata, dict) else None
-        self._fallback_mode = _CRON_TOOL_MODE.get()
-        self._fallback_user_id = _CRON_TOOL_USER_ID.get()
+        if isinstance(metadata, dict) and metadata:
+            self._fallback_metadata = dict(metadata)
+        mode = _CRON_TOOL_MODE.get()
+        if mode:
+            self._fallback_mode = mode
+        user_id = _CRON_TOOL_USER_ID.get()
+        if user_id:
+            self._fallback_user_id = user_id
 
     @property
     def channel_id(self) -> str:
@@ -1819,29 +1894,26 @@ class _RuntimeCronToolContext:
 
     @property
     def session_id(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_SESSION_ID.get()
-        return self._fallback_session_id
+        bound = _CRON_TOOL_SESSION_ID.get() if _CRON_TOOL_BOUND.get() else None
+        return bound or self._fallback_session_id
 
     @property
     def metadata(self) -> dict[str, Any] | None:
         if _CRON_TOOL_BOUND.get():
             metadata = _CRON_TOOL_METADATA.get()
-            if isinstance(metadata, dict):
+            if isinstance(metadata, dict) and metadata:
                 return metadata
         return self._fallback_metadata
 
     @property
     def mode(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_MODE.get()
-        return self._fallback_mode
+        bound = _CRON_TOOL_MODE.get() if _CRON_TOOL_BOUND.get() else None
+        return bound or self._fallback_mode
 
     @property
     def user_id(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_USER_ID.get()
-        return self._fallback_user_id
+        bound = _CRON_TOOL_USER_ID.get() if _CRON_TOOL_BOUND.get() else None
+        return bound or self._fallback_user_id
 
     @property
     def tool_scope(self) -> str:
@@ -4251,6 +4323,20 @@ class JiuWenSwarmDeepAdapter:
                 return existing
 
             adapter = self._new_session_scoped_adapter(sid)
+            # Cron tools may run on a task/thread that never inherits the
+            # per-turn contextvars (their route then carries no user_id, so the
+            # Gateway persists an ownerless job and cannot route the command
+            # ACK back).  Pin the session owner on the adapter once, here.
+            # ``getattr`` keeps test doubles that bypass ``__init__`` working.
+            cron_context = getattr(adapter, "_runtime_cron_tool_context", None)
+            if cron_context is not None:
+                _cron_sid, _cron_uid = _resolve_cron_session_identity(
+                    execution_request, sid
+                )
+                cron_context.bind_session(
+                    session_id=_cron_sid,
+                    user_id=_cron_uid,
+                )
             if (
                 isinstance(external_harness_binding, dict)
                 and external_harness_binding.get("kind") == "external_harness"
@@ -12551,7 +12637,9 @@ class JiuWenSwarmDeepAdapter:
             self._paid_search_registered = True
 
         for tool_cls in [TrustedWebFreeSearchTool, WebFetchWebpageTool]:
-            tool_instance = tool_cls(agent_id=agent_id)
+            tool_instance = tool_cls(
+                language=self._resolve_runtime_language(), agent_id=agent_id
+            )
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
 

@@ -52,6 +52,7 @@ export interface PendingQuestionItem {
   multiSelect?: boolean;
   planPath?: string;
   planSlug?: string;
+  /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   cardId?: string;
 }
 
@@ -66,6 +67,7 @@ export interface PendingQuestionOption {
 export interface UserAnswer {
   selected_options: string[];
   custom_input?: string;
+  /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   card_id?: string;
 }
 
@@ -546,7 +548,7 @@ function normalizePendingQuestion(payload: Record<string, unknown>): PendingQues
 function boundedCardId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
-  return normalized && normalized.length <= 128 ? normalized : undefined;
+  return normalized && normalized.length <= 512 ? normalized : undefined;
 }
 
 function handleDelta(

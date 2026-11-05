@@ -689,6 +689,20 @@ def _permission_question(card_id: str) -> dict:
 
 class TestPermissionCardAnswer:
     @staticmethod
+    @pytest.mark.parametrize("size", [128, 129, 512, 513])
+    def test_call_id_alias_boundary(size: int):
+        from jiuwenswarm.channels.cli.chat import _permission_answer_for_card
+
+        call_id = "c" * size
+        answers = _permission_answer_for_card(
+            [_permission_question(call_id)], selected="allow_once", custom_input="",
+        )
+        assert answers == (
+            [{"selected_options": ["allow_once"], "custom_input": "", "card_id": call_id}]
+            if size <= 512 else []
+        )
+
+    @staticmethod
     def test_builds_one_opaque_card_answer():
         from jiuwenswarm.channels.cli.chat import _permission_answer_for_card
 

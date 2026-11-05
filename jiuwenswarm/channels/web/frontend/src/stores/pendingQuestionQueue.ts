@@ -16,7 +16,7 @@ export function pendingQuestionIdentity(payload: AskUserQuestionPayload): string
     const kind = permissionQuestionKind(payload.questions);
     if (!kind) return undefined;
     if (kind === 'smart') {
-      return `permission\u0000${boundedIdentity(payload.questions[0].card_id, 128)}`;
+      return `permission\u0000${boundedIdentity(payload.questions[0].card_id, 512)}`;
     }
   }
   const requestId = boundedIdentity(payload.request_id, 512);
@@ -34,7 +34,7 @@ export function permissionQuestionKind(
   if (questions.every((question) => !Object.prototype.hasOwnProperty.call(question, 'card_id'))) {
     return 'legacy';
   }
-  return questions.length === 1 && boundedIdentity(questions[0].card_id, 128) ? 'smart' : undefined;
+  return questions.length === 1 && boundedIdentity(questions[0].card_id, 512) ? 'smart' : undefined;
 }
 
 export function enqueuePendingQuestions(
@@ -129,7 +129,7 @@ export function bindPendingPermissionCard(
       return bound;
     });
   }
-  const cardId = boundedIdentity(questions[0]?.card_id, 128);
+  const cardId = boundedIdentity(questions[0]?.card_id, 512);
   if (!cardId) return [];
   const answer = { ...answers[0] };
   delete answer.card_id;
