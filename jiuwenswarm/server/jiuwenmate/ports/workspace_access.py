@@ -19,9 +19,10 @@ import shutil
 import stat
 from pathlib import Path
 
+from openjiuwen.harness.persistent_agent import ExecutionContext, WorkspaceReadScope, WorkspaceWriteScope
+
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
-from openjiuwen.harness.persistent_agent import ExecutionContext, WorkspaceReadScope, WorkspaceWriteScope
 
 WORKSPACE_READ = "workspace_read"
 WORKSPACE_WRITE = "workspace_write"
@@ -49,14 +50,14 @@ class WorkspaceStore:
         return self._root / namespace_id / agent_id
 
     @staticmethod
-    def _is_redirected(metadata: os.stat_result) -> bool:
+    def is_redirected(metadata: os.stat_result) -> bool:
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         return stat.S_ISLNK(metadata.st_mode) or bool(
             getattr(metadata, "st_file_attributes", 0) & reparse_flag
         )
 
     def _assert_safe_directory(self, path: Path, metadata: os.stat_result) -> None:
-        if self._is_redirected(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        if self.is_redirected(metadata) or not stat.S_ISDIR(metadata.st_mode):
             raise PersistentAgentError("workspace directory must be a real directory")
         try:
             path.resolve(strict=True).relative_to(self._root)
@@ -148,13 +149,11 @@ class WorkspaceStore:
     def resolve_shared_output(self, namespace_id: str, agent_id: str, file_path: str) -> Path | None:
         """Resolve a regular file under its originating ``sessions/<id>/output/`` directory."""
         parts = file_path.split("/") if isinstance(file_path, str) else []
-        if (
-            len(parts) != 4
-            or parts[0] != SESSIONS_DIR
-            or not _DIR_NAME.fullmatch(parts[1])
-            or parts[2] != "output"
+        invalid_session_path = len(parts) != 4 or parts[0] != SESSIONS_DIR or not _DIR_NAME.fullmatch(parts[1])
+        if invalid_session_path or (
+            parts[2] != "output"
             or parts[3] in ("", ".", "..")
-            or any(char in parts[3] for char in ("\\", ":", "\x00"))
+            or any((char in parts[3] for char in ("\\", ":", "\x00")))
         ):
             return None
 
@@ -165,12 +164,12 @@ class WorkspaceStore:
             output_root = session_root / "output"
             self._check_directory(output_root, create=False)
             output_metadata = output_root.lstat()
-            if self._is_redirected(output_metadata) or not stat.S_ISDIR(output_metadata.st_mode):
+            if self.is_redirected(output_metadata) or not stat.S_ISDIR(output_metadata.st_mode):
                 return None
 
             candidate = output_root / parts[3]
             metadata = candidate.lstat()
-            if self._is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
+            if self.is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
                 return None
             candidate.resolve(strict=True).relative_to(output_root.resolve(strict=True))
             return candidate

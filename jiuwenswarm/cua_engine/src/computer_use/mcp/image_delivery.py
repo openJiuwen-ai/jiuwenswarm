@@ -5,9 +5,10 @@ import math
 from dataclasses import dataclass
 from io import BytesIO
 
-from ..protocol.png import decode_png, png_size
-from ..client.image_coordinates import ImageCoordinates
 from PIL import Image
+
+from ..client.image_coordinates import ImageCoordinates
+from ..protocol.png import decode_png, png_size
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,7 @@ def prepare_image(
     png: bytes | bytearray | memoryview, *, max_dimension: int = 2048, max_pixels: int = 1536 * 1536
 ) -> ImageDelivery:
     """Resize once before publication; never derive a map from a nominal ratio."""
-    if type(max_dimension) is not int or max_dimension <= 0 or type(max_pixels) is not int or max_pixels <= 0:
+    if any(type(limit) is not int or limit <= 0 for limit in (max_dimension, max_pixels)):
         raise ValueError("Image delivery limits must be positive integers.")
     decode_png(base64.b64encode(png).decode("ascii"))
     size = png_size(png)

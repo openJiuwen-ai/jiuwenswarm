@@ -150,10 +150,10 @@ class IMPermissionReplies:
             return True
         if decision == "approve" and tool_call_id is None and len(approval.intercepted) == 1:
             tool_call_id = approval.intercepted[0]["tool_call_id"]
-        if (
-            decision == "approve" and tool_call_id not in {item["tool_call_id"] for item in approval.intercepted}
-            or decision == "reject" and tool_call_id is not None
-        ):
+        invalid_approval = decision == "approve" and tool_call_id not in {
+            item["tool_call_id"] for item in approval.intercepted
+        }
+        if invalid_approval or decision == "reject" and tool_call_id is not None:
             await feedback("请选择具体工具调用，回复以下完整命令：\n" + approval_instructions(approval))
             return True
 

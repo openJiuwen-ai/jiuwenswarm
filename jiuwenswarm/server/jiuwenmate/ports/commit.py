@@ -22,12 +22,13 @@ from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
 
+from openjiuwen.harness.persistent_agent import AgentEvent, EventType, ExecutionContext
+from openjiuwen.harness.persistent_agent.schema.port_results import ExecutionLink
+
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, WorkspaceOutputFiles
-from openjiuwen.harness.persistent_agent import AgentEvent, EventType, ExecutionContext
-from openjiuwen.harness.persistent_agent.schema.port_results import ExecutionLink
 
 logger = logging.getLogger(__name__)
 

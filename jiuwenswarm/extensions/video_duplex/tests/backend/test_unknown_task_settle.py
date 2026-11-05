@@ -103,7 +103,11 @@ async def test_core_cancel_of_detached_request_does_not_touch_session_round():
         return True
 
     other = SimpleNamespace(request_id="other-round")
-    adapter = SimpleNamespace(
+    class InterruptAdapter(SimpleNamespace, JiuWenSwarmDeepAdapter):
+        pass
+
+    adapter = InterruptAdapter(
+        _is_session_scoped_adapter=True, _instance_interaction_started=lambda: True,
         _resolve_interrupt_session_id=lambda s: s,
         _voice_agent_task_rail=SimpleNamespace(managed_tasks={"core-s": other}),
         _cancel_scheduler_running_tasks=lambda: touched.append("scheduler"),
@@ -113,9 +117,7 @@ async def test_core_cancel_of_detached_request_does_not_touch_session_round():
         request_id="cancel-gone", channel_id="video_tool", session_id="core-s",
         params={"intent": "cancel", "managed_task_request": "gone"},
     )
-    response = await JiuWenSwarmDeepAdapter._process_interaction_interrupt(
-        adapter, request, "cancel", None
-    )
+    response = await adapter.process_interrupt(request)
     assert touched == []
     assert response.ok and response.payload["managed_task_settled"] is True
 
@@ -144,7 +146,11 @@ async def test_failed_round_cancel_falls_back_to_cancelling_the_active_cua():
 
     running = asyncio.create_task(cua())
     await registered.wait()
-    adapter = SimpleNamespace(
+    class InterruptAdapter(SimpleNamespace, JiuWenSwarmDeepAdapter):
+        pass
+
+    adapter = InterruptAdapter(
+        _is_session_scoped_adapter=True, _instance_interaction_started=lambda: True,
         _resolve_interrupt_session_id=lambda s: s,
         _voice_agent_task_rail=SimpleNamespace(managed_tasks={}),
         _cancel_scheduler_running_tasks=lambda: None,
@@ -157,9 +163,7 @@ async def test_failed_round_cancel_falls_back_to_cancelling_the_active_cua():
         request_id="cancel-cua", channel_id="video_tool", session_id="core-s",
         params={"intent": "cancel", "managed_task_request": "cua-request"},
     )
-    response = await JiuWenSwarmDeepAdapter._process_interaction_interrupt(
-        adapter, request, "cancel", None
-    )
+    response = await adapter.process_interrupt(request)
     await asyncio.wait({running}, timeout=1)
     cancelled_by_interrupt = running.cancelled()
     running.cancel()

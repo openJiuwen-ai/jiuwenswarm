@@ -174,6 +174,7 @@ _OWNER_START_REMINDER = (
     "the requested deliverable."
 )
 
+
 def _lock_for(session_id: str) -> asyncio.Lock:
     lock = _locks.get(session_id)
     if lock is None:
@@ -805,12 +806,11 @@ def earlier_organization_plans(
 
 def _earlier_live_plans(session_id: str, member_name: str, plan: dict) -> list[dict]:
     target = _plan_sort_key(plan)
-    earlier = [
-        item
-        for item in _collect_live_plans(session_id, member_name)
-        if str(item.get("plan_id") or "") != str(plan.get("plan_id") or "")
-        and _plan_sort_key(item) < target
-    ]
+    plan_id = str(plan.get("plan_id") or "")
+    earlier = []
+    for item in _collect_live_plans(session_id, member_name):
+        if str(item.get("plan_id") or "") != plan_id and _plan_sort_key(item) < target:
+            earlier.append(item)
     earlier.sort(key=_plan_sort_key)
     return earlier
 
@@ -886,14 +886,15 @@ def _blocking_earlier_plans(session_id: str, plan: dict) -> list[dict]:
 
     members = {str(name) for name in (plan.get("members") or [])}
     target = _plan_sort_key(plan)
-    blocking = [
-        item
-        for item in group_organization_plans(session_id)
-        if str(item.get("status") or "") in {"pending", "running"}
-        and str(item.get("plan_id") or "") != str(plan.get("plan_id") or "")
-        and _plan_sort_key(item) < target
-        and members.intersection(str(name) for name in (item.get("members") or []))
-    ]
+    plan_id = str(plan.get("plan_id") or "")
+    blocking = []
+    for item in group_organization_plans(session_id):
+        if str(item.get("status") or "") not in {"pending", "running"}:
+            continue
+        if str(item.get("plan_id") or "") == plan_id or _plan_sort_key(item) >= target:
+            continue
+        if members.intersection(str(name) for name in (item.get("members") or [])):
+            blocking.append(item)
     blocking.sort(key=_plan_sort_key)
     return blocking
 
@@ -941,16 +942,11 @@ def route_live_organization_plan(
         _collect_live_plans(session_id, member_name),
         key=_plan_sort_key,
     )
-    pending = next(
-        (
-            item
-            for item in live
-            if not organization_plan_accepted(
-                session_id, str(item.get("plan_id") or ""), member_name
-            )
-        ),
-        plan,
-    )
+    pending = plan
+    for item in live:
+        if not organization_plan_accepted(session_id, str(item.get("plan_id") or ""), member_name):
+            pending = item
+            break
     claim_organization_plan(session_id, str(pending.get("plan_id") or ""), member_name)
     return ("queue", pending)
 
@@ -1709,12 +1705,8 @@ async def _fail_followup_card(session_id: str, execution_id: str | None) -> None
     store = GroupExecutions(session_id)
     try:
         record = store.get(execution_id)
-    except Exception:
-        return
-    if record.get("status") in TERMINAL:
-        return
-    try:
-        await store.update(execution_id, status="failed", phase="failed")
+        if record.get("status") not in TERMINAL:
+            await store.update(execution_id, status="failed", phase="failed")
     except Exception:
         logger.warning(
             "group follow-up card was not marked failed session=%s execution=%s",
@@ -2520,13 +2512,9 @@ async def _organization_rows(
     # summary. Show this row only after every chapter is accepted. A child sent
     # back for revision stays failed on its own row; its accepted repair closes
     # that chapter.
-    if (
-        root is not None
-        and _aggregation_mode(root) == "HIERARCHICAL"
-        and not any(_is_summary_task(task) for task in children)
-        and source_done
-        and all(source_done)
-    ):
+    hierarchical_root = root is not None and _aggregation_mode(root) == "HIERARCHICAL"
+    chapters_complete = bool(source_done) and all(source_done)
+    if hierarchical_root and chapters_complete and not any(_is_summary_task(task) for task in children):
         task_id = str(root.task_id)
         status = await _expert_row_status(task_pool, root)
         if fail_unfinished and status not in {"completed", "failed"}:

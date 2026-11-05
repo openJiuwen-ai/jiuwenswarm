@@ -15,6 +15,15 @@ from typing import Any, Literal, get_args, get_origin
 
 from pydantic import ValidationError
 
+from openjiuwen.core.common.exception.errors import BaseError
+from openjiuwen.core.session.checkpointer import NoopCheckpointer
+from openjiuwen.core.single_agent import create_agent_session
+from openjiuwen.harness.persistent_agent import (
+    PersistentAgentSpec,
+    PersistentBuildContext,
+    PersistentPorts,
+)
+
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     ExecutionRecord,
     PersistentContractError,
@@ -26,14 +35,6 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import (
     WORKSPACE_READ,
     WORKSPACE_WRITE,
     HostWorkspaceAccess,
-)
-from openjiuwen.core.common.exception.errors import BaseError
-from openjiuwen.core.session.checkpointer import NoopCheckpointer
-from openjiuwen.core.single_agent import create_agent_session
-from openjiuwen.harness.persistent_agent import (
-    PersistentAgentSpec,
-    PersistentBuildContext,
-    PersistentPorts,
 )
 
 HOST_OPEN_FEATURES: frozenset[str] = frozenset(

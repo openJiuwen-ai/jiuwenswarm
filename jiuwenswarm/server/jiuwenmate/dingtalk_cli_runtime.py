@@ -19,6 +19,33 @@ _FORBIDDEN_FLAGS = frozenset({
 logger = logging.getLogger(__name__)
 
 
+def valid_history_page_fields(page: Any) -> bool:
+    if not isinstance(page, dict):
+        return False
+    flags = (page.get("complete"), page.get("hasMore"))
+    return (
+        isinstance(page.get("messages"), list) and isinstance(page.get("botCodes"), list)
+        and all(isinstance(value, bool) for value in flags)
+    )
+
+
+def _valid_bot_code(code: Any) -> bool:
+    if not isinstance(code, str) or not 1 <= len(code) <= 512:
+        return False
+    return not any(char.isspace() or ord(char) < 32 for char in code)
+
+
+def valid_document_search(query: str, cursor: str | None, limit: int) -> bool:
+    if not isinstance(query, str) or len(query) > 512:
+        return False
+    if not query.strip() or "\x00" in query:
+        return False
+    if cursor is not None:
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048 or "\x00" in cursor:
+            return False
+    return isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= 30
+
+
 @dataclass(frozen=True)
 class DingTalkCliScope:
     """Trusted employee identity; values are never used directly as filesystem paths."""
@@ -37,34 +64,45 @@ class DingTalkCliScope:
 class DingTalkCliRuntimePort(Protocol):
     """Operations supported by the default app-token DWS CLI integration."""
 
-    def is_available(self, scope: DingTalkCliScope) -> bool: ...
+    def is_available(self, scope: DingTalkCliScope) -> bool:
+        ...
 
-    async def execute(self, scope: DingTalkCliScope, argv: list[str]) -> dict[str, Any]: ...
+    async def execute(self, scope: DingTalkCliScope, argv: list[str]) -> dict[str, Any]:
+        ...
 
-    async def dingtalk_auth_status(self, scope: DingTalkCliScope) -> dict[str, Any]: ...
+    async def dingtalk_auth_status(self, scope: DingTalkCliScope) -> dict[str, Any]:
+        ...
 
-    async def dingtalk_auth_begin(self, scope: DingTalkCliScope) -> dict[str, Any]: ...
+    async def dingtalk_auth_begin(self, scope: DingTalkCliScope) -> dict[str, Any]:
+        ...
 
-    async def dingtalk_auth_cancel(self, scope: DingTalkCliScope, operation_id: str) -> dict[str, Any]: ...
+    async def dingtalk_auth_cancel(self, scope: DingTalkCliScope, operation_id: str) -> dict[str, Any]:
+        ...
 
-    async def dingtalk_auth_disconnect(self, scope: DingTalkCliScope) -> dict[str, Any]: ...
+    async def dingtalk_auth_disconnect(self, scope: DingTalkCliScope) -> dict[str, Any]:
+        ...
 
-    async def group_history_identity(self, scope: DingTalkCliScope) -> str | None: ...
+    async def group_history_identity(self, scope: DingTalkCliScope) -> str | None:
+        ...
 
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
     async def search_online_documents(
         self, scope: DingTalkCliScope, *, query: str, cursor: str | None = None, limit: int = 10,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
-    async def read_online_document(self, scope: DingTalkCliScope, *, node_id: str) -> dict[str, Any]: ...
+    async def read_online_document(self, scope: DingTalkCliScope, *, node_id: str) -> dict[str, Any]:
+        ...
 
     async def edit_online_document(
         self, scope: DingTalkCliScope, *, node_id: str, edit_mode: str,
         content: str | None = None, old_text: str | None = None, new_text: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
     async def create_group_document(
         self,
@@ -74,7 +112,8 @@ class DingTalkCliRuntimePort(Protocol):
         sender_staff_id: str,
         title: str,
         content: str = "",
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
     async def edit_group_document(
         self,
@@ -84,7 +123,8 @@ class DingTalkCliRuntimePort(Protocol):
         sender_staff_id: str,
         dentry_id: str,
         content: str,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
     async def upload_group_file(
         self,
@@ -93,11 +133,13 @@ class DingTalkCliRuntimePort(Protocol):
         conversation_id: str,
         sender_staff_id: str,
         file_path: str,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
     async def update_calendar_event(
         self, scope: DingTalkCliScope, *, event_id: str, title: str,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
     async def create_calendar_event(
         self,
@@ -114,9 +156,11 @@ class DingTalkCliRuntimePort(Protocol):
         create_video_meeting: bool = False,
         include_group_members: bool = False,
         conversation_id: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
-    async def remove_runtime(self, scope: DingTalkCliScope) -> None: ...
+    async def remove_runtime(self, scope: DingTalkCliScope) -> None:
+        ...
 
 
 def load_dingtalk_cli_runtime_provider() -> DingTalkCliRuntimePort | None:
@@ -187,10 +231,14 @@ class DingTalkCliRuntimeService:
         """Read validated history only for targets selected by the host."""
         reader = getattr(self._runtime, "read_group_history", None)
         if not callable(reader):
-            raise PersistentAgentError("DingTalk group history is unavailable", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE")
+            raise PersistentAgentError(
+                "DingTalk group history is unavailable", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE"
+            )
         try:
             if not self._runtime.is_available(scope):
-                raise PersistentAgentError("DingTalk group history is unavailable", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE")
+                raise PersistentAgentError(
+                    "DingTalk group history is unavailable", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE"
+                )
             result = await reader(scope, conversation_id=conversation_id, since=since)
         except PersistentAgentError:
             raise
@@ -199,28 +247,25 @@ class DingTalkCliRuntimeService:
             raise PersistentAgentError(
                 "DingTalk group history could not be read", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE",
             ) from exc
-        if (
-            not isinstance(result, dict)
-            or not isinstance(result.get("readerKey"), str)
-            or not _GROUP_HISTORY_READER.fullmatch(result["readerKey"])
-            or not isinstance(result.get("messages"), list)
-            or not isinstance(result.get("complete"), bool)
-            or not isinstance(result.get("hasMore"), bool)
-            or not isinstance(result.get("botCodes"), list)
-            or any(
-                not isinstance(code, str) or not code or len(code) > 512
-                or any(char.isspace() or ord(char) < 32 for char in code)
-                for code in result["botCodes"]
+        if valid_history_page_fields(result):
+            reader_key = result.get("readerKey")
+            verified_reader = isinstance(reader_key, str) and _GROUP_HISTORY_READER.fullmatch(reader_key)
+            valid_page = verified_reader and all(_valid_bot_code(code) for code in result["botCodes"])
+        else:
+            valid_page = False
+        if not valid_page:
+            raise PersistentAgentError(
+                "Invalid DingTalk group history response", code="DINGTALK_CLI_GROUP_HISTORY_INVALID"
             )
-        ):
-            raise PersistentAgentError("Invalid DingTalk group history response", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
         senders = result.get('botSenders', {})
         if (not isinstance(senders, dict) or any(
             code not in result['botCodes'] or not isinstance(sender, str) or not sender or len(sender) > 512
             or any(char.isspace() or ord(char) < 32 for char in sender)
             for code, sender in senders.items()
         ) or len(set(senders.values())) != len(senders)):
-            raise PersistentAgentError("Invalid DingTalk bot sender identities", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+            raise PersistentAgentError(
+                "Invalid DingTalk bot sender identities", code="DINGTALK_CLI_GROUP_HISTORY_INVALID"
+            )
         fields = ("readerKey", "messages", "complete", "hasMore", "nextCursor", "botCodes", "botSenders")
         return {key: result[key] for key in fields if key in result}
 
@@ -235,18 +280,30 @@ class DingTalkCliRuntimeService:
 
     async def _auth_call(self, scope: DingTalkCliScope, method: str, *args: Any) -> dict[str, Any]:
         if self._runtime is None or not self.is_available(scope):
-            raise PersistentAgentError("DingTalk app is unavailable for this employee", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
+            raise PersistentAgentError(
+                "DingTalk app is unavailable for this employee", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
+            )
         call = getattr(self._runtime, method, None)
         if not callable(call):
-            raise PersistentAgentError("DingTalk user authorization is unavailable", code="DINGTALK_CLI_AUTH_UNAVAILABLE")
+            raise PersistentAgentError(
+                "DingTalk user authorization is unavailable", code="DINGTALK_CLI_AUTH_UNAVAILABLE"
+            )
         try:
             result = await call(scope, *args)
         except PersistentAgentError:
             raise
         except Exception as exc:
             logger.warning("DingTalk user authorization operation failed (%s)", type(exc).__name__)
-            raise PersistentAgentError("DingTalk user authorization operation failed", code="DINGTALK_CLI_AUTH_ERROR") from exc
-        if not isinstance(result, dict) or result.get("status") not in {"unavailable", "not_connected", "authorizing", "connected", "error"}:
+            raise PersistentAgentError(
+                "DingTalk user authorization operation failed", code="DINGTALK_CLI_AUTH_ERROR"
+            ) from exc
+        if not isinstance(result, dict) or result.get("status") not in {
+            "unavailable",
+            "not_connected",
+            "authorizing",
+            "connected",
+            "error",
+        }:
             raise PersistentAgentError("invalid DingTalk authorization response", code="DINGTALK_CLI_RESPONSE_INVALID")
         safe = {"status": result["status"], "cli_version": result.get("cli_version")}
         if result['status'] == 'error' and result.get('error_code') in {
@@ -280,7 +337,9 @@ class DingTalkCliRuntimeService:
             raise
         except Exception as exc:
             logger.warning("DingTalk app-token API request failed (%s)", type(exc).__name__)
-            raise PersistentAgentError("DingTalk app-token API request failed", code="DINGTALK_CLI_EXECUTION_ERROR") from exc
+            raise PersistentAgentError(
+                "DingTalk app-token API request failed", code="DINGTALK_CLI_EXECUTION_ERROR"
+            ) from exc
         if not isinstance(result, dict):
             raise PersistentAgentError("invalid DingTalk CLI response", code="DINGTALK_CLI_RESPONSE_INVALID")
         return result
@@ -326,14 +385,10 @@ class DingTalkCliRuntimeService:
     async def search_online_documents(
         self, scope: DingTalkCliScope, *, query: str, cursor: str | None = None, limit: int = 10,
     ) -> dict[str, Any]:
-        if (
-            not isinstance(query, str) or not query.strip() or len(query) > 512 or "\x00" in query
-            or (cursor is not None and (
-                not isinstance(cursor, str) or not cursor or len(cursor) > 2048 or "\x00" in cursor
-            ))
-            or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 30
-        ):
-            raise PersistentAgentError("Invalid online document search request", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID")
+        if not valid_document_search(query, cursor, limit):
+            raise PersistentAgentError(
+                "Invalid online document search request", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID"
+            )
         return await self._online_document_call(
             scope, "search_online_documents", {"query": query, "cursor": cursor, "limit": limit},
             "DINGTALK_CLI_ONLINE_DOC_SEARCH_FAILED",
@@ -359,10 +414,19 @@ class DingTalkCliRuntimeService:
         else:
             valid = False
         if not valid:
-            raise PersistentAgentError("Invalid online document edit request", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID")
+            raise PersistentAgentError(
+                "Invalid online document edit request", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID"
+            )
         return await self._online_document_call(
-            scope, "edit_online_document",
-            {"node_id": node_id, "edit_mode": edit_mode, "content": content, "old_text": old_text, "new_text": new_text},
+            scope,
+            "edit_online_document",
+            {
+                "node_id": node_id,
+                "edit_mode": edit_mode,
+                "content": content,
+                "old_text": old_text,
+                "new_text": new_text,
+            },
             "DINGTALK_CLI_ONLINE_DOC_EDIT_FAILED",
         )
 
@@ -371,7 +435,9 @@ class DingTalkCliRuntimeService:
     ) -> dict[str, Any]:
         call = getattr(self._runtime, method, None)
         if not callable(call):
-            raise PersistentAgentError("Online document operation is unavailable", code="DINGTALK_CLI_ONLINE_DOC_UNAVAILABLE")
+            raise PersistentAgentError(
+                "Online document operation is unavailable", code="DINGTALK_CLI_ONLINE_DOC_UNAVAILABLE"
+            )
         try:
             result = await call(scope, **request)
         except PersistentAgentError:
@@ -382,16 +448,18 @@ class DingTalkCliRuntimeService:
                 "Online document operation was not confirmed; check the document before retrying", code=failure_code,
             ) from exc
         if not isinstance(result, dict):
-            raise PersistentAgentError("Invalid online document response", code="DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID")
+            raise PersistentAgentError(
+                "Invalid online document response", code="DINGTALK_CLI_ONLINE_DOC_RESULT_INVALID"
+            )
         return result
 
     @staticmethod
     def _validate_online_document_id(node_id: str) -> None:
-        if (
-            not isinstance(node_id, str) or not node_id or len(node_id) > 512 or node_id.startswith("-")
-            or any(char.isspace() or ord(char) < 32 for char in node_id)
-        ):
-            raise PersistentAgentError("Invalid online document identity", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID")
+        invalid_node_id = not isinstance(node_id, str) or not node_id or len(node_id) > 512
+        if invalid_node_id or node_id.startswith('-') or any(char.isspace() or ord(char) < 32 for char in node_id):
+            raise PersistentAgentError(
+                "Invalid online document identity", code="DINGTALK_CLI_ONLINE_DOC_REQUEST_INVALID"
+            )
 
     async def edit_group_document(
         self,
@@ -531,7 +599,9 @@ class DingTalkCliRuntimeService:
             raise PersistentAgentError("DingTalk app is unavailable", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
         updater = getattr(self._runtime, "update_calendar_event", None)
         if not callable(updater):
-            raise PersistentAgentError("DingTalk runtime does not support calendar updates", code="DINGTALK_CLI_CALENDAR_UNAVAILABLE")
+            raise PersistentAgentError(
+                "DingTalk runtime does not support calendar updates", code="DINGTALK_CLI_CALENDAR_UNAVAILABLE"
+            )
         try:
             result = await updater(scope, event_id=event_id, title=title)
         except PersistentAgentError:
@@ -543,7 +613,9 @@ class DingTalkCliRuntimeService:
                 code="DINGTALK_CLI_CALENDAR_UPDATE_FAILED",
             ) from exc
         if not isinstance(result, dict) or result.get("updated") is not True or result.get("eventId") != event_id:
-            raise PersistentAgentError("invalid DingTalk calendar update response", code="DINGTALK_CLI_CALENDAR_UPDATE_RESULT_INVALID")
+            raise PersistentAgentError(
+                "invalid DingTalk calendar update response", code="DINGTALK_CLI_CALENDAR_UPDATE_RESULT_INVALID"
+            )
         return result
 
     async def remove(self, scope: DingTalkCliScope) -> None:

@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 import base64
-import binascii
 import json
 import re
 import shlex
@@ -103,7 +102,8 @@ def _options(words: list[str]) -> tuple[list[str], dict]:
                 if index >= len(words):
                     raise UnsafeGroupRead("missing CLI option value")
                 value = words[index]
-            if not value or value.startswith("@") or value == "-" or any(char in value for char in "$%`\x00\r\n"):
+            indirect_value = not value or value.startswith("@") or value == "-"
+            if indirect_value or any(char in value for char in "$%`\x00\r\n"):
                 raise UnsafeGroupRead("dynamic or file-backed CLI parameters are not supported")
             options[flag] = value
         elif word.startswith("-"):
@@ -148,7 +148,7 @@ def parse_group_read(command: str) -> CliReadPlan | None:
             continue
         try:
             decoded = base64.b64decode(token, validate=True)
-        except (ValueError, binascii.Error):
+        except ValueError:
             continue
         if any(_HINT.search(decoded.decode(encoding, errors="ignore"))
                for encoding in ("utf-8", "utf-16-le")):
@@ -160,7 +160,9 @@ def parse_group_read(command: str) -> CliReadPlan | None:
         words = _tokens(text)
         for _ in range(3):
             if words and words[0].lower().removesuffix(".exe") in {"cmd", "powershell", "pwsh", "bash", "sh"}:
-                marker = next((i for i, word in enumerate(words) if word.lower() in {"/c", "/s", "-c", "-command"}), None)
+                marker = next(
+                    (i for i, word in enumerate(words) if word.lower() in {"/c", "/s", "-c", "-command"}), None
+                )
                 if marker is None or marker + 1 >= len(words):
                     raise UnsafeGroupRead("opaque shell wrapper")
                 rest = words[marker + 1:]
@@ -180,11 +182,18 @@ def parse_group_read(command: str) -> CliReadPlan | None:
             ):
                 raise UnsafeGroupRead("unsupported environment mutation")
             words = words[boundary + 1:]
-        if not words or not _CLI.search(words[0]) or any(word in {";", "&&", "||", "|", ">", ">>", "<", "(", ")", "&"} for word in words):
+        if (
+            not words
+            or not _CLI.search(words[0])
+            or any(word in {";", "&&", "||", "|", ">", ">>", "<", "(", ")", "&"} for word in words)
+        ):
             raise UnsafeGroupRead("use one explicit CLI read without a pipeline, redirection or script")
-        if (len(words) >= 3 and words[1] == "im"
-                and words[2] in {"+messages-send", "+messages-reply", "+messages-update", "+messages-delete"}
-                and not _HINT.search(" ".join(words[3:]))):
+        is_message_mutation = (
+            len(words) >= 3
+            and words[1] == "im"
+            and (words[2] in {"+messages-send", "+messages-reply", "+messages-update", "+messages-delete"})
+        )
+        if is_message_mutation and not _HINT.search(" ".join(words[3:])):
             return None
         positional, opts = _options(words[1:])
         if "--help" in opts or "-h" in opts or "--dry-run" in opts:
@@ -227,17 +236,26 @@ def parse_group_read(command: str) -> CliReadPlan | None:
                         "query", "start_time", "end_time", "page_size", "page_token", "sort_type"}
         if set(data) - allowed_data or data.get("container_id_type", "chat") != "chat":
             raise UnsafeGroupRead("unsupported CLI source or query filter")
-        if any(key in opts for key in ("--sender-type", "--exclude-sender-type", "--chat-type",
-                                       "--include-attachment-type", "--at-chatter-ids")):
+        unsupported_filters = {
+            "--sender-type", "--exclude-sender-type", "--chat-type", "--include-attachment-type", "--at-chatter-ids",
+        }
+        if unsupported_filters.intersection(opts):
             raise UnsafeGroupRead("unsupported CLI query filter; it cannot be discarded")
         chat_ids = _ids(opts.get("--chat-id", data.get("chat_ids", data.get("container_id"))), "oc_", 128)
         message_ids = _ids(opts.get("--message-ids", opts.get("--message-id", data.get("message_id"))), "om_", 50)
-        if operation == "list" and len(chat_ids) != 1 or operation in {"get", "download"} and not message_ids:
+        missing_chat = operation == "list" and len(chat_ids) != 1
+        if missing_chat or operation in {"get", "download"} and not message_ids:
             raise UnsafeGroupRead("missing exact source resource")
-        file_key, resource_type = opts.get("--file-key", data.get("file_key", "")), opts.get("--type", data.get("type", "file"))
+        file_key, resource_type = (
+            opts.get("--file-key", data.get("file_key", "")),
+            opts.get("--type", data.get("type", "file")),
+        )
         thread = opts.get("--thread", "")
-        if operation == "download" and (len(message_ids) != 1 or not re.fullmatch(r"(?:file|img)_[\w-]+", file_key) or resource_type not in {"file", "image"}):
-            raise UnsafeGroupRead("missing message attachment identity")
+        if operation == "download":
+            if len(message_ids) != 1 or not re.fullmatch(r"(?:file|img)_[\w-]+", file_key):
+                raise UnsafeGroupRead("missing message attachment identity")
+            if resource_type not in {"file", "image"}:
+                raise UnsafeGroupRead("missing message attachment identity")
         if operation == "thread" and re.fullmatch(r"omt_[\w-]+", thread) is None:
             raise UnsafeGroupRead("missing thread identity")
         page_size = int(opts.get("--page-size", data.get("page_size", 50)))
@@ -248,10 +266,23 @@ def parse_group_read(command: str) -> CliReadPlan | None:
             data.get("sort_type", "ByCreateTimeDesc")))
         if order not in {"asc", "desc"}:
             raise UnsafeGroupRead("unsupported CLI sort order")
-        return CliReadPlan(operation, identity, chat_ids, message_ids, file_key, resource_type, thread,
-                           opts.get("--query", str(data.get("query", ""))), str(opts.get("--start", data.get("start_time", ""))),
-                           str(opts.get("--end", data.get("end_time", ""))), order, page_size, pages,
-                           str(opts.get("--page-token", data.get("page_token", ""))), opts.get("--sender", ""))
+        return CliReadPlan(
+            operation,
+            identity,
+            chat_ids,
+            message_ids,
+            file_key,
+            resource_type,
+            thread,
+            opts.get("--query", str(data.get("query", ""))),
+            str(opts.get("--start", data.get("start_time", ""))),
+            str(opts.get("--end", data.get("end_time", ""))),
+            order,
+            page_size,
+            pages,
+            str(opts.get("--page-token", data.get("page_token", ""))),
+            opts.get("--sender", ""),
+        )
     except (ValueError, TypeError, IndexError) as exc:
         if isinstance(exc, UnsafeGroupRead):
             raise

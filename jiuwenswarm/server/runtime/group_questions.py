@@ -68,9 +68,8 @@ class GroupQuestions:
 
     @staticmethod
     def public(record: dict) -> dict:
-        return {key: copy.deepcopy(record[key]) for key in (
-            "request_id", "questions", "source", "member_name", "execution_id", "created_at",
-        )}
+        fields = ("request_id", "questions", "source", "member_name", "execution_id", "created_at")
+        return {key: copy.deepcopy(record[key]) for key in fields}
 
     async def publish(self, payload: dict) -> None:
         from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport

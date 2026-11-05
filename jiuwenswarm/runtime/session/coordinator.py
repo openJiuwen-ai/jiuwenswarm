@@ -440,7 +440,11 @@ class RuntimeSessionCoordinator:
 
     def _in_execution_lineage(self, owner: SessionExecutionHandle, execution_id: str) -> bool:
         ancestor = owner
-        while ancestor is not None and ancestor.session_id == owner.session_id and ancestor.generation == owner.generation:
+        while (
+            ancestor is not None
+            and ancestor.session_id == owner.session_id
+            and ancestor.generation == owner.generation
+        ):
             if ancestor.execution_id == execution_id:
                 return True
             ancestor = self._registry.get(ancestor.parent_execution_id) if ancestor.parent_execution_id else None

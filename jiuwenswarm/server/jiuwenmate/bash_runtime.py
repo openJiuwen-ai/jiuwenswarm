@@ -228,14 +228,18 @@ class _Shell:
         self._cli = cli
         self._execution = execution
 
+    async def aclose(self):
+        await self._shell.aclose()
+
     def _params(self, cwd, environment):
         env = dict(environment or {})
         child = self._cli.shell_environment(self._execution.namespace_id, self._execution.agent_id)
         managed = {"PATH", "LARKSUITE_CLI_CONFIG_DIR", "LARKSUITE_CLI_DATA_DIR"}
         env.update({key: value for key, value in child.items() if key in managed})
         env["JIUWENMATE_OUTPUT_DIR"] = str(self._output_dir)
-        env.update({key: "" for key in os.environ if key.startswith(("LARK_", "FEISHU_", "LARKSUITE_"))
-                    and key not in managed})
+        for key in os.environ:
+            if key.startswith(("LARK_", "FEISHU_", "LARKSUITE_")) and key not in managed:
+                env[key] = ""
         directory = str(self._session_workspace) if not cwd else os.fspath(cwd)
         if not os.path.isabs(directory):
             directory = str(self._session_workspace / directory)
@@ -245,7 +249,9 @@ class _Shell:
         return await self._shell.execute_cmd(command, timeout=timeout, options=options, shell_type=shell_type,
                                               **self._params(cwd, environment))
 
-    async def execute_cmd_stream(self, command, *, cwd=None, timeout=300, environment=None, options=None, shell_type="auto"):
+    async def execute_cmd_stream(
+        self, command, *, cwd=None, timeout=300, environment=None, options=None, shell_type="auto"
+    ):
         async for chunk in self._shell.execute_cmd_stream(command, timeout=timeout, options=options,
                 shell_type=shell_type, **self._params(cwd, environment)):
             yield chunk
@@ -296,12 +302,16 @@ class _PersistentBash(BashTool):
             )) from None
         except UnsafeGroupRead as exc:
             message = f"群内容读取未执行：{exc}。请使用来源明确的单条 CLI 读取命令。"
-            return ToolOutput(success=False, data={"content": message, "status": "cli_group_read_blocked"}, error=message)
+            return ToolOutput(
+                success=False, data={"content": message, "status": "cli_group_read_blocked"}, error=message
+            )
         except Exception as exc:
             logging.getLogger(__name__).warning("CLI sharing failed request=%s error_type=%s",
                                                 self._execution.request_id, type(exc).__name__)
             message = "CLI 群内容读取或授权检查失败，未返回候选内容。请检查宿主日志后再决定是否继续。"
-            return ToolOutput(success=False, data={"content": message, "status": "cli_group_read_failed"}, error=message)
+            return ToolOutput(
+                success=False, data={"content": message, "status": "cli_group_read_failed"}, error=message
+            )
         import json
 
         content = "宿主已处理原 CLI 读取请求：\n" + json.dumps(result, ensure_ascii=False)
@@ -320,12 +330,16 @@ class _PersistentBash(BashTool):
         return str(self._session_workspace / ".bash-history.json")
 
     async def aclose(self):
-        await self._operation.shell()._shell.aclose()
+        await self._operation.shell().aclose()
 
     @staticmethod
     def _bounded(output):
         for key in ("content", "text"):
-            if isinstance(output.data, dict) and isinstance(output.data.get(key), str) and len(output.data[key]) > 20000:
+            if (
+                isinstance(output.data, dict)
+                and isinstance(output.data.get(key), str)
+                and len(output.data[key]) > 20000
+            ):
                 output.data[key] = output.data[key][:20000] + "\n[输出已截断]"
         if isinstance(output.error, str):
             output.error = output.error[:20000]
@@ -373,7 +387,9 @@ def build_bash_tool(params: dict[str, Any], context):
         config.shell_allowlist = [*config.shell_allowlist, "lark-cli", "lark-cli.cmd"]
     operation = SysOperation(SysOperationCard(id=f"jm-bash:{execution.execution_id}", work_config=config))
     shell = _Shell(_OwnedShell(config), session_workspace, output_dir, cli, execution)
-    tool = _PersistentBash(_Operation(parent or operation, shell), session_workspace, execution, context.language, group_cli)
+    tool = _PersistentBash(
+        _Operation(parent or operation, shell), session_workspace, execution, context.language, group_cli
+    )
     tools.append(tool)
     from openjiuwen.harness.manifest import ensure_builtin_elements_registered
 

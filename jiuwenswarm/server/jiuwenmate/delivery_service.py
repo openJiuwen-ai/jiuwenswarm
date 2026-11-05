@@ -195,8 +195,6 @@ class ResultDeliveryService:
                 for field in ("namespace_id", "agent_id", "session_id", "request_kind"):
                     gateway_job.pop(field, None)
                 ack = await asyncio.wait_for(self._send_delivery(gateway_job), timeout=timeout)
-            except asyncio.CancelledError:
-                raise
             except TimeoutError:
                 ack = {"outcome": "unknown", "error_code": "ACK_TIMEOUT"}
             except Exception as exc:  # an exception can follow a platform-side effect
@@ -219,8 +217,8 @@ class ResultDeliveryService:
                 file_key=self._file_key(job, ack),
             )
             dispatched += 1
-            if (outcome == "delivered" and job.get("channel") != "welink"
-                    and job.get("mention_targets") and self._handoff_handler is not None):
+            delivered_outside_welink = outcome == "delivered" and job.get("channel") != "welink"
+            if delivered_outside_welink and job.get("mention_targets") and self._handoff_handler is not None:
                 try:
                     if await self._check_sharing(job):
                         await self._handoff_handler(
@@ -248,7 +246,9 @@ class ResultDeliveryService:
         )
         if not jobs and self._welink_reconcile_after:
             self._welink_reconcile_after = ""
-            jobs = await asyncio.to_thread(self._repository.unknown_welink_result_deliveries, self._namespace_id, limit=1)
+            jobs = await asyncio.to_thread(
+                self._repository.unknown_welink_result_deliveries, self._namespace_id, limit=1
+            )
         for job in jobs:
             self._welink_reconcile_after = str(job["delivery_id"])
             try:
@@ -262,8 +262,6 @@ class ResultDeliveryService:
                     self._repository.update_result_delivery, self._namespace_id, job["delivery_id"],
                     outcome=outcome, external_message_id=message_id, error_code=error_code, now=self._clock(),
                 )
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.warning("[JiuwenMate] WeLink delivery still unconfirmed: delivery_id=%s", job["delivery_id"])
 
@@ -298,9 +296,9 @@ class ResultDeliveryService:
                     continue
                 else:
                     logger.info("[JiuwenMate] WeLink handoff target unavailable: delivery_id=%s", job["delivery_id"])
-                await asyncio.to_thread(self._repository.mark_welink_handoff_done, self._namespace_id, job["delivery_id"])
-            except asyncio.CancelledError:
-                raise
+                await asyncio.to_thread(
+                    self._repository.mark_welink_handoff_done, self._namespace_id, job["delivery_id"]
+                )
             except Exception:
                 logger.warning("[JiuwenMate] WeLink confirmed handoff pending: delivery_id=%s", job["delivery_id"])
 
@@ -406,8 +404,6 @@ class ResultDeliveryService:
             self._wake.clear()
             try:
                 await self.dispatch_pending()
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception("[JiuwenMate] result delivery scan failed")
             try:
@@ -420,8 +416,6 @@ class ResultDeliveryService:
         while True:
             try:
                 await self.reconcile_welink_deliveries()
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception("[JiuwenMate] WeLink reconciliation scan failed")
             await asyncio.sleep(self._poll_interval)

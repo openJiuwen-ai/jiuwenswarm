@@ -2970,14 +2970,17 @@ class AgentRuntime:
         if snapshot is None or snapshot.session_id != session_id:
             return None
         control_ids = self._control_ids(request)
-        candidates = [
-            execution for execution in snapshot.executions
-            if execution.session_id == session_id
-            and execution.generation == snapshot.generation
-            and execution.work_kind is SessionWorkKind.CONTROL_INPUT
-            and execution.state is SessionExecutionState.RUNNING
-            and execution.request_id in control_ids
-        ]
+        candidates = []
+        for execution in snapshot.executions:
+            if execution.session_id != session_id or execution.generation != snapshot.generation:
+                continue
+            if (
+                execution.work_kind is not SessionWorkKind.CONTROL_INPUT
+                or execution.state is not SessionExecutionState.RUNNING
+            ):
+                continue
+            if execution.request_id in control_ids:
+                candidates.append(execution)
         if len(candidates) != 1 or not candidates[0].parent_execution_id:
             return None
         execution = candidates[0]

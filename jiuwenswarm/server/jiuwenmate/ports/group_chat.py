@@ -6,7 +6,11 @@ import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
-from pydantic import ValidationError
+from openjiuwen.harness.persistent_agent import (
+    ExecutionContext,
+    GroupMessageQuery,
+    GroupMessagesResult,
+)
 
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
@@ -16,11 +20,6 @@ from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSe
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.conversation_archive import time_micros
 from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchResult
-from openjiuwen.harness.persistent_agent import (
-    ExecutionContext,
-    GroupMessageQuery,
-    GroupMessagesResult,
-)
 
 MembershipVerifier = Callable[[GroupAccess, GroupChat], Awaitable[str]]
 
@@ -71,14 +70,14 @@ class HostGroupChatPort:
                                          reader_id=execution.agent_id)
         messages = await self._checked_messages(execution, access, group, result.messages)
         if hasattr(self._sessions, "session_requests"):
-            requests = await asyncio.to_thread(self._sessions.session_requests, execution.namespace_id, execution.session_id)
+            requests = await asyncio.to_thread(
+                self._sessions.session_requests, execution.namespace_id, execution.session_id
+            )
             queued = {state.record.request_input.trigger_message_id for state in requests if state.status == "queued"}
             messages = tuple(item.model_copy(update={"queued_request": item.message_id in queued}) for item in messages)
         status, reason = result.status, result.reason
-        if (
-            group.platform == "dingtalk" and cursor is None and messages
-            and status == "incomplete" and reason == "known collection gap"
-        ):
+        first_dingtalk_page = group.platform == "dingtalk" and cursor is None and messages
+        if first_dingtalk_page and status == "incomplete" and reason == "known collection gap":
             # The bounded local lookup succeeded; only the platform-wide collection is partial.
             # Participation can use observed facts, never infer absence from this view.
             # Keep the archive's gap and all cursor/search completeness contracts unchanged.
@@ -119,7 +118,7 @@ class HostGroupChatPort:
             return self._search_result(execution, "unavailable", reason="Group history search is unavailable.")
         try:
             query = GroupMessageQuery.model_validate(query)
-        except (ValidationError, TypeError, ValueError):
+        except (TypeError, ValueError):
             return self._search_result(execution, "failed", reason="The group history search request is invalid.")
         if "messages" not in query.content_types:
             return self._search_result(execution, "empty", query_complete=True)
@@ -328,12 +327,15 @@ class HostGroupChatPort:
             unresolved = await asyncio.to_thread(self._groups.unresolved_accesses, execution.namespace_id,
                                                  execution.agent_id)
             if query.platforms:
-                unresolved = [access for access in unresolved if (
-                    await asyncio.to_thread(self._groups.get, execution.namespace_id, access.group_id)
-                ).platform in query.platforms]
+                matching = []
+                for access in unresolved:
+                    group = await asyncio.to_thread(self._groups.get, execution.namespace_id, access.group_id)
+                    if group.platform in query.platforms:
+                        matching.append(access)
+                unresolved = matching
             unresolved_ids = {access.group_id for access in unresolved}
-            if ((not query.group_ids and not query.group_names and unresolved_ids) or
-                    unresolved_ids.intersection(query.group_ids)):
+            unresolved_unfiltered = not query.group_ids and not query.group_names and unresolved_ids
+            if unresolved_unfiltered or unresolved_ids.intersection(query.group_ids):
                 raise _SearchUnavailable("Current group membership could not be verified.")
             accesses = await asyncio.to_thread(self._groups.active_accesses, execution.namespace_id,
                                                execution.agent_id)
@@ -348,8 +350,8 @@ class HostGroupChatPort:
             raise _SearchUnavailable("Current group authorization is ambiguous.")
 
         authorized: dict[str, dict[str, object]] = {}
-        for group_id in sorted(by_group):
-            access = by_group[group_id][0]
+        for group_id, group_accesses in sorted(by_group.items()):
+            access = group_accesses[0]
             try:
                 group = await asyncio.to_thread(self._groups.get, execution.namespace_id, group_id)
                 if query.platforms and group.platform not in query.platforms:
@@ -411,7 +413,9 @@ class HostGroupChatPort:
                     ids = ", ".join(
                         f"{group_id} ({authorized[group_id]['group'].platform})" for group_id in candidate_ids
                     )
-                    raise _SearchUnavailable(f"This authorized group name is ambiguous; specify a group ID: {ids}"[:4096])
+                    raise _SearchUnavailable(
+                        f"This authorized group name is ambiguous; specify a group ID: {ids}"[:4096]
+                    )
             matching_names.update(matching)
         targets = requested_ids & matching_names if requested_ids else matching_names
         if not targets:
@@ -473,8 +477,15 @@ def _same_authorization(saved: dict[str, object], current: dict[str, object]) ->
     )
 
 
+def _cursor_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _valid_cursor_state(state: dict[str, object]) -> bool:
-    if type(state.get("version")) is not int or state.get("version") != 1 or type(state.get("scope_all")) is not bool:
+    version = state.get("version")
+    if not _cursor_integer(version) or version != 1:
+        return False
+    if not isinstance(state.get("scope_all"), bool):
         return False
     target_ids = state.get("target_ids")
     targets = state.get("targets")
@@ -486,7 +497,7 @@ def _valid_cursor_state(state: dict[str, object]) -> bool:
         return False
     if not isinstance(after, list) or len(after) != 3:
         return False
-    if type(after[0]) is not int or not isinstance(after[1], str) or not isinstance(after[2], str):
+    if not _cursor_integer(after[0]) or not isinstance(after[1], str) or not isinstance(after[2], str):
         return False
     seen = set()
     for item in targets:
@@ -496,11 +507,14 @@ def _valid_cursor_state(state: dict[str, object]) -> bool:
         if not isinstance(group_id, str) or group_id in seen:
             return False
         seen.add(group_id)
-        if (not isinstance(item.get("app_id"), str) or not isinstance(item.get("source_ref"), str) or
-                type(item.get("revision")) is not int or
-                not isinstance(item.get("visible_from"), str) or
-                (item.get("group_name") is not None and not isinstance(item.get("group_name"), str)) or
-                type(item.get("upper_ingest_seq")) is not int or type(item.get("content_revision")) is not int or
-                type(item.get("has_gap")) is not bool):
+        text_fields = ("app_id", "source_ref", "visible_from")
+        if not all(isinstance(item.get(field), str) for field in text_fields):
+            return False
+        integer_fields = ("revision", "upper_ingest_seq", "content_revision")
+        if not all(_cursor_integer(item.get(field)) for field in integer_fields):
+            return False
+        if item.get("group_name") is not None and not isinstance(item.get("group_name"), str):
+            return False
+        if not isinstance(item.get("has_gap"), bool):
             return False
     return seen == set(target_ids)

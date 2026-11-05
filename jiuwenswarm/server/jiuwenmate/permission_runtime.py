@@ -12,8 +12,8 @@ from openjiuwen.harness.security import ToolPermissionHost
 class EmployeePermissionRailFactory:
     """Create a fresh, non-persistent permission rail for one employee execution."""
 
+    @staticmethod
     def build(
-        self,
         *,
         execution,
         permissions: dict[str, Any],

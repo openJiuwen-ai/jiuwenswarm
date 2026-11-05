@@ -22,6 +22,8 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any
 
+from openjiuwen.harness.persistent_agent import AgentEvent, EventType
+
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.activity_query import ActivityQuery
@@ -37,7 +39,6 @@ from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailScope
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
-from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -225,12 +226,8 @@ def _coalesce(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for frame in frames:
         last = merged[-1] if merged else None
-        if (
-            last is not None
-            and frame["kind"] == "delta"
-            and last["kind"] == "delta"
-            and last["execution_id"] == frame["execution_id"]
-        ):
+        consecutive_delta = last is not None and frame["kind"] == "delta"
+        if consecutive_delta and last["kind"] == "delta" and last["execution_id"] == frame["execution_id"]:
             merged[-1] = {**last, "seq": frame["seq"], "text": last["text"] + frame["text"]}
         else:
             merged.append(frame)
@@ -308,9 +305,9 @@ class StreamPublisher:
             logger.warning("[JiuwenMate] stream push failed: request=%s error=%s", frame["request_id"], exc)
 
 
-def _channel_records(manager: AgentManager) -> ChannelRecords:
+def _channel_records(manager: AgentManager, service: PersistentAgentService) -> ChannelRecords:
     """Group records for the page, with colleague names and Feishu member names."""
-    colleagues = manager._service.list_agents("local")
+    colleagues = service.list_agents(WEB_NAMESPACE)
     return ChannelRecords(
         manager.group_chats,
         manager.group_archive,
@@ -557,13 +554,16 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             connections = await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
             from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_connection_key
             legacy_keys = {item.agent_id: item.connection_key for item in connections if item.channel == "welink"}
-            bindings = [
-                item for item in configured_welink_bindings()
-                if (item.config_id == config_id and item.agent_id == config_id)
-                or (item.config_id in ("", config_id) and item.agent_id in legacy_keys
-                    and legacy_keys[item.agent_id] in {welink_connection_key(item.account),
-                                                       welink_connection_key(item.account, config_id)})
-            ]
+            bindings = []
+            for item in configured_welink_bindings():
+                if item.config_id == config_id and item.agent_id == config_id:
+                    bindings.append(item)
+                    continue
+                if item.config_id not in ("", config_id) or item.agent_id not in legacy_keys:
+                    continue
+                keys = {welink_connection_key(item.account), welink_connection_key(item.account, config_id)}
+                if legacy_keys[item.agent_id] in keys:
+                    bindings.append(item)
             binding = bindings[0] if len(bindings) == 1 else None
             store = await asyncio.to_thread(WelinkOfficeSettings, manager.db_path)
             if method == ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS.value:
@@ -663,18 +663,18 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             pages = await asyncio.to_thread(InstalledResourceCatalog().list_knowledge)
             return {"pages": [{"name": page.name, "label": page.name} for page in pages]}
         if method == ReqMethod.JIUWENMATE_CHANNEL_LIST.value:
-            records = _channel_records(manager)
+            records = _channel_records(manager, self._colleagues())
             channels = await asyncio.to_thread(records.list_channels, WEB_NAMESPACE, _text_param(params, "agent_id"))
             return {"channels": channels}
         if method == ReqMethod.JIUWENMATE_CHANNEL_MESSAGES.value:
-            records = _channel_records(manager)
+            records = _channel_records(manager, self._colleagues())
             report = await asyncio.to_thread(
                 records.messages, WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "group_id"),
                 _optional_text_param(params, "cursor"),
             )
             return report
         if method == ReqMethod.JIUWENMATE_CHANNEL_TRACE.value:
-            records = _channel_records(manager)
+            records = _channel_records(manager, self._colleagues())
             report = await asyncio.to_thread(
                 records.trace, WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "group_id"),
             )

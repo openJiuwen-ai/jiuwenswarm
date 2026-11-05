@@ -1,22 +1,17 @@
-from jiuwenswarm.server.runtime.persistent_agents.capabilities import validate_plugin_names
+from types import SimpleNamespace
+from uuid import uuid4
+
+from jiuwenswarm.server.runtime import extension_package_manager as packages
 
 
-def test_validate_plugin_names_resolves_hub_asset_id(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.persistent_agents.capabilities.extension_package_manager.list_plugin_packages",
-        lambda _params: [{"id": "office-docs"}],
+def test_plugin_asset_id_and_package_name_resolve_to_same_plugin(monkeypatch) -> None:
+    asset_id = uuid4().hex
+    installed = SimpleNamespace(package_id="office-docs")
+    store = SimpleNamespace(
+        get={asset_id: installed}.get,
+        get_by_package_id={"office-docs": installed}.get,
     )
+    monkeypatch.setattr(packages, "_hub_install_state_store", lambda kind: store)
 
-    def resolve(_kind: str, identifier: str) -> str:
-        if identifier == "440c3c6e0e654b1eb9ec32c17bcd2923":
-            return "office-docs"
-        return identifier
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.persistent_agents.capabilities.extension_package_manager.resolve_equipment_runtime_id",
-        resolve,
-    )
-
-    assert validate_plugin_names(
-        ["440c3c6e0e654b1eb9ec32c17bcd2923", "office-docs"]
-    ) == ["office-docs"]
+    for identifier in (asset_id, "office-docs"):
+        assert packages.resolve_equipment_runtime_id("plugin_packages", identifier) == "office-docs"

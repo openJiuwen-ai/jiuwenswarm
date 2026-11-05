@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import closing
 import json
+from pathlib import Path
 import re
 
 from agent_gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
@@ -13,13 +14,17 @@ from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 MAILBOX_PATTERN = re.compile(r'[^\s@,<>;]+@[^\s@,<>;]+\.[^\s@,<>;]+')
 
 
+def cli_result_accepted(data):
+    if not isinstance(data, dict) or data.get('success') is False or data.get('error'):
+        return False
+    return all(data.get(field, 0) in (0, '0') for field in ('code', 'resultCode'))
+
+
 def discover_mailbox(cli, email: str) -> None:
     try:
         result = cli.run(['mail', 'autodiscover', '--email', email], timeout=30)
         data = json.loads(result.stdout)
-        if (not result.ok or not isinstance(data, dict) or data.get('success') is False
-                or data.get('error') or ('code' in data and data['code'] not in (0, '0'))
-                or ('resultCode' in data and data['resultCode'] not in (0, '0'))):
+        if not result.ok or not cli_result_accepted(data):
             raise ValueError('Mailbox discovery rejected')
     except Exception as exc:
         raise PersistentAgentError('邮箱连接验证失败，请检查邮箱地址、登录状态和邮件服务权限。',
@@ -43,11 +48,10 @@ class WelinkOfficeSettings(SQLiteStore):
         return {'status': 'not_connected', 'account': binding.account}
 
     def connect(self, binding, email, *, cli_factory=None):
-        from pathlib import Path
         if binding is None:
             raise PersistentAgentError('请先在该同事的 WeLink 渠道完成登录和助手绑定。', code='WELINK_NOT_BOUND')
-        if (not isinstance(email, str) or len(email) > 320 or not MAILBOX_PATTERN.fullmatch(email.strip())
-                or email.strip().startswith('-')):
+        invalid_email_length = not isinstance(email, str) or len(email) > 320
+        if invalid_email_length or not MAILBOX_PATTERN.fullmatch(email.strip()) or email.strip().startswith('-'):
             raise PersistentAgentError('请输入有效的本人邮箱地址。', code='BAD_REQUEST')
         email = email.strip()
         cli_factory = cli_factory or WelinkCli
@@ -57,7 +61,11 @@ class WelinkOfficeSettings(SQLiteStore):
             logged_in, account = parse_auth_status(auth.stdout, auth.stderr)
             if not auth.ok or not logged_in or account.casefold() != binding.account.casefold():
                 raise ValueError('Account not verified')
-            for command in (['mail', 'send', '--help'], ['calendar', 'list', '--help'], ['calendar', 'create', '--help']):
+            for command in (
+                ["mail", "send", "--help"],
+                ["calendar", "list", "--help"],
+                ["calendar", "create", "--help"],
+            ):
                 if not cli.run(command, timeout=15).ok:
                     raise ValueError('CLI capability unavailable')
         except Exception as exc:

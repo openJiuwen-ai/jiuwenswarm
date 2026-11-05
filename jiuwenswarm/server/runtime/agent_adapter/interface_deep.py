@@ -129,7 +129,6 @@ except ImportError:
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
-from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -154,6 +153,7 @@ from openjiuwen.harness.schema.config import SubAgentConfig
 
 from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
+from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
 )
@@ -4530,7 +4530,7 @@ class JiuWenSwarmDeepAdapter:
                     instance_ready_at = time.monotonic()
                     await adapter.start_interaction(session_id=sid)
                 except BaseException:
-                    await adapter._close_moa_runtime(suppress_errors=True)
+                    await adapter.close_moa_runtime(suppress_errors=True)
                     raise
                 interaction_ready_at = time.monotonic()
 
@@ -8916,7 +8916,7 @@ class JiuWenSwarmDeepAdapter:
             snapshot, selection, mode=self._session_instance_mode,
             is_cron=self._is_cron_execution_session(self._parent_session_id),
         )
-        await self._close_moa_runtime()
+        await self.close_moa_runtime()
         if not self._moa_enabled:
             return model if model is not None else self._create_model(config_base)
         # Group construction uses its frozen config and access policy rather
@@ -13238,7 +13238,7 @@ class JiuWenSwarmDeepAdapter:
             await self._create_instance(config, mode=mode, sub_mode=sub_mode,
                                         agent_definition=agent_definition)
         except BaseException:
-            await self._close_moa_runtime(suppress_errors=True)
+            await self.close_moa_runtime(suppress_errors=True)
             if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
                 await self._isolate_permission_instance()
             raise
@@ -15357,7 +15357,7 @@ class JiuWenSwarmDeepAdapter:
             # Otherwise the next process can replay an already approved tool.
             await session.post_run()
 
-    async def _close_moa_runtime(self, *, suppress_errors: bool = False) -> None:
+    async def close_moa_runtime(self, *, suppress_errors: bool = False) -> None:
         runtime = self._moa_runtime
         try:
             if runtime is not None:
@@ -15376,12 +15376,12 @@ class JiuWenSwarmDeepAdapter:
             await self._cleanup_adapter_resources()
         except BaseException:
             try:
-                await self._close_moa_runtime(suppress_errors=True)
+                await self.close_moa_runtime(suppress_errors=True)
             except asyncio.CancelledError:
                 logger.warning("MoA transport cleanup interrupted: reason=cleanup_cancelled")
             raise
         else:
-            await self._close_moa_runtime()
+            await self.close_moa_runtime()
         finally:
             snapshot = getattr(self, "_rsi_selected_package_snapshot", None)
             if snapshot is not None:
@@ -20176,7 +20176,7 @@ class JiuWenSwarmDeepAdapter:
                 raise
             moa_progress = getattr(self._moa_runtime, "progress", None)
             if moa_progress is not None:
-                moa_mailbox = moa_progress.open()
+                moa_mailbox = moa_progress.ensure_mailbox()
 
             if pending_goal_op is not None:
                 self._permission_dispatch.release(inputs)

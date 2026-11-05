@@ -1106,7 +1106,7 @@ async def test_welink_rejects_missing_or_wrong_connection_before_reading_data(mo
         account="account-a", expected_agent_id="agent-a", message_id="message-a", chat_id="group-a",
         sender_id="human-a", sender_name="Human", text="synthetic task", received_at=datetime.now(timezone.utc),
     )
-    assert await welink_inbound.accept_welink_message(SimpleNamespace(_service=service), event) == InboundDisposition.REJECTED
+    assert await welink_inbound.accept_welink_message(SimpleNamespace(service=service), event) == InboundDisposition.REJECTED
 
 
 @pytest.mark.asyncio
@@ -1429,9 +1429,9 @@ async def test_welink_inbound_stores_its_request_under_the_connection_agent(coll
     monkeypatch.setattr(welink_inbound, "welink_binding_for_agent", lambda agent: binding)
     manager = await gateway.host.adapter._runtime()
     fanout = SimpleNamespace(
-        _service=gateway.host._service(), _sessions=ExecutionRepository(gateway.host.db),
-        _groups=GroupChatRepository(gateway.host.db), _agent_manager=manager,
-        _clock=lambda: datetime.now(timezone.utc),
+        service=gateway.host._service(), sessions=ExecutionRepository(gateway.host.db),
+        groups=GroupChatRepository(gateway.host.db), agent_manager=manager,
+        clock=lambda: datetime.now(timezone.utc),
     )
     event = welink_inbound.WelinkInboundEvent(
         account=account, expected_agent_id=agent_id, assistant_credential_id="ak-a", message_id="message-isolated", chat_id="group-a",

@@ -194,6 +194,7 @@ async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | 
             owned = MoARuntime(
                 aggregator.model, None, fingerprint, aggregator.model_name, _jev_client=client, progress=progress,
             )
+
             async def close_on_failure(exc_type, _exc, _traceback):
                 try:
                     await owned.aclose()

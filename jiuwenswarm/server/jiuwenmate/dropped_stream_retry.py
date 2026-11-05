@@ -85,7 +85,7 @@ def request_dropped_stream_retry(ctx: Any) -> bool:
 def install_dropped_stream_retry() -> None:
     """Keep the anomaly rail, then retry a closed stream that already emitted chunks."""
     current = ModelAnomalyDetectionRail.on_model_exception
-    if getattr(current, "_jiuwenmate_dropped_stream_retry", False):
+    if getattr(current, "jiuwenmate_dropped_stream_retry", False):
         return
     original = current
 
@@ -93,5 +93,5 @@ def install_dropped_stream_retry() -> None:
         await original(self, ctx)
         request_dropped_stream_retry(ctx)
 
-    on_model_exception._jiuwenmate_dropped_stream_retry = True  # type: ignore[attr-defined]
+    on_model_exception.jiuwenmate_dropped_stream_retry = True  # type: ignore[attr-defined]
     ModelAnomalyDetectionRail.on_model_exception = on_model_exception  # type: ignore[method-assign]

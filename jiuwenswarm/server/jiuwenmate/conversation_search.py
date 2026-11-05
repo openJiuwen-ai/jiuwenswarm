@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from openjiuwen.harness.persistent_agent import GroupMessage, GroupMessageQuery
+
 from jiuwenswarm.server.jiuwenmate.conversation_archive import (
     ConversationArchive,
     _retain_latest,
@@ -10,7 +12,6 @@ from jiuwenswarm.server.jiuwenmate.conversation_archive import (
     time_micros,
 )
 from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchHit
-from openjiuwen.harness.persistent_agent import GroupMessage, GroupMessageQuery
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import utc_time
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 
@@ -61,8 +62,8 @@ class ConversationSearch:
         if not isinstance(upper_ingest_seq, int) or isinstance(upper_ingest_seq, bool) or upper_ingest_seq < 0:
             raise PersistentAgentError("invalid group search watermark")
         if after_key is not None:
-            if (not isinstance(after_key, tuple) or len(after_key) != 3 or
-                    not isinstance(after_key[0], int) or isinstance(after_key[0], bool)):
+            invalid_cursor_shape = not isinstance(after_key, tuple) or len(after_key) != 3
+            if invalid_cursor_shape or not isinstance(after_key[0], int) or isinstance(after_key[0], bool):
                 raise PersistentAgentError("invalid group search position")
             require_identifier("group search position group", after_key[1])
             require_identifier("group search position message", after_key[2])
@@ -82,7 +83,8 @@ class ConversationSearch:
             for row in rows:
                 message = GroupMessage.model_validate_json(row["payload"])
                 received = utc_time(message.received_at)
-                if received < visible or (since is not None and received < since) or (until is not None and received > until):
+                before_search_window = received < visible or since is not None and received < since
+                if before_search_window or until is not None and received > until:
                     continue
                 key = (time_micros(received), group_id, message.message_id)
                 if after_key is not None and not _key_is_after(key, after_key):
@@ -126,8 +128,15 @@ class ConversationSearch:
                 matches.append(message)
         matches.sort(key=lambda item: (-item.received_at.timestamp(), item.message_id))
         name = self._archive.groups.name_of(namespace_id, group_id)
-        return tuple(GroupMessageSearchHit(group_id=group_id, group_name=name, message_ref=message_reference(group_id, item.message_id),
-                                          message=item) for item in matches[:query.limit])
+        return tuple(
+            GroupMessageSearchHit(
+                group_id=group_id,
+                group_name=name,
+                message_ref=message_reference(group_id, item.message_id),
+                message=item,
+            )
+            for item in matches[: query.limit]
+        )
 
 
 def _key_is_after(key: tuple[int, str, str], after_key: tuple[int, str, str]) -> bool:

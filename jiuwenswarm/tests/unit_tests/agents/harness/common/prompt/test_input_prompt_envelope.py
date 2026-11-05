@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -20,7 +21,7 @@ if "gateway_protocol.sdk.crypto_utility" not in sys.modules:
     sys.modules.setdefault("gateway_protocol.sdk.crypto_utility", _crypto)
 
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import _input_prompt
-from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import HOST_USER_PROMPT_PREFIX_EN, UserTurn
 
 
 def test_input_prompt_en_lists_live_envelope_keys_and_binds_the_task_to_content(monkeypatch) -> None:
@@ -34,7 +35,7 @@ def test_input_prompt_en_lists_live_envelope_keys_and_binds_the_task_to_content(
         language="en",
         files={},
     )
-    envelope = turn._build_envelope(turn.text, "web", origin_kind=turn.origin_kind)
+    envelope = json.loads(turn.render().removeprefix(HOST_USER_PROMPT_PREFIX_EN))
     text = _input_prompt("en").content["en"]
 
     for key in envelope:

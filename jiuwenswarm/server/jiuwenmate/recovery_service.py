@@ -24,13 +24,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from openjiuwen.harness import persistent_agent as core
+
 from jiuwenswarm.server.jiuwenmate.execution_control_service import RequestControl
 from jiuwenswarm.server.jiuwenmate.execution_driver import outcome_of
 from jiuwenswarm.server.jiuwenmate.execution_models import RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SessionScheduler
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
-from openjiuwen.harness import persistent_agent as core
 
 logger = logging.getLogger(__name__)
 

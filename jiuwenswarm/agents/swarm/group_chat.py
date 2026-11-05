@@ -159,7 +159,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 + "For private-team work, call run_team with a stable run_id and the task. "
                 "The tool starts background work and returns its execution_id; remain available for new messages. "
                 "Use run_team action=update or cancel to change that execution. "
-                "For a follow-up to a private-team execution, use run_team action=continue with a new run_id and the previous execution_id. "
+                "For a follow-up to a private-team execution, use run_team action=continue with a new run_id "
+                "and the previous execution_id. "
                 "After a Team Organization, a message that mentions only you is a follow-up. "
                 "Answer it yourself with group_send_message when one agent can do it. "
                 "Call run_team when the expert team should do it. That call resumes the same instance "
@@ -622,7 +623,6 @@ class RunTeam(_GroupTool):
     async def _adjust(self, inputs):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
         from jiuwenswarm.server.runtime.group_service import GroupError
-        from openjiuwen.core.runner import Runner
         from openjiuwen.agent_teams.interaction.payload import GodViewMessage
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.server.runtime.group_execution import TERMINAL

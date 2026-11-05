@@ -15,7 +15,9 @@ from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec, register_tool_provider
 
 from agent_gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
-from jiuwenswarm.server.jiuwenmate.welink_office_settings import MAILBOX_PATTERN, WelinkOfficeSettings, discover_mailbox
+from jiuwenswarm.server.jiuwenmate.welink_office_settings import (
+    MAILBOX_PATTERN, WelinkOfficeSettings, cli_result_accepted, discover_mailbox,
+)
 
 PROVIDER = 'jiuwenmate.welink_office'
 _EMAIL = MAILBOX_PATTERN
@@ -28,7 +30,8 @@ _FIELDS = {
 
 
 def _text(value):
-    if not isinstance(value, str) or not value.strip() or len(value) > 16000 or '\x00' in value:
+    invalid_text = not isinstance(value, str) or not value.strip() or len(value) > 16000
+    if invalid_text or '\x00' in value:
         raise ValueError('Expected nonempty text, at most 16000 characters')
     if value.startswith('-'):
         raise ValueError('Values must not start with a command option')
@@ -114,22 +117,29 @@ class OfficeRuntime:
         if write:
             with closing(sqlite3.connect(self.database)) as conn, conn:
                 conn.execute('BEGIN IMMEDIATE')
-                prior = conn.execute('SELECT result FROM office_operations WHERE key LIKE ?', (prefix + '%',)).fetchall()
+                prior = conn.execute(
+                    "SELECT result FROM office_operations WHERE key LIKE ?", (prefix + "%",)
+                ).fetchall()
                 if any(json.loads(row[0]).get('status') == 'unknown' for row in prior):
                     return unknown
                 cursor = conn.execute('INSERT OR IGNORE INTO office_operations VALUES (?,?)',
                                       (key, json.dumps(unknown, ensure_ascii=False)))
                 if cursor.rowcount == 0:
-                    return json.loads(conn.execute('SELECT result FROM office_operations WHERE key=?', (key,)).fetchone()[0])
+                    return json.loads(
+                        conn.execute("SELECT result FROM office_operations WHERE key=?", (key,)).fetchone()[0]
+                    )
         try:
             result = self.cli.run(args, timeout=60)
             if len(result.stdout) > 64000:
                 raise ValueError('Response too large')
             data = json.loads(result.stdout)
-            if not isinstance(data, dict) or not result.ok or data.get('success') is False or data.get('error') or any(field in data and data[field] not in (0, '0') for field in ('code', 'resultCode')):
+            if not result.ok or not cli_result_accepted(data):
                 raise ValueError('Unconfirmed CLI result')
             # Exit code alone is not evidence that a write succeeded.
-            confirmed = data.get('success') is True or data.get('code') in (0, '0') or data.get('resultCode') in (0, '0') or bool(data.get('ItemId'))
+            confirmed = (
+                data.get('success') is True or bool(data.get('ItemId'))
+                or any(data.get(field) in (0, '0') for field in ('code', 'resultCode'))
+            )
             if write and not confirmed:
                 response = unknown
             else:
@@ -181,15 +191,24 @@ class ConfiguredOfficeRuntime:
                 or current.reader_credential_dir != self.binding.reader_credential_dir):
             return {'status': 'failed', 'code': 'WELINK_BINDING_CHANGED', 'stop_retrying': True,
                     'message': 'WeLink 登录账号或绑定已变化，请重新连接邮箱。'}
-        runtime = OfficeRuntime(WelinkCli(current.cli_path, Path(current.reader_credential_dir), env_name=current.env_name),
-                                '' if operation == 'meeting.create' else status['email'], Path(current.reader_credential_dir) / 'office_operations.sqlite3', current.account)
+        runtime = OfficeRuntime(
+            WelinkCli(current.cli_path, Path(current.reader_credential_dir), env_name=current.env_name),
+            "" if operation == "meeting.create" else status["email"],
+            Path(current.reader_credential_dir) / "office_operations.sqlite3",
+            current.account,
+        )
         return runtime.execute(request_id, operation, payload)
 
 
 class WelinkOfficeTool(Tool):
     def __init__(self, runtime, request_id):
         properties = {key: {'type': 'string'} for key in ('subject', 'body', 'start', 'end', 'location')}
-        properties.update({key: {'type': 'array', 'items': {'type': 'string'}} for key in ('to', 'cc', 'attendee', 'meeting_user_list')})
+        properties.update(
+            {
+                key: {"type": "array", "items": {"type": "string"}}
+                for key in ("to", "cc", "attendee", "meeting_user_list")
+            }
+        )
         super().__init__(ToolCard(
             id='jiuwenmate-welink-office', name='welink_office', parallel_safe=False,
             description=(
@@ -214,7 +233,9 @@ class WelinkOfficeTool(Tool):
             return dict(self.stopped)
         data = inputs if isinstance(inputs, dict) else inputs.model_dump()
         try:
-            result = await asyncio.to_thread(self.runtime.execute, self.request_id, data.get('operation'), data.get('payload'))
+            result = await asyncio.to_thread(
+                self.runtime.execute, self.request_id, data.get("operation"), data.get("payload")
+            )
         except ValueError as exc:
             return {'status': 'failed', 'code': 'INVALID_ARGUMENT', 'message': str(exc)}
         except Exception:

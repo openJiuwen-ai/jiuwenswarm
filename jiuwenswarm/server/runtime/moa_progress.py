@@ -52,10 +52,12 @@ class MoaProgress:
     def __init__(self) -> None:
         self.mailbox: _ProgressMailbox | None = None
 
-    def open(self) -> _ProgressMailbox:
+    def ensure_mailbox(self) -> _ProgressMailbox:
         if self.mailbox is None:
             self.mailbox = _ProgressMailbox()
         return self.mailbox
+
+    open = ensure_mailbox
 
     def close(self) -> None:
         if self.mailbox is not None:
@@ -64,7 +66,7 @@ class MoaProgress:
 
     async def stream(self, source: AsyncIterator[Any]) -> AsyncIterator[Any]:
         """Merge optional notices without making the runner await their delivery."""
-        mailbox = self.open()
+        mailbox = self.ensure_mailbox()
         output: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
         done = False
         error: BaseException | None = None

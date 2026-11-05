@@ -21,6 +21,8 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from openjiuwen.harness import persistent_agent as core
+
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import (
@@ -78,7 +80,6 @@ from jiuwenswarm.server.jiuwenmate.recovery_service import (
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import DEFAULT_SCHEDULE_INTERVAL, ScheduleService
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
-from openjiuwen.harness import persistent_agent as core
 
 logger = logging.getLogger(__name__)
 
@@ -562,7 +563,9 @@ class AgentManager:
 
         def read_views() -> list[RequestView]:
             with self._sessions.read_batch():
-                return [self._read_view(state, conversation.key, state.record.request_id in running) for state in states]
+                return [
+                    self._read_view(state, conversation.key, state.record.request_id in running) for state in states
+                ]
 
         return await asyncio.to_thread(read_views)
 
@@ -679,11 +682,13 @@ class AgentManager:
             if row is None or row.get("native_approval_id") != native_id:
                 return
             batch_digest = row["scope"].get("search_digest", row["query_digest"])
-            batch_rows = [
-                candidate for candidate in sharing_rows
-                if candidate["request_id"] == row["request_id"]
-                and candidate["scope"].get("search_digest", candidate["query_digest"]) == batch_digest
-            ]
+            batch_rows = []
+            for candidate in sharing_rows:
+                if candidate["request_id"] != row["request_id"]:
+                    continue
+                candidate_digest = candidate["scope"].get("search_digest", candidate["query_digest"])
+                if candidate_digest == batch_digest:
+                    batch_rows.append(candidate)
             if not batch_rows or any(candidate["status"] == "pending" for candidate in batch_rows):
                 return
             decisions[call["tool_call_id"]] = any(
@@ -1006,7 +1011,8 @@ class AgentManager:
         state = await asyncio.to_thread(self._sessions.get_request, event.namespace_id, event.request_id)
         route = state.record.route_snapshot
         sender = self._thinking_notice_sender
-        if not isinstance(notice, str) or route is None or route.channel == "web" or sender is None:
+        missing_notice_or_route = not isinstance(notice, str) or route is None
+        if missing_notice_or_route or route.channel == "web" or sender is None:
             return
         job: dict[str, object] = {
             "channel": route.channel,

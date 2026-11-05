@@ -1,5 +1,4 @@
-"""#5545/#5486: a stopping task whose "ended" acknowledgement was lost is
-settled by Core's confirmation instead of holding the session forever."""
+"""Recover a stopping task from Core confirmation after a lost acknowledgement (#5545/#5486)."""
 
 import asyncio
 

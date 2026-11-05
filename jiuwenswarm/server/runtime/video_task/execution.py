@@ -17,8 +17,9 @@ from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
 
-from .bridge import RemoteTaskEndpoint
 from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
+
+from .bridge import RemoteTaskEndpoint
 
 _settlements = set()
 # Requests whose settlement reporter is still waiting on native work.
@@ -178,12 +179,12 @@ async def bind_task_execution(request, adapter, inputs):
 
         # Awaiting this same request task from the reporter would deadlock on itself.
         current_execution = asyncio.current_task()
-        pending_executions = {
-            native for native in checkpoint.native_executions
-            if native is not current_execution and (
-                not invocation_cancelled or native in checkpoint.cancellation_executions or native.cancelling()
-            )
-        }
+        pending_executions = set()
+        for native in checkpoint.native_executions:
+            if native is current_execution:
+                continue
+            if not invocation_cancelled or native in checkpoint.cancellation_executions or native.cancelling():
+                pending_executions.add(native)
         # Output cancellation alone does not prove that CUA cleanup has ended.
 
         def retain_reporter(reporter):

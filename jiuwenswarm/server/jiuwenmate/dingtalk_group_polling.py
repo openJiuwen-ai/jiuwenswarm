@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope, valid_history_page_fields
 from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkBinding, configured_dingtalk_bindings
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
@@ -120,14 +120,8 @@ class DingTalkGroupPoller:
         return await asyncio.to_thread(configured_dingtalk_bindings, config)
 
     def _eligible_accesses(self, binding: DingTalkBinding) -> tuple[Any, ...]:
-        service = self._manager._service
         ns, agent = binding.namespace_id, binding.agent_id
-        if not service.get_colleague(ns, agent).enabled:
-            return ()
-        if service.read_settings(ns, agent).group_reply_mode != 'adaptive':
-            return ()
-        connection = service.connection_of(ns, agent)
-        if connection is None or (connection.channel, connection.connection_key) != ('dingtalk', binding.app_id):
+        if not self._inbound.accepts_group_polling(binding):
             return ()
         return tuple(access for access in self._manager.group_chats.active_accesses(ns, agent)
                      if access.app_id == binding.app_id)
@@ -147,9 +141,8 @@ class DingTalkGroupPoller:
             if self._closed:
                 break
             scope_key = ('scope', binding.namespace_id, binding.agent_id, binding.app_id)
-            existing = {key for key in self._floors
-                        if key[0] == binding.namespace_id
-                        and key[3:] == (binding.agent_id, binding.app_id)}
+            recipient = (binding.namespace_id, binding.agent_id, binding.app_id)
+            existing = {key for key in self._floors if (key[0], *key[3:]) == recipient}
             try:
                 accesses = await asyncio.to_thread(self._eligible_accesses, binding)
                 if not accesses:
@@ -237,16 +230,15 @@ class DingTalkGroupPoller:
         self._state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != 'nt':
             self._state_root.chmod(0o700)
-        descriptor, name = tempfile.mkstemp(prefix='.checkpoint-', dir=self._state_root)
-        temporary = Path(name)
-        try:
-            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+        with tempfile.TemporaryDirectory(prefix='.checkpoint-', dir=self._state_root) as directory:
+            temporary = Path(directory) / 'checkpoint.json'
+            with temporary.open('x', encoding='utf-8') as stream:
+                if os.name != 'nt':
+                    temporary.chmod(0o600)
                 json.dump({'version': 1, 'since': since.isoformat()}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self._state_path(key))
-        finally:
-            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _partial_boundary(payload: dict[str, Any]) -> datetime | None:
@@ -271,10 +263,7 @@ class DingTalkGroupPoller:
         # A delayed read must never retire a different app that replaced this binding.
         if binding not in await self._bindings():
             return
-        connection = await asyncio.to_thread(
-            self._manager._service.connection_of, binding.namespace_id, binding.agent_id,
-        )
-        if connection is None or (connection.channel, connection.connection_key) != ('dingtalk', binding.app_id):
+        if not await asyncio.to_thread(self._inbound.matches_connection, binding):
             return
         source = hashlib.sha256(json.dumps((group.key, binding.app_id, binding.robot_code)).encode()).hexdigest()
         await asyncio.to_thread(
@@ -343,14 +332,10 @@ class DingTalkGroupPoller:
         if payload is None:
             self._defer(('group', *key), _utc(self._clock()))
             return
-        if (
-            not isinstance(payload, dict) or payload.get('readerKey') != key[1]
-            or not isinstance(payload.get('messages'), list)
-            or any(not isinstance(message, dict) for message in payload['messages'])
-            or not isinstance(payload.get('complete'), bool) or not isinstance(payload.get('hasMore'), bool)
-            or not isinstance(payload.get('botCodes'), list)
-            or any(not isinstance(code, str) or not code.strip() for code in payload['botCodes'])
-        ):
+        if not valid_history_page_fields(payload) or payload.get('readerKey') != key[1]:
+            raise ValueError('Unverified DingTalk polling response')
+        valid_messages = all(isinstance(message, dict) for message in payload['messages'])
+        if not valid_messages or any(not isinstance(code, str) or not code.strip() for code in payload['botCodes']):
             raise ValueError('Unverified DingTalk polling response')
         if successful_reader is not None:
             self._preferred_readers[key] = successful_reader
@@ -386,7 +371,8 @@ class DingTalkGroupPoller:
             recipient.binding.app_id: 'dingtalk-open:' + bot_senders[recipient.binding.robot_code]
             for recipient in recipients if recipient.binding.robot_code in bot_senders
         }
-        if verified_senders and payload['complete'] and not payload['hasMore'] and not self._closed:
+        verified_complete_page = verified_senders and payload['complete'] and not payload['hasMore']
+        if verified_complete_page and not self._closed:
             await asyncio.to_thread(
                 self._manager.group_archive.reconcile_dingtalk_deliveries, key[0], key[2], verified_senders,
                 observed_since=since, observed_through=query_started,

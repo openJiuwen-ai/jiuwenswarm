@@ -93,7 +93,7 @@ def _json(value: object, limit: int) -> str:
     try:
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
         size = len(encoded.encode("utf-8"))
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         raise PersistentAgentError("invalid group sharing JSON") from None
     if size > limit:
         raise PersistentAgentError("group sharing snapshot is too large")
@@ -275,7 +275,9 @@ class GroupShareRepository(SQLiteStore):
         with self._transaction() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(group_share_approvals)")}
             if "tool_call_ids_json" not in columns:
-                conn.execute("ALTER TABLE group_share_approvals ADD COLUMN tool_call_ids_json TEXT NOT NULL DEFAULT '[]'")
+                conn.execute(
+                    "ALTER TABLE group_share_approvals ADD COLUMN tool_call_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
                 rows = conn.execute(
                     "SELECT approval_id, tool_call_id FROM group_share_approvals WHERE tool_call_id IS NOT NULL",
                 ).fetchall()
@@ -293,10 +295,11 @@ class GroupShareRepository(SQLiteStore):
 
     @staticmethod
     def _record(row: sqlite3.Row, *, private: bool = False) -> dict:
-        record = {key: row[key] for key in (
+        record_fields = (
             "approval_id", "namespace_id", "config_id", "agent_id", "request_id", "query_digest",
             "native_approval_id", "tool_call_id", "status", "decision", "created_at", "expires_at", "decided_at",
-        )}
+        )
+        record = {key: row[key] for key in record_fields}
         record["scope"] = json.loads(row["scope_json"])
         record["source_groups"] = json.loads(row["source_groups_json"])
         record["tool_call_ids"] = json.loads(row["tool_call_ids_json"])
@@ -345,11 +348,12 @@ class GroupShareRepository(SQLiteStore):
             f"申请分享 1 个来源群的{'、'.join(counts) or '内容'}至「{target_label}」。内容摘录："
             + ("；".join(excerpts[:3]) if excerpts else "暂无正文")
         )[:400]
+        approval_fields = (
+            "approval_id", "request_id", "agent_id", "config_id", "status",
+            "created_at", "expires_at", "decided_at",
+        )
         return {
-            **{key: row[key] for key in (
-                "approval_id", "request_id", "agent_id", "config_id", "status",
-                "created_at", "expires_at", "decided_at",
-            )},
+            **{key: row[key] for key in approval_fields},
             "can_decide": row["status"] == "pending" and row["native_approval_id"] is not None and len(sources) == 1,
             "requester_name": scope["requester_name"], "source_groups": sources,
             "target": _target_view(scope["target"]),
@@ -362,10 +366,11 @@ class GroupShareRepository(SQLiteStore):
 
     @staticmethod
     def _grant_view(row: sqlite3.Row) -> dict:
+        grant_fields = (
+            "grant_id", "source_group_id", "source_group_name", "created_at", "status",
+        )
         return {
-            **{key: row[key] for key in (
-                "grant_id", "source_group_id", "source_group_name", "created_at", "status",
-            )},
+            **{key: row[key] for key in grant_fields},
             "content_types": json.loads(row["content_types_json"]),
             "target": _target_view(json.loads(row["target_json"])),
         }
@@ -612,9 +617,12 @@ class GroupShareRepository(SQLiteStore):
         return {"approvals": [self._approval_view(row) for row in visible_approvals],
                 "grants": [self._grant_view(row) for row in grants]}
 
-    def _transition(self, conn: sqlite3.Connection, row: sqlite3.Row, status: str, stamp: str, decision: str | None) -> dict:
+    def _transition(
+        self, conn: sqlite3.Connection, row: sqlite3.Row, status: str, stamp: str, decision: str | None
+    ) -> dict:
         conn.execute(
-            "UPDATE group_share_approvals SET status=?, decision=?, decided_at=? WHERE approval_id=? AND status='pending'",
+            "UPDATE group_share_approvals SET status=?, decision=?, decided_at=? "
+            "WHERE approval_id=? AND status='pending'",
             (status, decision, stamp, row["approval_id"]),
         )
         return self._record(self._required(conn, row["approval_id"]))
@@ -670,7 +678,9 @@ class GroupShareRepository(SQLiteStore):
             row = self._required(conn, approval_id)
             self._owned(row, namespace_id, config_id)
             if len(json.loads(row["source_groups_json"])) != 1:
-                raise PersistentAgentError("group sharing approval must contain exactly one source group", code="CONFLICT")
+                raise PersistentAgentError(
+                    "group sharing approval must contain exactly one source group", code="CONFLICT"
+                )
             if row["status"] != "pending":
                 if row["decision"] == decision:
                     return self._record(row)
@@ -702,9 +712,19 @@ class GroupShareRepository(SQLiteStore):
                         "INSERT INTO group_share_grants (grant_id, namespace_id, config_id, agent_id, "
                         "source_group_id, source_group_name, target_json, grant_key, content_types_json, "
                         "approval_id, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,'active',?)",
-                        ("share_grant_" + secrets.token_hex(16), namespace_id, config_id, scope["agent_id"],
-                         group["group_id"], group["name"], _json(_target_view(scope["target"]), _MAX_SCOPE_BYTES),
-                         _grant_key(scope, group["group_id"]), _json(content_types, _MAX_SCOPE_BYTES), approval_id, stamp),
+                        (
+                            "share_grant_" + secrets.token_hex(16),
+                            namespace_id,
+                            config_id,
+                            scope["agent_id"],
+                            group["group_id"],
+                            group["name"],
+                            _json(_target_view(scope["target"]), _MAX_SCOPE_BYTES),
+                            _grant_key(scope, group["group_id"]),
+                            _json(content_types, _MAX_SCOPE_BYTES),
+                            approval_id,
+                            stamp,
+                        ),
                     )
             decided = self._transition(conn, row, _DECISIONS[decision], stamp, decision)
             return decided
@@ -722,7 +742,9 @@ class GroupShareRepository(SQLiteStore):
                 "UPDATE group_share_grants SET status='revoked', revoked_at=? WHERE grant_id=? AND status='active'",
                 (stamp, grant_id),
             )
-            return self._grant_view(conn.execute("SELECT * FROM group_share_grants WHERE grant_id=?", (grant_id,)).fetchone())
+            return self._grant_view(
+                conn.execute("SELECT * FROM group_share_grants WHERE grant_id=?", (grant_id,)).fetchone()
+            )
 
     def expire_pending(self, now: datetime) -> list[dict]:
         """Expire overdue requests and invalidate legacy approvals spanning multiple source groups."""

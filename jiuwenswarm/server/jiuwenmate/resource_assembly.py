@@ -45,7 +45,8 @@ def _package_file_spec(spec: Any, package: Path) -> dict[str, Any] | None:
     params = dumped.get("params")
     raw = params.get("file_path") if isinstance(params, dict) else None
     path = Path(raw) if isinstance(raw, str) and raw else None
-    if path is None or path.is_symlink() or not path.is_file() or not _inside(path, package):
+    unusable_file = path is None or path.is_symlink() or not path.is_file()
+    if unusable_file or not _inside(path, package):
         return None
     return dumped
 
@@ -138,7 +139,7 @@ def assemble_resources(
     configs = _connector_configs(agent_id, connectors)
     plugin_tools = [tool for plugin in plugins for tool in plugin.tools]
     plugin_rails = [rail for plugin in plugins for rail in plugin.rails]
-    if not skills and not configs and not pages and not manuals and not plugin_tools and not plugin_rails:
+    if not any((skills, configs, pages, manuals, plugin_tools, plugin_rails)):
         return AssembledResources(spec_fields={}, prompt="")
 
     fields: dict[str, Any] = {}
@@ -599,18 +600,16 @@ class InstalledResourceCatalog:
             from openjiuwen.harness.resources.extension_loader import load_plugin_package
 
             loaded = load_plugin_package(package / "manifest.json")
-        except (OSError, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError):
             return None
         skills = []
         for item in loaded.skills:
             directory = Path(item.dir)
             skill_id = directory.name
-            if (
-                _NAME.fullmatch(skill_id) is None
-                or directory.is_symlink()
-                or not (directory / "SKILL.md").is_file()
-                or not _inside(directory, package)
-            ):
+            invalid_skill_path = (
+                _NAME.fullmatch(skill_id) is None or directory.is_symlink() or (not (directory / "SKILL.md").is_file())
+            )
+            if invalid_skill_path or not _inside(directory, package):
                 return None
             skills.append(SkillSource(name=skill_id, directory=directory.resolve()))
         tools = []
@@ -710,7 +709,8 @@ class InstalledResourceCatalog:
             return []
         return [item for item in records if isinstance(item, dict)]
 
-    def _connector_skills(self, name: str) -> list[SkillSource]:
+    @staticmethod
+    def _connector_skills(name: str) -> list[SkillSource]:
         from jiuwenswarm.server.runtime.mcp.state_store import connected_mcp_skill_dirs
 
         found: list[SkillSource] = []

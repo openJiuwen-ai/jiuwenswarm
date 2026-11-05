@@ -430,7 +430,7 @@ async def test_abort_given_before_core_starts_is_handed_over(host):
     await handle.abort("cancel")
     assert calls == []
 
-    await handle._attach(object())
+    await handle.attach(object())
 
     assert calls == ["stop"]
     assert handle.reason == "stop"

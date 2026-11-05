@@ -7,13 +7,29 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition, _present, _valid_received_at
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
+    from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+
+
+@dataclass(frozen=True, kw_only=True)
+class WelinkInboundContext:
+    service: PersistentAgentService
+    groups: GroupChatRepository
+    sessions: ExecutionRepository
+    agent_manager: AgentManager
+    clock: Callable[[], datetime]
+
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +115,7 @@ class WelinkReader:
     reader_credential_dir: str
     cli_path: str = "welink-cli"
     env_name: str = "pro"
-    poll_interval_seconds: float = 4
+    poll_interval_seconds: float = 4.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -114,7 +130,7 @@ class WelinkBinding:
     reader_credential_dir: str = ""
     cli_path: str = "welink-cli"
     env_name: str = "pro"
-    poll_interval_seconds: float = 4
+    poll_interval_seconds: float = 4.0
     namespace_id: str = "local"
 
 
@@ -155,8 +171,8 @@ def configured_welink_bindings(config: Mapping[str, Any] | None = None) -> tuple
     for item, agent, credential in zip(entries, agents, credentials):
         secret = str(item.get("assistant_secret") or "").strip()
         directory = str(item.get("credential_dir") or "").strip()
-        if (not item.get("enabled") or not agent or not credential or not secret or not directory
-                or agents.count(agent) != 1 or credentials.count(credential) != 1):
+        configured = all((item.get("enabled"), agent, credential, secret, directory))
+        if not configured or agents.count(agent) != 1 or credentials.count(credential) != 1:
             continue
         result.append(WelinkBinding(account=reader.account, agent_id=agent,
             assistant_credential_id=credential, assistant_secret=secret,
@@ -206,7 +222,9 @@ def configured_welink_agent_ids(config: Mapping[str, Any] | None = None) -> list
     return [binding.agent_id for binding in configured_welink_bindings(config)]
 
 
-async def _accept_direct_message(fanout: Any, event: WelinkInboundEvent, binding: WelinkBinding, snapshot: Any) -> InboundDisposition:
+async def _accept_direct_message(
+    context: WelinkInboundContext, event: WelinkInboundEvent, binding: WelinkBinding, snapshot: Any
+) -> InboundDisposition:
     """Open one private colleague session. A private chat is not a group and always replies."""
     if event.sender_kind == "agent":
         return InboundDisposition.HANDLED
@@ -222,18 +240,18 @@ async def _accept_direct_message(fanout: Any, event: WelinkInboundEvent, binding
         )
         from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_KNOWLEDGE_READ, WORKSPACE_READ
 
-        now = fanout._clock()
+        now = context.clock()
         received_at = event.received_at.astimezone(timezone.utc)
-        text = await asyncio.to_thread(_text_with_workspace_media, fanout, binding, event)
+        text = await asyncio.to_thread(_text_with_workspace_media, context, binding, event)
         scope = frozenset({"chat", WORKSPACE_READ, WORKSPACE_KNOWLEDGE_READ})
         session = await asyncio.to_thread(
-            fanout._sessions.resolve_session,
+            context.sessions.resolve_session,
             binding.namespace_id,
             binding.agent_id,
             ConversationRef.im_direct("welink", event.chat_id),
             now=now,
         )
-        await fanout._agent_manager.scheduler.accept(
+        await context.agent_manager.scheduler.accept(
             session,
             snapshot=snapshot,
             source_ref=f"welink:message:{event.message_id}",
@@ -268,22 +286,21 @@ async def _accept_direct_message(fanout: Any, event: WelinkInboundEvent, binding
     return InboundDisposition.HANDLED
 
 
-async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> InboundDisposition:
+async def accept_welink_message(context: WelinkInboundContext, event: WelinkInboundEvent) -> InboundDisposition:
     """Archive once and independently accept each bound colleague's request."""
-    if (
-        not isinstance(event, WelinkInboundEvent)
-        or event.chat_type not in {"group", "p2p"}
-        or not _present(event.account)
-        or not _present(event.expected_agent_id)
-        or not _present(event.message_id)
-        or not _present(event.chat_id)
-        or not _present(event.sender_id)
-        or not _present(event.sender_name)
-        or not _present(event.text)
-        or event.sender_kind not in {"human", "agent"}
-        or (event.visible_from is not None and not _valid_received_at(event.visible_from))
-        or not _valid_received_at(event.received_at)
-    ):
+    if not isinstance(event, WelinkInboundEvent):
+        return InboundDisposition.REJECTED
+    if event.chat_type not in {"group", "p2p"} or event.sender_kind not in {"human", "agent"}:
+        return InboundDisposition.REJECTED
+    required_text = (
+        event.account, event.expected_agent_id, event.message_id, event.chat_id,
+        event.sender_id, event.sender_name, event.text,
+    )
+    if not all(_present(value) for value in required_text):
+        return InboundDisposition.REJECTED
+    if event.visible_from is not None and not _valid_received_at(event.visible_from):
+        return InboundDisposition.REJECTED
+    if not _valid_received_at(event.received_at):
         return InboundDisposition.REJECTED
 
     binding = welink_binding_for_agent(event.expected_agent_id)
@@ -305,22 +322,22 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
         from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
         expected = ("welink", welink_connection_key(binding.account, binding.config_id))
-        connection = await asyncio.to_thread(fanout._service.connection_of, binding.namespace_id, binding.agent_id)
+        connection = await asyncio.to_thread(context.service.connection_of, binding.namespace_id, binding.agent_id)
         # A later save can stamp the office colleague onto persistent_agent_id. The
         # dedicated WeLink agent is still the connection row for that config.
         if connection is None and binding.config_id and binding.config_id != binding.agent_id:
             return InboundDisposition.REJECTED
-        if connection is None and hasattr(fanout._service, "connections"):
+        if connection is None and hasattr(context.service, "connections"):
             config_id = binding.config_id or binding.agent_id
-            records = await asyncio.to_thread(fanout._service.connections, binding.namespace_id, config_id)
+            records = await asyncio.to_thread(context.service.connections, binding.namespace_id, config_id)
             matches = [item for item in records if (item.channel, item.connection_key) == expected]
             if len(matches) > 1 or (not matches and any(item.channel == "welink" for item in records)):
                 return InboundDisposition.REJECTED
             connection = matches[0] if matches else None
         if connection is None:
-            if not hasattr(fanout._service, "get_config"):
+            if not hasattr(context.service, "get_config"):
                 return InboundDisposition.REJECTED
-            owner = await asyncio.to_thread(fanout._service.get_config, binding.namespace_id, binding.agent_id)
+            owner = await asyncio.to_thread(context.service.get_config, binding.namespace_id, binding.agent_id)
             if owner.agent_id != binding.agent_id:
                 return InboundDisposition.REJECTED
         elif (connection.channel, connection.connection_key) != expected or (
@@ -332,26 +349,26 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
             from dataclasses import replace
 
             binding = replace(binding, agent_id=runtime_id)
-        view = await asyncio.to_thread(fanout._service.get_colleague, binding.namespace_id, binding.agent_id)
+        view = await asyncio.to_thread(context.service.get_colleague, binding.namespace_id, binding.agent_id)
         if getattr(view, "enabled", True) is False:
             return InboundDisposition.HANDLED
-        snapshot = await asyncio.to_thread(fanout._service.current_snapshot, binding.namespace_id, binding.agent_id)
+        snapshot = await asyncio.to_thread(context.service.current_snapshot, binding.namespace_id, binding.agent_id)
         if snapshot.agent_id != binding.agent_id:
             return InboundDisposition.REJECTED
 
         if event.chat_type == "p2p":
-            return await _accept_direct_message(fanout, event, binding, snapshot)
+            return await _accept_direct_message(context, event, binding, snapshot)
 
-        now = fanout._clock()
+        now = context.clock()
         received_at = event.received_at.astimezone(timezone.utc)
         group = await asyncio.to_thread(
-            fanout._groups.resolve,
+            context.groups.resolve,
             binding.namespace_id,
             "welink",
             event.chat_id,
             now=now,
         )
-        text = await asyncio.to_thread(_text_with_workspace_media, fanout, binding, event)
+        text = await asyncio.to_thread(_text_with_workspace_media, context, binding, event)
         source = GroupMessage(
             message_id=event.message_id,
             sender_id=event.sender_id,
@@ -370,7 +387,7 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
         )
         try:
             await asyncio.to_thread(
-                fanout._agent_manager.group_archive.append,
+                context.agent_manager.group_archive.append,
                 binding.namespace_id,
                 group.group_chat_id,
                 source,
@@ -381,17 +398,17 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
             if getattr(exc, "code", "") == "CONFLICT":
                 return InboundDisposition.HANDLED
             raise
-        current, = await asyncio.to_thread(fanout._agent_manager.group_archive.current_messages,
+        current, = await asyncio.to_thread(context.agent_manager.group_archive.current_messages,
             binding.namespace_id, group.group_chat_id, (event.message_id,))
         if current.status in {"recalled", "unavailable"}:
             return InboundDisposition.HANDLED
         boundary = current.received_at
         if event.first_observation and event.visible_from is not None:
             boundary = min(boundary, event.visible_from)
-        await asyncio.to_thread(fanout._groups.observe_access,
+        await asyncio.to_thread(context.groups.observe_access,
             binding.namespace_id, binding.agent_id, group.group_chat_id, binding.account,
             observed_at=now, visible_from=boundary, source_ref=f"welink:message:{event.message_id}")
-        access_record = await asyncio.to_thread(fanout._groups.access_for,
+        access_record = await asyncio.to_thread(context.groups.access_for,
             binding.namespace_id, binding.agent_id, group.group_chat_id)
         if access_record.status != "active" or current.received_at < access_record.visible_from:
             return InboundDisposition.HANDLED
@@ -400,16 +417,18 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
             source = current.model_copy(update={"sender_id": event.sender_id, "sender_name": event.sender_name,
                                                 "sender_kind": "agent"})
         if event.mentioned:
-            source = source.model_copy(update={"mention_ids": tuple(dict.fromkeys((*current.mention_ids, binding.agent_id)))})
+            source = source.model_copy(
+                update={"mention_ids": tuple(dict.fromkeys((*current.mention_ids, binding.agent_id)))}
+            )
         else:
             if event.sender_kind == "agent":
                 return InboundDisposition.HANDLED
-            settings = await asyncio.to_thread(fanout._service.read_settings, binding.namespace_id, binding.agent_id)
+            settings = await asyncio.to_thread(context.service.read_settings, binding.namespace_id, binding.agent_id)
             if getattr(settings, "group_reply_mode", "adaptive") != "adaptive":
                 return InboundDisposition.HANDLED
         request_input = request_input.model_copy(update={"source": source, "text": source.text})
         session = await asyncio.to_thread(
-            fanout._sessions.resolve_session,
+            context.sessions.resolve_session,
             binding.namespace_id,
             binding.agent_id,
             ConversationRef.group(group.group_chat_id),
@@ -422,7 +441,7 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
             source_scope=scope,
             policy_revision="welink-v1",
         )
-        await fanout._agent_manager.scheduler.accept(
+        await context.agent_manager.scheduler.accept(
             session,
             snapshot=snapshot,
             source_ref=f"welink:message:{event.message_id}",
@@ -442,12 +461,12 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
     return InboundDisposition.HANDLED
 
 
-def _text_with_workspace_media(fanout: Any, binding: WelinkBinding, event: WelinkInboundEvent) -> str:
+def _text_with_workspace_media(context: WelinkInboundContext, binding: WelinkBinding, event: WelinkInboundEvent) -> str:
     """Copy downloaded media into the office and hand the colleague a relative path."""
     if not event.local_files:
         return event.text
     try:
-        office = fanout._service._workspaces.ensure(binding.namespace_id, binding.agent_id)
+        office = context.service.workspaces.ensure(binding.namespace_id, binding.agent_id)
         placed = place_welink_media(office, event.message_id, event.local_files, event.text)
     except Exception:
         logger.info("[Welink] media was not placed in the workspace")
@@ -479,13 +498,8 @@ def place_welink_media(
         except OSError:
             continue
         name = resolved.name
-        if (
-            not resolved.is_file()
-            or not _within(resolved, root)
-            or "incoming" not in resolved.parts
-            or name in {"", ".", ".."}
-            or any(char in name for char in ("/", "\\", ":"))
-        ):
+        invalid_source_path = not resolved.is_file() or not _within(resolved, root) or 'incoming' not in resolved.parts
+        if invalid_source_path or name in {'', '.', '..'} or any(char in name for char in ('/', '\\', ':')):
             continue
         dest = (dest_dir / name).resolve()
         if not _within(dest, dest_dir):

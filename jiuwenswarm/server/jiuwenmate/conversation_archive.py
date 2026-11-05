@@ -13,10 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from openjiuwen.harness.persistent_agent import GroupMessage
+
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository, utc_time
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
-from openjiuwen.harness.persistent_agent import GroupMessage
 
 # The Swarm group record keeps this many newest messages. Older rows are deleted.
 _RETAINED_MESSAGES = 5000
@@ -126,8 +127,16 @@ class ConversationArchive:
                 message = message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()})
             row = conn.execute("SELECT * FROM messages WHERE message_id=?", (message.message_id,)).fetchone()
             if row is None:
-                conn.execute("INSERT INTO messages(message_id,payload,received_at_us,changed_at,source_ref) VALUES (?,?,?,?,?)",
-                             (message.message_id, message.model_dump_json(), time_micros(message.received_at), stamp, source_ref))
+                conn.execute(
+                    "INSERT INTO messages(message_id,payload,received_at_us,changed_at,source_ref) VALUES (?,?,?,?,?)",
+                    (
+                        message.message_id,
+                        message.model_dump_json(),
+                        time_micros(message.received_at),
+                        stamp,
+                        source_ref,
+                    ),
+                )
             elif recalled is not None:
                 previous = GroupMessage.model_validate_json(row["payload"])
                 current = previous.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()})
@@ -186,7 +195,8 @@ class ConversationArchive:
             receipts, echoes = [], {}
             for row in conn.execute('SELECT message_id,payload,source_ref FROM messages'):
                 item = GroupMessage.model_validate_json(row['payload'])
-                if item.sender_kind != 'agent' or item.status != 'normal' or not item.text or item.attachment_refs:
+                non_agent_or_abnormal = item.sender_kind != "agent" or item.status != "normal"
+                if non_agent_or_abnormal or not item.text or item.attachment_refs:
                     continue
                 if row['source_ref'].startswith('delivery:') and item.sender_id in bot_senders:
                     receipts.append((row, item))
@@ -235,7 +245,9 @@ class ConversationArchive:
                 message = GroupMessage.model_validate_json(row["payload"])
                 changed = message.status != "recalled" or message.text is not None or bool(message.attachment_refs)
                 message = message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()})
-                conn.execute("UPDATE messages SET payload=? WHERE message_id=?", (message.model_dump_json(), message_id))
+                conn.execute(
+                    "UPDATE messages SET payload=? WHERE message_id=?", (message.model_dump_json(), message_id)
+                )
             if added or changed:
                 conn.execute("UPDATE archive_info SET content_revision=content_revision+1")
 
@@ -243,7 +255,9 @@ class ConversationArchive:
         with self.connection(namespace_id, group_id, create=True) as conn:
             conn.execute("UPDATE archive_info SET gap=1")
 
-    def current_messages(self, namespace_id: str, group_id: str, message_ids: tuple[str, ...]) -> tuple[GroupMessage, ...]:
+    def current_messages(
+        self, namespace_id: str, group_id: str, message_ids: tuple[str, ...]
+    ) -> tuple[GroupMessage, ...]:
         with self.connection(namespace_id, group_id) as conn:
             messages = []
             for message_id in message_ids:
@@ -282,11 +296,13 @@ class ConversationArchive:
                             raise ValueError("cursor scope changed")
                         if not all(type(value) is int and value >= 0 for value in (start, upper, revision)):
                             raise ValueError("cursor position invalid")
-                    except (ValueError, TypeError, UnicodeError, OverflowError):
+                    except (ValueError, TypeError, OverflowError):
                         return ArchivePage("incomplete", reason="unknown or expired group cursor")
-            rows = conn.execute("SELECT * FROM messages WHERE ingest_seq>? AND ingest_seq<=? AND received_at_us>=? "
-                                + ("ORDER BY ingest_seq DESC LIMIT ?" if cursor is None else "ORDER BY ingest_seq LIMIT ?"),
-                                (start, upper, time_micros(visible_from), limit if cursor is None else limit + 1)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE ingest_seq>? AND ingest_seq<=? AND received_at_us>=? "
+                + ("ORDER BY ingest_seq DESC LIMIT ?" if cursor is None else "ORDER BY ingest_seq LIMIT ?"),
+                (start, upper, time_micros(visible_from), limit if cursor is None else limit + 1),
+            ).fetchall()
             if cursor is None:
                 rows.reverse()
             page = rows[:limit]
@@ -325,13 +341,19 @@ class ConversationArchive:
                     before, cursor_upper, revision, cursor_scope, signature = state
                     signed = json.dumps([cursor_scope, before, cursor_upper, revision]).encode()
                     expected = hmac.new(secret, signed, hashlib.sha256).hexdigest()
-                    if (type(before) is not int or type(cursor_upper) is not int or type(revision) is not int
-                            or cursor_scope != scope or cursor_upper > current_upper
-                            or revision > info["content_revision"] or not 1 <= before <= cursor_upper + 1
-                            or not hmac.compare_digest(signature, expected)):
+                    invalid_position = (
+                        type(before) is not int or type(cursor_upper) is not int or type(revision) is not int
+                    )
+                    if invalid_position or (
+                        cursor_scope != scope
+                        or cursor_upper > current_upper
+                        or revision > info["content_revision"]
+                        or (not 1 <= before <= cursor_upper + 1)
+                        or (not hmac.compare_digest(signature, expected))
+                    ):
                         raise ValueError("cursor scope changed")
                     upper = cursor_upper
-                except (ValueError, TypeError, UnicodeError, OverflowError):
+                except (ValueError, TypeError, OverflowError):
                     return ArchivePage("incomplete", reason="unknown or expired group cursor")
             rows = conn.execute(
                 "SELECT * FROM messages WHERE ingest_seq < ? AND ingest_seq <= ? AND received_at_us >= ? "

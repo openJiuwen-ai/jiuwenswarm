@@ -73,10 +73,10 @@ def _message(row: dict):
     except (ValueError, TypeError, OverflowError, OSError):
         try:
             received = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-            if received.tzinfo is None:
-                raise ValueError("naive date")
         except (ValueError, TypeError):
             raise UnsafeGroupRead("CLI message time could not be verified") from None
+    if received.tzinfo is None:
+        raise UnsafeGroupRead("CLI message time could not be verified")
     sender = row.get("sender") or {}
     if not isinstance(sender, dict):
         sender = {"id": str(sender)}
@@ -121,11 +121,11 @@ async def verified_cli_rows(cli, namespace: str, agent: str, rows: list[dict], i
                 "api", "GET", f"/open-apis/im/v1/messages/{message_id}", "--as", identity, "--format", "json",
             ])
             if payload.get("code", 0) != 0:
-                raise UnsafeGroupRead("raw source message is not readable")
+                raise UnsafeGroupRead("raw source message is not readable") from exc
             exact, _ = _messages(payload)
-            if (len(exact) != 1 or exact[0].get("message_id") != message_id
-                    or row.get("chat_id") and exact[0].get("chat_id") != row["chat_id"]):
-                raise UnsafeGroupRead("raw source message identity changed")
+            different_message = len(exact) != 1 or exact[0].get("message_id") != message_id
+            if different_message or (row.get("chat_id") and exact[0].get("chat_id") != row["chat_id"]):
+                raise UnsafeGroupRead("raw source message identity changed") from exc
             row = exact[0]
             _message(row)
         verified.append(row)
@@ -223,11 +223,15 @@ class CliGroupSharing:
             hits.append(core.GroupMessageSearchHit(group_id=source["group_id"], group_name=source["name"],
                 message_ref=f"cli:{source['group_id']}:{message.message_id}", message=message))
         snapshot = CliReadSnapshot(
-            **core.InvocationRef.from_execution(execution).model_dump(), command_digest=digest,
-            plan=json.loads(json.dumps(asdict(plan))), content_types=("files",) if plan.operation == "download" else ("messages",),
-            hits=tuple(hits), has_more=more,
-            source_authorizations=_source_facts([item for item in sources
-                                                if item["group_id"] in {hit.group_id for hit in hits}]),
+            **core.InvocationRef.from_execution(execution).model_dump(),
+            command_digest=digest,
+            plan=json.loads(json.dumps(asdict(plan))),
+            content_types=("files",) if plan.operation == "download" else ("messages",),
+            hits=tuple(hits),
+            has_more=more,
+            source_authorizations=_source_facts(
+                [item for item in sources if item["group_id"] in {hit.group_id for hit in hits}]
+            ),
         )
         if plan.operation == "download":
             if len(hits) != 1 or plan.file_key not in hits[0].message.attachment_refs:
@@ -280,17 +284,26 @@ class CliGroupSharing:
         if requested and requested.issubset(denied_groups):
             return {"ok": False, "error": "本次请求对此来源群的分享已被拒绝或过期，不再重复申请。"}
         digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
-        marker = CliReadSnapshot(**core.InvocationRef.from_execution(execution).model_dump(),
-                                 command_digest=digest, plan=json.loads(json.dumps(asdict(plan))), content_types=("messages",))
+        marker = CliReadSnapshot(
+            **core.InvocationRef.from_execution(execution).model_dump(),
+            command_digest=digest,
+            plan=json.loads(json.dumps(asdict(plan))),
+            content_types=("messages",),
+        )
         directory = preview_directory(self.cli, marker)
         cache = directory / "preview.json"
         if cache.exists():
             if cache.is_symlink() or cache.stat().st_size > MAX_JSON_BYTES:
                 raise UnsafeGroupRead("invalid private CLI preview")
             preview = CliReadSnapshot.model_validate_json(cache.read_text(encoding="utf-8"))
-            if any(getattr(preview, key) != getattr(execution, key) for key in (
+            identity_fields = (
                 "namespace_id", "agent_id", "session_id", "request_id", "source_ref",
-            )) or preview.command_digest != digest or preview.plan != json.loads(json.dumps(asdict(plan))):
+            )
+            if (
+                any(getattr(preview, key) != getattr(execution, key) for key in identity_fields)
+                or preview.command_digest != digest
+                or preview.plan != json.loads(json.dumps(asdict(plan)))
+            ):
                 raise UnsafeGroupRead("CLI preview belongs to another request")
         else:
             preview = await self._preview(execution, plan, digest, sources)
@@ -322,11 +335,16 @@ class CliGroupSharing:
                     "hits": tuple(hit for hit in preview.hits if hit.group_id == group_id),
                     "artifacts": tuple(file for file in preview.artifacts if file.group_id == group_id),
                 })
-                per_scope = {**scope, "origin": "cli", "cli_digest": digest, "search_digest": batch,
-                             "source_authorizations": {group_id: {key: source[key] for key in ("app_id", "visible_from")}}}
+                per_scope = {
+                    **scope,
+                    "origin": "cli",
+                    "cli_digest": digest,
+                    "search_digest": batch,
+                    "source_authorizations": {group_id: {key: source[key] for key in ("app_id", "visible_from")}},
+                }
                 snapshots.append((per_scope, _digest(query, group_id), frozen.model_dump(mode="json"), [source]))
             if snapshots:
-                rows = await asyncio.to_thread(repo.create_or_get_batch, snapshots, now=self.sharing._clock())
+                rows = await asyncio.to_thread(repo.create_or_get_batch, snapshots, now=self.sharing.now())
         approved = [preview.model_copy(update={
             "hits": tuple(hit for hit in preview.hits if hit.group_id == current),
             "artifacts": tuple(file for file in preview.artifacts if file.group_id == current),
@@ -336,12 +354,17 @@ class CliGroupSharing:
             group_id = row["source_groups"][0]["group_id"]
             saved = row["scope"]
             expected = {group_id: {key: by_group[group_id][key] for key in ("app_id", "visible_from")}}
-            if any(saved.get(key) != scope.get(key) for key in (
+            scope_fields = (
                 "namespace_id", "config_id", "agent_id", "request_id", "principal_ref", "target", "query",
-            )) or saved.get("source_authorizations") != expected or saved.get("cli_digest") != digest:
+            )
+            if (
+                any(saved.get(key) != scope.get(key) for key in scope_fields)
+                or saved.get("source_authorizations") != expected
+                or saved.get("cli_digest") != digest
+            ):
                 raise UnsafeGroupRead("CLI sharing scope changed")
             if row["status"] == "pending":
-                await asyncio.to_thread(repo.authorize_from_grants, row["approval_id"], now=self.sharing._clock())
+                await asyncio.to_thread(repo.authorize_from_grants, row["approval_id"], now=self.sharing.now())
                 row = await asyncio.to_thread(repo.get, row["approval_id"])
             if row["status"] == "pending":
                 pending.append(row)

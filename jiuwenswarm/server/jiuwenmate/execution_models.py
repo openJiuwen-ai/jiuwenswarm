@@ -307,13 +307,12 @@ def build_execution_context(
         raise PersistentContractError("Execution belongs to another Request")
     startup_scope = request.access.startup_scope
     source_scope = request.access.source_scope
-    if (
+    legacy_feishu_direct_message = (
         request.request_input.kind == "direct_message"
         and request.access.principal_ref.startswith("feishu:")
-        and request.access.policy_revision == "jm08-feishu-v1"
-        and "chat" in startup_scope
-        and "chat" in source_scope
-    ):
+        and (request.access.policy_revision == "jm08-feishu-v1")
+    )
+    if legacy_feishu_direct_message and "chat" in startup_scope and "chat" in source_scope:
         # Recover only the direct-message permission for Requests persisted before JM-08-v2.
         startup_scope = startup_scope | frozenset({"workspace_knowledge_read"})
         source_scope = source_scope | frozenset({"workspace_knowledge_read"})

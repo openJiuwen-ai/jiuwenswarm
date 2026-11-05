@@ -71,7 +71,10 @@ def _fixture(tmp_path, monkeypatch, *, agents=2, groups=1):
         _sessions=SimpleNamespace(db_path=tmp_path / 'sessions.sqlite'),
     )
     monkeypatch.setattr(dingtalk_group_polling, 'configured_dingtalk_bindings', lambda config=None: tuple(bindings))
-    inbound = SimpleNamespace(handle_history_message=handle)
+    from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundHandler
+
+    inbound = DingTalkInboundHandler(service=service, sessions=manager._sessions, agent_manager=manager)
+    monkeypatch.setattr(inbound, "handle_history_message", handle)
     poller = dingtalk_group_polling.DingTalkGroupPoller(manager, inbound, clock=lambda: now[0], config_loader=lambda: {})
     return SimpleNamespace(**locals())
 

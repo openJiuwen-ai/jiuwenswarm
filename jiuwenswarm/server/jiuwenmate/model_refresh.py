@@ -47,8 +47,6 @@ class ModelRefreshQueue:
             self._pending = None
             try:
                 applied = await self._refresh(payload)
-            except asyncio.CancelledError:
-                raise
             except Exception as exc:
                 # Configuration and exception messages can contain credentials.
                 logger.warning("[JiuwenMate] background model refresh failed: error_type=%s", type(exc).__name__)

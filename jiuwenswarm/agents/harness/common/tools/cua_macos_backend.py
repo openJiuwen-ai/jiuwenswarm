@@ -21,7 +21,8 @@ class MacOSBackend:
         self.target = None
         self.observation_only = False
 
-    def _prepare_driver(self):
+    @staticmethod
+    def _prepare_driver():
         return str(prepare_native())
 
     def _call(self, operation, **arguments):

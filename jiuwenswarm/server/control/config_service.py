@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 import os
 import re
 import sys
@@ -22,6 +20,7 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod

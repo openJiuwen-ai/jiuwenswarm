@@ -4,11 +4,12 @@ import json
 from datetime import datetime
 from urllib.parse import quote
 
+from openjiuwen.harness.persistent_agent import GroupMessage
+
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.execution_models import RequestRecord
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, shared_output_file_name
-from openjiuwen.harness.persistent_agent import GroupMessage
 
 
 class ConversationResources:

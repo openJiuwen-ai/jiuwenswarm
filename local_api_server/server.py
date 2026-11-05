@@ -128,7 +128,7 @@ def _extract_context_fields(value: Any) -> dict[str, list[Any]]:
                 return
             try:
                 visit(json.loads(stripped), depth + 1)
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError):
                 return
 
     visit(value)
@@ -175,7 +175,7 @@ def _parse_tool_arguments(raw_arguments: Any) -> Any:
         return raw_arguments
     try:
         return json.loads(raw_arguments)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError):
         return _truncate_trace_text(raw_arguments)
 
 
@@ -337,8 +337,9 @@ class StreamingResponseAccumulator:
             delta = choice.get("delta")
             if not isinstance(delta, dict):
                 delta = {}
-            if isinstance(delta.get("role"), str):
-                state["role"] = delta["role"]
+            role = delta.get("role")
+            if isinstance(role, str):
+                state["role"] = role
             for field in ("content", "reasoning_content", "refusal"):
                 value = delta.get(field)
                 if isinstance(value, str):
@@ -652,7 +653,7 @@ def _iter_sse_events(buffer: bytes) -> tuple[list[bytes], bytes]:
         if idx < 0:
             break
         events.append(buffer[:idx])
-        buffer = buffer[idx + len(separator) :]
+        buffer = buffer[idx + len(separator):]
     return events, buffer
 
 
@@ -982,7 +983,8 @@ class LocalOpenAIProxyApp:
             message = await receive()
             if message["type"] != "http.request":
                 continue
-            if body := message.get("body", b""):
+            body = message.get("body", b"")
+            if body:
                 chunks.append(body)
             if not message.get("more_body", False):
                 break

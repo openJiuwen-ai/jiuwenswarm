@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import WelinkInboundEvent
     from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
     from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot
     from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -236,7 +237,11 @@ def resolve_feishu_access(
     )
 
     sender_type = str(event.sender_type or "unknown").strip().lower()
-    sender_id = event.sender_app_id if sender_type in {"bot", "app", "agent"} and _present(event.sender_app_id) else event.sender_id
+    sender_id = (
+        event.sender_app_id
+        if sender_type in {"bot", "app", "agent"} and _present(event.sender_app_id)
+        else event.sender_id
+    )
     scope = {"chat", WORKSPACE_READ}
     if event.chat_type == "p2p":
         scope.add(WORKSPACE_KNOWLEDGE_READ)
@@ -360,9 +365,17 @@ def create_default_persistent_group_fanout(
                 item = facts["messages"].get(message.message_id, {})
                 status = item.get("status")
                 if status == "recalled":
-                    await asyncio.to_thread(manager.group_archive.recall, access.namespace_id, access.group_id,
-                        message.message_id, source_ref=f"refresh:{message.message_id}", changed_at=datetime.now(timezone.utc))
-                    updated.append(message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()}))
+                    await asyncio.to_thread(
+                        manager.group_archive.recall,
+                        access.namespace_id,
+                        access.group_id,
+                        message.message_id,
+                        source_ref=f"refresh:{message.message_id}",
+                        changed_at=datetime.now(timezone.utc),
+                    )
+                    updated.append(
+                        message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()})
+                    )
                 elif status in {"normal", "edited"}:
                     changed_at = datetime.fromisoformat(item["changed_at"])
                     fresh = type(message).model_validate({**message.model_dump(), "status": status,
@@ -388,7 +401,9 @@ def create_default_persistent_group_fanout(
                     # Feishu did not answer. The archived inbound text remains the trigger.
                     updated.append(message)
                 else:
-                    updated.append(message.model_copy(update={"status": "unavailable", "text": None, "attachment_refs": ()}))
+                    updated.append(
+                        message.model_copy(update={"status": "unavailable", "text": None, "attachment_refs": ()})
+                    )
             return tuple(updated)
 
         manager.refresh_group_messages = refresh
@@ -562,8 +577,12 @@ class PersistentGroupFanout:
                 archived = False
                 try:
                     await asyncio.to_thread(
-                        self._agent_manager.group_archive.append, binding.namespace_id, group.group_chat_id,
-                        request_input.source, source_ref=f"feishu:message:{event.message_id}", changed_at=event.changed_at,
+                        self._agent_manager.group_archive.append,
+                        binding.namespace_id,
+                        group.group_chat_id,
+                        request_input.source,
+                        source_ref=f"feishu:message:{event.message_id}",
+                        changed_at=event.changed_at,
                     )
                     archived = True
                 except PersistentAgentError as exc:
@@ -576,7 +595,8 @@ class PersistentGroupFanout:
                     return InboundDisposition.HANDLED
                 source = current
                 text = current.text or ("[附件消息]" if current.attachment_refs else "[群消息正文为空]")
-                if event.allow_existing_message and not archived and isinstance(presented_text, str) and presented_text:
+                can_update_message = event.allow_existing_message and not archived
+                if can_update_message and isinstance(presented_text, str) and presented_text:
                     source = current.model_copy(update={"text": presented_text})
                     text = presented_text
                 request_input = request_input.model_copy(update={"source": source,
@@ -637,7 +657,9 @@ class PersistentGroupFanout:
                             )
                             return InboundDisposition.HANDLED
                 if event.group_name:
-                    await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
+                    await asyncio.to_thread(
+                        self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name
+                    )
             else:
                 conversation = ConversationRef.im_direct("feishu", event.chat_id)
 
@@ -711,9 +733,12 @@ class PersistentGroupFanout:
 
     async def _handle_group_change(self, binding: FeishuBinding, event: FeishuInboundEvent) -> InboundDisposition:
         """Lifecycle and recall facts change host records, never create business Requests."""
-        if (event.event_kind not in {"recalled", "joined", "left", "group_updated"}
-                or event.chat_type != "group" or not _present(event.chat_id)
-                or not _present(event.event_id) or not _valid_received_at(event.changed_at)):
+        invalid_group_event = (
+            event.event_kind not in {"recalled", "joined", "left", "group_updated"}
+            or event.chat_type != "group"
+            or not _present(event.chat_id)
+        )
+        if invalid_group_event or not _present(event.event_id) or not _valid_received_at(event.changed_at):
             return InboundDisposition.REJECTED
         try:
             group = await asyncio.to_thread(self._groups.resolve, binding.namespace_id, "feishu", event.chat_id,
@@ -731,7 +756,9 @@ class PersistentGroupFanout:
                                          status="active" if event.event_kind == "joined" else "left",
                                          observed_at=event.changed_at, source_ref=source)
             if event.group_name:
-                await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
+                await asyncio.to_thread(
+                    self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name
+                )
         except Exception:
             return InboundDisposition.REJECTED
         return InboundDisposition.HANDLED
@@ -763,17 +790,10 @@ class PersistentGroupFanout:
         namespace_id = job.get("namespace_id")
         chat_id = job.get("target_id")
         sender_app_id = job.get("app_id")
-        if (
-            not isinstance(agent_id, str)
-            or not isinstance(name, str)
-            or not isinstance(app_ids, list)
-            or len(app_ids) != 1
-            or not isinstance(app_ids[0], str)
-            or not isinstance(sender_id, str)
-            or not isinstance(namespace_id, str)
-            or not isinstance(chat_id, str)
-            or not isinstance(sender_app_id, str)
-        ):
+        identifiers = (agent_id, name, sender_id, namespace_id, chat_id, sender_app_id)
+        if not all(isinstance(value, str) for value in identifiers):
+            return
+        if not isinstance(app_ids, list) or len(app_ids) != 1 or not isinstance(app_ids[0], str):
             return
         colleague = await asyncio.to_thread(self._service.get_colleague, namespace_id, sender_id)
         reply_to = job.get("source_message_id")
@@ -804,7 +824,7 @@ class PersistentGroupFanout:
     ) -> None:
         """Accept a confirmed public reply after Gateway has checked current membership."""
         from jiuwenswarm.server.jiuwenmate.welink_inbound import (
-            WelinkInboundEvent, accept_welink_message, configured_welink_bindings,
+            WelinkInboundEvent, configured_welink_bindings,
         )
 
         if job.get("is_direct_message") is True or len(mentions) != 1 or not _present(external_message_id):
@@ -831,9 +851,18 @@ class PersistentGroupFanout:
             received_at=self._clock(),
             mentioned=True,
         )
-        disposition = await accept_welink_message(self, event)
+        disposition = await self.accept_welink_message(event)
         if disposition == InboundDisposition.RETRYABLE:
             raise RuntimeError("WeLink handoff acceptance pending")
+
+    async def accept_welink_message(self, event: WelinkInboundEvent) -> InboundDisposition:
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import WelinkInboundContext, accept_welink_message
+
+        context = WelinkInboundContext(
+            service=self._service, groups=self._groups, sessions=self._sessions,
+            agent_manager=self._agent_manager, clock=self._clock,
+        )
+        return await accept_welink_message(context, event)
 
     async def _call(self, callback: Callable[..., Any], *args: Any) -> Any:
         result = await asyncio.to_thread(callback, *args)
@@ -843,20 +872,15 @@ class PersistentGroupFanout:
 
     @staticmethod
     def _validated_sender_kind(event: FeishuInboundEvent) -> str | None:
-        if (
-            not _present(event.message_id)
-            or not _present(event.chat_id)
-            or not _valid_received_at(event.received_at)
-            or not _present(event.sender_id)
-            or not _present(event.sender_name)
-            or not isinstance(event.text, (str, type(None)))
-            or not isinstance(event.mention_ids, tuple)
-            or any(not _present(item) for item in event.mention_ids)
-            or not isinstance(event.receiver_bot_mentioned, bool)
-            or not isinstance(event.attachment_refs, tuple)
-            or any(not _present(item) for item in event.attachment_refs)
-            or (event.reply_to is not None and not _present(event.reply_to))
-        ):
+        identifiers = (event.message_id, event.chat_id, event.sender_id, event.sender_name)
+        if not all(_present(value) for value in identifiers) or not _valid_received_at(event.received_at):
+            return None
+        if not isinstance(event.text, (str, type(None))) or not isinstance(event.receiver_bot_mentioned, bool):
+            return None
+        for references in (event.mention_ids, event.attachment_refs):
+            if not isinstance(references, tuple) or not all(_present(value) for value in references):
+                return None
+        if event.reply_to is not None and not _present(event.reply_to):
             return None
 
         if event.chat_type not in ("group", "p2p"):

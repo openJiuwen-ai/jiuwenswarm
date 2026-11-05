@@ -40,7 +40,7 @@ class SessionArtifactSharing:
             return None
         if any(marker in text for marker in ("agents.sqlite3", "group_messages/", "cli_read_previews/")):
             return _blocked("群消息库和审批预览不能通过磁盘命令读取；请使用跨群搜索或明确的 CLI 消息读取。")
-        loader = getattr(self.sharing._sessions, "session_artifact_candidates", None)
+        loader = getattr(self.sharing.sessions, "session_artifact_candidates", None)
         if loader is None:
             return None
         rows = await asyncio.to_thread(loader, execution.namespace_id, execution.agent_id)
@@ -52,14 +52,17 @@ class SessionArtifactSharing:
         if handled and output is not None:
             return output
         current_prefix = f"sessions/{execution.session_id}/".casefold()
+        foreign_path = re.search(r"sessions/(?!%s/)" % re.escape(execution.session_id.casefold()), text)
         selected = []
         for row in rows:
             path = _normal(str(row.get("file_path") or ""))
             filename = _normal(str(row.get("file_name") or ""))
             if path and path in text:
                 selected.append(row)
-            elif (filename and filename in text and path.startswith(current_prefix)
-                  and not re.search(r"sessions/(?!" + re.escape(execution.session_id.casefold()) + r"/)", text)):
+                continue
+            if not filename or filename not in text:
+                continue
+            if path.startswith(current_prefix) and foreign_path is None:
                 selected.append(row)
         foreign_sessions = {sid for sid in re.findall(r"sessions/([^/\s\"']+)", text)
                             if sid != execution.session_id.casefold()}
@@ -74,8 +77,10 @@ class SessionArtifactSharing:
         origins = {candidate["artifact_id"]: candidate for candidate in selected}
         scope_query = core.GroupMessageQuery(query="file provenance", content_types=("files",))
         _, current = await asyncio.to_thread(self.sharing.scope, execution, scope_query)
-        private_copies = [row for row in selected if row['source_group_id'] == current
-                          and not row.get('published', True)]
+        private_copies = []
+        for row in selected:
+            if row['source_group_id'] == current and not row.get('published', True):
+                private_copies.append(row)
         for candidate in rows:
             if candidate['source_group_id'] == current:
                 continue
@@ -113,7 +118,7 @@ class SessionArtifactSharing:
         # A local copy must still match the frozen blob before allowing its existing
         # read_file/share_file call; Bash is never replayed after a cross-group preflight.
         for row in selected:
-            path = await asyncio.to_thread(self.sharing._files.resolve, execution.namespace_id, execution.agent_id,
+            path = await asyncio.to_thread(self.sharing.files.resolve, execution.namespace_id, execution.agent_id,
                 row["file_path"], row["file_ref"], row["file_size"], expected_session_id=row["session_id"])
             if path is None:
                 return _blocked("本地副本已改变，请重新检索并审批来源文件。")

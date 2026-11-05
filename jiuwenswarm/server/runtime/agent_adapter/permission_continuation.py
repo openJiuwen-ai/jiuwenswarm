@@ -6,7 +6,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Collection, Iterator, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.foundation.tool import ClientToolResult, ClientToolStatus, default_client_output
@@ -239,13 +239,24 @@ async def discard_permission_continuation(
     return True
 
 
-_UNPROVEN = object()
+class _UnmatchedInterrupt(NamedTuple):
+    loop_session: Any
+
+
+class _PendingInterruptSplit(NamedTuple):
+    loop_session: Any
+    state: Any
+    context: Any
+    context_engine: Any
+    active_ids: list[str]
+    stale_ids: list[str]
+    state_signature: list[tuple[str, str]]
 
 
 def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None):
     """Split Core's pending interrupt into live and already-answered tool calls.
 
-    Returns ``None`` when *target_sid* has no pending interrupt, ``_UNPROVEN``
+    Returns ``None`` when *target_sid* has no pending interrupt, ``_UnmatchedInterrupt``
     when the interrupt cannot be matched to the context, otherwise
     ``(loop_session, state, context, context_engine, active_ids, stale_ids, state_signature)``.
     A tool call is stale when its result is already in the context tail.
@@ -281,7 +292,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
         or len(all_tool_ids) != len(state_signature)
         or not set(pending_tool_ids).issubset(all_tool_ids)
     ):
-        return _UNPROVEN
+        return _UnmatchedInterrupt(loop_session)
 
     react_agent = getattr(instance, "react_agent", None)
     context_engine = getattr(react_agent, "context_engine", None)
@@ -300,7 +311,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
         -1,
     )
     if assistant_index < 0:
-        return _UNPROVEN
+        return _UnmatchedInterrupt(loop_session)
     context_signature: list[tuple[str, str]] = []
     for call in list(
         getattr(messages[assistant_index], "tool_calls", None) or []
@@ -312,7 +323,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
             )
         )
     if context_signature != state_signature:
-        return _UNPROVEN
+        return _UnmatchedInterrupt(loop_session)
     pending_id_set = set(pending_tool_ids)
     tail_id_set: set[str] = set()
     for message in messages[assistant_index + 1:]:
@@ -323,7 +334,7 @@ def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: st
             tail_id_set.add(tool_call_id)
     active_ids = [tid for tid in pending_tool_ids if tid not in tail_id_set]
     stale_ids = [tid for tid in pending_tool_ids if tid in tail_id_set]
-    return loop_session, state, context, context_engine, active_ids, stale_ids, state_signature
+    return _PendingInterruptSplit(loop_session, state, context, context_engine, active_ids, stale_ids, state_signature)
 
 
 def has_live_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None) -> bool:
@@ -341,7 +352,7 @@ def has_live_pending_interrupt(instance: Any, target_sid: str, loop_session_id: 
         return True
     if split is None:
         return False
-    return split is not _UNPROVEN and bool(split[4])
+    return isinstance(split, _PendingInterruptSplit) and bool(split.active_ids)
 
 
 async def discard_pending_permission_interrupt_for_target(
@@ -374,8 +385,8 @@ async def discard_pending_permission_interrupt_for_target(
     """
     try:
         split = _split_pending_interrupt(instance, target_sid, loop_session_id)
-        if split is _UNPROVEN and drop_unproven:
-            loop_session = instance._loop_session
+        if isinstance(split, _UnmatchedInterrupt) and drop_unproven:
+            loop_session = split.loop_session
             loop_session.update_state({INTERRUPTION_KEY: None})
             context_engine = getattr(getattr(instance, "react_agent", None), "context_engine", None)
             if context_engine is not None:
@@ -385,7 +396,7 @@ async def discard_pending_permission_interrupt_for_target(
                 target_sid, cancel_reason,
             )
             return True
-        if split is None or split is _UNPROVEN:
+        if not isinstance(split, _PendingInterruptSplit):
             return False
         loop_session, state, context, context_engine, active_ids, stale_ids, state_signature = split
         if only_stale and active_ids:

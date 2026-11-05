@@ -39,21 +39,22 @@ _REPLACEMENTS = (
 
 def install_office_relative_write_tools() -> None:
     """Rewrite persistent write-tool cards once, and relativize in-office absolute paths."""
+    from openjiuwen.core.foundation.tool import Tool
     from openjiuwen.harness.persistent_agent.workspace.file_access import (
         PersistentWorkspaceWriteRail,
         WorkspaceWriteAdapter,
     )
 
-    if getattr(WorkspaceWriteAdapter, "_office_relative_paths", False):
+    if getattr(WorkspaceWriteAdapter, "jiuwenmate_office_relative_paths", False):
         return
     original_init = WorkspaceWriteAdapter.__init__
     original_before = PersistentWorkspaceWriteRail.before_tool_call
 
     def __init__(self, base_tool: Any) -> None:
         original_init(self, base_tool)
-        card = self._card.model_copy(deep=True)
+        card = self.card.model_copy(deep=True)
         apply_office_relative_path_text(card)
-        self._card = card
+        Tool.__init__(self, card)
 
     async def before_tool_call(self, ctx: Any) -> None:
         rewrite_office_absolute_argument(self, ctx)
@@ -61,7 +62,7 @@ def install_office_relative_write_tools() -> None:
 
     WorkspaceWriteAdapter.__init__ = __init__
     PersistentWorkspaceWriteRail.before_tool_call = before_tool_call
-    WorkspaceWriteAdapter._office_relative_paths = True
+    WorkspaceWriteAdapter.jiuwenmate_office_relative_paths = True
 
 
 def apply_office_relative_path_text(card: Any) -> None:

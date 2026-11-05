@@ -63,7 +63,7 @@ async def test_recovery_dispatches_only_opened_owner_and_conversation(tmp_path):
     service = TaskService(store, executor)
     scopes = [("alice", "task-duplex:current"), ("alice", "task-duplex:other"),
               ("bob", "task-duplex:current")]
-    queued = [service._new(owner, session, "pending", {}) for owner, session in scopes]
+    queued = [service.new_task_record(owner, session, "pending", {}) for owner, session in scopes]
     with store.transaction() as db:
         for task in queued:
             store.put(db, task)
@@ -94,8 +94,8 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path):
     store = TaskStore(tmp_path / "scoped-running.sqlite")
     executor = SimpleNamespace(cancel=AsyncMock(return_value=False))
     service = TaskService(store, executor)
-    current = service._new("alice", "current", "running", {})
-    other = service._new("alice", "other", "running", {})
+    current = service.new_task_record("alice", "current", "running", {})
+    other = service.new_task_record("alice", "other", "running", {})
     for task in (current, other):
         task["status"] = "running"
     with store.transaction() as db:
@@ -987,7 +987,8 @@ async def test_titles_persist_search_and_revision_without_replacing_instructions
     assert child["title"] == "用英文介绍香港天气"
     assert child["request"]["prior_result"]["answer"] == task["instruction"]
     assert service.store.read(task["id"])["title"] == "查询香港天气"
-    assert service.modify("alice", "conversation", task["id"], "english", TaskModification(1, "改成英文", "用英文介绍香港天气")) == receipt
+    change = TaskModification(1, "改成英文", "用英文介绍香港天气")
+    assert service.modify("alice", "conversation", task["id"], "english", change) == receipt
 
 
 async def test_queued_title_change_preserves_full_requirement_and_legacy_replay(tasks):
@@ -1005,22 +1006,20 @@ async def test_queued_title_change_preserves_full_requirement_and_legacy_replay(
 
 
 def _round_harness(round_task=None):
-    harness = SimpleNamespace(
+    options = {"_interaction_round_task": round_task} if round_task is not None else {}
+    return SimpleNamespace(
         _react_agent=object(),
         active_round=SimpleNamespace(task_id="round-id"),
         loop_controller=SimpleNamespace(task_scheduler=SimpleNamespace(_running_tasks={})),
+        **options,
     )
-    if round_task is not None:
-        harness._interaction_round_task = round_task
-    return harness
 
 
 @pytest.mark.parametrize("has_round_task", [True, False])
 async def test_5545_stopped_round_without_scheduler_handle_still_settles(
     tasks, monkeypatch, has_round_task
 ):
-    """#5545: the output closes while the stopped round (e.g. CUA cleanup) still
-    unwinds outside the scheduler map; its end must still be acknowledged."""
+    """Acknowledge a stopped round that finishes cleanup outside the scheduler map (#5545)."""
     from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
 
     service, executor = tasks
@@ -1054,8 +1053,7 @@ async def test_5545_stopped_round_without_scheduler_handle_still_settles(
 
 
 async def test_5545_failed_stop_request_still_ends_cancelled_when_execution_ends(tasks):
-    """#5545: a stop request that errors must not leave the task 'stopping' forever
-    once the execution has actually ended."""
+    """Settle a stopped task once execution ends even if its stop request failed (#5545)."""
     service, executor = tasks
     service.concurrency = 1
     task = independent(service, "first")
@@ -1153,7 +1151,8 @@ async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch
             async with module.bind_task_execution(request, adapter, {}):
                 await task_checkpoint(rail, ctx, "before_model")
                 module.capture_task_execution(
-                    rail, SimpleNamespace(session_id=request.session_id, params={"managed_task_request": request.request_id}), stale,
+                    rail, SimpleNamespace(session_id=request.session_id, params={
+                        "managed_task_request": request.request_id}), stale,
                 )
                 raise asyncio.CancelledError()
 
@@ -1184,7 +1183,8 @@ async def test_completed_voice_cancel_becomes_one_core_followup_with_exact_user_
     assert child["request"]["prior_result"] == original
     assert child["parent_id"] == task["id"]
     assert service.store.read(task["id"])["result"] == original
-    assert await service.cancel("alice", "conversation", task["id"], "voice-cancel", user_instruction=instruction) == receipt
+    repeated = await service.cancel("alice", "conversation", task["id"], "voice-cancel", user_instruction=instruction)
+    assert repeated == receipt
     assert len(service.list("alice", "conversation")[0]) == 2
     with pytest.raises(ValueError):
         await service.cancel("alice", "conversation", task["id"], "different-request", user_instruction=instruction)
