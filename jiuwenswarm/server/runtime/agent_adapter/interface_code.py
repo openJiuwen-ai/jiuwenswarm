@@ -699,6 +699,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             _RailBuildInfo("_context_processor_rail", self._build_context_processor_rail),
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
+            _RailBuildInfo(
+                "_todo_progress_rail",
+                self._build_todo_progress_rail,
+                # 团队成员不经过模式切换，profile 停在默认值，按 code 记
+                {"mode": "design" if self._static_prompt_profile == "design" else "code"},
+            ),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
         ]

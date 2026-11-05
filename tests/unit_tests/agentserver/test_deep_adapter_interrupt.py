@@ -648,7 +648,6 @@ async def test_cancel_runs_teardown_when_session_not_in_active_counter(
         "openjiuwen.core.sys_operation.shell_process_registry.kill_shell_processes_for_session_tree",
         kill_mock,
     )
-    monkeypatch.setattr(adapter, "_cancel_pending_todos", AsyncMock(return_value=[]))
     monkeypatch.setattr(adapter, "_cancel_scheduler_running_tasks", MagicMock())
 
     response = await adapter.process_interrupt(_build_cancel_request())
@@ -691,7 +690,6 @@ async def test_interaction_cancel_pauses_active_goal_before_cancel_round() -> No
         _stream_event_rail=rail,
         _instance=instance,
     )
-    adapter._cancel_pending_todos = AsyncMock(return_value=None)
 
     response = await adapter.process_interrupt(
         AgentRequest(
@@ -731,7 +729,6 @@ async def test_interaction_cancel_skips_pause_when_no_goal() -> None:
         _stream_event_rail=rail,
         _instance=instance,
     )
-    adapter._cancel_pending_todos = AsyncMock(return_value=None)
 
     response = await adapter.process_interrupt(_build_cancel_request("sess-x"))
 
@@ -739,6 +736,7 @@ async def test_interaction_cancel_skips_pause_when_no_goal() -> None:
     instance.cancel_round.assert_awaited_once()
     rail.abort.assert_called_once_with("sess-x")
     assert "goal" not in response.payload
+    assert "todos" not in response.payload  # 停止时不改写 todo，也不随应答下发列表
 
 
 @pytest.mark.asyncio
@@ -775,7 +773,6 @@ async def test_interaction_cancel_appends_cancelled_tools_to_history(
         _instance=instance,
         _session_agent_tasks={},
     )
-    adapter._cancel_pending_todos = AsyncMock(return_value=None)
     adapter._cancel_session_agent_tasks = AsyncMock(return_value=0)
 
     append_mock = MagicMock()
@@ -834,7 +831,6 @@ async def test_cancel_history_waits_for_pending_tool_call_write(tmp_path, monkey
     instance.goal_manager = None
     instance.cancel_round = AsyncMock(return_value=True)
     adapter = _make_adapter(_instance=instance, _stream_event_rail=rail, _active_session_ids={sid: 1})
-    adapter._cancel_pending_todos = AsyncMock(return_value=None)
     asyncio.get_running_loop().call_later(0.05, release.set)
     try:
         await adapter.process_interrupt(_build_cancel_request(sid))
@@ -865,7 +861,6 @@ async def test_history_io_failure_does_not_replace_successful_cancel(monkeypatch
     instance.active_round = SimpleNamespace(work=SimpleNamespace(request_id="req-picture"))
     instance.cancel_round = AsyncMock(return_value=True)
     adapter = _make_adapter(_instance=instance, _stream_event_rail=rail, _active_session_ids={"sess-io": 1})
-    adapter._cancel_pending_todos = AsyncMock(return_value=None)
     monkeypatch.setattr(interface_deep, "load_history_records", fail if failed_io == "read" else lambda *_: [])
     monkeypatch.setattr(interface_deep, "append_history_record", fail if failed_io == "write" else lambda **_: None)
     response = await adapter.process_interrupt(_build_cancel_request("sess-io"))
@@ -934,7 +929,6 @@ async def test_abort_skipped_when_other_sessions_active_even_if_target_executing
         "openjiuwen.core.sys_operation.shell_process_registry.kill_shell_processes_for_session_tree",
         MagicMock(return_value=0),
     )
-    monkeypatch.setattr(adapter, "_cancel_pending_todos", AsyncMock(return_value=[]))
     monkeypatch.setattr(adapter, "_cancel_scheduler_running_tasks", MagicMock())
 
     await adapter.process_interrupt(_build_cancel_request(session_id="tui_target"))

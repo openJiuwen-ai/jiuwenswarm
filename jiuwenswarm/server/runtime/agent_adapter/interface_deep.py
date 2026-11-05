@@ -123,7 +123,6 @@ except ImportError:  # Compatibility with older agent-core versions.
             return False
 
 
-from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
@@ -178,6 +177,7 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
 from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.xiaoyi_reference import resolve_append_reference_enabled
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
+from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
@@ -1311,6 +1311,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # In-flight asyncio tasks per session (stream/non-stream agent runs).
         self._session_agent_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._task_planning_rail: TaskPlanningRail | None = None
+        self._todo_progress_rail: TodoProgressRail | None = None
         self._context_assemble_rail: ContextAssembleRail | None = None
         self._context_assemble_mode: str | None = None
         self._context_processor_rail: ContextProcessorRail | None = None
@@ -5101,6 +5102,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             task_planning_rail = None
         return task_planning_rail
 
+    @staticmethod
+    def _build_todo_progress_rail(mode: str = "agent") -> TodoProgressRail | None:
+        """Build TodoProgressRail（主 agent 的 todo 进度度量、todo 工具串行与写入回执）。"""
+        try:
+            return TodoProgressRail(mode=mode)
+        except Exception as exc:
+            logger.error("[JiuWenSwarmDeepAdapter] TodoProgressRail create failed: %s", type(exc).__name__)
+            return None
+
     def _build_subagent_rail(self) -> SubagentRail | None:
         """Build SubagentRail for subagent delegation."""
         try:
@@ -5744,6 +5754,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 else []
             ),
             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
+            _RailBuildInfo("_todo_progress_rail", self._build_todo_progress_rail, {"mode": mode}),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo(
@@ -7035,6 +7046,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             if self._task_planning_rail is not None:
                 await self._instance.register_rail(self._task_planning_rail)
                 logger.info("[JiuWenSwarmDeepAdapter] TaskPlanningRail registered for agent mode")
+        if self._todo_progress_rail is None:
+            self._todo_progress_rail = self._build_todo_progress_rail("agent")
+            if self._todo_progress_rail is not None:
+                await self._instance.register_rail(self._todo_progress_rail)
+                logger.info("[JiuWenSwarmDeepAdapter] TodoProgressRail registered for agent mode")
         if self._is_xiaoyi_channel():
             if self._ask_user_rail is not None:
                 await self._instance.unregister_rail(self._ask_user_rail)
@@ -8807,7 +8823,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
 
         success = True
-        updated_todos = None
         cancelled_tool_results = []
 
         if intent == "pause":
@@ -8849,7 +8864,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             message = "任务已切换"
 
         else:
-            # cancel（默认）：终止当前正在运行的 agent 任务 + 清理 todos。
+            # cancel（默认）：终止当前正在运行的 agent 任务，未完成的 todo 保持原状态。
             # 必须同时调用 rail.abort() 和 instance.abort()，否则流式模式下
             # DeepAgent 的 _run_task_loop_stream 后台 Task 不会停止
             # （stream_task.cancel() 只取消了 chunk 转发 Task，不影响 _stream_process）。
@@ -8881,13 +8896,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 request.session_id, reason="interrupt(cancel)",
             )
 
-            updated_todos = None
+            # 停止时不改 todo 状态：未完成项保持原状态，不标为 cancelled
             if request.session_id:
-                try:
-                    updated_todos = await self._cancel_pending_todos(request.session_id)
-                except Exception as exc:
-                    logger.warning("[JiuWenSwarmDeepAdapter] 标记 todo cancelled 失败: %s", exc)
-
                 # Cancel auto_harness active run if exists
                 try:
                     if self._auto_harness_service is not None \
@@ -8921,10 +8931,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         if new_input:
             payload["new_input"] = new_input
-
-        # cancel 后附带更新的 todo 列表，通知前端刷新
-        if intent not in ("pause", "resume", "supplement") and updated_todos is not None:
-            payload["todos"] = updated_todos
 
         # cancel 后附带被中断的工具执行结果，通知前端更新状态
         if cancelled_tool_results:
@@ -9058,17 +9064,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             payload["cancelled_tools"] = cancelled_tool_results
             await self._append_cancelled_tools_to_history(request, cancelled_tool_results, target_request_id)
 
-        # Best-effort todo cancellation for user cancel (does not touch runtime).
-        if cancelled and intent == "cancel" and request.session_id:
-            try:
-                updated_todos = await self._cancel_pending_todos(request.session_id)
-                if updated_todos is not None:
-                    payload["todos"] = updated_todos
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] 标记 todo cancelled 失败: %s", exc,
-                )
-
         # 方案A：用户 cancel/supplement 单回合后，agent 实例仍存活、会话仍
         # 会被复用。刷新主 adapter 的 last_used，避免本会话被随后的
         # _evict_idle_session_adapters() 当成 idle 而 cleanup()。
@@ -9184,7 +9179,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         悬空消息当作待处理请求回应——实测：手机停止「生成图片」后发送
         「你好」，模型回复的却是图片生成的引导话术。这里在普通 chat.send
         派发时消费计数，返回一段 ``<system-reminder>``（模型系统提示中已
-        声明该标签承载系统信息），提醒模型这些请求已被用户放弃。
+        声明该标签承载系统信息），提醒模型不要主动回应这些请求；最新消息
+        要求接着做时，先查看任务清单再继续。
 
         Returns:
             存在被停止未回复轮次时返回提醒文本（计数已清零）；否则 None。
@@ -9199,11 +9195,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             getattr(self, "_parent_session_id", None),
             stopped,
         )
+        # 「继续」类消息本身就是要接着做被停止的任务，提示不能一刀切禁止；
+        # 停止时同一批里已写入的 todo 更新可能没进上下文，接着做之前先读一次清单。
         return (
             "<system-reminder>用户此前主动停止了 "
             f"{stopped} 条未获得回复的请求（对应会话中未被应答的用户消息）。"
-            "这些请求已被用户放弃，请勿继续处理或主动回应它们；"
-            "只需处理最新一条用户消息。</system-reminder>"
+            "不要主动回应这些请求，以最新一条用户消息为准；"
+            "如果最新消息要求接着做之前的任务，先用 todo_list 查看当前任务清单（有清单时），"
+            "再在原有条目上继续推进。</system-reminder>"
         )
 
     def _cancel_scheduler_running_tasks(self) -> None:
@@ -10293,64 +10292,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return await self._dispatch_goal_control(
             action="set", objective=objective, session_id=session_id
         )
-
-    async def _cancel_pending_todos(self, session_id: str) -> list[dict] | None:
-        """将未完成的 todo 项标记为 cancelled.
-
-        Returns:
-            更新后的 todo 列表（前端格式），用于附加到 interrupt_result 事件通知前端刷新。
-            如果没有 todo 或操作失败，返回 None。
-        """
-        if self._instance is None:
-            return None
-
-        modify_tool = None
-        try:
-            tool_card = self._instance.ability_manager.get("todo_modify")
-            registered_tool = Runner.resource_mgr.get_tool(tool_card.id)
-            if registered_tool is not None:
-                modify_tool = registered_tool
-        except Exception:
-            pass
-
-        if modify_tool is None:
-            deep_config = self._instance.deep_config
-            modify_tool = TodoModifyTool(
-                operation=deep_config.sys_operation,
-                workspace=str(deep_config.workspace.get_node_path(WorkspaceNode.TODO)),
-                language=self._resolve_runtime_language(),
-            )
-
-        try:
-            todos = await modify_tool.load_todos(session_id)
-            if not todos:
-                return None
-
-            _done_statuses = {
-                TodoStatus.COMPLETED.value,
-                TodoStatus.CANCELLED.value,
-            }
-
-            ids_to_cancel = []
-            for todo in todos:
-                if todo.status.value not in _done_statuses:
-                    ids_to_cancel.append(todo.id)
-
-            if ids_to_cancel:
-                await modify_tool._cancel_todos(ids_to_cancel, todos)
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] 已将 session %s 的未完成任务标记为 cancelled",
-                    session_id,
-                )
-
-            # 重新加载并返回前端格式的 todo 列表
-            updated_todos = await modify_tool.load_todos(session_id)
-            if updated_todos and self._stream_event_rail is not None:
-                return self._stream_event_rail._format_todos_for_frontend(updated_todos)
-            return None
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] 标记 todo cancelled 失败: %s", exc)
-            return None
 
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
