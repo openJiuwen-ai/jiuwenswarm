@@ -3226,6 +3226,18 @@
       "local": "本地",
       "skillPack": "技能包"
     },
+    "mySkillsKindTabs": {
+      "skill": "技能",
+      "team": "团队技能",
+      "multimodal": "多模态",
+      "packs": "技能包"
+    },
+    "mySkillsKindEmpty": {
+      "skill": "暂无技能",
+      "team": "暂无团队技能",
+      "multimodal": "暂无多模态技能",
+      "packs": "暂无技能包"
+    },
     "noPrebuiltSkills": "暂无预置技能",
     "noUserSkills": "暂无用户自装技能",
     "noLocalSkills": "暂无本地技能",
