@@ -3,6 +3,7 @@
  * Runtime 管理实例状态、revision、挂载所有权、当前帧校验与显示反馈，不依赖 React。
  */
 
+import type { WebUIAppearanceFrame } from '../appearance/appearance.ts';
 import type { WebUICatalog } from '../catalog/types.ts';
 import type { WebUIInteractionIntent, WebUIInteractionResult } from '../contracts/interaction.ts';
 import type { WebUINormalizedRenderFrame, WebUINormalizedTarget } from '../contracts/normalized.ts';
@@ -118,4 +119,7 @@ export interface WebUIRuntime {
   resetRequestContext(): void;
   refreshContributions(): Promise<void>;
   getConnectionState(): WebUIConnectionState;
+  /** Current appearance contribution of the Gateway connection (S_08); null when none. */
+  getAppearance(): WebUIAppearanceFrame | null;
+  subscribeAppearance(listener: () => void): () => void;
 }

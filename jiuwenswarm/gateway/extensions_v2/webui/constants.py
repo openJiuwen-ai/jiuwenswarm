@@ -32,6 +32,7 @@ class WebUIEvent(StrEnum):
 FRAME_RENDER: Final[str] = "webui.render"
 FRAME_CLEAR: Final[str] = "webui.render.clear"
 FRAME_RENDER_ERROR: Final[str] = "webui.render.error"
+FRAME_APPEARANCE: Final[str] = "webui.appearance"
 
 # Upstream events: all enter the event chain through the single method webui.dispatch.
 UPSTREAM_EVENTS: Final[frozenset[str]] = frozenset(

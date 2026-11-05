@@ -27,6 +27,8 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
 )
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
+from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
+from jiuwenswarm.gateway.extensions_v2.webui.call_context import trusted_connection
 
 SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background"})
 ASSET_PREFIX = "/extension-assets/"
@@ -98,6 +100,10 @@ class BrowserBridge:
         self.runtime = runtime
         self.connections: dict[str, BrowserConnection] = {}
         self.generations: dict[str, str] = {}
+        self.appearance = AppearanceProviders()
+        self._appearance_locks: dict[str, asyncio.Lock] = {}
+        # Browser notifications started from synchronous package release.
+        self._tasks: set[asyncio.Task] = set()
         self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
 
     @property
@@ -219,8 +225,60 @@ class BrowserBridge:
             _CALLER.reset(token)
 
     def released(self, package_id: str) -> None:
+        """Retire a package's views and appearance, and tell the affected browsers."""
         self.generations.pop(package_id, None)
-        self.runtime.registry.drop_package(package_id)
+        clears = self.runtime.registry.retire_package(package_id)
+        revokes = self.appearance.release(package_id)
+        if clears or revokes:
+            self._spawn(self._notify_release(package_id, clears, revokes))
+
+    async def _notify_release(self, package_id: str, clears, revokes) -> None:
+        transport = self.runtime.webui.transport
+        for frame in clears:
+            await transport.send_clear(frame)
+        for connection_id, revision in revokes:
+            await transport.send_appearance(connection_id, {
+                "package_id": package_id, "revision": revision, "appearance": None,
+            })
+
+    def _spawn(self, coroutine) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Without a loop no browser can be connected either.
+            coroutine.close()
+            return
+        task = loop.create_task(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def settle(self) -> None:
+        """Wait until release notifications have been sent."""
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+
+    async def apply_appearance(self, ops: EventHandlerOps, appearance: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Deliver or revoke the calling package's appearance on its browser connection (S_08)."""
+        package = self._package_caller(ops)
+        generation = self.generations[package.package_id]
+        connection_id = trusted_connection(ops)
+        if not connection_id:
+            raise ValueError("ops.appearance requires a browser connection")
+        normalized = None if appearance is None else validate_appearance(appearance)
+        lock = self._appearance_locks.setdefault(connection_id, asyncio.Lock())
+        async with lock:
+            if normalized is None and self.appearance.provider(connection_id) != package.package_id:
+                return {"status": "unchanged", "revision": self.appearance.revision(connection_id)}
+            revision = self.appearance.next_revision(connection_id)
+            delivered = await self.runtime.webui.transport.send_appearance(connection_id, {
+                "package_id": package.package_id, "revision": revision, "appearance": normalized,
+            })
+            if not delivered:
+                return {"status": "delivery_failed", "revision": revision}
+            # A release during delivery has already sent a later revoke; keep it authoritative.
+            if self.generations.get(package.package_id) == generation:
+                self.appearance.set(connection_id, package.package_id if normalized else None)
+            return {"status": "applied" if normalized else "revoked", "revision": revision}
 
     async def connect(self, ws: Any, connection_id: str) -> None:
         """Deliver trusted declarations before processing a business frame."""
@@ -242,6 +300,8 @@ class BrowserBridge:
 
     def drop_connection(self, connection_id: str) -> None:
         self.connections.pop(connection_id, None)
+        self.appearance.drop_connection(connection_id)
+        self._appearance_locks.pop(connection_id, None)
 
     def register_events(self, bus) -> None:
         async def core(event, ops, next_handler):
@@ -284,6 +344,8 @@ class BrowserBridge:
             return await self.operation(ops, "local_storage.delete", {"key": key})
         async def page_reload(ops):
             return await self.operation(ops, "page.reload", {})
+        async def appearance_apply(ops, appearance: Mapping[str, Any] | None = None):
+            return await self.apply_appearance(ops, appearance)
         async def build(event, ops, next_handler):
             del ops
             builder = await next_handler(event)
@@ -294,6 +356,8 @@ class BrowserBridge:
             builder.add_method("client", "local_storage_set", storage_set)
             builder.add_method("client", "local_storage_delete", storage_delete)
             builder.add_method("client", "page_reload", page_reload)
+            builder.add_namespace("appearance")
+            builder.add_method("appearance", "apply", appearance_apply)
             return builder
         return build
 

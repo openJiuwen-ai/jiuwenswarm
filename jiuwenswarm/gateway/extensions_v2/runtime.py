@@ -135,6 +135,7 @@ class GatewayRuntime:
         self._user_handlers.clear()
         self._package_handlers.clear()
         self._packages.clear()
+        await self.browser.settle()
         await self.webui.shutdown()
         self.store.clear()
         if self._data_store_bound:
@@ -142,6 +143,7 @@ class GatewayRuntime:
             self._data_store_bound = False
         self.browser.connections.clear()
         self.browser.generations.clear()
+        self.browser.appearance.clear()
         self._started = False
 
     @property
