@@ -111,20 +111,12 @@ def save_recommendation_switches(
 
     update_config(mutate)
     if topic_enabled:
+        # Agent tier registers freeze_consent_boundary via register_topic_enabled_hook.
+        # common must not import agents (layering R1); missing freeze is healed by
+        # repair_missing_consent_boundary on worker startup.
         moment = now if now is not None else time.time()
         for hook in _TOPIC_ENABLED_HOOKS:
             hook(moment)
-        # Settings ``config.set`` imports this module without the agent tier. If no hook
-        # registered yet, freeze here so ``topic_enabled`` never persists without a boundary.
-        if not _TOPIC_ENABLED_HOOKS:
-            try:
-                from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-                    freeze_consent_boundary,
-                )
-
-                freeze_consent_boundary(moment)
-            except Exception:  # noqa: BLE001 - switch write must not fail closed on store import
-                pass
     return dict(_section())
 
 

@@ -4043,6 +4043,18 @@ def _valid_pool_composition(
     return bool(cards and len(cards) <= limit and set(actual).issubset(expected))
 
 
+def _violates_project_composition_gate(
+    context_scope: str,
+    manifest: dict[str, Any],
+    cards: list[dict[str, Any]],
+) -> bool:
+    """Cold-start stand-in uses global corpus categories on any scope; the
+    project_continuation composition gate only applies to personalized project pools."""
+    if context_scope == GLOBAL_NEW_CHAT_SCOPE or is_cold_start_manifest(manifest):
+        return False
+    return not _valid_pool_composition(context_scope, cards)
+
+
 def _short_delta_interest_id(manifest: dict[str, Any]) -> str | None:
     selection = manifest.get("rid_interest_selection")
     if not isinstance(selection, dict):
@@ -6591,12 +6603,8 @@ def read_terminal_pool(
         shown_before=last_shown,
         retained_card_ids=retained_card_ids,
     )
-    # Cold-start stand-in uses global corpus categories on any scope; skip the
-    # project_continuation composition gate that personalized project pools need.
-    if not exposed or (
-        context_scope != GLOBAL_NEW_CHAT_SCOPE
-        and not is_cold_start_manifest(manifest)
-        and not _valid_pool_composition(context_scope, exposed)
+    if not exposed or _violates_project_composition_gate(
+        context_scope, manifest, exposed
     ):
         return _static_read(context_scope, project_id)
     personalized = sum(bool(card.get("interest_summary_id")) for card in exposed)

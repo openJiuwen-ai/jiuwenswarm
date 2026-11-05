@@ -55,8 +55,8 @@ def test_save_topic_switch_records_history_boundary(user_config):
     assert controls.load_recommendation_controls()["history_after"] == 12.5
 
 
-def test_common_save_freezes_boundary_when_agent_hook_missing(user_config, tmp_path, monkeypatch):
-    """Settings config.set imports common switches; freeze must not depend on the agent hook."""
+def test_common_save_does_not_import_agents_when_hook_missing(user_config, tmp_path, monkeypatch):
+    """common switches stay layer-clean; freeze is hook-only, heal via repair on startup."""
     from jiuwenswarm.common import recommendation_switches as common_switches
 
     monkeypatch.setattr(controls, "get_agent_workspace_dir", lambda: tmp_path)
@@ -64,6 +64,8 @@ def test_common_save_freezes_boundary_when_agent_hook_missing(user_config, tmp_p
     common_switches._TOPIC_ENABLED_HOOKS.clear()
     try:
         common_switches.save_recommendation_switches(topic_enabled=True, now=42.0)
+        assert controls._consent_state()["history_after"] is None
+        assert controls.repair_missing_consent_boundary(now=42.0) is True
         assert controls.load_recommendation_controls()["history_after"] == 42.0
     finally:
         common_switches._TOPIC_ENABLED_HOOKS[:] = hooks
