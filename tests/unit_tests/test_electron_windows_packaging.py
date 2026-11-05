@@ -82,11 +82,12 @@ def test_gateway_build_gate_runs_frozen_exe_and_stops_on_failure(tmp_path, exit_
         "$ProjectRoot = 'C:\\build with spaces'\n"
         "$FrozenExe = 'C:\\frozen backend\\workswarm.exe'\n"
         "$BuildErrorLogName = 'error.log'\n"
-        "function Start-Process {\n"
-        "param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, [switch]$NoNewWindow)\n"
-        "if ($FilePath -ne $FrozenExe -or -not $Wait -or -not $PassThru) { throw 'bad invocation' }\n"
-        "if ($ArgumentList[0] -cne '\"C:\\build with spaces\\scripts\\verify_gateway_adapter_bundle.py\"') { throw 'unquoted verifier' }\n"
-        f"[pscustomobject]@{{ ExitCode = {exit_code} }}\n"
+        "function uv {\n"
+        "if ($args.Count -ne 6) { throw 'bad argument count' }\n"
+        "if (($args[0..2] -join ' ') -cne 'run --no-sync python') { throw 'bad launcher' }\n"
+        "if ($args[3] -cne 'C:\\build with spaces\\scripts\\verify_gateway_adapter_bundle.py') { throw 'split verifier path' }\n"
+        "if ($args[4] -cne '--executable' -or $args[5] -cne $FrozenExe) { throw 'split executable path' }\n"
+        f"$global:LASTEXITCODE = {exit_code}\n"
         "}\ntry {\n" + source[start:end] +
         "\nWrite-Output 'gate passed'\n} catch { Write-Output $_; exit 1 }\n",
         encoding="utf-8",

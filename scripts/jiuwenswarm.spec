@@ -334,6 +334,15 @@ icon_path = os.path.join(
 import sysconfig as _sysconfig
 _bundled_binaries = []
 
+# Gateway discovers extension directories and loads extension.py from disk.
+# Keep physical Python sources as well as package data and hidden imports.
+_gateway_datas, _gateway_binaries, _gateway_hidden = collect_all(
+    "agent_gateway", include_py_files=True
+)
+datas += _gateway_datas
+hiddenimports += _gateway_hidden
+_bundled_binaries += _gateway_binaries
+
 # RSI is initialized lazily from AgentWebSocketServer. Collect the complete
 # service trees so PyInstaller keeps their nested modules and package data,
 # including the native harness_config.yaml fallback used by clean workspaces.
