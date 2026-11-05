@@ -4019,7 +4019,6 @@ class JiuWenSwarmDeepAdapter:
                 history_before_request_id=request.request_id,
                 execution_request=request,
                 reserve_activity=reserve_activity,
-                execution_request=request,
                 external_harness_binding=external_harness_binding,
                 **(
                     {"model_selection": request.params["model_selection"]}
@@ -4041,7 +4040,6 @@ class JiuWenSwarmDeepAdapter:
                 execution_request=request,
                 reserve_activity=reserve_activity,
                 host_external_input=True,
-                execution_request=request,
                 external_harness_binding=external_harness_binding,
                 **(
                     {"model_selection": request.params["model_selection"]}

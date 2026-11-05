@@ -1,4 +1,4 @@
-import { useState, useRef, ReactNode } from 'react';
+import { useRef, useState, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -12,7 +12,7 @@ import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
-import { modelNameForSelection } from './cronModelSelection';
+import { modelNameForSelection, resolveCronDefaultHint } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
@@ -202,6 +202,17 @@ export default function CronTaskDrawer({
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
+  const defaultModelName = useSessionStore((state) => state.defaultModelName);
+  // 任务未存模型（新建/模板创建未选，或编辑一个本就未下发模型的任务）时，在
+  // picker 下方展示任务触发时实际执行的默认模型说明。仅提示、不写 form：
+  // 提交值保持不携带任何模型字段，「新建任务不借用聊天默认模型」的产品约束
+  // （!5666）不变。任务存了模型时 form 非空，提示自然消失（模型被删的旧任务
+  // 由既有 unavailable 提示接管）。清单加载完成（modelsLoaded）后才判定，
+  // 避免加载中把空目录误报成「未检测到可用模型」。
+  const defaultModelHint =
+    modelsLoaded && !form.modelName && !form.modelSelection
+      ? resolveCronDefaultHint(models, defaultModelName)
+      : null;
   // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
   const modelUnavailable = modelsLoaded && (form.modelSelection
     ? !models.some((model) => model.model_id === form.modelSelection?.id)
@@ -471,6 +482,20 @@ export default function CronTaskDrawer({
                       disabled={proactiveLocked}
                     />
                   </div>
+                  {defaultModelHint && (
+                    <p
+                      className={`min-w-0 break-words text-xs ${defaultModelHint.kind === 'empty' ? 'text-warn' : 'text-text-muted'}`}
+                      role="status"
+                      data-testid="cron-drawer-model-default-hint"
+                      data-kind={defaultModelHint.kind}
+                    >
+                      {defaultModelHint.kind === 'named'
+                        ? t('cron.drawer.modelDefaultHintNamed', { model: defaultModelHint.modelName })
+                        : defaultModelHint.kind === 'generic'
+                          ? t('cron.drawer.modelDefaultHintGeneric')
+                          : t('cron.drawer.modelDefaultHintEmpty')}
+                    </p>
+                  )}
                   {modelUnavailable && (
                     <p
                       className="min-w-0 break-words text-xs text-warn"

@@ -195,23 +195,6 @@ function applyResolvedModelSelection(
 
 function restoreNewConversationSelection(
   runtime: SessionRuntime,
-  selection: ModelSelection | null,
-  models: ModelEntry[],
-): SessionRuntime {
-  // Catalog refresh can briefly omit groups; keep the draft group until the user
-  // changes it. Historical sessions heal via ChatModelSelector / session restore.
-  if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
-  const cached = loadLastModelSelection();
-  const selection = isModelSelectionAvailable(cached, models, groups)
-    ? cached
-    : !cached && isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
-      ? runtime.selectedModelSelection
-      : resolveNewConversationModelSelection(models, groups, cached);
-  return applyResolvedModelSelection(runtime, selection, models);
-}
-
-function restoreNewConversationSelection(
-  runtime: SessionRuntime,
   models: ModelEntry[],
   groups: ModelGroup[],
 ): SessionRuntime {

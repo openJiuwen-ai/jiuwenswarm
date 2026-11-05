@@ -87,12 +87,6 @@ import {
   splitComposerSlashChip,
 } from './composerDraftHydrate';
 import {
-  createComposerSkillRange,
-  readComposerSkillPositions,
-  readComposerText,
-  splitComposerSlashChip,
-} from './composerDraftHydrate';
-import {
   canUseSlashCommand,
   getWebSlashCommandsForMode,
   hasUnfinishedGoal as isUnfinishedGoal,

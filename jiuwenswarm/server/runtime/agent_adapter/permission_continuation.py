@@ -251,15 +251,6 @@ class _PendingInterruptSplit(NamedTuple):
     stale_ids: list[str]
 
 
-class _PendingInterruptSplit(NamedTuple):
-    loop_session: Any
-    state: Any
-    context: Any
-    context_engine: Any
-    active_ids: list[str]
-    stale_ids: list[str]
-
-
 def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None):
     """Split Core's pending interrupt into live and already-answered tool calls.
 

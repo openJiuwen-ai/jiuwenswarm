@@ -35,16 +35,6 @@
   animation: task-full-duplex-orb-leave 180ms ease-in forwards;
 }
 
-/* 视觉参数（尺寸、时长、缩放幅度）来源：实测截图调定。 */
-.task-full-duplex-orb {
-  animation: task-full-duplex-orb-enter 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-
-.task-full-duplex-orb.is-leaving {
-  pointer-events: none;
-  animation: task-full-duplex-orb-leave 180ms ease-in forwards;
-}
-
 .task-full-duplex-orb__sphere {
   --duplex-orb-level: 0;
   position: relative;

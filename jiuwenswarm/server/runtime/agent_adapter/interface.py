@@ -2405,11 +2405,6 @@ class JiuWenSwarm:
             )
             return interactive_input
 
-        if source == "ask_user_interrupt":
-            from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
-
-            return build_ask_user_interactive_input(request_id, answers)
-
         if source in EVOLUTION_INTERRUPT_METADATA_SOURCES:
             answer = answers[0] if answers else {}
             selected_options = answer.get("selected_options", []) if isinstance(answer, dict) else []
