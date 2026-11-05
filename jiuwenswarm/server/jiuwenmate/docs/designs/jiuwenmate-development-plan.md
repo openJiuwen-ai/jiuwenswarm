@@ -285,7 +285,7 @@
 - **来源验证点与共享场景：** 无。
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 当前群读取参与 S2a，直接对接 PA-07、PA-23；跨群搜索按 JM-21 子范围单独开放。PA-11、PA-12 参与后续长上下文联合场景，不是归档、当前群读取或跨群搜索的开工硬前置。真实执行需另核对最新 core 的容量配置与可靠计数支持。
-- **设计索引：** [F_11 群公共记录与搜索](../features/F_11_group-public-records.md)；[F_21 跨群搜索](../features/F_21_cross-group-search.md)。
+- **设计索引：** [F_11 群公共记录与搜索](../features/F_11_group-public-records.md)；[F_21 跨群搜索](../features/F_21_cross-group-search.md)；[F_11_02 群目录动态上下文](../features/F_11_02_group-directory-attachment.md)（2026-11-05：两渠道统一可信消息登记、active 目录、退出与分享授权事务失效；474 项定向回归通过，真实平台生命周期联调待验收）。
 
 ### JM-12 执行控制服务
 

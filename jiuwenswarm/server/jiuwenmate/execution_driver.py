@@ -26,6 +26,7 @@ from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchi
 from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
 from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_execution_guidance
+from jiuwenswarm.server.jiuwenmate.group_directory import prepare_group_directory_invocation
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -285,6 +286,7 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum="\n\n".join(addenda),
             )
+            spec = prepare_group_directory_invocation(spec, context, self._groups)
             spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
             spec = await prepare_dingtalk_cli_invocation(
                 spec,
