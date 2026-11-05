@@ -6150,12 +6150,13 @@ class JiuWenSwarmDeepAdapter:
             params,
         )
 
-    async def load_enterprise_mcp_names(self, request: AgentRequest) -> set[str]:
+    async def load_enterprise_mcp_names(self, request: AgentRequest) -> set[str] | None:
         """Refresh this adapter's policy cache and return enabled MCP names.
 
         Keep the resolved configuration local to this session adapter; do not
         persist enterprise templates to shared YAML or marketplace state.
-        On load failure, preserve the current selection and retry next turn.
+        Return None on load failure so reconciliation keeps the message picker.
+        An empty set represents a successfully loaded policy without MCPs.
         """
         try:
             resolved = await self._load_enterprise_config(
@@ -6164,11 +6165,10 @@ class JiuWenSwarmDeepAdapter:
         except Exception:  # noqa: BLE001 - policy read failures must not abort chat
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] enterprise MCP policy load failed; "
-                "keeping current session selection",
+                "keeping per-message selection",
+                exc_info=True,
             )
-            # An empty fallback would unload live MCPs. Do not use local YAML
-            # or the message picker as an enterprise policy fallback either.
-            return set(self._session_selected_mcp)
+            return None
         self._config_base_cache = resolved.config.copy()
         mcp_section = resolved.config.get("mcp") or {}
         names: set[str] = set()
@@ -6240,7 +6240,9 @@ class JiuWenSwarmDeepAdapter:
             ConfigSource, resolve_config_source,
         )
         if execution_request is not None and resolve_config_source() == ConfigSource.ENTERPRISE:
-            needed_set = await child.load_enterprise_mcp_names(execution_request)
+            enterprise_names = await child.load_enterprise_mcp_names(execution_request)
+            if enterprise_names is not None:
+                needed_set = enterprise_names
         if child._instance is None:
             pending_holder = getattr(
                 child,

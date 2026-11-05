@@ -135,7 +135,8 @@ async def test_enterprise_agent_sessions_keep_distinct_policies(enterprise):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("selected", [set(), {"existing-mcp"}])
 @pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
-async def test_enterprise_load_failure_preserves_session(enterprise, selected, error_type):
+@pytest.mark.parametrize("picker", [None, [], ["picked-mcp"]])
+async def test_enterprise_load_failure_uses_picker(enterprise, selected, error_type, picker):
     child = _child([])
     child._session_selected_mcp.update(selected)
     child._load_enterprise_config.side_effect = error_type("policy store unavailable")
@@ -145,25 +146,32 @@ async def test_enterprise_load_failure_preserves_session(enterprise, selected, e
     adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
 
     await adapter.reconcile_session_mcp(
-        "session-a", ["unauthorized-picker-entry"],
+        "session-a", picker,
         execution_request=SimpleNamespace(channel_id="web"),
     )
 
-    assert child._session_selected_mcp == selected
+    expected = set(picker or [])
+    assert child._session_selected_mcp == expected
     assert child._config_base_cache is original_base
     assert original_base == baseline
-    child.register_mcp_by_name.assert_not_awaited()
-    child.unregister_mcp_by_name.assert_not_awaited()
+    if expected:
+        child.register_mcp_by_name.assert_awaited_once_with("picked-mcp")
+    else:
+        child.register_mcp_by_name.assert_not_awaited()
+    if selected:
+        child.unregister_mcp_by_name.assert_awaited_once_with("existing-mcp")
+    else:
+        child.unregister_mcp_by_name.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_enterprise_load_failure_returns_selection_copy():
+async def test_enterprise_load_failure_returns_none():
     child = _child([])
     child._session_selected_mcp.add("existing-mcp")
     child._load_enterprise_config.side_effect = RuntimeError("policy store unavailable")
 
     names = await child.load_enterprise_mcp_names(SimpleNamespace(channel_id="web"))
-    names.clear()
+    assert names is None
 
     assert child._session_selected_mcp == {"existing-mcp"}
 
@@ -180,17 +188,19 @@ async def test_enterprise_load_retries_and_applies_recovered_policy(enterprise):
     adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
     request = SimpleNamespace(channel_id="web")
 
-    await adapter.reconcile_session_mcp("session-a", None, execution_request=request)
-    assert child._session_selected_mcp == {"old-mcp"}
-    child.register_mcp_by_name.assert_not_awaited()
-    child.unregister_mcp_by_name.assert_not_awaited()
+    await adapter.reconcile_session_mcp("session-a", ["picked-mcp"], execution_request=request)
+    assert child._session_selected_mcp == {"picked-mcp"}
+    child.register_mcp_by_name.assert_awaited_once_with("picked-mcp")
+    child.unregister_mcp_by_name.assert_awaited_once_with("old-mcp")
+    child.register_mcp_by_name.reset_mock()
+    child.unregister_mcp_by_name.reset_mock()
 
     await adapter.reconcile_session_mcp("session-a", None, execution_request=request)
 
     assert child._load_enterprise_config.await_count == 2
     assert child._session_selected_mcp == {"new-mcp"}
     child.register_mcp_by_name.assert_awaited_once_with("new-mcp")
-    child.unregister_mcp_by_name.assert_awaited_once_with("old-mcp")
+    child.unregister_mcp_by_name.assert_awaited_once_with("picked-mcp")
 
 
 @pytest.mark.asyncio
