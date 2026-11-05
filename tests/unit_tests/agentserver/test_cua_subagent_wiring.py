@@ -22,6 +22,7 @@ from openjiuwen.harness.image_modality_probe import (
     reset_image_support_cache,
     set_cached_image_support,
 )
+from openjiuwen.harness.rails.subagent import SubagentRail
 from openjiuwen.harness.schema.deep_agent_spec import SubAgentConfig
 from openjiuwen.harness.subagents.cua_agent import (
     CUA_AGENT_FACTORY_NAME,
@@ -583,6 +584,44 @@ def test_parent_is_told_why_cua_agent_is_missing():
     assert text is not None
     assert "## Desktop Capability Unavailable" in text
     assert "cannot read image input" in text
+    assert "Desktop Capability Routing Rules" not in text
+
+
+def test_mounted_cua_is_found_when_ctx_agent_is_the_inner_react_agent(mocker):
+    # At model-call time ctx.agent is the inner ReActAgent, which has no
+    # deep_config. Reading subagents from it found nothing, so every session
+    # with cua enabled was told the model cannot read images (#8436) and
+    # instruction-following models refused desktop tasks outright.
+    mocker.patch.object(SubagentRail, "init")
+    rail = BrowserTaskPromptRail(cua_agent_enabled=True)
+    rail.init(_rail_agent("browser_agent", "cua_agent").agent)
+    react_ctx = SimpleNamespace(agent=SimpleNamespace())
+
+    text = rail._task_prompt_extension(react_ctx, "en")
+
+    assert "Desktop Capability Routing Rules" in text
+    assert "## Browser Capability Routing Rules" in text
+    assert "Desktop Capability Unavailable" not in text
+
+
+def test_cua_is_withdrawn_when_the_request_model_rejects_images(mocker, image_cache):
+    # The session adapter mounts cua_agent against the config default model,
+    # then swaps in the user's selected model. If that model cannot see the
+    # screenshots, routing desktop tasks to cua_agent drives the GUI blind
+    # while reporting success, so the parent must be told it is unavailable.
+    mocker.patch.object(SubagentRail, "init")
+    rail = BrowserTaskPromptRail(cua_agent_enabled=True)
+    deep_agent = _rail_agent("cua_agent").agent
+    deep_agent.deep_config.model = _model("vision-default", supports_images=True)
+    rail.init(deep_agent)
+    react_ctx = SimpleNamespace(agent=SimpleNamespace())
+
+    assert "Desktop Capability Routing Rules" in rail._task_prompt_extension(react_ctx, "en")
+
+    deep_agent.deep_config.model = _model("text-only-request", supports_images=False)
+    text = rail._task_prompt_extension(react_ctx, "en")
+
+    assert "## Desktop Capability Unavailable" in text
     assert "Desktop Capability Routing Rules" not in text
 
 
