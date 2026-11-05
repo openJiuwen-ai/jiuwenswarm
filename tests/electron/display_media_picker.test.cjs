@@ -21,20 +21,26 @@ test('screens are listed before windows and names are escaped', () => {
 });
 
 function register(platform, getSources, BrowserWindow = null) {
+  const origin = 'http://127.0.0.1:5173';
+  const mainFrame = { url: origin + '/', detached: false };
+  mainFrame.top = mainFrame;
+  const parent = { isDestroyed: () => false, webContents: { mainFrame } };
   let handler;
   let options;
   let callbacks = 0;
   const session = { setDisplayMediaRequestHandler: (next, opts) => { handler = next; options = opts; } };
-  registerDisplayMediaHandler({ session, desktopCapturer: { getSources }, BrowserWindow, getParentWindow: () => null, platform });
+  registerDisplayMediaHandler({ session, desktopCapturer: { getSources }, BrowserWindow, getParentWindow: () => parent, getFrontendUrl: () => origin, platform });
   return {
-    request: (request) => new Promise(resolve => handler(request, value => { callbacks += 1; resolve(value); })),
+    request: (request) => new Promise(resolve => handler({ frame: mainFrame, securityOrigin: origin, ...request }, value => { callbacks += 1; resolve(value); })),
     options,
+    mainFrame,
+    parent,
     get callbackCount() { return callbacks; },
   };
 }
 
-test('macOS uses the system picker; other platforms use the in-app picker', () => {
-  assert.equal(register('darwin', async () => []).options.useSystemPicker, true);
+test('all platforms disable the system picker that bypasses the origin guard', () => {
+  assert.equal(register('darwin', async () => []).options.useSystemPicker, false);
   assert.equal(register('win32', async () => []).options.useSystemPicker, false);
 });
 
@@ -71,7 +77,70 @@ for (const platform of ['win32', 'darwin']) {
     assert.deepEqual(result, { video: screen });
     assert.equal(picker.destroyed, true);
     assert.equal(registered.callbackCount, 1);
-    assert.equal(registered.options.useSystemPicker, platform === 'darwin');
+    assert.equal(registered.options.useSystemPicker, false);
   });
 }
 
+
+for (const platform of ['win32', 'darwin', 'linux']) {
+  test(`${platform} denies untrusted frames before enumerating sources`, async () => {
+    let enumerated = 0;
+    const registered = register(platform, async () => { enumerated += 1; return []; });
+    const ownFrame = registered.mainFrame;
+    const externalFrame = { url: 'https://login.example.com/', detached: false };
+    externalFrame.top = externalFrame;
+    const sameOriginPopup = { url: ownFrame.url, detached: false };
+    sameOriginPopup.top = sameOriginPopup;
+    for (const frame of [
+      null,
+      externalFrame,
+      sameOriginPopup,
+      { url: 'http://127.0.0.1:5174/', top: ownFrame },
+      { url: 'https://127.0.0.1:5173/', top: ownFrame },
+      { url: 'http://localhost:5173/', top: ownFrame },
+      { url: 'https://login.example.com/', top: ownFrame },
+      { url: ownFrame.url, top: ownFrame, detached: true },
+    ]) {
+      assert.equal(await registered.request({ videoRequested: true, frame }), null);
+    }
+    assert.equal(await registered.request({ videoRequested: true, securityOrigin: 'null' }), null);
+    registered.parent.isDestroyed = () => true;
+    assert.equal(await registered.request({ videoRequested: true }), null);
+    assert.equal(enumerated, 0);
+  });
+}
+
+test('same-origin child frame in the main window can request the picker', async () => {
+  let enumerated = 0;
+  const registered = register('darwin', async () => { enumerated += 1; return []; });
+  const frame = { url: registered.mainFrame.url + 'child', top: registered.mainFrame };
+  assert.equal(await registered.request({ videoRequested: true, frame }), null);
+  assert.equal(enumerated, 1);
+});
+
+test('navigation during enumeration denies the request without opening a picker', async () => {
+  const registered = register('darwin', async () => {
+    registered.mainFrame.url = 'https://login.example.com/';
+    return [{ id: 'screen:1:0', name: 'Screen' }];
+  });
+  assert.equal(await registered.request({ videoRequested: true }), null);
+  assert.equal(registered.callbackCount, 1);
+});
+
+test('navigation while the picker is open never grants the selected stream', async () => {
+  class PickerWindow extends EventEmitter {
+    constructor() { super(); this.webContents = new EventEmitter(); this.destroyed = false; }
+    isDestroyed() { return this.destroyed; }
+    destroy() { this.destroyed = true; this.emit('closed'); }
+    show() {}
+    async loadURL() {
+      registered.mainFrame.url = 'http://127.0.0.1:5174/';
+      queueMicrotask(() => this.webContents.emit(
+        'will-navigate', { preventDefault() {} }, `${PICKER_PROTOCOL}//select?index=0`,
+      ));
+    }
+  }
+  const registered = register('darwin', async () => [{ id: 'screen:1:0', name: 'Screen' }], PickerWindow);
+  assert.equal(await registered.request({ videoRequested: true }), null);
+  assert.equal(registered.callbackCount, 1);
+});

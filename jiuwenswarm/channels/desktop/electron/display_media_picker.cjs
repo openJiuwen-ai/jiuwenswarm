@@ -2,8 +2,8 @@
 //
 // Electron does not ship Chrome's screen/window picker: without a
 // setDisplayMediaRequestHandler the page cannot obtain a display stream (the
-// full-duplex "share screen or window" source). macOS 15+ can use the native
-// system picker; elsewhere a small modal lists desktopCapturer sources.
+// full-duplex "share screen or window" source). All platforms use the guarded
+// in-app picker because the native system picker bypasses the request handler.
 
 const PICKER_PROTOCOL = 'jiuwenswarm-display-choice:';
 const THUMBNAIL_SIZE = { width: 320, height: 180 };
@@ -87,9 +87,33 @@ function promptForSource({ BrowserWindow, parent, sources }) {
   });
 }
 
-function registerDisplayMediaHandler({ session, desktopCapturer, BrowserWindow, getParentWindow, platform = process.platform }) {
+function isTrustedRequest(request, parent, frontendUrl) {
+  try {
+    if (!parent || parent.isDestroyed() || !request.frame || request.frame.detached) return false;
+    const mainFrame = parent.webContents.mainFrame;
+    const expected = new URL(frontendUrl);
+    if (!['http:', 'https:'].includes(expected.protocol)) return false;
+    return request.frame.top === mainFrame
+      && new URL(mainFrame.url).origin === expected.origin
+      && new URL(request.frame.url).origin === expected.origin
+      && request.securityOrigin === expected.origin;
+  } catch {
+    return false;
+  }
+}
+
+function registerDisplayMediaHandler({ session, desktopCapturer, BrowserWindow, getParentWindow, getFrontendUrl, platform = process.platform }) {
   let picking = false;
   session.setDisplayMediaRequestHandler((request, callback) => {
+    const parent = getParentWindow();
+    if (!isTrustedRequest(request, parent, getFrontendUrl())) {
+      callback(null);
+      return;
+    }
+    const frameUrl = request.frame.url;
+    const trusted = () => parent === getParentWindow()
+      && isTrustedRequest(request, parent, getFrontendUrl())
+      && request.frame.url === frameUrl;
     // One picker at a time; a second request while it is open is denied.
     if (picking || !request.videoRequested) {
       console.warn('[electron] display media request denied', {
@@ -110,13 +134,14 @@ function registerDisplayMediaHandler({ session, desktopCapturer, BrowserWindow, 
       console.info('[electron] display media sources enumerated', {
         sourceCount: sources.length, elapsedMs: Date.now() - startedAt,
       });
-      return promptForSource({ BrowserWindow, parent: getParentWindow(), sources });
+      if (!trusted()) return null;
+      return promptForSource({ BrowserWindow, parent, sources });
     })().then(
       source => {
         console.info('[electron] display media picker completed', {
           selected: Boolean(source), elapsedMs: Date.now() - startedAt,
         });
-        callback(source ? { video: source } : null);
+        callback(source && trusted() ? { video: source } : null);
       },
       error => {
         console.error('[electron] display media request failed', error);
@@ -125,7 +150,7 @@ function registerDisplayMediaHandler({ session, desktopCapturer, BrowserWindow, 
     ).finally(() => {
       picking = false;
     });
-  }, { useSystemPicker: platform === 'darwin' });
+  }, { useSystemPicker: false });
 }
 
 module.exports = { registerDisplayMediaHandler, orderSources, pickerHtml, PICKER_PROTOCOL };
