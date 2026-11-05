@@ -87,10 +87,12 @@ async def dispatch_group_request(server, ws, request, send_lock) -> bool:
         else:
             group_id = validate_session_id(params.get("group_id") or request.session_id)
             if method in {"chat.send", "chat.resume"}:
-                if request.session_id and request.session_id != group_id:
-                    raise GroupError(
-                        "BAD_REQUEST", "group_id and session_id must match"
-                    )
+                # 外置 agent-gateway 未含 beta1_chat 的 group_id 归一逻辑：前端群聊
+                # chat.send 只带 group_id，gateway 会生成临时 session_id。这里以
+                # params.group_id 为准归一（与 beta1 gateway 侧归一等价），保证群会话
+                # 的 session_id 恒为 group_id，回复事件按群会话桶路由到所有成员窗口。
+                if params.get("group_id") and request.session_id != group_id:
+                    request.session_id = group_id
                 group = service.owned(group_id, user_id, channel_id)
                 if method == "chat.send" and params.get("source") == "ask_user_interrupt":
                     from jiuwenswarm.server.runtime.group_questions import GroupQuestions

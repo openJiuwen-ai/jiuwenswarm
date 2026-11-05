@@ -510,7 +510,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
+        base = [sys.executable, "-m", "jiuwenswarm.gateway_compat"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":

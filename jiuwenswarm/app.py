@@ -91,7 +91,7 @@ def main() -> None:
         gateway_cmd = [python, "--desktop-run-gateway"]
     else:
         agent_cmd = [python, "-m", "jiuwenswarm.server.app_agentserver"]
-        gateway_cmd = [python, "-m", "agent_gateway.app_gateway"]
+        gateway_cmd = [python, "-m", "jiuwenswarm.gateway_compat"]
 
     # Pass --dotenv to subprocesses for multi-instance isolation
     if dotenv_path is not None:
