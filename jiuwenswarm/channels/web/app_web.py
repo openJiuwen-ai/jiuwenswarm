@@ -349,6 +349,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+    _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
@@ -516,6 +517,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _is_api_route(self) -> bool:
         return urlparse(self.path).path.startswith("/api")
 
+    def _is_extension_asset_route(self) -> bool:
+        # Gateway extension package assets live on the same WebChannel as /api.
+        return urlparse(self.path).path.startswith("/extension-assets/")
+
     def _is_ws_route(self) -> bool:
         return urlparse(self.path).path.startswith("/ws")
 
@@ -632,6 +637,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 timeout=self._HTTP_PROXY_TIMEOUT,
             )
 
+        headers_sent = False
         try:
             body = b""
             if self.command not in ("GET", "HEAD"):
@@ -652,7 +658,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
@@ -660,11 +665,18 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 self.send_header(key, value)
             self.end_headers()
+            headers_sent = True
             if self.command != "HEAD":
-                self.wfile.write(resp_body)
+                # Stream the body so large media starts playing before it is fully read.
+                while True:
+                    chunk = resp.read(self._HTTP_PROXY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
-            self._write_proxy_error(502, "proxy http error")
+            if not headers_sent:
+                self._write_proxy_error(502, "proxy http error")
         finally:
             conn.close()
 
@@ -976,7 +988,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         return True
 
     def _dispatch_proxy(self) -> bool:
-        if self._is_api_route() or urlparse(self.path).path.startswith("/extension-assets/"):
+        if self._is_api_route() or self._is_extension_asset_route():
             self._proxy_http()
             return True
         if self._is_ws_route():

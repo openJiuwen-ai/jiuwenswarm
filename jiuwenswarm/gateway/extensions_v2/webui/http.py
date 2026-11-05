@@ -13,6 +13,20 @@ from openjiuwen.core.events import Event, SessionContext
 
 from jiuwenswarm.gateway.extensions_v2.assembly import get_gateway_runtime
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, GatewayRequestInput, GatewayRequestOutput
+from jiuwenswarm.gateway.extensions_v2.webui.bridge import ASSET_PREFIX
+
+# Assets are documents of an opaque origin even when opened directly, so they
+# can never read the frontend's storage or act as the signed-in page. The
+# sandbox keeps the abilities the Iframe component grants (forms, popups,
+# modals, downloads) but never allow-same-origin; sandboxed pages fetch other
+# assets cross-origin, hence the CORS header.
+CORS_HEADERS = MappingProxyType({"Access-Control-Allow-Origin": "*"})
+ASSET_HEADERS = MappingProxyType({
+    **CORS_HEADERS,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
+})
 
 
 def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) -> None:
@@ -51,16 +65,13 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
         return JSONResponse({"code": "UNSUPPORTED_HTTP_ROUTE"}, status_code=400)
 
     async def package_asset(package_id: str, generation: str, path: str):
-        headers = {"Access-Control-Allow-Origin": "*"}
         runtime = runtime_provider()
         if runtime is None:
-            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=headers)
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=dict(CORS_HEADERS))
         try:
             resource = runtime.browser.asset_file(package_id, generation, path)
         except (ValueError, StopIteration):
-            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=headers)
-        return FileResponse(
-            resource, headers={**headers, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-        )
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=dict(CORS_HEADERS))
+        return FileResponse(resource, headers=dict(ASSET_HEADERS))
 
-    app.add_api_route("/extension-assets/{package_id}/{generation}/{path:path}", package_asset, methods=["GET", "HEAD"])
+    app.add_api_route(ASSET_PREFIX + "{package_id}/{generation}/{path:path}", package_asset, methods=["GET", "HEAD"])

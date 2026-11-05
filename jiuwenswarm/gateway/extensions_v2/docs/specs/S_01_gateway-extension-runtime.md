@@ -79,7 +79,7 @@
 `params` 冻结为只读映射；`session_id` 从 params 的 `session_id` 提取；`headers` 来自浏览器帧的 `request_context.headers`，键统一小写。
 
 完整 `request_context` 独立保留，不合并进 `params`。`webui.dispatch` 同样先经过 USER 请求策略；
-继续处理的客户端能力包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
+继续处理的应用级 UI 包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
 HTTP 接入将合法的默认 `forward` 结果继续交给原接口，不要求 `handled=true`。具体范围见 [浏览器接入规约](S_06_local-browser-bridge.md)。
 
 ## 6. 扩展鉴权职责

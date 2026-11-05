@@ -99,7 +99,33 @@ class BrowserBridge:
 
     @property
     def enabled(self) -> bool:
+        """Whether a client-capability package needs declarations and HTTP interception."""
         return any(package.client for package in self.runtime.active_packages())
+
+    @property
+    def application_enabled(self) -> bool:
+        """Whether any active package contributes to a Gateway application slot."""
+        return any(self.is_application_package(package) for package in self.runtime.active_packages())
+
+    @staticmethod
+    def is_application_package(package) -> bool:
+        """Return True for packages contributing to a Gateway application slot.
+
+        Application UI does not depend on request bindings: a package that only
+        declares slot contributions still owns its interactions and assets.
+        """
+        items = package.ui.get("items", []) if isinstance(package.ui, Mapping) else []
+        return isinstance(items, list) and any(
+            isinstance(item, Mapping) and item.get("type") == "web.slot.contribution" and item.get("slot") in SLOTS
+            for item in items
+        )
+
+    def application_packages(self) -> list:
+        """Return the active packages that own Gateway application UI."""
+        return [package for package in self.runtime.active_packages() if self.is_application_package(package)]
+
+    def _active_application_package(self, package_id: str):
+        return next((package for package in self.application_packages() if package.package_id == package_id), None)
 
     def validate_package(self, package) -> None:
         """Validate browser declarations before publication."""
@@ -153,11 +179,17 @@ class BrowserBridge:
             raise ValueError("unsupported local application contribution")
 
     def published(self, package_id: str, generation: str) -> None:
-        if any(package.package_id == package_id and package.client for package in self.runtime.active_packages()):
+        if self._active_application_package(package_id) is not None:
             self.generations[package_id] = generation
 
     def frame_generation(self, package_id: str) -> str | None:
-        """Keep client frames attributed to the activation that initiated them."""
+        """Keep client frames attributed to the activation that initiated them.
+
+        Only client-capability packages are declared to the browser, so frames of
+        other application packages carry no generation.
+        """
+        if not any(package.package_id == package_id and package.client for package in self.runtime.active_packages()):
+            return None
         caller = _CALLER.get()
         return caller[1] if caller is not None and caller[0] == package_id else self.generations.get(package_id)
 
@@ -221,7 +253,7 @@ class BrowserBridge:
         """Dispatch application UI only after the USER request policy continues."""
         async def dispatch_request(event, ops, next_handler):
             request = event.event_input
-            if (not self.enabled or not isinstance(request, GatewayRequestInput)
+            if (not self.application_enabled or not isinstance(request, GatewayRequestInput)
                     or request.transport != "websocket" or request.method != WEBUI_DISPATCH_METHOD):
                 return await next_handler(event)
             receipt = await self.dispatch(request, ops.session_context)
@@ -235,7 +267,7 @@ class BrowserBridge:
 
     def build_ops_handler(self):
         async def asset_url(ops, path: str):
-            package, _ = self._caller(ops)
+            package = self._package_caller(ops)
             self.asset_file(package.package_id, self.generations[package.package_id], path)
             return f"{ASSET_PREFIX}{package.package_id}/{self.generations[package.package_id]}/{path}"
         async def storage_set(ops, key: str, value: Any):
@@ -256,6 +288,14 @@ class BrowserBridge:
             builder.add_method("client", "page_reload", page_reload)
             return builder
         return build
+
+    def _package_caller(self, ops: EventHandlerOps):
+        """Resolve an application package bound to its current activation."""
+        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
+        package = self._active_application_package(package_id)
+        if package is None or _CALLER.get() != (package_id, self.generations.get(package_id)):
+            raise ValueError("package call belongs to an inactive activation")
+        return package
 
     def _caller(self, ops: EventHandlerOps):
         metadata = ops.session_context.metadata if ops.session_context else {}
@@ -297,7 +337,7 @@ class BrowserBridge:
         if not isinstance(target, Mapping):
             return None
         package_id = target.get("package_id", "")
-        own = [package for package in self.runtime.active_packages() if package.client]
+        own = self.application_packages()
         if package_id and not any(package.package_id == package_id for package in own):
             return None
         slot_id = target.get("slot_id")
@@ -366,7 +406,9 @@ class BrowserBridge:
     def asset_file(self, package_id: str, generation: str, relative: str) -> Path:
         if self.generations.get(package_id) != generation:
             raise ValueError("inactive package asset")
-        package = next(item for item in self.runtime.active_packages() if item.package_id == package_id and item.client)
+        package = self._active_application_package(package_id)
+        if package is None:
+            raise ValueError("inactive package asset")
         root = (package.root / "assets").resolve()
         path = (root / relative).resolve()
         if not root.is_relative_to(package.root.resolve()) or not path.is_relative_to(root) or path == root or not path.is_file():
