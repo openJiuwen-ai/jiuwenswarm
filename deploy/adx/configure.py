@@ -86,7 +86,7 @@ def gateway_config(config, settings):
     config["sandbox"] = {
         "enabled": True, "type": "adx-environment", "startup_mode": "external",
         "url": "${JIUWENSWARM_ADX_NODE_INGRESS_URL}", "runtime": runtime.get("tool_runtime", "conch"), "image": runtime["tool_image"],
-        "cpu": 1000, "memory": 1024, "cpu_limit": 1000, "mem_limit": 1024,
+        "cpu": 2000, "memory": 4096, "cpu_limit": 2000, "mem_limit": 4096,
         "idle_timeout": 60, "user": str(account.pw_uid), "group": str(account.pw_gid),
         "connection": {"verify_tls": True},
     }

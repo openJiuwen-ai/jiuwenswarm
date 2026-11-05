@@ -88,7 +88,9 @@ class DeploymentTests(unittest.TestCase):
         original = {"models": [{"name": "original"}], "gateway": {"agentos": {"auth_enabled": True}}}
         for path in (config, user_config):
             deploy.write_yaml(path, original)
-            path.with_name(".env").write_text("MODEL_NAME='original'\n")
+            path.with_name(".env").write_text(
+                "MODEL_NAME='original'\nTOOL_SANDBOX_CPU=2000\nTOOL_SANDBOX_MEMORY=4096\n"
+            )
         sentinel = self.root / "users/alice/session.db"
         sentinel.write_bytes(b"retained-session-fixture")
         with patch.object(deploy, "check_business"), patch.object(deploy.subprocess, "run") as run:
@@ -100,8 +102,15 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(value["models"], original["models"])
             self.assertTrue(value["gateway"]["agentos"]["auth_enabled"])
             self.assertEqual(value["sandbox"]["runtime"], "conch")
+            self.assertEqual(value["sandbox"]["cpu"], 2000)
+            self.assertEqual(value["sandbox"]["cpu_limit"], 2000)
+            self.assertEqual(value["sandbox"]["memory"], 4096)
+            self.assertEqual(value["sandbox"]["mem_limit"], 4096)
             self.assertEqual(value["sandbox"]["url"], "${JIUWENSWARM_ADX_NODE_INGRESS_URL}")
-            self.assertIn("MODEL_NAME='original'", path.with_name(".env").read_text())
+            env_text = path.with_name(".env").read_text()
+            self.assertIn("MODEL_NAME='original'", env_text)
+            self.assertIn("TOOL_SANDBOX_CPU=2000", env_text)
+            self.assertIn("TOOL_SANDBOX_MEMORY=4096", env_text)
             self.assertIn("ADX_TOKEN=", path.with_name(".env").read_text())
             self.assertEqual(path.with_name(".env").stat().st_mode & 0o777, 0o600)
         self.assertEqual(sentinel.read_bytes(), b"retained-session-fixture")

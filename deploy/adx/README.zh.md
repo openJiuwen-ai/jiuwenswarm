@@ -7,6 +7,7 @@
 具体环境变量、镜像约定、安装/启停命令及打包方式见 [README](README.md)。
 `runtime.user` 为工具执行用户；镜像必须具备 AgentServer、Core provider 和 SDK，
 并由集群方配置凭据、CA、可达的工具入口。跨节点需事先准备一致的 workspace 路径。
+工具沙箱默认的 CPU 和内存请求与上限均为 2 核和 4096 MiB。
 
 AgentOS 模式由 Enterprise 显式传入 IAM、Registry、共享存储及凭据位置，
 决定 Master/VIP 的服务落点后调用同一个入口。Swarm 不维护另一份集群编排。

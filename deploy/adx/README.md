@@ -33,6 +33,7 @@ its runtime. Node-local endpoint injection, when needed, is configured on the AD
 image binding by the cluster operator. The Gateway cannot guess the selected node.
 Set `runtime.user` to the tool execution user present on the deployment host;
 default is the current user. `runtime.cpu` / `memory` configure builtin Agent resources.
+Tool sandboxes default to 2 CPU cores and 4096 MiB for both requests and limits.
 
 Standalone is a trusted local mode: Gateway/Web bind loopback only, use the existing
 local builtin catalog, and do not contact IAM or AgentRegistry. Protocol clients
