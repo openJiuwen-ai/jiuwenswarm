@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
 from jiuwenswarm.observability.models import (
     StreamFrameData,
@@ -317,6 +319,98 @@ def test_sink_queue_full_drops_without_blocking(tmp_path: Path) -> None:
         store.release_write.set()
         assert sink.close(timeout=5) is True
     test_logger.info("full sink queue dropped immediately without blocking the caller")
+
+
+def test_overflow_never_logs_on_the_producer_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow logging handler must not stall model callbacks on overflow."""
+    from jiuwenswarm.observability import sink as sink_module
+
+    store = _BlockingStore()
+    sink = TrajectoryRecordSink(
+        _settings(tmp_path / "trajectory.sqlite3", queue_size=1, batch_size=1),
+        store=store,
+    )
+    producer = threading.get_ident()
+    warnings = []
+
+    def warn(message: str, *args: object) -> None:
+        assert threading.get_ident() != producer
+        warnings.append((message, args))
+
+    monkeypatch.setattr(sink_module.logger, "warning", warn)
+    sink.start()
+    try:
+        sink.consume(_record(span_id="1" * 16))
+        assert store.write_started.wait(timeout=5)
+        sink.consume(_record(span_id="2" * 16))
+        sink.consume_stream_frame(_frame(1))
+        for sequence in range(2, 102):
+            sink.consume(_record(span_id="3" * 16))
+            sink.consume_stream_frame(_frame(sequence))
+        assert sink.stats().dropped == 200
+        assert sink.stats().dropped_final == 100
+        assert sink.stats().dropped_frames == 100
+        assert not warnings
+    finally:
+        store.release_write.set()
+        assert sink.close(timeout=5)
+    assert len(warnings) == 1
+
+
+def test_drop_warning_is_aggregated_and_rate_limited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.observability import sink as sink_module
+
+    sink = TrajectoryRecordSink(_settings(tmp_path / "trajectory.sqlite3"))
+    now = [100.0]
+    monkeypatch.setattr(sink_module.time, "monotonic", lambda: now[0])
+    warnings = []
+    monkeypatch.setattr(sink_module.logger, "warning", lambda *args: warnings.append(args))
+    sink._increment("dropped", 100)
+    sink._report_drops()
+    sink._increment("dropped", 50)
+    sink._report_drops()
+    assert len(warnings) == 1
+    now[0] += 30
+    sink._report_drops()
+    assert len(warnings) == 2
+    sink._report_drops(force=True)
+    assert len(warnings) == 2
+
+
+def test_slow_overflow_logger_does_not_hold_ingress_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.observability import sink as sink_module
+
+    store = _BlockingStore()
+    sink = TrajectoryRecordSink(
+        _settings(tmp_path / "trajectory.sqlite3", queue_size=1, batch_size=1),
+        store=store,
+    )
+    logging_started = threading.Event()
+    release_logging = threading.Event()
+
+    def warn(*args: object) -> None:
+        logging_started.set()
+        assert release_logging.wait(timeout=5)
+
+    monkeypatch.setattr(sink_module.logger, "warning", warn)
+    sink.start()
+    try:
+        sink.consume(_record(span_id="1" * 16))
+        assert store.write_started.wait(timeout=5)
+        sink.consume_stream_frame(_frame(1))
+        sink.consume_stream_frame(_frame(2))
+        store.release_write.set()
+        assert logging_started.wait(timeout=5)
+        # The logger is deliberately stuck on the writer. Both enqueue and
+        # full-queue rejection must still finish without waiting for it.
+        started = time.monotonic()
+        for sequence in range(3, 103):
+            sink.consume_stream_frame(_frame(sequence))
+        assert time.monotonic() - started < 1
+    finally:
+        release_logging.set()
+        store.release_write.set()
+        assert sink.close(timeout=5)
 
 
 def test_sink_coalesces_pending_live_snapshots_by_identity(tmp_path: Path) -> None:
