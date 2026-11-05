@@ -13,6 +13,9 @@ import type { TrajectoryTurnModel } from '../trajectory/model.ts'
 import type { AssistantMetricDetail, TrajectoryCellKind, TrajectoryCellProps } from '../trajectory/record.ts'
 import { formatTokenCount, liveElapsedSeconds } from '../trajectory/record.ts'
 import {
+  collectUserInteractionWallRanges,
+} from '../diagnosis/diagnosisTimeSelection.ts'
+import {
   alignPrepSpansBeforeModel,
   deriveTrajectoryTimeline,
   formatTimelineOffset,
@@ -20,6 +23,7 @@ import {
   type TrajectoryTimelineMode,
   type TrajectoryTimelineSegment,
   type TrajectoryTimelineSpan,
+  type TrajectoryTimelineTurnBoundary,
   type TrajectoryTimeRange,
   withSharedWallClockDomain,
   zoomTrajectoryTimelineViewport,
@@ -38,6 +42,16 @@ const EDGE_PAN_STEP_FRACTION = 0.025
 const MAXIMUM_EDGE_PAN_PX = 32
 const TIMELINE_TOOLTIP_DELAY_MS = 500
 const WHEEL_SETTLE_MS = 140
+/**
+ * Visible blank between consecutive user_turn ranges on the swimlane overview.
+ * End/start lines of abutting user interactions sit on opposite sides of this gap.
+ * Model `turn` numbering is unchanged; only gap chrome uses user_turn.
+ */
+const TURN_LANE_GAP_PX = 12
+
+function nearTimelineTime(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 1e-6 * Math.max(1, Math.abs(left), Math.abs(right))
+}
 
 interface TimelineRecordDetail {
   decodingMs?: number
@@ -430,6 +444,56 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     )),
     [nowMilliseconds, turns],
   )
+  // Gap chrome follows user_turn. model.turnBoundaries keep every model turn.
+  const gapBoundaries = useMemo((): readonly TrajectoryTimelineTurnBoundary[] => {
+    if (model === null) return []
+    const useUserTurnGaps = sharedDomain !== null || mode === 'actual' || mode === 'time'
+    if (!useUserTurnGaps) return model.turnBoundaries
+    const map = sharedDomain !== null && mapTime !== undefined
+      ? mapTime
+      : (time: number) => time
+    return collectUserInteractionWallRanges(turns, nowMilliseconds).map(range => {
+      const start = map(range.startWallMs)
+      const end = map(range.endWallMs)
+      return {
+        turn: range.userTurn,
+        start: Math.min(start, end),
+        end: Math.max(start, end),
+      }
+    })
+  }, [mapTime, mode, model, nowMilliseconds, sharedDomain, turns])
+  const turnPadTimes = useMemo(() => {
+    if (model === null) {
+      return { starts: [] as number[], ends: [] as number[] }
+    }
+    return {
+      starts: gapBoundaries
+        .filter(boundary => boundary.start > model.start)
+        .map(boundary => boundary.start),
+      ends: gapBoundaries
+        .filter(boundary => boundary.end < model.end)
+        .map(boundary => boundary.end),
+    }
+  }, [gapBoundaries, model])
+  const turnEdgeMarks = useMemo(() => {
+    if (model === null) return [] as Array<{ key: string; turn: number; time: number; edge: 'start' | 'end' }>
+    const marks: Array<{ key: string; turn: number; time: number; edge: 'start' | 'end' }> = []
+    for (const boundary of gapBoundaries) {
+      marks.push({
+        key: `user-turn-${boundary.turn}-start`,
+        turn: boundary.turn,
+        time: boundary.start,
+        edge: 'start',
+      })
+      marks.push({
+        key: `user-turn-${boundary.turn}-end`,
+        turn: boundary.turn,
+        time: boundary.end,
+        edge: 'end',
+      })
+    }
+    return marks
+  }, [gapBoundaries, model])
   const dragRef = useRef<{
     pointerId: number
     anchorTime: number
@@ -999,21 +1063,30 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
           <div
             className={css.turnBoundaries}
             data-animate-viewport={animateViewport || undefined}
-            aria-hidden="true"
           >
-            {model.turnBoundaries
-              .filter(boundary => boundary.time > model.start)
-              .map(boundary => (
+            {turnEdgeMarks.map(mark => {
+              const atDomainEdge = mark.time <= model.start || mark.time >= model.end
+              // Pull abutting end/start marks apart so both lines stay visible.
+              const shiftPx = atDomainEdge
+                ? 0
+                : mark.edge === 'end'
+                  ? -(TURN_LANE_GAP_PX / 2)
+                  : TURN_LANE_GAP_PX / 2
+              return (
                 <span
                   className={css.turnBoundary}
-                  data-turn={boundary.turn}
-                  key={boundary.turn}
+                  data-turn={mark.turn}
+                  data-edge={mark.edge}
+                  data-domain-edge={atDomainEdge || undefined}
+                  key={mark.key}
                   style={{
                     '--trajectory-turn-left':
-                      `${(boundary.time - model.start) / fullDuration * 100}%`,
+                      `${Math.max(0, (mark.time - model.start) / fullDuration) * 100}%`,
+                    '--trajectory-turn-shift': `${shiftPx}px`,
                   } as CSSProperties}
                 />
-              ))}
+              )
+            })}
           </div>
           <div
             className={css.lanes}
@@ -1024,6 +1097,14 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                 const left = (span.start - model.start) / fullDuration
                 const width = (span.end - span.start) / fullDuration
                 const widthPercent = width * 100
+                // Split the turn gap evenly across the abutting span ends.
+                const turnPad = TURN_LANE_GAP_PX / 2
+                const padLeft = turnPadTimes.starts.some(time => nearTimelineTime(time, span.start))
+                  ? turnPad
+                  : 0
+                const padRight = turnPadTimes.ends.some(time => nearTimelineTime(time, span.end))
+                  ? turnPad
+                  : 0
                 const detail = detailByIndex.get(span.index)
                 const ttftMs = detail?.ttftMs
                 const decodingMs = detail?.decodingMs
@@ -1069,6 +1150,8 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                         '--trajectory-span-left': `${left * 100}%`,
                         '--trajectory-span-width': `${widthPercent}%`,
                         '--trajectory-span-gap': `min(${widthPercent * 0.08}%, 1px)`,
+                        '--trajectory-span-turn-pad-left': `${padLeft}px`,
+                        '--trajectory-span-turn-pad-right': `${padRight}px`,
                         '--trajectory-span-lane': span.lane,
                         ...(splitFraction === null
                           ? {}

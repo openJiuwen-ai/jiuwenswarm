@@ -9,6 +9,13 @@ export interface WallClockSample {
   timeSeconds?: number | null;
   requestOnly?: boolean;
   status?: 'complete' | 'running' | 'error' | null;
+  /** Projected cell kind; used to detect chat user prompts for `user_turn`. */
+  kind?: string;
+  /** Projected message source; ask_user resumes are not a new user prompt. */
+  messageSource?: unknown;
+  /** Cell text / input body; team harness envelopes are not a new user prompt. */
+  text?: string | null;
+  inputDetail?: string | null;
 }
 
 export interface WallClockDomain {
@@ -217,6 +224,237 @@ export function collectWallClockSamples(
   turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
 ): WallClockSample[] {
   return turns.flatMap(turn => turn.groups.flatMap(group => group.cells));
+}
+
+/** Wall-clock start of one numbered turn (earliest timed cell in that turn). */
+export interface TurnWallStart {
+  turn: number;
+  wallMs: number;
+}
+
+/** Wall-clock span of one numbered turn (earliest start … latest end). */
+export interface TurnWallRange {
+  turn: number;
+  startWallMs: number;
+  endWallMs: number;
+}
+
+/**
+ * Earliest wall-clock start per numbered turn, for shared-axis turn markers.
+ * Unnumbered / empty turns are skipped. Order follows the turns array.
+ */
+export function collectTurnWallStarts(
+  turns: readonly {
+    turn: number | null;
+    groups: readonly { cells: readonly WallClockSample[] }[];
+  }[],
+): TurnWallStart[] {
+  return collectTurnWallRanges(turns).map(range => ({
+    turn: range.turn,
+    wallMs: range.startWallMs,
+  }));
+}
+
+/**
+ * Earliest start and latest end per numbered turn (request-only cells skipped).
+ * Used for shared-axis start/end marks and clock labels.
+ */
+export function collectTurnWallRanges(
+  turns: readonly {
+    turn: number | null;
+    groups: readonly { cells: readonly WallClockSample[] }[];
+  }[],
+  nowMs: number = Date.now(),
+): TurnWallRange[] {
+  const ranges: TurnWallRange[] = [];
+  for (const turn of turns) {
+    if (turn.turn === null) continue;
+    let startWallMs: number | null = null;
+    let endWallMs: number | null = null;
+    for (const group of turn.groups) {
+      for (const cell of group.cells) {
+        const interval = sampleInterval(cell, nowMs);
+        if (interval === null) continue;
+        startWallMs = startWallMs === null
+          ? interval.startMs
+          : Math.min(startWallMs, interval.startMs);
+        endWallMs = endWallMs === null
+          ? interval.endMs
+          : Math.max(endWallMs, interval.endMs);
+      }
+    }
+    if (startWallMs !== null && endWallMs !== null) {
+      ranges.push({ turn: turn.turn, startWallMs, endWallMs });
+    }
+  }
+  return ranges;
+}
+
+/** Team harness envelopes injected as USER rows are not a chat prompt. */
+const TEAM_HARNESS_USER_MARK = /<team-(?:clock|event|inbound)\b/i;
+
+type NumberedTurnSamples = {
+  turn: number | null;
+  groups: readonly { cells: readonly WallClockSample[] }[];
+};
+
+/**
+ * True when the cell is an external chat user prompt.
+ *
+ * `ask_user` resumes and team harness USER rows (`team-clock` / `team-event` /
+ * `team-inbound`) do not open a new `user_turn`. Projector `turn` numbers are
+ * unchanged by this check.
+ */
+export function isExternalUserPromptCell(cell: WallClockSample): boolean {
+  if (cell.kind !== 'user') return false;
+  const source = cell.messageSource;
+  if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
+    const kind = (source as { kind?: unknown }).kind;
+    if (kind === 'trajectory_ask_user') return false;
+    const origin = (source as { origin?: unknown }).origin;
+    if (origin === 'harness_internal') return false;
+  }
+  const text = `${cell.text ?? ''}\n${cell.inputDetail ?? ''}`;
+  if (TEAM_HARNESS_USER_MARK.test(text)) return false;
+  return true;
+}
+
+function turnHasExternalUserPrompt(turn: NumberedTurnSamples): boolean {
+  for (const group of turn.groups) {
+    for (const cell of group.cells) {
+      if (isExternalUserPromptCell(cell)) return true;
+    }
+  }
+  return false;
+}
+
+/** Wall span of one user-interaction turn (`user_turn`). */
+export interface UserTurnWallRange {
+  userTurn: number;
+  startWallMs: number;
+  endWallMs: number;
+}
+
+/**
+ * Wall ranges for analysis gap chrome: one range per chat user prompt
+ * (`user_turn`), not per internal ReAct / member `turn` number.
+ *
+ * A new `user_turn` starts on a numbered turn that carries an external user
+ * prompt; following numbered turns without such a prompt stay in the same
+ * range until the next prompt. Does not change projector turn numbering.
+ */
+export function collectUserInteractionWallRanges(
+  turns: readonly NumberedTurnSamples[],
+  nowMs: number = Date.now(),
+): UserTurnWallRange[] {
+  const ranges: UserTurnWallRange[] = [];
+  let current: UserTurnWallRange | null = null;
+  let userTurn = 0;
+  for (const turn of turns) {
+    if (turn.turn === null) continue;
+    let startWallMs: number | null = null;
+    let endWallMs: number | null = null;
+    const hasUserPrompt = turnHasExternalUserPrompt(turn);
+    for (const group of turn.groups) {
+      for (const cell of group.cells) {
+        const interval = sampleInterval(cell, nowMs);
+        if (interval === null) continue;
+        startWallMs = startWallMs === null
+          ? interval.startMs
+          : Math.min(startWallMs, interval.startMs);
+        endWallMs = endWallMs === null
+          ? interval.endMs
+          : Math.max(endWallMs, interval.endMs);
+      }
+    }
+    if (startWallMs === null || endWallMs === null) continue;
+    if (current === null || hasUserPrompt) {
+      if (current !== null) ranges.push(current);
+      userTurn += 1;
+      current = { userTurn, startWallMs, endWallMs };
+      continue;
+    }
+    current = {
+      ...current,
+      endWallMs: Math.max(current.endWallMs, endWallMs),
+    };
+  }
+  if (current !== null) ranges.push(current);
+  return ranges;
+}
+
+/**
+ * One turn range already projected onto the shared axis, with its real wall times.
+ *
+ * Analysis gap markers pass `user_turn` in `turn`; selection snap uses the same
+ * ranges. Projector model-turn numbering is separate.
+ */
+export interface SharedTurnAxisRange {
+  turn: number;
+  startAxisMs: number;
+  endAxisMs: number;
+  startWallMs: number;
+  endWallMs: number;
+}
+
+/**
+ * Map a shared-axis pick to wall clock for selection labels / diagnosis scope.
+ *
+ * Compressed `toWall` collapses a segment boundary onto the next stretch's start,
+ * so turn-end labels must use the stored wall end instead. Picks that land in the
+ * visual gap between turns snap to the next turn's start (selection start) or the
+ * previous turn's end (selection end).
+ */
+export function resolveSelectionWallMs(input: {
+  axisMs: number;
+  role: 'start' | 'end';
+  turns: readonly SharedTurnAxisRange[];
+  toWall: (axisMs: number) => number;
+  /** Half the visual turn gap, in shared-axis units. */
+  gapHalfAxisMs: number;
+}): number {
+  const turns = [...input.turns].sort((left, right) => (
+    left.startAxisMs - right.startAxisMs || left.turn - right.turn
+  ));
+  if (turns.length === 0) return input.toWall(input.axisMs);
+  const gapHalf = Math.max(0, input.gapHalfAxisMs);
+  for (let index = 0; index < turns.length - 1; index += 1) {
+    const prev = turns[index];
+    const next = turns[index + 1];
+    if (prev === undefined || next === undefined) continue;
+    const axisGap = next.startAxisMs - prev.endAxisMs;
+    const abuts = axisGap <= Math.max(gapHalf, 1e-6);
+    const inGap = abuts
+      ? (() => {
+        const junction = (prev.endAxisMs + next.startAxisMs) / 2;
+        return input.axisMs >= junction - gapHalf && input.axisMs <= junction + gapHalf;
+      })()
+      : input.axisMs > prev.endAxisMs && input.axisMs < next.startAxisMs;
+    if (inGap) {
+      return input.role === 'start' ? next.startWallMs : prev.endWallMs;
+    }
+  }
+  // Prefer recorded wall times on the projected turn edges (toWall collapses
+  // segment ends onto the next stretch's start).
+  const matches: Array<{ wallMs: number; distance: number; edge: 'start' | 'end' }> = [];
+  for (const turn of turns) {
+    for (const edge of [
+      { edge: 'start' as const, axisMs: turn.startAxisMs, wallMs: turn.startWallMs },
+      { edge: 'end' as const, axisMs: turn.endAxisMs, wallMs: turn.endWallMs },
+    ]) {
+      const distance = Math.abs(input.axisMs - edge.axisMs);
+      if (distance > Math.max(gapHalf, 1e-6)) continue;
+      matches.push({ wallMs: edge.wallMs, distance, edge: edge.edge });
+    }
+  }
+  if (matches.length > 0) {
+    matches.sort((left, right) => left.distance - right.distance);
+    const bestDistance = matches[0]?.distance ?? 0;
+    const closest = matches.filter(item => item.distance === bestDistance);
+    const preferred = closest.find(item => item.edge === input.role) ?? closest[0];
+    if (preferred !== undefined) return preferred.wallMs;
+  }
+  return input.toWall(input.axisMs);
 }
 
 function sampleInterval(
