@@ -446,7 +446,10 @@ class TaskService:
             tasks = [t for t in tasks if t["status"] == status]
         matched = []
         for task in tasks:
-            if query.casefold() in task["instruction"].casefold() or query.casefold() in task.get("title", "").casefold():
+            if (
+                query.casefold() in task["instruction"].casefold()
+                or query.casefold() in task.get("title", "").casefold()
+            ):
                 matched.append(task)
         tasks = matched
         end = offset + limit

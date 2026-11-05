@@ -162,8 +162,6 @@ async def test_reorder_and_cancel_waiter(queue):
 
 @pytest.mark.parametrize("stale_version", [False, True])
 async def test_voice_reorder_accepts_missing_version_and_rejects_stale_version(queue, stale_version):
-    from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
-
     q = queue
     await q.start("A")
     await until(lambda: q.executed == ["A"])
