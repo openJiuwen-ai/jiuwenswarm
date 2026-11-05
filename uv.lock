@@ -21,6 +21,7 @@ overrides = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=cbbadde9101db6e3d75e4ef2b9bdb6029fd92088" },
 ]
 
 [[package]]

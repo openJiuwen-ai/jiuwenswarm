@@ -219,7 +219,7 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
-# Keep Gateway and optional SDK extras on the same search-contract revision.
+# Keep SDK and protocol transitive dependencies on this project's pinned revisions.
 # Overrides replace extras too; the conditional entries preserve each opt-in extra.
 # Candidate dependencies are for editable development only; release builds reject forks.
 override-dependencies = [
@@ -228,6 +228,7 @@ override-dependencies = [
     "openjiuwen[codex] @ git+https://gitcode.com/m056838700/agent-core.git@85cdd56a625a762c44df9c019d0d8daa7ba4b0fc ; extra == 'codex'",
     "openjiuwen[cua] @ git+https://gitcode.com/m056838700/agent-core.git@85cdd56a625a762c44df9c019d0d8daa7ba4b0fc ; extra == 'cua'",
     "openjiuwen[postgres,zmq] @ git+https://gitcode.com/m056838700/agent-core.git@85cdd56a625a762c44df9c019d0d8daa7ba4b0fc ; extra == 'distribute'",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#subdirectory=openjiuwen-protocol",
 ]
 
 [tool.uv.sources]
