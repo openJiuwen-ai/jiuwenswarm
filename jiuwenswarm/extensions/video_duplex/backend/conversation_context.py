@@ -33,8 +33,14 @@ async def load_voice_history(session_id: str) -> list[dict]:
     if not await asyncio.to_thread(session_history.flush_pending_writes, timeout=5):
         raise RuntimeError("Voice history is still saving; retry the request")
     records = await asyncio.to_thread(session_history.load_history_records, session_id)
-    return [record for record in records if conversation_record_id(record)
-            and isinstance(record.get("content"), str) and record["content"].strip()]
+    voice_records = []
+    for record in records:
+        if not conversation_record_id(record):
+            continue
+        content = record.get("content")
+        if isinstance(content, str) and content.strip():
+            voice_records.append(record)
+    return voice_records
 
 
 async def sync_conversation_context(agent, session_id):

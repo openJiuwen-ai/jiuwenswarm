@@ -241,10 +241,14 @@ const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 function SuggestionCard({
   topic,
   onClick,
+  onMouseEnter,
+  onMouseLeave,
   disabled = false,
 }: {
   topic: TopicStarterTopic;
   onClick: () => void;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
@@ -283,6 +287,8 @@ function SuggestionCard({
       className={`chat-suggestion-card${sourceBadge ? ' chat-suggestion-card--sourced' : ''}${hotList ? ' chat-suggestion-card--hot-list' : ''}`}
       data-testid="chat-panel-welcome-suggestion"
       data-variant={topic.title}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
       {sourceBadge && (
         <div data-testid="chat-panel-topic-sources" data-variant={topic.title} className="chat-suggestion-card__sources">
@@ -2612,14 +2618,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {recommendationState === 'disabled' && visibleTopicSlate?.topics.length ? (
-                  <p className="chat-suggestions__title w-full" data-testid="chat-panel-topic-disabled-hint">
-                    {t('chat.topicStarter.disabledHintWithCards')}
-                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
-                      {t('chat.topicStarter.openSettings')}
-                    </button>
-                  </p>
-                ) : recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
+                {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
                   <div
                     className="chat-suggestions__title"
                     role="status"
@@ -2659,6 +2658,15 @@ export const ChatPanel = React.memo(function ChatPanel({
                       topic={topic}
                       onClick={() => handleSuggestion(topic)}
                       disabled={topicStarterSuggestionsDisabled}
+                      onMouseEnter={recommendationState === 'disabled' ? () => {
+                        if (bubbleHideTimerRef.current) {
+                          clearTimeout(bubbleHideTimerRef.current);
+                          bubbleHideTimerRef.current = null;
+                        }
+                        setTopicBubbleActive(true);
+                        setBubbleVisible(true);
+                      } : undefined}
+                      onMouseLeave={recommendationState === 'disabled' ? handleBubbleLeave : undefined}
                     />
                   );
                 })}

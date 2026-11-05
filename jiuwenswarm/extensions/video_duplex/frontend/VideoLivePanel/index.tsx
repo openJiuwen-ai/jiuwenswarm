@@ -34,7 +34,7 @@ import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame
 import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
-import { describeDuplexError } from '../duplexErrorMessage';
+import { describeDuplexError, duplexErrorDetail, screenCaptureFailure } from '../duplexErrorMessage';
 import { reportedRuntimeState } from './runtimeState';
 import {
   mergeSearchProgressJob,
@@ -825,6 +825,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
 
     setError('');
     const pickerStartedAt = Date.now();
+    const captureStartedAt = performance.now();
+    const captureId = `screen-${Date.now()}`;
+    let captureStage = 'getDisplayMedia';
+    const captureContext = JSON.stringify({
+      capture_id: captureId,
+      user_agent: navigator.userAgent,
+      secure_context: window.isSecureContext,
+      document_focused: document.hasFocus(),
+      user_activation: navigator.userActivation?.isActive,
+      existing_screens: screens.length,
+    });
+    reportRealtimeEvent('realtime_screen_capture_requested', { raw_event: captureContext });
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -843,6 +855,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         throw new Error('没有获得屏幕画面。');
       }
 
+      captureStage = 'attachStream';
       // Only a camera or file source is replaced. With nothing shared, a reset
       // would also stop the running voice transport and its conversation.
       if (source && source !== 'screen') {
@@ -866,6 +879,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
+      const { errorType, nativeMessage, reasonKey } = screenCaptureFailure(screenError);
+      const elapsedMs = Math.round(performance.now() - captureStartedAt);
+      const message = t('videoLive.screenCapture.failed', {
+        reason: t(`videoLive.screenCapture.${reasonKey}`),
+        errorType, nativeMessage, stage: captureStage, elapsedMs, captureId,
+      });
+      reportRealtimeEvent('realtime_screen_capture_failed', {
+        error_type: errorType, message, latency_ms: elapsedMs, raw_event: captureContext,
+      });
       if (isScreenCaptureDeniedBySystem(screenError)) {
         if (allowUnsupported) {
           screenFallbackNoticeRef.current = SCREEN_SHARE_NO_PERMISSION_NOTICE;

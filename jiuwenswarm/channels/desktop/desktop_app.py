@@ -96,14 +96,13 @@ VALID_CLOSE_ACTIONS = frozenset(
 )
 
 
-# 只给本地前端放行麦克风；摄像头不申请，一律拒绝。
-_MACOS_MEDIA_ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
+# Only the current frontend origin may request microphone access.
 _WK_MEDIA_CAPTURE_MICROPHONE = 1  # WKMediaCaptureTypeMicrophone
 _WK_PERMISSION_GRANT = 1  # WKPermissionDecisionGrant
 _WK_PERMISSION_DENY = 2  # WKPermissionDecisionDeny
 
 
-def _install_macos_media_capture_permission() -> None:
+def _install_macos_media_capture_permission(get_frontend_url: Callable[[], str]) -> None:
     """给 pywebview 的 WKUIDelegate 补上媒体授权回调。
 
     pywebview 的 BrowserDelegate 没实现
@@ -125,14 +124,24 @@ def _install_macos_media_capture_permission() -> None:
         return
 
     def media_permission(_self, _webview, origin, _frame, media_type, decision_handler):
-        host = str(origin.host() or "") if origin is not None else ""
-        allowed = (
-            host in _MACOS_MEDIA_ALLOWED_HOSTS
-            and int(media_type) == _WK_MEDIA_CAPTURE_MICROPHONE
-        )
+        allowed = False
+        try:
+            expected = urlsplit(get_frontend_url())
+            default_port = 443 if expected.scheme == "https" else 80
+            expected_origin = (expected.scheme, expected.hostname, expected.port or default_port)
+            request_origin = (
+                str(origin.protocol()), str(origin.host()), int(origin.port()) or default_port,
+            )
+            allowed = (
+                expected.scheme in {"http", "https"}
+                and request_origin == expected_origin
+                and int(media_type) == _WK_MEDIA_CAPTURE_MICROPHONE
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
         logger.info(
-            "[desktop] media capture request host=%s type=%s allowed=%s",
-            host, media_type, allowed,
+            "[desktop] media capture request type=%s allowed=%s",
+            media_type, allowed,
         )
         decision_handler(_WK_PERMISSION_GRANT if allowed else _WK_PERMISSION_DENY)
 
@@ -872,8 +881,6 @@ class _WindowApi:
 
         Only plain http(s) URLs without embedded credentials are accepted.
         """
-        from urllib.parse import urlsplit
-
         parsed = urlsplit(str(url))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
@@ -3401,7 +3408,7 @@ nohup {q_executable} >/dev/null 2>&1 &
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
-        _install_macos_media_capture_permission()
+        _install_macos_media_capture_permission(lambda: self.frontend_display_url)
 
         self.window = webview.create_window(
             window_title,

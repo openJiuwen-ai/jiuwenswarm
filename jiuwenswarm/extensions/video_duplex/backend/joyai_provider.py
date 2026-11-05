@@ -126,9 +126,9 @@ def parse_action(raw_content: str) -> dict[str, str]:
         response_match is None
         or response_match.start() != 0
         or len(_RESPONSE_MARKER.findall(raw)) != 1
-        or len(_DELEGATION_MARKER.findall(raw)) > 1
-        or _SILENCE_MARKER.search(raw)
     ):
+        raise ValueError("JoyAI returned an invalid action protocol")
+    if len(_DELEGATION_MARKER.findall(raw)) > 1 or _SILENCE_MARKER.search(raw):
         raise ValueError("JoyAI returned an invalid action protocol")
     response_end = delegation_match.start() if delegation_match else len(raw)
     response = raw[response_match.end():response_end].strip()

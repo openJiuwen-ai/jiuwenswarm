@@ -442,7 +442,7 @@ test('JoyAI reads managed and typed-chat approval cards last on every user turn,
 
   provider.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending', source: 'confirm_interrupt',
     questions: [{ header: '操作确认: cua_agent', question: '打开计算器', options: PERMISSION_OPTIONS }] });
-  provider.enqueueQuestion('', { id: 'typed-approval', request_id: 'typed-approval', state: 'pending', source: 'permission_interrupt',
+  provider.enqueueQuestion('', { id: 'typed-approval', request_id: 'typed-approval', state: 'pending', source: 'confirm_interrupt',
     questions: [{ header: '权限审批: bash', question: '允许执行 rm？', options: PERMISSION_OPTIONS }] });
   // Information forms stay on screen for JoyAI.
   provider.enqueueQuestion('trip', { id: 'form', request_id: 'f', state: 'pending', source: 'ask_user_interrupt',
@@ -479,18 +479,34 @@ test('JoyAI reads managed and typed-chat approval cards last on every user turn,
   frame = '';
 
   // Typed card answered on screen, then the task finishes: the status is gone.
+  provider.enqueueQuestion('', { id: 'typed-second', request_id: 'typed-second', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '另一张确认卡', options: PERMISSION_OPTIONS }] });
+  provider.enqueueQuestion('cua:child', { id: 'child-card', request_id: 'child-card', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '另一个任务', options: PERMISSION_OPTIONS }] });
   provider.enqueueQuestion('', { request_id: 'typed-approval', state: 'answered' });
+  provider.enqueueQuestion('', { request_id: '', state: 'answered' });
   let pending = provider.submitUserInstruction('还有卡吗');
   tick();
   await pending;
   assert.doesNotMatch(requests.at(-1).approval_context, /typed-approval/);
+  assert.match(requests.at(-1).approval_context, /typed-second/);
+  assert.match(requests.at(-1).approval_context, /card-a/);
+  assert.match(requests.at(-1).approval_context, /child-card/);
   provider.handleCompletedSearch({ job_id: 'cua' }, { status: 'completed', summary: 'x' });
   pending = provider.submitUserInstruction('好了吗');
   tick();
   await pending;
+  assert.doesNotMatch(requests.at(-1).approval_context, /card-a/);
+  assert.match(requests.at(-1).approval_context, /typed-second/);
+  assert.match(requests.at(-1).approval_context, /child-card/);
+  provider.enqueueQuestion('', { request_id: 'typed-second', state: 'answered' });
+  provider.handleCompletedSearch({ job_id: 'cua:child' }, { status: 'completed', summary: 'x' });
+  pending = provider.submitUserInstruction('全部处理了吗');
+  tick();
+  await pending;
   assert.equal(requests.at(-1).approval_context, undefined);
 
-  provider.enqueueQuestion('cua2', { id: 'c', request_id: 'c', state: 'pending', source: 'permission_interrupt', questions: [] });
+  provider.enqueueQuestion('cua2', { id: 'c', request_id: 'c', state: 'pending', source: 'confirm_interrupt', questions: [] });
   provider.stop();
   assert.equal(provider.pendingApprovals.size, 0, 'stop clears cards');
 });

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.extensions.video_duplex.backend import realtime_context as context
+from jiuwenswarm.extensions.video_duplex.backend.error_details import safe_error_detail
 
 
 def history(count):
@@ -24,7 +25,8 @@ def saved(monkeypatch, tmp_path):
 def test_transcript_preserves_roles_and_does_not_promote_assistant_claims():
     records = history(2) + [
         dict(id="reason", role="assistant", event_type="chat.reasoning", content="private reasoning"),
-        dict(id="reported", role="assistant", event_type="chat.final", presentation="tool_result", content="Core reports a file"),
+        dict(id="reported", role="assistant", event_type="chat.final",
+             presentation="tool_result", content="Core reports a file"),
     ]
     turns = context.transcript(records)
     assert len(turns) == 3
@@ -72,6 +74,23 @@ async def test_evicted_context_can_be_prepared_again_without_relaxing_scope_chec
         await restorer.instructions(None, "task-duplex:chat-a", first["token"])
 
 
+def test_metadata_alone_over_limit_has_explicit_error():
+    package = {"session_id": "x" * context.MAX_CONTEXT_CHARS, "memory": [],
+               "recent_turns": [], "tasks": {"jobs": [], "omitted_jobs": 0}}
+    with pytest.raises(ValueError, match="metadata exceeds the size limit"):
+        context.bound_context(package)
+
+
+def test_bound_context_can_remove_last_turn_without_popping_empty_list():
+    package = {"session_id": "chat-a", "memory": [], "context_incomplete": False,
+               "recent_turns": [{"text": "x" * context.MAX_CONTEXT_CHARS}],
+               "tasks": {"jobs": [], "omitted_jobs": 0}}
+    result = context.bound_context(package)
+    assert result["recent_turns"] == []
+    assert result["context_incomplete"]
+    assert len(json.dumps(result, ensure_ascii=False)) <= context.MAX_CONTEXT_CHARS
+
+
 async def test_short_history_needs_no_compressor_and_has_current_tasks(saved, monkeypatch):
     del saved[2:]
     compressor = AsyncMock()
@@ -89,7 +108,10 @@ async def test_memory_is_cached_but_task_status_is_fresh(saved, monkeypatch):
     compressor = AsyncMock(side_effect=select)
     monkeypatch.setattr(context, "select_memory", compressor)
     status = "running"
-    tasks = lambda: {"jobs": [{"job_id": "job-a", "status": status, "revision": 1}]}
+
+    def tasks():
+        return {"jobs": [{"job_id": "job-a", "status": status, "revision": 1}]}
+
     first = await context.prepare_context("chat-a", "alice", tasks)
     assert first["memory_method"] == "selected_excerpts"
     status = "completed"
@@ -119,7 +141,10 @@ async def test_compressor_failure_uses_bounded_fallback(saved, monkeypatch):
     saved.extend(history(40))
     for record in saved:
         record["content"] += '"\\' * 2000
-    tasks = lambda: {"jobs": [dict(job_id=str(i), status="running", question="x" * 8000) for i in range(30)]}
+
+    def tasks():
+        return {"jobs": [dict(job_id=str(i), status="running", question="x" * 8000) for i in range(30)]}
+
     result = await context.prepare_context("chat-a", "alice", tasks)
     assert len(json.dumps(result, ensure_ascii=False)) <= context.MAX_CONTEXT_CHARS
     assert result["context_incomplete"]
@@ -128,10 +153,12 @@ async def test_compressor_failure_uses_bounded_fallback(saved, monkeypatch):
 
 async def test_task_snapshot_is_read_after_compression(saved, monkeypatch):
     ready = False
+
     async def select(older):
         nonlocal ready
         ready = True
         return [{"source_id": older[0]["source_id"], "text": older[0]["text"]}]
+
     def tasks():
         assert ready
         return {"jobs": []}
@@ -188,3 +215,40 @@ async def test_shared_restorer_preserves_history_and_refreshes_only_task_facts(m
     manager.authorized_scope.return_value = ("bob", "task-duplex:chat-a")
     with pytest.raises(ValueError, match="unavailable"):
         await restorer.instructions(None, "task-duplex:chat-a", envelope["token"])
+
+
+@pytest.mark.parametrize("reported", [
+    "sk-1234567890abcdefghijklmnop",
+    "sk-1234567890...",
+    "...ijklmnop",
+    "sk-123456***ijklmnop",
+])
+def test_provider_key_fragments_are_redacted(monkeypatch, reported):
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "sk-1234567890abcdefghijklmnop")
+    detail = safe_error_detail("401: invalid key " + reported + "; request rejected")
+    assert reported not in detail
+    assert "401" in detail and "request rejected" in detail
+
+
+def test_short_common_key_fragments_do_not_erase_diagnostics(monkeypatch):
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "sk-1234567890abcdefghijklmnop")
+    assert safe_error_detail("request timeout: model unavailable") == "request timeout: model unavailable"
+
+
+@pytest.mark.parametrize("name", [
+    "PROVIDER_API_KEY", "AUTH_TOKEN", "ACCESS_TOKEN", "SERVICE_PASSWORD",
+    "CLIENT_SECRET", "SIGNING_PRIVATE_KEY",
+])
+@pytest.mark.parametrize("truncated", [False, True])
+def test_other_configured_credentials_are_redacted(monkeypatch, name, truncated):
+    secret = "credential-1234567890abcdef"
+    monkeypatch.setenv(name, secret)
+    reported = secret[:12] + "..." if truncated else secret
+    detail = safe_error_detail("Authentication failed: " + reported + "; status=401")
+    assert reported not in detail
+    assert "Authentication failed" in detail and "status=401" in detail
+
+
+def test_noncredential_environment_values_preserve_diagnostic_text(monkeypatch):
+    monkeypatch.setenv("MODEL_NAME", "model-offline")
+    assert safe_error_detail("model-offline: unavailable") == "model-offline: unavailable"

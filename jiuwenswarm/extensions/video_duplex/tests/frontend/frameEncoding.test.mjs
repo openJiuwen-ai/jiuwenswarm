@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   FRAME_MAX_JPEG_BYTES,
+  FRAME_MAX_BASE64_BYTES,
   FrameEncoder,
   fitFrameSize,
   frameStepsFor,
@@ -35,14 +36,14 @@ test('a camera at 1280x720 skips duplicate steps and keeps its full resolution',
   const calls = [];
   const frame = await new FrameEncoder().encode('camera', 1280, 720, fakeRenderer(0.2, calls));
   assert.equal(frame.width, 1280);
-  assert.equal(frame.quality, 0.72);
-  assert.deepEqual(calls, ['1280x720@0.72']);
+  assert.equal(frame.quality, 1);
+  assert.deepEqual(calls, ['1280x720@0.72', '1280x720@1']);
 });
 
 test('lowers quality before resolution until the frame fits the budget', async () => {
   const calls = [];
   // Density chosen so every 1920x1080 step is too big and 1280x720 at q0.5 just fits.
-  const density = (FRAME_MAX_JPEG_BYTES / (1280 * 720 * 0.5)) * 0.99;
+  const density = (FRAME_MAX_JPEG_BYTES / (1280 * 720 * 0.5)) * 0.995;
   const frame = await new FrameEncoder().encode('screen', 3840, 2160, fakeRenderer(density, calls));
   assert.deepEqual(calls, [
     '1920x1080@0.72',
@@ -58,7 +59,7 @@ test('lowers quality before resolution until the frame fits the budget', async (
 
 test('remembers the fitting step per source and climbs back when the picture gets simpler', async () => {
   const encoder = new FrameEncoder();
-  const dense = (FRAME_MAX_JPEG_BYTES / (1280 * 720 * 0.5)) * 0.99;
+  const dense = (FRAME_MAX_JPEG_BYTES / (1280 * 720 * 0.5)) * 0.995;
   await encoder.encode('screen', 3840, 2160, fakeRenderer(dense));
 
   // Same busy picture: one probe one step up, then the remembered step. No full ladder.
@@ -67,17 +68,17 @@ test('remembers the fitting step per source and climbs back when the picture get
   assert.deepEqual(steady, ['1280x720@0.72', '1280x720@0.5']);
   assert.equal(again.quality, 0.5);
 
-  // Mostly blank picture: each capture climbs one step until it is back at 1080p q0.72.
+  // Mostly blank picture: each capture climbs one step until it is back at 1080p full quality.
   const sparse = 0.01;
   let frame;
   for (let i = 0; i < 4; i += 1) frame = await encoder.encode('screen', 3840, 2160, fakeRenderer(sparse));
   assert.equal(frame.width, 1920);
-  assert.equal(frame.quality, 0.72);
+  assert.equal(frame.quality, 1);
 
   // Another source is not affected by this source's history.
   const other = [];
   await encoder.encode('screen-b', 3840, 2160, fakeRenderer(sparse, other));
-  assert.deepEqual(other, ['1920x1080@0.72']);
+  assert.deepEqual(other, ['1920x1080@0.72', '1920x1080@1']);
 });
 
 test('drops the frame when even the smallest step is too big', async () => {
@@ -93,4 +94,39 @@ test('stops encoding when the capture is cancelled', async () => {
   });
   assert.equal(frame, null);
   assert.equal(calls.length, 1);
+});
+
+test('JPEG budget accounts for base64 expansion at the exact transport boundary', () => {
+  assert.equal(FRAME_MAX_JPEG_BYTES, 192 * 1024);
+  assert.equal(4 * Math.ceil(FRAME_MAX_JPEG_BYTES / 3), FRAME_MAX_BASE64_BYTES);
+  assert.ok(4 * Math.ceil((FRAME_MAX_JPEG_BYTES + 1) / 3) > FRAME_MAX_BASE64_BYTES);
+});
+
+test('refines quality between coarse steps to use nearly all the image budget', async () => {
+  const calls = [];
+  const density = 300000 / (1920 * 1080);
+  const frame = await new FrameEncoder().encode('screen', 3840, 2160, fakeRenderer(density, calls));
+  assert.equal(frame.width, 1920);
+  assert.ok(frame.quality > 0.5 && frame.quality < 0.72);
+  assert.ok(frame.blob.size >= FRAME_MAX_JPEG_BYTES * 0.99);
+  assert.ok(frame.blob.size <= FRAME_MAX_JPEG_BYTES);
+  assert.ok(calls.length <= 8, 'bounded refinement must not stall capture');
+});
+
+test('raises quality above 0.72 when remaining capacity allows it', async () => {
+  const density = 240000 / (1920 * 1080);
+  const frame = await new FrameEncoder().encode('screen', 1920, 1080, fakeRenderer(density));
+  assert.ok(frame.quality > 0.72 && frame.quality < 1);
+  assert.ok(frame.blob.size >= FRAME_MAX_JPEG_BYTES * 0.99);
+  assert.ok(frame.blob.size <= FRAME_MAX_JPEG_BYTES);
+});
+
+test('a cancelled refinement never returns a stale lower quality capture', async () => {
+  let calls = 0;
+  const frame = await new FrameEncoder().encode('screen', 1920, 1080, async () => {
+    calls += 1;
+    return calls === 1 ? { size: 1000 } : null;
+  });
+  assert.equal(frame, null);
+  assert.equal(calls, 2);
 });

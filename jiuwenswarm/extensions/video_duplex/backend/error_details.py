@@ -1,21 +1,28 @@
-"""Format full-duplex provider errors for logs and client responses."""
+"""Bounded, credential-redacted diagnostics for duplex failures."""
 
 import os
 import re
 
 
-def safe_error_detail(detail: str) -> str:
-    text = str(detail)
-    for name, value in os.environ.items():
-        if value and name.upper().endswith(("_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET")):
-            text = text.replace(value, "******")
-    text = re.sub(r"(?i)(\bBearer\s+)\S+", r"\g<1>******", text)
-    return text[:2000]
+def safe_error_detail(value: object) -> str:
+    """Retain the service detail without returning configured API credentials."""
+    message = str(value).strip()
+    for name, secret in os.environ.items():
+        if name.upper().endswith(("API_KEY", "TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY")) and secret:
+            message = message.replace(secret, "******")
+            if len(secret) >= 16:
+                # Providers may echo only the beginning/end of a rejected key.
+                # Require eight known characters; short fragments match ordinary text.
+                token_chars = r"[A-Za-z0-9_+/=.*\u2026-]*"
+                for fragment in (secret[:8], secret[-8:]):
+                    message = re.sub(
+                        token_chars + re.escape(fragment) + token_chars, "******", message,
+                    )
+    message = re.sub(r"(?i)(\bBearer\s+)\S+", r"\g<1>******", message)
+    return message[:1500]
 
 
-def duplex_failure(exc: BaseException, *, stage: str, request_id: str) -> str:
-    detail = safe_error_detail(str(exc))
-    message = type(exc).__name__
-    if detail:
-        message += f": {detail}"
-    return f"{stage}失败：{message} (request_id={request_id})"
+def duplex_failure(exc: Exception, *, stage: str, request_id: object) -> str:
+    """Include the exception type even when a timeout has no message."""
+    detail = safe_error_detail(exc) or "服务未提供具体原因"
+    return f"{stage}失败：{type(exc).__name__}: {detail} [request_id={request_id}]"
