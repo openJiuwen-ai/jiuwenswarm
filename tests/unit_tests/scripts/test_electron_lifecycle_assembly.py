@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Execute release-script asset copies and load their installed lifecycle module."""
+"""Exercise release-script asset copies and frozen runtime resource collection."""
+import ast
 import os
 from pathlib import Path
 import re
@@ -49,3 +50,52 @@ def test_assembled_electron_contains_its_shutdown_dependency(platform, tmp_path)
     if platform == "macos":
         subprocess.run([node, "-e", "const m=require(process.argv[1]); if(typeof m.launchMacUpdate!=='function') process.exit(1)", str(destination / "macos_update.cjs")],
                        check=True, capture_output=True, timeout=10)
+
+
+def test_frozen_resources_keep_templates_and_skill_paths_without_runtime_files(tmp_path):
+    resource_root = tmp_path / "resources"
+    included = [
+        ".env.template",
+        "config.yaml",
+        "agent/workspace/skills/first/SKILL.md",
+        "agent/workspace/skills/second/SKILL.md",
+        "agent/workspace/skills/project-maintainer-extra/SKILL.md",
+        "runtime/playwright-mcp/manifest.json",
+    ]
+    excluded = [
+        ".env",
+        "config.lock",
+        ".env.media-capability.lock",
+        "__pycache__/settings.cpython-311.pyc",
+        "runtime/__pycache__/helper.cpython-311.pyc",
+        "agent/workspace/skills/project-maintainer/SKILL.md",
+        "agent/workspace/skills/project-maintainer/references/help.md",
+    ]
+    for relative in included + excluded:
+        path = resource_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture resource", encoding="utf-8")
+
+    spec = ROOT / "scripts/jiuwenswarm.spec"
+    definitions = []
+    for node in ast.parse(spec.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.FunctionDef) and node.name == "collect_resources_data_files":
+            definitions.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "EXCLUDED_RESOURCE_DIRS"
+            for target in node.targets
+        ):
+            definitions.append(node)
+    namespace = {"os": os}
+    exec(compile(ast.Module(body=definitions, type_ignores=[]), str(spec), "exec"), namespace)
+    collect = namespace["collect_resources_data_files"]
+    files = collect(str(resource_root), "jiuwenswarm/resources")
+    actual = {
+        Path(source).relative_to(resource_root).as_posix(): Path(destination).as_posix()
+        for source, destination in files
+    }
+    expected = {
+        relative: (Path("jiuwenswarm/resources") / Path(relative).parent).as_posix()
+        for relative in included
+    }
+    assert actual == expected
