@@ -17,7 +17,16 @@ def verify_gateway_extensions() -> None:
     package = import_module("agent_gateway")
     import_module("agent_gateway.app_gateway")
     version("agent-gateway")
-    loader = import_module("agent_gateway.extensions.loader").ExtensionLoader
+    extension_loader = import_module("agent_gateway.extensions.loader").ExtensionLoader
+
+    class VerificationLoader(extension_loader):
+        """Expose import-only verification without registering or starting plugins."""
+
+        @classmethod
+        def import_entry(cls, root: Path):
+            return cls._import_module(root)
+
+    loader = VerificationLoader
     extension_dir = Path(package.__file__).resolve().parent / "extensions"
     # These built-ins belong to the pinned Gateway dependency. Checking names
     # explicitly prevents an empty/missing directory from passing verification.
@@ -28,7 +37,7 @@ def verify_gateway_extensions() -> None:
                 raise RuntimeError(f"Missing frozen Gateway extension resource: {root / filename}")
         if not loader.load_manifest(root):
             raise RuntimeError(f"Empty frozen Gateway extension manifest: {root}")
-        module = loader._import_module(root)
+        module = loader.import_entry(root)
         if not callable(getattr(module, "register_extensions", None)):
             raise RuntimeError(f"Missing Gateway extension registration entry: {root}")
 
@@ -67,15 +76,15 @@ def run_isolated(executable: Path) -> int:
         # The child has exited, including entrypoint failure handling. Its file
         # handles are closed before the parent cleans up the isolated directory.
         if result.returncode:
-            print(f"Frozen Gateway verification failed (exit {result.returncode})", file=sys.stderr)
+            logging.getLogger(__name__).error("Frozen Gateway verification failed (exit %s)", result.returncode)
             for log in sorted(root.rglob("*.log")):
-                print(log.read_text(encoding="utf-8", errors="replace")[-16000:], file=sys.stderr)
+                logging.getLogger(__name__).error("%s", log.read_text(encoding="utf-8", errors="replace")[-16000:])
         return result.returncode
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     if getattr(sys, "frozen", False):
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
         verify_gateway_adapter_bundle()
         logging.getLogger(__name__).info("Gateway adapter frozen bundle verification passed")
         return 0

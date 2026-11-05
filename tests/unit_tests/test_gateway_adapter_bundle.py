@@ -113,7 +113,7 @@ def test_verifier_rejects_missing_registration_entry(gateway_extensions):
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
-def test_launcher_isolates_before_windows_entry_imports(tmp_path, monkeypatch, exit_code):
+def test_launcher_isolates_before_windows_entry_imports(tmp_path, monkeypatch, caplog, exit_code):
     import sys
 
     user = tmp_path / "user"
@@ -160,6 +160,11 @@ def test_launcher_isolates_before_windows_entry_imports(tmp_path, monkeypatch, e
     )
     monkeypatch.setattr(verifier, "__file__", str(probe))
     assert verifier.run_isolated(Path(sys.executable)) == exit_code
+    if exit_code:
+        assert "Frozen Gateway verification failed (exit 7)" in caplog.text
+        assert "isolated failure evidence" in caplog.text
+    else:
+        assert not caplog.records
     assert not Path(report.read_text()).exists()
     assert verifier.os.environ == original_env
     assert Path.cwd() == original_cwd
