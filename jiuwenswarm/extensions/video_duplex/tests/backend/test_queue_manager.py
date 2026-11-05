@@ -3,7 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -69,7 +69,6 @@ async def test_revision_conflict_can_query_then_correct_without_replaying_old_wr
         {"jobs": [{"job_id": "a", "revision": 2}]},
         {"state": "accepted"},
     ]))
-
     def modification(revision):
         return json.dumps({"tool": {"name": "jiuwen_task_modify", "arguments": {
             "job_id": "a", "revision": revision, "instruction": "change",
@@ -201,11 +200,11 @@ async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
 
     service = TaskService(TaskStore(tmp_path / "tasks.sqlite"), None)
     service.started = True
-    service.kick = Mock(return_value=None)
+    service.kick = lambda: None
     wechat = service.submit("alice", "voice", "create-wechat", "打开微信")
     feishu = service.submit("alice", "voice", "create-feishu", "打开飞书")
-    manager = VideoSearchManager(None, None, log_event=lambda *a, **k: None, qwen_active=lambda: True,
-                                 service=service)
+    manager = VideoSearchManager(None, None, log_event=lambda *a, **k: None, qwen_active=lambda: True)
+    manager._service = service
     monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
         json.dumps({"tool": {"name": "jiuwen_task_reorder", "arguments": {
             "job_id": feishu["id"], "action": "before", "before_job_id": wechat["id"]}}}),

@@ -63,7 +63,7 @@ async def test_recovery_dispatches_only_opened_owner_and_conversation(tmp_path):
     service = TaskService(store, executor)
     scopes = [("alice", "task-duplex:current"), ("alice", "task-duplex:other"),
               ("bob", "task-duplex:current")]
-    queued = [service.new_task_record(owner, session, "pending", {}) for owner, session in scopes]
+    queued = [service._new(owner, session, "pending", {}) for owner, session in scopes]
     with store.transaction() as db:
         for task in queued:
             store.put(db, task)
@@ -94,8 +94,8 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path):
     store = TaskStore(tmp_path / "scoped-running.sqlite")
     executor = SimpleNamespace(cancel=AsyncMock(return_value=False))
     service = TaskService(store, executor)
-    current = service.new_task_record("alice", "current", "running", {})
-    other = service.new_task_record("alice", "other", "running", {})
+    current = service._new("alice", "current", "running", {})
+    other = service._new("alice", "other", "running", {})
     for task in (current, other):
         task["status"] = "running"
     with store.transaction() as db:
@@ -1007,13 +1007,14 @@ async def test_queued_title_change_preserves_full_requirement_and_legacy_replay(
 
 
 def _round_harness(round_task=None):
-    options = {"_interaction_round_task": round_task} if round_task is not None else {}
-    return SimpleNamespace(
+    harness = SimpleNamespace(
         _react_agent=object(),
         active_round=SimpleNamespace(task_id="round-id"),
         loop_controller=SimpleNamespace(task_scheduler=SimpleNamespace(_running_tasks={})),
-        **options,
     )
+    if round_task is not None:
+        harness._interaction_round_task = round_task
+    return harness
 
 
 @pytest.mark.parametrize("has_round_task", [True, False])

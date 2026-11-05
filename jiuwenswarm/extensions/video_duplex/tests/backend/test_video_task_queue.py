@@ -315,8 +315,9 @@ async def test_connection_identity_and_saved_conversation_scope(monkeypatch, cas
         return {"user_id": stored_owner}
 
     monkeypatch.setattr(task_adapter, "task_agent_query", metadata)
-    manager = video_search.VideoSearchManager(None, object(), log_event=Mock(), qwen_active=lambda: True,
-                                              authorize=task_identity)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager.authorize, manager.client = task_identity, object()
     ws = SimpleNamespace(
         remote_address=("127.0.0.1", 1234), request_headers={"Origin": "http://127.0.0.1:5384"},
         _web_connection_user_id=owner,
@@ -522,7 +523,9 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     service = TaskService(TaskStore(tmp_path / "summary.sqlite"), None)
     service.started = True  # No executions: use isolated persisted records only.
     service.kick = Mock(return_value=None)
-    manager = video_search.VideoSearchManager(None, None, log_event=Mock(), qwen_active=lambda: True, service=service)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
     for i in range(7):
         task = service.submit("alice", "scope", str(i), str(i))
         service.store.update(task["id"], lambda t, i=i: t.update(status="completed" if i < 5 else "running"))
@@ -601,7 +604,9 @@ async def test_voice_reorder_rejects_stale_queue_then_accepts_new_request(tmp_pa
     service = TaskService(TaskStore(tmp_path / "reorder.sqlite"), None)
     service.started = True
     service.kick = Mock(return_value=None)
-    manager = video_search.VideoSearchManager(None, None, log_event=Mock(), qwen_active=lambda: True, service=service)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
     jobs = [service.submit("alice", "scope", str(i), str(i)) for i in range(8)]
     stale_version = manager.snapshot("alice", "scope").get("queue_version")
     for task in jobs[:5]:
@@ -749,8 +754,9 @@ async def test_5597_voice_query_sees_scheduled_jobs_created_in_another_conversat
     service.kick = Mock(return_value=None)
     manager = video_search.VideoSearchManager(
         SimpleNamespace(), SimpleNamespace(), log_event=lambda _: None, qwen_active=lambda: True,
-        service=service,
+        path=tmp_path / "unused.sqlite",
     )
+    manager._service = service
 
     query = SimpleNamespace(name="jiuwen_task_query", arguments={})
     result = await manager.operate("alice", "task-duplex:conversation-b", query)
@@ -784,7 +790,9 @@ async def test_5597_unreadable_scheduled_jobs_are_not_reported_as_none(tmp_path)
 
     service = TaskService(TaskStore(tmp_path / "broken.sqlite"), None)
     service.started = True
-    manager = video_search.VideoSearchManager(None, None, log_event=Mock(), qwen_active=lambda: True, service=service)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
     manager.list_scheduled_jobs = broken
     result = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
     assert result["scheduled_jobs"]["available"] is False
@@ -799,7 +807,9 @@ async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
     service = TaskService(TaskStore(tmp_path / "approval.sqlite"), None)
     service.started = True
     service.kick = Mock(return_value=None)
-    manager = video_search.VideoSearchManager(None, None, log_event=Mock(), qwen_active=lambda: True, service=service)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
     card = {"id": "card-a", "request_id": "core-approval", "state": "pending", "source": source,
             "questions": [{"question": "cua_agent 将操作桌面：打开计算器", "header": "操作确认: cua_agent",
                            "options": [{"label": "允许"}, {"label": "拒绝"}]}]}

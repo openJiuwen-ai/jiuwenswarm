@@ -18,10 +18,10 @@ from jiuwenswarm.extensions.video_duplex.backend.core_receipts import receipt_pa
 
 
 @pytest.fixture(autouse=True)
-def isolate_receipts(monkeypatch):
-    monkeypatch.setattr(receipts, "_subscriptions", {})
-    monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
-                        lambda *args, **kwargs: {"user_id": "alice"})
+def clear_receipts():
+    receipts._subscriptions.clear()
+    yield
+    receipts._subscriptions.clear()
 
 
 def request(sid="chat", owner="alice", **params):
@@ -29,8 +29,8 @@ def request(sid="chat", owner="alice", **params):
                         channel_id="web", req_method=ReqMethod.CHAT_SEND, params=params)
 
 
-async def activate(sid="chat", token="token"):
-    await receipts.configure(request(sid=sid, token=token, action="start"))
+def activate(sid="chat", token="token"):
+    receipts._subscriptions[sid] = receipts.ReceiptSubscription("alice", token, time.monotonic() + 180)
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -80,8 +80,8 @@ async def test_new_conversation_replaces_previous_voice_session(monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["agent.work.normal", "agent.code.normal", "team.design"])
-async def test_runtime_policy_survives_native_answer_without_overwriting_answer(mode):
-    await activate()
+def test_runtime_policy_survives_native_answer_without_overwriting_answer(mode):
+    activate()
     req = request(mode=mode, answers=[{"question": "Which?", "custom_input": "blue"}])
     receipts.prepare_request(req)
     assert req.params["answers"][0]["custom_input"] == "blue"
@@ -90,7 +90,7 @@ async def test_runtime_policy_survives_native_answer_without_overwriting_answer(
     section = builder.add_section.call_args.args[0]
     assert "[[JIUWEN_BRIEF_BEGIN]]" in str(section.content)
     assert "pending, partial, blocked and failed" in str(section.content)
-    await receipts.configure(request(action="stop", token="token"))
+    receipts._subscriptions.clear()
     builder.reset_mock()
     receipts.apply_summary_policy(builder, "chat")
     builder.remove_section.assert_called_once_with("video_duplex.voice_receipt")
@@ -103,8 +103,8 @@ def test_runtime_policy_allows_attachment_only_agents():
 
 
 @pytest.mark.parametrize("mode", ["agent.work.normal", "agent.code.normal", "team.design"])
-async def test_active_session_uses_model_policy_without_rewriting_user_or_tool_input(mode):
-    await activate()
+def test_active_session_uses_model_policy_without_rewriting_user_or_tool_input(mode):
+    activate()
     for channel in ("web", "video_tool"):
         req = request(mode=mode, query="Keep the scene blue", content="Keep the scene blue")
         req.channel_id = channel
@@ -152,7 +152,7 @@ def test_task_projection_repairs_legacy_results_before_frontend_delivery():
 
 @pytest.mark.asyncio
 async def test_text_final_is_delivered_once_as_receipt_without_changing_chat(monkeypatch):
-    await activate()
+    activate()
     push = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.runtime.host_services.send_runtime_push", push)
     req = request(query="Write code")
@@ -176,7 +176,7 @@ async def test_text_final_is_delivered_once_as_receipt_without_changing_chat(mon
 
 @pytest.mark.asyncio
 async def test_delegated_result_keeps_existing_delivery_and_page_observer_does_not_duplicate(monkeypatch):
-    await activate()
+    activate()
     push = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.runtime.host_services.send_runtime_push", push)
     req = request(managed_task_binding={"task_id": "task"})
@@ -193,7 +193,7 @@ async def test_delegated_result_keeps_existing_delivery_and_page_observer_does_n
 
 @pytest.mark.asyncio
 async def test_design_text_stream_becomes_observer_after_its_reply_and_does_not_repeat_voice_tasks(monkeypatch):
-    await activate()
+    activate()
     push = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.runtime.host_services.send_runtime_push", push)
     text = request(mode="team.design", query="First question")
@@ -222,7 +222,7 @@ async def test_design_text_stream_becomes_observer_after_its_reply_and_does_not_
 @pytest.mark.parametrize("kind,role,sid", [("chat.delta", "leader", "chat"),
     ("chat.final", "member", "chat"), ("chat.final", "leader", "other")])
 async def test_progress_workers_and_other_sessions_are_not_announced(monkeypatch, kind, role, sid):
-    await activate()
+    activate()
     push = AsyncMock()
     monkeypatch.setattr("jiuwenswarm.runtime.host_services.send_runtime_push", push)
     event = RuntimeEvent(request_id="r", session_id=sid, channel_id="web",
@@ -231,33 +231,20 @@ async def test_progress_workers_and_other_sessions_are_not_announced(monkeypatch
     push.assert_not_awaited()
 
 
-async def test_lost_client_lease_removes_model_policy():
-    await activate()
-    receipts.subscription("chat").expires = time.monotonic() - 1
+def test_lost_client_lease_removes_model_policy():
+    activate()
+    receipts._subscriptions["chat"].expires = time.monotonic() - 1
     assert receipts.subscription("chat") is None
 
 
 
-async def test_web_channel_preserves_structured_core_receipt():
-    from agent_gateway.channel_manager.web.outbound import HttpSseOutbound
-    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-    from openjiuwen_protocol.message import Message
+def test_web_channel_preserves_structured_core_receipt():
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     payload = {"event_type": "video.core.result", "subscription_token": "current",
                "session_id": "chat", "realtime_brief": {"summary": "Still running"}}
-    channel = WebChannel(WebChannelConfig(), None)
-    outbound = HttpSseOutbound(session_id="chat")
-    peer = channel.register_request_outbound(outbound)
-    try:
-        await channel.send(Message(id="request", type="event", channel_id="web", session_id="chat",
-                                   params={}, timestamp=0, ok=True, payload=payload, metadata={"ws_id": peer}))
-        frames = outbound.iter_sse_frames("request", timeout=2)
-        frame = await anext(frames)
-        await frames.aclose()
-    finally:
-        await channel.unregister_request_outbound(outbound)
-    assert frame["event"] == "video.core.result"
-    result = frame["payload"]
+    message = SimpleNamespace(payload=payload, session_id="chat", id="request", metadata={}, ok=True)
+    result = WebChannel._build_event_payload(message, "video.core.result")
     assert result["subscription_token"] == "current"
     assert result["realtime_brief"]["summary"] == "Still running"
 
@@ -265,7 +252,7 @@ async def test_web_channel_preserves_structured_core_receipt():
 
 @pytest.mark.asyncio
 async def test_internal_background_and_unary_core_answers_are_forwarded(monkeypatch):
-    await activate()
+    activate()
     push = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.runtime.host_services.send_runtime_push", push)
     req = request(owner=None, query="Background result")

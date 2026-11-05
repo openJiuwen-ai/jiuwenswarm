@@ -153,7 +153,6 @@ from openjiuwen.harness.schema.config import SubAgentConfig
 
 from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
-from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
 )

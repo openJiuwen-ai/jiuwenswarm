@@ -528,12 +528,11 @@ class VideoSearchManager:
         path=None,
         authorize=task_identity,
         scheduled_jobs=gateway_scheduled_jobs,
-        service=None,
     ):
         self.channel, self.log_event, self.qwen_active = channel, log_event, qwen_active
         self.client, self.normalize_media = agent_client, normalize_media_attachments
         self.path, self.authorize, self.concurrency = path, authorize, max_concurrency
-        self._service = service
+        self._service = None
         self.list_scheduled_jobs = scheduled_jobs
         self.subscribers = {}
         self._approval_cards = {}

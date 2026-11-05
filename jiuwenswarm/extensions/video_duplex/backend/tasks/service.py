@@ -75,9 +75,9 @@ class TaskService:
         """Recover only the requested conversation before dispatching its queue."""
         if self.closed:
             raise RuntimeError("Task service is closed")
-        scoped = owner is not None or session is not None
-        valid_scope = isinstance(owner, str) and isinstance(session, str) and bool(session)
-        if scoped and not valid_scope:
+        if (owner is not None or session is not None) and (
+            not isinstance(owner, str) or not isinstance(session, str) or not session
+        ):
             raise ValueError("Task owner must be a string and conversation is required")
         if self.started and (owner is None or (owner, session) in self.active_scopes):
             return
@@ -400,8 +400,7 @@ class TaskService:
                 self.interrupt_settled()
 
     @staticmethod
-    def new_task_record(owner, session, instruction, request, *, parent=None):
-        """Build a queued record without writing it or scheduling execution."""
+    def _new(owner, session, instruction, request, *, parent=None):
         task_id = uuid.uuid4().hex
         return dict(
             id=task_id,
@@ -478,7 +477,7 @@ class TaskService:
                 }
             for dependency in request.get("depends_on", []):
                 self.store.get(db, dependency, owner, session)
-            task = self.new_task_record(owner, session, instruction.strip(), request)
+            task = self._new(owner, session, instruction.strip(), request)
             self.store.put(db, task)
             self.store.command(
                 db,
@@ -591,7 +590,7 @@ class TaskService:
         # A successor is a new execution, not a replay of the original call_id.
         for key in ("tool_call_id", "turn_id", "frame_data_url"):
             request.pop(key, None)
-        child = self.new_task_record(
+        child = self._new(
             task["owner"],
             task["session"],
             task["instruction"] + "\n" + adopted + "\nUser revision: " + instruction,
@@ -818,8 +817,7 @@ class TaskService:
                     receipt = dict(
                         task_id=task_id, operation_id=command_id, state="already_answered",
                         applied=False, task_state=task["status"],
-                        message="This exact card already has the same recorded answer. Nothing was resubmitted. Report "
-                            "task_state; do not infer continued execution or completion.",
+                        message="This exact card already has the same recorded answer. Nothing was resubmitted. Report task_state; do not infer continued execution or completion.",
                     )
                     self.store.command(db, task, command_id, fingerprint, receipt)
                     return receipt
