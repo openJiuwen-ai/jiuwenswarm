@@ -68,6 +68,13 @@
 再删除安装副本；删除数据失败时返回 `EXTENSION_DATA_WRITE_FAILED` 并保留安装副本，再次卸载可重试。
 包数据目录及其上级不得为符号链接。设计与验证见 [F_09](../features/F_09_package-store-and-data.md)。
 
+### 3.2 包释放与浏览器通知
+
+包被释放（卸载、重载、发布失败前的替换）时，运行时除注销 Handler 外，还向浏览器发送该包各应用级实例的清除帧
+（原因 `released`，并预留该版本号，之后的渲染从更高版本开始），并撤销该包作为提供者的外观（[S_08](S_08_appearance.md)）。
+这些通知在释放后异步发送；本机 CLI 的 install 与 reload 成功后，先等待通知发出，再广播 `extensions.v2.installed`，
+已挂载的槽位据此重新发送 `ui.ready`。设计与验证见 [F_11](../features/F_11_controlled-appearance.md)。
+
 ## 4. 事件契约
 
 | 事件 | 输入 | 输出 | CORE 默认 |
@@ -136,6 +143,7 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 7. connection 作用域状态在 socket 关闭时清除；session 与 global 由写入方或停机清理。
 8. 包只能通过 Handler 的包身份访问自己的存储与数据目录，不能指定其他包。
 9. 包存储与数据目录只在卸载时删除；删除失败不删除安装副本。
+10. 包释放后，浏览器不再显示该包的应用级实例与外观；释放时发送的清除帧版本号不会被之后的渲染复用。
 
 ## 10. 验证索引
 
@@ -150,6 +158,7 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 | 出站 HTTP 白名单与预算 | `test_gateway_http_fetch.py`（契约细节见 [S_05](S_05_http-fetch.md)） |
 | 包存储、数据目录、数据素材与卸载清理 | `test_gateway_package_data.py` |
 | 应用级 UI 包与素材路由 | `test_gateway_application_assets.py` |
+| 包释放通知、受控外观与重载广播 | `test_gateway_appearance.py`、`test_gateway_package_management.py`（契约细节见 [S_08](S_08_appearance.md)） |
 
 
 ## 本机扩展管理 CLI
@@ -158,6 +167,7 @@ Gateway 装配完成后创建本机管理入口，关闭运行时时撤销入口
 
 - **包管理：** `extensions_v2/management/local_cli.py` 调用当前 Gateway 的包管理门面，不导入 AgentServer 扩展模块。
 - **宿主归属：** install 校验 ZIP 的 domain 为 gateway；query/reload/uninstall 仅处理本宿主包。
+- **界面通知：** install 与 reload 成功后广播 `extensions.v2.installed`（见第 3.2 节）。
 - **访问权限：** 访问密钥与实例标识由宿主生成，只供当前操作系统账号使用。Web 登录和认证继续使用原有规则。
 
 公共命令和退出码见[本机 CLI 契约](../../../../extensions_v2/docs/specs/S_02_backend-package-management.md#5-本机-cli)，

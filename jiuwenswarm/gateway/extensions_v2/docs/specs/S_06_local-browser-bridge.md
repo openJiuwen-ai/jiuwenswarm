@@ -59,6 +59,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - `ops.ui.asset_url(path, source="data")` 生成 `/extension-assets/<package_id>/<activation_generation>.data/<path>`，
   指向包数据目录（[S_01 第 3.1 节](S_01_gateway-extension-runtime.md)）中 `public/` 内的普通文件；
   `source` 只接受 `package`（默认）与 `data`。代次、越界与响应头规则同包内素材。
+- `ops.appearance.apply(appearance)` 供应用级 UI 包为当前连接提交或撤销受控外观，接口与生命周期见 [S_08](S_08_appearance.md)。
 - Web UI 静态服务将 `/extension-assets/` 请求按原路径转发到 WebChannel HTTP 服务，与 Vite 开发服务保持一致。
   GET/HEAD 保留后端状态码、内容类型和缓存策略；无效或过期素材返回后端的 404，不返回 SPA HTML。
   打包版前端由 `channels/web/app_web.py` 将 `/extension-assets/` 与 `/api` 一同转发到 WebChannel，响应按块写回。

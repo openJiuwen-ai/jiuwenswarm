@@ -64,6 +64,7 @@ const {
   WebUINavigationHost,
   WebUIPageHost,
   WebUIBackgroundHost,
+  WebUIAppearanceHost, appearanceModule,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -3065,5 +3066,99 @@ test('one settings tree mounts application and session items with independent id
     runtime.dispose();
     container.remove();
     for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+const appearanceCases = JSON.parse(readFileSync(new URL('./fixtures/gatewayAppearanceCases.json', import.meta.url), 'utf8'));
+for (const { name, appearance, valid } of appearanceCases) {
+  test(`Gateway appearance contract: ${name}`, () => {
+    const result = appearanceModule.validateAppearance(appearance);
+    if (valid) assert.deepEqual(result, appearance);
+    else assert.equal(result, null);
+  });
+}
+
+test('accent derivation keeps white button text readable and lets tokens override', () => {
+  const { accentVariables, parseColor, contrastRatio, buildAppearanceCss } = appearanceModule;
+  const white = [255, 255, 255];
+  for (const accent of ['#b45309', '#2f6fae', '#0d8f72', '#ffdd00', '#ffffff', '#000000', '#17b893']) {
+    const variables = accentVariables(accent);
+    const strong = parseColor(variables['--color-action-primary']);
+    assert.ok(contrastRatio(strong, white) >= 4.5, `${accent} strong ${variables['--color-action-primary']}`);
+    assert.ok(contrastRatio(parseColor(variables['--color-action-primary-hover']), white) >= 3, `${accent} hover`);
+    assert.equal(variables['--color-action-primary-rgb'], strong.join(', '));
+    assert.equal(variables['--color-text-link'], variables['--color-action-primary']);
+    assert.equal(variables['--color-border-accent-rgb'], parseColor(accent).join(', '));
+  }
+  // A dark enough accent is used as given.
+  assert.equal(accentVariables('#2f6fae')['--color-action-primary'], '#2f6fae');
+  const css = buildAppearanceCss({ accent: '#b45309', tokens: { '--color-action-primary-subtle': '#ff000020' } }, {});
+  assert.match(css, /--color-action-primary-subtle:#ff000020/);
+  assert.doesNotMatch(css, /--color-action-primary-subtle:rgba/);
+  assert.doesNotMatch(css, /data-webui-background/, 'opaque appearances add no translucent rules');
+});
+
+test('translucent preset uses theme bases, concrete colors and only applies with a background', () => {
+  const { buildAppearanceCss, readSurfaceBases, translucentVariables } = appearanceModule;
+  const bases = readSurfaceBases((name) => (name === '--color-surface-card' ? ' #fafafa' : name === '--color-sidebar-surface' ? 'rgb(1, 2, 3)' : 'var(--x)'));
+  assert.deepEqual(bases['--color-surface-card'], [250, 250, 250]);
+  assert.deepEqual(bases['--color-sidebar-surface'], [1, 2, 3]);
+  assert.deepEqual(bases['--color-surface-page'], [245, 247, 249], 'unreadable bases fall back to the default theme');
+  const variables = translucentVariables(0.8, bases);
+  assert.equal(variables['--color-surface-page'], 'rgba(245, 247, 249, 0.336)');
+  assert.equal(variables['--color-sidebar-surface'], 'rgba(1, 2, 3, 0.56)');
+  assert.equal(variables['--color-surface-panel'], 'rgba(255, 255, 255, 0.82)');
+  assert.equal(variables['--color-surface-card'], 'rgba(250, 250, 250, 0.88)');
+  assert.equal(variables['--color-surface-shell'], 'transparent');
+  assert.equal(variables['--color-surface-popover'], undefined);
+  assert.ok(Object.keys(variables).every((name) => !name.startsWith('--color-text')));
+  const css = buildAppearanceCss({ surface: 'translucent', surfaceOpacity: 0.8 }, bases);
+  assert.doesNotMatch(css, /calc\(/);
+  for (const rule of css.split('\n')) {
+    assert.match(rule, /\[data-webui-surface='translucent'\]\[data-webui-background='active'\]/, rule);
+  }
+  assert.match(css, /\.ui-dialog[^{]*\{background-color:rgba\(250, 250, 250, 0\.97\) !important\}/);
+  assert.match(buildAppearanceCss({ surface: 'translucent' }, bases), /rgba\(245, 247, 249, 0\.361\)/, 'default opacity 0.86');
+});
+
+test('WebUIAppearanceHost writes the contribution layer and removes it on revoke and unmount', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const html = document.documentElement;
+  const style = () => document.getElementById('webui-appearance');
+  html.setAttribute('data-theme', 'default'); html.setAttribute('data-color-mode', 'light');
+  try {
+    await act(async () => root.render(createElement(WebUIAppearanceHost, { runtime })));
+    assert.equal(style(), null);
+    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 1,
+      appearance: { accent: '#b45309', surface: 'translucent', surfaceOpacity: 0.6 } }));
+    assert.match(style().textContent, /--color-action-primary:#b45309/);
+    assert.match(style().textContent, /rgba\(245, 247, 249, 0\.252\)/);
+    assert.equal(html.getAttribute('data-webui-surface'), 'translucent');
+    const firstWrite = html.getAttribute('data-webui-appearance');
+    assert.ok(firstWrite);
+
+    // A theme change recomputes the layer and announces a new write to theme observers.
+    await act(async () => { html.setAttribute('data-color-mode', 'dark'); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.notEqual(html.getAttribute('data-webui-appearance'), firstWrite);
+    assert.equal(html.getAttribute('data-color-mode'), 'dark', 'the host never changes the color mode');
+
+    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 2, appearance: null }));
+    assert.equal(style(), null);
+    assert.equal(html.hasAttribute('data-webui-appearance'), false);
+    assert.equal(html.hasAttribute('data-webui-surface'), false);
+    assert.equal(html.getAttribute('data-color-mode'), 'dark');
+
+    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 3, appearance: { accent: '#2f6fae' } }));
+    assert.equal(html.getAttribute('data-webui-surface'), 'opaque');
+    await act(async () => root.unmount());
+    assert.equal(style(), null, 'unmounting the host removes the layer');
+  } finally {
+    runtime.dispose();
+    container.remove();
+    html.setAttribute('data-color-mode', 'light');
   }
 });

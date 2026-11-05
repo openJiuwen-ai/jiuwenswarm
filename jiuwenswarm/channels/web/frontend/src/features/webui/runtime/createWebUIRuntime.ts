@@ -18,6 +18,7 @@ import type {
   WebUINormalizedTarget,
 } from '../contracts/normalized.ts';
 import { createProtocolPipeline } from '../protocol/process.ts';
+import { readAppearanceFrame, type WebUIAppearanceFrame } from '../appearance/appearance.ts';
 import type { WebUIProtocol } from '../protocol/process.ts';
 import type { WebUIConnectionState, WebUITransportHandlers } from '../transport/types.ts';
 import type {
@@ -76,6 +77,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   let ownerCounter = 0;
   let version = 0;
   let connectionState: WebUIConnectionState = transport.getConnectionState();
+  // Appearance follows the connection: revisions restart with each connection, and a contribution
+  // kept through a disconnect is dropped if no provider re-applies it after the reconnect readies.
+  let appearance: WebUIAppearanceFrame | null = null;
+  let appearanceRevision = 0;
+  let appearanceStale = false;
+  const appearanceListeners = new Set<Listener>();
   let unsubscribeTransport: (() => void) | null = null;
   let started = false;
   let disposed = false;
@@ -339,12 +346,26 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         commitErrorFrame(result.value);
       }
     },
+    onAppearanceFrame(payload) {
+      if (disposed || connectionState !== 'connected') {
+        return;
+      }
+      const frame = readAppearanceFrame(payload);
+      if (!frame || frame.revision <= appearanceRevision) {
+        return;
+      }
+      appearanceRevision = frame.revision;
+      appearanceStale = false;
+      setAppearance(frame.appearance ? frame : null);
+    },
     onConnectionStateChange(state) {
       if (disposed || state === connectionState) {
         return;
       }
       connectionState = state;
       if (state !== 'connected') {
+        appearanceRevision = 0;
+        appearanceStale = appearance !== null;
         nodeBindings.clear();
         for (const owner of owners.values()) {
           if (owner.scope === 'application') {
@@ -355,10 +376,21 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
-        void reportReadyAfterReconnect();
+        void reportReadyAfterReconnect().then(() => {
+          if (!disposed && appearanceStale && connectionState === 'connected') {
+            appearanceStale = false;
+            setAppearance(null);
+          }
+        });
       }
     },
   };
+
+  function setAppearance(next: WebUIAppearanceFrame | null): void {
+    if (next === appearance) return;
+    appearance = next;
+    for (const listener of [...appearanceListeners]) listener();
+  }
 
   async function sendReady(owner: MountedOwner, instanceKey: string, packageId?: string): Promise<void> {
     if (
@@ -685,6 +717,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     scopeVersions.clear();
     globalListeners.clear();
     nodeBindings.clear();
+    appearance = null;
+    appearanceListeners.clear();
     version += 1;
   }
 
@@ -765,5 +799,10 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     resetRequestContext,
     refreshContributions,
     getConnectionState: () => connectionState,
+    getAppearance: () => appearance,
+    subscribeAppearance: (listener) => {
+      appearanceListeners.add(listener);
+      return () => appearanceListeners.delete(listener);
+    },
   };
 }

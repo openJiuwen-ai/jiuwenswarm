@@ -24,6 +24,8 @@ export { createMockTransport } from '../../src/features/webui/transport/index.ts
 export { WebUIHost } from '../../src/features/webui/react/WebUIHost.tsx';
 export { WebUIEntryHost } from '../../src/features/webui/react/WebUIEntryHost.tsx';
 export { WebUIBackgroundHost } from '../../src/features/webui/react/WebUIBackgroundHost.tsx';
+export { WebUIAppearanceHost } from '../../src/features/webui/react/WebUIAppearanceHost.tsx';
+export * as appearanceModule from '../../src/features/webui/appearance/index.ts';
 export { MediaSurfacePolicyContext } from '../../src/features/webui/renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
 export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';

@@ -305,6 +305,34 @@ async def test_local_cli_uses_live_gateway_manager(tmp_path, monkeypatch):
         await runtime.shutdown()
 
 
+async def test_local_cli_reload_asks_mounted_slots_for_ready(tmp_path, monkeypatch):
+    """Reload retires the old activation's views, so browsers must ask the new one to render (F_11)."""
+    from jiuwenswarm.channels.cli import extension as cli
+    from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setenv("GATEWAY_PORT", "19001")
+    runtime = await _runtime(tmp_path)
+    broadcasts = []
+
+    async def broadcast_event(event, payload, **_):
+        broadcasts.append((event, payload))
+
+    runtime.channel.broadcast_event = broadcast_event
+    service = await start_local_cli(runtime)
+    archive = _package_zip(tmp_path)
+    try:
+        await cli.execute(cli.parser().parse_args(["install", str(archive), "--json"]))
+        result, code = await cli.execute(cli.parser().parse_args(["reload", "demo.gateway", "--domain", "gateway"]))
+        assert code == 0 and result["verification_status"] == "SUCCESS"
+        assert broadcasts == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})] * 2
+        await cli.execute(cli.parser().parse_args(["uninstall", "demo.gateway", "--domain", "gateway"]))
+        assert len(broadcasts) == 2
+    finally:
+        await service.close()
+        await runtime.shutdown()
+
+
 async def test_local_cli_retains_failed_gateway_report(tmp_path, monkeypatch):
     from jiuwenswarm.channels.cli import extension as cli
     from jiuwenswarm.gateway.extensions_v2.management.local_cli import start_local_cli

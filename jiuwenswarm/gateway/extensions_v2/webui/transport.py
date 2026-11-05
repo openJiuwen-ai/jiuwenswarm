@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import (
+    FRAME_APPEARANCE,
     FRAME_CLEAR,
     FRAME_RENDER,
     FRAME_RENDER_ERROR,
@@ -43,6 +44,11 @@ class GatewayTransport:
 
     async def send_clear(self, frame: ClearFrame) -> bool:
         return await self._send(frame.target.connection_id, FRAME_CLEAR, frame.to_payload())
+
+    async def send_appearance(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
+        """Send one appearance contribution or revocation (S_08)."""
+
+        return await self._send(connection_id, FRAME_APPEARANCE, payload)
 
     async def send_error(
         self,
