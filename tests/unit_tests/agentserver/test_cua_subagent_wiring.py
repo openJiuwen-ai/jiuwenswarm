@@ -649,27 +649,26 @@ def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
 
 
 @pytest.mark.parametrize("frozen", [False, True])
-def test_cua_factory_keeps_caller_rails_in_both_builds(monkeypatch, frozen):
+def test_cua_factory_keeps_caller_rails_in_both_builds(monkeypatch, tmp_path, frozen):
     # The panel's tool activity rail is passed in by the adapters; the desktop
     # installer build must keep it next to its own CuaExtensionRail, not drop either.
     from jiuwenswarm.agents.harness.common import cua_factory
     from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
 
-    captured = {}
 
     def _fake_core(model, **kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace()
+        return SimpleNamespace(rails=list(kwargs["rails"]), system_prompt="core prompt")
 
     monkeypatch.setattr(cua_factory, "build_core_cua_config", _fake_core)
-    monkeypatch.setattr(cua_factory, "build_system_prompt", lambda language, **_: "prompt")
+    (tmp_path / "__init__.pyi").write_text("class Computer: ...", encoding="utf-8")
+    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
     monkeypatch.setattr(cua_factory.sys, "frozen", frozen, raising=False)
     monkeypatch.setattr(cua_factory.sys, "platform", "win32")
     caller_rail = object()
 
-    cua_factory.build_cua_agent_config(MagicMock(), card=AgentCard(name="cua_agent"), rails=[caller_rail])
+    spec = cua_factory.build_cua_agent_config(MagicMock(), card=AgentCard(name="cua_agent"), rails=[caller_rail])
 
-    rails = captured["rails"]
+    rails = spec.rails
     assert rails[0] is caller_rail
     assert any(isinstance(rail, CuaExtensionRail) for rail in rails) is frozen
 
