@@ -258,6 +258,8 @@ export function ColleagueProfilePage({
   const [dingtalkAuthStatuses, setDingtalkAuthStatuses] = useState<Record<string, JiuwenMateDingTalkAuthStatus>>({});
   const [dingtalkAuthErrors, setDingtalkAuthErrors] = useState<Record<string, string>>({});
   const [dingtalkAuthBusy, setDingtalkAuthBusy] = useState<Record<string, boolean>>({});
+  const [dingtalkAuthRecovery, setDingtalkAuthRecovery] = useState<Record<string, boolean>>({});
+  const dingtalkAuthWindows = useRef(new Map<string, Window>());
   const dingtalkAuthMounted = useRef(false);
   const dingtalkAuthConnections = useRef(new Map<string, string>());
   const dingtalkAuthGenerations = useRef(new Map<string, number>());
@@ -271,9 +273,23 @@ export function ColleagueProfilePage({
   const handleAgentMailError = (error: unknown) => {
     setAgentMailError(error instanceof Error ? error.message : String(error));
   };
+  const closeDingTalkAuthWindow = (connectionKey: string) => {
+    const authWindow = dingtalkAuthWindows.current.get(connectionKey);
+    dingtalkAuthWindows.current.delete(connectionKey);
+    try { authWindow?.close(); } catch { /* The browser may have detached the window. */ }
+  };
   const updateDingTalkAuth = (connectionKey: string, status: JiuwenMateDingTalkAuthStatus) => {
+    const checkFailed = status.status === 'error' && !status.error_code;
+    if (status.status !== 'authorizing' && !checkFailed) closeDingTalkAuthWindow(connectionKey);
+    if (!checkFailed) {
+      const authWindow = dingtalkAuthWindows.current.get(connectionKey);
+      setDingtalkAuthRecovery((current) => ({
+        ...current, [connectionKey]: status.status === 'authorizing' && (!authWindow || authWindow.closed),
+      }));
+    }
     setDingtalkAuthStatuses((current) => {
       const previous = current[connectionKey];
+      if (checkFailed && (previous?.status === 'authorizing' || previous?.status === 'connected')) return current;
       const next = status.status === 'authorizing' && status.operation_id
         && status.operation_id === previous?.operation_id ? {
           ...status,
@@ -282,7 +298,9 @@ export function ColleagueProfilePage({
         } : status;
       return { ...current, [connectionKey]: next };
     });
-    setDingtalkAuthErrors((current) => ({ ...current, [connectionKey]: '' }));
+    setDingtalkAuthErrors((current) => ({
+      ...current, [connectionKey]: checkFailed ? t('jiuwenmate.profile.dingtalkAuth.status.error') : '',
+    }));
   };
   const nextDingTalkAuthGeneration = (connectionKey: string) => {
     const generation = (dingtalkAuthGenerations.current.get(connectionKey) ?? 0) + 1;
@@ -295,7 +313,7 @@ export function ColleagueProfilePage({
     && dingtalkAuthGenerations.current.get(connectionKey) === generation;
   const runDingTalkAuthorization = async (
     connectionKey: string,
-    action: () => Promise<JiuwenMateDingTalkAuthStatus>,
+    action: (generation: number) => Promise<JiuwenMateDingTalkAuthStatus>,
   ) => {
     if (!dingtalkAuthMounted.current || !dingtalkAuthConnections.current.has(connectionKey)
       || dingtalkAuthActions.current.has(connectionKey)) return;
@@ -304,7 +322,7 @@ export function ColleagueProfilePage({
     setDingtalkAuthBusy((current) => ({ ...current, [connectionKey]: true }));
     setDingtalkAuthErrors((current) => ({ ...current, [connectionKey]: '' }));
     try {
-      const status = await action();
+      const status = await action(generation);
       if (isCurrentDingTalkAuth(connectionKey, generation)) updateDingTalkAuth(connectionKey, status);
     } catch (error) {
       if (isCurrentDingTalkAuth(connectionKey, generation)) {
@@ -318,8 +336,49 @@ export function ColleagueProfilePage({
     }
   };
   const beginDingTalkAuthorization = (connectionKey: string) => {
-    if (!onBeginDingTalkAuth) return;
-    return runDingTalkAuthorization(connectionKey, () => onBeginDingTalkAuth(colleague.id, connectionKey));
+    if (!onBeginDingTalkAuth || !dingtalkAuthMounted.current
+      || !dingtalkAuthConnections.current.has(connectionKey) || dingtalkAuthActions.current.has(connectionKey)) return;
+    let authWindow: Window | null = null;
+    try {
+      authWindow = window.open('about:blank', '_blank');
+      if (authWindow) {
+        dingtalkAuthWindows.current.set(connectionKey, authWindow);
+        authWindow.opener = null;
+        authWindow.document.title = t('jiuwenmate.profile.dingtalkAuth.title');
+        const theme = window.getComputedStyle(document.body);
+        const colors = window.getComputedStyle(document.documentElement);
+        Object.assign(authWindow.document.body.style, {
+          fontFamily: theme.fontFamily, color: colors.getPropertyValue('--color-text-primary') || theme.color,
+          backgroundColor: colors.getPropertyValue('--color-surface-page') || theme.backgroundColor,
+          margin: '0', padding: '48px 32px', lineHeight: '1.6',
+        });
+        const heading = authWindow.document.createElement('h2');
+        heading.textContent = t('jiuwenmate.profile.dingtalkAuth.beginPending');
+        heading.setAttribute('data-testid', 'jiuwenmate-dingtalk-auth-window-title');
+        const note = authWindow.document.createElement('p');
+        note.textContent = t('jiuwenmate.profile.dingtalkAuth.waitDescription');
+        note.setAttribute('data-testid', 'jiuwenmate-dingtalk-auth-window-description');
+        authWindow.document.body.replaceChildren(heading, note);
+      }
+    } catch {
+      closeDingTalkAuthWindow(connectionKey);
+      authWindow = null;
+    }
+    return runDingTalkAuthorization(connectionKey, async (generation) => {
+      try {
+        const status = await onBeginDingTalkAuth(colleague.id, connectionKey);
+        if (!isCurrentDingTalkAuth(connectionKey, generation)) return status;
+        if (authWindow && !authWindow.closed && status.status === 'authorizing' && status.auth_url) {
+          try { authWindow.location.href = status.auth_url; } catch { closeDingTalkAuthWindow(connectionKey); }
+        } else if (status.status !== 'authorizing') {
+          closeDingTalkAuthWindow(connectionKey);
+        }
+        return status;
+      } catch (error) {
+        if (isCurrentDingTalkAuth(connectionKey, generation)) closeDingTalkAuthWindow(connectionKey);
+        throw error;
+      }
+    });
   };
   const disconnectDingTalkAuthorization = (connectionKey: string) => {
     if (!onDisconnectDingTalkAuth) return;
@@ -488,6 +547,7 @@ export function ColleagueProfilePage({
         nextDingTalkAuthGeneration(connectionKey);
       }
       dingtalkAuthActions.current.clear();
+      for (const connectionKey of dingtalkAuthWindows.current.keys()) closeDingTalkAuthWindow(connectionKey);
     };
   }, []);
   useEffect(() => {
@@ -500,6 +560,7 @@ export function ColleagueProfilePage({
         staleKeys.add(connectionKey);
         nextDingTalkAuthGeneration(connectionKey);
         dingtalkAuthActions.current.delete(connectionKey);
+        closeDingTalkAuthWindow(connectionKey);
       }
     }
     dingtalkAuthConnections.current = connections;
@@ -511,6 +572,9 @@ export function ColleagueProfilePage({
         Object.entries(current).filter(([key]) => !staleKeys.has(key)),
       ));
       setDingtalkAuthBusy((current) => Object.fromEntries(
+        Object.entries(current).filter(([key]) => !staleKeys.has(key)),
+      ));
+      setDingtalkAuthRecovery((current) => Object.fromEntries(
         Object.entries(current).filter(([key]) => !staleKeys.has(key)),
       ));
     }
@@ -540,12 +604,13 @@ export function ColleagueProfilePage({
       dingtalkAuthConnections.current.has(connectionKey) && (
         (status.status === 'authorizing' && status.operation_id && onPollDingTalkAuth)
         || (status.status === 'error' && status.error_code === 'authorization_failed' && onLoadDingTalkAuthStatus)
+        || (status.status === 'connected' && (section === 'channels' || !status.account || !status.organization) && onLoadDingTalkAuthStatus)
       ),
     );
     if (!pending.length) return;
     const pollAuthorization = (includeFailed = false) => {
       for (const [connectionKey, status] of pending) {
-        if (status.status !== 'authorizing' && !includeFailed) continue;
+        if (status.status !== 'authorizing' && !(status.status === 'connected' && section === 'channels') && !includeFailed) continue;
         if (!dingtalkAuthConnections.current.has(connectionKey) || dingtalkAuthActions.current.has(connectionKey)
           || dingtalkAuthPolls.current.has(connectionKey)) continue;
         const generation = nextDingTalkAuthGeneration(connectionKey);
@@ -569,7 +634,9 @@ export function ColleagueProfilePage({
       if (document.visibilityState !== 'hidden') pollAuthorization(true);
     };
     const timer = pending.some(([, status]) => status.status === 'authorizing')
-      ? window.setInterval(pollAuthorization, 1000) : undefined;
+      ? window.setInterval(pollAuthorization, 1000)
+      : section === 'channels' && pending.some(([, status]) => status.status === 'connected')
+        ? window.setInterval(refreshVisibleAuthorization, 5000) : undefined;
     window.addEventListener('focus', refreshVisibleAuthorization);
     document.addEventListener('visibilitychange', refreshVisibleAuthorization);
     return () => {
@@ -577,7 +644,7 @@ export function ColleagueProfilePage({
       window.removeEventListener('focus', refreshVisibleAuthorization);
       document.removeEventListener('visibilitychange', refreshVisibleAuthorization);
     };
-  }, [colleague.connections, colleague.id, dingtalkAuthStatuses, onPollDingTalkAuth, onLoadDingTalkAuthStatus]);
+  }, [colleague.connections, colleague.id, dingtalkAuthStatuses, onPollDingTalkAuth, onLoadDingTalkAuthStatus, section]);
   useEffect(() => {
     if (section !== 'persona' || !onLoadSettings) return;
     let active = true;
@@ -796,6 +863,7 @@ export function ColleagueProfilePage({
               dingtalkAuthStatuses={dingtalkAuthStatuses}
               dingtalkAuthErrors={dingtalkAuthErrors}
               dingtalkAuthBusy={dingtalkAuthBusy}
+              dingtalkAuthRecovery={dingtalkAuthRecovery}
               onBeginDingTalkAuth={beginDingTalkAuthorization}
               onCancelDingTalkAuth={cancelDingTalkAuthorization}
               onDisconnectDingTalkAuth={disconnectDingTalkAuthorization}
@@ -1312,6 +1380,7 @@ function ProfileSectionDetail({
   dingtalkAuthStatuses,
   dingtalkAuthErrors,
   dingtalkAuthBusy,
+  dingtalkAuthRecovery,
   onBeginDingTalkAuth,
   onCancelDingTalkAuth,
   onDisconnectDingTalkAuth,
@@ -1365,6 +1434,7 @@ function ProfileSectionDetail({
   dingtalkAuthStatuses: Record<string, JiuwenMateDingTalkAuthStatus>;
   dingtalkAuthErrors: Record<string, string>;
   dingtalkAuthBusy: Record<string, boolean>;
+  dingtalkAuthRecovery: Record<string, boolean>;
   onBeginDingTalkAuth: (connectionKey: string) => void;
   onCancelDingTalkAuth: (connectionKey: string, operationId: string) => void;
   onDisconnectDingTalkAuth: (connectionKey: string) => void;
@@ -1607,17 +1677,25 @@ function ProfileSectionDetail({
                                   {t('jiuwenmate.profile.dingtalkAuth.description')}
                                 </p>
                                 <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-status">
-                                  {t(`jiuwenmate.profile.dingtalkAuth.status.${auth?.status ?? 'loading'}`)}
+                                  {busy && auth?.status !== 'authorizing' && auth?.status !== 'connected'
+                                    ? t('jiuwenmate.profile.dingtalkAuth.beginPending')
+                                    : t(`jiuwenmate.profile.dingtalkAuth.status.${auth?.status ?? (error ? 'error' : 'loading')}`)}
                                 </p>
                                 {auth?.status === 'connected' ? (
                                   <div className="jiuwenmate-profile__dingtalk-auth-identity" data-testid="jiuwenmate-dingtalk-user-auth-account">
                                     <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-account-name">{t('jiuwenmate.profile.dingtalkAuth.account')}: {auth.account || t('jiuwenmate.profile.dingtalkAuth.accountUnavailable')}</p>
                                     <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-organization">{t('jiuwenmate.profile.dingtalkAuth.organization')}: {auth.organization || t('jiuwenmate.profile.dingtalkAuth.organizationUnavailable')}</p>
+                                    <p className="jiuwenmate-profile__mail-note" role="status" data-testid="jiuwenmate-dingtalk-group-monitor-status">
+                                      {t(`jiuwenmate.profile.dingtalkAuth.groupMonitor.${auth.group_monitor?.status ?? 'discovering'}`, { count: auth.group_monitor?.group_count ?? 0 })}
+                                    </p>
                                   </div>
                                 ) : null}
                                 {auth?.status === 'authorizing' && auth.auth_url ? (
-                                  <details data-testid="jiuwenmate-dingtalk-user-auth-help">
+                                  <details open={Boolean(dingtalkAuthRecovery[connection.connectionKey])} data-testid="jiuwenmate-dingtalk-user-auth-help">
                                     <summary data-testid="jiuwenmate-dingtalk-user-auth-help-toggle">{t('jiuwenmate.profile.dingtalkAuth.help')}</summary>
+                                    {dingtalkAuthRecovery[connection.connectionKey] ? (
+                                      <p className="jiuwenmate-profile__mail-note" role="status" data-testid="jiuwenmate-dingtalk-user-auth-popup-note">{t('jiuwenmate.profile.dingtalkAuth.popupBlocked')}</p>
+                                    ) : null}
                                     {auth.user_code ? (
                                       <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-code"><strong>{t('jiuwenmate.profile.dingtalkAuth.code')}</strong> {auth.user_code}</p>
                                     ) : null}

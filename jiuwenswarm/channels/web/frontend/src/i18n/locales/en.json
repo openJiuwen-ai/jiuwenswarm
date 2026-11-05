@@ -6186,9 +6186,11 @@
       },
       "dingtalkAuth": {
         "title": "DingTalk user account authorization",
-        "description": "Authorize a DingTalk user account for this employee to read connected group messages, work with online documents, and manage calendar events. Available access depends on account and organization permissions.",
+        "description": "Start account authorization through the DingTalk CLI. Authorization information is stored separately for each employee. Once authorized, the employee can read connected group messages, work with online documents, and manage calendar events within the permissions granted by the account and organization.",
         "begin": "Authorize DingTalk account",
         "beginPending": "Starting authorization…",
+        "popupBlocked": "The authorization page did not open or was closed. Continue with the link below without starting again.",
+        "waitDescription": "Connecting to DingTalk. This page will redirect automatically. First use may need to prepare the DingTalk CLI; please avoid starting again.",
         "cancel": "Cancel authorization",
         "disconnect": "Disconnect account",
         "open": "Reopen authorization page",
@@ -6198,6 +6200,15 @@
         "accountUnavailable": "Account name is temporarily unavailable",
         "organizationUnavailable": "Organization name is temporarily unavailable",
         "organization": "Organization",
+        "groupMonitor": {
+          "discovering": "Discovering groups containing this employee's bot and starting observation…",
+          "listening": "Observing ordinary messages in {{count}} groups. No initial @mention is required.",
+          "no_groups": "No groups shared by this account and the employee's bot were found. Add the bot to a work group.",
+          "error": "Group discovery or message reading temporarily failed. Retrying…",
+          "disabled": "The employee is disabled. Ordinary group message observation is paused.",
+          "mentions_only": "Passive reply mode is enabled. Only group messages mentioning the employee are handled.",
+          "unavailable": "Waiting for the group message observation service to start."
+        },
         "openAdmin": "Open DingTalk developer platform (CLI settings)",
         "failures": {
           "org_access_denied": "Your DingTalk account was confirmed, but the selected organization has not allowed this account to access data through the CLI. Ask an organization administrator to grant access, then authorize again, or select an organization where you already have access.",

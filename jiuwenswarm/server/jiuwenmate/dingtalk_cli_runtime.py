@@ -88,6 +88,8 @@ class DingTalkCliRuntimePort(Protocol):
     async def inspect_group_membership(self, scope: DingTalkCliScope, *, conversation_id: str) -> dict[str, str]:
         ...
 
+    async def discover_groups(self, scope: DingTalkCliScope, *, cursor: int | None = None) -> dict[str, Any]: ...
+
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
     ) -> dict[str, Any]:
@@ -243,6 +245,36 @@ class DingTalkCliRuntimeService:
             return {"status": "unknown"}
         return {"status": result["status"]}
 
+    async def discover_groups(self, scope: DingTalkCliScope, *, cursor: int | None = None) -> dict[str, Any]:
+        """Expose only bot-verified group metadata to the host, never a model tool."""
+        discover = getattr(self._runtime, 'discover_groups', None)
+        if not callable(discover) or not self.is_available(scope):
+            raise PersistentAgentError("DingTalk group discovery is unavailable", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE")
+        try:
+            result = await discover(scope, cursor=cursor)
+        except PersistentAgentError:
+            raise
+        except Exception as exc:
+            raise PersistentAgentError("DingTalk group discovery failed", code="DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE") from exc
+        if (
+            not isinstance(result, dict) or not isinstance(result.get('readerKey'), str)
+            or not _GROUP_HISTORY_READER.fullmatch(result['readerKey'])
+            or not isinstance(result.get('groups'), list) or len(result['groups']) > 5
+            or not isinstance(result.get('hasMore'), bool) or not isinstance(result.get('failed'), bool)
+            or (result['hasMore'] and (isinstance(result.get('nextCursor'), bool)
+                or not isinstance(result.get('nextCursor'), int) or result['nextCursor'] <= (cursor or 0)))
+            or any(not isinstance(group, dict) or not isinstance(group.get('conversation_id'), str)
+                   or not group['conversation_id'] or len(group['conversation_id']) > 512
+                   or any(char.isspace() or ord(char) < 32 for char in group['conversation_id'])
+                   or not isinstance(group.get('name'), str) or len(group['name']) > 512
+                   for group in result['groups'])
+        ):
+            raise PersistentAgentError("Invalid DingTalk group discovery response", code="DINGTALK_CLI_GROUP_HISTORY_INVALID")
+        return {'readerKey': result['readerKey'], 'hasMore': result['hasMore'],
+                'nextCursor': result.get('nextCursor') if result['hasMore'] else None, 'failed': result['failed'],
+                'groups': [{'conversation_id': group['conversation_id'], 'name': group['name']}
+                           for group in result['groups']]}
+
     async def read_group_history(
         self, scope: DingTalkCliScope, *, conversation_id: str, since: str,
     ) -> dict[str, Any]:
@@ -297,10 +329,8 @@ class DingTalkCliRuntimeService:
         return await self._auth_call(scope, "dingtalk_auth_disconnect")
 
     async def _auth_call(self, scope: DingTalkCliScope, method: str, *args: Any) -> dict[str, Any]:
-        if self._runtime is None or not self.is_available(scope):
-            raise PersistentAgentError(
-                "DingTalk app is unavailable for this employee", code="DINGTALK_CLI_APP_NOT_CONFIGURED"
-            )
+        if self._runtime is None or (method != "dingtalk_auth_disconnect" and not self.is_available(scope)):
+            raise PersistentAgentError("DingTalk app is unavailable for this employee", code="DINGTALK_CLI_APP_NOT_CONFIGURED")
         call = getattr(self._runtime, method, None)
         if not callable(call):
             raise PersistentAgentError(
