@@ -47,5 +47,21 @@ export const agentModule: SettingsModuleDefinition = {
         { id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem },
       ],
     },
+    {
+      id: 'team-rules',
+      titleKey: 'settingsPanel.agent.teamRules.title',
+      items: [
+        {
+          id: 'team-rules-mode',
+          component: 'select',
+          key: 'team_rules_mode',
+          options: [
+            { value: 'off', labelKey: 'settingsPanel.agent.teamRules.modeOff' },
+            { value: 'llm', labelKey: 'settingsPanel.agent.teamRules.modeLlm' },
+            { value: 'jev', labelKey: 'settingsPanel.agent.teamRules.modeJev' },
+          ],
+        },
+      ],
+    },
   ],
 };

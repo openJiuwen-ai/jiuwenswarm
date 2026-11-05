@@ -542,11 +542,11 @@
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
       "jevTab": "决策模型",
-      "jevTabHelp": "可选配置。用于增强浏览器子智能体，以及单智能体会话中多模型协同的决策能力。",
+      "jevTabHelp": "可选配置。用于增强浏览器子智能体、单智能体会话中多模型协同，以及 Group 团队规则的决策能力。",
       "jevModels": "Jev 模型",
       "jevDeleteFailed": "清除 Jev 配置失败，请重试。",
       "jevEmpty": "尚未配置 Jev 模型",
-      "jevEmptyDescription": "添加一个 Jev 模型，供浏览器决策和多模型协同共用。",
+      "jevEmptyDescription": "添加一个 Jev 模型，供浏览器决策、多模型协同和 Group 团队规则共用。",
       "jevDisplayNamePlaceholder": "请输入模型展示名称",
       "jevApiBasePlaceholder": "例如：https://jev.example.com/v1",
       "jevModelHint": "请填写提供商支持的 Jev 模型名，例如 typesafe/jev-1.13 或 jev-1.13.0。",
@@ -729,6 +729,12 @@
       "test": "测试"
     },
     "agent": {
+      "teamRules": {
+        "title": "Group 团队规则",
+        "modeOff": "关闭",
+        "modeLlm": "仅 LLM",
+        "modeJev": "Jev"
+      },
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",
@@ -902,6 +908,10 @@
       "task_asr_enabled": {
         "title": "语音转写",
         "description": "开启后，任务对话可以使用麦克风进行语音转写。"
+      },
+      "team_rules_mode": {
+        "title": "监工模式",
+        "description": "Agent 忙时收到新消息，由监工决定打断、插入或排队。仅 LLM 使用团队主模型；Jev 模式使用「模型 > 决策模型」中的共享配置。修改后重启团队生效。"
       },
       "skill_evolution": {
         "title": "本地技能自动演进与沉淀",

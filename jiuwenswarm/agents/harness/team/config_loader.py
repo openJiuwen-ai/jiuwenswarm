@@ -15,7 +15,13 @@ from openjiuwen.agent_teams.paths import get_agent_teams_home
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
-from jiuwenswarm.common.config import coerce_subtask_depth, get_config, get_default_models
+from jiuwenswarm.common.config import (
+    coerce_subtask_depth,
+    get_config,
+    get_config_raw,
+    get_default_models,
+)
+from jiuwenswarm.common.team_rules import env_var_name, resolve_team_rules_spec
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_free_model_entries
 
@@ -554,6 +560,76 @@ def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
     spec_dict["swarmflow_budget"] = budget_value
 
 
+def main_model_key_env(main_model: dict[str, Any]) -> str:
+    """The environment variable the main model's API key is read from.
+
+    ``models.defaults`` entries reference it as ``${NAME}`` in config.yaml (the
+    default entry uses ``${API_KEY}``); without a ``models.defaults`` /
+    ``models.default`` section the key comes from ``API_KEY`` directly. A key
+    stored in config.yaml itself has no variable: returns ``""``.
+    """
+    raw = get_config_raw() or {}
+    models = raw.get("models") if isinstance(raw, dict) else None
+    models = models if isinstance(models, dict) else {}
+    defaults = models.get("defaults")
+    entries = defaults if isinstance(defaults, list) and defaults else None
+    if entries is None and isinstance(models.get("default"), dict):
+        entries = [models["default"]]
+    if entries is None:
+        return "API_KEY"
+    model_id = main_model.get("model_id")
+    if not model_id:
+        return ""
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("model_id") != model_id:
+            continue
+        client = entry.get("model_client_config")
+        if isinstance(client, dict):
+            return env_var_name(client.get("api_key"))
+    return ""
+
+
+def _apply_team_rules(
+    spec_dict: dict[str, Any],
+    config_base: dict[str, Any],
+    main_model: dict[str, Any] | None = None,
+) -> None:
+    """Pass ``team_rules`` to ``TeamAgentSpec.team_rules`` when the installed SDK supports it.
+
+    ``main_model`` is the team's main model entry, used by mode ``llm``. Off, an
+    incomplete connection, an SDK without the field, or a value the SDK rejects:
+    the key is left out, so the team starts with the original delivery behavior.
+    """
+    main_model = main_model or {}
+    try:
+        team_rules = resolve_team_rules_spec(
+            config_base,
+            main_model=main_model,
+            main_model_key_env=main_model_key_env(main_model) if main_model else "",
+        )
+    except ValueError as exc:
+        logger.warning("[TeamConfigLoader] team_rules ignored: %s", exc)
+        return
+    if team_rules is None:
+        return
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+    field = TeamAgentSpec.model_fields.get("team_rules")
+    if field is None:
+        logger.warning(
+            "[TeamConfigLoader] team_rules enabled but installed agent-core has no team_rules support; ignored"
+        )
+        return
+    from pydantic import TypeAdapter, ValidationError
+
+    try:
+        TypeAdapter(field.annotation).validate_python(team_rules)
+    except ValidationError as exc:
+        logger.warning("[TeamConfigLoader] team_rules ignored, invalid for agent-core: %s", exc)
+        return
+    spec_dict["team_rules"] = team_rules
+
+
 def load_team_spec_dict(
     config_base: dict[str, Any] | None = None,
     *,
@@ -630,6 +706,15 @@ def load_team_spec_dict(
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents
     spec_dict["language"] = str(config_base.get("preferred_language", "zh")).strip().lower()
+    _apply_team_rules(
+        spec_dict,
+        config_base,
+        _resolve_default_model_config(
+            config_base,
+            requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
+        ),
+    )
 
     workspace_spec = _build_workspace_spec(team_raw)
     if workspace_spec is not None:

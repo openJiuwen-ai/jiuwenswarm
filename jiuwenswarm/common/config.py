@@ -914,6 +914,20 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_team_rules_in_config(updates: dict[str, Any]) -> None:
+    """Write ``updates`` as the ``team_rules`` section under the config write lock.
+
+    The section only holds ``mode``; keys left by older versions are dropped.
+    """
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("team_rules")
+        mode = section.get("mode") if isinstance(section, dict) else None
+        data["team_rules"] = {**({"mode": mode} if mode is not None else {}), **updates}
+        return data
+
+    update_config(_mutate)
+
+
 def update_browser_decision_in_config(updates: dict[str, Any]) -> None:
     """只更新 browser.decision 中给定的字段，保留阈值等其余字段。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
