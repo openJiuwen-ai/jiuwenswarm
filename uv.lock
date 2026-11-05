@@ -2369,7 +2369,7 @@ requires-dist = [
     { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable-ee" },
     { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable-ee" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
-    { name = "openjiuwen-deepsearch", git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable" },
+    { name = "openjiuwen-deepsearch", git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable-ee" },
     { name = "openjiuwen-runtime-foundation", extras = ["link-mtls"], git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&rev=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -3572,8 +3572,8 @@ zmq = [
 
 [[package]]
 name = "openjiuwen-deepsearch"
-version = "0.1.11"
-source = { git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable#09cf56a20254206ba7afa62a74998f05fc3501ad" }
+version = "0.1.10"
+source = { git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable-ee#bc1e464fee4156a87e6ff0ffdaf466027a8102aa" }
 dependencies = [
     { name = "aiolimiter" },
     { name = "beautifulsoup4" },

@@ -21,7 +21,7 @@ dependencies = [
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable-ee",
     # Gateway/AgentServer share the reviewed Runtime foundation implementation.
     "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
-    "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",
+    "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable-ee#subdirectory=deepsearch",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     # AgentServer 的 _FastPongServerProtocol（OA.05000010：pong 抑制 drain）
