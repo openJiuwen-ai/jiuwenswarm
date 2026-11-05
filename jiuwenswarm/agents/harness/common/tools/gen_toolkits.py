@@ -177,6 +177,8 @@ _OPENROUTER_FAILED_STATUSES = ("failed", "cancelled", "expired")
 # the provider as a request, so no job was created and it is safe to send again.
 _OPENROUTER_SEND_ERRORS = (httpx.ConnectError, httpx.WriteError, httpx.ConnectTimeout, ssl.SSLError)
 _OPENROUTER_POST_ATTEMPTS = 3
+# e.g. "The request failed because the output audio may be related to copyright restrictions."
+_OPENROUTER_AUDIO_REJECTION = re.compile(r"output audio|audio\b.*\bcopyright|copyright\b.*\baudio", re.IGNORECASE)
 _OPENROUTER_RETRY_DELAY_SECONDS = 2
 # Ratios Gemini image models accept in image_config.aspect_ratio.
 _OPENROUTER_IMAGE_RATIOS = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
@@ -1542,34 +1544,53 @@ def _openrouter_pending(status: str) -> bool:
     return status != "completed" and status not in _OPENROUTER_FAILED_STATUSES
 
 
+async def _openrouter_run_video(
+    client: httpx.AsyncClient, base: str, headers: dict[str, str], body: dict[str, Any], save_dir: str | None
+) -> str:
+    """Submit one /videos job and poll it to its end (or the poll budget)."""
+    resp = await _openrouter_post(client, f"{base}/videos", headers, body)
+    if resp.status_code not in (200, 201, 202):
+        return f"[ERROR]: OpenRouter video generation submit failed: {_openrouter_error_detail(resp)}"
+    try:
+        job = resp.json()
+    except ValueError:
+        return "[ERROR]: OpenRouter video submit returned a non-JSON response."
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return f"[ERROR]: OpenRouter video submit returned no job id: {str(job)[:300]}"
+    status, elapsed = str(job.get("status") or "pending").lower(), 0
+    while _openrouter_pending(status) and elapsed < _OPENROUTER_MAX_POLL_SECONDS:
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+        elapsed += _POLL_INTERVAL_SECONDS
+        status, job, error = await _openrouter_query(client, base, headers, job_id)
+        if error:
+            return error
+    if _openrouter_pending(status):
+        return _pending_submit_message(
+            job_id, status, elapsed, " (call the tool again to wait; do not use shell sleep)"
+        )
+    return await _openrouter_finish(_OpenRouterJob(client, base, headers, job_id), job, save_dir)
+
+
+def _openrouter_audio_rejected(result: str) -> bool:
+    """A finished job the provider failed over its own generated audio (e.g. copyright)."""
+    return result.startswith("[ERROR]: video job ") and bool(_OPENROUTER_AUDIO_REJECTION.search(result))
+
+
 async def _openrouter_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:
     base = target.api_base.strip().rstrip("/")
     headers = {"Authorization": f"Bearer {target.api_key}"}
     body = _openrouter_video_body(target.model, request)
     try:
         async with httpx.AsyncClient(timeout=60, verify=get_requests_verify()) as client:
-            resp = await _openrouter_post(client, f"{base}/videos", headers, body)
-            if resp.status_code not in (200, 201, 202):
-                return f"[ERROR]: OpenRouter video generation submit failed: {_openrouter_error_detail(resp)}"
-            try:
-                job = resp.json()
-            except ValueError:
-                return "[ERROR]: OpenRouter video submit returned a non-JSON response."
-            job_id = str(job.get("id") or "")
-            if not job_id:
-                return f"[ERROR]: OpenRouter video submit returned no job id: {str(job)[:300]}"
-            status, elapsed = str(job.get("status") or "pending").lower(), 0
-            while _openrouter_pending(status) and elapsed < _OPENROUTER_MAX_POLL_SECONDS:
-                await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-                elapsed += _POLL_INTERVAL_SECONDS
-                status, job, error = await _openrouter_query(client, base, headers, job_id)
-                if error:
-                    return error
-            if _openrouter_pending(status):
-                return _pending_submit_message(
-                    job_id, status, elapsed, " (call the tool again to wait; do not use shell sleep)"
-                )
-            return await _openrouter_finish(_OpenRouterJob(client, base, headers, job_id), job, save_dir)
+            result = await _openrouter_run_video(client, base, headers, body, save_dir)
+            if body.get("generate_audio") and _openrouter_audio_rejected(result):
+                # The clip itself is fine; only the soundtrack was refused. A silent
+                # clip keeps the film whole instead of failing the node outright.
+                logger.warning("[generate_video] provider rejected the clip audio; retrying without audio: %s",
+                               result[:300])
+                result = await _openrouter_run_video(client, base, headers, {**body, "generate_audio": False}, save_dir)
+            return result
     except (httpx.HTTPError, ssl.SSLError) as exc:
         return f"[ERROR]: OpenRouter video generation request failed: {exc!r}"
 

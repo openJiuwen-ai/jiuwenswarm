@@ -854,3 +854,56 @@ async def test_openrouter_video_pending_failed_and_check(monkeypatch, tmp_path):
         "Video job gen-vid-1 is still pending."
     )
     assert _saved_path(await gt.check_video(_OR_VIDEO_TARGET, "gen-vid-1", str(tmp_path))).read_bytes() == _MP4
+
+
+_AUDIO_REJECTED = (
+    "The request failed because the output audio may be related to copyright restrictions. Request id: 0217"
+)
+
+
+def _or_audio_handler(first_error: str) -> tuple[Handler, list[dict[str, Any]]]:
+    """First job fails with ``first_error``; any later job completes."""
+    submitted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/videos"):
+            submitted.append(json.loads(request.content))
+            return httpx.Response(202, json={"id": f"job-{len(submitted)}", "status": "pending"})
+        if path.endswith("/content"):
+            return httpx.Response(200, content=_MP4)
+        job_id = path.rsplit("/", 1)[-1]
+        if job_id == "job-1":
+            return httpx.Response(200, json={"id": job_id, "status": "failed", "error": first_error})
+        return httpx.Response(200, json={"id": job_id, "status": "completed"})
+
+    return handler, submitted
+
+
+@pytest.mark.asyncio
+async def test_openrouter_audio_rejection_retries_without_audio(monkeypatch, tmp_path):
+    handler, submitted = _or_audio_handler(_AUDIO_REJECTED)
+    _patch_client(monkeypatch, handler)
+    request = gt.VideoRequest("p", "16:9", "720p", 5, generate_audio=True)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert _saved_path(result).read_bytes() == _MP4
+    assert [body["generate_audio"] for body in submitted] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_other_failures_are_not_retried(monkeypatch, tmp_path):
+    handler, submitted = _or_audio_handler("content moderated")
+    _patch_client(monkeypatch, handler)
+    request = gt.VideoRequest("p", "16:9", "720p", 5, generate_audio=True)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, request, str(tmp_path))
+    assert result == "[ERROR]: video job job-1 ended with status failed: content moderated"
+    assert len(submitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_openrouter_silent_clip_audio_rejection_is_not_retried(monkeypatch, tmp_path):
+    handler, submitted = _or_audio_handler(_AUDIO_REJECTED)
+    _patch_client(monkeypatch, handler)
+    result = await gt.submit_video(_OR_VIDEO_TARGET, gt.VideoRequest("p", "16:9", "720p", 5), str(tmp_path))
+    assert result.startswith("[ERROR]: video job job-1 ended with status failed")
+    assert len(submitted) == 1
