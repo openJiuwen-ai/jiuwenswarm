@@ -354,3 +354,55 @@ async def test_native_placement_is_available_to_strict_registry_on_first_post(mo
     finally:
         await control.close()
         await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_config_request_retains_adx_warmup_failure(monkeypatch):
+    from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentRuntime
+
+    router, _ = _router(_config(monkeypatch))
+    await router.connect('')
+    started = asyncio.Event()
+    release_create = asyncio.Event()
+    joined = asyncio.Event()
+    release_waiter = asyncio.Event()
+    wait = AgentRuntime.wait_until_settled
+    request = router._control.http.request
+    detail = 'requested cgroup v1 backend is unavailable'
+
+    async def create(method, url, **kwargs):
+        if method == 'POST' and url.endswith('/environments'):
+            started.set()
+            await release_create.wait()
+            return httpx.Response(409, json={
+                'message': detail,
+                'error': {'code': 'CONFLICT', 'outcome': 'terminal', 'requestId': 'create-test'},
+            })
+        return await request(method, url, **kwargs)
+
+    async def wait_for_create(runtime, timeout):
+        joined.set()
+        await wait(runtime, timeout)
+        await release_waiter.wait()
+
+    monkeypatch.setattr(router._control.http, 'request', create)
+    monkeypatch.setattr(AgentRuntime, 'wait_until_settled', wait_for_create)
+    warmup = asyncio.create_task(router._warmup_user_agent('alice'))
+    envelope = _request()
+    envelope.method = 'config.get'
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        pending = asyncio.create_task(router.send_request(envelope))
+        await asyncio.wait_for(joined.wait(), 2)
+        release_create.set()
+        await warmup
+        release_waiter.set()
+        response = await pending
+        assert not response.ok
+        assert 'AGENT_CREATE_FAILED' in response.payload['error']
+        assert detail in response.payload['error']
+        assert 'create-test' in response.payload['error']
+    finally:
+        release_create.set()
+        release_waiter.set()
+        await router.shutdown()

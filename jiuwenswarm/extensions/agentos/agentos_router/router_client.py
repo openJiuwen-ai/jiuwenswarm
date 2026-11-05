@@ -1159,9 +1159,7 @@ class AgentOSRouterClient(AgentServerClient):
                 exc_info=True,
             )
             try:
-                existing = await self._agent_manager.get_agent(user_id, agent_type)
-                if existing is not None and existing.is_failed():
-                    await self._agent_manager.delete_agent(user_id, agent_type)
+                await self._agent_manager.discard_failed(user_id, agent_type)
             except Exception:
                 logger.debug(
                     "[AgentOSRouter] warmup cleanup delete failed: user=%s",

@@ -88,8 +88,15 @@ class AdxControlClient:
             error = value.get('error') if isinstance(value, dict) else None
             code = error.get('code', 'SERVICE_UNAVAILABLE') if isinstance(error, dict) else 'SERVICE_UNAVAILABLE'
             outcome = error.get('outcome') if isinstance(error, dict) else None
-            raise AdxControlError(f'ADX {method} returned HTTP {response.status_code}',
-                                  code=code, outcome=outcome)
+            message = value.get('message') if isinstance(value, dict) else None
+            response_request_id = error.get('requestId') if isinstance(error, dict) else None
+            detail = f'ADX {method} returned HTTP {response.status_code}'
+            if isinstance(message, str) and message.strip():
+                detail = f'{detail}: {message}'
+            correlation_id = response_request_id or request_id
+            if correlation_id:
+                detail = f'{detail} (request ID: {correlation_id})'
+            raise AdxControlError(detail, code=code, outcome=outcome)
         if isinstance(value, dict) and 'data' in value and 'code' in value:
             if value['code'] not in (200, 201):
                 raise AdxControlError('ADX operation failed')

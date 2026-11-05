@@ -485,6 +485,14 @@ class AgentManager:
         if runtime is not None:
             runtime.mark_deleted()
 
+    async def discard_failed(self, user_id: str, agent_type: str) -> None:
+        """Allow a fresh lookup while waiters retain the failed create result."""
+        key = self._make_key(user_id, agent_type)
+        async with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if runtime is not None and runtime.is_failed():
+                self._runtimes.pop(key)
+
     async def release(self, key: AgentKey) -> None:
         """Drop one task holding acquired via ``get_or_create_agent`` / ``get_agent``.
 

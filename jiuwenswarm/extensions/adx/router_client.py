@@ -13,10 +13,14 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.adx.ssh_relay import AdxSshRelay
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.extensions.adx.config import AdxRouterConfig
-from jiuwenswarm.extensions.adx.control_client import AdxControlClient
+from jiuwenswarm.extensions.adx.control_client import AdxControlClient, AdxControlError
 from jiuwenswarm.extensions.adx.errors import AdxRoutingError
 from jiuwenswarm.extensions.adx.file_client import AdxFileMixin
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
+from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+    AgentCreateFailed,
+    AgentManager,
+    AgentRuntime,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
@@ -66,6 +70,14 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         )
         self._closed = True
         self.set_or_update_server_config(config={})
+
+    async def _resolve_agent(
+        self, envelope: E2AEnvelope, *, acquire: bool = False, ws_ready: bool = False,
+    ) -> AgentRuntime:
+        try:
+            return await super()._resolve_agent(envelope, acquire=acquire, ws_ready=ws_ready)
+        except AdxControlError as exc:
+            raise AgentCreateFailed(f"AGENT_CREATE_FAILED: {exc}") from exc
 
     async def shutdown(self) -> None:
         await super().shutdown()
