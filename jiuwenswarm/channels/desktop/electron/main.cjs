@@ -252,7 +252,13 @@ function serviceCommand(name, extraArgs = []) {
   };
 }
 
+function assertServiceStartAllowed() {
+  if (shuttingDown) throw new Error('Application is shutting down; service startup cancelled');
+}
+
 function spawnService(name, ports, extraArgs = []) {
+  // Keep the guard, spawn and registration synchronous with the shutdown snapshot.
+  assertServiceStartAllowed();
   const { command, args } = serviceCommand(name, extraArgs);
   const env = {
     ...process.env,
@@ -423,6 +429,7 @@ async function waitForHttp(host, port, child, timeoutMs = STARTUP_TIMEOUT_MS) {
 function runToExit(command, args, { cwd } = {}) {
   const name = 'workspace-prepare';
   return new Promise((resolve, reject) => {
+    assertServiceStartAllowed();
     const env = {
       ...process.env,
       JIUWENSWARM_DESKTOP: '1',
@@ -709,8 +716,10 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   // consume PLAYWRIGHT_MCP_TARGET_RESOLVER through their spawn env.
   let agentProcess = null;
   let gatewayProcess = null;
+  if (shuttingDown) return;
   try {
     await prepareRuntimeWorkspace();
+    if (shuttingDown) return;
     agentProcess = spawnService('agent', ports);
     gatewayProcess = spawnService('gateway', ports);
 
@@ -723,6 +732,8 @@ async function startBackendServices({ ports, webProcess, webReady }) {
       webReady,
     ]);
   } catch (error) {
+    // Quit owns cleanup. A cancelled preparation/readiness wait is not a startup failure.
+    if (shuttingDown) return;
     for (const child of [webProcess, agentProcess, gatewayProcess]) {
       if (child) {
         void terminateService(child).catch(error =>
@@ -732,6 +743,7 @@ async function startBackendServices({ ports, webProcess, webReady }) {
     throw error;
   }
 
+  if (shuttingDown) return;
   watchBackendPair(agentProcess, gatewayProcess);
   // 健康启动不产生 failure 记录, 删除空的会话诊断目录避免累积
   // (对齐 desktop_app; 非空目录保留)。
@@ -859,13 +871,15 @@ function stopServices() {
         failure ||= result.reason;
       }
     }
-    if (services.some(([name]) => name === 'agent')) {
+    // A previous Front may have left this deployment's resident Worker alive,
+    // even when Quit precedes this launch's AgentServer registration.
+    if (!isFrontendOnly) {
       const remaining = Math.max(1, deadline - Date.now());
       const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(remaining / 1000)]);
-      const agent = services.find(([name]) => name === 'agent')[1];
+      const agent = services.find(([name]) => name === 'agent')?.[1];
       try {
         await new Promise((resolve, reject) => {
-          const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
+          const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent?.spawnEnvironment || process.env });
           const timer = setTimeout(() => { helper.kill(); reject(new Error('Worker shutdown helper exceeded deadline')); }, remaining + 500);
           helper.once('error', error => { clearTimeout(timer); reject(error); });
           helper.once('exit', code => {
@@ -3139,6 +3153,7 @@ async function createMainWindow() {
     // Gateway 单例预检, 冲突时完全不占用端口组(两个 Gateway = 两套
     // CronScheduler = cron 重复执行)。
     await preflightGatewaySingleton();
+    if (shuttingDown) return;
     webStartup = await startWebService(onWebReady);
   }
 
@@ -3170,6 +3185,7 @@ async function createMainWindow() {
 
   console.log('[electron] starting backend services...');
   await startBackendServices(webStartup);
+  if (shuttingDown) return;
   const frontendBase = `http://${FRONTEND_HOST}:${webStartup.ports.frontend}`;
   currentFrontendUrl = frontendBase;
   if (!navigated) {
