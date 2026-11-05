@@ -66,8 +66,8 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - 宿主方法 `webui.settings.pages`、`webui.splash.settings`、`webui.splash.settings.update`、`webui.upload.begin`
   经 `gateway.request` 的 USER 请求策略继续后由 BUILTIN 处理器应答；`FileImport` 的 `ui.change` 由宿主核对导入凭据后替换为可信数据；
   `ops.ui.download` 向调用所在的连接发送 `webui.download`。契约见 [S_10](S_10_application-settings.md)。
-- `/extension-uploads/` 与 `/extension-downloads/` 的访问权来自一次性凭据，不进入 `gateway.request`；本期只接受本机连接；
-  `app_web` 同样只为本机客户端转发，上传请求体按块转发。
+- `/extension-uploads/` 与 `/extension-downloads/` 的访问权只来自一次性凭据，不进入 `gateway.request`，本机与远程浏览器都可使用；
+  `app_web` 一并转发，上传请求体按块转发。
 
 ## 不变量
 

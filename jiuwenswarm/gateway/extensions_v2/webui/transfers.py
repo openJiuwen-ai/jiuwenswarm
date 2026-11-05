@@ -12,7 +12,6 @@ the host gives that one browser connection a single-use download address.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import os
 import re
@@ -48,16 +47,6 @@ CODE_TARGET_INACTIVE = "TARGET_INACTIVE"
 CODE_UPLOAD_TOO_LARGE = "UPLOAD_TOO_LARGE"
 TOKEN = re.compile(r"^[0-9a-f]{32}$")
 _FORBIDDEN_CHARACTERS = frozenset('\\<>:"|?*')
-
-
-def is_loopback(host: str | None) -> bool:
-    """Whether an HTTP peer address is the local machine (S_10 invariant 6)."""
-    try:
-        address = ipaddress.ip_address(str(host or "").split("%", 1)[0])
-    except ValueError:
-        return False
-    mapped = getattr(address, "ipv4_mapped", None)
-    return (mapped or address).is_loopback
 
 
 def _segment_ok(segment: str) -> bool:
@@ -207,10 +196,11 @@ class TransferManager:
         )
         return {"upload_id": upload_id, "url": f"{UPLOAD_PREFIX}{upload_id}/"}
 
-    async def receive(self, upload_id: str, relative: str, chunks: AsyncIterator[bytes], peer: str | None) -> int:
-        """Store one declared file of an open ticket; return the HTTP status (S_10 section 6.3)."""
-        if not is_loopback(peer):
-            return 403
+    async def receive(self, upload_id: str, relative: str, chunks: AsyncIterator[bytes]) -> int:
+        """Store one declared file of an open ticket; return the HTTP status (S_10 section 6.3).
+
+        Access comes from the ticket alone, so a remote browser holding it may upload.
+        """
         await self.expire()
         upload = self.uploads.get(upload_id) if TOKEN.fullmatch(upload_id or "") else None
         if upload is None or relative not in upload.files:
@@ -303,9 +293,9 @@ class TransferManager:
             return {"status": "delivery_failed"}
         return {"status": "offered"}
 
-    def download(self, token: str, peer: str | None, *, consume: bool) -> Download | None:
+    def download(self, token: str, *, consume: bool) -> Download | None:
         """Return a valid offered download; a GET consumes it (S_10 section 7.2)."""
-        if not is_loopback(peer) or not TOKEN.fullmatch(token or ""):
+        if not TOKEN.fullmatch(token or ""):
             return None
         offer = self.downloads.get(token)
         if (offer is None or self._clock() - offer.created > DOWNLOAD_TTL_S

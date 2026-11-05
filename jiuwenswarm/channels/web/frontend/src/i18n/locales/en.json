@@ -5422,7 +5422,6 @@
     "uploading": "Uploading {{percent}}%",
     "failed": "Import failed. Try again.",
     "tooLarge": "The files are too large to import",
-    "localOnly": "Importing works only on this computer",
     "inactive": "The page changed. Pick the files again."
   },
   "webuiSplash": {

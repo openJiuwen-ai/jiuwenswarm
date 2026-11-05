@@ -238,18 +238,19 @@ async def test_begin_requires_the_current_import_node(tmp_path):
         await runtime.shutdown()
 
 
-async def test_transfer_route_refuses_remote_peers_and_wrong_bodies(tmp_path):
+async def test_transfer_route_serves_remote_peers_and_refuses_wrong_bodies(tmp_path):
     package = ThemePackage({"label": "Many", "multiple": True})
     runtime = await _start(tmp_path)
     try:
         revision = await _mount(runtime, package, tmp_path)
         response = await _call(runtime, "webui.upload.begin", _begin(revision, [
-            {"path": "a.zip", "size": 4}, {"path": "b.zip", "size": 4}]))
+            {"path": "a.zip", "size": 4}, {"path": "b.zip", "size": 4}, {"path": "c.zip", "size": 4}]))
         upload_id, url = response["payload"]["upload_id"], response["payload"]["url"]
+        # A remote browser holding the ticket may upload (S_10 section 6.3).
         async with _client(runtime, ("203.0.113.7", 1)) as remote:
-            assert (await remote.put(url + "a.zip", content=b"1234")).status_code == 403
+            assert (await remote.put(url + "b.zip", content=b"5678")).status_code == 204
         async with _client(runtime) as client:
-            assert (await client.put(url + "c.zip", content=b"1234")).status_code == 404
+            assert (await client.put(url + "d.zip", content=b"1234")).status_code == 404
             assert (await client.put("/extension-uploads/" + "0" * 32 + "/a.zip", content=b"1234")).status_code == 404
             assert (await client.put(url + "a.zip", content=b"12345")).status_code == 413
             assert (await client.put(url + "a.zip", content=b"12")).status_code == 400
@@ -259,7 +260,7 @@ async def test_transfer_route_refuses_remote_peers_and_wrong_bodies(tmp_path):
                                                                  {"upload_id": upload_id}))
         assert response["payload"]["accepted"] is False and package.imports == []
         directory = runtime.package_data_dir(PACKAGE) / ".uploads" / upload_id
-        assert sorted(path.name for path in directory.iterdir()) == ["a.zip"]
+        assert sorted(path.name for path in directory.iterdir()) == ["a.zip", "b.zip"]
     finally:
         await runtime.shutdown()
 
@@ -332,16 +333,16 @@ async def test_download_is_single_use_for_the_calling_connection(tmp_path):
         url = payload["url"]
         assert url.startswith("/extension-downloads/")
         async with _client(runtime, ("203.0.113.7", 1)) as remote:
-            assert (await remote.get(url)).status_code == 404
-        async with _client(runtime) as client:
-            assert (await client.head(url)).status_code == 200
-            answer = await client.get(url)
+            # The connection that asked may be a remote browser; HEAD does not use the offer up.
+            assert (await remote.head(url)).status_code == 200
+            answer = await remote.get(url)
             assert answer.status_code == 200 and answer.content == b"backup-bytes"
             assert answer.headers["content-type"] == "application/octet-stream"
             assert answer.headers["content-disposition"] == "attachment; filename*=UTF-8''%E5%A4%87%E4%BB%BD%201.zip"
             assert answer.headers["cache-control"] == "no-store"
             assert answer.headers["x-content-type-options"] == "nosniff"
             assert answer.headers["content-security-policy"] == "sandbox"
+        async with _client(runtime) as client:
             assert (await client.get(url)).status_code == 404
     finally:
         await runtime.shutdown()

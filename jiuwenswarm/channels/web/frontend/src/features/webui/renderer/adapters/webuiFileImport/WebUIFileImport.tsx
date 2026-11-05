@@ -16,7 +16,6 @@ type Phase = 'idle' | 'uploading' | 'done' | 'error';
 
 const ERROR_KEYS: Readonly<Record<string, string>> = {
   UPLOAD_TOO_LARGE: 'webuiFileImport.tooLarge',
-  LOCAL_ONLY: 'webuiFileImport.localOnly',
   TARGET_INACTIVE: 'webuiFileImport.inactive',
 };
 
