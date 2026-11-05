@@ -894,12 +894,9 @@ function AppContent({
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
   const browserAgentActive = useBrowserAgentActivity(sessionId);
-<<<<<<< ours
   const browserHeadless = useDesktopBrowserHeadless();
-=======
   // WebUI 扩展：订阅下行渲染帧（webui.render / webui.render.error）
   useWebUIRender();
->>>>>>> theirs
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
