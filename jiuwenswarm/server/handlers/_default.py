@@ -52,6 +52,9 @@ from jiuwenswarm.server.handlers._shared import (
     resolve_request_runtime_mode,
 )
 from jiuwenswarm.server.handlers.stream_delta_coalesce import StreamDeltaCoalescer
+from jiuwenswarm.server.runtime.plan_execute_continuation import (
+    schedule_plan_execute_continuation,
+)
 from jiuwenswarm.server.runtime.session_owner_routing import (
     bind_request_to_session_owner,
 )
@@ -254,6 +257,18 @@ async def _check_post_process_plan_exit(
             "tool execution for session=%s",
             session_id,
         )
+        # Web「执行」批准的服务端幂等续跑（issue 5223）：批准轮结束且 plan 已
+        # 退出，登记后代发执行消息开启执行轮。gate 在模块内（resume 载荷须含
+        # plan_execute 取值）——TUI approve / 跳过 / 修订都不携带，不受影响。
+        if schedule_plan_execute_continuation(
+            ctx, request, agent,
+            plan_slug=getattr(state.plan_mode, "plan_slug", None),
+        ):
+            logger.info(
+                "[_check_post_process_plan_exit] Scheduled plan execute "
+                "continuation for session=%s",
+                session_id,
+            )
 
 
 async def _ensure_code_mode_state(
