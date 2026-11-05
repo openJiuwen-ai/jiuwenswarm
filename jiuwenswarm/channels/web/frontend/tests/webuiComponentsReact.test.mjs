@@ -3299,7 +3299,7 @@ test('splash queue plays providers in order, skips non-players and closes each p
   assert.equal(app.controller.getState().phase, 'playing');
   assert.equal(app.controller.getState().provider.packageId, 'pkg.b');
   const readyPayload = app.transport.dispatches[0].payload;
-  assert.deepEqual(readyPayload, { launch_id: 'launch-1', first_visit: true, reduced_motion: false });
+  assert.deepEqual(readyPayload, { launch_id: 'launch-1', first_visit: true, reduced_motion: false, preview: false });
 
   app.controller.skip();
   await settle();
@@ -3736,5 +3736,89 @@ test('Extensions settings pages mount only the selected package page', async () 
   } finally {
     await view.unmount();
     runtime.dispose();
+  }
+});
+
+// ── Splash preview (Gateway F_14) ────────────────────────────────────────────
+
+test('splash preview plays one provider after the gate opened and leaves launch records alone', async () => {
+  const app = splashSetup({ answers: { 'pkg.a': 'play' }, launch: splashLaunch(true) });
+  await app.controller.start();
+  assert.equal(app.controller.getState().phase, 'open');
+  const marks = app.launch.marks;
+  window.localStorage.removeItem('workswarm.splash.played');
+  const provider = splashModule.parseSplashPlay({ package_id: 'pkg.a', skippable: true, max_duration_ms: 9500 });
+  assert.deepEqual(provider, { packageId: 'pkg.a', skippable: true, maxDurationMs: 9500 });
+  for (const bad of [{ package_id: '' }, { package_id: 'pkg.a', skippable: 'yes', max_duration_ms: 1 }, null]) {
+    assert.equal(splashModule.parseSplashPlay(bad), null);
+  }
+  try {
+    const done = app.controller.preview(provider);
+    await settle();
+    assert.equal(app.controller.getState().phase, 'playing');
+    assert.deepEqual(app.readies(), ['pkg.a']);
+    assert.deepEqual(app.transport.dispatches[0].payload,
+      { launch_id: 'launch-1', first_visit: false, reduced_motion: false, preview: true });
+    assert.equal(await app.controller.preview(provider), false, 'a second preview waits for none and is ignored');
+    app.controller.surfaceEvent('ready');
+    app.controller.skip();
+    assert.equal(await done, true);
+    assert.deepEqual(app.closes().map(([packageId, reason]) => [packageId, reason]), [['pkg.a', 'skip']]);
+    assert.equal(app.controller.getState().phase, 'open');
+    assert.equal(app.launch.marks, marks, 'the launch is not completed again');
+    assert.equal(window.localStorage.getItem('workswarm.splash.played'), null, 'the device record is unchanged');
+  } finally {
+    app.runtime.dispose();
+  }
+});
+
+test('splash preview is ignored while the startup queue still runs', async () => {
+  const app = splashSetup({ answers: { 'pkg.a': 'hang' }, providers: providerList(['pkg.a']) });
+  const started = app.controller.start();
+  await settle();
+  assert.equal(app.controller.getState().phase, 'preparing');
+  assert.equal(await app.controller.preview({ packageId: 'pkg.b', skippable: true, maxDurationMs: 9500 }), false);
+  assert.deepEqual(app.readies(), ['pkg.a']);
+  app.controller.dispose();
+  app.runtime.dispose();
+  await Promise.race([started, settle()]);
+});
+
+test('WebUISplashGate plays a requested preview over the open workspace', async () => {
+  const transport = splashTransport({ 'pkg.theme': 'play' });
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+  const reactRoot = createRoot(rootElement);
+  const listeners = new Set();
+  const subscribePreview = (listener) => { listeners.add(listener); return () => listeners.delete(listener); };
+  const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+  try {
+    await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISplashGate, { launch: splashLaunch(true), hint: async () => 'none',
+        requestProviders: async () => providerList(), subscribePreview },
+        createElement('main', { 'data-testid': 'workspace' }, 'Workspace')))));
+    await act(async () => settle());
+    assert.equal(overlay(), null);
+    assert.equal(rootElement.hasAttribute('inert'), false);
+    assert.equal(listeners.size, 1);
+
+    await act(async () => { for (const listener of listeners) listener({ package_id: 'pkg.theme', skippable: true, max_duration_ms: 9500 }); });
+    await act(async () => settle());
+    assert.equal(overlay().dataset.variant, 'playing');
+    assert.equal(rootElement.hasAttribute('inert'), true, 'the workspace takes no input during the preview');
+    const frame = overlay().querySelector('[data-testid="webui-media-surface-frame"]');
+    const token = surfaceToken(frame);
+    await postSurface(frame.contentWindow, surfaceMessage(token, 'ready'));
+    await postSurface(frame.contentWindow, surfaceMessage(token, 'complete'));
+    await act(async () => settle());
+    assert.equal(overlay(), null);
+    assert.equal(rootElement.hasAttribute('inert'), false);
+    const closed = transport.dispatches.filter((request) => request.event === 'ui.closed');
+    assert.deepEqual(closed.map((request) => [request.target.packageId, request.payload.reason]), [['pkg.theme', 'complete']]);
+  } finally {
+    await act(async () => reactRoot.unmount());
+    runtime.dispose();
+    rootElement.remove();
   }
 });

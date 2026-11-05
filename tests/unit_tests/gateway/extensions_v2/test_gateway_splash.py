@@ -1,12 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Startup splash: declarations, providers, platform frames and ui.closed (F_12)."""
+"""Startup splash: declarations, providers, platform frames, ui.closed (F_12) and previews (F_14)."""
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
+from openjiuwen.core.events import Event, SessionContext
 
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
@@ -15,30 +16,31 @@ from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 from jiuwenswarm.gateway.extensions_v2.webui import bridge as bridge_module
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
-    RenderMode, RenderNode, RenderTarget, UiActionOutput, UiRenderInput,
+    RenderMode, RenderNode, RenderTarget, UiActionInput, UiActionOutput, UiRenderInput,
 )
 
 SURFACE = RenderNode(component="MediaSurface", props={"kind": "html", "src": "/extension-assets/p/g/boot.html",
                                                       "title": "Boot"})
-READY = {"launch_id": "launch-1", "first_visit": True, "reduced_motion": False}
+READY = {"launch_id": "launch-1", "first_visit": True, "reduced_motion": False, "preview": False}
 
 
 def _channel():
     responses = []
+    events = []
     sockets = {}
 
     async def ensure_ws_id(ws):
-        ws._jiuwen_ws_id = "browser-1"
+        ws._jiuwen_ws_id = getattr(ws, "name", "browser-1")
         sockets[ws._jiuwen_ws_id] = ws
         return ws._jiuwen_ws_id
 
     async def send_event(ws, event, payload):
-        return None
+        events.append((ws._jiuwen_ws_id, event, payload))
 
     async def send_response(ws, req_id, *, ok, payload=None, error=None, code=None):
         responses.append({"ok": ok, "payload": payload, "error": error})
 
-    return SimpleNamespace(channel_id="web", responses=responses, ensure_ws_id=ensure_ws_id,
+    return SimpleNamespace(channel_id="web", responses=responses, events=events, ensure_ws_id=ensure_ws_id,
                            connection_user_id=lambda ws: None, ws_by_id=sockets.get,
                            send_event=send_event, send_response=send_response)
 
@@ -192,6 +194,9 @@ async def test_splash_ready_rejects_untargeted_or_malformed_frames(tmp_path):
             _dispatch("application.splash", "ui.ready", "test.play", {**READY, "extra": 1}),
             _dispatch("application.splash", "ui.ready", "test.play", {**READY, "launch_id": ""}),
             _dispatch("application.splash", "ui.ready", "test.play", {**READY, "first_visit": "yes"}),
+            _dispatch("application.splash", "ui.ready", "test.play",
+                      {key: value for key, value in READY.items() if key != "preview"}),
+            _dispatch("application.splash", "ui.ready", "test.play", {**READY, "preview": 1}),
             _dispatch("application.background", "ui.closed", "test.play", {"reason": "complete", "revision": 1}),
         ):
             _, response = await _frame(runtime, ws, "webui.dispatch", params)
@@ -241,5 +246,94 @@ async def test_slow_ready_handlers_time_out(tmp_path, monkeypatch):
         _, response = await _frame(runtime, SimpleNamespace(closed=False), "webui.dispatch",
                                    _dispatch("application.splash", "ui.ready", "test.slow", READY))
         assert response["payload"] == {"accepted": False, "status": "timeout"}
+    finally:
+        await runtime.shutdown()
+
+
+class Previewer:
+    """A settings page that asks for its own splash preview when it mounts (F_14)."""
+
+    def __init__(self, package_id: str, slots, splash=None) -> None:
+        self.package_id = package_id
+        self.slots = slots
+        self.splash = splash
+        self.answers: list = []
+        self.readies: list = []
+
+    async def ready(self, event, ops, next_handler):
+        target = event.event_input.target
+        if target.slot_id == "application.settings.page":
+            try:
+                self.answers.append(await ops.splash.preview())
+            except ValueError as exc:
+                self.answers.append(f"ValueError: {exc}")
+            return UiActionOutput(accepted=True, status="ready")
+        self.readies.append(dict(event.event_input.payload))
+        await ops.ui.render(UiRenderInput(
+            target=RenderTarget(session_id="", slot_id=target.slot_id, instance_key=target.instance_key),
+            root=SURFACE, mode=RenderMode.REPLACE,
+        ))
+        return UiActionOutput(accepted=True, status="ready")
+
+    def package(self, root: Path) -> LoadedPackage:
+        root.mkdir(parents=True, exist_ok=True)
+        items = []
+        for slot in self.slots:
+            item = {"type": "web.slot.contribution", "slot": slot}
+            if slot == "application.splash" and self.splash is not None:
+                item["splash"] = self.splash
+            items.append(item)
+        return LoadedPackage(
+            package_id=self.package_id, version="1.0.0", root=root, client={},
+            ui={"apiVersion": 1, "items": items},
+            handlers=(HandlerDeclaration("ui.ready", self.ready, {"target.package_id": self.package_id}, "ready"),),
+        )
+
+
+SETTINGS = "application.settings.page"
+
+
+async def test_preview_sends_the_declared_splash_to_the_calling_connection(tmp_path):
+    theme = Previewer("test.theme", ("application.splash", SETTINGS), {"skippable": True, "maxDurationMs": 9500})
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        # A disabled splash can still be previewed on request.
+        _, response = await _frame(runtime, SimpleNamespace(closed=False), "webui.splash.settings.update",
+                                   {"disabled": ["test.theme"]})
+        assert response["ok"] is True
+        settings_ws = SimpleNamespace(closed=False, name="browser-2")
+        await _frame(runtime, settings_ws, "webui.dispatch", _dispatch(SETTINGS, "ui.ready", "test.theme"))
+        assert theme.answers == [{"status": "requested"}]
+        plays = [(connection, payload) for connection, event, payload in runtime.channel.events
+                 if event == "webui.splash.play"]
+        assert plays == [("browser-2", {"package_id": "test.theme", "skippable": True, "max_duration_ms": 9500})]
+
+        preview = {**READY, "first_visit": False, "preview": True}
+        _, response = await _frame(runtime, settings_ws, "webui.dispatch",
+                                   _dispatch("application.splash", "ui.ready", "test.theme", preview))
+        assert response["payload"] == {"accepted": True, "status": "playing"}
+        assert theme.readies == [preview]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_preview_needs_a_splash_declaration_and_a_reachable_connection(tmp_path):
+    plain = Previewer("test.plain", (SETTINGS,))
+    theme = Previewer("test.theme", ("application.splash", SETTINGS))
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(plain.package(tmp_path / "plain"))
+        runtime.publish(theme.package(tmp_path / "theme"))
+        await _frame(runtime, SimpleNamespace(closed=False), "webui.dispatch", _dispatch(SETTINGS, "ui.ready", "test.plain"))
+        assert len(plain.answers) == 1 and plain.answers[0].startswith("ValueError")
+
+        target = RenderTarget(session_id="", slot_id=SETTINGS, package_id="test.theme", instance_key="main",
+                              scope="application", connection_id="")
+        for metadata in ({}, {"connection_id": "browser-gone"}):
+            await runtime.bus.trigger(Event("ui.ready", UiActionInput("ui.ready", target, MappingProxyType({}))),
+                                      SessionContext("gateway:test", None, metadata))
+        assert theme.answers[0].startswith("ValueError") and theme.answers[1] == {"status": "delivery_failed"}
+        assert not any(event == "webui.splash.play" for _, event, _ in runtime.channel.events)
     finally:
         await runtime.shutdown()

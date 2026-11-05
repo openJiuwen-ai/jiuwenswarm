@@ -13,6 +13,7 @@ import {
   SPLASH_INSTANCE_KEY,
   SPLASH_SLOT_ID,
   createSplashController,
+  parseSplashPlay,
   type SplashController,
   type SplashTimers,
 } from '../splash/controller.ts';
@@ -35,6 +36,8 @@ export interface WebUISplashGateProps {
   launch: SplashLaunch;
   hint(): Promise<SplashHint>;
   requestProviders(): Promise<unknown>;
+  /** Subscribe to `webui.splash.play` preview requests (Gateway S_09 section 3.3). */
+  subscribePreview?(listener: (payload: unknown) => void): () => void;
   /** 测试或特殊宿主的注入点；生产环境由 WebUIProvider 提供。 */
   runtime?: WebUIRuntime;
   registry?: WebUIRendererRegistry;
@@ -114,7 +117,7 @@ function SkipHint({ onSkip }: { onSkip: () => void }) {
 }
 
 export function WebUISplashGate({
-  children, launch, hint, requestProviders, runtime: runtimeOverride, registry: registryOverride, timers,
+  children, launch, hint, requestProviders, subscribePreview, runtime: runtimeOverride, registry: registryOverride, timers,
 }: WebUISplashGateProps) {
   const context = useOptionalWebUIAppContext();
   const runtime = runtimeOverride ?? context?.runtime;
@@ -136,6 +139,14 @@ export function WebUISplashGate({
     void created.start();
     return () => created.dispose();
   }, [runtime]);
+  // A package asks to replay its splash from its own page; the controller ignores it unless the gate is idle.
+  useEffect(() => {
+    if (!controller || !subscribePreview) return undefined;
+    return subscribePreview((payload) => {
+      const provider = parseSplashPlay(payload);
+      if (provider) void controller.preview(provider);
+    });
+  }, [controller, subscribePreview]);
   const state = useSyncExternalStore(
     controller ? controller.subscribe : noSubscribe,
     () => controller?.getState() ?? null,

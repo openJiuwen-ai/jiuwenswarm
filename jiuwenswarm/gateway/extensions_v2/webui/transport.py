@@ -18,6 +18,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.constants import (
     FRAME_DOWNLOAD,
     FRAME_RENDER,
     FRAME_RENDER_ERROR,
+    FRAME_SPLASH_PLAY,
 )
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     ClearFrame,
@@ -55,6 +56,11 @@ class GatewayTransport:
         """Offer one export to the connection that asked for it (S_10 section 7)."""
 
         return await self._send(connection_id, FRAME_DOWNLOAD, payload)
+
+    async def send_splash_play(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
+        """Ask one connection to preview a package's splash (S_09 section 3.3)."""
+
+        return await self._send(connection_id, FRAME_SPLASH_PLAY, payload)
 
     async def send_error(
         self,

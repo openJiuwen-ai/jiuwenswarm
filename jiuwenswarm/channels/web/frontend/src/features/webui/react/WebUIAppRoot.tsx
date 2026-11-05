@@ -14,6 +14,7 @@ import { WebUIBackgroundHost } from './WebUIBackgroundHost.tsx';
 import { WebUIEntryHost } from './WebUIEntryHost.tsx';
 import { WebUISplashGate } from './WebUISplashGate.tsx';
 import { fetchSplashHint, resolveLaunch } from '../splash/launch.ts';
+import { SPLASH_PLAY_EVENT } from '../splash/controller.ts';
 import { WebUIProvider } from './WebUIProvider.tsx';
 import { browserClientCapabilities } from '../client/browserClient.ts';
 import { WebUIUploadContext } from '../renderer/adapters/webuiFileImport/uploadContext.ts';
@@ -71,11 +72,14 @@ export function WebUIAppRoot({ children }: WebUIAppRootProps) {
 
   const launch = useMemo(() => resolveLaunch(window.jiuwenDesktop?.launchId), []);
   const requestProviders = useMemo(() => () => webClient.request('webui.splash.providers', {}), []);
+  const subscribePreview = useMemo(() => (listener: (payload: unknown) => void) =>
+    webClient.on(SPLASH_PLAY_EVENT, (event) => listener(event.payload)), []);
 
   return (
     <WebUIProvider runtime={app.runtime} registry={app.registry}>
       <WebUIUploadContext.Provider value={uploads}>
-      <WebUISplashGate launch={launch} hint={fetchSplashHint} requestProviders={requestProviders}>
+      <WebUISplashGate launch={launch} hint={fetchSplashHint} requestProviders={requestProviders}
+        subscribePreview={subscribePreview}>
         <WebUIBackgroundHost />
         <WebUIAppearanceHost />
         <WebUIEntryHost notice={error ? <div role="alert" className="webui-entry-notice" data-testid="webui-client-error">
