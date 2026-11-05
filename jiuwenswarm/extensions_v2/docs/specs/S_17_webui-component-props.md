@@ -106,7 +106,7 @@ Panel / Iframe 只能作为允许其使用的槽位的树根。
 `task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
 空对话也可挂载，切换会话不改变实例归属或关闭已打开的任务页面。入口与页面共享包和实例标识。
 切到聊天时，当前应用范围任务页面仅隐藏、保留 iframe；返回同一任务入口不重建页面。
-MediaSurface 只能作为 Gateway 槽位 `application.background` 的树根，该槽位也只接受 MediaSurface 根。
+MediaSurface 只能作为 Gateway 槽位 `application.background`、`application.splash` 的树根，这两个槽位也只接受 MediaSurface 根。
 其他挂载位置和作用域见 [catalog/slots.ts](../../../channels/web/frontend/src/features/webui/catalog/slots.ts)、[后端 constants.py](../../webui/constants.py) 与 [F_07 槽位与交互](../features/F_07_ui-contributions.md)。
 槽位容量、页面导航和插件启停由宿主控制。Button.openPanel 仅表达显式点击后的同包、同会话面板打开意图，不绕过槽位声明、实例存在和生命周期校验。
 
@@ -549,7 +549,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 路径只允许 RFC 3986 路径字符，`%` 后必须是两位十六进制且解码结果为合法 UTF-8；可带查询串与片段；
 整串只允许除空格与反斜杠外的可打印 ASCII 字符。
 
-只允许作为 `application.background` 的树根，无子节点或事件。HTML 内容固定在 sandbox="allow-scripts" 的 iframe 中运行，
+只允许作为 `application.background`、`application.splash` 的树根，无子节点或事件。HTML 内容固定在 sandbox="allow-scripts" 的 iframe 中运行，
 不含 allow-same-origin，插件不可覆盖。fit、position 不作用于 HTML 内容。
 输入、焦点、静音、就绪超时、减少动态和与页面的消息协议是宿主行为，不是 props，见
 [Gateway 媒体容器规约 S_07](../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)。
@@ -664,6 +664,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 消息与轮次：message.assistant.meta、conversation.turn.footer.actions、conversation.session.content.after | [MessageItem.tsx](../../../channels/web/frontend/src/components/ChatPanel/MessageItem.tsx) | 消息归属、轮次操作、状态与事件参数 |
 | 设置页：application.settings | [SettingsPageLayout.tsx](../../../channels/web/frontend/src/features/settings/SettingsPageLayout.tsx) | 表单组件、共享布局与滚动 |
 | 应用背景：application.background（Gateway） | [WebUIAppRoot.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIAppRoot.tsx)、[WebUIBackgroundHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIBackgroundHost.tsx) | MediaSurface 根、全窗口底层、不接收输入、宿主策略 |
+| 启动开场：application.splash（Gateway） | [WebUISplashGate.tsx](../../../channels/web/frontend/src/features/webui/react/WebUISplashGate.tsx)、[splash/](../../../channels/web/frontend/src/features/webui/splash) | MediaSurface 根、开场层、时限与跳过、登录入口推迟 |
 
 普通槽位通过 [WebUIHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIHost.tsx) 挂载实例；
 右侧页签由 useWebUIPanels 管理，二者共用 WebUIInstanceView 和运行时的挂载租约。

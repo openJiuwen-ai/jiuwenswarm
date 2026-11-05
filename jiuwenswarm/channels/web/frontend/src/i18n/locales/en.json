@@ -5390,6 +5390,9 @@
     "approve": "Authorize",
     "waiting": "Processing..."
   },
+  "webuiSplash": {
+    "holdToSkip": "Hold Space to skip"
+  },
   "webuiIframe": {
     "pluginPage": "Plugin page",
     "loading": "Loading page...",

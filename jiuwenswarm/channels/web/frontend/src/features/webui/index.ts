@@ -15,6 +15,8 @@ export type { WebUIEntryHostProps } from './react/WebUIEntryHost.tsx';
 export { WebUIBackgroundHost } from './react/WebUIBackgroundHost.tsx';
 export type { WebUIBackgroundHostProps } from './react/WebUIBackgroundHost.tsx';
 export { WebUIAppearanceHost } from './react/WebUIAppearanceHost.tsx';
+export { WebUISplashGate } from './react/WebUISplashGate.tsx';
+export type { WebUISplashGateProps } from './react/WebUISplashGate.tsx';
 export type { WebUIAppearanceHostProps } from './react/WebUIAppearanceHost.tsx';
 export { WebUIHost } from './react/WebUIHost.tsx';
 export type { WebUIHostProps } from './react/WebUIHost.tsx';

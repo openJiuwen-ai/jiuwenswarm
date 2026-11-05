@@ -90,6 +90,43 @@ def _get_user_workspace_dir() -> Path:
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
 
 
+#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
+#: the page may load before the Gateway is up.
+SPLASH_HINT_PATH = "/extension-splash/hint"
+_SPLASH_SLOT_MARKER = "application.splash"
+
+
+def _gateway_install_dir() -> Path:
+    """Resolve ``extensions.gateway.install_dir`` without importing the extension runtime."""
+    workspace = _get_user_workspace_dir()
+    install_dir = "extension_pkgs"
+    try:
+        import yaml
+
+        raw = yaml.safe_load((workspace / "config" / "config.yaml").read_text(encoding="utf-8"))
+        configured = raw["extensions"]["gateway"]["install_dir"]
+        if isinstance(configured, str) and configured.strip():
+            install_dir = configured.strip()
+    except Exception:  # noqa: BLE001 - a missing or partial config keeps the default
+        pass
+    path = Path(install_dir).expanduser()
+    return path if path.is_absolute() else workspace / path
+
+
+def _splash_candidates(install_dir: Path) -> bool:
+    """Whether an installed manifest mentions the splash slot.
+
+    This is only a hint that a splash may play: the browser still asks the Gateway
+    which packages are active.
+    """
+    try:
+        manifests = (*install_dir.glob("*/manifest.yaml"), *install_dir.glob("*/*/manifest.yaml"))
+        return any(_SPLASH_SLOT_MARKER in manifest.read_text(encoding="utf-8", errors="ignore")
+                   for manifest in manifests)
+    except OSError:
+        return False
+
+
 def _get_agent_root_dir() -> Path:
     return _get_user_workspace_dir() / "agent"
 
@@ -2271,6 +2308,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if parsed.path == SPLASH_HINT_PATH:
+            self._write_json(200, {"candidates": _splash_candidates(_gateway_install_dir())})
             return
         if parsed.path == "/oauth/hub/done":
             body = (

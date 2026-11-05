@@ -19,7 +19,7 @@ export interface WebUITransportHandlers {
 }
 
 export interface WebUIDispatchRequest {
-  event: 'ui.ready' | WebUIComponentEvent;
+  event: 'ui.ready' | 'ui.closed' | WebUIComponentEvent;
   target: WebUINormalizedTarget;
   payload: Record<string, unknown>;
 }

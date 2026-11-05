@@ -10,7 +10,7 @@ Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../.
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 24 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item` 与 `MediaSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
+目录包含 24 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item` 与 `MediaSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍

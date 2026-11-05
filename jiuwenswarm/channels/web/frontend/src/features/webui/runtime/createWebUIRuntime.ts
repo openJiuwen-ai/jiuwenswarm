@@ -20,7 +20,7 @@ import type {
 import { createProtocolPipeline } from '../protocol/process.ts';
 import { readAppearanceFrame, type WebUIAppearanceFrame } from '../appearance/appearance.ts';
 import type { WebUIProtocol } from '../protocol/process.ts';
-import type { WebUIConnectionState, WebUITransportHandlers } from '../transport/types.ts';
+import type { WebUIConnectionState, WebUIDispatchReceipt, WebUITransportHandlers } from '../transport/types.ts';
 import type {
   WebUIInstanceDispatch,
   WebUIInstanceSnapshot,
@@ -385,6 +385,22 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       }
     },
   };
+
+  async function notifyClosed(instanceKey: string, reason: string): Promise<WebUIDispatchReceipt | null> {
+    const record = records.get(instanceKey);
+    if (disposed || !record || connectionState !== 'connected') {
+      return null;
+    }
+    try {
+      return await transport.dispatch({
+        event: 'ui.closed',
+        target: { ...record.target, scope: 'application' },
+        payload: { reason, revision: record.snapshot.revision },
+      });
+    } catch {
+      return null;
+    }
+  }
 
   function setAppearance(next: WebUIAppearanceFrame | null): void {
     if (next === appearance) return;
@@ -800,6 +816,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     refreshContributions,
     getConnectionState: () => connectionState,
     getAppearance: () => appearance,
+    notifyClosed,
     subscribeAppearance: (listener) => {
       appearanceListeners.add(listener);
       return () => appearanceListeners.delete(listener);

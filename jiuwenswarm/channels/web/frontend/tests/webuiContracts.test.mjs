@@ -47,6 +47,13 @@ test('catalog contains the supported components', () => {
   });
   assert.deepEqual(componentCatalog.getSlot('conversation.panel.right').rootComponents, ['Panel', 'Iframe']);
   assert.equal(componentCatalog.getSlot('conversation.panel.right').strictRoot, true);
+  assert.deepEqual(componentCatalog.getSlot('application.splash'), {
+    id: 'application.splash',
+    display: 'single',
+    scope: 'application',
+    rootComponents: ['MediaSurface'],
+    strictRoot: true,
+  });
   assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
 });

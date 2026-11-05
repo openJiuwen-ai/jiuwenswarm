@@ -2436,7 +2436,14 @@ async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
   }
 }
 
+// One identifier per application start; every window of this start shares it, so a
+// startup splash plays once (Gateway S_09).
+const LAUNCH_ID = randomUUID();
+
 function registerIpcHandlers() {
+  ipcMain.on('desktop:launch-id', event => {
+    event.returnValue = LAUNCH_ID;
+  });
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;

@@ -64,7 +64,7 @@ const {
   WebUINavigationHost,
   WebUIPageHost,
   WebUIBackgroundHost,
-  WebUIAppearanceHost, appearanceModule,
+  WebUIAppearanceHost, appearanceModule, splashModule, WebUISplashGate,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -3160,5 +3160,273 @@ test('WebUIAppearanceHost writes the contribution layer and removes it on revoke
     runtime.dispose();
     container.remove();
     html.setAttribute('data-color-mode', 'light');
+  }
+});
+
+// ── Startup splash (Gateway F_12) ────────────────────────────────────────────
+
+const splashSurface = (src) => ({ component: 'MediaSurface', props: { kind: 'html', src, title: 'Boot' } });
+
+function splashTransport(answers, { connected = true } = {}) {
+  const handlers = new Set();
+  const dispatches = [];
+  let state = connected ? 'connected' : 'disconnected';
+  let revision = 0;
+  const target = (packageId, slot = 'application.splash') => ({
+    scope: 'application', slot_id: slot, package_id: packageId, instance_key: 'main',
+  });
+  const transport = {
+    dispatches,
+    subscribe(handler) { handlers.add(handler); return () => handlers.delete(handler); },
+    getConnectionState: () => state,
+    setConnectionState(next) { state = next; for (const handler of handlers) handler.onConnectionStateChange(next); },
+    render(packageId, root, slot) {
+      revision += 1;
+      for (const handler of handlers) {
+        handler.onRenderFrame({ target: target(packageId, slot), schema_version: 1, revision, mode: 'replace', root });
+      }
+    },
+    clear(packageId) {
+      revision += 1;
+      for (const handler of handlers) handler.onClearFrame({ target: target(packageId), revision });
+    },
+    async dispatch(request) {
+      dispatches.push(request);
+      if (request.event !== 'ui.ready' || request.target.slotId !== 'application.splash') {
+        return { accepted: true, status: request.event === 'ui.closed' ? 'closed' : 'ready' };
+      }
+      const answer = answers[request.target.packageId] ?? 'unhandled';
+      if (answer === 'hang') return new Promise(() => undefined);
+      if (answer === 'play') {
+        transport.render(request.target.packageId, splashSurface(`/extension-assets/${request.target.packageId}/g/boot.html`));
+        return { accepted: true, status: 'playing' };
+      }
+      return answer === 'skip' ? { accepted: true, status: 'skipped' } : { accepted: false, status: 'unhandled' };
+    },
+  };
+  return transport;
+}
+
+function fakeTimers() {
+  let now = 0;
+  let sequence = 0;
+  const pending = new Map();
+  return {
+    set(callback, ms) { sequence += 1; pending.set(sequence, { at: now + ms, callback }); return sequence; },
+    clear(handle) { pending.delete(handle); },
+    async advance(ms) {
+      now += ms;
+      for (const [handle, timer] of [...pending].sort((left, right) => left[1].at - right[1].at)) {
+        if (timer.at <= now && pending.has(handle)) { pending.delete(handle); timer.callback(); await settle(); }
+      }
+      await settle();
+    },
+  };
+}
+
+async function settle() {
+  for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function splashLaunch(completed = false) {
+  return { id: 'launch-1', completed, firstVisit: true, marks: 0, markCompleted() { this.completed = true; this.marks += 1; } };
+}
+
+const providerList = (...entries) => ({ providers: entries.map(([packageId, skippable = false, max = 60000]) => ({
+  package_id: packageId, skippable, max_duration_ms: max,
+})) });
+
+function splashSetup({ answers = {}, providers = providerList(), hint = 'candidates', launch = splashLaunch(), preferred, connected } = {}) {
+  const transport = splashTransport(answers, { connected });
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const timers = fakeTimers();
+  const requests = [];
+  const controller = splashModule.createSplashController({
+    runtime, launch, timers, preferredProvider: preferred, reducedMotion: () => false,
+    hint: async () => hint,
+    requestProviders: async () => { requests.push('providers'); return providers; },
+  });
+  const phases = [];
+  controller.subscribe(() => phases.push(`${controller.getState().phase}:${controller.getState().provider?.packageId ?? ''}`));
+  const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready').map((request) => request.target.packageId);
+  const closes = () => transport.dispatches.filter((request) => request.event === 'ui.closed')
+    .map((request) => [request.target.packageId, request.payload.reason, request.payload.revision]);
+  return { transport, runtime, timers, controller, requests, phases, readies, closes, launch };
+}
+
+test('splash provider lists are validated and the appearance provider plays first', () => {
+  const { parseProviders, orderProviders } = splashModule;
+  const providers = parseProviders({ providers: [
+    { package_id: 'pkg.a', skippable: true, max_duration_ms: 9500 },
+    { package_id: 'pkg.b', skippable: false, max_duration_ms: 90000 },
+    { package_id: 'pkg.a', skippable: false, max_duration_ms: 1000 },
+    { package_id: '', skippable: true, max_duration_ms: 1000 },
+    { package_id: 'pkg.c', skippable: 'yes', max_duration_ms: 1000 },
+    { package_id: 'pkg.d', skippable: true, max_duration_ms: 1.5 },
+    'pkg.e',
+  ] });
+  assert.deepEqual(providers, [
+    { packageId: 'pkg.a', skippable: true, maxDurationMs: 9500 },
+    { packageId: 'pkg.b', skippable: false, maxDurationMs: 60000 },
+  ]);
+  assert.deepEqual(orderProviders(providers, 'pkg.b').map((provider) => provider.packageId), ['pkg.b', 'pkg.a']);
+  assert.deepEqual(orderProviders(providers, 'pkg.z').map((provider) => provider.packageId), ['pkg.a', 'pkg.b']);
+  assert.deepEqual(parseProviders(null), []);
+});
+
+test('splash gate opens at once for a completed launch or a hint without candidates', async () => {
+  for (const options of [{ launch: splashLaunch(true) }, { hint: 'none' }]) {
+    const app = splashSetup(options);
+    await app.controller.start();
+    assert.equal(app.controller.getState().phase, 'open');
+    assert.deepEqual(app.requests, []);
+    assert.deepEqual(app.readies(), []);
+    app.controller.dispose(); app.runtime.dispose();
+  }
+  assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '0');
+});
+
+test('splash queue plays providers in order, skips non-players and closes each played splash once', async () => {
+  const app = splashSetup({
+    answers: { 'pkg.a': 'play', 'pkg.b': 'play', 'pkg.skip': 'skip', 'pkg.none': 'unhandled' },
+    providers: providerList(['pkg.a', true], ['pkg.skip'], ['pkg.b', false], ['pkg.none']),
+    preferred: 'pkg.b',
+  });
+  const done = app.controller.start();
+  await settle();
+  assert.deepEqual(app.readies(), ['pkg.b']);
+  assert.equal(app.controller.getState().phase, 'playing');
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.b');
+  const readyPayload = app.transport.dispatches[0].payload;
+  assert.deepEqual(readyPayload, { launch_id: 'launch-1', first_visit: true, reduced_motion: false });
+
+  app.controller.skip();
+  await settle();
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.b', 'a non-skippable splash ignores skip');
+  app.controller.surfaceEvent('ready');
+  app.controller.surfaceEvent('complete');
+  await settle();
+  assert.deepEqual(app.readies(), ['pkg.b', 'pkg.a']);
+  app.controller.surfaceEvent('ready');
+  app.controller.skip();
+  await done;
+  assert.deepEqual(app.readies(), ['pkg.b', 'pkg.a', 'pkg.skip', 'pkg.none']);
+  const closes = app.closes();
+  assert.deepEqual(closes.map(([packageId, reason]) => [packageId, reason]), [['pkg.b', 'complete'], ['pkg.a', 'skip']]);
+  assert.ok(closes.every(([, , revision]) => Number.isInteger(revision) && revision > 0));
+  assert.equal(app.controller.getState().phase, 'open');
+  assert.equal(app.launch.marks, 1);
+  assert.equal(window.localStorage.getItem('workswarm.splash.played'), '1');
+  assert.equal(window.localStorage.getItem('workswarm.splash.expected'), '1');
+  app.runtime.dispose();
+});
+
+test('splash time limits end preparation and playback without blocking the gate', async () => {
+  const app = splashSetup({
+    answers: { 'pkg.hang': 'hang', 'pkg.slow': 'play', 'pkg.silent': 'play', 'pkg.long': 'play', 'pkg.cleared': 'play' },
+    providers: providerList(['pkg.hang'], ['pkg.slow'], ['pkg.silent'], ['pkg.long', false, 4000], ['pkg.cleared']),
+  });
+  const done = app.controller.start();
+  await settle();
+  assert.equal(app.controller.getState().phase, 'preparing');
+  await app.timers.advance(splashModule.SPLASH_TIMEOUTS.answer);      // no answer from pkg.hang
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.slow');
+  await app.timers.advance(splashModule.SPLASH_TIMEOUTS.mediaReady);  // pkg.slow never became ready
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.silent');
+  app.controller.surfaceEvent('ready');
+  await app.timers.advance(4000);
+  app.controller.surfaceEvent('heartbeat');
+  await app.timers.advance(4000);
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.silent', 'heartbeats keep a splash alive');
+  await app.timers.advance(splashModule.SPLASH_TIMEOUTS.heartbeat);  // heartbeats stopped
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.long');
+  app.controller.surfaceEvent('ready');
+  for (let elapsed = 0; elapsed < 4000; elapsed += 1000) {
+    app.controller.surfaceEvent('heartbeat');
+    await app.timers.advance(1000);                                   // reaches the declared maximum
+  }
+  assert.equal(app.controller.getState().provider.packageId, 'pkg.cleared');
+  app.transport.clear('pkg.cleared');                                 // the provider ends its own splash
+  await done;
+  assert.deepEqual(app.closes().map(([packageId, reason]) => [packageId, reason]),
+    [['pkg.slow', 'timeout'], ['pkg.silent', 'timeout'], ['pkg.long', 'timeout']]);
+  assert.equal(app.controller.getState().phase, 'open');
+  app.runtime.dispose();
+});
+
+test('splash gate stops waiting for an unreachable Gateway', async () => {
+  for (const [hint, wait] of [['unknown', splashModule.SPLASH_TIMEOUTS.connectUnknown], ['candidates', splashModule.SPLASH_TIMEOUTS.connectHinted]]) {
+    const app = splashSetup({ hint, connected: false, providers: providerList(['pkg.a']), answers: { 'pkg.a': 'play' } });
+    const done = app.controller.start();
+    await settle();
+    assert.equal(app.controller.getState().phase, 'deciding');
+    await app.timers.advance(wait - 1);
+    assert.equal(app.controller.getState().phase, 'deciding');
+    await app.timers.advance(1);
+    await done;
+    assert.equal(app.controller.getState().phase, 'open');
+    assert.deepEqual(app.requests, []);
+    app.runtime.dispose();
+  }
+  const app = splashSetup({ hint: 'candidates', connected: false, providers: providerList(['pkg.a']), answers: { 'pkg.a': 'skip' } });
+  const done = app.controller.start();
+  await settle();
+  app.transport.setConnectionState('connected');
+  await done;
+  assert.deepEqual(app.readies(), ['pkg.a'], 'the queue starts once the Gateway connects');
+  app.runtime.dispose();
+});
+
+test('WebUISplashGate holds the workspace and entry until the queue ends and skips on a held Space', async () => {
+  const transport = splashTransport({ 'pkg.theme': 'play' });
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+  const neutral = document.createElement('div'); neutral.id = 'workswarm-neutral'; document.body.append(neutral);
+  const reactRoot = createRoot(rootElement);
+  const launch = splashLaunch();
+  const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+  try {
+    await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISplashGate, { launch, hint: async () => 'candidates',
+        requestProviders: async () => providerList(['pkg.theme', true, 9500]) },
+        createElement(WebUIEntryHost, null, createElement('main', { 'data-testid': 'workspace' }, 'Workspace'))))));
+    assert.equal(document.getElementById('workswarm-neutral'), null, 'the gate takes over the first-paint layer');
+    assert.equal(overlay().dataset.look, 'neutral');
+    assert.equal(rootElement.hasAttribute('inert'), true);
+    assert.ok(!rootElement.contains(overlay()), 'the splash layer lives outside the inert root');
+
+    // A login entry rendered during the splash waits for the gate.
+    await act(async () => transport.render('pkg.login', { component: 'Text', props: { value: 'Sign in' } }, 'application.entry'));
+    await act(async () => settle());
+    assert.equal(overlay().dataset.variant, 'playing');
+    assert.equal(document.querySelector('[data-testid="webui-entry-host"]').open, false);
+    const frame = overlay().querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.ok(frame, 'the splash surface plays inside the overlay');
+    const token = surfaceToken(frame);
+    await postSurface(frame.contentWindow, surfaceMessage(token, 'ready'));
+    assert.ok(overlay().querySelector('[data-testid="webui-splash-skip"]'));
+    assert.match(overlay().querySelector('[data-testid="webui-splash-skip-label"]').textContent, /空格|Space/);
+
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Space', bubbles: true })));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keyup', { code: 'Space', bubbles: true })));
+    assert.ok(overlay(), 'releasing early does not skip');
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Space', bubbles: true })));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1000)));
+    await act(async () => settle());
+
+    assert.equal(overlay(), null);
+    assert.equal(rootElement.hasAttribute('inert'), false);
+    assert.equal(document.querySelector('[data-testid="webui-entry-host"]').open, true, 'the entry shows after the gate');
+    const closed = transport.dispatches.filter((request) => request.event === 'ui.closed');
+    assert.deepEqual(closed.map((request) => [request.target.packageId, request.payload.reason]), [['pkg.theme', 'skip']]);
+    assert.equal(launch.marks, 1);
+  } finally {
+    await act(async () => reactRoot.unmount());
+    runtime.dispose();
+    rootElement.remove();
+    document.getElementById('workswarm-neutral')?.remove();
   }
 });

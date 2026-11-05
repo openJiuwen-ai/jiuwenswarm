@@ -1567,5 +1567,27 @@
       ]
     },
     "valid": false
+  },
+  {
+    "name": "MediaSurface in the splash slot",
+    "slot": "application.splash",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "html",
+        "src": "/extension-assets/pkg.theme/g1/boot.html",
+        "title": "Boot"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "application.splash rejects other roots",
+    "slot": "application.splash",
+    "root": {
+      "component": "Box",
+      "props": {}
+    },
+    "valid": false
   }
 ]

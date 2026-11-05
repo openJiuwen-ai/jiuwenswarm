@@ -30,7 +30,7 @@
 | EXTV2-GW-08 | Gateway 存储与包数据目录 | 接入 Core `JsonStore` 与 `ops.store.*`；`ops.data.root()`；数据素材；卸载清理 | [F_09](../features/F_09_package-store-and-data.md) | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_06](../specs/S_06_local-browser-bridge.md) | `test_gateway_package_data.py` | Song Haoran | 已实现（单测通过） |
 | EXTV2-GW-09 | 媒体容器与应用背景 | `MediaSurface` 根组件（图片、视频、沙箱页面）、令牌与来源校验的消息协议、`application.background` 槽位与前端背景宿主 | [F_10](../features/F_10_media-surface-and-background.md) | [S_07](../specs/S_07_media-surface.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_ui_render.py`、`test_gateway_application_assets.py`；前端 `test:webui-components`、`test:webui-protocol`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调随 GW-11） |
 | EXTV2-GW-10 | 受控外观 | `ops.appearance.apply`、宿主派生的强调色与半透明模式、按连接的提供者、包释放时撤销外观并清除实例、重载后重新通知 | [F_11](../features/F_11_controlled-appearance.md) | [S_08](../specs/S_08_appearance.md) | `test_gateway_appearance.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-transport` | Song Haoran | 已实现（单测与浏览器验证通过） |
-| EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、定向 `ui.ready`、开场槽位（复用 `MediaSurface` 的心跳与完成）、开场顺序、跳过与时长、`ui.closed` | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
+| EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、开场声明与提供者、显示型槽位的平台帧、定向 `ui.ready`、`application.splash`、时限与心跳、长按跳过、`ui.closed`、登录入口协调 | [F_12](../features/F_12_startup-gate-and-splash.md) | [S_09](../specs/S_09_startup-splash.md)、[S_07](../specs/S_07_media-surface.md) | `test_gateway_splash.py`、`test_app_web_splash_hint.py`；前端 `test:webui-components` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
 | EXTV2-GW-12 | 应用级设置页 | 不依赖会话的应用级设置槽位与桌面路径选择 | 待建档 | [S_02](../specs/S_02_ui-render.md) | 待定 | Song Haoran | 未开始 |
 
 ## 3. 依赖与开工条件
@@ -70,7 +70,8 @@ flowchart LR
 | GW-08 | 存储按包隔离并跨重载与重启保留；数据目录与数据素材越界、符号链接拒绝；卸载删除且失败可重试；重载保留 |
 | GW-09 | 两端字段、根节点与槽位结论一致（共享用例）；图片、视频、页面渲染与宿主策略；消息的来源、令牌与事件校验；就绪超时、错误与减少动态回退；背景层不接收输入、根元素标记；声明背景槽位的包收到 `ui.ready`；真实浏览器显示 |
 | GW-10 | 外观对象两端结论一致；提供者切换、非提供者撤销、断开连接；卸载与重载时撤销外观并清除实例且版本号不复用；重载后广播；前端帧排序与重连核对；强调色对比度与半透明预设；Chromium 中派生变量与 antd 取色 |
-| GW-11～GW-12 | 在各自 feature 建档时补充 |
+| GW-11 | 声明校验与提供者顺序；请求策略拒绝一切时平台帧仍到达包；`ui.closed` 一次性；候选提示；门控四种判定路径；准备、媒体就绪、心跳与上限时限；长按跳过；登录入口推迟；Chromium 中从首帧到开放的完整流程 |
+| GW-12 | 在 feature 建档时补充 |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -93,6 +94,7 @@ flowchart LR
 | 2026-11-05 | GW-09 | 媒体容器与应用背景实现，单测通过（Gateway 扩展 370 项、前端 WebUI 各套件全部通过、构建成功）；内置浏览器验证图片、视频、超时回退与素材响应头，页面消息往返的浏览器验证待补，证据见 F_10 |
 | 2026-11-05 | GW-09 | Chromium 157 无头模式补充验证：页面双向消息、错误回退、减少动态、就绪超时与清除通过；隐藏 iframe 被暂停渲染的推测未得到证实，证据见 F_10 |
 | 2026-11-05 | GW-10 | 受控外观实现：Gateway 扩展 413 项、前端 WebUI 各套件全部通过、构建成功；Chromium 157 中验证强调色派生、antd 取色、半透明预设与撤销；同时补正包释放时不通知浏览器的缺口，证据见 F_11 |
+| 2026-11-05 | GW-11 | 启动门控与开场队列实现：Gateway 扩展 426 项、Web 渠道 147 项、前端 WebUI 各套件全部通过、构建成功；Chromium 157 中验证首帧中性层、播放、登录入口推迟、刷新不重播与长按跳过；背景与开场的生命周期帧改为平台帧，证据见 F_12 |
 
 ## 6. 风险与待确认
 

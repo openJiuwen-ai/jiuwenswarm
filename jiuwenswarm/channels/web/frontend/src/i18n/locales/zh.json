@@ -5362,6 +5362,9 @@
     "approve": "授权",
     "waiting": "处理中..."
   },
+  "webuiSplash": {
+    "holdToSkip": "长按空格跳过"
+  },
   "webuiIframe": {
     "pluginPage": "插件页面",
     "loading": "页面加载中...",

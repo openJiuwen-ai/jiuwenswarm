@@ -320,7 +320,8 @@ class GatewayRuntime:
         returned params continue to the existing path unchanged.
         """
 
-        if not self.active:
+        platform = self._started and self.browser.is_platform_frame(method, params)
+        if not self.active and not platform:
             return False, dict(params)
         connection_id = await self._connection_id(ws)
         if not connection_id:
@@ -336,6 +337,11 @@ class GatewayRuntime:
             request_context=MappingProxyType(dict(request_context or {})),
             request_id=req_id,
         )
+        if platform:
+            # Host lifecycle frames carry no user input and bypass request policy (S_09).
+            payload = await self.browser.platform_frame(request, self._session_context(request))
+            await self._respond(ws, req_id, ok=True, payload=payload)
+            return True, dict(params)
         try:
             if self.browser.enabled:
                 await self.browser.connect(ws, connection_id)

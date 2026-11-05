@@ -6,6 +6,7 @@ import type { WebUIRuntime } from '../runtime/types.ts';
 import type { WebUIDispatchReceipt } from '../transport/types.ts';
 import { WebUIHost } from './WebUIHost.tsx';
 import { useOptionalWebUIAppContext } from './WebUIProvider.tsx';
+import { useSplashGateOpen } from './splashGateContext.ts';
 import './WebUIEntryHost.css';
 
 const ENTRY_SLOT_ID = 'application.entry';
@@ -104,7 +105,9 @@ export function WebUIEntryHost({
   );
 
   const entryMounted = Boolean(runtime && registry);
-  const entryOpen = Boolean(entryMounted && (hasActiveTree || hasFailedInstance));
+  // A modal dialog sits in the browser top layer, above any splash, so it waits for the startup gate.
+  const gateOpen = useSplashGateOpen();
+  const entryOpen = Boolean(entryMounted && gateOpen && (hasActiveTree || hasFailedInstance));
   useLayoutEffect(() => {
     const element = dialog.current;
     if (!element) return;

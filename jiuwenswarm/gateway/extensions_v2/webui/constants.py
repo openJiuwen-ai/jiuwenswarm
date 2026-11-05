@@ -26,6 +26,7 @@ class WebUIEvent(StrEnum):
     PRESS_ENTER = "ui.press_enter"
     SEARCH = "ui.search"
     CLEAR = "ui.clear"
+    CLOSED = "ui.closed"
 
 
 # Downstream frames consumed by the browser.
@@ -78,13 +79,15 @@ def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION) -> SlotSpec:
 # ``application.entry`` is the full-screen host the browser already mounts;
 # ``application.sidebar.footer`` is a list slot for several packages' footer
 # content and does not depend on a chat session.
-# ``application.background`` is the full-window layer below the workspace; it
-# only accepts a ``MediaSurface`` root.
+# ``application.background`` is the full-window layer below the workspace and
+# ``application.splash`` the startup layer above it; both only accept a
+# ``MediaSurface`` root.
 SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
     {
         "application.entry": _slot("single", SlotScope.APPLICATION),
         "application.sidebar.footer": _slot("list", SlotScope.APPLICATION),
         "application.background": _slot("single", SlotScope.APPLICATION),
+        "application.splash": _slot("single", SlotScope.APPLICATION),
     }
 )
 

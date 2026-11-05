@@ -121,5 +121,7 @@ export interface WebUIRuntime {
   getConnectionState(): WebUIConnectionState;
   /** Current appearance contribution of the Gateway connection (S_08); null when none. */
   getAppearance(): WebUIAppearanceFrame | null;
+  /** Tell the package its splash instance was closed by the host (Gateway S_09); null when not sent. */
+  notifyClosed(instanceKey: string, reason: string): Promise<WebUIDispatchReceipt | null>;
   subscribeAppearance(listener: () => void): () => void;
 }

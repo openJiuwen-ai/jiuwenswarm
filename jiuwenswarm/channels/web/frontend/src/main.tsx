@@ -55,6 +55,9 @@ const runnerJobId = window.location.pathname === '/share-export-runner'
   ? runnerQuery.get('job_id')?.trim() || null
   : null
 
+// The export runner has no startup gate to take over the first-paint layer.
+if (runnerJobId || runnerSessionId) document.getElementById('workswarm-neutral')?.remove()
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <A2UIProvider onAction={handleA2UIAction}>
     {browserRunner || runnerJobId || runnerSessionId ? (

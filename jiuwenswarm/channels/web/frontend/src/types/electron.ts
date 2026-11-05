@@ -57,6 +57,8 @@ export interface ElectronBubbleAnchorRect {
 
 export interface JiuwenElectronDesktopApi {
   readonly isElectron: true;
+  /** One identifier per application start, shared by its windows (Gateway S_09). */
+  readonly launchId?: string;
   readonly apiBase?: string;
   readonly wsBase?: string;
   minimizeWindow: () => Promise<boolean>;
