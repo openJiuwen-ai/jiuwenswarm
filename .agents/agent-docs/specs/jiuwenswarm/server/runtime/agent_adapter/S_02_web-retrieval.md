@@ -10,6 +10,8 @@ modules:
   - jiuwenswarm/server/control
   - jiuwenswarm/channels/web/frontend
   - jiuwenswarm/agents/harness/common/tools
+  - jiuwenswarm/agents/harness/common/prompt
+  - jiuwenswarm/agents/harness/common/rails
   - jiuwenswarm/agents/harness/common/recommendation
 files:
   - jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py
@@ -22,6 +24,8 @@ files:
   - jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts
   - jiuwenswarm/agents/harness/common/tools/search_tools.py
   - jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py
+  - jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py
+  - jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py
   - jiuwenswarm/agents/harness/common/recommendation/topic_search.py
   - jiuwenswarm/agents/harness/common/recommendation/topic_model.py
   - jiuwenswarm/agents/harness/common/recommendation/topic_starter.py
@@ -61,6 +65,19 @@ files:
 - Work/Code 的 invocation 预算不覆盖遗留 `mcp_free_search` / 自定义 MCP、浏览器、付费搜索或自定义 Agent Spec；这些仍遵循各自策略。
   无关结果不会伪装成功，但代码不保证源质量、模型最终答案正确或必然结束推理。
 
+## 无搜索配置时的浏览器提示
+
+- Work/默认 Code 的 `BrowserTaskPromptRail` 在每次模型调用前使用 SDK 的
+  `is_paid_search_enabled()` / `is_free_search_enabled()` 读取当前配置。
+  仅在没有付费搜索 key、DDG/Bing 都关闭且实际挂载 `browser_agent` 时，追加中英文浏览器检索提示；
+  配置改变后下一次模型调用移除或重新追加，不缓存初始状态，不影响工具注册与付费/免费优先规则。
+- 用户未指定引擎或方式、需要发现网络来源时，提示主 Agent 使用同步
+  `task_tool(subagent_type="browser_agent")`，不先试调用未配置或已关闭的搜索来源。
+  已知 URL 的正文抓取仍可用 `fetch_webpage`；用户指定方式、站点或禁止浏览器/联网等限制优先。
+  浏览器未挂载时不宣传该能力；调用能力不可用时如实说明，不改为 Shell 启动。
+- 此提示只描述配置缺失，不将网络错误、验证码、访问限制、低相关或预算耗尽变成浏览器兜底条件，
+  不能绕过预算或权限。模型仍负责工具选择；不新增确定性路由或后台话题推荐的浏览器调用。
+
 ## 免费来源设置契约
 
 - 设置入口为“智能体 → 网页搜索”；DDG、Bing 是独立布尔开关，均默认关闭。
@@ -84,6 +101,8 @@ files:
 底层契约唯一来源为 `D:/agent-core/.agents/agent-docs/specs/harness/S_05_tools-contract.md`；不复制 SDK 设计。
 验证入口 `tests/unit_tests/agentserver/permissions/test_trusted_web_search.py`：SDK 输出等价、真实质量过滤与来源台账、
 预算透传、旧 SDK 兼容错误、Work/Code 实际 builder 装配。
+浏览器配置兜底验证入口为 `tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py`：
+实际 before-model 提示注入、中英文、付费/免费配置矩阵、配置热更新、同步 task 路由及未挂载浏览器边界。
 设置与消费方验证入口为 `tests/unit_tests/common/test_free_search_settings.py`、
 `tests/unit_tests/gateway/test_app_web_handlers.py`、前端 `tests/settingsRefactor.test.mjs`；
 `tests/fixtures/free-search-settings/` 是隔离 RPC 的真实设置组件浏览器验证入口，不替代真实服务端端到端测试。
