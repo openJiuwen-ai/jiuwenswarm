@@ -219,10 +219,16 @@ def test_backend_cmdline_ignores_paths_that_are_merely_mentioned() -> None:
     assert not _is_backend_cmdline(["cmd", "/c", "type", "jiuwenswarm\\gateway\\app_gateway.py"])
 
 
-def test_backend_pids_cover_this_process_and_its_parent() -> None:
-    pids = command_tools._backend_pids()
-    assert os.getpid() in pids
-    assert os.getppid() in pids
+def test_backend_pids_cover_this_process() -> None:
+    assert os.getpid() in command_tools._backend_pids()
+
+
+# PID 1 has no parent, so os.getppid() returns 0 and no ancestor can be
+# covered. A test process is PID 1 whenever the suite runs as the only
+# command of a container that has no init shim.
+@pytest.mark.skipif(os.getppid() == 0, reason="this process is PID 1: it has no parent")
+def test_backend_pids_cover_this_process_parent() -> None:
+    assert os.getppid() in command_tools._backend_pids()
 
 
 # ── jiuwenswarm-tui spawn 护栏 ────────────────────────────────

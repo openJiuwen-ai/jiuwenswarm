@@ -163,6 +163,16 @@ details[open] > .organization-tree__row > .organization-tree__chevron { transfor
   gap: 12px;
 }
 
+.organization-teams__branch { min-width: 0; }
+.organization-teams__children {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 0 16px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-border-default);
+}
+
 .organization-team {
   display: flex;
   position: relative;

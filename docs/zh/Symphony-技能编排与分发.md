@@ -538,6 +538,26 @@ symphony:
 - [Agent Team 使用指南](AgentTeam.md)
 - [English: Symphony](../en/Symphony.md)
 
+## SkillPack：Hub 兼容发布
+
+从已有薄 SkillPack 的详情页发起发布，成员必须是独立普通 Skill，不支持 SwarmSkill 或嵌套 Pack。产品发布默认关闭，先使用隔离测试 Hub：
+
+```sh
+export SKILLPACK_PRODUCTIZATION_ENABLED=true
+export SKILLPACK_HUB_DEPLOYMENT_SCOPE=isolated
+export SKILLPACK_HUB_TRANSPORT_PROFILE=legacy_skill_v1
+```
+
+部署范围必须是 `isolated` 或 `version_gated`。后者表示部署方已经限制市场客户端版本；它本身不会替 Hub 建立版本过滤。旧 Hub 按普通 Skill 审核和展示兼容包。`native_skillpack_v1` 仅用于支持该协议的 Hub，网络错误不会自动切换发布方式。
+
+一次预检列出成员的“复用／先发布／阻断”，用户确认后先上传缺失成员并等待审核，再发布 Pack。Pack 失败不删除已经成功发布的独立成员；重新打开面板可继续查询原操作，内容变化必须重新准备并确认。
+
+薄 ZIP 包含外层 `plugin.yaml`、根说明和 `skillpack.lock.json`，不复制成员源码。锁按顺序记录精确 Hub asset ID、版本及原始 ZIP SHA-256。消费端必须支持成员锁，并从同一 Hub 独立下载成员，普通单 Skill 安装器不能替代这一步。发布／安装契约测试使用共享安装器检查实际生成的包，但不会单独开启技能广场的安装入口。
+
+Hub 连续三次网络检查失败后停止自动轮询，网络恢复后由用户明确重试原操作，沿用已有上传标识。正常审核等待不算网络失败；轮询逐步放缓至 30 秒，已审核成员不反复查询，Pack 上传前及完成前仍完整检查成员闭包。授权失效或上传结果不明时停止自动推进，用户处理原因后可重试原操作。
+
+本地模拟测试不代替真实 Hub 审核、模型或桌面平台验收，结果应分别记录。关闭产品开关会停止新 Pack 发布，不会下架既有资产。
+
 ### 开发与维护边界
 
 检索、指纹提取、图谱编排和演化算法由 `openjiuwen.symphony` 提供。JiuwenSwarm 的应用适配负责模型配置与用量、构建状态、Web/RPC、运行时工具以及技能包安装；配置解析位于 `jiuwenswarm/common/symphony_config.py`。部署升级需要包含对应公开接口的 openjiuwen 版本。删除无调用的 SDK 遗留不改变持久化图谱目录和用户配置路径。

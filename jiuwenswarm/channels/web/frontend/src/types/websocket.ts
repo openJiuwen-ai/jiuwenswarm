@@ -150,6 +150,7 @@ export interface Question {
   header: string;
   options: QuestionOption[];
   multi_select?: boolean;
+  /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   card_id?: string;
   matched_rule?: string;
   tool_payload?: unknown;
@@ -176,6 +177,10 @@ export interface AskUserQuestionPayload {
     correlation_id: string;
     agent_id: string;
     agent_name: string;
+    /** Member name currently hosting the run; null/absent = no team context (no popup source prefix). */
+    executor?: string | null;
+    /** The run's META name, shown in the popup source prefix. */
+    workflow_name?: string | null;
   };
 }
 
@@ -190,6 +195,7 @@ export interface UserAnswer {
   question?: string;
   selected_options: string[];
   custom_input?: string;
+  /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   card_id?: string;
 }
 

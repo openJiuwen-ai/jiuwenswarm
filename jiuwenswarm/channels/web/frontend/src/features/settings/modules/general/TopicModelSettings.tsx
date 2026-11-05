@@ -76,7 +76,7 @@ export function TopicModelConfiguration({ onSave, onClose, enableOnSave = true }
       enableOnSave={enableOnSave}
       save={async updates => {
         const configuration = Object.fromEntries(Object.entries(updates)
-          .filter(([key]) => key !== 'topic_enabled' && key !== 'topic_context_window_tokens')
+          .filter(([key]) => key !== 'topic_enabled')
           .map(([key, value]) => [key.replace(/^topic_/, ''), value]));
         await request('topic_starters.select_model', { configuration });
         await onSave();

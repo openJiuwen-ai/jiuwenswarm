@@ -277,24 +277,14 @@ def build_openjiuwen_native_search(
     search_runner: SearchRunner = _default_search_runner,
     request_id_factory: Callable[[], str] = _request_id,
 ) -> OpenJiuwenNativeSearch:
-    values = os.environ if environ is None else environ
-    _require_native_free_search(values)
+    # Free-search engine toggles no longer gate construction: topic recommendation
+    # (hot-list pull, presets, model work) must start without them. A call still
+    # fails at search time when both engines are off.
+    del environ
     return OpenJiuwenNativeSearch(
         search_runner=search_runner,
         request_id_factory=request_id_factory,
     )
-
-
-def _require_native_free_search(values: Mapping[str, str]) -> None:
-    if (
-        str(values.get("FREE_SEARCH_DDG_ENABLED") or "").strip().lower()
-        != "true"
-        or str(values.get("FREE_SEARCH_BING_ENABLED") or "").strip().lower()
-        != "true"
-    ):
-        raise OpenJiuwenNativeSearchContractError(
-            "openjiuwen_native_search_requires_free_engines"
-        )
 
 
 def _native_factory(values: Mapping[str, str]) -> OpenJiuwenNativeSearch:
@@ -307,9 +297,10 @@ def selected_topic_search_provider_id(
 ) -> str:
     """Return the exact serving-compatibility identity of the selected lane.
 
-    The native free-search lane is the only one implemented, so an unset variable selects it:
-    the model comes from the settings page, and the search toggles from theirs. The variable
-    remains only to name the lane explicitly; an unknown explicit name still fails loudly.
+    The native free-search lane is the only one implemented, so an unset variable
+    selects it. Free-search engine toggles do not choose the lane: topic
+    recommendation stays available when they are off. An unknown explicit name
+    still fails loudly.
     """
 
     values = os.environ if environ is None else environ
@@ -319,7 +310,6 @@ def selected_topic_search_provider_id(
         or ""
     ).strip()
     if provider in ("", "openjiuwen-native"):
-        _require_native_free_search(values)
         return OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
     raise OpenJiuwenNativeSearchContractError("search_provider_not_configured")
 

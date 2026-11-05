@@ -587,7 +587,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
                 {
                     "selected_options": [selected_option],
                     "custom_input": "",
-                    "card_id": "tool-invocation-17",
+                    "card_id": "tool-call-17",
                 }
             ],
             "source": "permission_interrupt",
@@ -598,7 +598,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
 
     assert isinstance(inputs["query"], InteractiveInput)
     assert inputs["query"].user_inputs == {
-        "tool-invocation-17": expected_payload
+        "tool-call-17": expected_payload
     }
 
 

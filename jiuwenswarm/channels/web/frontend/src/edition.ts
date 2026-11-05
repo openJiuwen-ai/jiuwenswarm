@@ -9,7 +9,7 @@ function readInjectedEdition(): string {
 function readEdition(): string {
   const injected = readInjectedEdition().trim().toLowerCase();
   if (injected && !injected.startsWith('__')) return injected;
-  return String(import.meta.env.VITE_JIUWENSWARM_EDITION ?? '')
+  return String(import.meta.env?.VITE_JIUWENSWARM_EDITION ?? '')
     .trim()
     .toLowerCase();
 }

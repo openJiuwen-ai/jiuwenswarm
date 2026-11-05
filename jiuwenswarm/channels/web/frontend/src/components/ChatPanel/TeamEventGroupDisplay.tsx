@@ -612,6 +612,7 @@ export function AgentTeamActivityCard({
                   shortId={group.shortId}
                   status={group.status}
                   runId={group.runId}
+                  executor={group.executor}
                 />
                 {group.items.map(renderActivityRow)}
               </div>

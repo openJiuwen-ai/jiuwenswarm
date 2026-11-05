@@ -117,6 +117,24 @@ const prompt = () => document.querySelector('[data-testid="interaction-slot-auth
 const deliver = async (socket, value) => act(async () => socket.receive({ type: 'event', event: 'chat.ask_user_question', payload: value }));
 const respond = async (socket, request, ok = true) => act(async () => socket.receive({ type: 'res', id: request.id, ok, payload: { accepted: ok } }));
 const runtimeAck = async (socket, id) => act(async () => socket.receive({ type: 'event', event: 'runtime.accepted', payload: { request_id: id, accepted: true } }));
+
+for (const callId of ['call_A', 'c'.repeat(129), 'c'.repeat(512)]) {
+  test(`equal call identity (${callId.length}) preserves submission and exact ACK matching`, async () => mounted(async ({ socket, observed }) => {
+    await deliver(socket, { ...payload([question({ card_id: callId })]), request_id: callId });
+    assert.ok(prompt());
+    await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+    const outbound = socket.requests.at(-1);
+    assert.equal(outbound.params.request_id, callId);
+    assert.equal(outbound.params.answers[0].card_id, callId);
+    await respond(socket, outbound);
+    assert.deepEqual(observed.results, []);
+    await runtimeAck(socket, 'foreign-rpc');
+    assert.deepEqual(observed.results, []);
+    await runtimeAck(socket, outbound.id);
+    assert.deepEqual(observed.results, [true]);
+    assert.equal(prompt(), null);
+  }));
+}
 const assertPlanToggleAllowed = (allowed) => {
   for (const next of [false, true]) assert.equal(evaluatePlanToggle(sessionId, next).ok, allowed);
 };
@@ -207,7 +225,7 @@ test('legacy caller cards are stripped, and blind or foreign permission answers 
 
 test('invalid or mixed Smart frames never display a legacy prompt', async () => mounted(async ({ socket }) => {
   for (const questions of [[question({ card_id: null })], [question({ card_id: '' })], [question({ card_id: 1 })],
-    [question({ card_id: 'x'.repeat(129) })], [question(), question({ card_id: 'smart' })],
+    [question({ card_id: 'x'.repeat(513) })], [question(), question({ card_id: 'smart' })],
     [question({ card_id: 'a' }), question({ card_id: 'b' })], []]) {
     await deliver(socket, payload(questions));
     assert.equal(prompt(), null);
