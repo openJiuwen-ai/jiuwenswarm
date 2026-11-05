@@ -610,11 +610,11 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
       >
         {scheduledMode && laneSections !== null ? (
           <>
-            {laneSections.members.length === 0 ? null : (
+            {standaloneMembers.length === 0 ? null : (
               <div className={css.laneSection} data-testid="team-trajectory-member-group">
                 <div className={css.memberSectionHeader}>
                   <strong>{t('trajectory.team.members')}</strong>
-                  <span>{laneSections.members.length}</span>
+                  <span>{standaloneMembers.length}</span>
                 </div>
                 {ungrouped.map(renderLane)}
                 {workflowGroups.map(renderWorkflowGroup)}
