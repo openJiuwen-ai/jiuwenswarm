@@ -791,6 +791,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_default_project_session_workspace_dir,
     get_env_file,
+    get_project_skills_dirs,
     get_runtime_state_path,
     mask_sensitive,
 )
@@ -10939,9 +10940,10 @@ class JiuWenSwarmDeepAdapter:
         return skill_rail
 
     def _skill_scan_dirs(self) -> list[str]:
-        """Skill scan roots: agent skills dir + this session's selected MCP
-        skill dirs. A client app that leaves out the skill library scans
-        no agent skills dir; its template binds its own skills.
+        """Skill scan roots: agent skills dir + project-level skill dirs + this
+        session's selected MCP skill dirs. A client app that leaves out the
+        skill library scans neither the agent skills dir nor project skill
+        dirs; its template binds its own skills.
 
         Centralized so _build_skill_rail (init) and refresh_skill_rails
         (reload) compute the same roots. Only a session-scoped child scans MCP
@@ -10954,8 +10956,19 @@ class JiuWenSwarmDeepAdapter:
         support them, so the root's view of them must be empty (previously it
         scanned ALL connected MCP dirs, leaking cli/skill skills into rewind/
         cron/admin root runs).
+
+        When a project is set from the frontend, ``<project>/.agents/skills``
+        and ``<project>/.claude/skills`` (project-level installs) follow the
+        agent skills dir. They come after it so an installed Skill keeps
+        precedence over a same-named project Skill.
         """
-        roots = [] if self._leaves_out(Capability.SKILL_LIBRARY) else [str(get_agent_skills_dir())]
+        if self._leaves_out(Capability.SKILL_LIBRARY):
+            roots: list[str] = []
+        else:
+            roots = [str(get_agent_skills_dir())]
+            for project_root in get_project_skills_dirs(getattr(self, "_project_dir", None)):
+                if project_root not in roots:
+                    roots.append(project_root)
         if not getattr(self, "_is_session_scoped_adapter", False):
             return roots
         try:
