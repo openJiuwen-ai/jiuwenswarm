@@ -133,6 +133,27 @@ class DeploymentTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(sentinel.read_bytes(), b"retained-history")
 
+    def test_shared_workspace_removes_node_address_and_keeps_service_address(self):
+        from dotenv import dotenv_values
+
+        self.settings["persist_user_node_ingress_url"] = False
+        config = self.root / "home/.jiuwenswarm/config/config.yaml"
+        user_config = self.root / "users/alice/.jiuwenswarm/config/config.yaml"
+        for path in (config, user_config):
+            deploy.write_yaml(path, {})
+        user_env = user_config.with_name(".env")
+        user_env.write_text("MODEL_NAME='original'\nJIUWENSWARM_ADX_NODE_INGRESS_URL='https://old:8443'\n")
+        owner = user_env.stat()
+        with patch.object(deploy, "check_business"):
+            service_env = deploy.configure(self.settings)
+            deploy.configure(self.settings)
+        self.assertNotIn("JIUWENSWARM_ADX_NODE_INGRESS_URL", dotenv_values(user_env))
+        self.assertEqual(dotenv_values(user_env)["MODEL_NAME"], "original")
+        self.assertEqual((user_env.stat().st_uid, user_env.stat().st_gid), (owner.st_uid, owner.st_gid))
+        self.assertEqual(user_env.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(dotenv_values(service_env)["JIUWENSWARM_ADX_NODE_INGRESS_URL"],
+                         self.settings["node_ingress_url"])
+
 
 
 if __name__ == "__main__":

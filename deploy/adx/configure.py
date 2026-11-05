@@ -207,7 +207,7 @@ def configure(settings):
 
 
 def update_environment(path, settings, owner=None, *, service=False):
-    from dotenv import set_key
+    from dotenv import dotenv_values, set_key, unset_key
     if not path.exists():
         write_private(path, "")
         if owner:
@@ -215,8 +215,12 @@ def update_environment(path, settings, owner=None, *, service=False):
     owner = path.stat()
     token = Path(settings["token_file"]).read_text().strip()
     values = {"ADX_TOKEN": token, "ADX_GATEWAY_TOKEN": token,
-              "SSL_CERT_FILE": settings["ca_file"],
-              "JIUWENSWARM_ADX_NODE_INGRESS_URL": settings["node_ingress_url"]}
+              "SSL_CERT_FILE": settings["ca_file"]}
+    node_ingress_key = "JIUWENSWARM_ADX_NODE_INGRESS_URL"
+    if service or settings.get("persist_user_node_ingress_url", True):
+        values[node_ingress_key] = settings["node_ingress_url"]
+    elif node_ingress_key in dotenv_values(path, interpolate=False):
+        unset_key(str(path), node_ingress_key)
     if service:
         values.update({
             "AGENTOS_BUILTIN_AGENT_CPU": str(settings["runtime"].get("cpu", 2000)),
