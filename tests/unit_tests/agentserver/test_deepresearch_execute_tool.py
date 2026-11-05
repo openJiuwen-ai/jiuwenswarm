@@ -1406,6 +1406,35 @@ async def test_option_generation_preserves_model_defaults_and_completion_budget(
     assert "不得输出分析或推理过程" in prompt
 
 
+@pytest.mark.asyncio
+async def test_replay_interrupt_card_cancelled_option_generation_returns_stopped():
+    """选项生成 await 点被取消时，重弹路径透传 stopped 终态而不是抛 KeyError。
+
+    回归检视意见：_guard_user_stop 取消路径返回 _stopped_result 的 dict
+    （kind=stopped），修复前 _replay_interrupt_card 直接按 options[index]
+    构造交互卡，dict 无整数键抛 KeyError，stopped 转译失效退回框架通用
+    [Interrupted] 分支。phase=new 与 phase=error 两个重弹入口共用本路径。
+    """
+    model = _Model(_option_payload("方向A"))
+    model.invoke = AsyncMock(side_effect=asyncio.CancelledError())
+    context = de.DeepResearchExecutionContext(
+        tool_call_id="call-1",
+        state=None,
+        user_input=None,
+        model=model,
+        agent_id="jiuwenswarm",
+        save_state=lambda _value: None,
+    )
+    state = {"query": "研究智能家电竞争格局", "conversation_id": "conv-stop-1"}
+    probe = {"node": "feedback_handler", "questions": ["重点研究哪些品类？"]}
+
+    result = await de._replay_interrupt_card(context, state, "conv-stop-1", probe)
+
+    assert isinstance(result, dict)
+    assert result["kind"] == "stopped"
+    assert "已被用户停止" in str(result["content"])
+
+
 def test_option_description_is_truncated_without_rejecting_valid_options():
     payload = json.dumps(
         {
@@ -1946,6 +1975,13 @@ async def test_cancelled_during_sdk_window_translates_to_stopped_without_error_o
     assert "明确要求继续" in result["content"]
     assert "如需继续，请再次调用" not in result["content"]
     assert "conversation-1" not in result["content"]
+    # 2026-11-05 B+ 补强（9973ed6e 线上事故回归）：停止定性为用户
+    # 主动行为（防猜测故障/因历史失败绕过）、“继续”优先于备选方案
+    # 解读、消息信封 timestamp 时序意识三重防御须在文案在位。
+    assert "停止是用户的主动操作" in result["content"]
+    assert "失败记录" in result["content"]
+    assert "备选方案" in result["content"]
+    assert "timestamp" in result["content"]
 
 
 @pytest.mark.asyncio
@@ -2063,11 +2099,97 @@ async def test_error_phase_without_stopped_snapshot_reports_finished():
         patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=None)),
         patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
     ):
-        result, _ = await _invoke(state=state)
+        result, saved = await _invoke(state=state)
 
     assert result["kind"] == "error"
     assert "请重新发起" in result["content"]
     stream.assert_not_awaited()
+    # fix-4c：判死回落 new（参照 _stopped_result）。rail 对 error 终态保留
+    # state 后，phase=error 幸存会让同主题的重新发起被反复判死（死锁）；
+    # 回落 new 保留 conversation_id，下一次调用走 new 分支扫库认领或全新
+    # 起跑，重新发起可自愈。
+    assert saved[-1]["phase"] == "new"
+    assert saved[-1]["conversation_id"] == "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_error_phase_replays_feedback_card_from_interrupt_snapshot():
+    """修复8：error 相位 + feedback_handler 中断快照 → 重弹原反馈卡。
+
+    error 写入可能覆盖原 wait_feedback 相位（子进程失败退出），
+    checkpoint 残留的是交互中断快照：不判死，重弹原反馈卡，
+    用户答复后从原会话 resume，交互上下文不丢。
+    """
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-FB-E",
+    }
+    probe = {
+        "node": "feedback_handler",
+        "questions": ["1. 重点研究哪些品类？", "2. 覆盖哪些市场？"],
+    }
+    model = _Model(_option_payload("重点研究哪些品类？", "覆盖哪些市场？"))
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state, model=model)
+
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    cards = result["interaction"]["questions"]
+    assert [card["question"] for card in cards] == [
+        "重点研究哪些品类？",
+        "覆盖哪些市场？",
+    ]
+    assert all(len(card["options"]) == 2 for card in cards)
+    final = saved[-1]
+    assert final["phase"] == "wait_feedback"
+    assert final["conversation_id"] == "C-FB-E"
+    # 与 new 相位认领同口径：probe 问题经 _split_questions 剥掉编号后入 state。
+    assert final["questions"] == ["重点研究哪些品类？", "覆盖哪些市场？"]
+
+
+@pytest.mark.asyncio
+async def test_error_phase_replays_outline_card_from_interrupt_snapshot():
+    """修复8：error 相位 + outline_interaction 中断快照 → 重弹大纲审阅卡。"""
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-OL-E",
+    }
+    probe = {
+        "node": "outline_interaction",
+        "outline_json": {
+            "title": "智能家电竞争格局研究",
+            "thought": "先规模后玩家",
+            "sections": [
+                {"title": "市场规模", "is_core_section": True},
+                {"title": "主要玩家", "is_core_section": False},
+            ],
+        },
+    }
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state)
+
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    final = saved[-1]
+    assert final["phase"] == "wait_outline"
+    assert final["conversation_id"] == "C-OL-E"
+    assert final["outline_presented"] is True
+    question = result["interaction"]["questions"][0]
+    assert "**研究思路**：先规模后玩家" in question["preview"]["text"]
 
 
 @pytest.mark.asyncio
@@ -2335,6 +2457,12 @@ async def test_execution_rail_rewrites_stopped_result_to_block_auto_restart():
     assert ctx.inputs.tool_msg.tool_call_id == "call-1"
     assert "已被用户停止" in ctx.inputs.tool_msg.content
     assert "请勿" in ctx.inputs.tool_msg.content
+    # 2026-11-05 B+ 补强（9973ed6e 线上事故回归）：rail 改写口径与
+    # execution._stopped_result 同步——停止定性、备选方案优先级、
+    # timestamp 时序意识三重防御在位。
+    assert "停止是用户的主动操作" in ctx.inputs.tool_msg.content
+    assert "备选方案" in ctx.inputs.tool_msg.content
+    assert "timestamp" in ctx.inputs.tool_msg.content
     # conversation_id 与内部 state 字段不泄露进 LLM 历史
     assert "conversation-1" not in ctx.inputs.tool_msg.content
     assert "schema_version" not in ctx.inputs.tool_msg.content
