@@ -14,18 +14,18 @@ def _timestamp(value: str | None) -> str | None:
 def _content_key(item: dict, kind: str) -> str:
     if kind == 'message':
         message = item['message']
-        content = {key: message.get(key) for key in (
-            'message_id', 'sender_id', 'sender_kind', 'text', 'reply_to', 'status',
-        )}
+        fields = ('message_id', 'sender_id', 'sender_kind', 'text', 'reply_to', 'status')
+        content = {key: message.get(key) for key in fields}
         content['received_at'] = _timestamp(message.get('received_at'))
         for key in ('mention_ids', 'attachment_refs'):
             content[key] = message.get(key, [])
     else:
         # Import paths, preview cache names and execution references are not file contents.
-        content = {key: item.get(key) for key in (
+        fields = (
             'artifact_id', 'artifact_kind', 'title', 'file_name', 'file_size', 'file_digest',
             'url', 'snippet', 'message_id', 'file_key', 'resource_type', 'source_session_id',
-        )}
+        )
+        content = {key: item.get(key) for key in fields}
         content['created_at'] = _timestamp(item.get('created_at'))
     payload = [kind, item['group_id'], content]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()

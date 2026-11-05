@@ -98,7 +98,7 @@ class GroupSharingService:
         self._cli = cli
 
     def is_owner_direct(self, execution) -> bool:
-        state = self._sessions.get_request(execution.namespace_id, execution.request_id)
+        state = self.sessions.get_request(execution.namespace_id, execution.request_id)
         record = state.record
         if (record.agent_id, record.session_id, record.access.principal_ref) != (
             execution.agent_id, execution.session_id, execution.principal_ref,
@@ -106,7 +106,7 @@ class GroupSharingService:
             return False
         if getattr(record, "source_ref", None) != execution.source_ref:
             return False
-        session = self._sessions.get_session(execution.namespace_id, execution.session_id)
+        session = self.sessions.get_session(execution.namespace_id, execution.session_id)
         return _owner_web_request(record, session)
 
     def scope(self, execution, query) -> tuple[dict[str, Any], str | None]:
@@ -198,6 +198,10 @@ class GroupSharingService:
                     approval["requester_name"] = ""
 
     async def authorize(self, execution, query, result, source_groups):
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
         if result.status not in {"found", "empty", "incomplete"}:
             return result
         try:
@@ -314,7 +318,10 @@ class GroupSharingService:
                     execution, "Source group access changed; submit a new request.", status="unavailable"
                 )
             if row["status"] == "pending":
-                await asyncio.to_thread(self.repository.authorize_from_grants, row["approval_id"], now=self.now())
+                try:
+                    await asyncio.to_thread(self.repository.authorize_from_grants, row["approval_id"], now=self.now())
+                except PersistentAgentError:
+                    return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
                 row = await asyncio.to_thread(self.repository.get, row["approval_id"])
             if row["status"] == "pending":
                 pending_rows.append(row)
@@ -372,6 +379,10 @@ class GroupSharingService:
         except (OSError, PersistentAgentError):
             return _safe_result(execution, "An approved file is no longer available for this Session.",
                                 status="unavailable")
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
         if denied_source:
             if not (released_hits or released_artifacts):
                 return _safe_result(
@@ -551,7 +562,7 @@ class GroupSharingService:
         for row in rows:
             scope = row["scope"]
             if row["status"] == "owner_read":
-                session = await asyncio.to_thread(self._sessions.get_session, namespace_id, record.session_id)
+                session = await asyncio.to_thread(self.sessions.get_session, namespace_id, record.session_id)
                 if not _owner_web_request(record, session) or scope.get("release_policy") != "owner_direct":
                     return False
             target = scope["target"]

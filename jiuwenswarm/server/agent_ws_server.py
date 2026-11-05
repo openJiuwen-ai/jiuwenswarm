@@ -3141,13 +3141,23 @@ class AgentWebSocketServer:
         disposition = InboundDisposition.REJECTED
         try:
             params = request.params if isinstance(request.params, dict) else {}
-            event = DingTalkInboundEvent.from_payload(params.get("event"))
+            raw_event = params.get("event")
+            lifecycle = isinstance(raw_event, dict) and raw_event.get("event_kind") == "group_lifecycle"
+            if lifecycle:
+                from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import DingTalkGroupEvent
+
+                event = DingTalkGroupEvent.from_payload(raw_event)
+            else:
+                event = DingTalkInboundEvent.from_payload(raw_event)
             if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
                 disposition = InboundDisposition.REJECTED
             else:
                 fanout = await self._ensure_persistent_group_fanout()
                 if fanout is not None:
-                    disposition = await fanout.dingtalk_inbound.handle(event)
+                    if lifecycle:
+                        disposition = await fanout.dingtalk_inbound.handle_group_change(event)
+                    else:
+                        disposition = await fanout.dingtalk_inbound.handle(event)
         except Exception as exc:
             logger.warning(
                 "[AgentWebSocketServer] JM-21 inbound event rejected: error_type=%s",

@@ -57,28 +57,33 @@ class _ReadBudget:
 
 
 class DingTalkGroupPoller:
-    """Read only active adaptive bindings, then use the normal history ingress."""
+    """Reconcile known Bot memberships separately from adaptive history reads."""
 
     def __init__(
         self, manager: Any, inbound: Any, *,
         config_loader: Callable[[], Mapping[str, Any]] | None = None,
         interval: float = 10.0,
+        membership_interval: float = 60.0,
         clock: Callable[[], datetime] = _utc_now,
         state_root: Path | None = None,
     ) -> None:
-        if interval <= 0:
+        if interval <= 0 or membership_interval <= 0:
             raise ValueError('Polling interval must be positive')
         self._manager = manager
         self._inbound = inbound
         self._config_loader = config_loader
         self._interval = interval
+        self._membership_interval = membership_interval
         self._clock = clock
         self._state_root = Path(state_root) if state_root is not None else (
             Path(manager._sessions.db_path).parent / 'dingtalk_group_polling'
         )
         self._task: asyncio.Task[None] | None = None
+        self._membership_task: asyncio.Task[None] | None = None
         self._closed = False
         self._lock = asyncio.Lock()
+        self._membership_lock = asyncio.Lock()
+        self._last_membership_key: tuple[str, ...] | None = None
         self._floors: dict[_RecipientKey, datetime] = {}
         self._progress: dict[_GroupKey, datetime] = {}
         self._recipient_progress: dict[_RecipientKey, datetime] = {}
@@ -91,19 +96,24 @@ class DingTalkGroupPoller:
         """Start at most one background loop; a closed poller cannot restart."""
         if not self._closed and self._task is None:
             self._task = asyncio.create_task(self._run(), name='dingtalk-group-history')
+            self._membership_task = asyncio.create_task(self._run_memberships(), name='dingtalk-group-membership')
 
     async def aclose(self) -> None:
         """Cancel reads and wait until any manually triggered poll stops dispatching."""
         self._closed = True
-        task = self._task
+        tasks = tuple(task for task in (self._task, self._membership_task) if task is not None)
         self._task = None
-        if task is not None:
+        self._membership_task = None
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
         async with self._lock:
+            pass
+        async with self._membership_lock:
             pass
 
     async def _run(self) -> None:
@@ -118,6 +128,92 @@ class DingTalkGroupPoller:
     async def _bindings(self) -> tuple[DingTalkBinding, ...]:
         config = await asyncio.to_thread(self._config_loader) if self._config_loader is not None else None
         return await asyncio.to_thread(configured_dingtalk_bindings, config)
+
+    async def _run_memberships(self) -> None:
+        while not self._closed:
+            try:
+                await self.poll_memberships_once()
+            except Exception as exc:
+                logger.warning('DingTalk group membership cycle failed (%s)', type(exc).__name__)
+            await asyncio.sleep(self._membership_interval)
+
+    def _membership_accesses(self, binding: DingTalkBinding) -> tuple[Any, ...]:
+        """Include uncertain known bindings without depending on group reply mode."""
+        service = self._manager.service
+        connection = service.connection_of(binding.namespace_id, binding.agent_id)
+        if connection is None:
+            service.get_config(binding.namespace_id, binding.agent_id)
+        elif (connection.channel, connection.connection_key) != ('dingtalk', binding.app_id):
+            return ()
+        groups = self._manager.group_chats
+        accesses = list(groups.active_accesses(binding.namespace_id, binding.agent_id))
+        accesses.extend(groups.unresolved_accesses(binding.namespace_id, binding.agent_id))
+        return tuple(access for access in accesses if access.app_id == binding.app_id)
+
+    async def poll_memberships_once(self) -> int:
+        """Check at most eight known Bot bindings, without reading message bodies."""
+        from jiuwenswarm.common.im_binding_lock import im_binding_lock
+
+        inspect = getattr(self._manager.dingtalk_cli_runtime, 'inspect_group_membership', None)
+        async with self._membership_lock:
+            if self._closed or not callable(inspect):
+                return 0
+            choices = {}
+            for binding in await self._bindings():
+                try:
+                    accesses = await asyncio.to_thread(self._membership_accesses, binding)
+                    for access in accesses:
+                        group = await asyncio.to_thread(
+                            self._manager.group_chats.get, binding.namespace_id, access.group_id,
+                        )
+                        if group.platform == 'dingtalk':
+                            key = (binding.namespace_id, binding.agent_id, binding.app_id, access.group_id)
+                            choices[key] = (binding, access, group)
+                except Exception as exc:
+                    logger.warning('DingTalk membership binding unavailable (%s)', type(exc).__name__)
+            keys = sorted(choices)
+            if self._last_membership_key is not None:
+                keys = ([key for key in keys if key > self._last_membership_key]
+                        + [key for key in keys if key <= self._last_membership_key])
+            used = 0
+            for key in keys:
+                if self._closed or used >= _READ_BUDGET:
+                    break
+                binding, access, group = choices[key]
+                async with im_binding_lock('dingtalk', binding.app_id):
+                    if binding not in await self._bindings():
+                        continue
+                    if access not in await asyncio.to_thread(self._membership_accesses, binding):
+                        continue
+                    observed_at = _utc(self._clock())
+                    self._last_membership_key = key
+                    used += 1
+                    try:
+                        proof = await inspect(
+                            DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id),
+                            conversation_id=group.platform_chat_id,
+                        )
+                    except Exception as exc:
+                        logger.warning('DingTalk membership probe unavailable (%s)', type(exc).__name__)
+                        proof = {'status': 'unknown'}
+                    if self._closed or binding not in await self._bindings():
+                        continue
+                    if access not in await asyncio.to_thread(self._membership_accesses, binding):
+                        continue
+                    status = proof.get('status') if isinstance(proof, dict) else None
+                    if status not in {'active', 'left'}:
+                        # A failed observation does not revoke the last trusted membership fact.
+                        logger.warning('DingTalk membership could not be refreshed: agent=%s group=%s',
+                                       binding.agent_id, access.group_id)
+                        continue
+                    if status == 'left' and status != access.status:
+                        await asyncio.to_thread(
+                            self._manager.group_chats.update_membership,
+                            binding.namespace_id, binding.agent_id, access.group_id, binding.app_id,
+                            status=status, observed_at=observed_at, source_ref='dingtalk:membership-probe',
+                            expected_revision=access.revision,
+                        )
+            return used
 
     def _eligible_accesses(self, binding: DingTalkBinding) -> tuple[Any, ...]:
         ns, agent = binding.namespace_id, binding.agent_id
