@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-`webui.workbench-v2` demonstrates 14 registered WebUI slots (15 contributions in total, with two instances in the right panel), covering catalog components such as `Avatar`, `Card`, `Dropdown`, `FileTree`, `FilePreview`, `Panel`, `Iframe`, `Switch`, `Button`, `Tag`, `Box`, and `Text`. The sidebar main page and task inspection main page use `Iframe` roots, while the right panel provides both a workspace files tab (`Panel` root combining `FileTree` and `FilePreview`) and a web preview tab (`Iframe` root). The plugin stores session state and platform file results, then publishes complete render trees. File components handle expansion, selection, and status messages locally. The demo calls no model or external business API.
+`webui.workbench-v2` demonstrates 12 registered WebUI slots (13 contributions in total, with two instances in the right panel), covering catalog components such as `Avatar`, `Card`, `Dropdown`, `FileTree`, `FilePreview`, `Panel`, `Iframe`, `Button`, `Tag`, `Box`, and `Text`. The sidebar main page and task inspection main page use `Iframe` roots, while the right panel provides both a workspace files tab (`Panel` root combining `FileTree` and `FilePreview`) and a web preview tab (`Iframe` root). The plugin stores session state and platform file results, then publishes complete render trees. File components handle expansion, selection, and status messages locally. The demo calls no model or external business API.
 
 ## Install and activate
 
@@ -15,7 +15,7 @@ Place the generated ZIP where the AgentServer machine can read it, then run thes
 /extension query webui.workbench-v2
 ```
 
-If an older package with the same ID is active, run `/extension uninstall webui.workbench-v2` first, then install the new ZIP and query it. Successful installation activates the package immediately. Startup loads installed copies and does not scan `examples/` in the source tree. Management commands work in a new empty conversation, session-scoped rendering requires a real session; application-scope slots (`application.entry`, `application.sidebar.footer`) do not.
+If an older package with the same ID is active, run `/extension uninstall webui.workbench-v2` first, then install the new ZIP and query it. Successful installation activates the package immediately. Startup loads installed copies and does not scan `examples/` in the source tree. Management commands work in a new empty conversation, session-scoped rendering requires a real session; application-scope slots (`application.entry`, `application.sidebar.footer`, `task.function`, `task.function.main`) do not.
 
 After installation, open an existing real conversation and refresh or re-enter it so the Host sends `ui.ready`. The first ready builds the demo trees; later ready events restore the active extension's state. Ready for the file instance reads the root directory again and clears the preview; ready for the webpage instance republishes its Iframe.
 
@@ -26,9 +26,7 @@ After installation, open an existing real conversation and refresh or re-enter i
 | `application.entry` | Welcome card and Avatar on first visit; Get started closes it. Accepted ready stores a visit marker, so refresh skips mounting |
 | `application.sidebar.footer` | User menu at the bottom of the icon rail (`Avatar` + `Dropdown`, instance `user-menu`): application scope, single capacity |
 | `application.menu` → `application.menu.main` | Click "交互工作台 / Workbench" in the sidebar to open the main page (`Iframe` root); both use instance `workbench` |
-| `task.function` → `task.function.main` | Click "任务检查 / Inspect tasks" in the task area to open the task page (`Iframe` root); both use `task-inspector` |
-| `application.settings` | "天气详情 / Weather details" switch in the settings content area, scoped to the current conversation |
-| `conversation.input.above` | Token Weather demo with a hide/show button on the right, arranged horizontally in a `Box` with wrapping on narrow screens; the host provides a muted rounded strip above the activity panel in team mode |
+| `task.function` → `task.function.main` | Click "Inspect tasks" in the task area to open the task page (`Iframe` root); labels follow the interface language, and both use application-scoped `task-inspector`, including in an empty conversation. Visiting a chat hides the page; returning to the entry reuses its iframe |
 | `conversation.input.below` | Four quick actions for weekly reports, bug fixes, presentations, and idle tasks, using `file-text`, `wrench`, `presentation`, and `clock` icons respectively |
 | `conversation.panel.right` | "Workspace files" (`Panel` root, instance `workbench`) and "Web preview" (`Iframe` root, instance `iframe-preview`) tabs, mutually exclusive with native content |
 | `conversation.session.content.after` | Real token usage for a completed assistant round, using the ghost Button style and database icon without a click action; round menu actions add a result row |
@@ -40,16 +38,21 @@ Normal buttons use `size="md"`: 32px height, 14px text, 16px horizontal padding,
 8px corners, and no default shadow. The host theme owns these metrics; the plugin only selects size.
 The four quick actions below the input use this same normal size.
 
-Turn slots use the actual `requestId` as `instance_key`. Usage appears as a label such as `用量：22.8M tokens`,
+Turn slots use the actual `requestId` as `instance_key`. Usage appears as a localized label such as `Input 22.9K · Output 82`,
 using `Button(type="text", size="md", icon="database")` without a `ui.click` binding, for display only.
-The total comes from `total_tokens` on the `context.usage.updated` notification.
-It is the provider's round total, not context occupancy or a cumulative bill.
-`ops.session.usage()` reports context-window information and no longer exposes a round `turn` field.
+The two counts come directly from `input_tokens` and `output_tokens` in the same `context.usage.updated` notification.
+They represent the provider's input and output for that round.
+The backend plugin uses the existing `ops.store` to persist both values in one `turn-usage.v2` record, isolated by session and requestId.
+The Chinese label is `输入 22.9K · 输出 82`. Numbers follow the native context popover's decimal K convention, with one decimal place and no trailing zero.
+Repeated notifications replace the values without adding them. Reported zero is displayed as `Input 0 · Output 0`;
+missing observations show `Input not reported · Output not reported`. Legacy v1 totals are retained without treating totals or context occupancy as input/output counts or deriving the missing split.
 
-- Notifications replace the value for the same session and requestId and continue the handler chain.
-- The package stores round totals in its own store. Mounting, reloading and reactivation recover only the matching record.
-- Reported zero is displayed as `用量：0 tokens`. Missing notifications or records show "not reported"; input/output counts are not added to infer a total.
-- "Refresh round" reads the stored value and updates the filter summary and refresh count. "Round details" displays the requestId and saved summary. Other rounds and sessions remain independent.
+The first mount restores the matching round from the plugin's own store. Notifications received before mounting are saved too.
+"Refresh round" reads saved usage again, saves the current filter summary, and displays that round's refresh count.
+"Round details" displays its requestId and saved summary. Other rounds and sessions do not overwrite these values.
+Saved counts survive page refresh, plugin reload and service restart; uninstall deletes the package store under the platform's existing rules.
+Rounds never observed or saved before this fix remain "not reported". The plugin neither reads internal host history files nor adds a host query API.
+The runtime must support the existing `ops.store`; a failed write is not reported as saved.
 
 The round menu uses `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")` and keeps its muted background while open.
 A plugin-rendered `Button(value="👍", type="text")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.

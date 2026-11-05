@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 
@@ -34,17 +35,27 @@ class TurnState:
     summary: str
     result: str
     refreshes: int = 0
-    total_tokens: int | float | None = None
+    input_tokens: int | float | None = None
+    output_tokens: int | float | None = None
     result_visible: bool = False
 
-    def usage_label(self) -> str:
-        """Format the reported round total, keeping missing usage distinct from zero."""
-        if self.total_tokens is None:
-            return "用量：未上报 / Usage: not reported"
-        for scale, suffix in ((1_000_000, "M"), (1_000, "k")):
-            if self.total_tokens >= scale:
-                return f"用量：{self.total_tokens / scale:.1f}{suffix} tokens"
-        return f"用量：{self.total_tokens:g} tokens"
+    def usage_label(self) -> dict[str, str]:
+        """Show the round's reported input and output with the host's decimal K convention."""
+        if self.input_tokens is None or self.output_tokens is None:
+            return {"zh": "输入 未上报 · 输出 未上报", "en": "Input not reported · Output not reported"}
+        input_count = _format_token_count(self.input_tokens)
+        output_count = _format_token_count(self.output_tokens)
+        return {
+            "zh": f"输入 {input_count} · 输出 {output_count}",
+            "en": f"Input {input_count} · Output {output_count}",
+        }
+
+
+def _format_token_count(value: int | float) -> str:
+    if value < 1_000:
+        return str(value).removesuffix(".0")
+    rounded = Decimal.from_float(value / 1_000).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return format(rounded, "f").rstrip("0").rstrip(".") + "K"
 
 
 @dataclass(slots=True)

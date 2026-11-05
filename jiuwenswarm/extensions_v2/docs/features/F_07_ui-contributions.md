@@ -292,16 +292,17 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 
 工作台原来的固定用量按钮用于占位。本次在 `conversation.session.content.after` 保留
 `Button(variant="ghost", size="md", icon="database")` 的外观，不绑定点击动作，仅展示用量，
-按实际 requestId 显示 provider 的本轮 total_tokens；普通状态仅显示一行，轮次菜单操作后另显示操作结果。
+按实际 requestId 显示 provider 的本轮用量；普通状态仅显示一行，轮次菜单操作后另显示操作结果。
+最初展示 total_tokens，当前展示采用下述输入、输出拆分修订。
 “本轮详情”保留 requestId 和该轮筛选摘要；“刷新本轮”重新查询可用用量，同时保留既有摘要刷新行为。
 
-数据沿用 [S_11](../specs/S_11_session-usage-ops.md) 的 `ops.session.usage()`，不扩展平台接口。
-插件监听 `context.usage.updated` 后读取宿主绑定快照，按会话与 requestId 保存，用量通知继续交给后续 Handler。
-重复通知覆盖该轮数值，不累加。ready 在本轮尚无数值时查询；只接收 session_id 和 turn.request_id 均匹配的结果，
-不把最新回合数据借给旧回合，不以输入和输出重算总量。真实零值显示 0，缺失显示“未上报”。
+2026-11-04 修订：当前 [S_07](../specs/S_07_session-usage-ops.md) 的 `ops.session.usage()` 已不公开 turn，旧消费方因此一直显示“未上报”。
+后端插件直接读取 `context.usage.updated.total_tokens`，通过既有 `ops.store` 按会话与 requestId 保存；不增加宿主接口，不读宿主内部历史文件。
+重复通知覆盖该轮数值，不累加；不把上下文占用或其他轮次借作当前消耗，也不以输入和输出重算总量。真实零值显示 0，缺失显示“未上报”。
 
 通知和 UI 事件沿用同一个会话锁；只更新已挂载的对应轮次内容槽位，通知先于 ready 时仅缓存。
-状态随插件激活存续。重新激活后，公共查询只能恢复最近可用回合，其他历史轮次显示未上报；不另读内部历史文件。
+ready 从插件自己的存储恢复对应轮次，“刷新本轮”重新读存储；持久数据沿用 [F_27](F_27_store-persistence.md) 的目录、提交和生命周期。
+保存成功后才更新缓存和界面，失败不假称已经提交；非法保存值明确报错，不伪造零值。重载和服务重启保留数据，卸载删除数据。修复前未保存或没有收到通知的历史轮次仍然未知。
 最初改成 Text 后，用户要求保留原按钮样式和图标，因此恢复原 Button 配置，只替换真实用量文案，
 不声明 `ui.click`；本次不扩展组件协议。
 
@@ -309,6 +310,31 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 2026-11-03：`test_workbench_turn_actions.py` 与 `test_application_slots.py` 定向测试合计 35 项通过。
 其中安装/重载用例经过真实管理器、事件总线、Session Ops 和 WebUI 渲染服务，数据使用绑定宿主快照，
 不代表已完成真实模型及跨进程联调。产品页面由用户手工验收。
+
+2026-11-04：修复迁移并新增通知先后、非法值、持久化失败、重载恢复、零值和会话隔离回归。
+工作台、独立 Token Weather 和应用槽位定向测试共 109 项通过，原先失败的工作台安装用例已按当前通知及 store 契约更新并通过。
+实际工作台安装副本已同步处理器，经正式 /extension reload 返回热重载成功；本轮没有调用模型，尚未验证修复后新模型回合的实际数值。
+本次只修改工作台插件及验证与说明，未扩展宿主；没有为修复前缺失的插件记录复制宿主历史或造数。
+
+2026-11-04 口径与文案修订：用户确认保留真实本轮总量，将标签改为中英文独立的“本轮消耗”/“Turn usage”，数字统一为十进制 K、保留一位小数并省略末尾零；不将本轮消耗改成上下文占用。
+与独立插件、应用槽位的定向测试共 139 项通过，覆盖 1K 边界、二进制浮点舍入点、零值与中英文文案。
+安装副本已更新并热重载；Chrome 在同一真实历史回合确认中文“本轮消耗：23K Token”、英文“Turn usage: 23K tokens”，天气条上下文仍为 22.9K/256K。原始用量及持久化键值未修改，本轮未发起模型请求。
+
+2026-11-04 输入、输出拆分修订（已实现，替代上述总量展示）：用户确认消息下方仅显示
+“输入 22.9K · 输出 82” / “Input 22.9K · Output 82”，沿用原 Button 样式与 database 图标。
+直接保存同一 `context.usage.updated` 通知的 input_tokens、output_tokens，不从总量或上下文占用推导。
+两项数值都通过非负有限数校验后，以 `turn-usage.v2`、session_id、requestId 为键一次保存；保存成功后才更新界面。
+ready、刷新和热重载均恢复同一记录。零值明确显示 0；未收到拆分通知时显示
+“输入 未上报 · 输出 未上报” / “Input not reported · Output not reported”。旧 v1 总量记录保留，
+不解释为输入或输出，不读取宿主内部历史补值。按用户后续确认省略 Token/tokens 后缀，
+格式化沿用十进制 K、一位小数及省略末尾零。输入框上方的上下文天气条及宿主组件接口不变。
+
+验证：`.venv/bin/python -m pytest tests/unit_tests/extensions_v2/webui/test_workbench_turn_actions.py tests/unit_tests/extensions_v2/webui/test_application_slots.py tests/unit_tests/extensions_v2/webui/test_token_weather.py -q --no-cov -o log_cli=false`
+共 71 项通过，覆盖通知时序、重复更新、隔离、持久化失败、非法值、零值、旧记录、刷新、重载恢复及中英文标签。
+本地 1.0.9 安装副本已同步两个实现文件及中英文说明，ZIP 已重建；正式 `/extension reload` 返回热重载成功。
+Chrome 在用户截图对应的 20:13 历史回合确认显示“输入 未上报 · 输出 未上报”，刷新后保留，
+天气条仍显示 8.7% · 22.9K/256K Token。旧 v1 总量记录未改写，本轮没有调用模型或向真实会话注入用量，
+新数值的通知与恢复通过上述受控测试验证。真实页面截图为本次可视化目录的 workbench-input-output-live.png。
 
 ## 5. 异常与边界
 

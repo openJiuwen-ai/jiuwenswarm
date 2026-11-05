@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import math
 from collections.abc import Mapping
 from dataclasses import replace
+import json
+import math
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext
 
@@ -53,6 +53,15 @@ from .workspace import apply_file_action, load_workspace
 EVENTS = ("ui.click", "ui.change", "ui.press_enter", "ui.search", "ui.clear", "ui.select")
 
 
+def _valid_tokens(value: object) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
+def _usage_key(session_id: str, request_id: str) -> str:
+    return json.dumps(["turn-usage.v2", session_id, request_id], separators=(",", ":"))
+
+
 class WorkbenchHandlers:
     """Keep session and round state inside one extension activation."""
 
@@ -76,45 +85,33 @@ class WorkbenchHandlers:
         update = event.event_input
         if (not isinstance(update, ContextUsageUpdate) or ops is None
                 or ops.session_context is None or ops.session_context.session_id != update.session_id
-                or not update.request_id):
+                or not update.request_id
+                or not _valid_tokens(update.input_tokens) or not _valid_tokens(update.output_tokens)):
             return await next_handler(event)
         lock = self._locks.setdefault(update.session_id, asyncio.Lock())
         async with lock:
+            usage = {"input_tokens": update.input_tokens, "output_tokens": update.output_tokens}
+            if not await ops.store.set(_usage_key(update.session_id, update.request_id), usage):
+                raise RuntimeError("could not persist Workbench round usage")
             state = self._sessions.setdefault(update.session_id, SessionState())
-            total = update.total_tokens
-            if isinstance(total, (int, float)) and not isinstance(total, bool) and math.isfinite(total) and total >= 0:
-                state.turn(update.request_id).total_tokens = total
-                await ops.store.set(self._usage_key(update.session_id, update.request_id), {
-                    "session_id": update.session_id,
-                    "turn": {"request_id": update.request_id, "total_tokens": total},
-                })
-                slot = "conversation.session.content.after"
-                if (slot, update.request_id) in state.mounted:
-                    await self._render(ops, update.session_id, slot, update.request_id, state)
+            turn = state.turn(update.request_id)
+            turn.input_tokens = update.input_tokens
+            turn.output_tokens = update.output_tokens
+            slot = "conversation.session.content.after"
+            if (slot, update.request_id) in state.mounted:
+                await self._render(ops, update.session_id, slot, update.request_id, state)
         return await next_handler(event)
 
     @staticmethod
-    def _usage_key(session_id: str, request_id: str) -> str:
-        return "turn-usage:" + json.dumps([session_id, request_id], ensure_ascii=True)
-
-    @staticmethod
-    async def _load_usage(
-        ops: EventHandlerOps,
-        session_id: str,
-        request_id: str,
-        state: SessionState,
-    ) -> bool:
-        usage = await ops.store.get(WorkbenchHandlers._usage_key(session_id, request_id))
-        if not isinstance(usage, Mapping) or usage.get("session_id") != session_id:
-            return False
-        turn_usage = usage.get("turn")
-        if not isinstance(turn_usage, Mapping) or turn_usage.get("request_id") != request_id:
-            return False
-        total = turn_usage.get("total_tokens")
-        if not isinstance(total, (int, float)) or isinstance(total, bool) or not math.isfinite(total) or total < 0:
-            return False
-        state.turn(request_id).total_tokens = total
-        return True
+    async def _load_usage(ops: EventHandlerOps, session_id: str, request_id: str, state: SessionState) -> None:
+        usage = await ops.store.get(_usage_key(session_id, request_id))
+        if usage is not None:
+            if (not isinstance(usage, Mapping) or set(usage) != {"input_tokens", "output_tokens"}
+                    or not all(_valid_tokens(value) for value in usage.values())):
+                raise ValueError("invalid saved Workbench round usage")
+        turn = state.turn(request_id)
+        turn.input_tokens = usage["input_tokens"] if usage is not None else None
+        turn.output_tokens = usage["output_tokens"] if usage is not None else None
 
     async def on_event(
         self,
@@ -147,7 +144,7 @@ class WorkbenchHandlers:
                     return UiActionOutput(accepted=False, status="invalid_instance")
                 failed_status = None
                 for instance in instances:
-                    if target.slot_id in TURN_SLOTS and state.turn(instance).total_tokens is None:
+                    if target.slot_id in TURN_SLOTS and state.turn(instance).input_tokens is None:
                         await self._load_usage(ops, target.session_id, instance, state)
                     if target.slot_id == "conversation.panel.right" and instance == INSTANCE:
                         await load_workspace(ops, state.workspace)
@@ -240,7 +237,6 @@ class WorkbenchHandlers:
                 and request.payload.get("action_id") == "workbench.open"):
             return UiActionOutput(accepted=True, status="selected")
         return UiActionOutput(accepted=False, status="invalid")
-
 
     async def _on_application_entry(
         self,

@@ -2,7 +2,7 @@
 
 [English](README_EN.md)
 
-`webui.workbench-v2` 演示 14 个已登记的 WebUI slot（共 15 项贡献，右侧面板包含两个实例），覆盖 `Avatar`、`Card`、`Dropdown`、`FileTree`、`FilePreview`、`Panel`、`Iframe`、`Switch`、`Button`、`Tag`、`Box`、`Text` 等目录组件。侧栏主页面与任务检查主页面均使用 `Iframe` 根加载示例页面，右侧面板同时提供工作区文件页签（`Panel` 根，内含 `FileTree` 与 `FilePreview`）和网页预览页签（`Iframe` 根）。插件保存会话状态及平台返回的文件数据，通过下行完整树更新界面；文件组件自行处理展开、选中和提示文案。示例不调用模型或外部业务 API。
+`webui.workbench-v2` 演示 12 个已登记的 WebUI slot（共 13 项贡献，右侧面板包含两个实例），覆盖 `Avatar`、`Card`、`Dropdown`、`FileTree`、`FilePreview`、`Panel`、`Iframe`、`Button`、`Tag`、`Box`、`Text` 等目录组件。侧栏主页面与任务检查主页面均使用 `Iframe` 根加载示例页面，右侧面板同时提供工作区文件页签（`Panel` 根，内含 `FileTree` 与 `FilePreview`）和网页预览页签（`Iframe` 根）。插件保存会话状态及平台返回的文件数据，通过下行完整树更新界面；文件组件自行处理展开、选中和提示文案。示例不调用模型或外部业务 API。
 
 ## 安装与启用
 
@@ -15,7 +15,7 @@
 /extension query webui.workbench-v2
 ```
 
-已有同 ID 的旧版本时，先执行 `/extension uninstall webui.workbench-v2`，成功后再安装新 ZIP 并查询。安装成功即激活，无需另执行 enable。服务启动只加载安装目录，不扫描源码中的 `examples/`。管理命令可以在新建空对话使用，会话级插件渲染需要真实会话；应用范围槽位（`application.entry`、`application.sidebar.footer`）不要求会话。
+已有同 ID 的旧版本时，先执行 `/extension uninstall webui.workbench-v2`，成功后再安装新 ZIP 并查询。安装成功即激活，无需另执行 enable。服务启动只加载安装目录，不扫描源码中的 `examples/`。管理命令可以在新建空对话使用，会话级插件渲染需要真实会话；应用范围槽位（`application.entry`、`application.sidebar.footer`、`task.function`、`task.function.main`）不要求会话。
 
 安装完成后进入已有真实会话，刷新页面或重新进入会话，让 Host 发送 `ui.ready`。首次 ready 即可生成演示树；再次 ready 恢复当前激活实例的任务状态。文件实例 ready 时重新读取根目录并清空预览；网页实例 ready 时重新发布 Iframe。
 
@@ -26,9 +26,7 @@
 | `application.entry` | 首次访问展示欢迎卡片和 Avatar，点击开始使用关闭；ready 被接受后记录访问标记，刷新不再挂载 |
 | `application.sidebar.footer` | 左侧图标栏底部的用户菜单（`Avatar` + `Dropdown`，实例 `user-menu`）：应用范围、single 容量 |
 | `application.menu` → `application.menu.main` | 点击侧栏“交互工作台 / Workbench”打开主页面（`Iframe` 根）；两处实例均为 `workbench` |
-| `task.function` → `task.function.main` | 点击任务区“任务检查 / Inspect tasks”打开任务主页面（`Iframe` 根）；两处实例均为 `task-inspector` |
-| `application.settings` | 设置内容区域显示“天气详情 / Weather details”开关，状态属于当前会话 |
-| `conversation.input.above` | Token 天气演示与右侧“隐藏／显示”按钮，使用 `Box` 横向排列、窄屏换行；宿主提供浅色圆角横条，集群模式下位于活动面板上方 |
+| `task.function` → `task.function.main` | 点击任务区“任务检查”打开任务主页面（`Iframe` 根）；标题随中英文切换，两处实例均为 `task-inspector`，使用应用范围，空对话也可用；切到聊天后页面仅隐藏，返回入口复用原 iframe |
 | `conversation.input.below` | 周报总结、报错修复、PPT 制作、闲时任务四个快捷按钮，图标分别为 `file-text`、`wrench`、`presentation`、`clock` |
 | `conversation.panel.right` | “工作区文件”（`Panel` 根，实例 `workbench`）与“网页预览”（`Iframe` 根，实例 `iframe-preview`）两个页签，与原生内容互斥 |
 | `conversation.session.content.after` | 已结束助手轮次的真实 Token 用量，复用 ghost Button 样式和 database 图标，不绑定点击动作；执行轮次菜单操作后另显示结果行 |
@@ -36,16 +34,17 @@
 | `conversation.header.title.after` | 工作台状态 Tag |
 | `conversation.header.actions` | 刷新当前会话工作台的纯图标按钮；插件声明 `type="text"`、`icon="refresh"` 和 `aria-label` |
 
-轮次位置的 `instance_key` 来自实际 `requestId`。用量显示为 `用量：22.8M tokens` 等文案，
+轮次位置的 `instance_key` 来自实际 `requestId`。用量显示为 `输入 22.9K · 输出 82` 等文案，
 沿用 `Button(type="text", size="md", icon="database")` 的外观，不声明 `ui.click`，仅用于展示。
-数值来自 `context.usage.updated` 通知的 `total_tokens`，不是上下文占用量或会话累计账单。
-`ops.session.usage()` 提供上下文窗口信息，不再包含单轮 `turn` 字段。
+分别取自同一 `context.usage.updated` 通知的 `input_tokens` 和 `output_tokens`，表示本轮输入、输出量。
+后端插件通过已有 `ops.store` 将两个数值一次保存，使用 `turn-usage.v2` 键并按会话和 requestId 隔离；重复通知覆盖数值，不累加。
+文案随宿主语言切换，英文为 `Input 22.9K · Output 82`。数字沿用原生上下文浮层的十进制 K、保留一位小数并省略末尾零的规则。
+真实零值显示 `输入 0 · 输出 0`；缺失显示 `输入 未上报 · 输出 未上报`。旧 v1 总量记录保留，不将总量或上下文占用当作输入、输出，也不据此推算拆分值。
 
-- **通知更新：** 按会话和 requestId 保存本轮总数，重复通知替换数值，不累加；继续调用后续 Handler。
-- **保存与恢复：** 使用包自己的 store 保存用量。首次挂载、热重载或重新激活后，只读取当前会话、当前 requestId 对应的记录。
-- **显示规则：** 真实零值显示 `用量：0 tokens`；没有通知或保存记录时显示“未上报”，不从输入和输出推算总数。
-- **轮次操作：** “刷新本轮”重新读取保存值并更新筛选摘要和刷新次数；“本轮详情”显示 requestId 与摘要。
-  操作只影响当前轮次，不覆盖其他轮次或会话的数据。
+首次挂载从插件自己的存储恢复对应轮次；通知早于挂载时也会先保存。
+“刷新本轮”重新读取已保存用量、保存当前筛选摘要，并显示该轮刷新次数；“本轮详情”显示 requestId 和已保存的摘要。
+这些操作只更新当前轮次，其他轮次和会话的修改不会覆盖它。刷新页面、重新激活插件和服务重启后，已保存用量仍可恢复；卸载插件会按平台规则删除其存储。
+修复前未保存或插件未收到通知的历史轮次保持“未上报”，不读取宿主内部历史文件，也不新增宿主查询接口。运行环境须支持既有 `ops.store`，保存失败不会假称已保存。
 
 普通按钮统一使用 `size="md"`：高 32px、字号 14px、左右内边距 16px、图文间距 8px、圆角 8px，无默认阴影。
 这些尺寸由宿主主题提供，插件只声明 size；输入框下方的四个快捷按钮也使用该规格。
