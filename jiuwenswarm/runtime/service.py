@@ -2694,7 +2694,7 @@ class AgentRuntime:
         # actual handoff acknowledgement can settle the submitted answer.
         return (
             params.get("source") == "permission_interrupt"
-            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 128
+            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 512
             and event.event_type == "runtime.accepted"
             and event.request_id == request.request_id
             and event.session_id == request.session_id
