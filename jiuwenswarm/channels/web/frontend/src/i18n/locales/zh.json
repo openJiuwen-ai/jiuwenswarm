@@ -89,13 +89,7 @@
     "unavailable": "界面内容暂时无法显示，请稍后重试或重新生成结果。",
     "unavailableTitle": "界面内容暂时无法显示",
     "retry": "请稍后重试或重新生成结果",
-    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}",
-    "dateTimeAria": { "datetime": "日期时间", "time": "时间", "date": "日期" },
-    "multipleChoice": {
-      "maxSelections": "最多选 {{count}} 项",
-      "selectAria": "请选择",
-      "groupAria": "选项"
-    }
+    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
   },
   "nav": {
     "chat": "对话",

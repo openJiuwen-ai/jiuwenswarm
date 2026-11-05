@@ -89,13 +89,7 @@
     "unavailable": "The interface cannot be displayed right now. Please try again or regenerate the result.",
     "unavailableTitle": "The interface cannot be displayed right now",
     "retry": "Please try again later or regenerate the result",
-    "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}",
-    "dateTimeAria": { "datetime": "Date & Time", "time": "Time", "date": "Date" },
-    "multipleChoice": {
-      "maxSelections": "Up to {{count}} selections",
-      "selectAria": "Select an option",
-      "groupAria": "Options"
-    }
+    "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
   },
   "nav": {
     "chat": "Chat",
