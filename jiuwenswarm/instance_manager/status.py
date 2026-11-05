@@ -163,6 +163,15 @@ def _find_pid_by_port(port: int) -> Optional[int]:
                 ],
                 capture_output=True,
                 text=True,
+                # Pin the codec: the implicit text encoding follows the
+                # interpreter's UTF-8 mode (``uv run`` enables it), while netstat
+                # emits ANSI/OEM bytes. A mismatch raises inside subprocess'
+                # reader thread and the call silently returns an empty stdout,
+                # which made a listening port look free. Only ASCII tokens are
+                # parsed below, so a tolerant handler is safe. See
+                # lock.py::is_process_alive for the full rationale.
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             # Look for lines like: "TCP    0.0.0.0:18092    0.0.0.0:0    LISTENING    12345"
@@ -189,6 +198,8 @@ def _find_pid_by_port(port: int) -> Optional[int]:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if result.stdout.strip():
