@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -12,6 +12,7 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { reserveLoopbackPortSync, waitForOwnedCdpTarget } = require('./cdp_port.cjs');
 const { createShareImageExporter } = require('./share_image_export.cjs');
+const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
@@ -2998,6 +2999,13 @@ async function createMainWindow() {
     },
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  registerDisplayMediaHandler({
+    session: mainWindow.webContents.session,
+    desktopCapturer,
+    BrowserWindow,
+    getParentWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+    getFrontendUrl: () => currentFrontendUrl,
+  });
   mainWindow.on('close', event => {
     if (process.platform === 'darwin') {
       if (shuttingDown) return;
