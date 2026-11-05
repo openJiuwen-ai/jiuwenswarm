@@ -799,7 +799,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         eager_tools = list(configured) if isinstance(configured, list) else list(
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS
         )
-        replaced_tool_names = {"web_search", "fetch_webpage"} | set(
+        replaced_tool_names = {"web_search", "fetch_webpage", "web_image_search"} | set(
             _CRON_TOOL_NAMES
         )
         retained_tools = []

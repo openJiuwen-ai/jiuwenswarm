@@ -3308,6 +3308,73 @@ class JiuWenSwarmDeepAdapter:
         self._registered_mcp_servers.pop(server_id, None)
 
 
+    def _is_builtin_shadowed_tool_name(self, tool_name: str) -> bool:
+        """True when a non-request-scoped ability (typically a harness built-in)
+        already occupies ``tool_name`` in this agent's AbilityManager."""
+        if self._instance is None:
+            return False
+        getter = getattr(getattr(self._instance, "ability_manager", None), "get", None)
+        if not callable(getter):
+            return False
+        try:
+            existing = getter(tool_name)
+        except Exception:
+            return False
+        if existing is None:
+            return False
+        existing_id = str(getattr(existing, "id", "") or "")
+        # Request-scoped holders (ours from a previous request or a foreign
+        # request) keep the install-time replace / fail-closed paths; only
+        # built-in occupancy triggers the staging rename.
+        return not is_request_scoped_mcp_tool_id(existing_id)
+
+    def _resolve_shadow_safe_tool_name(
+        self,
+        server_name: str,
+        tool_name: str,
+        buffers: _RequestMcpToolBuffers,
+    ) -> str:
+        """Rename a connector tool only when its short name is shadowed.
+
+        ``server_name_tool_name`` (LLM-safe) frees connectors such as
+        doubao-search's ``web_search`` from the built-in shadow skip. The
+        rename happens at staging — before any resource_mgr add — so the card
+        id, allowlists, and deepresearch admission all stay consistent.
+        Returns the raw name when no safe candidate exists; the install-time
+        builtin-shadow skip then keeps today's semantics.
+        """
+        if not self._is_builtin_shadowed_tool_name(tool_name):
+            return tool_name
+        base = re.sub(r"[^0-9A-Za-z_]", "_", f"{server_name}_{tool_name}").strip("_")
+        if not base:
+            return tool_name
+        for candidate in [base] + [f"{base}_{index}" for index in range(2, 21)]:
+            if candidate == tool_name or candidate in buffers.seen_names:
+                continue
+            if self._is_builtin_shadowed_tool_name(candidate):
+                continue
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] renamed shadowed MCP connector tool: "
+                "server=%s raw=%s staged=%s",
+                server_name,
+                tool_name,
+                candidate,
+            )
+            return candidate
+        return tool_name
+
+    @staticmethod
+    def _staged_research_tool_names(
+        tool_defs: list[dict[str, Any]],
+        rewrites: dict[str, str],
+    ) -> list[str]:
+        """Deepresearch admission compares installed names, so apply the rewrite."""
+        names: list[str] = []
+        for tool in tool_defs:
+            raw_name = str(tool.get("name") or "").strip()
+            names.append(rewrites.get(raw_name, raw_name))
+        return names
+
     async def _append_identity_pinned_office_claw_tools(
         self,
         request: AgentRequest,
@@ -3354,14 +3421,19 @@ class JiuWenSwarmDeepAdapter:
                 buffers.unavailable_connectors[server_name] = (
                     CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
                 )
-            _stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
+            _stage_request_mcp_tools(
+                request, server_name, tool_defs, params, buffers,
+                staged_name_resolver=self._resolve_shadow_safe_tool_name,
+            )
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
                 research_server = project_search_server(server_name, server_config, params)
                 if research_server:
                     buffers.research_servers.append(research_server)
-                    buffers.research_tool_names[server_name] = [str(tool.get("name") or "").strip()
-                                                               for tool in tool_defs]
+                    rewrites = buffers.research_name_rewrites.get(server_name) or {}
+                    buffers.research_tool_names[server_name] = (
+                        self._staged_research_tool_names(tool_defs, rewrites)
+                    )
             if server_name == "office-claw" and not invocation_id:
                 env = params.get("env") if isinstance(params.get("env"), dict) else {}
                 invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
@@ -3470,6 +3542,7 @@ class JiuWenSwarmDeepAdapter:
                 for name, tool_defs, params in snapshots:
                     _stage_request_mcp_tools(
                         request, name, tool_defs, params, buffers, use_global_pool=True,
+                        staged_name_resolver=self._resolve_shadow_safe_tool_name,
                     )
                     reader = getattr(get_mcp_server_registry(), "get_server", None)
                     try:
@@ -3483,8 +3556,10 @@ class JiuWenSwarmDeepAdapter:
                         research_server = project_search_server(name, policy["config"], params)
                         if research_server:
                             buffers.research_servers.append(research_server)
-                            buffers.research_tool_names[name] = [str(tool.get("name") or "").strip()
-                                                                 for tool in tool_defs]
+                            rewrites = buffers.research_name_rewrites.get(name) or {}
+                            buffers.research_tool_names[name] = (
+                                self._staged_research_tool_names(tool_defs, rewrites)
+                            )
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:

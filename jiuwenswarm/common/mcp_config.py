@@ -2614,6 +2614,7 @@ class RequestScopedOfficeClawMcpTool(Tool):
         server_name: str = "",
         *,
         use_global_pool: bool = False,
+        remote_tool_name: str = "",
     ) -> None:
         super().__init__(card)
         # Deep-copy env so concurrent registrations cannot mutate each other's
@@ -2627,6 +2628,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._server_name = str(server_name or "")
         self._use_global_pool = bool(use_global_pool)
         self._unavailable_connectors: dict[str, str] = {}
+        # 对外可改名（避免遮蔽内置工具），但远程 MCP 服务器只认原始工具名。
+        self._remote_tool_name = str(remote_tool_name or getattr(card, "name", "") or "")
 
     @property
     def server_name(self) -> str:
@@ -2711,16 +2714,17 @@ class RequestScopedOfficeClawMcpTool(Tool):
             ) from exc
 
         arguments = inputs if isinstance(inputs, dict) else {}
+        remote_name = self._remote_tool_name or self._card.name
         try:
             session = await self._acquire_mcp_session()
             try:
-                result = await session.call_tool(self._card.name, arguments=arguments)
+                result = await session.call_tool(remote_name, arguments=arguments)
             except Exception:
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
                 session = await self._acquire_mcp_session(force_rebuild=True)
-                result = await session.call_tool(self._card.name, arguments=arguments)
+                result = await session.call_tool(remote_name, arguments=arguments)
             text = annotate_connector_catalog_result(
-                self._card.name, arguments, _extract_mcp_result_text(result),
+                remote_name, arguments, _extract_mcp_result_text(result),
                 self._unavailable_connectors, is_error=getattr(result, "isError", False) is True,
             )
             return {"result": text}
