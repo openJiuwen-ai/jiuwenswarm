@@ -11033,6 +11033,21 @@ class JiuWenSwarmDeepAdapter:
             return None
 
     @staticmethod
+    def _build_secret_shield_rail() -> Any | None:
+        """Build the session-scoped secret tokenization rail."""
+        try:
+            from jiuwenswarm.agents.harness.common.rails.secret_shield import (
+                SecretShieldRail,
+            )
+
+            rail = SecretShieldRail()
+            logger.info("[JiuWenSwarmDeepAdapter] SecretShieldRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] SecretShieldRail create failed: %s", exc)
+            return None
+
+    @staticmethod
     def _build_model_anomaly_detection_rail(
         config_base: dict[str, Any] | None = None,
     ) -> ModelAnomalyDetectionRail | None:
@@ -11548,6 +11563,7 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
+            _RailBuildInfo("_secret_shield_rail", self._build_secret_shield_rail),
             _RailBuildInfo(
                 "_subagent_rail",
                 self._build_subagent_rail,

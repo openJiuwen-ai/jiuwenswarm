@@ -1567,6 +1567,21 @@ updater:
   timeout_seconds: 20
   pypi_mirror: "https://mirrors.aliyun.com/pypi"
 
+# ============================================================
+# Secret Shield: 工具结果中观察到的敏感值令牌化
+# 所有闸口默认 observe（只审计不改写），升级到 enforce 需显式配置。
+# ============================================================
+secret_shield:
+  enabled: true
+  # 工具结果闸：observe 仅审计；enforce 将明文替换为 JIUWEN_SECRET::<fp> 令牌
+  tool_result_mode: observe
+  # 执行闸：off 关闭；observe 仅审计令牌引用；
+  # enforce 执行前将令牌还原为明文，无法解析的令牌则拒绝调用
+  exec_gate_mode: observe
+  # 输出闸：observe 仅审计；enforce 将用户可见文本中的值/令牌替换为掩码
+  output_mode: observe
+  vault_max_entries: 64
+
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
   # EXTENSION_DIRS="E:/a;D:/b"

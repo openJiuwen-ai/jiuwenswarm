@@ -33,6 +33,7 @@ def _stub_deep_rail_builders(adapter, monkeypatch, *, permission_rail):
         "_build_circuit_breaker_rail",
         "_build_avatar_rail",
         "_build_memory_forbidden_rail",
+        "_build_secret_shield_rail",
         "_build_subagent_rail",
         "_build_skill_retrieval_prompt_rail",
         "_build_structured_ask_user_rail",
