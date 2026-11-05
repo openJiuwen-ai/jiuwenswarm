@@ -55,6 +55,30 @@ export function mentionOptions(graph: DesignerExecutionGraph | null | undefined)
   return options;
 }
 
+/**
+ * The "@query" the caret is in, allowing spaces while the query still starts some
+ * label: labels such as "Scene 1: Set_1" contain spaces, so "@Scene 1" must keep
+ * the menu open instead of ending the token at the space. Once a label has been
+ * chosen ("@Scene 1: Set_1 ...") no label starts with the query and it is closed.
+ */
+export function detectMentionQuery(
+  value: string,
+  cursor: number,
+  options: DesignerMentionOption[],
+): { start: number; query: string } | null {
+  const simple = detectAtToken(value, cursor);
+  if (simple) return simple;
+  const upto = value.slice(0, cursor);
+  const at = upto.lastIndexOf('@');
+  if (at === -1) return null;
+  const before = upto[at - 1];
+  if (before !== undefined && !/\s/.test(before)) return null;
+  const query = upto.slice(at + 1);
+  if (!query.trim() || query.includes('\n')) return null;
+  const needle = query.toLowerCase();
+  return options.some((item) => item.label.toLowerCase().startsWith(needle)) ? { start: at, query } : null;
+}
+
 /** Options whose label contains ``query`` (case-insensitive), at most eight. */
 export function filterMentionOptions(options: DesignerMentionOption[], query: string): DesignerMentionOption[] {
   const needle = query.trim().toLowerCase();
@@ -119,7 +143,7 @@ export function buildMentionAppendix(nodes: DesignerMentionOption[]): string {
     'The user referenced these canvas nodes with @; apply the request to these node ids:',
     ...lines,
     'Referencing a node with @ together with a change request is the user\'s approval to regenerate it: '
-      + 'after updating a node, rerun just that node with designer_run_graph(node_id=<id>) '
+      + 'after updating a node, rerun just that node with swarmflow(node_id=<id>) '
       + '(no cascade) without asking first (no ask_user). Rerun it even if its prompt already '
       + 'contains this change. Skip the rerun only if the user says not to run, '
       + 'or only asked a question about the node.',

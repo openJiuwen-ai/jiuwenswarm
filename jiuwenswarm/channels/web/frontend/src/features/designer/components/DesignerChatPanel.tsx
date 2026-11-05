@@ -28,7 +28,7 @@ import { useDesignerUiStore } from '../designerUiStore';
 import { designerAssetPreviewUrl } from '../designerAssetUrl';
 import {
   collectMentionedNodes,
-  detectAtToken,
+  detectMentionQuery,
   filterMentionOptions,
   insertMention,
   isPreviewableMention,
@@ -229,9 +229,9 @@ export function DesignerChatPanel() {
   const onDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const { value } = event.target;
     setDraft(value);
-    const token = detectAtToken(value, event.target.selectionStart ?? value.length);
+    const token = detectMentionQuery(value, event.target.selectionStart ?? value.length, allMentionOptions);
     setAtMenu(token ? { ...token, index: 0 } : null);
-  }, []);
+  }, [allMentionOptions]);
 
   useEffect(() => {
     const el = bodyRef.current;

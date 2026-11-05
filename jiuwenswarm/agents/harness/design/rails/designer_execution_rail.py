@@ -68,8 +68,10 @@ _PROMPT_CN = """# 画布执行（swarmflow）
 - 调用后先告诉用户"已开始执行，画布可看进度"，不要在原地等待结果。
 
 用户用 @ 引用画布节点（消息里带 `[[designer-canvas-refs]]` 块）并提出修改时，这条消息本身就是同意：
-改完被引用节点的提示词后，直接对每个被引用节点调用 `designer_run_graph(node_id=...)`（不加 cascade），
-不要用 ask_user 再确认。即使提示词里已经包含这次要求（例如上一轮改过但没跑），也要重跑，让画布出现新结果。
+改完被引用节点的提示词后，直接调用 `swarmflow(node_id=...)`（不加 cascade）重跑该节点，不要用 ask_user 再确认。
+即使提示词里已经包含这次要求（例如上一轮改过但没跑），也要重跑，让画布出现新结果。
+同一时刻只能有一个执行：引用了多个节点时，先把它们的提示词都改好，只对第一个调用 `swarmflow(node_id=...)`，
+并告诉用户其余节点会在这次运行结束后、收到用户下一条消息时依次重跑。
 只有用户明确说先不跑、或只是在询问该节点时才不运行。
 """
 
@@ -112,11 +114,14 @@ Conventions:
 
 When the user references canvas nodes with @ (the message carries a
 `[[designer-canvas-refs]]` block) and asks for a change, that message is the
-approval: after updating each referenced node's prompt, call
-`designer_run_graph(node_id=...)` for it (no cascade) without confirming via
-ask_user. Rerun it even if its prompt already contains the request (e.g. it
-was edited earlier but never run), so the canvas shows the new result. Only
-skip the run if the user says not to run, or is only asking about the node.
+approval: after updating the referenced node's prompt, rerun it with
+`swarmflow(node_id=...)` (no cascade) without confirming via ask_user. Rerun
+it even if its prompt already contains the request (e.g. it was edited earlier
+but never run), so the canvas shows the new result. Only one execution runs at
+a time: when several nodes are referenced, update all their prompts, call
+`swarmflow(node_id=...)` for the first one only, and tell the user the others
+rerun one by one on their next message after this run finishes. Only skip the
+run if the user says not to run, or is only asking about the node.
 """
 
 

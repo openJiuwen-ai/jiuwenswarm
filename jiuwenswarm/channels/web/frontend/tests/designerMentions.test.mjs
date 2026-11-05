@@ -5,6 +5,7 @@ import {
   DESIGNER_REFS_MARKER,
   collectMentionedNodes,
   detectAtToken,
+  detectMentionQuery,
   filterMentionOptions,
   insertMention,
   isPreviewableMention,
@@ -76,8 +77,25 @@ test('the leader appendix maps labels to node ids and is stripped for display', 
   assert.ok(sent.startsWith(text));
   assert.ok(sent.includes(DESIGNER_REFS_MARKER));
   assert.ok(sent.includes('- @Character 1: 小企鹅 → node_id=n_character, type=image, output=C:/Users/a/.jiuwenswarm/p/image_1.png'));
-  assert.ok(sent.includes('designer_run_graph(node_id=<id>)'), 'the leader is told to rerun the node');
+  assert.ok(sent.includes('swarmflow(node_id=<id>)'), 'the leader is told to rerun the node with swarmflow');
+  assert.ok(!sent.includes('designer_run_graph'), 'no stale tool name');
   assert.equal(stripMentionAppendix(sent), text);
   assert.equal(withMentionAppendix('plain request', graph), 'plain request');
   assert.ok(withMentionAppendix('@Scene 1 换成夜景', graph).includes('output=(not generated yet)'));
+});
+
+test('detectMentionQuery keeps the menu open across spaces inside a label', () => {
+  const options = mentionOptions(graph);
+  assert.deepEqual(detectMentionQuery('@Clip 1', 7, options), { start: 0, query: 'Clip 1' }, 'label prefix with a space');
+  assert.deepEqual(
+    detectMentionQuery('把 @Character 1: 小', 18, options),
+    { start: 2, query: 'Character 1: 小' },
+    'prefix through the colon and CJK',
+  );
+  const chosen = '@Character 1: 小企鹅 表情更开心';
+  assert.equal(detectMentionQuery(chosen, chosen.length, options), null, 'closed once the request text follows');
+  const justChosen = '@Character 1: 小企鹅 ';
+  assert.equal(detectMentionQuery(justChosen, justChosen.length, options), null, 'closed right after insertion');
+  assert.equal(detectMentionQuery('@Nothing here', 13, options), null, 'no label starts with it');
+  assert.equal(detectMentionQuery('mail a@b c', 10, options), null, '@ inside a word');
 });
