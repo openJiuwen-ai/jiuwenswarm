@@ -353,3 +353,16 @@ bash scripts/build-macos.sh
 
 - [返回文档首页](../README.md)
 - [返回项目首页](../../README_CN.md)
+## WHL 出包时统一 Core 与 Gateway
+
+在一次性构建检出中使用显式入口（需要 Git、uv，以及当前 Python 环境的 `tomlkit`、`packaging`）。先将 Core 分支解析为完整 commit；不直接传浮动分支：
+
+```bash
+python scripts/build_config.py --prepare-core "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@<40位commit>" --wheel-dir /absolute/path/gateway-wheels
+uv lock
+uv sync --locked --extra dev
+```
+
+也支持 `--prepare-core "openjiuwen==0.1.20"`。该入口同步主仓的 Core 声明、extras 和已有 overrides，移除旧 Core source；按主仓固定提交下载 Gateway 到临时目录，生成同一 Core 声明的配套 WHL，检查其 METADATA，再将主仓 Gateway 依赖改为精确版本并通过本地 wheel source 构建。普通 `--sync`、`--check`、版本查询及运行时不触发这一流程。锁文件仍由外部出包流程更新。
+
+必须保留 wheel-dir 至主包构建结束，并将其中 Gateway WHL 与主 WHL 一起交付。安装时使用 `python -m pip install --find-links /path/to/wheels /path/to/wheels/workswarm-<version>-py3-none-any.whl`；仅交付主 WHL 不足以安装本地生成的 Gateway 版本。使用全新构建检出重试或切换 Core，不提交生成的路径、包或版本修改。旧分支未声明独立 Gateway 时只更新 Core。统一依赖声明不替代 Core/Gateway 的运行兼容性测试。

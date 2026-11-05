@@ -357,3 +357,17 @@ The script will execute the following steps in order:
 4. Create a DMG installer image using `hdiutil`
 
 Output: `dist/JiuwenSwarm-<version>.dmg`
+
+## Align Core and Gateway for wheel releases
+
+In a disposable build checkout, install Git, uv, and `tomlkit`/`packaging` in the invoking Python environment. Resolve the Core branch to a full commit first:
+
+```bash
+python scripts/build_config.py --prepare-core "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@<40-character-commit>" --wheel-dir /absolute/path/gateway-wheels
+uv lock
+uv sync --locked --extra dev
+```
+
+An exact PyPI selection such as `--prepare-core "openjiuwen==0.1.20"` is also supported. The explicit action aligns main-project Core requirements, extras and existing overrides, removes the old Core source, and builds a matching Gateway wheel from the main project's pinned Gateway commit in a temporary checkout. It verifies wheel METADATA before changing the main project's Gateway requirement to the generated exact version and local wheel source. Normal sync/check/version queries and runtime execution do not invoke this workflow. The caller still updates the lock.
+
+Keep wheel-dir until the main build completes and deliver its Gateway wheel alongside the main wheel. Install using `python -m pip install --find-links /path/to/wheels /path/to/wheels/workswarm-<version>-py3-none-any.whl`. The main wheel alone cannot resolve the locally generated Gateway version. Retry or change Core from a fresh build checkout; do not commit generated paths, artifacts or version edits. Legacy branches without an independent Gateway only update Core. Matching dependency metadata does not establish runtime API compatibility.

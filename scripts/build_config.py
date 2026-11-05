@@ -267,20 +267,30 @@ def _parse_args() -> argparse.Namespace:
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--sync", action="store_true", help="Synchronize tracked consumers before building.")
     action.add_argument("--check", action="store_true", help="Fail when a tracked consumer is out of date.")
+    action.add_argument("--prepare-core", metavar="REQUIREMENT", help="Prepare matching Core/Gateway wheel dependencies in a build checkout.")
+    parser.add_argument("--wheel-dir", type=Path, help="Persistent output directory for the paired Gateway wheel.")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--version", action="store_true", help="Print only the canonical version.")
     output.add_argument("--name", action="store_true", help="Print only the canonical distribution name.")
     output.add_argument("--emit-json", action="store_true", help="Print all build values as JSON.")
     output.add_argument("--emit-shell", action="store_true", help="Print shell assignments for macOS builds.")
     output.add_argument("--emit-batch", action="store_true", help="Print set commands for Windows batch builds.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if bool(args.prepare_core) != bool(args.wheel_dir):
+        parser.error("--prepare-core and --wheel-dir must be used together")
+    return args
 
 
 def main() -> None:
     args = _parse_args()
     project_root = args.root.resolve()
+    if args.prepare_core:
+        # Keep ordinary build identity reads independent of release-only tools.
+        import runpy
+        helper = runpy.run_path(str(Path(__file__).with_name("prepare_core_wheel.py")))
+        helper["prepare_core_wheel"](project_root, args.prepare_core, args.wheel_dir.resolve())
     try:
-        if args.sync:
+        if args.sync or args.prepare_core:
             for path in write_expected(project_root):
                 _emit(f"updated {path}\n", sys.stderr)
         elif args.check:
@@ -297,7 +307,7 @@ def main() -> None:
         raise SystemExit(f"build config error: {exc}") from exc
 
     output_requested = args.version or args.name or args.emit_shell or args.emit_batch or args.emit_json
-    if (args.sync or args.check) and not output_requested:
+    if (args.sync or args.check or args.prepare_core) and not output_requested:
         if args.check:
             _emit("Build config is synchronized.\n", sys.stdout)
         return
