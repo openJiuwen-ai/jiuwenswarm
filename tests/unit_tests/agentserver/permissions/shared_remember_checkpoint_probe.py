@@ -70,7 +70,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
                 }
                 card = queue.reconcile(snapshot, root_session_id=session.get_session_id()).cards[0]
                 answer = InteractiveInput()
-                answer.update(card.key.invocation_id, {"approved": True, "auto_confirm": True, "persist_allow": permanent})
+                answer.update(card.key.tool_call_id, {"approved": True, "auto_confirm": True, "persist_allow": permanent})
                 reserved = queue.reserve_answer(session.get_session_id(), answer)
                 calls = []
                 async def execute(resume_ctx, tool_calls, sdk_session, _context):

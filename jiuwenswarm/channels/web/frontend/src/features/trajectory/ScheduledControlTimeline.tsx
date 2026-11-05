@@ -174,48 +174,49 @@ function TaskDetail({
         </div>
       </div>
 
-      <div className={css.rounds}>
-        {rounds.length === 0 ? (
-          <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
-        ) : rounds.map(([round, reviews]) => (
-          <div
-            className={css.round}
-            key={round}
-            data-testid="team-trajectory-control-round"
-            data-variant={`${task.taskId}:r${round}`}
-          >
-            <span className={css.roundLabel}>R{round}</span>
-            <div className={css.reviewList}>
-              {reviews.map(review => (
-                <span
-                  className={css.review}
-                  key={review.key}
-                  data-decision={review.decision.kind}
-                  data-testid="team-trajectory-control-review"
-                  data-variant={`${task.taskId}:${round}:${review.reviewer}`}
-                >
-                  <span>{review.reviewer}</span>
-                  <strong>{decisionText(review.decision, t)}</strong>
-                </span>
-              ))}
+      <div className={css.detailScroll}>
+        <div className={css.rounds}>
+          {rounds.length === 0 ? (
+            <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
+          ) : rounds.map(([round, reviews]) => (
+            <div
+              className={css.round}
+              key={round}
+              data-testid="team-trajectory-control-round"
+              data-variant={`${task.taskId}:r${round}`}
+            >
+              <span className={css.roundLabel}>R{round}</span>
+              <div className={css.reviewList}>
+                {reviews.map(review => (
+                  <span
+                    className={css.review}
+                    key={review.key}
+                    data-decision={review.decision.kind}
+                    data-testid="team-trajectory-control-review"
+                    data-variant={`${task.taskId}:${round}:${review.reviewer}`}
+                  >
+                    <span>{review.reviewer}</span>
+                    <strong>{decisionText(review.decision, t)}</strong>
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      <div className={css.events} data-testid="team-trajectory-control-event-list">
-        {events.map(event => (
-          <div
-            className={css.eventRow}
-            key={event.eventId}
-            data-kind={event.kind}
-            data-testid="team-trajectory-control-event"
-            data-variant={`${event.kind}:${event.recordId}`}
-          >
-            <time>{formatAxisClock(event.timestampMs)}</time>
-            <span>{eventText(event, t)}</span>
-          </div>
-        ))}
+          ))}
+        </div>
+        <div className={css.events} data-testid="team-trajectory-control-event-list">
+          {events.map(event => (
+            <div
+              className={css.eventRow}
+              key={event.eventId}
+              data-kind={event.kind}
+              data-testid="team-trajectory-control-event"
+              data-variant={`${event.kind}:${event.recordId}`}
+            >
+              <time>{formatAxisClock(event.timestampMs)}</time>
+              <span>{eventText(event, t)}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -311,9 +312,6 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
             {t('trajectory.team.schedule.blockedLegend')}
           </span>
         ) : null}
-        <span className={css.controlCount}>
-          {t('trajectory.team.schedule.controlRecords', { count: model.controlRecordCount })}
-        </span>
         {model.anomalies.length === 0 ? null : (
           <span className={css.anomalySummary} data-testid="team-trajectory-control-anomaly-summary">
             <AlertTriangle size={13} strokeWidth={2} aria-hidden />

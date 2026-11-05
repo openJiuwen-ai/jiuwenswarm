@@ -60,6 +60,67 @@ async def _collect_events(stream) -> list[RuntimeEvent]:
     return [event async for event in stream]
 
 
+async def _wait_for_runtime_entry(entered: asyncio.Event, task: asyncio.Task[Any]) -> None:
+    """Keep the entry deadline without hiding an already failed request."""
+    waiter = asyncio.create_task(entered.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (waiter, task), timeout=1, return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            task.result()
+        if entered.is_set():
+            return
+        if task in done:
+            raise AssertionError("Runtime request completed before entering execution")
+        task.print_stack()
+        raise TimeoutError("Runtime request did not enter execution within 1 second")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.parametrize("outcome", ["error", "completed"])
+async def test_runtime_entry_wait_reports_early_request_completion(outcome):
+    async def complete():
+        if outcome == "error":
+            raise RuntimeError("request preparation failed")
+
+    task = asyncio.create_task(complete())
+    expected = RuntimeError if outcome == "error" else AssertionError
+    message = "request preparation failed" if outcome == "error" else "before entering execution"
+    with pytest.raises(expected, match=message):
+        await _wait_for_runtime_entry(asyncio.Event(), task)
+    assert task.done()
+
+
+async def test_runtime_entry_wait_keeps_pending_request_owned_by_caller():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def execute():
+        entered.set()
+        await release.wait()
+
+    task = asyncio.create_task(execute())
+    try:
+        await _wait_for_runtime_entry(entered, task)
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+
+
+async def test_runtime_entry_wait_retains_deadline_without_cancelling_request():
+    task = asyncio.create_task(asyncio.Event().wait())
+    try:
+        with pytest.raises(TimeoutError, match="within 1 second"):
+            await _wait_for_runtime_entry(asyncio.Event(), task)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("work_mode", ["work", "code"])
 @pytest.mark.parametrize("session_type", ["agent", "team"])
@@ -123,7 +184,7 @@ async def test_runtime_corrects_mode_before_scheduling(monkeypatch, streaming, w
 
     tasks = [submit("first", stored_mode)]
     try:
-        await asyncio.wait_for(entered["first"].wait(), timeout=1)
+        await _wait_for_runtime_entry(entered["first"], tasks[0])
         tasks.append(submit("second", f"{wrong_type}.{work_mode}.normal"))
         async with asyncio.timeout(1):
             while True:
@@ -139,7 +200,7 @@ async def test_runtime_corrects_mode_before_scheduling(monkeypatch, streaming, w
             assert not entered["second"].is_set()
         else:
             assert isinstance(execution.team, TeamExecutionDetails)
-            await asyncio.wait_for(entered["second"].wait(), timeout=1)
+            await _wait_for_runtime_entry(entered["second"], tasks[1])
         release.set()
         results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
         assert all(events[0].event_type == "chat.final" for events in results)

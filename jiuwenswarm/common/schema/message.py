@@ -105,6 +105,9 @@ _ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 # registry entry it created (see session_assets.py). The pinned protocol
 # package does not define this member yet.
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
+# Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
+# http_invoke.py reference this member); 协议包当前 pin 尚未定义。
+_ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")
 # MCP Apps host bridge (io.modelcontextprotocol/ui); 协议包当前 pin 尚未定义。
 _ensure_req_method("MCP_APP_LIST_TOOLS", "mcp_app.list_tools")
 _ensure_req_method("MCP_APP_READ_RESOURCE", "mcp_app.read_resource")

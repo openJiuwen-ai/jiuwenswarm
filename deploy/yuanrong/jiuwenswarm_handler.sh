@@ -60,6 +60,20 @@ port_is_listening() {
     exec_on_host "${host}" "if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | grep -qE ':${port}[[:space:]]'; else timeout 3 bash -c 'exec 3<>/dev/tcp/${host}/${port}' 2>/dev/null; fi" 2>/dev/null
 }
 
+# 发行包名：0.2.8 起为 workswarm，旧包/日构建为 jiuwenswarm。
+# 输出目标机上已安装的发行包名；未安装时输出空串（返回 0，避免调用方在 set -e 下中断）。
+jiuwenswarm_dist_name() {
+    local host="$1"
+    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
+    local name=""
+    if exec_on_host "${host}" "python${python_version} -m pip show workswarm >/dev/null 2>&1"; then
+        name="workswarm"
+    elif exec_on_host "${host}" "python${python_version} -m pip show jiuwenswarm >/dev/null 2>&1"; then
+        name="jiuwenswarm"
+    fi
+    printf '%s' "${name}"
+}
+
 jiuwenswarm_check_ssh() {
     local host="$1"
     if is_local_host "${host}"; then
@@ -77,11 +91,14 @@ jiuwenswarm_install() {
     local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
 
     info "Checking jiuwenswarm on ${host}..."
-    local check_result
-    check_result=$(exec_on_host "${host}" "python${python_version} -m pip show jiuwenswarm 2>/dev/null | grep -i '^Version:' | awk '{print \$2}'" | tr -d '\r') || true
+    local dist_name check_result=""
+    dist_name=$(jiuwenswarm_dist_name "${host}")
+    if [ -n "${dist_name}" ]; then
+        check_result=$(exec_on_host "${host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Version:' | awk '{print \$2}'" | tr -d '\r') || true
+    fi
 
     if [ -n "${check_result}" ]; then
-        success "jiuwenswarm already installed on ${host}: ${check_result}"
+        success "jiuwenswarm already installed on ${host}: ${check_result} (${dist_name})"
         return 0
     fi
 
@@ -102,11 +119,14 @@ jiuwenswarm_infer_func_code_dir() {
     local host="$1"
     local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
 
-    local jiuwenswarm_location
-    jiuwenswarm_location=$(exec_on_host "${host}" "python${python_version} -m pip show jiuwenswarm 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    local dist_name jiuwenswarm_location=""
+    dist_name=$(jiuwenswarm_dist_name "${host}")
+    if [ -n "${dist_name}" ]; then
+        jiuwenswarm_location=$(exec_on_host "${host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    fi
 
     if [ -z "${jiuwenswarm_location}" ]; then
-        error "Failed to infer YR_FUNC_CODE_DIR: jiuwenswarm not found on ${host}. Please set YR_FUNC_CODE_DIR in .env.custom."
+        error "Failed to infer YR_FUNC_CODE_DIR: jiuwenswarm/workswarm not found on ${host}. Please set YR_FUNC_CODE_DIR in .env.custom."
     fi
 
     local inferred_dir="${jiuwenswarm_location}/jiuwenswarm/extensions"

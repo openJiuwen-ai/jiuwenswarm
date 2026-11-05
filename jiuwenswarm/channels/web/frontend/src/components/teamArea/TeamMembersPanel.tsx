@@ -61,6 +61,7 @@ import {
   type TeamTaskTimelineEntry,
 } from './groupChatTimeline';
 import { groupByWorkflowRun, type WorkflowRunGroup } from './runGrouping';
+import { isWorkflowRunEnded, type WorkflowStatus } from './workflowTypes';
 import { RunGroupHeader } from './RunGroupHeader';
 
 type TeamMembersPanelProps = {
@@ -882,11 +883,17 @@ function TeamMemberContextCompressionBar({
   const status = runtime?.status;
   const isRunning = status === 'running';
   const isFailed = status === 'failed';
+  // 用户暂停/取消：SDK 发 cancelled/paused，按中性终态呈现（可关闭、不红色、无转圈）。
+  const isInterrupted = status === 'cancelled' || status === 'paused';
   let statusTitle = t('team.contextCompression.completed', { count: summary?.count || 1 });
   if (isRunning) {
     statusTitle = t('team.contextCompression.running');
   } else if (isFailed) {
     statusTitle = t('team.contextCompression.failed');
+  } else if (isInterrupted) {
+    statusTitle = status === 'paused'
+      ? t('team.contextCompression.paused')
+      : t('team.contextCompression.cancelled');
   }
   const detailsTitle = showSummaryDetails
     ? summaryItems.map((item, index) => `${index + 1}. ${item}`).join('\n')
@@ -1003,20 +1010,31 @@ function MemberRunGroupedList({
   groups: WorkflowRunGroup<TeamMember>[];
   renderRow: (member: TeamMember) => ReactNode;
 }) {
+  // 一个会话能攒好几个 run、每个 run 十几二十个 worker，全部平铺太长：
+  // 每个组头给一个展开/收起，默认展开还在跑的、收起已结束的。
+  const [collapsedRuns, setCollapsedRuns] = useState<Record<string, boolean>>({});
   return (
     <>
       {ungrouped.map(renderRow)}
-      {groups.map((group) => (
-        <div key={group.runId}>
-          <RunGroupHeader
-            name={group.name}
-            shortId={group.shortId}
-            status={group.status}
-            runId={group.runId}
-          />
-          {group.items.map(renderRow)}
-        </div>
-      ))}
+      {groups.map((group) => {
+        const collapsed = collapsedRuns[group.runId] ?? isWorkflowRunEnded(group.status as WorkflowStatus);
+        return (
+          <div key={group.runId}>
+            <RunGroupHeader
+              name={group.name}
+              shortId={group.shortId}
+              status={group.status}
+              runId={group.runId}
+              executor={group.executor}
+              collapsed={collapsed}
+              onToggle={() =>
+                setCollapsedRuns((prev) => ({ ...prev, [group.runId]: !collapsed }))
+              }
+            />
+            {!collapsed && group.items.map(renderRow)}
+          </div>
+        );
+      })}
     </>
   );
 }

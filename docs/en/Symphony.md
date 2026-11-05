@@ -515,6 +515,26 @@ This is an easy distinction to miss: building the skill graph is not composing a
 - [Agent Team](AgentTeam.md)
 - [Chinese: Symphony](../zh/Symphony-技能编排与分发.md)
 
+## SkillPack: compatible Hub publication
+
+Publish an existing thin SkillPack from its detail page. Its members must be independent ordinary Skills, not SwarmSkills or nested Packs. Product publication is off by default; start with an isolated Hub:
+
+```sh
+export SKILLPACK_PRODUCTIZATION_ENABLED=true
+export SKILLPACK_HUB_DEPLOYMENT_SCOPE=isolated
+export SKILLPACK_HUB_TRANSPORT_PROFILE=legacy_skill_v1
+```
+
+Deployment scope must be `isolated` or `version_gated`. The latter asserts that the deployment already restricts marketplace client versions; the flag does not implement Hub filtering. A legacy Hub reviews and displays the wrapper as an ordinary Skill. Use `native_skillpack_v1` only with a compatible Hub. Transport failures never change profiles.
+
+One preflight lists each member as reuse, publish first, or blocked. User confirmation starts independent member uploads and review waiting, followed by Pack publication. A failed Pack does not delete successfully published members. Reopening the panel resumes status queries; changed local content requires a new preflight and confirmation.
+
+The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and `skillpack.lock.json`, not member sources. The ordered lock records exact Hub asset IDs, versions and original ZIP SHA-256 digests. Consumers must support this lock and independently download members from the same Hub; an ordinary single-Skill installer is not sufficient. The publisher/installer contract test checks the generated archive with the shared installer, without enabling the marketplace installation entry point by itself.
+
+Three consecutive Hub check failures stop automatic polling. After connectivity recovers, explicitly retry the confirmed operation with the same upload IDs. Normal moderation waiting does not count as a network failure. Polling backs off to 30 seconds without repeatedly querying approved members; the full member closure is checked before uploading the Pack and before completion. Expired authorization or an unconfirmed upload outcome stops automatic progress until the user addresses the cause and retries the same operation.
+
+Local simulated tests do not establish real Hub moderation, model or desktop acceptance. Record those separately. Disabling the product switch stops new Pack publication; it does not unpublish existing assets.
+
 ### Development boundaries
 
 `openjiuwen.symphony` owns retrieval, fingerprint extraction, graph orchestration, and evolution algorithms. JiuwenSwarm owns model configuration and usage, build status, Web/RPC, runtime tools, and skill-package installation. Configuration parsing lives in `jiuwenswarm/common/symphony_config.py`. Deployments require an openjiuwen version with the corresponding public interfaces. Removing unused SDK leftovers does not change persistent graph directories or user configuration paths.

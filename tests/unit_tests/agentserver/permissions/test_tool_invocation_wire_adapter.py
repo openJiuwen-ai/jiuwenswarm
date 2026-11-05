@@ -44,94 +44,58 @@ def _smart_owner():
     return adapter, request, card
 
 
-def test_permission_answer_uses_only_opaque_card_id() -> None:
+@pytest.mark.parametrize("with_alias", [False, True])
+def test_permission_answer_uses_request_id(with_alias: bool) -> None:
+    answer = {"selected_options": ["本次允许"]}
+    if with_alias:
+        answer["card_id"] = " batch-call-1 "
     interactive = JiuWenSwarm._build_interactive_input_from_answers(
-        "batch-call-1",
-        [
-            {
-                "selected_options": ["本次允许"],
-                "card_id": " batch-invocation-1 ",
-            },
-        ],
-        source="permission_interrupt",
+        "batch-call-1", [answer], source="permission_interrupt",
     )
-
     assert interactive.user_inputs == {
-        "batch-invocation-1": {
-            "approved": True,
-            "auto_confirm": False,
-            "feedback": "",
-        },
+        "batch-call-1": {"approved": True, "auto_confirm": False, "feedback": ""},
     }
 
 
-def test_permission_multi_answer_keeps_manual_fallback_but_smart_consumer_rejects() -> None:
+@pytest.mark.parametrize("alias", ["batch-invocation-1", "", " ", None, 7, "x" * 513])
+def test_explicit_invalid_or_conflicting_alias_is_rejected(alias) -> None:
+    with pytest.raises(RootPermissionQueueError, match="permission_card_alias_"):
+        JiuWenSwarm._build_interactive_input_from_answers(
+            "batch-call-1", [{"selected_options": ["allow_once"], "card_id": alias}],
+            source="permission_interrupt",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_alias", [False, True])
+async def test_multiple_answers_do_not_consume_smart_head(with_alias: bool) -> None:
+    answers = [{"selected_options": ["allow_once"]}] * 2
+    if with_alias:
+        answers = [{**answer, "card_id": "batch-call-1"} for answer in answers]
+        with pytest.raises(RootPermissionQueueError, match="one_answer_required"):
+            JiuWenSwarm._build_interactive_input_from_answers(
+                "batch-call-1", answers, source="permission_interrupt",
+            )
+        return
     interactive = JiuWenSwarm._build_interactive_input_from_answers(
-        "batch-call-1",
-        [
-            {
-                "selected_options": ["本次允许"],
-                "card_id": "batch-invocation-1",
-            },
-            {
-                "selected_options": ["拒绝"],
-                "card_id": "batch-invocation-2",
-            },
-        ],
+        "batch-call-1", answers, source="permission_interrupt",
+    )
+    adapter, request, card = _smart_owner()
+    request.params = {"source": "permission_interrupt", "answers": answers}
+    with pytest.raises(RootPermissionQueueError, match="one_answer_required"):
+        await adapter._prepare_root_input_dispatch(request, {"query": interactive})
+    assert adapter._root_permission_queue.get(card.key) == card
+    assert not adapter._permission_dispatch.lock.locked()
+
+
+@pytest.mark.parametrize("size", [128, 129, 512])
+def test_long_call_alias_preserves_existing_request_id_range(size: int) -> None:
+    call_id = "c" * size
+    interactive = JiuWenSwarm._build_interactive_input_from_answers(
+        call_id, [{"selected_options": ["allow_once"], "card_id": call_id}],
         source="permission_interrupt",
     )
-
-    assert list(interactive.user_inputs) == ["batch-call-1"]
-    adapter, request, card = _smart_owner()
-    with pytest.raises(RootPermissionQueueError, match="non_head_answer"):
-        adapter._prepare_permission_resume_dispatch(request, {"query": interactive})
-    assert adapter._root_permission_queue.get(card.key) == card
-
-
-@pytest.mark.parametrize(
-    "answers",
-    [
-        [
-            {
-                "selected_options": ["本次允许"],
-                "card_id": "batch-invocation-1",
-            },
-            {
-                "selected_options": ["本次允许"],
-                "card_id": "batch-invocation-2",
-            },
-        ],
-        [
-            {
-                "selected_options": ["本次允许"],
-                "card_id": "",
-            }
-        ],
-        [
-            {
-                "selected_options": ["本次允许"],
-                "tool_invocation_id": "batch-invocation-1",
-            }
-        ],
-    ],
-)
-def test_malformed_permission_locator_cannot_resume_smart_head(
-    answers: list[dict],
-) -> None:
-    interactive = JiuWenSwarm._build_interactive_input_from_answers(
-        "batch-call-1",
-        answers,
-        source="permission_interrupt",
-    )
-
-    # Blank/missing card locators and multiple answers preserve develop's
-    # tool-call fallback for ordinary manual interrupts. Smart requires the
-    # current opaque card at the actual queue consumer, before SDK dispatch.
-    assert list(interactive.user_inputs) == ["batch-call-1"]
-    adapter, request, card = _smart_owner()
-    with pytest.raises(RootPermissionQueueError, match="non_head_answer"):
-        adapter._prepare_permission_resume_dispatch(request, {"query": interactive})
-    assert adapter._root_permission_queue.get(card.key) == card
+    assert list(interactive.user_inputs) == [call_id]
 
 
 @pytest.mark.parametrize("source", ["", "permission_interrupt", "confirm_interrupt"])
@@ -165,7 +129,7 @@ def test_smart_wire_card_round_trip_dispatches_exact_tool_call_once() -> None:
     adapter, request, card = _smart_owner()
     incoming = JiuWenSwarm._build_interactive_input_from_answers(
         card.key.tool_call_id,
-        [{"selected_options": ["本次允许"], "card_id": card.key.invocation_id}],
+        [{"selected_options": ["本次允许"], "card_id": card.key.tool_call_id}],
         source="permission_interrupt",
     )
     prepared = adapter._prepare_permission_resume_dispatch(request, {"query": incoming})
@@ -181,11 +145,11 @@ def test_smart_wire_card_round_trip_dispatches_exact_tool_call_once() -> None:
         adapter._prepare_permission_resume_dispatch(request, {"query": incoming})
 
 
-@pytest.mark.parametrize("locator", ["foreign-card", "batch-call-1"])
+@pytest.mark.parametrize("locator", ["foreign-call", "batch-invocation-1"])
 def test_wrong_smart_card_locator_is_rejected_without_consuming_head(locator: str) -> None:
     adapter, request, card = _smart_owner()
     incoming = JiuWenSwarm._build_interactive_input_from_answers(
-        card.key.tool_call_id, [{"selected_options": ["本次允许"], "card_id": locator}],
+        locator, [{"selected_options": ["本次允许"], "card_id": locator}],
         source="permission_interrupt",
     )
     with pytest.raises(RootPermissionQueueError, match="non_head_answer"):
@@ -269,13 +233,13 @@ def test_an_answer_without_an_interrupt_id_is_addressed_to_the_tool_call() -> No
     assert interactive.interrupt_answers == {}
 
 
-def test_a_smart_card_answer_stays_keyed_by_its_card_id() -> None:
+def test_a_smart_card_answer_stays_keyed_by_the_request_id() -> None:
     interactive = JiuWenSwarm._build_interactive_input_from_answers(
         "batch-call-1",
-        [{"selected_options": ["本次允许"], "card_id": "batch-invocation-1"}],
+        [{"selected_options": ["本次允许"], "card_id": "batch-call-1"}],
         source="permission_interrupt",
         interrupt_id="intr-1",
     )
 
-    assert set(interactive.user_inputs) == {"batch-invocation-1"}
+    assert set(interactive.user_inputs) == {"batch-call-1"}
     assert interactive.interrupt_answers == {}

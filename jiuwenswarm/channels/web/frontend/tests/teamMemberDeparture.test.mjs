@@ -69,3 +69,15 @@ test('nothing to reconcile returns null so the caller keeps its roster', () => {
     null,
   );
 });
+
+test('mirrored workflow workers survive the reconcile (they never reach the DB roster)', () => {
+  const workerId = 'wf_1:[["call", 0]]';
+  const result = reconcileSnapshotRoster(
+    [member('leader')],
+    new Set(),
+    [member('leader'), { member_id: workerId, status: 'busy', workflow_run_id: 'wf_1' }],
+    new Set(),
+  );
+
+  assert.deepEqual(ids(result.members), ['leader', workerId]);
+});
