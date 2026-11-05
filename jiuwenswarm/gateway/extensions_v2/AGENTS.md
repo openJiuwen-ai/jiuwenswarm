@@ -37,6 +37,8 @@
 - [运行时规约](docs/specs/S_01_gateway-extension-runtime.md)：入口、配置、包、事件、路由、错误码与不变量的唯一维护位置。
 - [渲染服务](docs/features/F_03_render-service.md)与[渲染规约](docs/specs/S_02_ui-render.md)：应用级树、组件规则、实例版本与下行传输。
 - [浏览器桥接](docs/specs/S_06_local-browser-bridge.md)：声明、客户端操作、应用级交互与资源接入。
+- [应用级界面能力设计概览](docs/designs/application-surfaces-overview.md)：应用背景、启动开场、受控外观、应用级设置页、素材与数据的整体设计（EXTV2-GW-07～12）。
+- [应用级 UI 包与素材交付](docs/features/F_08_application-packages-and-assets.md)：应用级 UI 包的参与条件、素材路由与打包版转发。
 - 待建立：ui.store 的浏览器订阅特性与规约；当前示例不依赖该能力。
 - [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算与重定向策略。
 - [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键与错误码。

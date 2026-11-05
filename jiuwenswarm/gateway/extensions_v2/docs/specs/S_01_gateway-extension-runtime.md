@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -78,7 +78,7 @@
 `params` 冻结为只读映射；`session_id` 从 params 的 `session_id` 提取；`headers` 来自浏览器帧的 `request_context.headers`，键统一小写。
 
 完整 `request_context` 独立保留，不合并进 `params`。`webui.dispatch` 同样先经过 USER 请求策略；
-继续处理的客户端能力包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
+继续处理的应用级 UI 包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
 HTTP 接入将合法的默认 `forward` 结果继续交给原接口，不要求 `handled=true`。具体范围见 [浏览器接入规约](S_06_local-browser-bridge.md)。
 
 ## 6. 扩展鉴权职责

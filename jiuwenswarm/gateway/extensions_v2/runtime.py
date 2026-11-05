@@ -183,7 +183,7 @@ class GatewayRuntime:
                     declaration.event_type,
                     _async_handler(
                         declaration.handler,
-                        browser=self.browser if package.client else None,
+                        browser=self.browser if self.browser.is_application_package(package) else None,
                         package_id=package.package_id,
                         generation=generation,
                     ),
