@@ -70,31 +70,61 @@ def assemble_openai_response(response: str) -> Any:
 
     content = think_content = ""
     last_chunk = None
-    cache_chunk = ""
+    data_value = ""
 
-    for line in response.split("\n"):
-        if not line.strip():
-            continue
-        if line.startswith("id:"):
-            if cache_chunk:
-                chunk = _parse_chunk(cache_chunk)
-                cache_chunk = ""
-                if chunk:
-                    think, out = _extract_message_content(chunk)
-                    think_content += think
-                    content += out
-                    last_chunk = chunk
-        elif line.startswith("data:"):
-            cache_chunk = line
-
-    # 处理最后一个 chunk
-    if cache_chunk:
-        chunk = _parse_chunk(cache_chunk)
+    def _flush():
+        nonlocal content, think_content, last_chunk
+        if not data_value:
+            return
+        stripped = data_value.strip()
+        if not stripped or stripped == "[DONE]":
+            # 终止帧（[DONE]）与空事件都不是 JSON payload，静默跳过：
+            # 标准 OpenAI 流必然以 data: [DONE] 结尾，若走回退分支会每次响应
+            # 都打一条"解析失败"的 WARNING，稀释告警信号。
+            return
+        chunk = _parse_chunk("data:" + data_value)
         if chunk:
             think, out = _extract_message_content(chunk)
             think_content += think
             content += out
             last_chunk = chunk
+            return
+        # 整段解析失败：退回逐行解析。兼容以单换行（而非空行）分隔事件、
+        # 或将多个完整 JSON 作为同一事件多行 data 下发的非规范 SSE 流，
+        # 避免从"截断"退化成"整段空内容"且无日志提示。
+        logger.warning(
+            "[llm_sse_patch] SSE 事件整段 JSON 解析失败，回退逐行解析: %.200s",
+            data_value,
+        )
+        for sub in data_value.split("\n"):
+            sub = sub.rstrip("\r").strip()
+            if not sub or sub == "[DONE]":
+                continue
+            sub_chunk = _parse_chunk("data:" + sub)
+            if sub_chunk:
+                think, out = _extract_message_content(sub_chunk)
+                think_content += think
+                content += out
+                last_chunk = sub_chunk
+
+    for line in response.split("\n"):
+        if line.strip() == "":
+            # blank line terminates the current SSE event
+            _flush()
+            data_value = ""
+            continue
+        if line.startswith("data:"):
+            piece = line[len("data:"):]
+            # SSE 规范：冒号后可带一个前导空格（属于分帧），需剔除；
+            # 同时剔除 CRLF 行尾残留的 "\r"，避免多行 data 拼接时污染文本。
+            if piece.startswith(" "):
+                piece = piece[1:]
+            piece = piece.rstrip("\r")
+            # 同一事件的连续 data: 行按 SSE 规范以 "\n" 拼接累积
+            data_value = data_value + "\n" + piece if data_value else piece
+
+    # flush a trailing event that has no final blank line
+    _flush()
 
     # 提取并构建工具调用对象
     formatted_tool_calls = None
