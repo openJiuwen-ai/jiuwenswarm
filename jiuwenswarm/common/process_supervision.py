@@ -241,7 +241,8 @@ def signal_service_tree(pid: int, *, force: bool = False, expected_created: floa
     """Signal an owned launcher and proven services, retaining Worker branches."""
     import psutil
 
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or pid == os.getpid():
+    invalid_pid_type = not isinstance(pid, int) or isinstance(pid, bool)
+    if invalid_pid_type or pid <= 0 or pid == os.getpid():
         raise RuntimeError("Service tree cleanup refused an invalid launcher PID")
     try:
         parent = psutil.Process(pid)
@@ -297,7 +298,9 @@ def signal_service_tree(pid: int, *, force: bool = False, expected_created: floa
         except psutil.Error as exc:
             errors.append(exc)
     if errors:
-        raise RuntimeError("Service process tree cleanup incomplete; ownership or termination checks failed") from errors[0]
+        raise RuntimeError(
+            "Service process tree cleanup incomplete; ownership or termination checks failed"
+        ) from errors[0]
     return targets
 
 

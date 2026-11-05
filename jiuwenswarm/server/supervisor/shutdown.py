@@ -26,8 +26,9 @@ def _pending_workers(paths: list[str]) -> dict[str, list[tuple[psutil.Process, f
         try:
             info = process.info
             argv = info.get("cmdline") or []
-            if (argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"] or "--socket" not in argv
-                    or info.get("username") != username or not info.get("exe")):
+            if argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"] or "--socket" not in argv:
+                continue
+            if info.get("username") != username or not info.get("exe"):
                 continue
             if os.path.normcase(str(Path(info["exe"]).resolve())) not in executables:
                 continue
@@ -53,8 +54,6 @@ def _pending_worker_alive(workers: list[tuple[psutil.Process, float]]) -> bool:
 
 def detach_front_process(pid: int, *, force: bool = False, timeout: float = 5.0) -> None:
     """Stop an owned Front subtree; unknown survivors cannot mean success."""
-    import psutil
-
     deadline = time.monotonic() + max(0.0, timeout)
     try:
         parent = psutil.Process(pid)
@@ -208,7 +207,9 @@ def shutdown_application_worker(*, timeout: float = 30.0, workspace: Path | None
                 timeout=max(.001, timeout) + 5, check=False, start_new_session=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if completed.returncode != 0:
-                raise RuntimeError(f"Worker lifecycle helper failed (exit={completed.returncode}): {completed.stderr[-2000:]}")
+                raise RuntimeError(
+                    f"Worker lifecycle helper failed (exit={completed.returncode}): {completed.stderr[-2000:]}"
+                )
             result = json.loads(completed.stdout)
         if not isinstance(result, dict) or result.get("ok") is not True:
             raise RuntimeError(f"Worker shutdown incomplete: {result}")
