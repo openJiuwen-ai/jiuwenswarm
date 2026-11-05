@@ -80,6 +80,10 @@ export interface JiuwenMateDingTalkAuthStatus {
   user_code?: string;
   account?: string;
   organization?: string;
+  group_monitor?: {
+    status: 'discovering' | 'listening' | 'no_groups' | 'error' | 'disabled' | 'mentions_only' | 'unavailable';
+    group_count: number;
+  };
 }
 
 export interface JiuwenMateWelinkOfficeStatus {
