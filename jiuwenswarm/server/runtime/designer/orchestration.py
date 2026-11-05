@@ -1586,15 +1586,20 @@ class Director:
             from jiuwenswarm.server.runtime.designer.script_analysis import (
                 _apply_shot_crowds,
                 _decide_shot_crowds,
+                _shot_has_crowd,
                 _shots_missing_crowd,
             )
 
             if _shots_missing_crowd(shots):
+                decided_before = sum(1 for s in shots if isinstance(s, dict) and _shot_has_crowd(s))
                 decided = await _decide_shot_crowds(shots, timeout_sec=60.0)
                 if decided:
                     _apply_shot_crowds(shots, decided)
                     analysis["clips"] = shots
-                    meta["crowd_decided_by_llm"] = len(decided)
+                    decided_after = sum(
+                        1 for s in shots if isinstance(s, dict) and _shot_has_crowd(s)
+                    )
+                    meta["crowd_decided_by_llm"] = decided_after - decided_before
         except Exception:  # noqa: BLE001 — crowd decision is best-effort
             logger.info("crowd decision pass skipped", exc_info=True)
         if shots and not user_declined_speech(user_prompt):
