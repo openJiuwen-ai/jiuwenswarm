@@ -787,15 +787,16 @@ def test_stop_process_tree_sweeps_group_of_dead_leader():
     assert signalled == [(7000, signal.SIGTERM)]
 
 
-def test_stop_process_tree_uses_taskkill_on_windows():
-    """Windows has no process groups here; taskkill /T already walks the tree."""
-    with patch.object(debug_launcher.platform, "system", return_value="Windows"):
-        with patch.object(
-            debug_launcher, "stop_process_by_pid", return_value=True
-        ) as single:
-            assert debug_launcher._stop_process_tree(7000, timeout=2.0) is True
+def test_stop_process_tree_preserves_workers_on_windows():
+    """The IPC lifecycle, rather than taskkill, must retire resident Workers."""
+    from jiuwenswarm.common import process_supervision
 
-    single.assert_called_once_with(7000, timeout=2.0)
+    with patch.object(debug_launcher.platform, "system", return_value="Windows"), \
+         patch.object(process_supervision, "terminate_service_tree") as tree, \
+         patch.object(debug_launcher, "stop_process_by_pid") as single:
+        assert debug_launcher._stop_process_tree(7000, timeout=2.0) is True
+    tree.assert_called_once_with(7000, timeout=2.0)
+    single.assert_not_called()
 
 
 # --------------------------------------------------------------------------

@@ -24,7 +24,13 @@ IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。
 
 关闭成功需要同时确认完整关闭应答和实际 PID 退出。强制结束、负应答或缺少应答会报告失败；升级安装器还检查本次退出产生的结果文件，清理失败时停止替换后端。旧协议没有应答能力时，以验证后的进程退出作为兼容条件。
 
-`jiuwenswarm-stop` 管理 `jiuwenswarm-start debug` 的后台状态。关闭失败保留状态，可重试；没有 debug 状态时仍按既有约定返回无操作。普通 WHL 服务应由其启动终端或服务管理器停止 Front，再从相同安装环境执行：
+`jiuwenswarm-stop` 管理 `jiuwenswarm-start debug` 的后台状态。关闭失败保留状态，可重试；没有 debug 状态时仍按既有约定返回无操作。
+
+WHL 的 `jiuwenswarm-start all/app/dev`、命名实例及独立 `jiuwenswarm-app` 在最终退出时先停止 Front，再关闭 Worker；`--stop <name>` 和完整实例 `--restart <name>` 也执行最终清理。命名实例在启动锁内按目标 workspace 的 bootstrap 和运行配置定位 Worker，确认退出后才删除 PID 记录，失败保留记录以便重试。Windows 服务进程树清理保留 Worker 分支，由后续 IPC 操作完成持久化和退出。仅运行 web 的启动器不接管外部后端。
+
+Python 桌面的正式退出即使发生在首个子服务注册之前，也会清理已有 Worker 和可验证的历史端点。最终关闭发现尚未建立 IPC 的 Worker 启动进程时，会在同一截止时间内等待 HELLO，再验证归属；进程命令行只能用于等待，不能代替部署归属校验。
+
+直接管理 `jiuwenswarm-agentserver` 的服务管理器仍需区分 Front 重启与应用最终停止；最终停止应先关闭 Front，再从相同安装环境执行：
 
 ```bash
 python -m jiuwenswarm.server.supervisor.shutdown --shutdown-worker --timeout 30

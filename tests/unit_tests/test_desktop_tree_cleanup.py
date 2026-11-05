@@ -8,6 +8,19 @@ import psutil
 import pytest
 
 
+def test_service_tree_rechecks_recorded_pid_before_signalling(monkeypatch):
+    from jiuwenswarm.common.process_supervision import signal_service_tree
+
+    process = Mock(pid=100)
+    process.create_time.return_value = 200.0
+    monkeypatch.setattr(psutil, "Process", Mock(return_value=process))
+    with pytest.raises(RuntimeError, match="identity changed"):
+        signal_service_tree(100, expected_created=100.0)
+    process.children.assert_not_called()
+    process.terminate.assert_not_called()
+    process.kill.assert_not_called()
+
+
 @pytest.mark.parametrize("failure", ["cmdline", "ppid", "terminate", "children"])
 @pytest.mark.parametrize("force", [False, True])
 def test_cleanup_continues_after_one_process_cannot_be_inspected_or_stopped(monkeypatch, failure, force):

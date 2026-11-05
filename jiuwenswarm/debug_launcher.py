@@ -772,9 +772,14 @@ def _stop_process_tree(
         True when nothing from the tree is left running.
     """
     if platform.system().lower() == "windows":
-        # taskkill /T /F (used by stop_process_by_pid) already walks the tree
-        # the OS records for this PID, so no separate group handling is needed.
-        return stop_process_by_pid(pid, timeout=timeout)
+        from jiuwenswarm.common.process_supervision import terminate_service_tree
+
+        try:
+            terminate_service_tree(pid, timeout=timeout)
+        except (OSError, RuntimeError) as exc:
+            logging.error("[debug] Service tree cleanup incomplete: %s", exc)
+            return False
+        return True
 
     import signal
 

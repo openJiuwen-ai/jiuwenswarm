@@ -347,3 +347,77 @@ def test_legacy_posix_paths_include_historical_temp_fallback(monkeypatch, tmp_pa
 def test_explicit_socket_override_excludes_all_historical_locations(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_SOCKET", "owned-custom-endpoint")
     assert worker_process.legacy_socket_paths() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical", [False, True])
+async def test_instance_shutdown_loads_target_environment_without_touching_callers_worker(
+    monkeypatch, tmp_path, legacy_workspace, historical,
+):
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
+    other = tmp_path / "other"
+    (legacy_workspace / "config").mkdir()
+    (legacy_workspace / ".env").write_text(f"JIUWENSWARM_DATA_DIR={other}\n", encoding="utf-8")
+    (legacy_workspace / "config/.env").write_text(
+        "JIUWENSWARM_RUNTIME_PROFILE=target\nJIUWENSWARM_RUNTIME_INSTANCE=target\n", encoding="utf-8")
+    workers = []
+    try:
+        for workspace, label in [(legacy_workspace, "target"), (other, "other")]:
+            monkeypatch.setattr(utils, "_workspace_base_dir", workspace)
+            monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(workspace))
+            monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", label)
+            monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", label)
+            path = default_socket_path()
+            if historical and label == "target":
+                path = str(workspace / "run" / ("runtime-worker.pipe" if os.name == "nt" else "runtime-worker.sock"))
+            process = worker_process.WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
+            await process.spawn()
+            connection = await connect_with_retry(path, timeout=15)
+            hello = await asyncio.wait_for(connection.recv(), 5)
+            await connection.close()
+            native = psutil.Process(hello["pid"])
+            workers.append((process, native, native.create_time()))
+        before = {key: os.environ.get(key) for key in
+            ["JIUWENSWARM_DATA_DIR", "JIUWENSWARM_RUNTIME_PROFILE", "JIUWENSWARM_RUNTIME_INSTANCE"]}
+        assert await asyncio.to_thread(shutdown_application_worker, workspace=legacy_workspace, timeout=5)
+        assert await workers[0][0].wait(timeout=3) == 0
+        assert not psutil.pid_exists(workers[0][1].pid)
+        assert workers[1][1].is_running() and workers[1][1].create_time() == workers[1][2]
+        assert before == {key: os.environ.get(key) for key in before}
+    finally:
+        for process, native, born in workers:
+            if native.is_running() and native.create_time() == born:
+                assert native.cmdline()[1:3] == ["-m", "jiuwenswarm.server.worker.main"]
+                native.kill()
+            await process.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_final_shutdown_waits_for_a_worker_still_booting_before_ipc(monkeypatch, tmp_path, legacy_workspace):
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
+    shim = tmp_path / "boot-delay"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import sys, time\n"
+        "if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []): time.sleep(2)\n",
+        encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(shim), str(SOURCE)]))
+    path = default_socket_path()
+    process = worker_process.WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
+    await process.spawn()
+    try:
+        assert await asyncio.to_thread(shutdown_application_worker, workspace=legacy_workspace, timeout=5)
+        assert await process.wait(timeout=1) == 0
+    finally:
+        if await process.wait(timeout=.05) is None:
+            connection = await connect_with_retry(path, timeout=5)
+            await asyncio.wait_for(connection.recv(), 5)
+            await connection.close()
+            await shutdown_resident_worker(timeout=5, socket_path=path)
+            assert await process.wait(timeout=2) == 0

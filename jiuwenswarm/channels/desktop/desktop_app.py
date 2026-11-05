@@ -691,7 +691,7 @@ def _wait_for_port_release(host: str, port: int, timeout: float = 15.0) -> bool:
 def _shutdown_runtime_before_update() -> None:
     from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 
-    result = asyncio.run(shutdown_resident_worker(timeout=30))
+    result = asyncio.run(shutdown_resident_worker(timeout=30, include_legacy=True))
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise RuntimeError(f"Worker shutdown incomplete: {result}")
 
@@ -3221,18 +3221,18 @@ nohup {q_executable} >/dev/null 2>&1 &
                     shutdown_ok = False
                     logger.exception("[desktop] service tree cleanup incomplete")
 
-        if processes:
-            # Front restarts detach. The desktop application owns final exit
-            # and upgrade, so it explicitly drains the resident Worker here.
-            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
-            try:
-                result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
-                if not isinstance(result, dict) or result.get("ok") is not True:
-                    shutdown_ok = False
-                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
-            except Exception:
+        # A previous launch may own a resident Worker even before this
+        # application's first service is registered. Final exit owns both.
+        from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+        try:
+            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic()),
+                include_legacy=True))
+            if not isinstance(result, dict) or result.get("ok") is not True:
                 shutdown_ok = False
-                logger.exception("[desktop] resident Worker final shutdown incomplete")
+                logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
+        except Exception:
+            shutdown_ok = False
+            logger.exception("[desktop] resident Worker final shutdown incomplete")
 
         while time.monotonic() < deadline:
             if all(process.poll() is not None for process in processes):
@@ -3653,74 +3653,10 @@ if(bridgeNeverResponded||bridgeStoppedResponding){
 
 
 def _psutil_terminate(pid: int, force: bool = False) -> None:
-    """Terminate a process and all its descendants using psutil.
+    """Signal owned services while preserving resident Worker branches."""
+    from jiuwenswarm.common.process_supervision import signal_service_tree
 
-    Unlike ``taskkill.exe``, this is a pure-Python operation that does not
-    spawn an external console process, avoiding console window flashes on
-    Windows (console=False builds).
-    """
-    import psutil
-
-    try:
-        parent = psutil.Process(pid)
-    except psutil.NoSuchProcess:
-        return
-    errors = []
-    try:
-        children = parent.children(recursive=True)
-    except psutil.NoSuchProcess:
-        return
-    except psutil.Error as exc:
-        children = []
-        errors.append(exc)
-    # Preserve Worker and uninspectable branches while still attempting
-    # every proven service sibling and the trusted launcher itself.
-    retained = set()
-    parents = {}
-    by_pid = {child.pid: child for child in children}
-    for child in children:
-        try:
-            argv = child.cmdline()
-            if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
-                retained.add(child.pid)
-            parents[child.pid] = child.ppid()
-        except psutil.NoSuchProcess:
-            continue
-        except psutil.Error as exc:
-            retained.add(child.pid)
-            errors.append(exc)
-    for child in children:
-        ancestor = parents.get(child.pid)
-        visited = {child.pid}
-        while ancestor in by_pid and ancestor not in retained:
-            if ancestor in visited:
-                retained.add(child.pid)
-                errors.append(RuntimeError("Desktop process ancestry contains a cycle"))
-                break
-            visited.add(ancestor)
-            ancestor = parents.get(ancestor)
-        if ancestor in retained:
-            retained.add(child.pid)
-    kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-    for child in reversed(children):
-        if child.pid in retained:
-            continue
-        try:
-            kill_fn(child)
-        except psutil.NoSuchProcess:
-            pass
-        except psutil.Error as exc:
-            errors.append(exc)
-    try:
-        kill_fn(parent)
-    except psutil.NoSuchProcess:
-        pass
-    except psutil.Error as exc:
-        errors.append(exc)
-    if errors:
-        raise RuntimeError(
-            "Desktop process tree termination incomplete; ownership or termination checks failed"
-        ) from errors[0]
+    signal_service_tree(pid, force=force)
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:

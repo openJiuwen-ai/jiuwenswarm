@@ -21,7 +21,13 @@ Historical endpoint discovery includes the POSIX temporary-directory fallback us
 
 Desktop process-tree cleanup continues for proven service branches when another branch cannot be inspected; it preserves Worker and unproven branches and reports incomplete cleanup. On macOS, an update helper exiting after READY must leave the shutdown receipt available to the application writer. The helper removes its attempt files only after observing the application's exit.
 
-`jiuwenswarm-stop` manages the state created by `jiuwenswarm-start debug`. Failed cleanup preserves that state for retry; no debug state remains a no-op. For a regular wheel service, stop its Front through its terminal/service manager, then use the same installation environment:
+`jiuwenswarm-stop` manages the state created by `jiuwenswarm-start debug`. Failed cleanup preserves that state for retry; no debug state remains a no-op.
+
+Wheel launchers `jiuwenswarm-start all/app/dev`, named instances, and standalone `jiuwenswarm-app` stop Fronts and then retire their Worker on final exit. `--stop <name>` and a full instance `--restart <name>` also complete final shutdown. Named-instance shutdown loads the selected workspace's bootstrap and runtime environment in a separate lifecycle process. It holds the startup lock through Worker exit confirmation, deleting the PID record only after success and retaining it on failure. Windows service-tree cleanup preserves Worker branches for the final IPC operation. A web-only launcher leaves its external backend running.
+
+Python desktop final exit checks existing Workers and verifiable historical endpoints even before registering its first service. When a Worker process is still booting before IPC exists, final shutdown waits for HELLO within the same deadline and then validates ownership. Command-line observations authorize waiting, never retirement.
+
+A service manager controlling `jiuwenswarm-agentserver` directly must still distinguish Front restart from application final stop. For final stop, stop its Front first, then use the same installation environment:
 
 ```bash
 python -m jiuwenswarm.server.supervisor.shutdown --shutdown-worker --timeout 30
