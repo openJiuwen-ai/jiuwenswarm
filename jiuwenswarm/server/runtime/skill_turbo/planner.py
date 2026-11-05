@@ -120,7 +120,7 @@ class SkillTurboPlanner:
             try:
                 # 使用流式调用：部分模型服务对非流式调用存在路由注册限制，
                 # 可能触发 429 Route missed，流式调用可规避
-                async for chunk in client.stream(messages):
+                async for chunk in client.stream(messages, request_purpose="skill_turbo"):
                     content = getattr(chunk, "content", None)
                     if content:
                         collected.append(content)

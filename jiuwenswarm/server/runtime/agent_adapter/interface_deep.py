@@ -13908,6 +13908,7 @@ class JiuWenSwarmDeepAdapter:
                     UserMessage(content=user_prompt),
                 ],
                 temperature=0,
+                request_purpose="rewrite",
             )
             content = _strip_skill_md_fence(
                 getattr(result, "content", None) or ""
@@ -19146,7 +19147,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             # No temperature override — inherit model default to match main agent
             # API params (thinking config is part of the Anthropic cache key).
-            result = await self._model.invoke(recap_messages, tools=tools)
+            result = await self._model.invoke(recap_messages, tools=tools, request_purpose="recap")
             # Tool-use guard: tools schema is passed only to preserve the cache
             # key (matches the main agent). Single turn + discard any tool_use
             # the model emits → tools are never executed. Aligned with
@@ -19243,6 +19244,7 @@ class JiuWenSwarmDeepAdapter:
         result = await self._model.invoke(
             [UserMessage(content=prompt)],
             temperature=0,
+            request_purpose="repair",
         )
         content = getattr(result, "content", None)
         if isinstance(content, str):
@@ -19329,7 +19331,7 @@ class JiuWenSwarmDeepAdapter:
         recap_messages.append(UserMessage(content=prompt))
 
         try:
-            result = await self._model.invoke(recap_messages, temperature=0)
+            result = await self._model.invoke(recap_messages, temperature=0, request_purpose="summary")
             raw = getattr(result, "content", None) or str(result)
         except Exception:
             logger.exception("[compact_partial] model call failed")
