@@ -504,14 +504,9 @@ if ($FrontendOnly) {
     # (same self-check as the Python packaging build in build-exe.ps1).
     $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
     $GatewayVerifier = Join-Path $ProjectRoot "scripts\verify_gateway_adapter_bundle.py"
-    $GatewayVerifyProcess = Start-Process `
-        -FilePath $FrozenExe `
-        -ArgumentList @("`"$GatewayVerifier`"") `
-        -Wait `
-        -PassThru `
-        -NoNewWindow
-    if ($GatewayVerifyProcess.ExitCode -ne 0) {
-        throw "Frozen Gateway adapter bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    uv run --no-sync python $GatewayVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen Gateway adapter bundle verification failed. See verifier output above."
     }
 
     $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
