@@ -30,6 +30,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from importlib.util import MAGIC_NUMBER
 from pathlib import Path
 from typing import Any
 
@@ -832,7 +833,7 @@ def _child_preexec(
 
 
 def _daemon_code_blob() -> bytes:
-    """Compile the daemon once per process and cache the marshal bytes."""
+    """Cache the daemon bytecode with its Python interpreter format."""
     global _cached_daemon_code
     with _daemon_code_lock:
         if _cached_daemon_code is None:
@@ -841,7 +842,7 @@ def _daemon_code_blob() -> bytes:
                 SANDBOX_DAEMON_SANDBOX_PATH,
                 "exec",
             )
-            _cached_daemon_code = marshal.dumps(code)
+            _cached_daemon_code = MAGIC_NUMBER + marshal.dumps(code)
         return _cached_daemon_code
 
 

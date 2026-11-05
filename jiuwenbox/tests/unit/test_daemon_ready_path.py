@@ -6,6 +6,7 @@ import io
 import ipaddress
 import marshal
 import os
+from importlib.util import MAGIC_NUMBER
 
 _TEST_SANDBOX_IP = str(ipaddress.IPv4Address(bytes((100, 64, 0, 2))))
 
@@ -163,7 +164,8 @@ def test_daemon_bytecode_round_trip():
             blob += chunk
     finally:
         os.close(fd)
-    code = marshal.loads(blob)
+    assert blob.startswith(MAGIC_NUMBER)
+    code = marshal.loads(blob[len(MAGIC_NUMBER):])
     assert isinstance(code, type(compile("x=1", "<t>", "exec")))
     assert code.co_filename.endswith("sandbox-daemon.py")
 
@@ -173,7 +175,7 @@ def test_launcher_loads_memfd_and_skips_disk(tmp_path, monkeypatch):
     source = "def main():\n    return 4\n"
     code = compile(source, "daemon.py", "exec")
     fd = os.memfd_create("test-daemon", os.MFD_CLOEXEC)
-    os.write(fd, marshal.dumps(code))
+    os.write(fd, MAGIC_NUMBER + marshal.dumps(code))
     os.lseek(fd, 0, os.SEEK_SET)
     monkeypatch.setenv(launcher.DAEMON_CODE_FD_ENV, str(fd))
     loaded = _call(launcher, "_load_daemon_code", str(missing))
@@ -181,6 +183,21 @@ def test_launcher_loads_memfd_and_skips_disk(tmp_path, monkeypatch):
     assert loaded.co_consts
     assert launcher.DAEMON_CODE_FD_ENV not in os.environ
     assert not missing.exists()
+
+
+def test_launcher_compiles_source_for_incompatible_bytecode(tmp_path, monkeypatch):
+    script = tmp_path / "daemon.py"
+    script.write_text("result = 'source'\n")
+    code = compile("result = 'memfd'", str(script), "exec")
+    fd = os.memfd_create("test-daemon", os.MFD_CLOEXEC)
+    os.write(fd, bytes(len(MAGIC_NUMBER)) + marshal.dumps(code))
+    os.lseek(fd, 0, os.SEEK_SET)
+    monkeypatch.setenv(launcher.DAEMON_CODE_FD_ENV, str(fd))
+
+    loaded = _call(launcher, "_load_daemon_code", str(script))
+    namespace = {}
+    exec(loaded, namespace)
+    assert namespace["result"] == "source"
 
 
 def test_launcher_drop_privileges_uses_env(monkeypatch):

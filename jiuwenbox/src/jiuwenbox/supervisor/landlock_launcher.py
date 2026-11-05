@@ -35,6 +35,7 @@ import os
 import sys
 import time
 import types
+from importlib.util import MAGIC_NUMBER
 
 LANDLOCK_CREATE_RULESET = 444
 LANDLOCK_ADD_RULE = 445
@@ -318,8 +319,11 @@ def _load_daemon_code_from_fd() -> types.CodeType | None:
         return None
     finally:
         os.close(fd)
+    if not blob.startswith(MAGIC_NUMBER):
+        # The sandbox may use a different Python version from the server.
+        return None
     try:
-        code = marshal.loads(blob)
+        code = marshal.loads(blob[len(MAGIC_NUMBER):])
     except (ValueError, EOFError, TypeError) as exc:
         logger.error("Failed to unmarshal daemon bytecode: %s", exc)
         return None
