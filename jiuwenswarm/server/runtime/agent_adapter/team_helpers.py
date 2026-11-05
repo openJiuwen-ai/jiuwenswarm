@@ -2104,20 +2104,26 @@ async def _execute_team_slash_rebuild(
 
 
 def _resolve_team_slash_skills_dir(session_id: str) -> str | None:
+    """Return the Skill library for team slash commands, if the session is a team."""
     metadata = get_session_metadata(session_id)
     team_name = str(metadata.get("team_name") or "").strip()
     if not team_name:
         return None
-    return str(team_home(team_name) / "team-workspace" / "skills")
+    from jiuwenswarm.common.utils import get_agent_skills_dir
+
+    return str(get_agent_skills_dir())
 
 
 def _team_spec_skills_dir(team_spec: Any) -> str:
-    workspace = getattr(team_spec, "workspace", None)
-    root_path = str(getattr(workspace, "root_path", "") or "").strip()
-    if root_path:
-        return str(Path(root_path) / "skills")
-    team_name = str(getattr(team_spec, "team_name", "") or "").strip()
-    return str(team_home(team_name) / "team-workspace" / "skills")
+    """Return the single physical Skill library used by team slash/evolution paths.
+
+    ``team_spec`` is accepted for call-site compatibility; teams no longer own a
+    mirrored ``skills/`` directory.
+    """
+    del team_spec
+    from jiuwenswarm.common.utils import get_agent_skills_dir
+
+    return str(get_agent_skills_dir())
 
 
 def _team_spec_monitor_roots(team_spec: Any, session_id: str | None = None) -> list[str]:
@@ -2445,7 +2451,7 @@ async def process_team_message_stream(
 
     team_name = team_spec.team_name
     team_skills_dir = _team_spec_skills_dir(team_spec)
-    ensure_ready = getattr(team_manager, "ensure_team_shared_skills_ready_for_session", None)
+    ensure_ready = None  # soft-link views removed; global library + visibility only
     shared_skills_ready_prepared = False
     if is_first_request and callable(ensure_ready):
         # The manager is a duck-typed extension point: implementations may be

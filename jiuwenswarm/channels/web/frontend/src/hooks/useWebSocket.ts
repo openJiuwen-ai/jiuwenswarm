@@ -7,6 +7,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isWorkspaceQuotaError } from '../multi-session/state/createConversationSession';
+import { createConversationTitle } from '../multi-session/state/newConversationLifecycle';
 import {
   ConnectionAckPayload,
   WebConnectOptions,
@@ -60,6 +61,10 @@ import {
 } from '../services/runtimeScope';
 import { getWebTransport } from '../utils/env';
 import { isEnterprise } from '../edition';
+import {
+  SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND,
+  SWARM_SKILL_MULTIPLE_NOT_ALLOWED,
+} from '../features/teamCatalog/teamCatalogApi';
 import {
   clearStaleCronPermissionPrompt,
   dismissCronAskUser,
@@ -1635,6 +1640,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           beforeCompressed: 0,
           afterCompressed: 0,
         });
+        // Dynamic-team open creates the session with an empty title; mirror
+        // develop by filling the sidebar from the first user turn (backend
+        // also auto-titles when metadata.title is empty).
+        const existingTitle = (
+          useSessionStore.getState().sessions.find((s) => s.session_id === sessionId)?.title || ''
+        ).trim();
+        if (!existingTitle) {
+          const nextTitle = createConversationTitle(content).slice(0, 100);
+          if (nextTitle) {
+            updateSession(sessionId, { title: nextTitle });
+            useWorkspaceStore.getState().patchSession(sessionId, { title: nextTitle });
+          }
+        }
       }
 
       resetContextCompressionTurn(sessionId);
@@ -1745,6 +1763,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const chatRequestId = makeClientRequestId('chat');
         activeRequestIdRef.current = chatRequestId;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
+
+        // v2: no openDynamicTeam. Unbound + Swarm rides chat.send → host auto-bind.
         await request('chat.send', {
           session_id: sessionId,
           content: outgoingContent,
@@ -1765,7 +1785,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setConnectionStats({ lastError: webError.message });
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
-        const errorMsg = webError.message || t('network.sendMessageFailed');
+        let errorMsg = webError.message || t('network.sendMessageFailed');
+        if (webError.code === SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND) {
+          errorMsg = t('chat.teamSession.swarmForbidden');
+        } else if (webError.code === SWARM_SKILL_MULTIPLE_NOT_ALLOWED) {
+          errorMsg = t('chat.teamSession.swarmMultiple');
+        }
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
           id: `error-${Date.now()}`,
@@ -1786,6 +1811,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       setContextCompressionStats,
       setConnectionStats,
       t,
+      updateSession,
     ]
   );
 
@@ -4602,9 +4628,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             new_status?: string;
             timestamp?: number;
             name?: string;
+            displayName?: string;
+            display_name?: string;
             execution_status?: string | null;
             mode?: string;
           };
+          // M1 wire: prefer displayName, then name, then member_id.
+          const memberDisplayName =
+            (typeof e.displayName === 'string' && e.displayName.trim()) ||
+            (typeof e.display_name === 'string' && e.display_name.trim()) ||
+            (typeof e.name === 'string' && e.name.trim()) ||
+            e.member_id ||
+            '';
           const activeSessionId = getPayloadSessionId(payload) || undefined;
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
@@ -4628,7 +4663,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 member_id: e.member_id,
                 status: e.status || '',
                 timestamp: e.timestamp || Date.now(),
-                name: e.name,
+                name: memberDisplayName,
                 execution_status: e.execution_status || e.new_status,
                 mode: e.mode,
               });
@@ -4639,7 +4674,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               member_id: e.member_id || '',
               status: e.status || '',
               timestamp: e.timestamp || Date.now(),
-              name: e.name,
+              name: memberDisplayName,
               execution_status: e.execution_status,
               mode: e.mode,
             });

@@ -2278,6 +2278,51 @@ overflow: hidden;
   overscroll-behavior: contain;
 }
 
+.chat-skill-select__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-skill-select__group + .chat-skill-select__group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border-default);
+}
+
+.chat-skill-select__group-title {
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+}
+
+.chat-skill-select__group-hint {
+  padding: 0 8px 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+}
+
+.chat-skill-select__item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-skill-select__badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-action-primary);
+  background: rgba(var(--color-action-primary-rgb), 0.1);
+}
+
 .chat-skill-select__item {
   width: 100%;
   display: flex;

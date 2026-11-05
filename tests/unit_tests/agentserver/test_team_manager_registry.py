@@ -17,7 +17,7 @@ from jiuwenswarm.agents.harness.team.team_manager import (
     RuntimeInfo,
     TeamWorkspaceInfo,
     get_team_manager,
-    refresh_team_shared_skill_links_across_managers,
+    reload_team_skill_views_across_managers,
     reset_team_manager,
 )
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
@@ -213,7 +213,7 @@ def test_find_team_skill_rail_for_request_uses_pending_governance() -> None:
     assert manager.find_team_skill_rail_for_request("missing") is None
 
 
-def test_refresh_team_shared_skill_links_across_managers_uses_registered_session(
+def test_reload_team_skill_views_across_managers_uses_registered_session(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -231,7 +231,7 @@ def test_refresh_team_shared_skill_links_across_managers_uses_registered_session
     manager = get_team_manager("web")
     manager.register_team_shared_skill_link_target("sess-1", team_shared_skills)
 
-    assert refresh_team_shared_skill_links_across_managers("sess-1")
+    assert reload_team_skill_views_across_managers("sess-1")
     assert (team_shared_skills / "skill-a").resolve() == skill_dir.resolve()
 
 

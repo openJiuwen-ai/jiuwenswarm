@@ -23,6 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import openjiuwen.agent_teams.paths as _agent_teams_paths
 from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.schema.deep_agent_spec import RailSpec
 
@@ -37,6 +38,12 @@ from jiuwenswarm.agents.swarm.registry import (
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
 from jiuwenswarm.common.utils import get_agent_skills_dir
+
+SKILL_VISIBILITY_FILENAME = getattr(
+    _agent_teams_paths,
+    "SKILL_VISIBILITY_FILENAME",
+    "skills-visibility.json",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +145,18 @@ def enrich_team_spec_for_swarm(
         if workspace and workspace.root_path
         else str(team_home(spec.team_name) / "team-workspace")
     )
-    team_skills_dir = str(Path(team_ws_root) / "skills")
-    global_skills_dir = str(get_agent_skills_dir())
+    # Point openjiuwen's single Skill library at the platform-owned directory.
+    skills_library = get_agent_skills_dir()
+    configure_skills = getattr(_agent_teams_paths, "configure_global_skills_dir", None)
+    if configure_skills is not None:
+        configure_skills(skills_library)
+    else:
+        logger.warning(
+            "[SwarmAssembly] configure_global_skills_dir missing; "
+            "TeamSkillUse may scan the default ~/.openjiuwen skills tree"
+        )
+    team_visibility_path = str(Path(team_ws_root) / SKILL_VISIBILITY_FILENAME)
+    global_skills_dir = str(skills_library)
 
     base = SwarmBuildContext(
         session_id=session_id,
@@ -152,7 +169,7 @@ def enrich_team_spec_for_swarm(
         disable_teammate_worktree=str(channel_id or "").strip().lower() == "web",
         team_id=spec.team_name,
         team_ws_root=team_ws_root,
-        team_skills_dir=team_skills_dir,
+        team_skill_visibility_path=team_visibility_path,
         global_skills_dir=global_skills_dir,
         config=config,
         language=_normalize_prompt_language(
