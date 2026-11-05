@@ -12,7 +12,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { canRetrySkillPack, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -658,14 +658,23 @@ function AssetPublishDrawer({
           )}
           {showResult && (
             <>
-              <button
+              {reference.kind === 'skillpack' && state.record && canRetrySkillPack(state.record) ? (
+                <button
+                  type="button"
+                  data-testid="asset-publish-retry-pack"
+                  disabled={!state.loggedIn || state.submissionLocked || state.busy}
+                  onClick={() => void state.retrySkillPack()}
+                >
+                  {text(state.busy ? 'busy' : 'retryPack')}
+                </button>
+              ) : <button
                 type="button"
                 data-testid="asset-publish-result-edit"
                 disabled={state.submissionLocked || state.busy}
                 onClick={backToForm}
               >
                 {text('edit')}
-              </button>
+              </button>}
               <button type="button" onClick={onClose} data-testid="asset-publish-done">
                 {text('close')}
               </button>
@@ -957,7 +966,9 @@ function AssetPublishDrawer({
             <span className="asset-publish-result-icon" aria-hidden="true" data-testid="asset-publish-result-icon">
               <ResultIcon size={20} />
             </span>
-            <h3 data-testid="asset-publish-result-status">{text(recordState as MessageKey)}</h3>
+            <h3 data-testid="asset-publish-result-status">
+              {text(packStageLabels[state.record.stage || ''] || recordState as MessageKey)}
+            </h3>
           </header>
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
@@ -982,7 +993,9 @@ function AssetPublishDrawer({
             <p className="asset-publish-result-error text-danger">{issueText(state.record.error)}</p>
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
-            <p data-testid="asset-publish-observed-note">{text('observed')}</p>
+            <p data-testid="asset-publish-observed-note">
+              {text(state.record.stage === 'completed' ? 'packPublishedNote' : 'observed')}
+            </p>
           </footer>
         </section>
       )}

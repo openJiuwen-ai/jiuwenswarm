@@ -1,6 +1,7 @@
 """History and list reads must not reserve SQLite's single writer lock."""
 
 import sqlite3
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import pytest
@@ -103,6 +104,7 @@ async def test_history_worker_queue_work_is_bounded_as_message_count_grows(monke
     manager = object.__new__(AgentManager)
     manager._scheduler = Scheduler()
     manager._sessions = SimpleNamespace(
+        read_batch=nullcontext,
         find_session=lambda *args: SimpleNamespace(session_id='session'),
         session_requests=lambda *args: list(states),
         result_deliveries=lambda *args: [],
@@ -152,6 +154,7 @@ async def test_history_observes_a_request_that_starts_while_states_are_read():
     manager = object.__new__(AgentManager)
     manager._scheduler = Scheduler()
     manager._sessions = SimpleNamespace(
+        read_batch=nullcontext,
         find_session=lambda *args: SimpleNamespace(session_id='session'),
         session_requests=read_states, result_deliveries=lambda *args: [],
     )

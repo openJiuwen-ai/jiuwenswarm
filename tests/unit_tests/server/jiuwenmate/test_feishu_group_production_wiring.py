@@ -12,9 +12,10 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent as GatewayFeishuEvent, InboundDisposition as GatewayDisposition
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
     FeishuBinding,
     FeishuInboundEvent,
@@ -190,7 +191,7 @@ async def test_group_response_must_match_query_kind(monkeypatch, message_ids, va
 async def test_group_caches_group_name_but_not_membership(monkeypatch):
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     now = [0.0]
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect.time.monotonic",
+    monkeypatch.setattr("agent_gateway.channel_manager.im_platforms.feishu.feishu_connect.time.monotonic",
                         lambda: now[0])
     membership = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=True))
     member_api = AsyncMock(return_value=membership)
@@ -267,7 +268,7 @@ async def test_group_platform_lifecycle_event_enters_only_the_bound_persistent_r
     assert events[0].changed_at == NOW
 
 
-def _event(**overrides) -> FeishuInboundEvent:
+def _event(event_type=FeishuInboundEvent, **overrides) -> FeishuInboundEvent:
     values = {
         "receiving_app_id": "cli_bound",
         "expected_agent_id": "mate_1",
@@ -285,7 +286,7 @@ def _event(**overrides) -> FeishuInboundEvent:
         "attachment_refs": ("feishu:attachment:om_1:file_1",),
     }
     values.update(overrides)
-    return FeishuInboundEvent(**values)
+    return event_type(**values)
 
 
 def _agent_websocket_server_type():
@@ -592,9 +593,9 @@ async def test_message_handler_forwards_bound_event_over_e2a_and_maps_dispositio
     handler = object.__new__(MessageHandler)
     handler.agent_client = client
 
-    result = await handler.handle_persistent_feishu_event(_event())
+    result = await handler.handle_persistent_feishu_event(_event(GatewayFeishuEvent))
 
-    assert result is InboundDisposition.HANDLED
+    assert result is GatewayDisposition.HANDLED
     envelope = client.send_request.await_args.args[0]
     assert envelope.method == ReqMethod.JIUWENMATE_FEISHU_INBOUND.value
     assert envelope.channel == "feishu"
@@ -612,9 +613,9 @@ async def test_unbound_feishu_event_does_not_make_an_e2a_request():
     handler = object.__new__(MessageHandler)
     handler.agent_client = client
 
-    result = await handler.handle_persistent_feishu_event(_event(expected_agent_id=None))
+    result = await handler.handle_persistent_feishu_event(_event(GatewayFeishuEvent, expected_agent_id=None))
 
-    assert result is InboundDisposition.UNCLAIMED
+    assert result is GatewayDisposition.UNCLAIMED
     client.send_request.assert_not_awaited()
 
 
@@ -1121,8 +1122,8 @@ async def test_welink_reconciliation_push_preserves_read_only_operation():
 @pytest.mark.asyncio
 async def test_welink_gateway_reconciliation_reads_history_without_sending(tmp_path):
     import json
-    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
-    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_poller import MembershipStore
+    from agent_gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
+    from agent_gateway.channel_manager.im_platforms.welink.welink_poller import MembershipStore
 
     channel = WelinkChannel(WelinkConfig(account='reader', agent_id='mate', credential_dir=str(tmp_path),
         assistant_credential_id='ak', assistant_secret='sk'), MagicMock())

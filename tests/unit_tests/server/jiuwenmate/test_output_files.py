@@ -11,10 +11,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from jiuwenswarm.common.file_download_token import WebFileDownloadManager, validate_file_download_token
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.gateway.routing.keys import ChannelKey
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.routing.keys import ChannelKey
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 from jiuwenswarm.server.jiuwenmate.execution_models import (
@@ -103,7 +103,7 @@ def _file_event(
         "target_ref": "reply-1",
         "share_mode": share_mode,
         "file_ref": file_ref,
-        "file_path": file_path,
+        "file_path": f"sessions/{execution.session_id}/{file_path}",
         "file_size": size,
     }
     if caption is not None:
@@ -142,8 +142,10 @@ def _paused(execution, seq, refs=("out-file",)):
 async def host(tmp_path):
     repository = ExecutionRepository(tmp_path / "agents.sqlite3")
     workspaces = WorkspaceStore(tmp_path / "workspaces")
-    office = workspaces.ensure(NS, AGENT)
-    (office / "output" / "周报.md").write_bytes(CONTENT)
+    for conversation in (ConversationRef.group("cid_group"), ConversationRef.web("conv-1")):
+        session = repository.resolve_session(NS, AGENT, conversation, now=NOW)
+        office = workspaces.ensure_session(NS, AGENT, session.session_id)
+        (office / "output" / "周报.md").write_bytes(CONTENT)
     files = WorkspaceOutputFiles(workspaces)
     queue = CommitQueue(repository)
     await queue.start()
@@ -167,10 +169,10 @@ async def test_final_uses_the_verified_workspace_file_and_makes_it_available_on_
 
     source = host.office / "output" / "周报.md"
     assert source.read_bytes() == CONTENT
-    assert host.files.resolve(NS, AGENT, "output/周报.md", FILE_REF, len(CONTENT)) == source
+    assert host.files.resolve(NS, AGENT, f"sessions/{execution.session_id}/output/周报.md", FILE_REF, len(CONTENT)) == source
     assert not (host.data_dir / "outputs").exists()
     source.write_bytes(b"edited later")
-    assert host.files.resolve(NS, AGENT, "output/周报.md", FILE_REF, len(CONTENT)) is None
+    assert host.files.resolve(NS, AGENT, f"sessions/{execution.session_id}/output/周报.md", FILE_REF, len(CONTENT)) is None
     deliveries = host.repository.result_deliveries(NS, state.record.request_id)
     assert [(item["output_id"], item["channel"], item["status"]) for item in deliveries] == [
         ("out-file", "web", "available")
@@ -202,7 +204,7 @@ async def test_shared_workspace_output_is_not_copied_into_a_second_persistent_di
     await host.port.record(execution, _file_event(execution, 1, file_path="output/最终报告.md"))
     await host.port.record(execution, _final(execution, 2))
 
-    assert host.files.resolve(NS, AGENT, "output/最终报告.md", FILE_REF, len(CONTENT)) == (
+    assert host.files.resolve(NS, AGENT, f"sessions/{execution.session_id}/output/最终报告.md", FILE_REF, len(CONTENT)) == (
         host.office / "output" / "最终报告.md"
     )
     assert not (host.data_dir / "outputs").exists()
@@ -245,7 +247,7 @@ async def test_file_candidate_outside_shared_output_is_not_handed_off(host):
     with pytest.raises(PersistentAgentError) as caught:
         await host.port.record(execution, _final(execution, 2))
 
-    assert caught.value.code == "OUTPUT_FILE_INVALID"
+    assert caught.value.code == "OUTPUT_FILE_FORBIDDEN"
     assert await host.port.read_execution_log(execution, execution.execution_id) == ()
 
 
@@ -291,7 +293,7 @@ async def test_paused_hands_off_files_and_feishu_claims_the_shared_workspace_out
     assert file["size"] == len(CONTENT)
     assert file["file_key"] is None
     assert jobs[0]["text"] == "本周周报"
-    assert file["key"] == f"{NS}/{AGENT}/output/周报.md"
+    assert file["key"] == f"{NS}/{AGENT}/sessions/{execution.session_id}/output/周报.md"
     assert host.files.resolve_key(file["key"], file["file_ref"], file["size"]) == (
         host.office / "output" / "周报.md"
     )
@@ -337,7 +339,7 @@ async def test_channel_manager_passes_dingtalk_group_upload_context(tmp_path):
     )
     manager = ChannelManager(object.__new__(MessageHandler))
     manager._channels[ChannelKey("dingtalk", "default")] = channel
-    manager._persistent_output_file = lambda _file: source
+    manager.set_persistent_output_file_resolver(lambda key, file_ref, size: source)
 
     result = await manager.deliver_persistent_result({
         "channel": "dingtalk",
@@ -399,11 +401,11 @@ def test_workspace_output_key_rejects_paths_outside_output():
 
 
 async def test_channel_manager_reads_the_agent_output_directly_and_rejects_changed_content(tmp_path, monkeypatch):
-    source = tmp_path / "workspaces" / NS / AGENT / "output" / "周报.md"
+    source = tmp_path / "workspaces" / NS / AGENT / "sessions" / "session-1" / "output" / "周报.md"
     source.parent.mkdir(parents=True)
     source.write_bytes(CONTENT)
-    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path)
     manager = ChannelManager(object.__new__(MessageHandler))
+    manager.set_persistent_output_file_resolver(WorkspaceOutputFiles(WorkspaceStore(tmp_path / "workspaces")).resolve_key)
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
     channel.send_persistent_result = AsyncMock(return_value={"outcome": "delivered", "external_message_id": "om_f"})
     manager.register_channel(channel)
@@ -415,7 +417,7 @@ async def test_channel_manager_reads_the_agent_output_directly_and_rejects_chang
         "idempotency_key": "k",
         "text": None,
         "file": {
-            "key": f"{NS}/{AGENT}/output/周报.md",
+            "key": f"{NS}/{AGENT}/sessions/session-1/output/周报.md",
             "name": "周报.md",
             "size": len(CONTENT),
             "file_ref": FILE_REF,

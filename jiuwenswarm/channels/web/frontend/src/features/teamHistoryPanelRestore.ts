@@ -11,6 +11,12 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import { ownerTeamId } from './teamOrganization/conversation';
 import { useTeamSelectorStore } from '../stores/teamSelectorStore';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
+import { isDepartedTeamMemberStatus } from './teamMemberDeparture';
+import {
+  mergeTaskTimeline,
+  toTaskTimelineEntry,
+  type TeamTaskTimelineEntry,
+} from '../components/teamArea/groupChatTimeline';
 import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
@@ -62,6 +68,7 @@ export interface TeamHistoryPanelState {
   taskTimeline: TeamTaskTimelineEntry[];
   executionEvents: TeamMemberExecutionEvent[];
   organizationExecutionEvents?: Record<string, TeamMemberExecutionEvent[]>;
+  organizationTeamStates?: Record<string, TeamHistoryPanelState>;
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
 }
@@ -827,7 +834,7 @@ export function parseTeamHistoryPanelRecords(records: unknown[], sessionId: stri
   return collectTeamState(records.filter(isRecord), sessionId);
 }
 
-/** Keep the Owner roster and member execution records scoped to their Team after a refresh. */
+/** Restore each Team's complete panel state into its own conversation projection. */
 export function parseOrganizationHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
   const state = parseTeamHistoryPanelRecords(records, sessionId);
   if (!isTeamOrganizationUiEnabled()) return state;
@@ -838,7 +845,8 @@ export function parseOrganizationHistoryPanelRecords(records: unknown[], session
   if (!ownerId) return state;
   for (const record of records.filter(isRecord)) {
     const payload = isRecord(record.event_payload) ? { ...record, ...record.event_payload } : record;
-    const teamId = String(payload.team_id || payload.team_name || '').trim();
+    const event = extractTeamEvent(record);
+    const teamId = String(payload.team_id || payload.team_name || event?.team_id || event?.team_name || '').trim();
     if (!teamId || teamId === ownerId) {
       ownerRecords.push(record);
       continue;
@@ -849,12 +857,23 @@ export function parseOrganizationHistoryPanelRecords(records: unknown[], session
   }
   if (!teams.size) return state;
   const ownerState = parseTeamHistoryPanelRecords(ownerRecords, sessionId);
+  const organizationTeamStates = Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
+    teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId),
+  ]));
+  const userMessages = Object.entries(organizationTeamStates).flatMap(([teamId, teamState]) =>
+    teamState.messages.flatMap((message) => {
+      const ownerMessage = toOwnerTeamMessage({ ...message, teamId });
+      return ownerMessage ? [ownerMessage] : [];
+    }),
+  );
   return {
-    ...state,
-    members: ownerState.members,
-    executionEvents: ownerState.executionEvents,
-    organizationExecutionEvents: Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
-      teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId).executionEvents,
+    // Mirror only user-directed messages; boards, timelines and collaboration remain isolated.
+    ...ownerState,
+    messages: mergeUniqueMessages([...ownerState.messages, ...userMessages])
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)),
+    organizationTeamStates,
+    organizationExecutionEvents: Object.fromEntries(Object.entries(organizationTeamStates).map(([teamId, teamState]) => [
+      teamId, teamState.executionEvents,
     ])),
   };
 }

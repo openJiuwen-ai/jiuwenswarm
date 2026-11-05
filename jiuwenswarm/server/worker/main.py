@@ -179,19 +179,23 @@ def main() -> None:
     _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
-    runner = asyncio.Runner()
-    loop = runner.get_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     task = loop.create_task(serve_worker(args.socket or "", host=args.host, port=args.port,
                                        code_identity_value=code_identity_value,
                                        session_source=session_source))
-    restore_handlers: Callable[[], None] | None = None
+
+    def _stop() -> None:
+        task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _stop)
+        loop.add_signal_handler(signal.SIGTERM, _stop)
+    except (NotImplementedError, OSError):
+        pass
     exit_code = 1
     try:
-        restore_handlers = _install_stop_handlers(loop, task)
-        runner.run(_wait_for_worker(task))
-        exit_code = 0
-    except asyncio.CancelledError:
-        # A signal may arrive before serve_worker enters its cancellation guard.
+        loop.run_until_complete(task)
         exit_code = 0
     except WorkerForceExit as exc:
         logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
@@ -201,19 +205,11 @@ def main() -> None:
         # SystemExit waits for those threads and can exceed the shared deadline.
         exit_process(1)
     finally:
-        try:
-            # Also drain SDK-owned tasks, async generators and the executor.
-            # Closing the loop directly abandons their asynchronous cleanup.
-            runner.close()
-        finally:
-            try:
-                # logging.shutdown acquires every sink's lock at interpreter exit.
-                # A stuck disk must not make an otherwise drained Worker immortal.
-                if not stop_background_logging():
-                    exit_process(exit_code)
-            finally:
-                if restore_handlers is not None:
-                    restore_handlers()
+        loop.close()
+        # logging.shutdown acquires every sink's lock at interpreter exit.
+        # A stuck disk must not make an otherwise drained Worker immortal.
+        if not stop_background_logging():
+            exit_process(exit_code)
 
 
 if __name__ == "__main__":

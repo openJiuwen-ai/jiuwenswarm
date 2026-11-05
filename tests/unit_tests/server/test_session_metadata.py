@@ -2037,7 +2037,7 @@ class _FakeWebChannel:
         self.methods: dict[str, object] = {}
         self.responses: list[dict] = []
 
-    def register_method(self, name, handler):
+    def register_method(self, name, handler, **kwargs):
         self.methods[name] = handler
 
     def on_connect(self, handler):
@@ -3461,3 +3461,28 @@ def test_owner_stop_persists_without_changing_session_activity_or_other_metadata
     assert stored["title"] == "original"
     set_owner_stopped("owner-stop", False)
     assert not owner_is_stopped("owner-stop", "owner")
+def test_session_equipment_survives_full_metadata_write(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_equipment,
+        get_session_metadata,
+        init_session_metadata,
+        save_session_equipment,
+    )
+
+    init_session_metadata(
+        session_id="sess_expert",
+        channel_id="web",
+        user_id="user_1",
+        title="expert",
+    )
+    save_session_equipment("sess_expert", agent_template_name="pkg-a")
+    assert get_session_equipment("sess_expert")["agent_template_name"] == "pkg-a"
+
+    current = dict(get_session_metadata("sess_expert", cache_bust=True, enable_writeback=False))
+    current.pop("session_equipment", None)
+    current["title"] = "renamed"
+    _enqueue_write("sess_expert", current, sync_write=True, preserve_equipment=True)
+
+    assert get_session_equipment("sess_expert", cache_bust=True)["agent_template_name"] == "pkg-a"
+    assert _read_json(sessions_dir / "sess_expert" / "metadata.json")["title"] == "renamed"

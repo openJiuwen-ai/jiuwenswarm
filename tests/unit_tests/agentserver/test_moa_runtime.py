@@ -375,7 +375,7 @@ async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, re
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, **kwargs: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     assert "config.moa_status" in channel.methods
     await channel.methods["config.moa_status"](object(), "status", {"model_selection": SELECTION}, "chat", "authenticated-user")
@@ -404,7 +404,7 @@ async def test_web_status_rpc_requires_available_agent_server(monkeypatch, missi
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, **kwargs: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     ws = object()
     await channel.methods["config.moa_status"](
@@ -481,7 +481,7 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
     import httpx
     from openjiuwen.core.foundation.llm.system_one.schema import ChoiceQuestion
 
-    from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+    from jiuwenswarm.common.browser_config import browser_decision_state
     from jiuwenswarm.server.runtime.moa_progress import ProgressJevSystemOneClient
 
     monkeypatch.setenv(key_env, "shared-provider-secret")
@@ -707,7 +707,7 @@ async def test_session_start_failure_closes_uncached_child(moa_config, monkeypat
     monkeypatch.setattr(child, "persist_skill_retrieval_session_profile", lambda: None)
     monkeypatch.setattr(child, "create_instance", create)
     monkeypatch.setattr(child, "start_interaction", AsyncMock(side_effect=failure()))
-    monkeypatch.setattr(interface_deep, "load_persisted_external_harness_binding", lambda _: None)
+    monkeypatch.setattr(interface_deep, "load_persisted_external_harness_binding", AsyncMock(return_value=None))
     monkeypatch.setattr(interface_deep, "get_config", lambda: moa_config)
     monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata", lambda _: {})
     with pytest.raises(failure):
@@ -846,7 +846,9 @@ async def test_moa_rail_emits_transient_reference_and_verification_status(moa_co
         for event in mailbox.pending:
             assert set(event) == {"operation_id", "phase", "status"}
             by_operation.setdefault(event["operation_id"], []).append(event["status"])
-        assert len(by_operation) == (5 if jev_enabled else 3)
+        # Both routes consult the two reference models after one verifier decision.
+        starts = [event["phase"] for event in mailbox.pending if event["status"] == "started"]
+        assert sorted(starts) == ["reference", "reference", "verification"]
         assert all(statuses == ["started", "completed"] for statuses in by_operation.values())
     finally:
         await runtime.aclose()

@@ -178,6 +178,7 @@ from jiuwenswarm.server.personal_context.ws_handler import (
     PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
     handle_personal_context_request,
 )
+from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -222,71 +223,6 @@ from jiuwenswarm.server.runtime.agent_manager import (
     ACP_DEFAULT_CAPABILITIES,
     AgentManager,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
-    get_permissions_config_req_methods,
-)
-from jiuwenswarm.agents.harness.common.a4p.rpc import get_a4p_req_methods
-from jiuwenswarm.common.config import (
-    DEFAULT_SANDBOX_POLICY_FILE,
-    DEFAULT_SANDBOX_STARTUP_MODE,
-    get_config,
-    get_available_models,
-    get_default_models,
-    get_config_yaml_mcp_servers,
-    get_mcp_server_config,
-    get_mcp_servers,
-    get_sandbox_endpoint,
-    get_sandbox_runtime,
-    get_sandbox_startup_mode,
-    get_sandbox_startup_mode_explicit,
-    remove_mcp_server,
-    resolve_preserve_file_sharing_mode_default,
-    resolve_sandbox_api_token,
-    resolve_sandbox_policy_path,
-    remove_subagent_from_config,
-    set_mcp_server_enabled,
-    sync_sandbox_api_token_environ,
-    update_sandbox_endpoint,
-    update_sandbox_runtime,
-    upsert_mcp_server,
-    upsert_subagent_in_config,
-)
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
-from jiuwenswarm.common.hooks_config import load_hooks_config
-from jiuwenswarm.common.security.ws_origin import (
-    extract_handshake_request,
-    forbidden_origin_response,
-    get_header_value,
-    is_origin_check_enabled,
-    is_allowed_browser_origin,
-)
-from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
-    PLAN_MODE_EXITED_EVENT_TYPE,
-)
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.personal_context import PersonalContextHostAPI
-from jiuwenswarm.server.personal_context.ws_handler import (
-    PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
-    handle_personal_context_request,
-)
-from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.runtime.request import (
-    PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
-    apply_resolved_mode_to_request as _apply_resolved_mode_to_request,
-    prepare_chat_turn,
-    resolve_agent_request_mode,
-    resolve_request_project_dir,
-    resolve_request_runtime_mode,
-    sync_chat_request_metadata as _sync_chat_request_metadata,
-)
-from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.runtime.host_services import (
-    install_runtime_push_handler,
-    restore_runtime_push_handler,
-)
-from jiuwenswarm.runtime.plan import PlanModeController
-from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
-from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -301,36 +237,6 @@ from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
-from jiuwenswarm.server.runtime.session.session_history import (
-    HistorySnapshotChanged,
-    InvalidHistoryCursor,
-    append_compact_history_records,
-    append_history_record,
-    enqueue_history_request_completion,
-    history_exists,
-    is_valid_session_id,
-    list_session_subagent_ids,
-    load_history_records,
-    read_history_cursor_page,
-    read_member_history_records,
-    read_team_history_records,
-    wait_for_history_receipt,
-)
-from jiuwenswarm.server.runtime.session.session_message_service import (
-    SessionMessageExecutionResult,
-    SessionMessageService,
-    SessionMessagingError,
-)
-from jiuwenswarm.server.runtime.session.session_message_store import (
-    SessionMessageRecord,
-    SessionMessageStore,
-)
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    build_server_push_message,
-    get_all_sessions_metadata,
-    get_session_metadata,
-)
-from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.server.utils.utils import is_team_params
@@ -550,6 +456,21 @@ def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
             exc,
             exc_info=exc,
         )
+
+_TRAJECTORY_REQ_METHODS = frozenset(
+    {
+        ReqMethod.TRAJECTORY_SUBJECTS_LIST,
+        ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
+        ReqMethod.TRAJECTORY_SEQUENCES_GET,
+        ReqMethod.TRAJECTORY_CHECKPOINTS_GET,
+        ReqMethod.TRAJECTORY_USAGE_GET,
+        ReqMethod.TRAJECTORY_SUBJECT_GET,
+        ReqMethod.TRAJECTORY_RAW_GET,
+        ReqMethod.TRAJECTORY_ARCHIVE_OPEN,
+        ReqMethod.TRAJECTORY_BLOB_READ,
+        ReqMethod.TRAJECTORY_BLOB_CLOSE,
+    },
+)
 
 _DIAGNOSIS_REQ_METHODS = frozenset(
     {
@@ -1427,6 +1348,10 @@ class AgentWebSocketServer:
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
         self._diagnosis_host: Any = None
+        # Trajectory read host (lazy, see _get_trajectory_host)
+        self._trajectory_host: Any = None
+        # Topic recommendation host (lazy, see _recommendation_host_instance)
+        self._recommendation_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -2314,6 +2239,23 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        close_client_attachments()
+        await self._stop_recommendation_host()
+        preparation = getattr(self, "_preparation_registry", None)
+        if preparation is not None:
+            await preparation.close()
+            self._preparation_registry = None
+        proactive = getattr(self, "_proactive_engine", None)
+        if proactive is not None:
+            close = getattr(proactive, "close", None)
+            if callable(close):
+                await close()
+            self._proactive_engine = None
+        sandbox_start = getattr(self, "_sandbox_start_task", None)
+        self._sandbox_start_task = None
+        if sandbox_start is not None:
+            sandbox_start.cancel()
+            await asyncio.gather(sandbox_start, return_exceptions=True)
         diagnosis_host = getattr(self, "_diagnosis_host", None)
         if diagnosis_host is not None:
             # A restart builds a fresh host so the shutdown flag does not linger.
@@ -3314,6 +3256,27 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(response, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+    @staticmethod
+    def _request_requires_sandbox_bootstrap(request: AgentRequest) -> bool:
+        """Only configured internal Sandbox execution shares its startup barrier.
+
+        A chat parameter cannot override the trusted server backend. Explicit
+        internal mode may enable Sandbox at startup even when enabled is false;
+        waiting preserves that existing Linux configuration contract.
+        """
+        if request.req_method == ReqMethod.COMMAND_SANDBOX:
+            # Serialize config mutation with bootstrap, avoiding a late startup
+            # enabling Sandbox after /sandbox disable returned successfully.
+            return True
+        if request.req_method not in {ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER}:
+            return False
+        if not sys.platform.startswith("linux"):
+            return False
+        try:
+            return (get_sandbox_startup_mode_explicit() == "internal"
+                    and str(get_sandbox_endpoint().get("type") or "jiuwenbox").strip().lower() != "yuanrong")
+        except Exception:  # noqa: BLE001 - an unknown backend retains its barrier
+            return True
 
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
@@ -3781,6 +3744,9 @@ class AgentWebSocketServer:
             if request.req_method in _DIAGNOSIS_REQ_METHODS:
                 await self._handle_diagnosis_request(ws, request, send_lock)
                 return
+            if request.req_method in _TRAJECTORY_REQ_METHODS:
+                await self._handle_trajectory_request(ws, request, send_lock)
+                return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if (
                 isinstance(request.req_method, ReqMethod)
@@ -3854,8 +3820,15 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
                 params = request.params if isinstance(request.params, dict) else {}
+                # Runtime owns exact execution cancellation for a
+                # target_request_id. Do not first terminate every response
+                # stream in the Session bucket.
                 owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
-                if owner_stop or self._is_targeted_expert_request(request):
+                if (
+                    params.get("target_request_id")
+                    or owner_stop
+                    or self._is_targeted_expert_cancel_request(request)
+                ):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -4172,7 +4145,7 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
             resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_request(request):
+        elif self._is_targeted_expert_cancel_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
             from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
@@ -5286,7 +5259,10 @@ class AgentWebSocketServer:
             )
         try:
             if targeted_expert:
-                from jiuwenswarm.server.runtime.organization_execution import OrganizationTurn, register_turn
+                from jiuwenswarm.server.runtime.organization_execution import (
+                    OrganizationTurn,
+                    register_turn,
+                )
 
                 register_turn(OrganizationTurn(
                     str(request.session_id or ""), str(request.params["target_team_id"]),
@@ -5369,7 +5345,9 @@ class AgentWebSocketServer:
                             if not entries:
                                 self._session_stream_tasks.pop(session_id, None)
                         if targeted_expert:
-                            from jiuwenswarm.server.runtime.organization_execution import unregister_turn
+                            from jiuwenswarm.server.runtime.organization_execution import (
+                                unregister_turn,
+                            )
 
                             unregister_turn()
             finally:
@@ -7534,8 +7512,11 @@ class AgentWebSocketServer:
         from dataclasses import replace
 
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
         from jiuwenswarm.server.runtime.organization_execution import stopping_teams
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
 
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
@@ -7699,6 +7680,15 @@ class AgentWebSocketServer:
                 })
         cancelled_request_ids = {item.request_id for item in cancelled_requests}
         cancelled_request_ids.update(item["request_id"] for item in cancelled)
+        # owner 未知时给明确原因：这是「拒绝定向取消」而不是「目标不合法」，客户端据此
+        # 可以提示会话尚未就绪，而不是重试一次取消（重试仍会被拒）。
+        if owner_id:
+            failure_reason = recovery_error or "expert target is invalid or intent is unsupported"
+        else:
+            failure_reason = (
+                "session metadata has no team_name (owner unknown); "
+                "refused to fall back to a session-level cancel"
+            )
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -7709,10 +7699,7 @@ class AgentWebSocketServer:
                 "team_id": team_id,
                 "source": "org_expert_direct",
                 "cancelled_request_ids": sorted(cancelled_request_ids),
-                **(
-                    {"error": recovery_error or "expert target is invalid or intent is unsupported"}
-                    if not success else {}
-                ),
+                **({"error": failure_reason} if not success else {}),
             },
         )
 
@@ -7724,10 +7711,12 @@ class AgentWebSocketServer:
         return AgentWebSocketServer._is_targeted_expert_request(request)
 
     @staticmethod
-    def _is_targeted_expert_request(request: AgentRequest) -> bool:
-        """Recognize a Team target only when the durable owner is known."""
-        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
-            return False
+    def _team_target_and_owner(request: AgentRequest) -> tuple[str, str] | None:
+        """取 ``(target_team_id, owner_team_id)``；非 team 模式或没给 target 时返回 None。
+
+        下面两个判定的公共部分：只说「这个请求有没有形成一个合法的 team 目标」，
+        至于 owner 该不该参与比较、怎么兜底，由调用方按各自语义决定。
+        """
         params = request.params if isinstance(request.params, dict) else {}
         if not is_team_mode(params.get("mode")):
             return None
@@ -7738,7 +7727,36 @@ class AgentWebSocketServer:
         owner_team_id = str(
             (get_session_metadata(session_id) or {}).get("team_name") or ""
         ).strip()
+        return team_id, owner_team_id
+
+    @staticmethod
+    def _is_targeted_expert_request(request: AgentRequest) -> bool:
+        """Recognize a Team target only when the durable owner is known."""
+        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
+            return False
+        pair = AgentWebSocketServer._team_target_and_owner(request)
+        if pair is None:
+            return False
+        team_id, owner_team_id = pair
         return bool(owner_team_id and team_id != owner_team_id)
+
+    @staticmethod
+    def _is_targeted_expert_cancel_request(request: AgentRequest) -> bool:
+        """CHAT_CANCEL 专用：owner 未知时也按「定向」处理，不降级为会话级取消。
+
+        与 `_is_targeted_expert_request` 的唯一差异是**兜底方向**：那边要求 owner 已知
+        且与被取消的 team 不同（用于 chat.send 路由，owner 未知就按普通会话走），这边
+        owner 未知时保守判为定向——交给 `_cancel_targeted_expert` 明确报错，而不是回落
+        `cancel_request(...)` 的会话级取消，把 owner 团队正在跑的 turn 一起取消
+        （违反同一次提交里 `_cancel_targeted_expert` 文档写明的 "never the owner turn"）。
+        """
+        if request.req_method != ReqMethod.CHAT_CANCEL:
+            return False
+        pair = AgentWebSocketServer._team_target_and_owner(request)
+        if pair is None:
+            return False
+        team_id, owner_team_id = pair
+        return not owner_team_id or team_id != owner_team_id
 
     def _expert_request_snapshot(self, session_id: str) -> list[dict[str, str]]:
         return [
@@ -7772,7 +7790,9 @@ class AgentWebSocketServer:
 
     async def _targeted_expert_response_stream(self, request: AgentRequest) -> Any:
         """Run one selected expert as a normal cancellable AgentServer stream."""
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
@@ -7806,7 +7826,9 @@ class AgentWebSocketServer:
         has_team_target = bool(session_id and team_id)
         has_organization_binding = bool(owner_org_id and target_org_id)
         needs_recovery = target_backend is None or not has_organization_binding
-        from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+        from jiuwenswarm.server.runtime.organization_packages import (
+            team_package_availability,
+        )
 
         availability = team_package_availability(team_id) if has_team_target else {}
         if not organization_enabled():
@@ -7820,7 +7842,9 @@ class AgentWebSocketServer:
                 if persisted is None:
                     error = "target expert team does not belong to the owner's organization"
                 else:
-                    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+                    from jiuwenswarm.agents.harness.team.expert_org.launcher import (
+                        JiuwenExpertTeamLauncher,
+                    )
 
                     db, organization = persisted
                     owner_org_id = organization.organization_id
@@ -7854,11 +7878,9 @@ class AgentWebSocketServer:
             from jiuwenswarm.agents.harness.team.expert_org.launcher import (
                 JiuwenExpertTeamLauncher,
             )
-            from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
-                HOST_USER_ORIGIN_EXTERNAL,
-                HOST_USER_ORIGIN_INTERNAL,
+            from jiuwenswarm.server.runtime.agent_adapter.interface import (
+                is_external_user_authored_dispatch,
             )
-            from jiuwenswarm.server.runtime.agent_adapter.interface import is_external_user_authored_dispatch
 
             query = _request_query_text(request)
             append_history_record(
@@ -8278,63 +8300,6 @@ class AgentWebSocketServer:
                         session_id, leader.team_id, exc_info=True,
                     )
 
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
-
-        try:
-            persisted = await self._load_persisted_organization(session_id) if organization_enabled() else None
-        except Exception:
-            persisted = None
-            logger.exception("[AgentWebSocketServer] historical team.list failed: session_id=%s", session_id)
-
-        if persisted is not None:
-            db, organization = persisted
-            # Membership is authoritative; optional labels must never remove a Team.
-            for leader in organization.leaders:
-                _upsert(
-                    leader.team_id,
-                    state="configured",
-                    leader_id=leader.leader_id,
-                    organization_id=organization.organization_id,
-                    capabilities=list(leader.capabilities or []),
-                    source="database",
-                )
-            try:
-                from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
-            except ImportError:
-                load_organization_team_identity = None
-                logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
-
-            for leader in organization.leaders:
-                team = None
-                identity = {}
-                try:
-                    team = await db.team.get_team(leader.team_id)
-                except Exception:
-                    logger.warning(
-                        "[AgentWebSocketServer] historical Team details unavailable: session=%s team=%s",
-                        session_id, leader.team_id, exc_info=True,
-                    )
-                try:
-                    if load_organization_team_identity is not None:
-                        identity = load_organization_team_identity(leader.team_id)
-                except Exception:
-                    logger.warning(
-                        "[AgentWebSocketServer] historical Team identity unavailable: session=%s team=%s",
-                        session_id, leader.team_id, exc_info=True,
-                    )
-                try:
-                    _upsert(
-                        leader.team_id,
-                        state="configured",
-                        display_name=getattr(team, "display_name", None) or identity.get("display_name"),
-                        agent_group_name=identity.get("agent_group_name"),
-                    )
-                except Exception:
-                    logger.warning(
-                        "[AgentWebSocketServer] historical Team labels unavailable: session=%s team=%s",
-                        session_id, leader.team_id, exc_info=True,
-                    )
-
         # ``team_name`` reaches session metadata only when the team runtime
         # becomes ready (sync_team_identity_metadata). During the first-turn
         # assembly window the session's own team is already listed via the
@@ -8370,7 +8335,9 @@ class AgentWebSocketServer:
                     entry["organization_id"] = org_id
 
         if organization_enabled():
-            from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+            from jiuwenswarm.server.runtime.organization_packages import (
+                team_package_availability,
+            )
             from jiuwenswarm.server.runtime.organization_team_models import load_team_model
 
             for entry in entries.values():
@@ -8484,7 +8451,9 @@ class AgentWebSocketServer:
         to the session's owner. A caller-supplied ``organization_id`` is only
         a consistency check and never selects the organization to query.
         """
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
 
         enabled = organization_enabled()
         params = request.params if isinstance(request.params, dict) else {}
@@ -8617,7 +8586,9 @@ class AgentWebSocketServer:
             key = str(task.status)
             status_counts[key] = status_counts.get(key, 0) + 1
 
-        from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+        from jiuwenswarm.server.runtime.organization_packages import (
+            team_package_availability,
+        )
 
         return {
             "organization": {
@@ -9421,14 +9392,12 @@ class AgentWebSocketServer:
         # Parent history cold-start: advertise on-disk subagent buckets so the
         # frontend can fetch per-subagent transcripts even when parent history
         # never persisted chat.subtask_update roster frames (GitCode #4887).
-        if (
-            is_initial_history_batch
-            and not (response_subagent_id or subagent_id)
-            and isinstance(session_id, str)
-            and session_id.strip()
-        ):
+        # Keep the if-condition to <=3 boolean expressions (G.CTL.03).
+        parent_session_id = session_id.strip() if isinstance(session_id, str) else ""
+        is_parent_history_request = not response_subagent_id and not subagent_id
+        if is_initial_history_batch and is_parent_history_request and parent_session_id:
             try:
-                discovered_ids = list_session_subagent_ids(session_id.strip())
+                discovered_ids = list_session_subagent_ids(parent_session_id)
             except Exception:  # noqa: BLE001
                 logger.debug(
                     "[history.get] list_session_subagent_ids failed: session_id=%s",
@@ -14682,6 +14651,37 @@ class AgentWebSocketServer:
                 channel_id=request.channel_id,
                 ok=False,
                 payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+            )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    def _get_trajectory_host(self) -> Any:
+        """Lazily build the trajectory read host once."""
+        if getattr(self, "_trajectory_host", None) is None:
+            from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+            self._trajectory_host = TrajectoryHost()
+        return self._trajectory_host
+
+    async def _handle_trajectory_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Answer one ``trajectory.*`` read proxied by the Gateway."""
+        try:
+            resp = await self._get_trajectory_host().handle(request)
+        except Exception as exc:
+            logger.exception("[AgentServer] trajectory request failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "trajectory query failed",
+                    "code": "TRAJECTORY_QUERY_FAILED",
+                    "status": 500,
+                },
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)

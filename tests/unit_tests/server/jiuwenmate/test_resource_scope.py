@@ -132,12 +132,14 @@ def office(tmp_path):
     return store, root
 
 
-def test_workspace_store_ensures_shared_output_directory(tmp_path):
+def test_workspace_store_ensures_private_session_output_directory(tmp_path):
     store = WorkspaceStore(tmp_path / "workspaces")
 
     root = store.ensure(NS, AGENT)
 
-    assert (root / "output").is_dir()
+    session = store.ensure_session(NS, AGENT, "session-1")
+    assert (session / "output").is_dir()
+    assert not (root / "output").exists()
     assert store.ensure(NS, AGENT) == root
 
 
@@ -150,7 +152,7 @@ def test_workspace_store_ensures_session_directory_idempotently(tmp_path):
     assert first == second
     assert first == store.path(NS, AGENT) / "sessions" / "session-a"
     assert first.is_dir()
-    assert (store.path(NS, AGENT) / "output").is_dir()
+    assert (first / "output").is_dir()
 
 
 def test_workspace_store_rejects_reparse_point_in_session_path(tmp_path, monkeypatch):
@@ -207,19 +209,25 @@ async def test_a_web_request_reads_relative_paths_inside_the_office(office):
     store, root = office
     access = HostWorkspaceAccess(store, NS, AGENT)
 
-    resolved = await resolve(access, execution(), "资料/周报.md")
-    listed = await resolve(access, execution(), ".")
+    session = store.ensure_session(NS, AGENT, "session-1")
+    page = session / "周报.md"
+    page.write_text("本周完成接入。", encoding="utf-8")
+    relative = page.relative_to(root).as_posix()
+    resolved = await resolve(access, execution(), relative)
+    listed = await resolve(access, execution(), session.relative_to(root).as_posix())
 
-    assert resolved.path == (root / "资料" / "周报.md").resolve()
-    assert resolved.source_ref == f"workspace://{NS}/{AGENT}/资料/周报.md"
-    assert listed.path == root.resolve()
+    assert resolved.path == page
+    assert resolved.source_ref == f"workspace://{NS}/{AGENT}/{relative}"
+    assert listed.path == session
+    with pytest.raises(WorkspacePathError):
+        await resolve(access, execution(), "资料/周报.md")
 
 
-async def test_agent_can_read_shared_output_across_sessions_but_not_another_session_draft(
+async def test_agent_reads_own_output_but_cannot_read_another_session_draft_or_output(
     office,
 ):
     store, root = office
-    output = root / "output"
+    output = store.ensure_session(NS, AGENT, "session-current") / "output"
     output.mkdir(exist_ok=True)
     (output / "交付.md").write_text("最终文件", encoding="utf-8")
     other_session = root / "sessions" / "session-other"
@@ -230,11 +238,15 @@ async def test_agent_can_read_shared_output_across_sessions_but_not_another_sess
         session_id="session-current", scope=frozenset({"chat", "workspace_read"})
     )
 
-    shared = await resolve(access, current, "output/交付.md")
+    shared = await resolve(access, current, "sessions/session-current/output/交付.md")
+    foreign = store.ensure_session(NS, AGENT, "session-other") / "output" / "交付.md"
+    foreign.write_text("private", encoding="utf-8")
+    with pytest.raises(WorkspacePathError):
+        await resolve(access, current, foreign.relative_to(root).as_posix())
     with pytest.raises(WorkspacePathError) as denied:
         await resolve(access, current, "sessions/session-other/draft.md")
     with pytest.raises(WorkspacePathError):
-        await resolve_write(access, current, "output/交付.md")
+        await resolve_write(access, current, "sessions/session-current/output/交付.md")
 
     assert shared.path == (output / "交付.md").resolve()
     assert denied.value.status == "forbidden"
@@ -425,10 +437,13 @@ async def test_a_web_request_writes_relative_paths_inside_the_office(office):
     store, root = office
     access = HostWorkspaceAccess(store, NS, AGENT)
 
-    resolved = await resolve_write(access, execution(), "报告/总结.md")
+    relative = "sessions/session-1/报告/总结.md"
+    resolved = await resolve_write(access, execution(), relative)
 
-    assert resolved.path == (root / "报告" / "总结.md").resolve()
-    assert resolved.source_ref == f"workspace://{NS}/{AGENT}/报告/总结.md"
+    assert resolved.path == (root / relative).resolve()
+    assert resolved.source_ref == f"workspace://{NS}/{AGENT}/{relative}"
+    with pytest.raises(WorkspacePathError):
+        await resolve_write(access, execution(), "报告/总结.md")
 
 
 @pytest.mark.parametrize(

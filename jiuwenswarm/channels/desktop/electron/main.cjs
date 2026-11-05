@@ -758,26 +758,9 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
-        const timeout = signal === 'SIGKILL' ? SERVICE_KILL_TIMEOUT_MS : SERVICE_SHUTDOWN_TIMEOUT_MS;
-        const { command, args } = serviceCommand('lifecycle', [
-          '--detach-front', String(child.pid), '--timeout', String(timeout / 1000),
-          ...(signal === 'SIGKILL' ? ['--force'] : []),
-        ]);
+        const { command, args } = serviceCommand('lifecycle', ['--detach-front', String(child.pid)]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
-        child.frontDetachPromise = new Promise((resolve, reject) => {
-          // The helper starts its own budget after Python has initialized.
-          const timer = setTimeout(() => {
-            helper.kill();
-            reject(new Error('Front detach helper exceeded deadline'));
-          }, timeout + 2_000);
-          helper.once('error', error => { clearTimeout(timer); reject(error); });
-          helper.once('exit', code => {
-            clearTimeout(timer);
-            if (code === 0) resolve();
-            else reject(new Error(`Front detach incomplete (exit=${code})`));
-          });
-        });
-        void child.frontDetachPromise.catch(error => console.error('[electron] Front detach helper failed', error));
+        helper.on('error', error => console.error('[electron] Front detach helper failed', error));
         helper.unref();
         return true;
       }
@@ -861,11 +844,7 @@ function stopServices() {
     console.log(`[electron] stopping ${name} service tree`, { pid: child.pid });
   }
   const deadline = Date.now() + RUNTIME_SHUTDOWN_TIMEOUT_MS;
-  shutdownPromise = Promise.allSettled(services.map(async ([, child]) => {
-    await terminateService(child);
-    if (serviceTreeRunning(child)) throw new Error(`Service tree ${child.pid} is still running`);
-  })).then(async results => {
-    let failure = null;
+  shutdownPromise = Promise.allSettled(services.map(([, child]) => terminateService(child))).then(async results => {
     for (const result of results) {
       if (result.status === 'rejected') {
         console.error('[electron] service shutdown failed', result.reason);
@@ -892,6 +871,17 @@ function stopServices() {
       } catch (error) {
         failure ||= error;
       }
+    }
+    if (services.some(([name]) => name === 'agent')) {
+      const remaining = Math.max(1, deadline - Date.now());
+      const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(remaining / 1000)]);
+      const agent = services.find(([name]) => name === 'agent')[1];
+      await new Promise(resolve => {
+        const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
+        const timer = setTimeout(() => { console.error('[electron] Worker shutdown helper exceeded deadline'); helper.kill(); resolve(); }, remaining + 500);
+        helper.once('error', error => { clearTimeout(timer); console.error('[electron] Worker shutdown failed', error); resolve(); });
+        helper.once('exit', code => { clearTimeout(timer); if (code !== 0) console.error('[electron] Worker shutdown incomplete', { code }); resolve(); });
+      });
     }
     serviceProcesses.clear();
     if (failure) throw failure;

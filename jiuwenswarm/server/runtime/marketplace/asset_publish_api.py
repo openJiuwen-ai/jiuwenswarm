@@ -271,6 +271,7 @@ class AssetPublishAPI:
         )
         auth = None if local_describe else self._auth(auth_data)
         scope = None if local_describe else self.scope(str(gateway_user or ""), auth_data)
+        member_record_scope = scope
         try:
             pack_request = params.get("kind") == "skillpack" or self.skillpacks.owns(
                 params.get("draft_id") or params.get("operation_id")
@@ -334,8 +335,12 @@ class AssetPublishAPI:
                         defaults=_defaults(kind, local_id, source),
                         can_publish=not capability_errors,
                         hub_url=self.hub_url,
-                        errors=[],
-                        records=[] if local_describe else self.service.records(scope, kind, local_id),
+                        errors=capability_errors,
+                        records=[] if local_describe else (
+                            self.skillpacks.records(scope, local_id)
+                            if pack_request
+                            else self.service.records(scope, kind, local_id)
+                        ),
                         identity_verified=False,
                     )
                 metadata = params.get("metadata")

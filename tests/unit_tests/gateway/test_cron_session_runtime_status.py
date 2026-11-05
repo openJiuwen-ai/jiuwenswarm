@@ -12,18 +12,18 @@ import pytest_asyncio
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message, ReqMethod
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _register_web_handlers,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from jiuwenswarm.gateway.cron import scheduler as cron_scheduler_module
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.models import CronRunState
-from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
-from jiuwenswarm.gateway.cron.store import CronJobStore
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.cron import scheduler as cron_scheduler_module
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.models import CronRunState
+from agent_gateway.cron.scheduler import CronSchedulerService
+from agent_gateway.cron.store import CronJobStore
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 class _TestWebChannel(WebChannel):
@@ -225,8 +225,8 @@ async def test_cron_execution_visible_to_web_until_natural_completion(harness_fa
     harness.client.release.set()
     await asyncio.wait_for(harness.scheduler.task(run_id), timeout=2)
     assert harness.client.closed.is_set()
-    harness.client.metadata_payload["status"] = "processing"
-    harness.client.metadata_payload["is_processing"] = True
+    # This execution ended. The AgentServer reports its session as idle.
+    harness.client.metadata_payload.update(status="idle", is_processing=False)
     for _ in range(3):
         response = await harness.channel.metadata(sid)
         assert response["payload"]["is_processing"] is False
@@ -325,6 +325,7 @@ async def test_stale_or_future_runs_are_not_processing(harness_factory, status, 
 @pytest.mark.parametrize("configured", [True, False])
 async def test_normal_web_busy_state_survives_with_or_without_cron_controller(harness_factory, configured):
     harness = await harness_factory(configured=configured)
+    harness.client.metadata_payload.pop("is_processing")
     harness.channel.processing_event("web-session", True)
     response = await harness.channel.metadata("web-session")
     assert response["payload"]["is_processing"] is True
@@ -483,6 +484,7 @@ async def test_team_timeout_ack_keeps_current_run_alive_until_timeout_result_is_
 async def test_stopped_owner_metadata_is_idle_while_child_keeps_git_guard_busy(harness_factory, stopped):
     harness = await harness_factory(mode="team")
     sid = "owner-with-running-child"
+    harness.client.metadata_payload.pop("is_processing")
     harness.client.metadata_payload["organization_owner_stopped"] = stopped
     harness.channel.processing_event(sid, True)
     harness.channel._track_session_busy(Message(

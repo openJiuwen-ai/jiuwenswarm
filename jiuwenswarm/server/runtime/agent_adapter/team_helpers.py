@@ -1203,9 +1203,15 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
+    # Synchronous, single-field merge. The queued whole-file write this used to
+    # be raced the runtime worker's round-end snapshot: another process could
+    # land a whole-file replace between our pre-read and the queue flush, and
+    # whichever wrote last erased the other's key. Merging only the owned key
+    # under the cross-process write locks keeps both sides' fields alive.
     _enqueue_write(
         session_id,
         metadata,
+        sync_write=True,
         merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
     )
 
@@ -1253,9 +1259,13 @@ def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) ->
         )
         return
     metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
+    # Same sync single-field merge as persist_session_team_dispatch_mode: the
+    # queued whole-file write raced concurrent writers and could erase (or be
+    # erased by) their keys.
     _enqueue_write(
         session_id,
         metadata,
+        sync_write=True,
         merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
     )
 

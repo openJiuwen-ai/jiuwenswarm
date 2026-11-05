@@ -103,7 +103,7 @@ def _approval(h) -> dict:
     answer = {"selected_options": ["allow_once"]}
     cards = h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id)
     if cards:
-        answer["card_id"] = cards[0].tool_call_id
+        answer["card_id"] = cards[0].invocation_id
     return {"source": "permission_interrupt", "request_id": interrupt.tool_call_id,
             "interrupt_id": interrupt.interrupt_id, "answers": [answer]}
 

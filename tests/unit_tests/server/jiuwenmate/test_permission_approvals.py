@@ -18,7 +18,7 @@ from openjiuwen.harness import persistent_agent as core
 NOW = datetime(2026, 10, 24, 8, 0, tzinfo=timezone.utc)
 
 
-def paused_request(*, channel="web", principal="user-1", target="conversation-1", app_id=None):
+def paused_request(*, namespace_id="team-1", channel="web", principal="user-1", target="conversation-1", app_id=None):
     route = RequestRouteSnapshot(
         channel=channel,
         target_id=target,
@@ -26,7 +26,7 @@ def paused_request(*, channel="web", principal="user-1", target="conversation-1"
         source_message_id="message-1" if channel == "feishu" else None,
     )
     record = RequestRecord(
-        namespace_id="team-1",
+        namespace_id=namespace_id,
         agent_id="employee-1",
         session_id="session-1",
         request_id="request-1",

@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import (
+from agent_gateway.config.channel.access import edit_channel_body
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     allow_from_valid,
     dingtalk_apps,
     dingtalk_channel_settings,
     merge_dingtalk_config,
-    update_dingtalk_section,
 )
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,
@@ -209,7 +209,7 @@ def test_app_list_rejects_duplicates_a_second_ordinary_app_and_missing_ids():
 
 @pytest.fixture
 def config_file(tmp_path, monkeypatch):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     path = tmp_path / "config.yaml"
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
@@ -220,32 +220,32 @@ def config_file(tmp_path, monkeypatch):
     return SimpleNamespace(path=path, module=config_module, channels=channels)
 
 
-def test_saving_merges_with_the_file_and_removes_dropped_keys(config_file):
+async def test_saving_merges_with_the_file_and_removes_dropped_keys(config_file):
     config_file.module.dump_yaml_round_trip(config_file.path, {"channels": {
         "dingtalk": {"client_id": "old", "client_secret": "fake-old", "last_sender_id": "staff-old"},
         "telegram": {"enabled": False},
     }})
-    saved = update_dingtalk_section(lambda current: {"apps": [
+    saved = await edit_channel_body("dingtalk", lambda current: merge_dingtalk_config(current, {"apps": [
         {"client_id": "other", "client_secret": "fake-other", "allow_from": []},
-    ]})
+    ]}))
     stored = config_file.channels()
     assert "last_sender_id" not in stored["dingtalk"] and "client_id" not in stored["dingtalk"]
     assert stored["dingtalk"]["apps"][0]["client_id"] == "other" == saved["apps"][0]["client_id"]
     assert stored["telegram"] == {"enabled": False}
 
 
-def test_a_save_keeps_the_cron_identity_the_ordinary_channel_wrote_after_load(config_file):
+async def test_a_save_keeps_the_cron_identity_the_ordinary_channel_wrote_after_load(config_file):
     config_file.module.dump_yaml_round_trip(config_file.path, {"channels": {
         "dingtalk": {"apps": [{"client_id": "ordinary", "client_secret": "fake"}]},
     }})
     # The ordinary channel records its last sender in the file only, never in Gateway memory.
     config_file.module.update_channel_in_config("dingtalk", {"last_sender_id": "staff-new"})
-    update_dingtalk_section(lambda current: {"apps": [{"client_id": "ordinary", "allow_from": ["staff-new"]}]})
+    await edit_channel_body("dingtalk", lambda current: merge_dingtalk_config(current, {"apps": [{"client_id": "ordinary", "allow_from": ["staff-new"]}]}))
     stored = config_file.channels()["dingtalk"]
     assert stored["last_sender_id"] == "staff-new" and stored["apps"][0]["allow_from"] == ["staff-new"]
 
 
-def test_a_rejected_save_leaves_the_file_unchanged(config_file):
+async def test_a_rejected_save_leaves_the_file_unchanged(config_file):
     config_file.module.dump_yaml_round_trip(config_file.path, {"channels": {
         "dingtalk": {"apps": [{"client_id": "ordinary", "client_secret": "fake"}]},
     }})
@@ -254,7 +254,7 @@ def test_a_rejected_save_leaves_the_file_unchanged(config_file):
         raise ValueError("refused by test")
 
     with pytest.raises(ValueError, match="refused"):
-        update_dingtalk_section(lambda current: {"apps": [{"client_id": "other", "allow_from": []}]}, validate=refuse)
+        await edit_channel_body("dingtalk", refuse)
     assert [app["client_id"] for app in config_file.channels()["dingtalk"]["apps"]] == ["ordinary"]
 
 

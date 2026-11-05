@@ -119,7 +119,7 @@ class WelinkBinding:
 
 
 def _welink_section(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import normalize_welink_section
+    from agent_gateway.channel_manager.im_platforms.welink.welink_binding import normalize_welink_section
     if config is None:
         from jiuwenswarm.common.config import get_config
         config = get_config()
@@ -308,12 +308,24 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
         connection = await asyncio.to_thread(fanout._service.connection_of, binding.namespace_id, binding.agent_id)
         # A later save can stamp the office colleague onto persistent_agent_id. The
         # dedicated WeLink agent is still the connection row for that config.
+        if connection is None and binding.config_id and binding.config_id != binding.agent_id:
+            return InboundDisposition.REJECTED
         if connection is None and hasattr(fanout._service, "connections"):
             config_id = binding.config_id or binding.agent_id
             records = await asyncio.to_thread(fanout._service.connections, binding.namespace_id, config_id)
             matches = [item for item in records if (item.channel, item.connection_key) == expected]
-            connection = matches[0] if len(matches) == 1 else None
-        if connection is None or (connection.channel, connection.connection_key) != expected:
+            if len(matches) > 1 or (not matches and any(item.channel == "welink" for item in records)):
+                return InboundDisposition.REJECTED
+            connection = matches[0] if matches else None
+        if connection is None:
+            if not hasattr(fanout._service, "get_config"):
+                return InboundDisposition.REJECTED
+            owner = await asyncio.to_thread(fanout._service.get_config, binding.namespace_id, binding.agent_id)
+            if owner.agent_id != binding.agent_id:
+                return InboundDisposition.REJECTED
+        elif (connection.channel, connection.connection_key) != expected or (
+            binding.config_id and getattr(connection, "config_id", binding.config_id) != binding.config_id
+        ):
             return InboundDisposition.REJECTED
         runtime_id = str(getattr(connection, "agent_id", "") or binding.agent_id)
         if runtime_id != binding.agent_id:

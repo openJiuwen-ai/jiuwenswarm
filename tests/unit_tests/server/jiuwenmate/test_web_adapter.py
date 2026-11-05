@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from agent_gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.jiuwenmate import web_adapter
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
@@ -304,6 +304,8 @@ def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
     # Refresh status has its own worker proxy, not the jiuwenmate.* forwarder.
     methods = JiuwenMateWebAdapter.methods - {ReqMethod.MODELS_REFRESH_STATUS.value}
     internal_methods = {
+        ReqMethod.JIUWENMATE_WELINK_INBOUND.value,
+        ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK.value,
         ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
         ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
         ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value,
@@ -365,7 +367,7 @@ async def test_welink_mail_settings_follow_colleague_connection_and_are_live(hos
     before = await host.call(ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS, agent_id=config_id)
     assert before.ok and before.payload['welink_office']['reason'] == 'WELINK_NOT_BOUND'
     im_id = host.adapter._colleagues().attach_connection('local', config_id, 'welink', 'owner:'+config_id)
-    binding = SimpleNamespace(agent_id=im_id, account='owner', cli_path='welink-cli', reader_credential_dir=str(host.tmp_path / 'reader'), env_name='pro')
+    binding = SimpleNamespace(agent_id=im_id, config_id=config_id, account='owner', cli_path='welink-cli', reader_credential_dir=str(host.tmp_path / 'reader'), env_name='pro')
     monkeypatch.setattr(welink_inbound, 'configured_welink_bindings', lambda: (binding,))
     monkeypatch.setattr(welink_inbound, 'welink_binding_for_agent', lambda _: binding)
     monkeypatch.setattr(module, 'parse_auth_status', lambda *args: (True, 'owner'))

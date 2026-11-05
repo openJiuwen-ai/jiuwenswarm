@@ -53,7 +53,7 @@ def prepare(tmp_path, *, attachment, channel="feishu", text=PRIVATE):
     payload = {"output_id": "out-1", "target_ref": "target-group", "share_mode": "message", "text": text}
     if attachment:
         payload.update(
-            share_mode="attachment", file_path="output/private.txt", file_ref="sha256:" + "a" * 64, file_size=7,
+            share_mode="attachment", file_path=f"sessions/{execution.session_id}/output/private.txt", file_ref="sha256:" + "a" * 64, file_size=7,
         )
     proposed = core.AgentEvent.create(
         execution, event_type=core.EventType.OUTPUT_PROPOSED, local_seq=1,

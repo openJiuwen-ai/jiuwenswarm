@@ -337,7 +337,7 @@ test('single expert cards show execution status without subtask statistics', () 
     }));
     assert.match(markup, /Research expert/);
     assert.match(markup, new RegExp(`data-testid="group-chat-execution-status" data-variant="${status}"`));
-    assert.match(markup, /data-testid="group-chat-execution-title"[^>]*>对大学城咖啡消费市场…/);
+    assert.match(markup, /data-testid="group-chat-execution-title"[^>]*><span>对大学城咖啡消费市场进行完整调研并提出市场定位建议<\/span>/);
     assert.match(markup, /data-testid="group-chat-execution-task"[^>]*>对大学城咖啡消费市场进行完整调研并提出市场定位建议</);
     assert.match(markup, /title="对大学城咖啡消费市场进行完整调研并提出市场定位建议。后续详细任务说明"/);
     assert.match(markup, /data-testid="group-chat-execution-summary"/);

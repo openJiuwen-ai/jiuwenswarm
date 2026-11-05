@@ -309,7 +309,7 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
         <div className="ix-prompt__title" data-testid="interaction-slot-ix-title">
           <FileText size={15} strokeWidth={2} className="ix-prompt__title-icon" data-testid="interaction-slot-ix-title-icon" />
           <span data-testid="interaction-slot-ix-title-text">
-            {variant === 'composer' ? t('interactionPrompt.title') : current.header || t('interactionPrompt.title')}
+            {swarmflowPrefix}{variant === 'composer' ? t('interactionPrompt.title') : current.header || t('interactionPrompt.title')}
           </span>
         </div>
         {total > 1 && (

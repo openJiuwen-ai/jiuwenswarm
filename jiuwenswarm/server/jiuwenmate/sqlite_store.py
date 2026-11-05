@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
+
+
+_read_batches = threading.local()
 
 
 def private_dir(path: Path) -> None:
@@ -36,9 +40,31 @@ class SQLiteStore:
         return conn
 
     @contextmanager
-    def _transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
+    def read_batch(self) -> Iterator[None]:
+        """Reuse one read-only connection on this thread without holding an idle snapshot."""
+        connections = getattr(_read_batches, "connections", None)
+        if connections is None:
+            connections = _read_batches.connections = {}
+        key = self._db_path.resolve()
+        if key in connections:
+            yield
+            return
         with closing(self._connect()) as conn:
-            if not write:
+            conn.execute("PRAGMA query_only = ON")
+            connections[key] = conn
+            try:
+                yield
+            finally:
+                del connections[key]
+
+    @contextmanager
+    def _transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
+        cached = None if write else getattr(_read_batches, "connections", {}).get(self._db_path.resolve())
+        with (nullcontext(cached) if cached is not None else closing(self._connect())) as conn:
+            if cached is not None and conn.in_transaction:
+                yield conn
+                return
+            if not write and cached is None:
                 conn.execute("PRAGMA query_only = ON")
             conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             try:

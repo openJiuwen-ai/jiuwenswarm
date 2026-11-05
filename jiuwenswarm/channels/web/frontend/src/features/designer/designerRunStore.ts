@@ -233,20 +233,11 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
-    // Run / Continue / Retry drive every node, so a generation slot this graph
-    // actually uses being off or incomplete can only fail the round: report it
-    // on the canvas instead of dispatching (#5266).
     const protocolBlock = designChatProtocolBlock(graph);
     if (protocolBlock) {
       set({ runError: protocolBlock, runWarning: null });
       return;
     }
-    const problem = await findDesignRunProblem(graph.nodes);
-    if (problem) {
-      set({ runError: problem, runWarning: null });
-      return;
-    }
-    await persistBeforeRun();
     const run = state.run?.graph_id === graph.graph_id ? state.run : null;
     const nodeStates = run ? state.nodeStates : {};
     const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
@@ -306,7 +297,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       return;
     }
     const node = graph.nodes.find((item) => item.id === nodeId);
-    const problem = await findDesignRunProblem([node]);
+    const problem = await findDesignRunProblem([node], graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;
@@ -339,7 +330,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       set({ runError: protocolBlock, runWarning: null });
       return;
     }
-    const problem = await findDesignRunProblem(graph.nodes);
+    const problem = await findDesignRunProblem(graph.nodes, graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;

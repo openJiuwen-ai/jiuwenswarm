@@ -38,6 +38,11 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def _run(coro):
+    """Drive an async catalog call from a synchronous test."""
+    return _asyncio.run(coro)
+
+
 def test_normalize_agent_group_display_identity_preserves_binding_and_asset_id():
     identity = catalog.normalize_agent_group_display_identity(
         {
@@ -2166,6 +2171,8 @@ class TestUpdateAndDeleteAgentTemplate:
     "/tmp/docx-pro",
     r"C:\Users\Administrator\skills\docx-pro",
     r"\\server\share\docx-pro",
+    r"C:skills\docx-pro",
+    r"\Users\Administrator\skills\docx-pro",
 ])
 def test_import_group_rejects_absolute_skill_paths(
     extension_workspace: Path, tmp_path: Path,
@@ -2186,7 +2193,7 @@ def test_import_group_rejects_absolute_skill_paths(
             for path in source.rglob("*"):
                 if path.is_file():
                     archive.write(path, Path(source.name) / path.relative_to(source))
-    with pytest.raises(ValueError, match="skill"):
+    with pytest.raises(ValueError, match="package-relative"):
         catalog.import_agent_group({"path": str(upload)})
     destination = (
         extension_workspace.parent.parent / ".agent_teams"

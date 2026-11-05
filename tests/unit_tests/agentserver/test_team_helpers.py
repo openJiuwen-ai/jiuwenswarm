@@ -6943,6 +6943,70 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
 
 @pytest.mark.anyio
+async def test_consume_workflow_events_human_popup_carries_run_executor(monkeypatch):
+    """The human popup reads a phase delta, which omits attribution by
+    convention; the run state supplies the executor for the popup meta."""
+    broadcasted: list[dict[str, object]] = []
+    event = {
+        "event_type": "workflow.updated",
+        "session_id": "sess-wf-human",
+        "workflow": {
+            "id": "run-human",
+            "name": "probe-alice-human",
+            "status": "running",
+            "phases": [
+                {
+                    "id": "ask-1",
+                    "name": "ask",
+                    "status": "running",
+                    "agents": [
+                        {
+                            "id": "agent-choice",
+                            "name": "选色",
+                            "status": "waiting_for_human",
+                            "correlation_id": "ask:选色:0",
+                            "human_prompt": "红还是蓝？",
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+
+    class _RunState:
+        executor = "alice"
+
+    class _FakeWorkflowHandler:
+        is_running = True
+        # The consumer owns the emission contract and reads these cross-class.
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
+        seen_activity: dict = {}
+        seen_human_waiting: set = set()
+
+        def get_run_states(self):
+            return {"run-human": _RunState()}
+
+        async def events(self):
+            yield event
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+
+    handler = _FakeWorkflowHandler()
+    await _TeamHelpersTestApi.consume_workflow_events(
+        "web", "sess-wf-human", handler,
+    )
+
+    popups = [e for e in broadcasted if e["event_type"] == "chat.ask_user_question"]
+    assert popups
+    meta = popups[0]["swarmflow_meta"]
+    assert meta["executor"] == "alice"
+    assert meta["workflow_name"] == "probe-alice-human"
+    assert meta["run_id"] == "run-human"
+
+
+@pytest.mark.anyio
 async def test_consume_workflow_events_does_not_emit_budget_exhausted_chat_error(monkeypatch):
     """Budget exhaustion is conveyed by the workflow.updated frame's
     budget_exhausted_scope; the consumer must not emit a separate chat.error."""

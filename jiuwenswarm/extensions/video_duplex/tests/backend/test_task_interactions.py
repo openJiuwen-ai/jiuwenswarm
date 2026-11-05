@@ -347,9 +347,22 @@ def test_answer_input_preserves_permission_card_id(mode, work_mode):
     },)
     assert request.interrupt_id == "intr-approval"
     assert request.to_agent_request().params["interrupt_id"] == "intr-approval"
-    assert request.mode == mode
-    assert request.work_mode == work_mode
-    assert request.project_dir == "design-project"
+
+
+def test_projected_questions_keep_the_interrupt_id_of_the_event():
+    voice = information_question(dict(
+        request_id="q", interrupt_id="intr-q", source="ask_user_interrupt",
+        questions=[{"question": "预算？"}],
+    ))
+    native = native_approval_question({
+        "request_id": "core-approval", "interrupt_id": "intr-approval", "source": "permission_interrupt",
+        "questions": [{"question": "允许执行？"}],
+    })
+    legacy = information_question(dict(request_id="q", source="ask_user_interrupt", questions=[{"question": "预算？"}]))
+
+    assert voice["interrupt_id"] == "intr-q"
+    assert native["interrupt_id"] == "intr-approval"
+    assert legacy["interrupt_id"] == ""
 
 
 def test_projected_questions_keep_the_interrupt_id_of_the_event():

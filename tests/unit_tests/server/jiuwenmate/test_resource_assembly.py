@@ -195,7 +195,7 @@ def test_an_unpublished_knowledge_page_refuses_publication(tmp_path):
         )
 
     assert caught.value.code == "RESOURCE_NOT_INSTALLED"
-    assert host.list_colleagues(NS)[0].current_version is None
+    assert host.list_colleagues(NS) == []
 
 
 def test_installed_catalog_lists_only_regular_pages_inside_the_context_root(tmp_path):

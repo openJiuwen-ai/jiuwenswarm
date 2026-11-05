@@ -28,12 +28,6 @@ import {
   SessionTokenUsageSnapshot,
   TeamMemberContextCompressionState,
 } from '../types';
-import {
-  createTaskProgressBaseline,
-  mergeTaskProgressBaseline,
-  registerConfirmedTaskCreation,
-  type TaskProgressBaseline,
-} from '../features/teamTaskProgressBaseline';
 import type {
   AgentGroupIdentity,
   AgentGroupSelectionIntent,
@@ -757,7 +751,9 @@ function createEmptyRuntime(
     ? availableModels.find((model) => model.model_id === restoredSelection.id)
     : null;
   return {
-    mode: loadModeFromStorage(),
+    // Only the new-conversation draft inherits the last selected mode.
+    // Existing Sessions restore their own mode from backend metadata.
+    mode: sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadModeFromStorage() : DEFAULT_MODE,
     selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
     selectedModelSelection: restoreLegacyName
       ? legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null
@@ -802,6 +798,8 @@ interface SessionState {
   availableTools: string[];
   memoryUsage: MemoryUsage;
   availableModels: ModelEntry[];
+  /** A successful catalog snapshot has arrived, including an empty catalog. */
+  modelsLoaded: boolean;
   /** All configured models available to the chat picker, including non-default connections. */
   chatAvailableModels: ModelEntry[];
   /** models.list 返回的模型组目录，供选择器与设置页共用 */
@@ -2361,18 +2359,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      const model = name
-        ? state.availableModels.find((entry) => entry.model_name === name)
-          ?? state.chatAvailableModels.find((entry) => entry.model_name === name)
-        : null;
-      const selectionFromName: ModelSelection | null =
-        model?.model_id && model.model_id.trim()
-          ? { type: 'model', id: model.model_id.trim() }
-          : null;
-      if (model && name) {
-        if (!selectionFromName) cacheLastLegacyModelName(name);
-        else if (loadLastLegacyModelName()) cacheLastModelSelection(selectionFromName);
-      }
       return {
         runtimes: {
           ...state.runtimes,

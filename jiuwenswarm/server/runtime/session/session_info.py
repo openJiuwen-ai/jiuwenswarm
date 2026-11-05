@@ -25,15 +25,6 @@ def session_type_from_metadata(meta: dict[str, Any]) -> str:
     return "chat"
 
 
-def session_type_from_metadata(meta: dict[str, Any]) -> str:
-    """Keep conversation type independent of the agent/team execution mode."""
-    if meta.get("type") == "group_chat":
-        return "group_chat"
-    if isinstance(meta.get("group_members"), list):
-        return "group_chat"
-    return "chat"
-
-
 def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
     """将会话元数据投影为 SessionInfo（排除内部字段，补齐兜底值）。
 

@@ -14,7 +14,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.channel_manager.web.web_connect import WebChannel
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
 

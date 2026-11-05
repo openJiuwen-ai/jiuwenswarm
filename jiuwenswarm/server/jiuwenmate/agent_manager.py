@@ -550,17 +550,19 @@ class AgentManager:
     ) -> list[RequestView]:
         """Requests of the colleague's Session in this conversation, oldest first; empty before first contact."""
         def read_states() -> list[RequestState]:
-            session = self._sessions.find_session(namespace_id, agent_id, conversation)
-            if session is None:
-                return []
-            return self._sessions.session_requests(namespace_id, session.session_id)
+            with self._sessions.read_batch():
+                session = self._sessions.find_session(namespace_id, agent_id, conversation)
+                if session is None:
+                    return []
+                return self._sessions.session_requests(namespace_id, session.session_id)
 
         states = await asyncio.to_thread(read_states)
         # Read scheduler state after request states, on the event loop, as in a single view.
         running = frozenset(run.record.request_id for run in self._scheduler.running)
 
         def read_views() -> list[RequestView]:
-            return [self._read_view(state, conversation.key, state.record.request_id in running) for state in states]
+            with self._sessions.read_batch():
+                return [self._read_view(state, conversation.key, state.record.request_id in running) for state in states]
 
         return await asyncio.to_thread(read_views)
 

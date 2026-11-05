@@ -5,8 +5,8 @@ from contextlib import closing
 import json
 import re
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
-from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages import parse_auth_status
+from agent_gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
+from agent_gateway.channel_manager.im_platforms.welink.welink_messages import parse_auth_status
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 

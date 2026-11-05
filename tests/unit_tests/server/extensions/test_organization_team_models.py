@@ -17,7 +17,7 @@ from openjiuwen.harness.prompts import SystemPromptBuilder
 from jiuwenswarm.agents.harness.team.rails.organization_model_rail import OrganizationModelRail
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_errors import ModelSelectionError
-from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
 from jiuwenswarm.server.runtime import organization_team_models as models
 
 

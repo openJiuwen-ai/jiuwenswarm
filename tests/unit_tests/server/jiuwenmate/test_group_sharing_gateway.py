@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from jiuwenswarm.gateway.app_gateway import RouteConfig
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from agent_gateway.app_gateway import RouteConfig
+from agent_gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS, _FORWARD_REQ_METHODS,
 )
 from tests.unit_tests.gateway.test_app_gateway_acp import build_server, FakeWebSocket

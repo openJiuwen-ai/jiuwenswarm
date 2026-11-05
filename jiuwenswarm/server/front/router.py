@@ -329,19 +329,28 @@ class MethodRouter:
             cursor_protocol and request_cursor is None
         ) or (not cursor_protocol and page_idx == 1)
         if is_initial_history_batch and isinstance(session_id, str) and session_id.strip():
-            # The todo snapshot is best-effort extra data that lazily imports
-            # OpenJiuwen, whose import can raise in sandboxes with unwritable
-            # log dirs. It must never suppress the trailing done frame -- the
-            # frontend only exits the "loading history" state on done.
             sid = session_id.strip()
 
             def _load_todos():
                 with TenantContext.scoped(tenant_key):
                     return _LOAD_HISTORY_TODO_SNAPSHOT(sid)
 
-            try:
-                todos = await asyncio.to_thread(_load_todos)
-            except Exception:  # noqa: BLE001
+            todos = await asyncio.to_thread(_load_todos)
+            todo_chunk = AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "todo.updated",
+                    "todos": todos,
+                    "session_id": session_id.strip(),
+                },
+                is_complete=False,
+            )
+            wire_todo = encode_chunk(
+                todo_chunk, response_id=request.request_id, sequence=next_seq
+            )
+            sent_todo = await self._send(ws, send_lock, wire_todo)
+            if not sent_todo:
                 logger.warning(
                     "[Front] history todo snapshot unavailable: "
                     "request_id=%s session_id=%s",

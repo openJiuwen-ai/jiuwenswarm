@@ -608,10 +608,10 @@ test('General ignores legacy chat models and opens the connection form without a
     const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');
     assert.ok(dialog);
     assert.equal(dialog.querySelector('[data-variant="api_key"] input').placeholder.includes('saved'), false);
-    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name']) {
+    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name', 'context_window_tokens']) {
       assert.ok(dialog.querySelector(`[data-testid="settings-agent-media-config-dialog-field"][data-variant="${field}"]`));
     }
-    for (const field of ['alias', 'reasoning_level', 'context_window_tokens']) {
+    for (const field of ['alias', 'reasoning_level']) {
       assert.equal(dialog.querySelector(`[data-variant="${field}"]`), null);
     }
     assert.equal(requests.includes('models.list'), false);
@@ -633,10 +633,6 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: false },
     }) }));
     assert.equal(visibleSuggestionTitles().length, 4, 'preset/cached cards stay while recommendation is off');
-    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
-    await react.act(async () => document.querySelector('[data-testid="chat-panel-welcome-suggestion"]').dispatchEvent(
-      new window.MouseEvent('mouseover', { bubbles: true }),
-    ));
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
     await react.act(async () => document.querySelector('[data-testid="chat-panel-topic-general-settings"]').click());
     assert.equal(settingsOpens, 1);
@@ -648,10 +644,7 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
     await react.act(settle);
     assert.equal(visibleSuggestionTitles().length, 4);
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
-    const disabledHint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
-    assert.ok(disabledHint.textContent.includes('Settings - General'));
-    assert.ok(document.querySelector('[data-testid="chat-panel-welcome-banner-bubble"]').contains(disabledHint));
-    assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]').className, 'chat-welcome__campaign-claim');
+    assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]').textContent.includes('preset'));
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
     }) }));

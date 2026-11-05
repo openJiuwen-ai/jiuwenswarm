@@ -18,7 +18,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { contextCompressionElapsedText, contextCompressionInterruptedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
 import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import {
   Message,

@@ -179,9 +179,9 @@ def test_chat_send_contract_declares_optional_group_id():
 
 @pytest.mark.asyncio
 async def test_group_only_chat_routes_through_web_gateway(host):
-    from jiuwenswarm.gateway.app_gateway import _normalize_gateway_message
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.app_gateway import _normalize_gateway_message
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     ws = SimpleNamespace(send=AsyncMock(), remote_address=("127.0.0.1", 12345))

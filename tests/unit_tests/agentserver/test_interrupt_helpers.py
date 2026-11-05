@@ -568,7 +568,7 @@ def test_permission_interrupt_exposes_only_reviewer_ui_metadata(
         "always_allow",
         "reject",
     ]
-    assert question["card_id"] == "tool-call-17"
+    assert question["card_id"] == "invocation:tool-call-17"
     assert "tool_call_id" not in question
     assert "tool_invocation_key" not in question
     assert question["reviewer_metadata"] == {

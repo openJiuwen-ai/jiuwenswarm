@@ -8,6 +8,7 @@ r"""JiuwenSwarm PyInstaller 打包配置。
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -86,6 +87,19 @@ def collect_resources_data_files(source_dir, target_dir):
 
 
 
+def collect_tree_python_modules(source_dir, package_roots):
+    modules = []
+    for package_root in package_roots:
+        package_dir = os.path.join(source_dir, *package_root.split("."))
+        for path in glob.glob(os.path.join(package_dir, "**", "*.py"), recursive=True):
+            rel_path = os.path.relpath(path, source_dir)
+            module_name = os.path.splitext(rel_path)[0].replace(os.sep, ".")
+            if module_name.endswith(".__init__"):
+                module_name = module_name[: -len(".__init__")]
+            modules.append(module_name)
+    return sorted(set(modules))
+
+
 # One shared build step for Windows/macOS, pywebview and Electron installers.
 # Native compiler inputs stay on the build machine; the installed app never builds.
 computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
@@ -140,8 +154,21 @@ datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
 datas += computer_use_data
-_build_metadata_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-metadata-")
-_build_metadata_file = Path(_build_metadata_directory.name, "build-metadata.json")
+# A controlled package embeds its immutable Runtime build identity. Computing
+# it belongs to the build, so frozen Front/Worker startup only reads this small
+# payload. Source execution still validates dirty code and dependency locks.
+_identity_helper = runpy.run_path(os.path.join(
+    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
+_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
+_build_recipe = hashlib.sha256()
+_build_recipe.update(_source_identity.encode())
+for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
+    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
+_identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
+_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
+datas.append((str(_identity_file), "jiuwenswarm"))
+_build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
 build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
 datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
 _playwright_mcp_resource_dir = os.path.join(
@@ -214,6 +241,12 @@ datas += collect_data_files(
     include_py_files=False,
     includes=["assets/0.8/*.json"],
 )
+# The extracted Gateway loads packaged extensions from physical Python files by path.
+datas += collect_data_files(
+    "agent_gateway.extensions",
+    include_py_files=True,
+    includes=EXTENSION_DATA_FILE_PATTERNS,
+)
 datas += collect_data_files(
     "jiuwenswarm.extensions",
     include_py_files=True,
@@ -249,12 +282,6 @@ runtime_worker_submodules = collect_submodules(
 cli_channel_submodules = collect_submodules(
     "jiuwenswarm.channels.cli"
 )
-# TeamManager imports this lifecycle hook while its parent package is being
-# initialized.  Keep it explicit because PyInstaller cannot reliably infer
-# this package-attribute import from the frozen entry point.
-team_kv_cache_hiddenimports = [
-    "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
-]
 http2_submodules = [
     *collect_submodules("h2"),
     *collect_submodules("hpack"),
@@ -262,8 +289,20 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
-hiddenimports = webview_hiddenimports + http2_submodules + [
+lazy_runtime_submodules = []
+for lazy_package in (
+    "agent_gateway",
+    "jiuwenswarm.agents.harness.common.auto_harness",
+    "jiuwenswarm.agents.harness.common.tools",
+    "jiuwenswarm.agents.harness.common.rails",
+    "jiuwenswarm.common.auth",
+    "jiuwenswarm.agents.swarm",
+):
+    lazy_runtime_submodules += collect_submodules(lazy_package)
+
+hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
+    "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -294,9 +333,8 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "dotenv",
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
-    "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports
-hiddenimports += gateway_submodules
+    "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -483,7 +521,7 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root, symphony_root, computer_use_source],
+    pathex=[project_root, computer_use_source],
     binaries=_bundled_binaries,
     datas=datas,
     hiddenimports=hiddenimports + computer_use_submodules,

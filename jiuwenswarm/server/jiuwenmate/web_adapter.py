@@ -155,7 +155,7 @@ def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, s
                 "agent_id": item.agent_id,
                 "workspace_dir": str(service.workspaces.path(WEB_NAMESPACE, item.agent_id)),
             })
-    for platform in ("feishu", "dingtalk"):
+    for platform in ("feishu", "dingtalk", "welink"):
         seen_apps = {item["connection_key"] for item in connections if item["channel"] == platform}
         for app_id, bound_agent_id in sorted(bound.get(platform, ())):
             if bound_agent_id == view.agent_id and app_id not in seen_apps:
@@ -555,8 +555,15 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             service = self._colleagues()
             await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, config_id)
             connections = await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
-            agent_ids = {item.agent_id for item in connections if item.channel == "welink"}
-            bindings = [item for item in configured_welink_bindings() if item.agent_id in agent_ids]
+            from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_connection_key
+            legacy_keys = {item.agent_id: item.connection_key for item in connections if item.channel == "welink"}
+            bindings = [
+                item for item in configured_welink_bindings()
+                if (item.config_id == config_id and item.agent_id == config_id)
+                or (item.config_id in ("", config_id) and item.agent_id in legacy_keys
+                    and legacy_keys[item.agent_id] in {welink_connection_key(item.account),
+                                                       welink_connection_key(item.account, config_id)})
+            ]
             binding = bindings[0] if len(bindings) == 1 else None
             store = await asyncio.to_thread(WelinkOfficeSettings, manager.db_path)
             if method == ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS.value:
