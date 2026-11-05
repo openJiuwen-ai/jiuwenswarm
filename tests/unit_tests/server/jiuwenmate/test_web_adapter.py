@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from itertools import count
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -202,6 +203,131 @@ async def test_colleague_list_restores_im_binding_status_from_owner_config(host,
     assert [(item["channel"], item["agent_id"]) for item in fetched.payload["colleague"]["connections"]] == [
         ("web", agent_id), ("feishu", connected),
     ]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("method", [
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL,
+    ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+])
+async def test_dingtalk_user_auth_uses_the_current_bound_employee_and_app(host, monkeypatch, legacy, method):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload["colleague"]["agent_id"]
+    agent_id = config_id
+    if legacy:
+        from tests.unit_tests.server.jiuwenmate.test_colleague_connections import seed_legacy_connection
+        agent_id = seed_legacy_connection(host.adapter._colleagues(), WEB_NAMESPACE, config_id, "dingtalk", "ding-app")
+    monkeypatch.setattr(web_adapter, "_bound_apps", lambda: {"dingtalk": {("ding-app", agent_id)}})
+    monkeypatch.setattr(web_adapter, "_dingtalk_disconnect_bindings", lambda: {("ding-app", agent_id)})
+    status = {"status": "not_connected", "cli_version": "test"}
+    action = AsyncMock(return_value=status)
+    runtime = SimpleNamespace(dingtalk_auth_status=action, dingtalk_auth_begin=action,
+                             dingtalk_auth_cancel=action, dingtalk_auth_disconnect=action)
+    monkeypatch.setattr(host.adapter, "_runtime", AsyncMock(return_value=SimpleNamespace(dingtalk_cli_runtime=runtime)))
+
+    response = await host.call(method, agent_id=config_id, connection_key="ding-app", operation_id="test-operation")
+
+    assert response.ok, response.payload
+    key = "authorization" if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN else "dingtalk_auth"
+    assert response.payload[key] == status
+    scope = action.await_args.args[0]
+    assert (scope.namespace_id, scope.agent_id, scope.app_id) == (WEB_NAMESPACE, agent_id, "ding-app")
+
+
+async def test_dingtalk_connected_account_separately_reports_the_im_runtime_group_status(host, monkeypatch):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    agent_id = created.payload['colleague']['agent_id']
+    monkeypatch.setattr(web_adapter, '_bound_apps', lambda: {'dingtalk': {('ding-app', agent_id)}})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_status=AsyncMock(return_value={'status': 'connected'})),
+    )))
+    host.adapter._dingtalk_group_status = lambda ns, agent, app: (
+        {'status': 'listening', 'group_count': 2} if (ns, agent, app) == ('local', agent_id, 'ding-app') else None
+    )
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, agent_id=agent_id, connection_key='ding-app')
+    assert response.ok
+    assert response.payload['dingtalk_auth'] == {
+        'status': 'connected', 'group_monitor': {'status': 'listening', 'group_count': 2},
+    }
+
+
+@pytest.mark.parametrize("binding", [set(), {("ding-app", "other-employee")}, {("other-app", "self")}])
+async def test_dingtalk_user_auth_rejects_a_missing_or_foreign_binding(host, monkeypatch, binding):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload["colleague"]["agent_id"]
+    bindings = {(app, config_id if agent == "self" else agent) for app, agent in binding}
+    monkeypatch.setattr(web_adapter, "_bound_apps", lambda: {"dingtalk": bindings})
+    action = AsyncMock(return_value={"status": "connected"})
+    monkeypatch.setattr(host.adapter, "_runtime", AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_status=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, agent_id=config_id, connection_key="ding-app")
+    assert not response.ok and response.payload["code"] == "NOT_FOUND"
+    assert action.await_count == 0
+
+
+@pytest.mark.parametrize('bound', [True, False])
+async def test_dingtalk_disconnect_resolves_a_current_legacy_runtime_owner(host, monkeypatch, bound):
+    from tests.unit_tests.server.jiuwenmate.test_colleague_connections import seed_legacy_connection
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload['colleague']['agent_id']
+    agent_id = seed_legacy_connection(host.adapter._colleagues(), WEB_NAMESPACE, config_id, 'dingtalk', 'ding-app')
+    monkeypatch.setattr(web_adapter, '_bound_apps', lambda: {'dingtalk': {('ding-app', agent_id if bound else 'other-agent')}})
+    monkeypatch.setattr(web_adapter, '_dingtalk_disconnect_bindings', lambda: {('ding-app', agent_id if bound else 'other-agent')})
+    action = AsyncMock(return_value={'status': 'not_connected', 'cli_version': 'test'})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_disconnect=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+                               agent_id=agent_id, connection_key='ding-app')
+    assert response.ok == bound, response.payload
+    if bound:
+        scope = action.await_args.args[0]
+        assert (scope.agent_id, scope.app_id) == (agent_id, 'ding-app')
+    else:
+        assert action.await_count == 0
+
+
+async def test_dingtalk_begin_rechecks_binding_after_waiting_for_the_unbind_lock(host, monkeypatch):
+    from contextlib import asynccontextmanager
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload['colleague']['agent_id']
+    bindings = {('ding-app', config_id)}
+    monkeypatch.setattr(web_adapter, '_bound_apps', lambda: {'dingtalk': bindings})
+    @asynccontextmanager
+    async def revoked(platform, app_id):
+        assert (platform, app_id) == ('dingtalk', 'ding-app')
+        bindings.clear()
+        yield
+    monkeypatch.setattr('jiuwenswarm.common.im_binding_lock.im_binding_lock', revoked)
+    action = AsyncMock(return_value={'status': 'authorizing', 'cli_version': 'test'})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_begin=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+                               agent_id=config_id, connection_key='ding-app')
+    assert not response.ok
+    assert action.await_count == 0
+
+
+async def test_dingtalk_disconnect_can_revoke_a_disabled_robot_without_enabling_it(host, monkeypatch):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    config_id = created.payload['colleague']['agent_id']
+    config = {'channels': {'dingtalk': {'apps': [{
+        'client_id': 'ding-app', 'client_secret': 'fake', 'persistent_agent_id': config_id, 'enabled': False,
+    }]}}}
+    monkeypatch.setattr('jiuwenswarm.common.config.get_config', lambda: config)
+    action = AsyncMock(return_value={'status': 'not_connected', 'cli_version': 'test'})
+    monkeypatch.setattr(host.adapter, '_runtime', AsyncMock(return_value=SimpleNamespace(
+        dingtalk_cli_runtime=SimpleNamespace(dingtalk_auth_disconnect=action),
+    )))
+    response = await host.call(ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+                               agent_id=config_id, connection_key='ding-app')
+    assert response.ok, response.payload
+    assert config['channels']['dingtalk']['apps'][0]['enabled'] is False
 
 
 async def test_created_colleague_is_published_with_the_default_model(host):

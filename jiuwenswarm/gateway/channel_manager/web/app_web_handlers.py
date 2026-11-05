@@ -4423,7 +4423,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         return serialized
 
-    async def _connection_request(req_method, params):
+    async def _connection_request(req_method, params, *, timeout: float = 120):
         """Ask AgentServer about colleague connections; return ``(payload, None)`` or ``(None, (code, error))``.
 
         Bindings change only after AgentServer has answered, so an unknown answer changes nothing.
@@ -4439,7 +4439,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
         try:
             # Adding a connection may publish a new agent; removing one waits for its work to end.
-            response = await asyncio.wait_for(client.send_request(envelope), timeout=120)
+            response = await asyncio.wait_for(client.send_request(envelope), timeout=timeout)
         except Exception:  # noqa: BLE001
             return None, ("SERVICE_UNAVAILABLE", "the colleague service did not answer; try again")
         payload = getattr(response, "payload", None)
@@ -4964,7 +4964,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await channel.send_response(ws, req_id, ok=True, payload={"unbound": True})
 
     async def _channel_dingtalk_unbind_agent(ws, req_id, params, session_id):
-        """Delete one colleague's DingTalk app; its agent keeps its data and returns if the app is bound again."""
+        """Clear employee user authorization before removing its DingTalk app binding."""
         cm = _resolve(channel_manager)
         client_id = _binding_identity(params, "client_id") if isinstance(params, dict) else ""
         if cm is None or not client_id:
@@ -4974,13 +4974,43 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST" if cm is not None else "SERVICE_UNAVAILABLE",
             )
             return
+        from filelock import Timeout
+        from jiuwenswarm.common.im_binding_lock import im_binding_lock
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+
         try:
-            section = _remove_dingtalk_apps(
-                cm, lambda app: app["client_id"] == client_id and bool(app["persistent_agent_id"]),
-            )
+            async with im_binding_lock("dingtalk", client_id):
+                current = (get_config_raw() or {}).get("channels") or {}
+                owners = {
+                    _binding_identity(app, "persistent_agent_id")
+                    for app in dingtalk_apps(current.get("dingtalk"))
+                    if _binding_identity(app, "client_id") == client_id and app["persistent_agent_id"]
+                }
+                for agent_id in owners:
+                    cleared, failure = await _connection_request(
+                        ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+                        {"agent_id": agent_id, "connection_key": client_id}, timeout=30,
+                    )
+                    if failure is not None:
+                        await channel.send_response(ws, req_id, ok=False, error=failure[1], code=failure[0])
+                        return
+                    if (cleared.get("dingtalk_auth") or {}).get("status") != "not_connected":
+                        await channel.send_response(
+                            ws, req_id, ok=False, error="DingTalk user authorization was not cleared; try again",
+                            code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+                        )
+                        return
+                section = _remove_dingtalk_apps(
+                    cm, lambda app: app["client_id"] == client_id and bool(app["persistent_agent_id"]),
+                )
+            # Stopping Stream workers must not hold the application acceptance lock.
             method = "channel.dingtalk.unbind_agent"
             if section is not None and not await _apply_dingtalk(ws, req_id, cm, resolve_env_vars(section), method):
                 return
+        except Timeout:
+            await channel.send_response(ws, req_id, ok=False, error="application binding is busy", code="CONFLICT")
+            return
         except Exception:  # noqa: BLE001
             logger.exception("[channel.dingtalk.unbind_agent] binding removal failed")
             await channel.send_response(ws, req_id, ok=False, error="binding removal failed", code="INTERNAL_ERROR")

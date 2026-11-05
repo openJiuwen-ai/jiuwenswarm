@@ -86,6 +86,17 @@ async function mountProfile(extra) {
   globalThis.document = dom.window.document;
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const openedWindows = [];
+  dom.window.open = (url) => {
+    const popup = {
+      closed: false,
+      document: dom.window.document.implementation.createHTMLDocument(''),
+      location: { href: url },
+      close() { this.closed = true; },
+    };
+    openedWindows.push(popup);
+    return popup;
+  };
   const timers = new Map();
   let timerId = 0;
   dom.window.setInterval = (callback) => { timers.set(++timerId, callback); return timerId; };
@@ -111,6 +122,7 @@ async function mountProfile(extra) {
   const find = (id) => container.querySelector(`[data-testid="jiuwenmate-profile-${id}"]`);
   return {
     container,
+    openedWindows,
     find,
     async click(id) {
       assert.ok(find(id), `Missing profile ${id}`);
@@ -271,6 +283,184 @@ const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', age
 const dingtalkColleague = { ...colleague, connections: [...colleague.connections, dingtalkConnection] };
 const dingtalkAuthorizing = { status: 'authorizing', cli_version: '1', operation_id: 'ding-operation' };
 
+test('authorizing a newly bound DingTalk account opens the browser before waiting for the RPC', async () => {
+  const pending = deferred();
+  const authUrl = 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=NEW-CODE';
+  const view = await mountProfile({
+    initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => pending.promise,
+  });
+  try {
+    await view.rerender({ colleague: dingtalkColleague });
+    const button = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => button.click());
+    assert.equal(view.openedWindows.length, 1);
+    assert.equal(view.openedWindows[0].location.href, 'about:blank');
+    assert.match(view.openedWindows[0].document.body.textContent, /正在发起授权/);
+    assert.equal(button.disabled, true);
+    await act(async () => pending.resolve({ ...dingtalkAuthorizing, auth_url: authUrl, user_code: 'NEW-CODE' }));
+    assert.equal(view.openedWindows[0].location.href, authUrl);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]'));
+  } finally { await view.close(); }
+});
+
+test('DingTalk account authorization refreshes and separately displays group monitoring', async () => {
+  let monitoring = { status: 'discovering', group_count: 0 };
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'connected', cli_version: '1', account: 'Test user', organization: 'Test org', group_monitor: monitoring }),
+  });
+  try {
+    const status = () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-group-monitor-status"]');
+    assert.match(status().textContent, /正在自动发现/);
+    assert.match(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /已绑定/);
+    monitoring = { status: 'listening', group_count: 2 };
+    await view.tickIntervals();
+    assert.match(status().textContent, /2 个群/);
+    monitoring = { status: 'no_groups', group_count: 0 };
+    await view.tickIntervals();
+    assert.match(status().textContent, /未发现/);
+    monitoring = { status: 'error', group_count: 2 };
+    await view.tickIntervals();
+    assert.match(status().textContent, /重试/);
+    assert.match(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /已绑定/);
+  } finally { await view.close(); }
+});
+
+test('DingTalk authorization closes its waiting page after an RPC failure and releases the button', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => { throw new Error('CLI preparation failed'); },
+  });
+  try {
+    const button = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => button.click());
+    assert.equal(view.openedWindows.length, 1);
+    assert.equal(view.openedWindows[0].closed, true);
+    assert.equal(button.disabled, false);
+    assert.match(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]').textContent, /CLI preparation failed/);
+  } finally { await view.close(); }
+});
+
+for (const popupFailure of ['blocked', 'throws']) test(`DingTalk authorization offers a usable recovery link when the popup ${popupFailure}`, async () => {
+  let started = 0;
+  const authUrl = 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=NEW-CODE';
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => { started += 1; return { ...dingtalkAuthorizing, auth_url: authUrl }; },
+  });
+  try {
+    window.open = () => { if (popupFailure === 'throws') throw new Error('Browser bridge unavailable'); return null; };
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    assert.equal(started, 1);
+    const link = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]');
+    assert.equal(link.href, authUrl);
+    assert.equal(link.closest('details').open, true);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]'));
+  } finally { await view.close(); }
+});
+
+for (const terminal of ['cancelled', 'connected', 'error']) test(`DingTalk closes its own authorization window when ${terminal}`, async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => ({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/test' }),
+    onCancelDingTalkAuth: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onPollDingTalkAuth: async () => ({ status: terminal, cli_version: '1', ...(terminal === 'error' ? { error_code: 'authorization_failed' } : {}) }),
+  });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    if (terminal === 'cancelled') {
+      await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]').click());
+    } else {
+      await view.tickIntervals();
+    }
+    assert.equal(view.openedWindows[0].closed, true);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]'), null);
+  } finally { await view.close(); }
+});
+
+for (const transition of ['removed', 'rebound', 'unmounted']) test(`a pending DingTalk begin cannot redirect its window after the connection is ${transition}`, async () => {
+  const pending = deferred();
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => pending.promise,
+  });
+  let closed = false;
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    const popup = view.openedWindows[0];
+    if (transition === 'unmounted') {
+      await view.close(); closed = true;
+    } else {
+      await view.rerender({ colleague: transition === 'removed' ? colleague : {
+        ...dingtalkColleague, connections: [...colleague.connections, { ...dingtalkConnection, agentId: 'replacement-agent' }],
+      } });
+    }
+    await act(async () => pending.resolve({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/stale' }));
+    assert.equal(popup.closed, true);
+    assert.equal(popup.location.href, 'about:blank');
+  } finally { if (!closed) await view.close(); }
+});
+
+test('closing the waiting DingTalk popup leaves an expanded recovery link and does not start a second login', async () => {
+  const pending = deferred();
+  let starts = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => { starts += 1; return pending.promise; },
+  });
+  try {
+    const button = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => { button.click(); button.click(); });
+    view.openedWindows[0].close();
+    await act(async () => pending.resolve({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/recover' }));
+    assert.equal(starts, 1);
+    assert.equal(view.openedWindows.length, 1);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]').closest('details').open, true);
+  } finally { await view.close(); }
+});
+
+test('a connected DingTalk account can fill missing display names on focus without authorizing again', async () => {
+  let checks = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ++checks === 1
+      ? { status: 'connected', cli_version: '1' }
+      : { status: 'connected', cli_version: '1', account: 'Resolved account', organization: 'Resolved organization' },
+  });
+  try {
+    await act(async () => window.dispatchEvent(new window.Event('focus')));
+    assert.match(view.container.textContent, /Resolved account/);
+    assert.match(view.container.textContent, /Resolved organization/);
+    assert.equal(view.openedWindows.length, 0);
+  } finally { await view.close(); }
+});
+
+test('a failed DingTalk account status check stops showing loading and can recover through authorization', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => { throw new Error('Status lookup failed'); },
+    onBeginDingTalkAuth: async () => ({ status: 'not_connected', cli_version: '1' }),
+  });
+  try {
+    const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
+    assert.match(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /检查钉钉授权失败/);
+    assert.doesNotMatch(card.textContent, /正在检查授权状态/);
+    assert.match(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]').textContent, /Status lookup failed/);
+    const button = card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    assert.equal(button.disabled, false);
+    await act(async () => button.click());
+    assert.match(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]').textContent, /尚未绑定钉钉用户账号/);
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]'), null);
+  } finally { await view.close(); }
+});
+
 test('DingTalk account authorization explains its scope and shows loading then the device link', async () => {
   const pending = deferred();
   const authUrl = 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=TEST-CODE';
@@ -309,7 +499,7 @@ test('returning from DingTalk authorization immediately shows the account and or
   });
   try {
     const link = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]');
-    assert.equal(link.closest('details')?.open, false, 'The device link is a collapsed fallback, not a second step');
+    assert.equal(link.closest('details')?.open, true, 'A restored authorization offers recovery without starting a new operation');
     await act(async () => { window.dispatchEvent(new window.Event('focus')); });
     const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
     assert.match(card.textContent, /Test user/);
@@ -393,6 +583,26 @@ test('DingTalk begin remains authorizing when an older initial status completes'
   } finally {
     await view.close();
   }
+});
+
+test('a transient DingTalk status failure preserves the active authorization and keeps polling', async () => {
+  let checks = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: async () => ({ ...dingtalkAuthorizing, auth_url: 'https://login.dingtalk.com/pending' }),
+    onPollDingTalkAuth: async () => ++checks === 1 ? { status: 'error', cli_version: '1' }
+      : { status: 'connected', cli_version: '1', account: 'Verified account', organization: 'Verified organization' },
+  });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click());
+    await view.tickIntervals();
+    assert.equal(view.openedWindows[0].closed, false);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-cancel"]'));
+    await view.tickIntervals();
+    assert.match(view.container.textContent, /Verified account/);
+    assert.equal(view.openedWindows[0].closed, true);
+  } finally { await view.close(); }
 });
 
 test('DingTalk terminal authorization failure removes the consumed code and explains organization access', async () => {

@@ -143,6 +143,19 @@ def _bound_apps() -> dict[str, set[tuple[str, str]]]:
     }
 
 
+def _dingtalk_disconnect_bindings() -> set[tuple[str, str]]:
+    """A saved owner may revoke private login even when its robot is disabled."""
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+
+    apps = dingtalk_apps((get_config().get("channels") or {}).get("dingtalk"))
+    return {
+        (app["client_id"], app["persistent_agent_id"]) for app in apps
+        if app["client_id"] and app["persistent_agent_id"]
+        and sum(item["client_id"] == app["client_id"] for item in apps) == 1
+    }
+
+
 def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, set[tuple[str, str]]]) -> dict[str, Any]:
     """A colleague with its connections: the Web agent first, then each IM app its configuration binds."""
     payload = view.to_dict()
@@ -341,10 +354,12 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         model_catalog: Callable[[], dict[str, Any]] = configured_model_catalog,
         manager_factory: ManagerFactory = _default_manager,
         push: PushSink | None = None,
+        dingtalk_group_status: Callable[[str, str, str], dict[str, Any]] | None = None,
     ) -> None:
         self._service_factory = service_factory
         self._model_catalog = model_catalog
         self._manager_factory = manager_factory
+        self._dingtalk_group_status = dingtalk_group_status
         self._stream = None if push is None else StreamPublisher(push)
         self._service: PersistentAgentService | None = None
         self._service_lock = threading.Lock()
@@ -613,25 +628,47 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             config_id = _text_param(params, "agent_id")
             connection_key = _text_param(params, "connection_key")
             service = await asyncio.to_thread(self._colleagues)
-            await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, config_id)
-            connection = next((
-                item for item in await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
-                if item.channel == "dingtalk" and item.connection_key == connection_key
-            ), None)
-            if connection is None or (connection_key, connection.agent_id) not in _bound_apps().get("dingtalk", set()):
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value:
+                connection = await asyncio.to_thread(service.connection_of, WEB_NAMESPACE, config_id)
+                if connection is not None and connection.channel == "dingtalk" and connection.connection_key == connection_key:
+                    config_id = connection.config_id
+            await asyncio.to_thread(service.get_config, WEB_NAMESPACE, config_id)
+            bindings = (_dingtalk_disconnect_bindings() if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value
+                        else _bound_apps().get("dingtalk", set()))
+            agent_id = config_id if (connection_key, config_id) in bindings else None
+            if agent_id is None:
+                agent_id = next((
+                    item.agent_id for item in await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
+                    if item.channel == "dingtalk" and item.connection_key == connection_key
+                    and (connection_key, item.agent_id) in bindings
+                ), None)
+            if agent_id is None:
                 raise PersistentAgentError("DingTalk connection is not bound to this employee", code="NOT_FOUND")
             from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
-            scope = DingTalkCliScope(WEB_NAMESPACE, connection.agent_id)
+            scope = DingTalkCliScope(WEB_NAMESPACE, agent_id, app_id=connection_key)
             runtime = manager.dingtalk_cli_runtime
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value:
-                return {"dingtalk_auth": await runtime.dingtalk_auth_status(scope)}
+                status = await runtime.dingtalk_auth_status(scope)
+                if status.get('status') == 'connected' and self._dingtalk_group_status is not None:
+                    status = {**status, 'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key)}
+                return {"dingtalk_auth": status}
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN.value:
-                return {"authorization": await runtime.dingtalk_auth_begin(scope)}
+                from filelock import Timeout
+                from jiuwenswarm.common.im_binding_lock import im_binding_lock
+                try:
+                    async with im_binding_lock("dingtalk", connection_key):
+                        if (connection_key, agent_id) not in _bound_apps().get("dingtalk", set()):
+                            raise PersistentAgentError("DingTalk connection is no longer bound", code="NOT_FOUND")
+                        return {"authorization": await runtime.dingtalk_auth_begin(scope)}
+                except Timeout as exc:
+                    raise PersistentAgentError("DingTalk application binding is busy", code="CONFLICT") from exc
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL.value:
                 operation_id = _text_param(params, "operation_id")
                 status = await runtime.dingtalk_auth_status(scope)
                 if status.get("operation_id") not in (None, operation_id):
                     raise PersistentAgentError("DingTalk authorization operation changed", code="CONFLICT")
+                if status.get('status') == 'connected' and self._dingtalk_group_status is not None:
+                    status = {**status, 'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key)}
                 return {"dingtalk_auth": status}
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL.value:
                 return {"dingtalk_auth": await runtime.dingtalk_auth_cancel(scope, _text_param(params, "operation_id"))}
