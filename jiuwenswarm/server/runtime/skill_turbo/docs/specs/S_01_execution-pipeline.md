@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / execution-pipeline |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：agent.py / executor.py / skill_turbo_tools.py；environment.py / planner.py 仅涉执行链一侧） |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-11-03 |
 | 关联 feature | [[F_02]]（回调槽 12→11 / resume 横幅不再抑制）；[[F_04]]（inputs 注入 python_cmd） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
@@ -94,7 +94,7 @@ def validate(self, plan_code: str) -> list[str]
 ### execute_plan_stream 内部 10 步序列（executor.py `execute_plan_stream`）
 
 1. `_merge_env_config_to_inputs`：注入 `skill_root` / `skill_name`（"not in merged" 保护，resume inputs 已有则不覆盖）与 `python_cmd`（缺省 / 空白时注入 `sys.executable`，显式非空值保留，[[F_04]]）。
-2. `env.register_tools`：静态工具幂等加载 + send_file 工具每请求刷新（先 remove 旧 tool_id 再 add）+ `_export_tool_info` 导出。
+2. `env.register_tools`：静态工具幂等加载 + send_file 工具每请求刷新（弹出让位本环境绑定；对全局注册表的 remove 仅限环境自注册旧实例，**严禁移除继承的父 agent 实例**，[[B_07]]）+ `_export_tool_info` 导出。
 3. `_setup_execution_context`：`create_agent_session`（`set_skill_turbo_id` 隔离键）+ 8 组 ContextVar 绑定（session/request_id/channel/task 队列/task_states/current_task_holder/send_file/interactive_ask）+ trace 创建 + `_tool_call_counter` 重置。
 4. 产物分支：`not _resume_replay` → `_clear_stale_node_artifacts()`（清 session 持久层残留）；else → `_inherit_node_artifacts_for_replay(plan_code)`（hash 门禁，fail-open）。
 5. yield `plan.started`——**必须最先**（前端依赖它建根节点）。
