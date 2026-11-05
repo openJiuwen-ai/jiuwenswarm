@@ -19,6 +19,7 @@ export {
   orderProviders,
   parseCustomized,
   parseProviders,
+  parseSplashPlay,
 } from './controller.ts';
 export type {
   SplashCloseReason,

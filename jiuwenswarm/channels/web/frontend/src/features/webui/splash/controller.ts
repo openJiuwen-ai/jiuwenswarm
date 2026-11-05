@@ -10,6 +10,8 @@ import { SPLASH_EXPECTED_KEY, SPLASH_PLAYED_KEY, writeItem, type SplashHint, typ
 
 export const SPLASH_SLOT_ID = 'application.splash';
 export const SPLASH_INSTANCE_KEY = 'main';
+/** Downstream preview request (Gateway S_09 section 3.3). */
+export const SPLASH_PLAY_EVENT = 'webui.splash.play';
 const MAX_SPLASH_MS = 60_000;
 
 export const SPLASH_TIMEOUTS = {
@@ -59,6 +61,8 @@ export interface SplashController {
   getState(): SplashState;
   subscribe(listener: () => void): () => void;
   start(): Promise<void>;
+  /** Play one provider again after the gate opened (Gateway S_09 section 3.3); false when ignored. */
+  preview(provider: SplashProvider): Promise<boolean>;
   surfaceEvent(event: MediaSurfaceEvent): void;
   skip(): void;
   dispose(): void;
@@ -90,6 +94,11 @@ export function parseProviders(value: unknown): SplashProvider[] {
     });
   }
   return providers;
+}
+
+/** Read a `webui.splash.play` preview request; null when malformed. */
+export function parseSplashPlay(value: unknown): SplashProvider | null {
+  return parseProviders({ providers: [value] })[0] ?? null;
 }
 
 /** Whether the user saved a splash order in the Extensions settings (Gateway S_10 section 4). */
@@ -198,7 +207,7 @@ export function createSplashController(options: SplashControllerOptions): Splash
     });
   }
 
-  async function play(provider: SplashProvider): Promise<void> {
+  async function play(provider: SplashProvider, preview = false): Promise<void> {
     set({ phase: 'preparing', provider, instanceKey: null });
     let settle: (receipt: WebUIDispatchReceipt | null) => void = () => undefined;
     const answered = new Promise<WebUIDispatchReceipt | null>((resolve) => { settle = resolve; });
@@ -206,7 +215,11 @@ export function createSplashController(options: SplashControllerOptions): Splash
       packageId: provider.packageId,
       instanceKey: SPLASH_INSTANCE_KEY,
       readyOnce: true,
-      readyPayload: { launch_id: launch.id, first_visit: launch.firstVisit, reduced_motion: options.reducedMotion() },
+      // A preview is never a first visit (Gateway S_09 section 3.3).
+      readyPayload: {
+        launch_id: launch.id, first_visit: preview ? false : launch.firstVisit,
+        reduced_motion: options.reducedMotion(), preview,
+      },
       onReadySettled: (receipt) => settle(receipt),
     });
     try {
@@ -218,7 +231,8 @@ export function createSplashController(options: SplashControllerOptions): Splash
       const reason = await playback(provider, instanceKey);
       // Close locally first so sound and motion stop before the package hears about it.
       set({ phase: 'preparing', provider: null, instanceKey: null });
-      writeItem(SPLASH_PLAYED_KEY, '1');
+      // Only startup playback counts towards the device's first-visit record.
+      if (!preview) writeItem(SPLASH_PLAYED_KEY, '1');
       if (reason && !disposed) void runtime.notifyClosed(instanceKey, reason);
     } finally {
       handle.release();
@@ -256,6 +270,18 @@ export function createSplashController(options: SplashControllerOptions): Splash
     if (!disposed) open();
   }
 
+  async function preview(provider: SplashProvider): Promise<boolean> {
+    // Previews only run on an open gate with nothing playing, one at a time.
+    if (disposed || state.phase !== 'open') return false;
+    try {
+      await play(provider, true);
+    } finally {
+      // Back to open without completing the launch again.
+      if (!disposed) set({ phase: 'open', provider: null, instanceKey: null });
+    }
+    return true;
+  }
+
   return {
     getState: () => state,
     subscribe(listener) {
@@ -263,6 +289,7 @@ export function createSplashController(options: SplashControllerOptions): Splash
       return () => listeners.delete(listener);
     },
     start,
+    preview,
     surfaceEvent: (event) => onSurface?.(event),
     skip: () => onSkip?.(),
     dispose() {

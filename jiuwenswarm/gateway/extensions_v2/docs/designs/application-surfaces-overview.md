@@ -8,8 +8,8 @@
 | 最近一次修订日期 | 2026-11-05 |
 | 责任人 | Song Haoran |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/`，并涉及 `jiuwenswarm/channels/web/`（`app_web.py` 与前端 `features/webui/`）及 `jiuwenswarm/channels/desktop/electron/` |
-| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md) |
-| 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-12` |
+| 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md)、[F_14 开场预览](../features/F_14_splash-preview.md) |
+| 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-13` |
 | 关联文档 | [运行时规约](../specs/S_01_gateway-extension-runtime.md)、[渲染规约](../specs/S_02_ui-render.md)、[浏览器桥接规约](../specs/S_06_local-browser-bridge.md)、[S_17 组件 Props 规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) |
 | 关键假设与待确认项 | 见第 1.3 节及各 feature；agent-core 锁定版本与当前导入不一致的问题记录在开发计划第 6 节 |
 
@@ -134,6 +134,7 @@ stateDiagram-v2
 4. 提供者以 `ops.ui.render` 渲染 `application.splash` 表示播放，以清除模式表示略过；宿主以调用上下文中的包身份判断回答是否有效。被其他 Handler 截获或短路时按准备超时处理。
 5. 播放期间宿主负责跳过、心跳与上限；结束后关闭容器、停止声音，再向该提供者发送 `ui.closed` 及原因。
 6. 队列结束后显示登录入口或工作界面。开场结束不解除认证要求；登录插件可提前准备，但显示与焦点由宿主协调。
+7. 门控开放后，插件可在自己设置页的交互中请求预览：宿主只为这个插件再播放一次，`ui.ready` 标明 `preview`，不改变启动记录。
 
 ### 3.2 时长、跳过与结束
 
@@ -170,5 +171,6 @@ stateDiagram-v2
 | EXTV2-GW-10 | 受控外观（[F_11](../features/F_11_controlled-appearance.md)、[S_08](../specs/S_08_appearance.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-11 | 启动门控与开场队列（[F_12](../features/F_12_startup-gate-and-splash.md)、[S_09](../specs/S_09_startup-splash.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-12 | 应用级设置页、开场顺序与停用、文件导入与导出（[F_13](../features/F_13_application-settings-page.md)、[S_10](../specs/S_10_application-settings.md)） | 已实现，单元与浏览器验证通过 |
+| EXTV2-GW-13 | 开场预览（[F_14](../features/F_14_splash-preview.md)、[S_09](../specs/S_09_startup-splash.md) 第 3.3 节） | 已实现，单元与浏览器验证通过 |
 
 负责人、进度与验证证据以[开发计划](extensions-v2-development-plan.md)为唯一维护位置。

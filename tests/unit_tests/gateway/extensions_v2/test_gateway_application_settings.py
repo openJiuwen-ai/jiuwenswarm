@@ -21,7 +21,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
 SURFACE = RenderNode(component="MediaSurface", props={"kind": "html", "src": "/extension-assets/p/g/boot.html",
                                                       "title": "Boot"})
 PAGE = RenderNode(component="Box", children=(RenderNode(component="Text", props={"value": "Theme settings"}),))
-READY = {"launch_id": "launch-1", "first_visit": False, "reduced_motion": False}
+READY = {"launch_id": "launch-1", "first_visit": False, "reduced_motion": False, "preview": False}
 AUTH = {"authorization": "Bearer tk"}
 
 

@@ -42,7 +42,7 @@ SPLASH_SLOT = "application.splash"
 #: Display-only slots whose lifecycle frames bypass request policy (S_09 section 3).
 PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})
 SPLASH_PROVIDERS_METHOD = "webui.splash.providers"
-SPLASH_READY_FIELDS = frozenset({"launch_id", "first_visit", "reduced_motion"})
+SPLASH_READY_FIELDS = frozenset({"launch_id", "first_visit", "reduced_motion", "preview"})
 CLOSE_REASONS = frozenset({"complete", "skip", "timeout", "error", "disabled", "removed"})
 MIN_SPLASH_MS = 1_000
 MAX_SPLASH_MS = 60_000
@@ -312,7 +312,7 @@ class BrowserBridge:
             launch_id = payload.get("launch_id") if isinstance(payload, Mapping) else None
             if (not isinstance(payload, Mapping) or set(payload) != SPLASH_READY_FIELDS
                     or not isinstance(launch_id, str) or not 0 < len(launch_id) <= 128
-                    or not isinstance(payload["first_visit"], bool) or not isinstance(payload["reduced_motion"], bool)):
+                    or any(not isinstance(payload[name], bool) for name in ("first_visit", "reduced_motion", "preview"))):
                 return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
             receipt = await self.dispatch(request, context)
             if receipt is None or not receipt.accepted:
@@ -531,6 +531,8 @@ class BrowserBridge:
             return await self.transfers.offer_download(
                 package.package_id, self.generations[package.package_id], trusted_connection(ops), path, filename,
             )
+        async def splash_preview(ops):
+            return await self.preview_splash(ops)
         async def build(event, ops, next_handler):
             del ops
             builder = await next_handler(event)
@@ -544,8 +546,28 @@ class BrowserBridge:
             builder.add_method("client", "page_reload", page_reload)
             builder.add_namespace("appearance")
             builder.add_method("appearance", "apply", appearance_apply)
+            builder.add_namespace("splash")
+            builder.add_method("splash", "preview", splash_preview)
             return builder
         return build
+
+    async def preview_splash(self, ops: EventHandlerOps) -> dict[str, Any]:
+        """Ask the calling connection to play this package's splash once (S_09 section 3.3).
+
+        A splash the user turned off can still be previewed: the request comes from the package's own page.
+        """
+        package = self._package_caller(ops)
+        declaration = self.splash_declaration(package)
+        if declaration is None:
+            raise ValueError("ops.splash.preview requires an application.splash contribution")
+        connection_id = trusted_connection(ops)
+        if not connection_id:
+            raise ValueError("ops.splash.preview requires a browser connection")
+        delivered = await self.runtime.webui.transport.send_splash_play(connection_id, {
+            "package_id": package.package_id, "skippable": declaration["skippable"],
+            "max_duration_ms": declaration["max_duration_ms"],
+        })
+        return {"status": "requested" if delivered else "delivery_failed"}
 
     def _package_caller(self, ops: EventHandlerOps):
         """Resolve an application package bound to its current activation."""
