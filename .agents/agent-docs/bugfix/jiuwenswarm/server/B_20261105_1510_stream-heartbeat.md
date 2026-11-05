@@ -15,6 +15,9 @@ files:
   - jiuwenswarm/server/worker/service.py
   - jiuwenswarm/server/worker/dispatcher.py
   - jiuwenswarm/server/supervisor/runtime_supervisor.py
+  - tests/unit_tests/agentserver/test_worker_shutdown_deadline.py
+  - tests/unit_tests/agentserver/test_worker_loop_liveness.py
+  - tests/unit_tests/server/test_handler_dispatch_agents.py
 designs: []
 design_note: 用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。
 ---
@@ -68,10 +71,28 @@ Issue #6093 的视频合成案例暴露业务循环同步等待时，通信心�
 
 原提交的远端 Linux UT 为 21716 passed、125 skipped、19 failed，其中 4 个失败涉及本次修正的旧用例和长测试预算。其余 15 个失败涉及 CUA、Web 语言配置、子代理导入及系统提示词；在干净基线 `b9820bf9342eb61cb344216bdf73b45868238f3f`、同一组固定依赖下，相关四个文件复现 13 failed、120 passed，修订版本得到相同的失败用例集合及通过数。两项子代理导入失败未在该定向运行中复现，不能据此认定它们的根因。未扩大本次修改范围。修订验证数据保存在工作区外 `.codex-temp/stream-heartbeat-review-20261105`。
 
+### CodeCheck 与第二轮 Linux UT 修订
+
+用户提供的未解决 CodeCheck 导出包含两项：`io_loop.py` 的生产 `assert`（G.TES.01）改为显式运行时检查，避免优化模式删除检查；Supervisor 栈字段过滤的复杂推导式（G.EXP.04）展开为普通循环，保留整数行号校验、16 个输入帧上限及字符串长度约束。
+
+附件 UT 日志运行的是 `42f761d0c774d1e9926e3e728353877dca811476` 与 develop `e2571b49496a34e4d02e74c88d2922c879667c55` 的合并版本，结果为 16 failed、21745 passed、124 skipped。新发现的 IPC 失败发生在真实 180 秒场景的下一代 Worker 就绪等待阶段：30 秒归因告警和 180 秒恢复决定均正确，但 POSIX Worker 的 SIGTERM 回调也要等待被阻塞的业务循环；首次进程等待耗尽了全部 5 秒清退预算，之后 SIGKILL 的确认等待得到 0 秒，Supervisor 因无法确认退出而进入 fatal。
+
+修复在同一退出期限内为强制终止后的退出观察预留最多 1 秒，短预算最多预留剩余时间的一半；不延长清退期限，不改变 30/180 秒阈值。仍检查 PID 和创建时间，仍要求确认旧 Worker 退出后才恢复下一代；未确认退出和身份冲突保持失败处理。新增确定性回归在 0.5/5 秒预算下均先复现旧实现失败，再验证修复；另增加 POSIX 原生忽略 SIGTERM 子进程用例。
+
+为解决远端索引冲突，合入当时最新 develop `f28b10207`，合并提交为 `2b7a03979`。该基线已修复 BrowserTaskPromptRail 重复构造器和 Web 语言测试初始化，消除了前述 13 项既存失败。其余两项导入失败已补充顺序复现：`test_handler_dispatch_agents.py` 直接覆盖 `sys.modules` 且未恢复，导致后续 `AgentDefinition` 导入失败；同一顺序在旧干净基线复现 2 failed、33 passed。测试替身改用 pytest monkeypatch，在用例结束后恢复原模块。
+
+修订后的 Windows / Python 3.11.15 验证：
+
+- IPC/Worker 的 14 个定向文件：296 passed、13 skipped、15 deselected；其中新增的 POSIX 信号用例在 Windows 跳过。
+- 原 CI 其他失败及污染源所在的 5 个文件，按污染源先于子代理用例的顺序运行：164 passed；修复前同一组合为 2 failed、162 passed。
+- 真实 180 秒 TCP 业务冻结复验：1 passed，约 180.188 秒触发恢复，告警与重启均含正确业务归因，旧 Worker 已退出，新 Worker 完成后续请求。
+
+上述为本地行为证据，不等同于修订后 Linux 全量 UT 或远端 CodeCheck 通过。按仓库约束未运行本地格式化或静态检查；原始附件、复现日志和 XML 结果保存在工作区外 `.codex-temp/stream-heartbeat-ci-20261105`。
+
 ## 防错模式与资料同步
 
 同步中英文日志说明和当前 IPC spec。关键回归覆盖普通业务帧不得终止心跳读取，以及首条告警必须已有实际阻塞业务上下文。记录仅保留标识与栈位置，并在消费端重新限制大小与字段。
 
 ## 遗留与后续
 
-本机为 Windows；原提交的 Linux CI 已通过 13 个新 socket 用例，修订后的原生 Linux/macOS 运行仍待新一轮 CI，HarmonyOS 真机未验证。原 CI 静态检查失败且未提供可访问日志，不能由本地行为测试宣称已修复；远端 CI 与本地测试单独报告。
+本机为 Windows；原提交的 Linux CI 已通过 13 个新 socket 用例，当前修订的原生 Linux/macOS 运行仍待新一轮 CI，HarmonyOS 真机未验证。本次已根据用户提供的两项 CodeCheck 导出修复对应代码，远端复验状态单独报告。

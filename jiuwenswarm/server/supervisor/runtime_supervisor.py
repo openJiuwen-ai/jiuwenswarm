@@ -90,12 +90,19 @@ def _bounded_stall_context(value: object) -> dict[str, Any]:
             result[key] = text(value[key])
     stack = value.get("stack")
     if isinstance(stack, list):
-        result["stack"] = [
-            {"file": text(frame.get("file"), 256), "function": text(frame.get("function")),
-             "line": frame["line"]}
-            for frame in stack[:16] if isinstance(frame, dict)
-            and type(frame.get("line")) is int and 0 <= frame["line"] <= 10_000_000
-        ]
+        frames = []
+        for frame in stack[:16]:
+            if not isinstance(frame, dict):
+                continue
+            line = frame.get("line")
+            if type(line) is not int or not 0 <= line <= 10_000_000:
+                continue
+            frames.append({
+                "file": text(frame.get("file"), 256),
+                "function": text(frame.get("function")),
+                "line": line,
+            })
+        result["stack"] = frames
     return result
 
 _GatewayRoute = tuple[Any, asyncio.Lock]
@@ -1379,7 +1386,11 @@ class RuntimeSupervisor:
             if terminate:
                 process.terminate()
             try:
-                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+                remaining = max(0.0, deadline - time.monotonic())
+                # Reserve time inside this deadline to observe forced exit.
+                # A blocked POSIX business loop cannot handle SIGTERM yet.
+                force_wait = min(1.0, remaining / 2)
+                process.wait(timeout=remaining - force_wait)
             except psutil.TimeoutExpired as exc:
                 if process.create_time() != worker_create_time:
                     if self._ignore_reused_attached_pid():

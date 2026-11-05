@@ -443,6 +443,32 @@ async def test_business_frame_proves_the_worker_loop_ran() -> None:
         await _until(lambda: supervisor._worker_last_beat > stalled + 5.0)
 
 
+def test_stall_context_filters_frame_lines_and_bounds_locations():
+    value = {
+        "request_id": "r" * 200,
+        "params": {"api_key": "excluded"},
+        "stack": [
+            None,
+            {"line": True},
+            {"line": "1"},
+            {"line": -1},
+            {"line": 10_000_001},
+            {"file": "f" * 300, "function": "g" * 200, "line": 0},
+            {"file": "end.py", "function": "last", "line": 10_000_000},
+        ],
+    }
+    result = module._bounded_stall_context(value)
+    assert result == {
+        "request_id": "r" * 128,
+        "stack": [
+            {"file": "f" * 256, "function": "g" * 128, "line": 0},
+            {"file": "end.py", "function": "last", "line": 10_000_000},
+        ],
+    }
+    value["stack"] = [{"line": i} for i in range(17)]
+    assert len(module._bounded_stall_context(value)["stack"]) == 16
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("age,restarted", [(35.0, False), (181.0, True)])
 async def test_business_stall_logs_running_business_and_retains_thresholds(age, restarted, caplog):

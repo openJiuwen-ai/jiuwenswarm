@@ -131,7 +131,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261105_1510_stream-heartbeat](jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md) | B | Socket 心跳被业务循环阻塞及卡顿缺少业务归因 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/io_loop.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/worker/stall_context.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/dispatcher.py, jiuwenswarm/server/supervisor/runtime_supervisor.py | 无独立 D：用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。 |
+| [B_20261105_1510_stream-heartbeat](jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md) | B | Socket 心跳被业务循环阻塞及卡顿缺少业务归因 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/io_loop.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/worker/stall_context.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/dispatcher.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/agentserver/test_worker_loop_liveness.py, tests/unit_tests/server/test_handler_dispatch_agents.py | 无独立 D：用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。 |
 
 <a id="module-12"></a>
 
@@ -157,7 +157,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261105_1510_stream-heartbeat](jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md) | B | Socket 心跳被业务循环阻塞及卡顿缺少业务归因 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/io_loop.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/worker/stall_context.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/dispatcher.py, jiuwenswarm/server/supervisor/runtime_supervisor.py | 无独立 D：用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。 |
+| [B_20261105_1510_stream-heartbeat](jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md) | B | Socket 心跳被业务循环阻塞及卡顿缺少业务归因 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/io_loop.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/worker/stall_context.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/dispatcher.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/agentserver/test_worker_loop_liveness.py, tests/unit_tests/server/test_handler_dispatch_agents.py | 无独立 D：用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。 |
 
 <a id="module-15"></a>
 
@@ -165,7 +165,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261105_1510_stream-heartbeat](jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md) | B | Socket 心跳被业务循环阻塞及卡顿缺少业务归因 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/io_loop.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/worker/stall_context.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/dispatcher.py, jiuwenswarm/server/supervisor/runtime_supervisor.py | 无独立 D：用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。 |
+| [B_20261105_1510_stream-heartbeat](jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md) | B | Socket 心跳被业务循环阻塞及卡顿缺少业务归因 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/io_loop.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/worker/stall_context.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/worker/dispatcher.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/agentserver/test_worker_loop_liveness.py, tests/unit_tests/server/test_handler_dispatch_agents.py | 无独立 D：用户明确要求补齐现有心跳隔离实现并增加卡顿归因，沿用既有 30/180 秒健康策略，无独立设计。 |
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | jiuwenswarm/server/worker | jiuwenswarm/server/worker/event_store.py | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 
 <a id="module-16"></a>

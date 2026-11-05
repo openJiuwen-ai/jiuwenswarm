@@ -44,8 +44,10 @@ def _get_loop() -> asyncio.AbstractEventLoop:
             _thread.start()
             if not ready.wait(5):
                 raise RuntimeError("IPC event loop did not start")
-        assert _loop is not None
-        return _loop
+        loop = _loop
+        if loop is None:
+            raise RuntimeError("IPC event loop is unavailable")
+        return loop
 
 
 async def on_loop(loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, _T]) -> _T:

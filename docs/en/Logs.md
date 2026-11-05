@@ -156,6 +156,8 @@ The 30-second business-stall warning and 180-second restart log include `busines
 
 A socket business-buffer overflow emits a separate `[IPC] business receive backlog exceeded` warning with pending message and byte counts, incoming frame size and limits, then follows connection-failure handling. Failed Supervisor diagnostic collection records only the exception type. Snapshot collection, serialization or output failures do not interrupt health checks or recovery.
 
+When retiring a blocked Worker, the Supervisor reserves time within the existing exit deadline to confirm forced termination. It starts the next Worker generation only after confirming that the old process exited. The 30/180-second business-loop thresholds remain unchanged.
+
 ## 5. Log Configuration
 
 ### 5.1 Configuration File
