@@ -17,7 +17,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_clip_index,
     node_pipeline,
 )
-from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_ffmpeg, run_off_loop
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import FfmpegCancelled, run_ffmpeg, run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_workspace_dir,
@@ -215,7 +215,13 @@ async def render_bgm(
 ) -> NodeResult:
     """Generate the film's BGM bed; a failed backend leaves a silent placeholder and a warning."""
     duration = film_duration_sec(node, ctx)
-    generated, warning = await _try_music_api(node, ctx, duration_sec=duration, instructions=instructions)
+    try:
+        generated, warning = await _try_music_api(node, ctx, duration_sec=duration, instructions=instructions)
+    except FfmpegCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Designer BGM backend raised for %s", ctx.node_id, exc_info=True)
+        generated, warning = None, f"music backend failed: {type(exc).__name__}: {exc}"
     if generated is not None:
         return generated
     if warning:

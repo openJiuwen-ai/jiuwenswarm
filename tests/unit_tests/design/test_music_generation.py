@@ -474,6 +474,41 @@ async def test_render_bgm_failure_leaves_silence_with_warning(
 
 
 @pytest.mark.asyncio
+async def test_render_bgm_backend_exception_leaves_silence_with_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers import audio_nodes
+
+    async def broken(*_a: Any, **_k: Any) -> dict[str, str]:
+        raise KeyError("choices")
+
+    _configure(monkeypatch, protocol="openrouter", api_key="k")
+    monkeypatch.setattr(music_generation, "generate_music", broken)
+    monkeypatch.setattr(audio_nodes, "_synthesize_bed", lambda dest, **_k: False)
+    events: list[str] = []
+    ctx = _music_ctx(tmp_path, monkeypatch, events)
+    result = await audio_nodes.MusicNodeHandler().execute(ctx.graph["nodes"][0], ctx)
+    assert audio_nodes.is_silent_music_placeholder(result.output_ref["label"])
+    assert "WARNING: music backend failed: KeyError" in result.message
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_render_bgm_lets_cancellation_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.server.runtime.designer.ffmpeg_runner import FfmpegCancelled
+    from jiuwenswarm.server.runtime.designer.handlers import audio_nodes
+
+    async def cancelled(*_a: Any, **_k: Any) -> dict[str, str]:
+        raise FfmpegCancelled("design run cancelled")
+
+    _configure(monkeypatch, protocol="openrouter", api_key="k")
+    monkeypatch.setattr(music_generation, "generate_music", cancelled)
+    ctx = _music_ctx(tmp_path, monkeypatch, [])
+    with pytest.raises(FfmpegCancelled):
+        await audio_nodes.render_bgm(ctx.graph["nodes"][0], ctx)
+
+
+@pytest.mark.asyncio
 async def test_unconfigured_handler_keeps_quiet_placeholder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

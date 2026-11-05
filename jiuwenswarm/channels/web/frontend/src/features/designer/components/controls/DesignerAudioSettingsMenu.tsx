@@ -12,6 +12,7 @@ import {
   audioDurationParts,
   effectiveAudioDurationSec,
   parseAudioDurationFields,
+  withAudioDuration,
 } from '../../designerMediaSettings';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../../designerStore';
@@ -97,6 +98,12 @@ export function DesignerAudioSettingsMenu({ nodeId }: DesignerAudioSettingsMenuP
 
   const commitDuration = () => {
     if (editingLocked) return;
+    if (!minutesDraft.trim() && !secondsDraft.trim()) {
+      setMinutesDraft('');
+      setSecondsDraft('');
+      if (durationSec !== null) updateNodeConfig(nodeId, (config) => withAudioDuration(config, null));
+      return;
+    }
     const next = parseAudioDurationFields(minutesDraft, secondsDraft);
     if (next === null) {
       revertDrafts();
@@ -106,11 +113,7 @@ export function DesignerAudioSettingsMenu({ nodeId }: DesignerAudioSettingsMenuP
     setMinutesDraft(String(parts.minutes));
     setSecondsDraft(String(parts.seconds));
     if (next === durationSec) return;
-    updateNodeConfig(nodeId, (config) => ({
-      ...config,
-      duration_sec: next,
-      film_duration_sec: next,
-    }));
+    updateNodeConfig(nodeId, (config) => withAudioDuration(config, next));
   };
 
   const onFieldBlur = (event: ReactFocusEvent<HTMLInputElement>) => {

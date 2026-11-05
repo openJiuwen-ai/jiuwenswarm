@@ -11,6 +11,7 @@ import {
   generatesTimedVideo,
   generationModelLabel,
   parseAudioDurationFields,
+  withAudioDuration,
 } from '../node_modules/.cache/designer-media-settings/designerMediaSettings.js';
 
 const caps = {
@@ -106,6 +107,14 @@ test('audio duration fields accept any positive total and reject zero', () => {
   assert.equal(parseAudioDurationFields('', '12'), null);
   assert.equal(parseAudioDurationFields('-1', '10'), null);
   assert.equal(parseAudioDurationFields('1.5', '0'), null);
+});
+
+test('a set audio length can be cleared back to the film duration', () => {
+  const set = withAudioDuration({ prompt: 'piano', duration_sec: 5 }, 90);
+  assert.deepEqual(set, { prompt: 'piano', duration_sec: 90, film_duration_sec: 90 });
+  const cleared = withAudioDuration(set, null);
+  assert.deepEqual(cleared, { prompt: 'piano' });
+  assert.equal(effectiveAudioDurationSec(cleared.duration_sec, cleared.film_duration_sec), null);
 });
 
 test('the toolbar names the configured model, else the provider that needs no model name', () => {

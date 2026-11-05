@@ -95,6 +95,19 @@ export function parseAudioDurationFields(minutesRaw: string, secondsRaw: string)
   return total;
 }
 
+/** Music-node config with this length; null drops both length keys so the film's own duration applies. */
+export function withAudioDuration(config: Record<string, unknown>, seconds: number | null): Record<string, unknown> {
+  const next = { ...config };
+  if (seconds === null) {
+    delete next.duration_sec;
+    delete next.film_duration_sec;
+    return next;
+  }
+  next.duration_sec = seconds;
+  next.film_duration_sec = seconds;
+  return next;
+}
+
 function positiveWholeSeconds(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
   return Math.floor(value);
