@@ -10,8 +10,17 @@ const frontendOnly = (() => {
   }
 })();
 
+const launchId = (() => {
+  try {
+    return ipcRenderer.sendSync('desktop:launch-id');
+  } catch {
+    return '';
+  }
+})();
+
 const desktopApi = Object.freeze({
   isElectron: true,
+  launchId,
   apiBase: frontendOnly ? 'http://127.0.0.1:19000' : '',
   wsBase: frontendOnly ? 'ws://127.0.0.1:19000' : '',
   minimizeWindow: () => invoke('desktop:minimize-window'),

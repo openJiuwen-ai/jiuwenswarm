@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import asyncio
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -25,12 +26,22 @@ from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestInput, Gatewa
 from jiuwenswarm.gateway.extensions_v2.webui.models import (
     RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiRenderInput, UiRenderOutput,
 )
-from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS
+from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 from jiuwenswarm.gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
 from jiuwenswarm.gateway.extensions_v2.webui.call_context import trusted_connection
 
-SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background"})
+SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash"})
+SPLASH_SLOT = "application.splash"
+#: Display-only slots whose lifecycle frames bypass request policy (S_09 section 3).
+PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})
+SPLASH_PROVIDERS_METHOD = "webui.splash.providers"
+SPLASH_READY_FIELDS = frozenset({"launch_id", "first_visit", "reduced_motion"})
+CLOSE_REASONS = frozenset({"complete", "skip", "timeout", "error", "disabled", "removed"})
+MIN_SPLASH_MS = 1_000
+MAX_SPLASH_MS = 60_000
+#: Package handlers answering a platform frame get the same budget as gateway.request.
+PLATFORM_TIMEOUT_S = 5.0
 ASSET_PREFIX = "/extension-assets/"
 #: Marks a generation segment that addresses the package data ``public/`` directory.
 DATA_GENERATION_SUFFIX = ".data"
@@ -38,6 +49,7 @@ ASSET_SOURCES = frozenset({"package", "data"})
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~\da-z-]+$", re.IGNORECASE | re.ASCII)
 FORBIDDEN = frozenset({"__proto__", "prototype", "constructor"})
+logger = logging.getLogger(__name__)
 _CALLER: ContextVar[tuple[str, str] | None] = ContextVar("gateway_browser_caller", default=None)
 
 
@@ -138,6 +150,10 @@ class BrowserBridge:
 
     def validate_package(self, package) -> None:
         """Validate browser declarations before publication."""
+        splash = self.splash_declaration(package)
+        if splash is not None and splash["declared_max_duration_ms"] > MAX_SPLASH_MS:
+            logger.warning("[GatewayExtensions] %s declares a %d ms splash; it runs for at most %d ms",
+                           package.package_id, splash["declared_max_duration_ms"], MAX_SPLASH_MS)
         if not package.client:
             return
         if set(package.client) != {"requestBindings"}:
@@ -186,6 +202,111 @@ class BrowserBridge:
         if any(not isinstance(item, dict) or item.get("type") != "web.slot.contribution"
                or item.get("slot") not in SLOTS for item in items):
             raise ValueError("unsupported local application contribution")
+
+    @staticmethod
+    def splash_declaration(package) -> dict[str, Any] | None:
+        """Read the package's ``application.splash`` declaration (S_09 section 1)."""
+        ui = package.ui if isinstance(package.ui, Mapping) else {}
+        items = ui.get("items", [])
+        declaration = None
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, Mapping):
+                continue
+            if "splash" in item and item.get("slot") != SPLASH_SLOT:
+                raise ValueError("splash settings only belong to application.splash")
+            if item.get("type") != "web.slot.contribution" or item.get("slot") != SPLASH_SLOT:
+                continue
+            settings = item.get("splash", {})
+            if not isinstance(settings, Mapping) or set(settings) - {"skippable", "maxDurationMs"}:
+                raise ValueError("splash accepts skippable and maxDurationMs")
+            skippable = settings.get("skippable", False)
+            maximum = settings.get("maxDurationMs", MAX_SPLASH_MS)
+            if not isinstance(skippable, bool):
+                raise ValueError("splash.skippable must be a boolean")
+            if type(maximum) is not int or maximum < MIN_SPLASH_MS:
+                raise ValueError(f"splash.maxDurationMs must be an integer of at least {MIN_SPLASH_MS}")
+            declaration = {"skippable": skippable, "max_duration_ms": min(maximum, MAX_SPLASH_MS),
+                           "declared_max_duration_ms": maximum}
+        return declaration
+
+    def splash_providers(self) -> list[dict[str, Any]]:
+        """Active splash providers in publication order."""
+        providers = []
+        for package in self.application_packages():
+            declaration = self.splash_declaration(package)
+            if declaration is not None:
+                providers.append({"package_id": package.package_id, "skippable": declaration["skippable"],
+                                  "max_duration_ms": declaration["max_duration_ms"]})
+        return providers
+
+    @staticmethod
+    def is_platform_frame(method: str, params: Any) -> bool:
+        """Whether a frame is a host lifecycle frame that bypasses request policy."""
+        if method == SPLASH_PROVIDERS_METHOD:
+            return True
+        if method != WEBUI_DISPATCH_METHOD or not isinstance(params, Mapping):
+            return False
+        target = params.get("target")
+        return (isinstance(target, Mapping) and target.get("scope") == "application"
+                and target.get("slot_id") in PLATFORM_SLOTS
+                and params.get("event") in (WebUIEvent.READY.value, WebUIEvent.CLOSED.value))
+
+    async def platform_frame(self, request, context: SessionContext) -> dict[str, Any]:
+        """Answer one platform frame; package handlers share the request time budget."""
+        if request.method == SPLASH_PROVIDERS_METHOD:
+            return {"providers": self.splash_providers()}
+        try:
+            receipt = await asyncio.wait_for(self._lifecycle(request, context), timeout=PLATFORM_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            receipt = UiActionOutput(accepted=False, status="timeout")
+        response = {"accepted": receipt.accepted, "status": receipt.status}
+        if receipt.code:
+            response["code"] = receipt.code
+        return response
+
+    async def _lifecycle(self, request, context: SessionContext) -> UiActionOutput:
+        params = request.params
+        target = params["target"]
+        event_name = params.get("event")
+        package_id = target.get("package_id", "")
+        invalid = UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
+        if target.get("slot_id") != SPLASH_SLOT:
+            if event_name != WebUIEvent.READY.value:
+                return invalid
+            return await self.dispatch(request, context) or UiActionOutput(accepted=False, status="unhandled")
+        if not isinstance(package_id, str) or not package_id:
+            return invalid
+        instance_key = target.get("instance_key", "")
+        if not isinstance(instance_key, str) or (instance_key and not IDENTIFIER.fullmatch(instance_key)):
+            return invalid
+        scoped = RenderTarget(session_id="", slot_id=SPLASH_SLOT, package_id=package_id, instance_key=instance_key,
+                              scope="application", connection_id=request.connection_id)
+        payload = params.get("payload", {})
+        if event_name == WebUIEvent.READY.value:
+            launch_id = payload.get("launch_id") if isinstance(payload, Mapping) else None
+            if (not isinstance(payload, Mapping) or set(payload) != SPLASH_READY_FIELDS
+                    or not isinstance(launch_id, str) or not 0 < len(launch_id) <= 128
+                    or not isinstance(payload["first_visit"], bool) or not isinstance(payload["reduced_motion"], bool)):
+                return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+            receipt = await self.dispatch(request, context)
+            if receipt is None or not receipt.accepted:
+                return UiActionOutput(accepted=False, status="unhandled")
+            record = self.runtime.registry.get(scoped)
+            return UiActionOutput(accepted=True, status="playing" if record and record.root is not None else "skipped")
+        reason = payload.get("reason") if isinstance(payload, Mapping) else None
+        revision = payload.get("revision") if isinstance(payload, Mapping) else None
+        if set(payload) != {"reason", "revision"} or reason not in CLOSE_REASONS or type(revision) is not int:
+            return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+        record = self.runtime.registry.get(scoped)
+        if (self._active_application_package(package_id) is None or record is None or record.root is None
+                or record.revision != revision):
+            return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
+        # Drop first so a repeated or concurrent close is answered as inactive.
+        self.runtime.registry.drop_instance(scoped)
+        await self.runtime.bus.trigger(Event(WebUIEvent.CLOSED.value, UiActionInput(
+            WebUIEvent.CLOSED.value, scoped, MappingProxyType({"reason": reason}), request.request_context,
+        )), context)
+        return UiActionOutput(accepted=True, status="closed")
 
     def published(self, package_id: str, generation: str) -> None:
         if self._active_application_package(package_id) is not None:
@@ -309,7 +430,7 @@ class BrowserBridge:
             if not isinstance(event.event_input, UiActionInput):
                 raise TypeError("UI events require UiActionInput")
             return UiActionOutput(accepted=False, status="unhandled")
-        for event_name in sorted(UPSTREAM_EVENTS):
+        for event_name in sorted(UPSTREAM_EVENTS | {WebUIEvent.CLOSED.value}):
             bus.register_event_type(event_name, match_pattern_subset, core)
 
     def build_request_dispatch_handler(self):

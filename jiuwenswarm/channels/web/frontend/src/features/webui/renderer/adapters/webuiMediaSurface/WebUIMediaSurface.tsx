@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { WebUIAdapterProps } from '../../types.ts';
-import { useMediaSurfacePolicy } from './hostPolicy.ts';
+import { useMediaSurfacePolicy, type MediaSurfaceEvent } from './hostPolicy.ts';
 import {
   createSurfaceToken,
   readSurfaceMessage,
@@ -47,6 +47,8 @@ const getVisible = (): boolean => document.visibilityState !== 'hidden';
 const serverFalse = (): boolean => false;
 const serverTrue = (): boolean => true;
 
+type Emit = (event: MediaSurfaceEvent) => void;
+
 function Poster({ src, style }: { src?: string; style: CSSProperties }) {
   const [failed, setFailed] = useState(false);
   if (!src || failed) return null;
@@ -54,11 +56,11 @@ function Poster({ src, style }: { src?: string; style: CSSProperties }) {
     draggable={false} style={style} onError={() => setFailed(true)} />;
 }
 
-function SurfaceImage({ src, poster, style }: { src: string; poster?: string; style: CSSProperties }) {
+function SurfaceImage({ src, poster, style, emit }: { src: string; poster?: string; style: CSSProperties; emit: Emit }) {
   const [failed, setFailed] = useState(false);
   if (failed) return <Poster src={poster} style={style} />;
   return <img className="webui-media-surface__media" data-testid="webui-media-surface-image" src={src} alt=""
-    draggable={false} style={style} onError={() => setFailed(true)} />;
+    draggable={false} style={style} onLoad={() => emit('ready')} onError={() => { emit('error'); setFailed(true); }} />;
 }
 
 interface SurfaceVideoProps {
@@ -69,11 +71,13 @@ interface SurfaceVideoProps {
   muted: boolean;
   autoPlay: boolean;
   visible: boolean;
+  emit: Emit;
 }
 
-function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible }: SurfaceVideoProps) {
+function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible, emit }: SurfaceVideoProps) {
   const video = useRef<HTMLVideoElement>(null);
   const [failed, setFailed] = useState(false);
+  const started = useRef(false);
 
   useEffect(() => {
     // React does not reflect `muted` reliably; autoplay policies read the property.
@@ -87,10 +91,16 @@ function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible }: Su
       element.pause();
       return;
     }
-    try {
+    const retryMuted = () => {
+      // Autoplay with sound may be refused; playing silently still shows the media.
+      if (element.muted) return;
+      element.muted = true;
       void element.play()?.catch(() => undefined);
+    };
+    try {
+      void element.play()?.catch(retryMuted);
     } catch {
-      // A rejected or unsupported play() leaves the poster frame in place.
+      // An unsupported play() leaves the poster frame in place.
     }
   }, [autoPlay, visible, failed]);
 
@@ -98,7 +108,9 @@ function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible }: Su
   return <video ref={video} className="webui-media-surface__media" data-testid="webui-media-surface-video"
     src={src} poster={poster} style={style} loop={loop} muted={muted} autoPlay={autoPlay && visible} playsInline
     preload="auto" controls={false} disablePictureInPicture disableRemotePlayback tabIndex={-1}
-    onError={() => setFailed(true)} />;
+    onPlaying={() => { if (!started.current) { started.current = true; emit('ready'); } }}
+    onTimeUpdate={() => emit('heartbeat')} onEnded={() => emit('complete')}
+    onError={() => { emit('error'); setFailed(true); }} />;
 }
 
 interface SurfaceFrameProps {
@@ -108,9 +120,10 @@ interface SurfaceFrameProps {
   posterStyle: CSSProperties;
   context: SurfaceContext;
   readyTimeoutMs: number;
+  emit: Emit;
 }
 
-function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs }: SurfaceFrameProps) {
+function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs, emit }: SurfaceFrameProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const token = useMemo(() => createSurfaceToken(), [src]);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'failed'>('loading');
@@ -127,6 +140,7 @@ function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs
       const frameWindow = frame.current?.contentWindow;
       if (!frameWindow || event.source !== frameWindow) return;
       const surfaceEvent = readSurfaceMessage(event.data, token);
+      if (surfaceEvent) emit(surfaceEvent);
       if (surfaceEvent === 'ready') {
         setPhase((current) => (current === 'failed' ? current : 'ready'));
         post('start');
@@ -174,6 +188,10 @@ export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, serverFalse);
   const visible = useSyncExternalStore(subscribeVisibility, getVisible, serverTrue);
   const { onPresence } = policy;
+  // Hosts read the latest callback without re-creating the media elements.
+  const eventCallback = useRef(policy.onSurfaceEvent);
+  eventCallback.current = policy.onSurfaceEvent;
+  const emit = useMemo<Emit>(() => (event) => eventCallback.current?.(event), []);
 
   useEffect(() => {
     onPresence?.(true);
@@ -184,19 +202,20 @@ export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
   // Extend blurred media past the edges so the blur does not show a transparent rim.
   const layerStyle: CSSProperties | undefined = p.blur > 0
     ? { inset: `${-2 * p.blur}px`, filter: `blur(${p.blur}px)` } : undefined;
-  const posterOnly = p.kind !== 'image' && reducedMotion && !!p.poster;
+  const posterOnly = policy.honorReducedMotion && p.kind !== 'image' && reducedMotion && !!p.poster;
 
   let content;
   if (p.kind === 'image') {
-    content = <SurfaceImage key={p.src} src={p.src} poster={p.poster} style={mediaStyle} />;
+    content = <SurfaceImage key={p.src} src={p.src} poster={p.poster} style={mediaStyle} emit={emit} />;
   } else if (posterOnly) {
     content = <Poster key={p.poster} src={p.poster} style={mediaStyle} />;
   } else if (p.kind === 'video') {
-    content = <SurfaceVideo key={p.src} src={p.src} poster={p.poster} style={mediaStyle} loop={p.loop}
-      muted={policy.forceMuted || p.muted} autoPlay={!reducedMotion} visible={visible} />;
+    content = <SurfaceVideo key={p.src} src={p.src} poster={p.poster} style={mediaStyle} loop={policy.allowLoop && p.loop}
+      muted={policy.forceMuted || p.muted} autoPlay={!(policy.honorReducedMotion && reducedMotion)} visible={visible}
+      emit={emit} />;
   } else {
     content = <SurfaceFrame key={p.src} src={p.src} title={p.title} poster={p.poster} posterStyle={mediaStyle}
-      readyTimeoutMs={policy.readyTimeoutMs}
+      readyTimeoutMs={policy.readyTimeoutMs} emit={emit}
       context={{ role: policy.role, visible, reducedMotion, locale: i18n.language }} />;
   }
 

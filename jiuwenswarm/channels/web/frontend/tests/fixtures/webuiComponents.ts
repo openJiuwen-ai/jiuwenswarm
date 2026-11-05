@@ -26,6 +26,8 @@ export { WebUIEntryHost } from '../../src/features/webui/react/WebUIEntryHost.ts
 export { WebUIBackgroundHost } from '../../src/features/webui/react/WebUIBackgroundHost.tsx';
 export { WebUIAppearanceHost } from '../../src/features/webui/react/WebUIAppearanceHost.tsx';
 export * as appearanceModule from '../../src/features/webui/appearance/index.ts';
+export * as splashModule from '../../src/features/webui/splash/index.ts';
+export { WebUISplashGate } from '../../src/features/webui/react/WebUISplashGate.tsx';
 export { MediaSurfacePolicyContext } from '../../src/features/webui/renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
 export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';

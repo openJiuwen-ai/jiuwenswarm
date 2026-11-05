@@ -8,7 +8,7 @@
 Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分开判定：
 
 - **应用级 UI 包**：至少一项 `web.slot.contribution` 指向 Gateway 应用级槽位（`application.entry`、
-  `application.sidebar.footer`、`application.background`）的活动包。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
+  `application.sidebar.footer`、`application.background`、`application.splash`）的活动包。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
   及本包素材，并按激活代次拦截迟到调用。不需要声明 `client`。
 - **客户端能力包**：声明 `client` 的应用级 UI 包。安装并激活后在上述能力之外直接具备请求绑定、
   `client.declarations` 与 `ops.client.*`（浏览器存储写删与页面刷新）；无需额外权限声明、Gateway 授权配置或确认，
@@ -21,7 +21,7 @@ Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分�
 
 ## 请求分派
 
-所有主 WebSocket 请求先触发 `gateway.request`，包括 `webui.dispatch`。USER 插件先处理请求策略：
+除显示型槽位的生命周期帧外（[S_09 第 3 节](S_09_startup-splash.md)：`webui.splash.providers` 以及 `application.background`、`application.splash` 的 `ui.ready` / `ui.closed`），所有主 WebSocket 请求先触发 `gateway.request`，包括 `webui.dispatch`。USER 插件先处理请求策略：
 返回 `deny` 或 `consume` 时按原路由契约应答；调用 `next_handler(event)` 时，客户端能力包的
 entry/footer 交互进入 BUILTIN 浏览器分派器，再触发对应 `ui.*` 事件并返回通用回执。
 不属于本 Gateway 应用级 UI 包的目标继续已有请求链。

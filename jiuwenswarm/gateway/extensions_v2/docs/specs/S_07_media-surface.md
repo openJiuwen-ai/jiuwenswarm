@@ -18,6 +18,7 @@
 | 槽位 | 范围 | 容量 | 根节点 | 宿主位置 |
 | --- | --- | --- | --- | --- |
 | `application.background` | `application` | `single` | 只接受 `MediaSurface` | 应用根部的全窗口底层，位于全部界面之下 |
+| `application.splash` | `application` | `single` | 只接受 `MediaSurface` | 启动门控的开场层，位于全部界面之上；时机与时限见 [S_09](S_09_startup-splash.md) |
 
 - 槽位由 Gateway 应用级 UI 包贡献，宿主挂载后按连接发送 `ui.ready`（S_06）。
 - 同一连接只显示版本最新的一个实例。
@@ -36,6 +37,9 @@
 | 减少动态 | 用户开启减少动态时：有 `poster` 的视频与 HTML 只显示 `poster`；没有 `poster` 的视频不自动播放，HTML 照常加载并在上下文中收到 `reducedMotion: true` |
 | 视觉参数 | `fit`、`position`、`dim`、`blur`、`opacity` 由宿主映射为样式 |
 
+开场槽位中：遵循插件的 `muted`（有声自动播放被拒绝时静音重试），视频不循环，不做减少动态替换；
+媒体就绪、心跳、完成与错误交给启动门控计时（[S_09](S_09_startup-splash.md) 第 5 节），容器不接收输入，只有跳过提示可按住。
+
 ## 3. 消息协议（HTML 内容）
 
 ### 3.1 令牌
@@ -53,8 +57,8 @@
 | --- | --- | --- |
 | `ready` | 内容已可显示 | 移除 `poster` 遮挡；再次发送 `start` |
 | `error` | 内容无法显示，可带 `detail: {code, message}` | 卸载 iframe，显示 `poster` |
-| `heartbeat` | 播放仍在进行 | 忽略（开场槽位使用） |
-| `complete` | 内容播放完毕 | 忽略（开场槽位使用） |
+| `heartbeat` | 播放仍在进行 | 忽略；开场槽位中重置心跳时限 |
+| `complete` | 内容播放完毕 | 忽略；开场槽位中按 `complete` 结束 |
 
 `ready` 表示内容已可显示。宿主不保证就绪前的页面已获得动画帧（例如应用冷启动时），
 内容页应在自身资源就绪时发送 `ready`，不以首个动画帧为前提；超过就绪时限仍会回退到 `poster`。
@@ -78,7 +82,7 @@
 
 ## 4. 不变量
 
-1. `MediaSurface` 只能作为树根，只能用于第 1 节列出的槽位；`application.background` 不接受其他根组件。
+1. `MediaSurface` 只能作为树根，只能用于第 1 节列出的槽位；这两个槽位不接受其他根组件。
 2. `src` 与 `poster` 只能是以 `/extension-assets/` 开头的站内路径，因此内容始终来自活动包素材或数据素材，
    并带有 S_06 规定的沙箱响应头。
 3. HTML 内容固定在 `sandbox="allow-scripts"` 中运行，不含 `allow-same-origin`，插件不能覆盖。

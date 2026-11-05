@@ -5,6 +5,7 @@
 
 import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 import { applyAppearance } from '../appearance/applyAppearance.ts';
+import { APPEARANCE_PROVIDER_KEY, writeItem } from '../splash/launch.ts';
 import type { WebUIAppearanceFrame } from '../appearance/appearance.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 import { useOptionalWebUIAppContext } from './WebUIProvider.tsx';
@@ -26,6 +27,11 @@ export function WebUIAppearanceHost({ runtime: runtimeOverride }: WebUIAppearanc
     noAppearance,
   );
   const appearance = frame?.appearance ?? null;
+
+  useEffect(() => {
+    // The current appearance provider plays its splash first on the next start (Gateway S_09).
+    if (frame) writeItem(APPEARANCE_PROVIDER_KEY, frame.packageId);
+  }, [frame]);
 
   useLayoutEffect(() => {
     applyAppearance(document, appearance);

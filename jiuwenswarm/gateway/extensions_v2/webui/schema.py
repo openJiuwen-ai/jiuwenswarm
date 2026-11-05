@@ -41,10 +41,11 @@ _SLOT_ROOT_COMPONENTS: Mapping[str, tuple[str, ...]] = {
     "application.menu.main": ("Iframe",),
     "task.function.main": ("Iframe",),
     "application.background": ("MediaSurface",),
+    "application.splash": ("MediaSurface",),
 }
 _ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe", "MediaSurface"})
 # Slots whose root must be one of their dedicated root components.
-_STRICT_ROOT_SLOTS: frozenset[str] = frozenset({"conversation.panel.right", "application.background"})
+_STRICT_ROOT_SLOTS: frozenset[str] = frozenset({"conversation.panel.right", "application.background", "application.splash"})
 
 
 def _fail(message: str, code: str = CODE_SCHEMA_ERROR) -> ValidationReport:

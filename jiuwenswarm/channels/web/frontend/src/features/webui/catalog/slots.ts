@@ -14,6 +14,8 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'application.sidebar.footer', display: 'single', scope: 'application' },
   // Gateway-only full-window layer below the workspace.
   { id: 'application.background', display: 'single', scope: 'application', rootComponents: ['MediaSurface'], strictRoot: true },
+  // Gateway-only startup layer above the workspace, played by the splash gate.
+  { id: 'application.splash', display: 'single', scope: 'application', rootComponents: ['MediaSurface'], strictRoot: true },
   { id: 'conversation.session.content.after', display: 'list' },
   { id: 'conversation.turn.footer.actions', display: 'list' },
   { id: 'conversation.header.title.after', display: 'list' },

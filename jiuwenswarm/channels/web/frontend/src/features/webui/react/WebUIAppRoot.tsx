@@ -12,6 +12,8 @@ import { createComponentRendererRegistry } from '../renderer/adapters/componentR
 import { WebUIAppearanceHost } from './WebUIAppearanceHost.tsx';
 import { WebUIBackgroundHost } from './WebUIBackgroundHost.tsx';
 import { WebUIEntryHost } from './WebUIEntryHost.tsx';
+import { WebUISplashGate } from './WebUISplashGate.tsx';
+import { fetchSplashHint, resolveLaunch } from '../splash/launch.ts';
 import { WebUIProvider } from './WebUIProvider.tsx';
 import { browserClientCapabilities } from '../client/browserClient.ts';
 
@@ -51,15 +53,20 @@ export function WebUIAppRoot({ children }: WebUIAppRootProps) {
     };
   }, [app]);
 
+  const launch = useMemo(() => resolveLaunch(window.jiuwenDesktop?.launchId), []);
+  const requestProviders = useMemo(() => () => webClient.request('webui.splash.providers', {}), []);
+
   return (
     <WebUIProvider runtime={app.runtime} registry={app.registry}>
-      <WebUIBackgroundHost />
-      <WebUIAppearanceHost />
-      <WebUIEntryHost notice={error ? <div role="alert" className="webui-entry-notice" data-testid="webui-client-error">
-        {t(error === 'CONFIGURATION_ERROR' ? 'webui.clientConfigurationError' : 'webui.clientOperationError')}
-      </div> : undefined}>
-        {children}
-      </WebUIEntryHost>
+      <WebUISplashGate launch={launch} hint={fetchSplashHint} requestProviders={requestProviders}>
+        <WebUIBackgroundHost />
+        <WebUIAppearanceHost />
+        <WebUIEntryHost notice={error ? <div role="alert" className="webui-entry-notice" data-testid="webui-client-error">
+          {t(error === 'CONFIGURATION_ERROR' ? 'webui.clientConfigurationError' : 'webui.clientOperationError')}
+        </div> : undefined}>
+          {children}
+        </WebUIEntryHost>
+      </WebUISplashGate>
     </WebUIProvider>
   );
 }
