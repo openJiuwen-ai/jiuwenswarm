@@ -59,6 +59,7 @@ def main() -> None:
         metavar="<name>",
         help="Start a named instance from instances.yaml.",
     )
+    parser.add_argument("--keep-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     # Route SIGTERM through the same shutdown path as Ctrl-C.
@@ -118,7 +119,16 @@ def main() -> None:
         # SIGTERM still tear everything down through this supervisor's handlers.
         _popen_kwargs["start_new_session"] = True
 
-    raise SystemExit(supervise({"agentserver": agent_cmd, "gateway": gateway_cmd}, _popen_kwargs))
+    from jiuwenswarm.common.process_supervision import application_shutdown
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    exit_code = supervise({"agentserver": agent_cmd, "gateway": gateway_cmd}, _popen_kwargs)
+    # Only a completed Front teardown permits final Worker shutdown.
+    # Internal Front/Gateway respawns never reach this application exit.
+    with application_shutdown():
+        if not args.keep_worker and not shutdown_application_worker():
+            raise SystemExit(1)
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

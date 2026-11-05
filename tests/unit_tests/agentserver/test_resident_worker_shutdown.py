@@ -11,7 +11,6 @@ import uuid
 
 import pytest
 
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.supervisor.worker_process import request_resident_worker_shutdown
 
@@ -28,26 +27,27 @@ async def test_request_shutdown_returns_none_without_worker() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_shutdown_sends_shutdown_and_returns_pid() -> None:
+async def test_request_shutdown_sends_shutdown_and_returns_pid(monkeypatch) -> None:
+    from pathlib import Path
+    from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+    from jiuwenswarm.server.ipc.client import connect_with_retry
+
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     path = _socket_path()
-    server = IpcServer(path)
-    await server.start()
-
-    async def _serve() -> dict:
-        conn = await server.accept()
-        try:
-            await conn.send({"kind": KIND_HELLO, "protocol": 1, "pid": 4321, "generation": 1})
-            return await conn.recv()
-        finally:
-            await conn.close()
-
-    serve_task = asyncio.create_task(_serve())
+    worker = WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
+    connection = None
     try:
-        assert await request_resident_worker_shutdown(path) == 4321
-        received = await asyncio.wait_for(serve_task, 2)
-        assert received["kind"] == KIND_SHUTDOWN
+        await worker.spawn()
+        connection = await connect_with_retry(path, timeout=15)
+        hello = await connection.recv()
+        await connection.close()
+        connection = None
+        assert await request_resident_worker_shutdown(path) == hello["pid"]
+        assert await worker.wait(timeout=1) == 0
     finally:
-        await server.close()
+        if connection is not None:
+            await connection.close()
+        await worker.stop(timeout=2)
 
 
 @pytest.mark.asyncio

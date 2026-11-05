@@ -4161,6 +4161,69 @@ async def test_agent_server_stop_replaces_runtime_after_closed_cleanup_error(
 
 
 @pytest.mark.asyncio
+async def test_agent_server_stop_joins_startup_before_closing_preparation(
+    monkeypatch,
+) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = AgentWebSocketServer()
+    runtime = server.get_runtime()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+
+    async def start_runtime() -> None:
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            order.append("startup_finished")
+
+    runtime.start = AsyncMock(side_effect=start_runtime)
+    server._heartbeat_runtime.start = AsyncMock()
+    server._on_runtime_ready = MagicMock()
+    server._bootstrap_internal_jiuwenbox = AsyncMock()
+    await server.start()
+    warmup = server._checkpointer_warmup_task
+    await asyncio.wait_for(entered.wait(), 1)
+    preparation = server._preparation_registry
+    close_preparation = preparation.close
+
+    async def close_and_release() -> None:
+        await close_preparation()
+        order.append("preparation_closed")
+        release.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(preparation, "close", close_and_release)
+    await server.stop()
+
+    assert order == ["startup_finished", "preparation_closed"]
+    assert warmup.cancelled()
+    assert server._checkpointer_warmup_task is None
+    server._on_runtime_ready.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_server_stop_retrieves_completed_startup_failure(caplog) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = AgentWebSocketServer()
+
+    async def fail_startup() -> None:
+        raise RuntimeError("startup failed before stop")
+
+    warmup = asyncio.create_task(fail_startup(), name="runtime-start")
+    server._checkpointer_warmup_task = warmup
+    await asyncio.wait({warmup})
+    with caplog.at_level(logging.WARNING):
+        await server.stop()
+
+    assert "checkpointer warmup stop failed: startup failed before stop" in caplog.text
+    assert server._checkpointer_warmup_task is None
+
+
+@pytest.mark.asyncio
 async def test_agent_server_start_restores_remote_service_after_stop(
     monkeypatch,
 ) -> None:

@@ -52,6 +52,7 @@ OPENJIUWEN_DATA_EXCLUDES = [
 
 def collect_resources_data_files(source_dir, target_dir):
     data_files = []
+    source_abs = os.path.normcase(os.path.abspath(source_dir))
     excluded_dirs = {
         os.path.normcase(os.path.abspath(os.path.join(source_dir, rel_path)))
         for rel_path in EXCLUDED_RESOURCE_DIRS
@@ -61,6 +62,7 @@ def collect_resources_data_files(source_dir, target_dir):
         root_abs = os.path.normcase(os.path.abspath(root))
         dirs[:] = [
             dirname for dirname in dirs
+            if dirname != "__pycache__"
             if os.path.normcase(os.path.abspath(os.path.join(root, dirname))) not in excluded_dirs
         ]
         if any(root_abs == excluded or root_abs.startswith(excluded + os.sep) for excluded in excluded_dirs):
@@ -73,6 +75,8 @@ def collect_resources_data_files(source_dir, target_dir):
             rel_dir = ""
         dest_dir = os.path.normpath(os.path.join(target_dir, rel_dir))
         for filename in files:
+            if root_abs == source_abs and (filename == ".env" or filename.endswith(".lock")):
+                continue
             data_files.append((os.path.join(root, filename), dest_dir))
 
     return data_files
@@ -122,19 +126,11 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-# A controlled package embeds its immutable Runtime build identity. Computing
-# it belongs to the build, so frozen Front/Worker startup only reads this small
-# payload. Source execution still validates dirty code and dependency locks.
-_identity_helper = runpy.run_path(os.path.join(
-    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
-_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
-_build_recipe = hashlib.sha256()
-_build_recipe.update(_source_identity.encode())
-for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
-    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+# Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
-_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
+_identity_helper = runpy.run_path(os.path.join(project_root, "jiuwenswarm", "common", "worker_build_identity.py"))
+_identity_helper["write_build_identity"](_identity_file, Path(project_root))
 datas.append((str(_identity_file), "jiuwenswarm"))
 _build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
 build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
@@ -187,6 +183,19 @@ datas += collect_data_files(
     include_py_files=False,
     includes=["cacert.pem"],
 )
+# Runtime consumers read these sidecars directly from their module directories.
+for _relative in (
+    "channels/process_cli/protocol/schema.json",
+    "agents/harness/common/auto_harness/issue_fix/code_rule.txt",
+    "server/runtime/agent_adapter/browser_runtime_network_guard.js",
+):
+    datas.append((
+        str(Path(project_root, "jiuwenswarm", _relative)),
+        str(Path("jiuwenswarm", _relative).parent),
+    ))
+datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", include_py_files=False)
+datas += collect_data_files("agent_gateway", include_py_files=False)
+datas += copy_metadata("agent-gateway", recursive=True)
 datas += copy_metadata("fastmcp", recursive=True)
 datas += copy_metadata("mcp", recursive=True)
 datas += copy_metadata("openjiuwen", recursive=True)
@@ -217,6 +226,8 @@ symphony_submodules = collect_submodules("jiuwenswarm.runtime.symphony")
 gateway_adapter_submodules = collect_submodules(
     "jiuwenswarm.server.runtime.gateway_adapter"
 )
+# The standalone Gateway also loads transport implementations dynamically.
+gateway_submodules = collect_submodules("agent_gateway")
 # The Runtime Worker is launched by module name through the frozen entrypoint's
 # runpy dispatcher. PyInstaller cannot infer this subprocess entrypoint from
 # the string passed to ``-m``, so bundle the package and all of its modules.
@@ -285,6 +296,7 @@ hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_s
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports
+hiddenimports += gateway_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
