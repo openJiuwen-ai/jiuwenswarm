@@ -55,6 +55,7 @@ class IpcConnection:
         self._send_seconds = self._recv_seconds = self._write_lock_seconds = 0.0
         self._sending_since = self._receiving_since = 0.0
         self._write_waiters: dict[object, float] = {}
+        self._stats_lock = threading.Lock()
         self._heartbeat_responder: Callable[[dict[str, Any]], None] | None = None
 
     def set_heartbeat_responder(
@@ -71,37 +72,43 @@ class IpcConnection:
     async def _locked_write(self):
         started = time.monotonic()
         marker = object()
-        self._write_waiters[marker] = started
+        with self._stats_lock:
+            self._write_waiters[marker] = started
         try:
             async with self._write_lock:
-                self._write_waiters.pop(marker)
-                self._write_lock_seconds = time.monotonic() - started
-                if self._closed:
-                    raise ConnectionError("ipc connection is closed")
-                self._sending_since = time.monotonic()
+                with self._stats_lock:
+                    self._write_waiters.pop(marker)
+                    self._write_lock_seconds = time.monotonic() - started
+                    if self._closed:
+                        raise ConnectionError("ipc connection is closed")
+                    self._sending_since = time.monotonic()
                 try:
                     yield
                 finally:
-                    self._send_seconds = time.monotonic() - self._sending_since
-                    self._sending_since = 0.0
+                    with self._stats_lock:
+                        self._send_seconds = time.monotonic() - self._sending_since
+                        self._sending_since = 0.0
         finally:
-            self._write_waiters.pop(marker, None)
+            with self._stats_lock:
+                self._write_waiters.pop(marker, None)
 
     def diagnostics(self) -> dict[str, Any]:
-        now = time.monotonic()
-        return {
-            "last_tx_age": now - self._last_tx if self._last_tx else None,
-            "last_rx_age": now - self._last_rx if self._last_rx else None,
-            "send_seconds": now - self._sending_since
-            if self._sending_since
-            else self._send_seconds,
-            "recv_seconds": now - self._receiving_since
-            if self._receiving_since
-            else self._recv_seconds,
-            "write_lock_seconds": now - min(self._write_waiters.values())
-            if self._write_waiters
-            else self._write_lock_seconds,
-        }
+        # Socket writers run on the I/O thread, while Supervisor diagnostics
+        # run on its caller loop. Snapshot under the same lock as mutations.
+        with self._stats_lock:
+            now = time.monotonic()
+            waiters = tuple(self._write_waiters.values())
+            return {
+                "last_tx_age": now - self._last_tx if self._last_tx else None,
+                "last_rx_age": now - self._last_rx if self._last_rx else None,
+                "send_seconds": now - self._sending_since
+                if self._sending_since
+                else self._send_seconds,
+                "recv_seconds": now - self._receiving_since
+                if self._receiving_since
+                else self._recv_seconds,
+                "write_lock_seconds": now - min(waiters) if waiters else self._write_lock_seconds,
+            }
 
     async def send(self, message: dict[str, Any]) -> None:
         raise NotImplementedError
@@ -197,6 +204,13 @@ class StreamConnection(IpcConnection):
                 size = self._last_frame_bytes
                 if (len(self._pending) >= _STREAM_PENDING_MESSAGES
                         or self._pending_bytes + size > _STREAM_PENDING_BYTES):
+                    logger.warning(
+                        "[IPC] business receive backlog exceeded; transport=stream "
+                        "pending_messages=%s pending_bytes=%s incoming_bytes=%s "
+                        "limit_messages=%s limit_bytes=%s",
+                        len(self._pending), self._pending_bytes, size,
+                        _STREAM_PENDING_MESSAGES, _STREAM_PENDING_BYTES,
+                    )
                     raise IpcError("ipc business receive backlog exceeded")
                 self._pending.append((message, size))
                 self._pending_bytes += size

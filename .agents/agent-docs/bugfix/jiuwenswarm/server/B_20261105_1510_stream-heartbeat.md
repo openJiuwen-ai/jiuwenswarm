@@ -50,10 +50,28 @@ Issue #6093 的视频合成案例暴露业务循环同步等待时，通信心�
 
 测试替换 Agent Runtime 构造为仓库的确定性故障注入 fixture，保留生产 Worker service/dispatcher、Supervisor、真实子进程与操作系统 IPC；不代表真实模型或桌面视频合成验收。测试数据与原始日志位于工作区之外的 `.codex-temp/stream-heartbeat-20261105`，不提交运行日志。
 
+### PR !9604 评审修订
+
+基于已发布提交 `7e996297246df3e5e6632048c779cba14afd3bcd` 逐项核对评审意见和远端 UT 报告后，修复以下问题：
+
+- I/O 线程修改写锁等待者时，业务线程直接遍历同一字典可能抛出异常。等待者增删与诊断读取改为共用线程锁，且不在锁内等待 I/O；Supervisor 对指标采集、快照序列化及输出增加尽力而为保护，诊断失败不能终止 watchdog 或跳过转发失败处理。
+- 原 POSIX-only slow 测试仍期待 60 秒业务冻结触发 30 秒传输超时，与新契约冲突。改为真正屏蔽 pong、保持业务循环响应的故障注入，在 resident 和 front_loopback 两种传输验证 30 秒超时仍生效；60 秒业务冻结存活用例也改为跨平台执行。
+- 新异步用例增加显式 asyncio 标记，以支持 strict 模式。评审中“仓库默认非 auto、核心用例已被跳过”的判断不成立：`pytest.ini` 已指定 `--asyncio-mode=auto`，原提交的 Linux CI 中 13 个新 socket 用例全部通过，包含 Unix domain socket；本地跳过项是平台不适用的用例。
+- 保持 256 条/64 MiB 的有界积压失败策略，补充单独告警和计数，区分队列溢出与 EOF。未采用暂停整个 transport 读取的建议，因为同一连接上的心跳也会随之停止。
+- 远端 CI 的全局 60 秒 pytest-timeout 会终止真实 60/180 秒用例；为相应用例设置 120/150/300 秒测试预算并注册标记。生产 30/180 秒阈值保持不变。
+
+修订后的 Windows 本地验证使用与 CI 相同的 `--timeout=60`，由用例级标记覆盖长场景预算：
+
+- 14 个定向文件：293 passed、12 skipped、15 deselected，包含并发写入诊断及 IPC/Gateway/序列化故障下的恢复回归。
+- 显式 `asyncio_mode=strict` 的两个心跳/存活文件：32 passed、6 skipped。
+- 真实进程场景：5 passed。两种传输真正缺失 pong 时约 30.1～35.1 秒触发 30 秒传输超时；60 秒业务阻塞存活和 TCP 排队请求均通过；180.407 秒后清退旧 Worker，30 秒告警与重启日志都包含同一请求及阻塞函数，新 Worker 完成后续请求。计时包含 5 秒 watchdog 检查周期。
+
+原提交的远端 Linux UT 为 21716 passed、125 skipped、19 failed，其中 4 个失败涉及本次修正的旧用例和长测试预算。其余 15 个失败涉及 CUA、Web 语言配置、子代理导入及系统提示词；在干净基线 `b9820bf9342eb61cb344216bdf73b45868238f3f`、同一组固定依赖下，相关四个文件复现 13 failed、120 passed，修订版本得到相同的失败用例集合及通过数。两项子代理导入失败未在该定向运行中复现，不能据此认定它们的根因。未扩大本次修改范围。修订验证数据保存在工作区外 `.codex-temp/stream-heartbeat-review-20261105`。
+
 ## 防错模式与资料同步
 
 同步中英文日志说明和当前 IPC spec。关键回归覆盖普通业务帧不得终止心跳读取，以及首条告警必须已有实际阻塞业务上下文。记录仅保留标识与栈位置，并在消费端重新限制大小与字段。
 
 ## 遗留与后续
 
-本机为 Windows；原生 Linux/macOS 的 Unix domain socket 用例待对应平台 CI 运行，HarmonyOS 真机未验证。远端 CI 与本地测试单独报告。
+本机为 Windows；原提交的 Linux CI 已通过 13 个新 socket 用例，修订后的原生 Linux/macOS 运行仍待新一轮 CI，HarmonyOS 真机未验证。原 CI 静态检查失败且未提供可访问日志，不能由本地行为测试宣称已修复；远端 CI 与本地测试单独报告。

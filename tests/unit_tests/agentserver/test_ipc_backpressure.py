@@ -664,20 +664,22 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="Windows answers heartbeats off-loop; a stalled loop no longer "
-    "times out transport (see test_real_freeze_worker_survives_loop_stall)",
-)
-async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
-    tmp_path, monkeypatch, caplog
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+async def test_real_missing_heartbeats_triggers_transport_watchdog(
+    tmp_path, monkeypatch, caplog, transport,
 ):
+    """A genuinely silent transport still expires at the 30s deadline."""
     from websockets.asyncio.client import connect as ws_connect
 
-    async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
+    async with _worker("heartbeat-loss", tmp_path, monkeypatch) as (supervisor, process):
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
+                worker_pid = supervisor.worker_pid
+                assert worker_pid is not None
                 started = time.monotonic()
                 dispatch = asyncio.create_task(
                     supervisor.dispatch_parsed_request(
@@ -688,10 +690,10 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                 )
                 assert (
                     json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
-                    == "freezing"
+                    == "heartbeats_muted"
                 )
                 assert process.returncode is None, (
-                    "Fault injection must reach a live hung child"
+                    "Fault injection must reach a live child with missing pongs"
                 )
                 await asyncio.wait_for(dispatch, 39)
                 assert time.monotonic() - started >= 29.5
@@ -704,10 +706,6 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 stderr = process.stderr_path.read_text(encoding="utf-8")
                 assert "Timeout (0:00:25)" in stderr
-                assert (
-                    "diagnostic_worker.py" in stderr
-                    and "dispatch_parsed_request" in stderr
-                )
                 dump = supervisor._last_dump_path.read_text(encoding="utf-8")
                 assert "ASYNCIO TASKS" in dump and "THREAD STACKS" in dump
                 snapshot = json.loads(dump.splitlines()[0])
@@ -718,8 +716,9 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                 (tmp_path / "acceptance.json").write_text(
                     json.dumps(
                         {
-                            "case": "live_stalled_worker",
-                            "pid": supervisor.worker_pid,
+                            "case": "missing_transport_heartbeats",
+                            "transport": transport,
+                            "pid": worker_pid,
                             "worker_exit_code": process.returncode,
                             "watchdog_seconds": time.monotonic() - started,
                             "native_stack_dump": "passed",
@@ -735,6 +734,7 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
+@pytest.mark.timeout(150)
 @pytest.mark.parametrize("transport", ["resident", "front_loopback"])
 async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
     tmp_path, monkeypatch, caplog, transport,
@@ -800,9 +800,7 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.skipif(
-    os.name != "nt", reason="Windows named-pipe heartbeat fast path"
-)
+@pytest.mark.timeout(150)
 async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, caplog):
     """A blocked business loop keeps transport liveness and must not be killed.
 
@@ -914,6 +912,7 @@ async def test_real_sustained_stall_replaces_worker(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
+@pytest.mark.timeout(300)
 async def test_real_loopback_180_second_stall_logs_business_before_replacing_worker(
     tmp_path, monkeypatch, caplog,
 ):

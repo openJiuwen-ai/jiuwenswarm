@@ -443,6 +443,7 @@ async def test_business_frame_proves_the_worker_loop_ran() -> None:
         await _until(lambda: supervisor._worker_last_beat > stalled + 5.0)
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("age,restarted", [(35.0, False), (181.0, True)])
 async def test_business_stall_logs_running_business_and_retains_thresholds(age, restarted, caplog):
     supervisor = RuntimeSupervisor(Readiness())
@@ -465,3 +466,27 @@ async def test_business_stall_logs_running_business_and_retains_thresholds(age, 
         assert module._WORKER_STALL_WARN == 30 and module._WORKER_STALL_RESTART == 180
         supervisor._note_worker_beat({"kind": KIND_WIRE})
         assert supervisor._worker_stall_context == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["ipc", "gateway", "serialization"])
+async def test_diagnostic_failure_does_not_stop_stall_recovery(source, monkeypatch, caplog):
+    supervisor = RuntimeSupervisor(Readiness())
+    monkeypatch.setattr(module, "_WATCHDOG_INTERVAL", 0.01)
+    async with _running(supervisor) as (conn, _pump):
+        def broken_stats():
+            if source == "serialization":
+                return {"unserializable": object()}
+            raise ValueError("do-not-log-diagnostic-payload")
+
+        if source == "gateway":
+            supervisor._forwarder = SimpleNamespace(diagnostics=broken_stats)
+        else:
+            monkeypatch.setattr(conn, "diagnostics", broken_stats, raising=False)
+        supervisor._worker_last_beat = time.monotonic() - 181
+        await asyncio.wait_for(supervisor._watchdog(1), 1)
+        assert conn.closed
+        assert supervisor._unhealthy_reason == "worker business loop stalled"
+        assert "business loop stalled" in caplog.text
+        assert "do-not-log-diagnostic-payload" not in caplog.text
+        assert "diagnostics_error" in caplog.text or "runtime diagnostics unavailable" in caplog.text

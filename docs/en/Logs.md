@@ -154,6 +154,8 @@ Windows named pipes use a dedicated reader thread. Unix domain sockets and loopb
 
 The 30-second business-stall warning and 180-second restart log include `business`: the running task, method, request/session/channel/dispatch identifiers, and at most 16 file/line/function locations. Background child tasks inherit diagnostic request identity. Supervisor diagnostic snapshots retain the same data in `worker_stall_context` for correlation with Worker stderr. Parameters, prompts, tool results, local variables and source text are excluded. Unattributed tasks and event-loop callbacks are identified explicitly; other concurrent requests are not named as the cause. Thread isolation cannot guarantee responses while an extension holds the GIL indefinitely or the process cannot be scheduled.
 
+A socket business-buffer overflow emits a separate `[IPC] business receive backlog exceeded` warning with pending message and byte counts, incoming frame size and limits, then follows connection-failure handling. Failed Supervisor diagnostic collection records only the exception type. Snapshot collection, serialization or output failures do not interrupt health checks or recovery.
+
 ## 5. Log Configuration
 
 ### 5.1 Configuration File

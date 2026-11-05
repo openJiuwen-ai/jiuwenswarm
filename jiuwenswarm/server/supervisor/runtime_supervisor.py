@@ -821,17 +821,39 @@ class RuntimeSupervisor:
             return False
 
     def _log_diagnostics(self, reason: str) -> None:
+        """Keep observation failures out of watchdog and forwarding decisions."""
+        try:
+            self._write_diagnostics(reason)
+        except Exception as exc:  # noqa: BLE001 - diagnostics are best effort
+            try:
+                logger.warning("[Supervisor] runtime diagnostics unavailable; reason=%s error=%s",
+                               reason, type(exc).__name__)
+            except Exception:  # noqa: BLE001 - a broken sink must not block recovery
+                pass
+
+    @staticmethod
+    def _diagnostic_stats(component: Any) -> dict[str, Any]:
+        try:
+            collect = getattr(component, "diagnostics", None)
+            if not callable(collect):
+                return {}
+            result = collect()
+            if not isinstance(result, dict):
+                return {"diagnostics_error": "invalid_result"}
+            return result
+        except Exception as exc:  # noqa: BLE001 - never log exception payloads
+            return {"diagnostics_error": type(exc).__name__}
+
+    def _write_diagnostics(self, reason: str) -> None:
         now = time.monotonic()
-        conn_stats = getattr(self._conn, "diagnostics", None)
-        forward_stats = getattr(self._forwarder, "diagnostics", None)
         stderr_path = getattr(self._process, "stderr_path", None)
         snapshot = {
             "reason": reason,
             "pid": self._worker_pid,
             "generation": self._generation,
             "last_rx_age": now - self._last_rx,
-            "ipc": conn_stats() if callable(conn_stats) else {},
-            "gateway": forward_stats() if callable(forward_stats) else {},
+            "ipc": self._diagnostic_stats(self._conn),
+            "gateway": self._diagnostic_stats(self._forwarder),
             "forward_queued": self._forward_queue.qsize()
             if self._forward_queue is not None
             else 0,

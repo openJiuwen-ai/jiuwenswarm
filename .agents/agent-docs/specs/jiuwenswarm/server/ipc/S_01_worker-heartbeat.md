@@ -29,7 +29,7 @@ files:
 ## 不变量
 
 - 业务循环进行普通同步阻塞等待时，I/O 线程持续读取；心跳回复不等待业务循环消费上一条消息。
-- 普通业务消息按顺序进入有界缓冲区：256 条、64 MiB，任一上限超出即报告 `ipc business receive backlog exceeded`。消息不静默丢弃。
+- 普通业务消息按顺序进入有界缓冲区：256 条、64 MiB，任一上限超出即报告 `ipc business receive backlog exceeded`，并单独记录积压条数、字节数、当前帧大小和上限。消息不静默丢弃；已入队消息先交付，随后报告连接故障。同一连接复用心跳与业务帧，不能暂停整条连接的读取来等待业务消费，否则心跳也会被暂停。
 - socket 的普通写入和心跳整帧写入均在同一个 I/O loop 串行执行，不跨线程操作 reader/writer，不交错帧字节。
 - 独立心跳仅读取业务循环的 `LoopBeat` 时间戳，不能刷新它。`_beat_loop` 在业务循环内每秒刷新一次。
 - 通信超时保持 30 秒，以最后一次收到任意 Worker IPC 消息计算；业务循环卡顿超过 30 秒告警，持续超过 180 秒清退并按重启预算恢复。实际处置时刻还受 5 秒 watchdog 检查周期影响。
@@ -45,13 +45,15 @@ files:
 
 30 秒业务告警和 180 秒重启日志均输出 `business`，Supervisor 诊断快照保留 `worker_stall_context`。循环恢复、旧版无上下文心跳或新 generation 会清除旧上下文，避免跨业务误归因。约 25 秒的 Worker 原生线程栈转储保持有效，后台 pong 不推迟它。
 
+IPC 写锁等待者的增删与诊断快照使用同一把线程锁，锁内不等待 I/O。Supervisor 收集 IPC/Gateway 诊断指标失败时仅记录异常类型；快照序列化或输出失败也不能中断 watchdog 的健康判定、180 秒恢复或转发失败处理。
+
 ## 限制与验证入口
 
 归因是尽力而为的诊断信息，不参与健康判定。线程隔离无法保证 C 扩展长期持有 GIL、I/O 线程本身阻塞、同一连接出现传输背压或进程完全无法获调度时继续回复。资源耗尽和协议错误继续按连接故障处理。
 
-- `tests/unit_tests/agentserver/test_stream_heartbeat.py`：TCP/Unix socket 阻塞隔离、子任务归因、有界队列和取消。
-- `test_worker_loop_liveness.py`：30/180 秒阈值、告警/重启日志、恢复后的上下文清除。
-- `test_ipc_backpressure.py`：真实 Worker 60 秒阻塞与排队请求、真实 180 秒阈值下的重启和后续请求。
+- `tests/unit_tests/agentserver/test_stream_heartbeat.py`：TCP/Unix socket 阻塞隔离、子任务归因、有界队列、取消和并发写入期间的诊断快照。
+- `test_worker_loop_liveness.py`：30/180 秒阈值、告警/重启日志、恢复后的上下文清除、诊断失败不影响恢复。
+- `test_ipc_backpressure.py`：真实心跳丢失的 30 秒传输超时、Worker 60 秒阻塞与排队请求、真实 180 秒阈值下的重启和后续请求。
 - `test_front_loopback_ipc.py`：鉴权、单连接消费、关闭、Front 丢失和进程回收。
 
 修复决策与实际证据见 [B_20261105_1510_stream-heartbeat](../../../../bugfix/jiuwenswarm/server/B_20261105_1510_stream-heartbeat.md)。

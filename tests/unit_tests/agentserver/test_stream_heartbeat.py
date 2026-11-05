@@ -22,6 +22,8 @@ from jiuwenswarm.server.worker.diagnostics import LoopBeat
 from jiuwenswarm.server.worker.service import _install_heartbeat_fast_path
 from jiuwenswarm.server.worker.stall_context import BusinessTracker
 
+pytestmark = pytest.mark.asyncio
+
 
 @asynccontextmanager
 async def _pair(transport, tmp_path):
@@ -108,7 +110,7 @@ async def test_socket_pong_survives_business_frame_then_blocked_loop(transport, 
 
 @pytest.mark.parametrize("transport", ["tcp", "unix"])
 @pytest.mark.parametrize("limit", ["messages", "bytes"])
-async def test_socket_backlog_is_bounded_and_preserves_frames(transport, limit, tmp_path, monkeypatch):
+async def test_socket_backlog_is_bounded_and_preserves_frames(transport, limit, tmp_path, monkeypatch, caplog):
     frame = {"kind": "wire", "id": "queued"}
     if limit == "messages":
         monkeypatch.setattr(stream, "_STREAM_PENDING_MESSAGES", 3)
@@ -127,6 +129,8 @@ async def test_socket_backlog_is_bounded_and_preserves_frames(transport, limit, 
             assert await worker.recv() == frame
         with pytest.raises(IpcError, match="receive backlog exceeded"):
             await worker.recv()
+        assert "business receive backlog exceeded; transport=stream" in caplog.text
+        assert "pending_messages=3" in caplog.text
         await worker.close()
         assert worker.diagnostics()["receive_pending_bytes"] == 0
 
@@ -183,3 +187,38 @@ async def test_business_tracker_preserves_custom_task_factory_and_explicit_conte
     finally:
         tracker.close()
         loop.set_task_factory(original)
+
+
+async def test_socket_diagnostics_remain_available_while_writers_wait(tmp_path):
+    async with _pair("tcp", tmp_path) as (worker, peer):
+        queued = threading.Event()
+        release = threading.Event()
+
+        @ipc_io
+        async def hold_write_lock():
+            async with worker._write_lock:
+                queued.set()
+                while not release.is_set():
+                    await asyncio.sleep(0.001)
+
+        holder = asyncio.create_task(hold_write_lock())
+        senders = []
+        try:
+            async with asyncio.timeout(2):
+                while not queued.is_set():
+                    await asyncio.sleep(0.001)
+            senders = [asyncio.create_task(worker.send({"kind": "wire", "index": i})) for i in range(100)]
+            async with asyncio.timeout(2):
+                while not worker._write_waiters:
+                    await asyncio.sleep(0.001)
+            assert worker.diagnostics()["write_lock_seconds"] >= 0
+            release.set()
+            while not all(task.done() for task in senders):
+                worker.diagnostics()
+                await asyncio.sleep(0)
+            await asyncio.gather(*senders)
+            assert [(await peer.recv())["index"] for _ in range(100)] == list(range(100))
+            assert worker.diagnostics()["write_lock_seconds"] >= 0
+        finally:
+            release.set()
+            await asyncio.gather(holder, *senders, return_exceptions=True)
