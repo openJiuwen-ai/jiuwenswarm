@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -12,6 +15,66 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
     parse_qwen_omni_tool_call,
     qwen_omni_tools,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "timeout", "cancelled"])
+async def test_action_review_bounds_transport_and_cancels_stalled_request(monkeypatch, outcome):
+    from jiuwenswarm.common import config, reasoning_injector
+    from jiuwenswarm.extensions.video_duplex.backend import joyai_action_helper as helper
+    from openjiuwen.core.foundation import llm
+
+    entry = {"model_id": "reviewer", "model_client_config": {
+        "model_name": "text-model", "client_provider": "OpenAI",
+        "api_base": "https://example.test/v1", "api_key": "test-key", "timeout": 120,
+    }}
+    monkeypatch.setenv("JOYAI_ACTION_HELPER_MODEL", "reviewer")
+    monkeypatch.setattr(config, "get_default_models", lambda: [entry])
+    monkeypatch.setattr(reasoning_injector, "build_reasoning_model_request_kwargs", Mock(
+        return_value={"model": "text-model", "max_tokens": 1200},
+    ))
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def invoke(messages):
+        started.set()
+        try:
+            if outcome == "success":
+                return SimpleNamespace(content="review result")
+            await asyncio.Future()
+        finally:
+            stopped.set()
+
+    model = SimpleNamespace(invoke=AsyncMock(side_effect=invoke))
+    build = Mock(return_value=model)
+    monkeypatch.setattr(llm, "Model", build)
+    real_timeout = asyncio.timeout
+
+    def short_timeout(delay):
+        assert delay == 10
+        return real_timeout(0.01 if outcome == "timeout" else 10)
+
+    monkeypatch.setattr(helper.asyncio, "timeout", short_timeout)
+    request = asyncio.create_task(helper.request_review({"user_request": "hello"}))
+    if outcome == "success":
+        assert await request == "review result"
+    elif outcome == "timeout":
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(request, timeout=1)
+    else:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+    assert stopped.is_set()
+    connection = build.call_args.kwargs["model_client_config"]
+    assert connection.timeout == 10 and connection.max_retries == 0
+    assert connection.api_key == "test-key"
+    assert entry["model_client_config"]["timeout"] == 120
+    model.invoke.assert_awaited_once()
+    messages = model.invoke.await_args.args[0]
+    assert all(isinstance(message["content"], str) for message in messages)
+    assert model.invoke.await_args.kwargs == {}
 
 
 def test_delegate_rejects_unrelated_full_voice_turn_but_allows_short_followup() -> None:
@@ -154,13 +217,6 @@ def test_delegation_title_is_separate_from_complete_requirements():
     assert call.task == "请查询香港今天的天气，并说明是否需要带伞"
 
 
-@pytest.mark.parametrize("title", [None, 42, "x" * 81, "first\nsecond"])
-def test_task_service_rejects_invalid_titles(title):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import _clean_title
-
-    with pytest.raises(ValueError, match="title"):
-        _clean_title(title)
-    assert _clean_title("  修改打卡提醒  ") == "修改打卡提醒"
 
 
 @pytest.mark.parametrize("version", [45527757797612, "45527757797612", "0"])

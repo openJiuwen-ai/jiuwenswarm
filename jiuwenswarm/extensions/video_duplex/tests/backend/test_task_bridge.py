@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -13,7 +14,6 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
-from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
 from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
@@ -484,8 +484,9 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
 
     executor.run = run
     service = TaskService(r.store, executor, concurrency=1)
+    service.started = True
     try:
-        service.start("alice", "voice")
+        service.kick()
         assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
         waiting = service.submit("alice", "voice", "next", "Next task")
         await service.cancel("alice", "voice", r.task["id"], "stop-starting")

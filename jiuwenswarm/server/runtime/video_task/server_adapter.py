@@ -37,7 +37,7 @@ class VoiceTaskServerAdapter(GatewayAdapter):
                 raise ValueError("Task session is unavailable to this user")
             payload = {"pending": bool(self._pending_interrupt(session))}
         elif request.req_method == ReqMethod.VOICE_SESSION_RECEIPTS:
-            from ..session_receipts import configure
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import configure
 
             payload = await configure(request)
         else:

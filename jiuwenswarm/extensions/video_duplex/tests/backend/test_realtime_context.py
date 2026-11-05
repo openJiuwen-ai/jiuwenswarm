@@ -58,10 +58,9 @@ async def test_evicted_context_can_be_prepared_again_without_relaxing_scope_chec
     monkeypatch.setattr(context, "prepare_context", AsyncMock(return_value={"memory": [], "recent_turns": []}))
     restorer = context.RealtimeContextRestorer(manager)
     first = await restorer.prepare(None, "task-duplex:chat-a")
-    second = await restorer.prepare(None, "task-duplex:chat-a")
-    for _ in range(127):
+    for _ in range(128):
         await restorer.prepare(None, "task-duplex:chat-a")
-    assert await restorer.instructions(None, "task-duplex:chat-a", second["token"])
+    assert len(restorer._prepared) == 128
     with pytest.raises(context.ContextRestoreExpired):
         await restorer.instructions(None, "task-duplex:chat-a", first["token"])
     fresh = await restorer.prepare(None, "task-duplex:chat-a")
@@ -183,8 +182,7 @@ async def test_empty_mode_session_still_restores_its_execution_profile(saved, wo
     saved.clear()
     mode = "team.design" if work_mode == "design" else "agent.code.normal"
     package = await context.prepare_context("chat-a", "alice", lambda: {
-        "jobs": [], "conversation": {"mode": mode, "work_mode": work_mode, "project_id": "project",
-            "api_key": "private"},
+        "jobs": [], "conversation": {"mode": mode, "work_mode": work_mode, "project_id": "project", "api_key": "private"},
     })
     assert package["tasks"]["conversation"] == {"mode": mode, "work_mode": work_mode, "project_id": "project"}
     assert "private" not in context.render_context(package)

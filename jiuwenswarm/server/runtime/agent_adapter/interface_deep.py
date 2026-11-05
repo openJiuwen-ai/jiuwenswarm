@@ -153,7 +153,6 @@ from openjiuwen.harness.schema.config import SubAgentConfig
 
 from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
-from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
 )
@@ -170,6 +169,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_client_tool_answers, validate_manual_resume,
     discard_restored_permission_batch, unanswered_permission_batch,
+    has_live_pending_interrupt,
 )
 from jiuwenswarm.runtime.client_tools import client_tool_request_event
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
@@ -414,6 +414,7 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
     cua_model_rejects_images,
     resolve_cua_factory_options,
 )
+from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (  # noqa: E402
     SessionMessagingRouteRail,
@@ -16880,7 +16881,8 @@ class JiuWenSwarmDeepAdapter:
                     channel_id=request.channel_id,
                     ok=True,
                     payload={"event_type": "chat.interrupt_result", "intent": intent,
-                             "success": True, "managed_task_settled": detached},
+                             "success": True, "managed_task_settled": detached,
+                             "managed_task_status": "unknown" if detached else "running"},
                     metadata=request.metadata,
                 )
             if detached:

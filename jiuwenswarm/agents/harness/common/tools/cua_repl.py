@@ -11,13 +11,13 @@ from openjiuwen.core.foundation.tool.mcp.base import McpToolResult, extract_mcp_
 from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.harness.tools.cua.user_activity import build_default_user_activity_probe
 
-from jiuwenswarm.cua_engine.runtime import desktop_lane
+from .cua_runtime import desktop_lane
 
 
 REPL_DESCRIPTION = (
     "Run Python with top-level await for multi-step desktop workflows. Preloaded: computer "
-    "(Computer/App/Element SDK), print, printImage. Variables persist across calls within this "
-    "task. Await operations sequentially. Use printImage for screenshots and explicitly read "
+    "(Computer/App/Window/Element SDK), print, print_image. Variables persist across calls within this "
+    "task. Await operations sequentially. Use print_image for screenshots and explicitly read "
     "to verify actions. Use references and coordinates from this tool; inspect a returned "
     "image before choosing coordinates in a later call. After errors, observe before retrying "
     "actions that may already have executed."
@@ -100,50 +100,6 @@ class CuaReplTool(Tool):
     @staticmethod
     def _error(detail):
         return ToolOutput(success=False, data={"content": detail}, error=detail)
-
-    async def stream(self, inputs, **kwargs):
-        yield await self.invoke(inputs, **kwargs)
-
-
-class NativeTool(Tool):
-    """Reuse the original operation; serialize and preflight only when used."""
-
-    def __init__(self, original, owner, preflight):
-        super().__init__(original.card.model_copy(update={"id": owner + "." + original.card.name}))
-        self.original, self.preflight = original, preflight
-
-    async def invoke(self, inputs, **kwargs):
-        async with desktop_lane().acquire():
-            try:
-                await self.preflight()
-            except Exception as error:
-                return ToolOutput(
-                    success=False, error="❌ Original desktop backend unavailable; no input sent. " + str(error),
-                )
-            task = asyncio.create_task(self.original.invoke(inputs, **kwargs))
-            try:
-                result = await asyncio.shield(task)
-                if self.card.name == "get_screen_size" and getattr(result, "success", False):
-                    from .cua_macos_backend import MacOSBackend
-                    desktop = getattr(self.original, "_desktop", None)
-                    if isinstance(getattr(desktop, "_backend", None), MacOSBackend):
-                        result.data["content"] = result.data["content"].replace(
-                            "Main display", "Desktop screenshot canvas",
-                        ).replace("physical pixels", "PNG pixels (Retina-normalized)")
-                return result
-            except asyncio.CancelledError:
-                from .cua_macos_backend import MacOSBackend
-                desktop = getattr(self.original, "_desktop", None)
-                backend = getattr(desktop, "_backend", None)
-                if isinstance(backend, MacOSBackend):
-                    backend.cancel_current()
-                # Native tools use to_thread. Cancelling the coroutine cannot
-                # stop the OS call; keep the lane until it actually finishes.
-                try:
-                    await asyncio.wait_for(asyncio.shield(task), 60)
-                except BaseException as error:
-                    desktop_lane().blocker = "Cancelled native input did not confirm completion: " + str(error)
-                raise
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)

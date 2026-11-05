@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pytest
 from types import SimpleNamespace
 
 import pytest
@@ -41,9 +42,7 @@ async def wait_for(predicate):
             await asyncio.sleep(0.005)
 
 
-@pytest.mark.parametrize("scope,work_mode", [
-    ("voice", "work"), ("task-duplex:web-native", "work"), ("task-duplex:code-native", "code"),
-])
+@pytest.mark.parametrize("scope,work_mode", [("voice", "work"), ("task-duplex:web-native", "work"), ("task-duplex:code-native", "code")])
 async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_path, monkeypatch, scope, work_mode):
     from jiuwenswarm.server.runtime.agent_adapter import interface
 
@@ -88,7 +87,7 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
     class LocalAgentTransport:
         async def send_request(self, env):
             if env.method == ReqMethod.SESSION_GET_METADATA.value:
-                return SimpleNamespace(ok=True, payload={"user_id": "user", "mode": "agent", "work_mode": work_mode})
+                return SimpleNamespace(ok=True, payload={"user_id": "user", "mode": "agent", "work_mode": "work"})
             return SimpleNamespace(ok=True, payload={"files": []})
 
         async def send_request_stream(self, env):

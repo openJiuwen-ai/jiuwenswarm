@@ -37,8 +37,9 @@ async def configure(request):
 
     params = request.params or {}
     token, action = params.get("token"), params.get("action")
-    valid_token = isinstance(token, str) and 0 < len(token) <= 128
-    if not valid_token or action not in {"start", "renew", "stop"}:
+    if not isinstance(token, str) or not token or len(token) > 128:
+        raise ValueError("Invalid Full-duplex subscription")
+    if action not in {"start", "renew", "stop"}:
         raise ValueError("Invalid Full-duplex subscription")
     metadata = await asyncio.to_thread(get_session_metadata, request.session_id,
                                        cache_bust=True, enable_writeback=False)
@@ -84,6 +85,8 @@ def prepare_request(request):
 
 def apply_summary_policy(builder, session_id, ctx=None):
     """Refresh the root model's policy even on native interaction resumes."""
+    if builder is None:
+        return
     name = "video_duplex.voice_receipt"
     builder.remove_section(name)
     if not session_id:
