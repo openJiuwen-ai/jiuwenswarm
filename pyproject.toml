@@ -52,7 +52,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.28.0,<1.42",
     "sqlite-vec==0.1.6",
     "fastapi>=0.115,<1.0",
-    "uvicorn[standard]>=0.30,<1.0",
+    "uvicorn[standard]>=0.52.1,<1.0",  # 0.50.0-0.52.0 websockets-sansio sends duplicate Content-Length in WS denial responses
     "python-multipart>=0.0.31,<0.1",  # CVE-2026-42561 MultipartParser DoS
     # Transitive dep floors for known CVEs (prevent resolve downgrade)
     "lxml>=6.1.0,<7",  # CVE-2026-41066 XXE
@@ -105,7 +105,7 @@ harmony = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.0",
     "opentelemetry-exporter-otlp-proto-http>=1.28.0",
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.52.1",  # duplicate Content-Length in WS denial responses (0.50.0-0.52.0)
     "httptools>=0.6.3",
     "python-multipart>=0.0.31",  # CVE-2026-42561
     "lxml>=6.1.0",  # CVE-2026-41066
