@@ -1,18 +1,22 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Upgrade isolation and explicit, verifiable retirement of old Python Workers."""
 import asyncio
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import psutil
 import pytest
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common import utils
 from jiuwenswarm.server.ipc.client import connect_with_retry
 from jiuwenswarm.server.lifecycle import Readiness
+from jiuwenswarm.server.supervisor import identity, worker_process
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path
@@ -80,6 +84,12 @@ async def test_unknown_legacy_worker_does_not_block_startup_and_requires_explici
         assert supervisor.worker_pid != worker.pid
         assert worker.is_running()
         await supervisor.stop(terminate_worker=True)
+        cli = await asyncio.to_thread(subprocess.run,
+            [sys.executable, "-m", "jiuwenswarm.server.supervisor.shutdown", "--shutdown-worker", "--timeout", "3"],
+            cwd=SOURCE, env=env, capture_output=True, text=True, timeout=15, check=False)
+        assert cli.returncode != 0
+        assert "no deployment identity" in cli.stderr
+        assert worker.create_time() == born and worker.is_running()
         with pytest.raises(RuntimeError, match="not found"):
             await shutdown_resident_worker(timeout=2, include_legacy=True, legacy_worker_pid=worker.pid + 1)
         assert worker.create_time() == born and worker.is_running()
@@ -252,6 +262,12 @@ async def test_stop_does_not_claim_a_different_installations_historical_endpoint
         born = worker.create_time()
         result = await shutdown_resident_worker(timeout=3, include_legacy=True)
         assert result["ok"] is True and result["absent"] is True
+        cli = await asyncio.to_thread(subprocess.run,
+            [sys.executable, "-m", "jiuwenswarm.server.supervisor.shutdown", "--shutdown-worker", "--timeout", "3"],
+            cwd=SOURCE, env={**os.environ, "PYTHONPATH": str(SOURCE)},
+            capture_output=True, text=True, timeout=15, check=False)
+        assert cli.returncode == 0, cli.stderr
+        assert json.loads(cli.stdout)["absent"] is True
         assert worker.create_time() == born and worker.is_running()
         with pytest.raises(RuntimeError, match="different deployment"):
             await shutdown_resident_worker(timeout=3, legacy_worker_pid=worker.pid)
@@ -263,3 +279,71 @@ async def test_stop_does_not_claim_a_different_installations_historical_endpoint
         if process.poll() is None:
             process.kill()
         process.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_final_shutdown_cli_retires_owned_historical_endpoint_before_front_start(
+    monkeypatch, tmp_path, legacy_workspace,
+):
+    from jiuwenswarm.server.ipc.client import endpoint_is_listening
+
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
+    suffix = "pipe" if os.name == "nt" else "sock"
+    path = legacy_workspace / "run" / f"runtime-worker.{suffix}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "PYTHONPATH": str(SOURCE)}
+    worker = None
+    with (tmp_path / "owned-historical.stderr.log").open("wb") as stderr:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", str(path), "--stub"],
+            env=env, cwd=SOURCE, stdout=stderr, stderr=stderr)
+    try:
+        peer = await connect_with_retry(str(path), timeout=15)
+        hello = await asyncio.wait_for(peer.recv(), 5)
+        await peer.close()
+        worker = psutil.Process(hello["pid"])
+        born = worker.create_time()
+        assert hello["deployment_scope"] == identity.deployment_scope()
+        assert not endpoint_is_listening(default_socket_path())
+        cli = await asyncio.to_thread(subprocess.run,
+            [sys.executable, "-m", "jiuwenswarm.server.supervisor.shutdown", "--shutdown-worker", "--timeout", "5"],
+            cwd=SOURCE, env=env, capture_output=True, text=True, timeout=15, check=False)
+        assert cli.returncode == 0, cli.stderr
+        assert json.loads(cli.stdout)["pid"] == worker.pid
+        assert await asyncio.to_thread(process.wait, 5) == 0
+        assert not psutil.pid_exists(worker.pid)
+    finally:
+        if worker is not None and worker.is_running() and worker.create_time() == born:
+            worker.kill()
+            await asyncio.to_thread(worker.wait, 5)
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("instance", ["", "pod-one"])
+def test_legacy_posix_paths_include_historical_temp_fallback(monkeypatch, tmp_path, instance):
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", instance)
+    workspace = tmp_path / ("deep-" * 25)
+    temp = tmp_path / "os-temp"
+    monkeypatch.setattr(utils, "_workspace_base_dir", workspace)
+    monkeypatch.setattr(identity, "data_scope", lambda: "a" * 64)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    monkeypatch.setattr(worker_process, "os", SimpleNamespace(name="posix", environ=os.environ, getuid=lambda: 42))
+    paths = worker_process.legacy_socket_paths()
+    prefix = "runtime-" + "a" * 16
+    assert str(temp / "jiuwenswarm-runtime-42" / (prefix + ".sock")) in paths
+    token = worker_process._runtime_instance_token()
+    if token:
+        assert str(temp / "jiuwenswarm-runtime-42" / (prefix + "-" + token + ".sock")) in paths
+    assert str(workspace / "run/runtime-worker.sock") in paths
+    assert len(paths) == len(set(paths))
+    assert not temp.exists(), "Endpoint discovery must not create a directory"
+
+
+def test_explicit_socket_override_excludes_all_historical_locations(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_SOCKET", "owned-custom-endpoint")
+    assert worker_process.legacy_socket_paths() == []

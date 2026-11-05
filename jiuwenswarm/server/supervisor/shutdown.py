@@ -156,7 +156,7 @@ def main() -> None:
         detach_front_process(args.detach_front, force=args.force, timeout=args.timeout)
     if args.shutdown_worker:
         if args.legacy_worker_pid is None:
-            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout)))
+            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout), include_legacy=True))
         else:
             result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout),
                 legacy_worker_pid=args.legacy_worker_pid))

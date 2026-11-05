@@ -392,8 +392,9 @@ async def test_complete_stop_can_reap_its_own_child_without_sending_unverified_i
 def test_shutdown_cli_emits_one_json_line_to_stdout(monkeypatch, capsys, caplog, result):
     from jiuwenswarm.server.supervisor import shutdown
 
-    async def shutdown_worker(*, timeout):
+    async def shutdown_worker(*, timeout, include_legacy):
         assert timeout == 2.0
+        assert include_legacy is True
         return result
 
     monkeypatch.setattr(sys, "argv", ["shutdown", "--shutdown-worker", "--timeout", "2"])
