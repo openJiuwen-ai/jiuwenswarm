@@ -161,5 +161,11 @@ export const experimentalModule: SettingsModuleDefinition = {
         },
       ],
     },
+    {
+      id: 'computer-control',
+      visibleWhen: 'cua_backend_available',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
+    },
   ],
 };

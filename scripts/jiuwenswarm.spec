@@ -25,6 +25,8 @@ SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
 build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
+computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
+computer_use_datas = computer_use_build["bundle_data"](Path(project_root))
 runtime_config_path = Path(project_root, "jiuwenswarm", "common", "_build_config.py")
 expected_runtime_config = build_config_module["render_runtime_python"](build_config)
 if not runtime_config_path.is_file() or runtime_config_path.read_text(encoding="utf-8") != expected_runtime_config:
@@ -126,6 +128,9 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
+datas += computer_use_datas
+if sys.platform in ("darwin", "win32"):
+    datas += collect_data_files("computer_use", includes=["*.pyi", "py.typed"])
 # Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
@@ -315,6 +320,8 @@ excludes = [
     "mock",
     "coverage",
 ]
+if sys.platform in ("darwin", "win32"):
+    hiddenimports += collect_submodules("computer_use") + collect_submodules("computer_use_mcp")
 
 # 入口脚本位于 scripts 目录
 entry_script = os.path.join(project_root, "scripts", "jiuwenswarm_exe_entry.py")
@@ -604,4 +611,7 @@ if sys.platform == "darwin":
                 f"{build_config.display_name} 需要使用麦克风进行实时语音对话（全双工）。"
             ),
         },
+    )
+    computer_use_build["finalize_macos_bundle"](
+        Path(project_root), Path(coll.name) / exe.contents_directory, Path(app.name)
     )
