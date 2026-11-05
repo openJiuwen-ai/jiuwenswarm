@@ -11,6 +11,7 @@ import argparse
 import errno
 import hmac
 import http.client
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -558,6 +559,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         # Gateway extension package assets live on the same WebChannel as /api.
         return urlparse(self.path).path.startswith("/extension-assets/")
 
+    def _is_extension_transfer_route(self) -> bool:
+        # Gateway file import and export (S_10 sections 6 and 7); only local clients for now.
+        return urlparse(self.path).path.startswith(("/extension-uploads/", "/extension-downloads/"))
+
+    def _client_is_local(self) -> bool:
+        try:
+            address = ipaddress.ip_address(str(self.client_address[0]).split("%", 1)[0])
+        except (ValueError, IndexError, TypeError):
+            return False
+        return (getattr(address, "ipv4_mapped", None) or address).is_loopback
+
     def _is_ws_route(self) -> bool:
         return urlparse(self.path).path.startswith("/ws")
 
@@ -653,7 +665,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_http(self) -> None:
+    def _proxy_http(self, *, stream_body: bool = False) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
@@ -677,9 +689,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         headers_sent = False
         try:
             body = b""
+            length = 0
             if self.command not in ("GET", "HEAD"):
                 length = int(self.headers.get("Content-Length", "0") or "0")
-                body = self.rfile.read(length) if length > 0 else b""
+                if not stream_body:
+                    body = self.rfile.read(length) if length > 0 else b""
 
             forward_headers: dict[str, str] = {}
             for key, value in self.headers.items():
@@ -693,7 +707,21 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
-            conn.request(self.command, self.path, body=body, headers=forward_headers)
+            if stream_body:
+                # Large imports go through in chunks instead of being held in memory.
+                conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
+                for key, value in forward_headers.items():
+                    conn.putheader(key, value)
+                conn.endheaders()
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, self._HTTP_PROXY_CHUNK_BYTES))
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    remaining -= len(chunk)
+            else:
+                conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
 
             self.send_response(resp.status, resp.reason)
@@ -1027,6 +1055,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _dispatch_proxy(self) -> bool:
         if self._is_api_route() or self._is_extension_asset_route():
             self._proxy_http()
+            return True
+        if self._is_extension_transfer_route():
+            if not self._client_is_local():
+                self._write_json(403, {"code": "LOCAL_ONLY"})
+            else:
+                self._proxy_http(stream_body=True)
             return True
         if self._is_ws_route():
             if self._is_websocket_upgrade():

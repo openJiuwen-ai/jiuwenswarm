@@ -173,6 +173,6 @@ Gateway 的回执与渲染帧由页面内的替身按 S_09 生成（平台帧逻
 ### 9.2 已知遗留
 
 - 安装报告中缺少超时声明的提示（agent-core `ActivationReport` 无警告字段），目前只记录日志。
-- 开场顺序与停用设置待 GW-12；`disabled`、`removed` 原因届时启用。
+- 开场顺序与停用设置待 GW-12；`disabled`、`removed` 原因届时启用。（2026-11-05 已由 GW-12 实现，见 [F_13](F_13_application-settings-page.md)。）
 - 开场期间断线后重连，运行时会向当前提供者重发 `ui.ready`；服务端已随断线丢弃开场实例，随后的 `ui.closed` 会被拒绝。
 - 桌面打包版（Electron）联调待真实插件完成后进行。

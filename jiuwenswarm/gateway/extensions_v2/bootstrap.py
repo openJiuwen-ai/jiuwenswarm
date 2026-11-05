@@ -26,6 +26,7 @@ from jiuwenswarm.gateway.extensions_v2.handler_ops.data_ops import build_data_op
 from jiuwenswarm.gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT, EVENT_UI_RENDER
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.gateway.extensions_v2.webui.host_settings import build_host_request_handler
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
@@ -87,6 +88,15 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
         bus.register_event_handler(
             EVENT_GATEWAY_REQUEST,
             runtime.browser.build_request_dispatch_handler(),
+            {},
+            HandlerLevel.BUILTIN,
+        )
+    )
+    # USER request policies run first; host methods only answer requests they continue (S_10 section 3).
+    handler_ids.append(
+        bus.register_event_handler(
+            EVENT_GATEWAY_REQUEST,
+            build_host_request_handler(runtime),
             {},
             HandlerLevel.BUILTIN,
         )

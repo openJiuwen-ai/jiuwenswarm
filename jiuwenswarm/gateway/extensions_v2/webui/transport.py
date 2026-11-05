@@ -15,6 +15,7 @@ from typing import Any
 from jiuwenswarm.gateway.extensions_v2.webui.constants import (
     FRAME_APPEARANCE,
     FRAME_CLEAR,
+    FRAME_DOWNLOAD,
     FRAME_RENDER,
     FRAME_RENDER_ERROR,
 )
@@ -49,6 +50,11 @@ class GatewayTransport:
         """Send one appearance contribution or revocation (S_08)."""
 
         return await self._send(connection_id, FRAME_APPEARANCE, payload)
+
+    async def send_download(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
+        """Offer one export to the connection that asked for it (S_10 section 7)."""
+
+        return await self._send(connection_id, FRAME_DOWNLOAD, payload)
 
     async def send_error(
         self,

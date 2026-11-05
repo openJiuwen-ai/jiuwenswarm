@@ -49,7 +49,7 @@ export interface SplashControllerOptions {
   launch: SplashLaunch;
   hint(): Promise<SplashHint>;
   requestProviders(): Promise<unknown>;
-  /** The package that last provided the appearance plays first. */
+  /** The package that last provided the appearance plays first unless the user saved an order. */
   preferredProvider?: string | null;
   reducedMotion(): boolean;
   timers?: SplashTimers;
@@ -90,6 +90,11 @@ export function parseProviders(value: unknown): SplashProvider[] {
     });
   }
   return providers;
+}
+
+/** Whether the user saved a splash order in the Extensions settings (Gateway S_10 section 4). */
+export function parseCustomized(value: unknown): boolean {
+  return isRecord(value) && value.customized === true;
 }
 
 export function orderProviders(providers: readonly SplashProvider[], preferred?: string | null): SplashProvider[] {
@@ -241,7 +246,8 @@ export function createSplashController(options: SplashControllerOptions): Splash
       return;
     }
     const answer = await delay(Promise.resolve().then(options.requestProviders), SPLASH_TIMEOUTS.answer, null);
-    const providers = orderProviders(parseProviders(answer), options.preferredProvider);
+    // A saved order is final; otherwise the appearance provider goes first (Gateway S_10 section 4).
+    const providers = orderProviders(parseProviders(answer), parseCustomized(answer) ? null : options.preferredProvider);
     if (answer !== null) writeItem(SPLASH_EXPECTED_KEY, providers.length ? '1' : '0');
     for (const provider of providers) {
       if (disposed) return;

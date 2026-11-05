@@ -43,6 +43,7 @@
 - [媒体容器与应用背景](docs/features/F_10_media-surface-and-background.md)与[媒体容器规约](docs/specs/S_07_media-surface.md)：`MediaSurface`、`application.background`、宿主策略与沙箱消息协议。
 - [受控外观](docs/features/F_11_controlled-appearance.md)与[外观规约](docs/specs/S_08_appearance.md)：`ops.appearance.apply`、宿主派生的强调色与半透明模式、提供者生命周期、包释放时的浏览器通知。
 - [启动门控与开场](docs/features/F_12_startup-gate-and-splash.md)与[开场规约](docs/specs/S_09_startup-splash.md)：开场声明与提供者、显示型槽位的平台帧、`ui.closed`、候选提示、启动标识与前端门控。
+- [应用级设置页](docs/features/F_13_application-settings-page.md)与[应用级设置页与文件交接规约](docs/specs/S_10_application-settings.md)：`application.settings.page`、宿主方法、开场顺序与停用、`disabled` / `removed`、`FileImport` 导入与 `ops.ui.download` 导出。
 - 待建立：ui.store 的浏览器订阅特性与规约；当前示例不依赖该能力。
 - [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算与重定向策略。
 - [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键与错误码。

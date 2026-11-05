@@ -164,6 +164,17 @@ class ActiveRenderRegistry:
             frames.append(ClearFrame(target=instance.target, revision=revision, reason="released"))
         return tuple(frames)
 
+    def retire_instance(self, target: RenderTarget, reason: str) -> ClearFrame | None:
+        """Drop one instance and reserve the revision of its clear frame, like ``retire_package``."""
+
+        instance = self._instances.get(target.key)
+        if instance is None:
+            return None
+        self.drop_instance(target)
+        revision = instance.revision + 1
+        self._revisions[target.key] = (instance.target, revision)
+        return ClearFrame(target=instance.target, revision=revision, reason=reason)
+
     def drop_connection(self, connection_id: str) -> tuple[RenderInstance, ...]:
         """Release application instances without touching any chat session."""
 

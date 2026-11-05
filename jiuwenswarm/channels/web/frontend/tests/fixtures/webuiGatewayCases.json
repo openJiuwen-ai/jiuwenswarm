@@ -1589,5 +1589,178 @@
       "props": {}
     },
     "valid": false
+  },
+  {
+    "name": "FileImport in the settings page slot",
+    "slot": "application.settings.page",
+    "root": {
+      "component": "Box",
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "Themes"
+          }
+        },
+        {
+          "component": "FileImport",
+          "props": {
+            "label": "Import theme",
+            "accept": [
+              ".zip",
+              ".wptheme"
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "FileImport imports a directory",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import folder",
+        "directory": true
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "FileImport selects several files",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import",
+        "multiple": true,
+        "disabled": true
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "FileImport requires a label",
+    "root": {
+      "component": "FileImport",
+      "props": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport rejects a blank label",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "   "
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport rejects a suffix without a dot",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import",
+        "accept": [
+          "zip"
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport rejects duplicate suffixes",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import",
+        "accept": [
+          ".zip",
+          ".ZIP"
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport rejects an empty accept list",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import",
+        "accept": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport directory rejects accept",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Folder",
+        "directory": true,
+        "accept": [
+          ".zip"
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport directory rejects multiple",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Folder",
+        "directory": true,
+        "multiple": false
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport has no children",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import"
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "x"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "FileImport rejects unknown props",
+    "root": {
+      "component": "FileImport",
+      "props": {
+        "label": "Import",
+        "maxBytes": 10
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "application.settings.page rejects a MediaSurface root",
+    "slot": "application.settings.page",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
   }
 ]

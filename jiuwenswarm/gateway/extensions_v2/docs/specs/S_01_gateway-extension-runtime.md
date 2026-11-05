@@ -36,6 +36,7 @@
 | `http.timeout_ms` | int | `3000` | 上限 `5000`；非法值回落默认 |
 | `http.max_body_bytes` | int | `1048576` | 上限 `4194304`；非法值回落默认 |
 | `http.follow_redirects` | bool | `false` | 非布尔值回落 `false` |
+| `uploads.max_bytes` | int | `536870912` | 一次文件导入的总大小；上限 `4294967296`；非法值回落默认，见 [S_10](S_10_application-settings.md) |
 
 配置读取异常时不抛错，等价于空配置。
 客户端浏览器能力随包安装激活直接可用，无需额外授权配置；详见 [浏览器接入规约](S_06_local-browser-bridge.md)。
@@ -62,6 +63,8 @@
 | 持久化键值 | agent-core `ops.store.get/set/delete/keys`，经 `store.*` 事件链执行，按调用包隔离 | `<data_dir>/store/<package_id>.json` |
 | 包数据目录 | `ops.data.root() -> Path`，仅活动包可用，首次调用时创建 | `<data_dir>/packages/<package_id>/` |
 | 数据素材 | `ops.ui.asset_url(path, source="data")`，见 [浏览器接入规约](S_06_local-browser-bridge.md) | 包数据目录的 `public/` |
+| 导入与导出 | `FileImport` 导入写入 `.uploads/<凭据>/`，Handler 返回后删除；`ops.ui.download(path, *, filename=None)` 导出数据目录内的文件，见 [S_10](S_10_application-settings.md) | 包数据目录 |
+| 宿主设置 | 开场的安装顺序、用户顺序与停用记录，卸载时删除该包的记录，见 [S_10](S_10_application-settings.md) | `<data_dir>/host/splash.json` |
 
 `runtime.start()` 在 `ops.build` 前把 `JsonStore(<data_dir>/store)` 绑定到总线，停机时解除绑定。
 生命周期：重载、升级（安装更高版本）与停机保留；经管理门面卸载时先删除该包的存储与数据目录，
@@ -74,6 +77,8 @@
 （原因 `released`，并预留该版本号，之后的渲染从更高版本开始），并撤销该包作为提供者的外观（[S_08](S_08_appearance.md)）。
 这些通知在释放后异步发送；本机 CLI 的 install 与 reload 成功后，先等待通知发出，再广播 `extensions.v2.installed`，
 已挂载的槽位据此重新发送 `ui.ready`。设计与验证见 [F_11](../features/F_11_controlled-appearance.md)。
+管理门面卸载、重载或覆盖安装一个活动包之前，先以 `removed` 关闭它正在播放的开场并通知 `ui.closed`
+（[S_10 第 5 节](S_10_application-settings.md)）；包释放同时作废它的导入与下载凭据并删除临时导入目录。
 
 ## 4. 事件契约
 
@@ -159,6 +164,7 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 | 包存储、数据目录、数据素材与卸载清理 | `test_gateway_package_data.py` |
 | 应用级 UI 包与素材路由 | `test_gateway_application_assets.py` |
 | 包释放通知、受控外观与重载广播 | `test_gateway_appearance.py`、`test_gateway_package_management.py`（契约细节见 [S_08](S_08_appearance.md)） |
+| 宿主方法、开场偏好、导入与导出 | `test_gateway_application_settings.py`、`test_gateway_file_transfer.py`（契约细节见 [S_10](S_10_application-settings.md)） |
 
 
 ## 本机扩展管理 CLI

@@ -25,7 +25,7 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
+    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FileImport', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
     'Iframe', 'Image', 'Input', 'MediaSurface', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {
@@ -53,6 +53,11 @@ test('catalog contains the supported components', () => {
     scope: 'application',
     rootComponents: ['MediaSurface'],
     strictRoot: true,
+  });
+  assert.deepEqual(componentCatalog.getSlot('application.settings.page'), {
+    id: 'application.settings.page',
+    display: 'list',
+    scope: 'application',
   });
   assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
@@ -187,4 +192,12 @@ test('size aliases normalize consistently and compact components reject large si
   }
   assert.equal(checkProps('Avatar', { src: '/logo.svg', size: 'default' }).value.size, 'medium');
   assert.equal(checkProps('Avatar', { src: '/logo.svg', size: 48 }).value.size, 48);
+});
+
+test('FileImport change data carries only a host upload id', () => {
+  const rule = componentCatalog.getComponent('FileImport');
+  assert.equal(rule.validateEvent('ui.change', { upload_id: 'a'.repeat(32) }, { label: 'Import' }), null);
+  for (const uploadId of ['A'.repeat(32), 'a'.repeat(31), '../x', 7]) {
+    assert.notEqual(rule.validateEvent('ui.change', { upload_id: uploadId }, { label: 'Import' }), null);
+  }
 });

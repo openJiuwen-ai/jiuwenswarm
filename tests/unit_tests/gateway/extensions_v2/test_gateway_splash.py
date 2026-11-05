@@ -149,7 +149,7 @@ async def test_providers_are_listed_in_publication_order_with_capped_durations(t
             {"package_id": "test.first", "skippable": True, "max_duration_ms": 9500},
             {"package_id": "test.second", "skippable": False, "max_duration_ms": 60000},
             {"package_id": "test.third", "skippable": False, "max_duration_ms": 60000},
-        ]}
+        ], "customized": False}
     finally:
         await runtime.shutdown()
 

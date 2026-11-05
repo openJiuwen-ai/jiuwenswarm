@@ -16,6 +16,9 @@ import { WebUISplashGate } from './WebUISplashGate.tsx';
 import { fetchSplashHint, resolveLaunch } from '../splash/launch.ts';
 import { WebUIProvider } from './WebUIProvider.tsx';
 import { browserClientCapabilities } from '../client/browserClient.ts';
+import { WebUIUploadContext } from '../renderer/adapters/webuiFileImport/uploadContext.ts';
+import { createUploadService, putWithFetch } from '../transfers/uploads.ts';
+import { DOWNLOAD_EVENT, readDownloadOffer, startDownload } from '../transfers/downloads.ts';
 
 export interface WebUIAppRootProps {
   children: ReactNode;
@@ -53,11 +56,25 @@ export function WebUIAppRoot({ children }: WebUIAppRootProps) {
     };
   }, [app]);
 
+  // Imports and exports go through the host (Gateway S_10); adapters never reach the client directly.
+  const uploads = useMemo(() => createUploadService({
+    runtime: app.runtime,
+    request: (method, params) => webClient.request(method, params),
+    put: putWithFetch,
+  }), [app]);
+  useEffect(() => webClient.on(DOWNLOAD_EVENT, (event) => {
+    const offer = readDownloadOffer(event.payload);
+    if (!offer) return;
+    const desktop = window.jiuwenDesktop?.downloadFile;
+    void startDownload(offer, { desktopDownload: desktop, document }).catch(() => undefined);
+  }), []);
+
   const launch = useMemo(() => resolveLaunch(window.jiuwenDesktop?.launchId), []);
   const requestProviders = useMemo(() => () => webClient.request('webui.splash.providers', {}), []);
 
   return (
     <WebUIProvider runtime={app.runtime} registry={app.registry}>
+      <WebUIUploadContext.Provider value={uploads}>
       <WebUISplashGate launch={launch} hint={fetchSplashHint} requestProviders={requestProviders}>
         <WebUIBackgroundHost />
         <WebUIAppearanceHost />
@@ -67,6 +84,7 @@ export function WebUIAppRoot({ children }: WebUIAppRootProps) {
           {children}
         </WebUIEntryHost>
       </WebUISplashGate>
+      </WebUIUploadContext.Provider>
     </WebUIProvider>
   );
 }

@@ -9,6 +9,7 @@ import { personalContextSettingsModule } from '../modules/personalContext';
 import { archivedTasksModule } from '../modules/archivedTasks';
 import { voiceModule } from '../modules/voice/definition';
 import { experimentalModule } from '../modules/experimental';
+import { extensionsModule } from '../modules/extensions';
 
 export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
   id: 'open-source-settings',
@@ -23,6 +24,7 @@ export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
     channelsModule,
     personalContextSettingsModule,
     archivedTasksModule,
+    extensionsModule,
     experimentalModule,
   ],
 });

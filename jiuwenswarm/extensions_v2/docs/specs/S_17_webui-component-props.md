@@ -12,8 +12,8 @@
 Ant Design 文档、示例插件、前后端规则表和已经安装的插件副本都不能独立定义另一套属性。
 后端负责最终拒绝非法输入，但“后端负责校验”不代表后端可以脱离本文件修改契约。
 
-当前字段表覆盖前端登记的 24 个组件（包括 Icon、Form、Form.Item、MediaSurface）。
-AgentServer 支持其中的 21 个组件；Gateway 使用独立校验器，支持 Form / Form.Item、MediaSurface、Button.form、
+当前字段表覆盖前端登记的 25 个组件（包括 Icon、Form、Form.Item、MediaSurface、FileImport）。
+AgentServer 支持其中的 21 个组件；Gateway 使用独立校验器，支持 Form / Form.Item、MediaSurface、FileImport、Button.form、
 Box 扩展布局、Input.autoComplete、Image.fit 和 Dropdown 富菜单，暂不支持独立 Icon 节点和 Dropdown.icon。
 Gateway 与 AgentServer 共同支持的属性使用相同名称和语义；宿主支持范围不同不代表可以恢复旧版 Button、Text 或 Avatar 属性。
 本文是人工维护的规范，当前没有从本文自动生成规则的能力。修改本文后，开发者或编码代理必须按第 7 章完成实现、调用方和验证同步；只改本文不代表运行行为已经改变。
@@ -554,6 +554,21 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 输入、焦点、静音、就绪超时、减少动态和与页面的消息协议是宿主行为，不是 props，见
 [Gateway 媒体容器规约 S_07](../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)。
 
+### 4.25 FileImport（Gateway）
+
+| 属性 | 类型 | 必填 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- |
+| `label` | string（1..200 UTF-8 字节） | 是 | — | 按钮文字，去空白后必须非空；同时作为无障碍名称 |
+| `accept` | string[]（1..16 项） | 否 | — | 允许的文件后缀，每项形如 `.zip`：`.` 后 1..16 个字母、数字、`.`、`_`、`-`，首字符为字母或数字；不得重复（忽略大小写） |
+| `multiple` | boolean | 否 | `false` | 一次选择多个文件 |
+| `directory` | boolean | 否 | `false` | 选择一个目录并导入其中全部文件；为 true 时不得同时设置 `accept` 或 `multiple` |
+| `disabled` | boolean | 否 | `false` | 禁止选择 |
+
+无子节点。用户点击后由宿主打开系统文件选择，把选中内容经导入凭据写入包数据目录，再派发 `ui.change`。
+文件清单的校验、传输、大小上限与插件收到的数据见
+[Gateway 应用级设置页规约 S_10](../../../gateway/extensions_v2/docs/specs/S_10_application-settings.md) 第 6 节；
+上传进度与错误提示是宿主行为，不是 props。
+
 ## 5. 事件、状态与错误
 
 **P-05：事件名放在节点的 events，不是 props。** 只有下表列出的组件事件可以绑定；其余组件不得声明事件。
@@ -578,6 +593,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | Dropdown | ui.select | key: string（必填） | 对应已存在且未禁用的菜单项；本地展开 / 关闭不派发业务事件 |
 | FileTree | ui.select | key: string（必填） | 已存在的 file；disabled 或非 ready 时禁止 |
 | FileTree | ui.change | key: string、expanded: boolean（必填）；expandedKeys: string[]（可选） | key 必须是 directory；完整 expandedKeys 唯一且全为目录，是否含 key 必须与 expanded 一致 |
+| FileImport | ui.change | upload_id: string（必填，32 位小写十六进制） | 未 disabled；凭据须属于当前连接、实例与节点且全部文件已接收；Handler 收到宿主替换后的数据（S_10 第 6.4 节） |
 
 普通交互 payload 必须包含 revision、node_key、action_id、args、data，并匹配当前实例已声明的事件和参数。
 只有当前代次已显示、渲染成功且连接有效的节点可以派发；非法更新不会替换上一帧有效界面。
@@ -647,6 +663,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | Dropdown | dropdown.ts | webuiDropdown：图标或自定义触发区、菜单选择 | 侧栏用户菜单、轮次菜单 |
 | Icon | icon.ts | webuiIcon：白名单、尺寸与无障碍 | 独立装饰 / 语义图标 |
 | MediaSurface | mediaSurface.ts | webuiMediaSurface：图片、视频、沙箱页面、封面回退与消息协议 | 外观插件的应用背景 |
+| FileImport | fileImport.ts | webuiFileImport：系统文件选择、经导入凭据上传、进度与错误提示 | 外观插件导入主题与恢复备份 |
 
 上述规则文件均位于前端 catalog/components，适配器目录均位于 renderer/adapters。
 修改专用根组件 title、生命周期或布局时，要同时核对这些入口；修改某个普通文案字段不要求重写网关和所有宿主。
@@ -664,6 +681,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 聊天输入区：conversation.input.above、conversation.input.below | [ChatPanel/index.tsx](../../../channels/web/frontend/src/components/ChatPanel/index.tsx) | 输入、选择、禁用、草稿和局部布局 |
 | 消息与轮次：message.assistant.meta、conversation.turn.footer.actions、conversation.session.content.after | [MessageItem.tsx](../../../channels/web/frontend/src/components/ChatPanel/MessageItem.tsx) | 消息归属、轮次操作、状态与事件参数 |
 | 设置页：application.settings | [SettingsPageLayout.tsx](../../../channels/web/frontend/src/features/settings/SettingsPageLayout.tsx) | 表单组件、共享布局与滚动 |
+| 扩展设置页：application.settings.page（Gateway） | [ExtensionSettingsPages.tsx](../../../channels/web/frontend/src/features/settings/modules/extensions/ExtensionSettingsPages.tsx) | 每个包一个页签、表单组件、FileImport、共享布局与滚动 |
 | 应用背景：application.background（Gateway） | [WebUIAppRoot.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIAppRoot.tsx)、[WebUIBackgroundHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIBackgroundHost.tsx) | MediaSurface 根、全窗口底层、不接收输入、宿主策略 |
 | 启动开场：application.splash（Gateway） | [WebUISplashGate.tsx](../../../channels/web/frontend/src/features/webui/react/WebUISplashGate.tsx)、[splash/](../../../channels/web/frontend/src/features/webui/splash) | MediaSurface 根、开场层、时限与跳过、登录入口推迟 |
 
