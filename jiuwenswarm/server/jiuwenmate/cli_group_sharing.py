@@ -292,6 +292,10 @@ class CliGroupSharing:
     async def _execute(self, execution, command: str, plan: CliReadPlan) -> dict:
         from jiuwenswarm.server.jiuwenmate.group_sharing_service import _digest
 
+        if not await asyncio.to_thread(
+            self.sharing.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            raise UnsafeGroupRead("group access changed; submit a new request")
         sources = await self._sources(execution)
         by_group = {item["group_id"]: item for item in sources}
         repo = self.sharing.repository
@@ -421,5 +425,7 @@ class CliGroupSharing:
                               "file_name": file.file_name, "file_size": file.file_size})
         if denied and not messages and not files:
             return {"ok": False, "error": "所有者拒绝或审批已过期，未返回跨群内容。"}
+        if not await asyncio.to_thread(repo.request_window_is_current, execution.namespace_id, execution.request_id):
+            raise UnsafeGroupRead("group access changed; submit a new request")
         return {"ok": True, "data": {"messages": messages, "files": files, "has_more": preview.has_more},
                 "incomplete": denied, "notice": "已返回宿主冻结并获准的 CLI 读取结果，未重跑原命令链。"}

@@ -8,6 +8,7 @@ import re
 from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.harness import persistent_agent as core
 
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.output_files import approved_import_path
 
 
@@ -34,6 +35,10 @@ class CachedGroupContent:
         self.sharing, self.port = sharing, port
 
     async def prepare(self, execution, text, rows, requested='', command=''):
+        if not await asyncio.to_thread(
+            self.sharing.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return True, blocked('群访问或分享授权已失效，请重新发起请求。')
         receipts = await asyncio.to_thread(
             self.sharing.repository.approvals_for_session,
             execution.namespace_id, execution.agent_id, execution.session_id,
@@ -164,14 +169,20 @@ class CachedGroupContent:
         if any(key[0] in denied for key in by_source):
             return True, blocked('所有者已拒绝或审批已过期，本次请求不再读取或分享该来源文件，请直接告知提问者。')
         if snapshots:
-            approvals.extend(await asyncio.to_thread(
-                self.sharing.repository.create_or_get_batch, snapshots, now=self.sharing.now(),
-            ))
+            try:
+                approvals.extend(await asyncio.to_thread(
+                    self.sharing.repository.create_or_get_batch, snapshots, now=self.sharing.now(),
+                ))
+            except PersistentAgentError:
+                return True, blocked('群访问或分享授权已失效，请重新发起请求。')
         for row in approvals:
             if row['status'] == 'pending':
-                row = await asyncio.to_thread(
-                    self.sharing.repository.authorize_from_grants, row['approval_id'], now=self.sharing.now(),
-                )
+                try:
+                    row = await asyncio.to_thread(
+                        self.sharing.repository.authorize_from_grants, row['approval_id'], now=self.sharing.now(),
+                    )
+                except PersistentAgentError:
+                    return True, blocked('群访问或分享授权已失效，请重新发起请求。')
                 row = await asyncio.to_thread(self.sharing.repository.get, row['approval_id'])
             if row['status'] == 'pending':
                 await asyncio.to_thread(self.sharing.notify_owner, row['scope'], row['approval_id'])
@@ -190,4 +201,8 @@ class CachedGroupContent:
             frozen = await self.sharing.verified_snapshot(execution.namespace_id, row['result'])
             if frozen is None:
                 return True, blocked()
+        if not await asyncio.to_thread(
+            self.sharing.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return True, blocked('群访问或分享授权已失效，请重新发起请求。')
         return True, None

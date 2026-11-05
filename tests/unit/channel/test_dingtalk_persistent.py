@@ -21,6 +21,7 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import
     DingTalkChannel,
     DingTalkConfig,
     DingTalkHandler,
+    DingTalkGroupEventHandler,
 )
 from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundEvent, configured_dingtalk_bindings
 
@@ -45,6 +46,47 @@ def _channel():
     channel._access_token = "fake-token"
     channel._token_expiry = time.time() + 3600
     return channel
+
+
+def _lifecycle_message(kind="chat_update_title"):
+    return SimpleNamespace(data={"eventType": kind, "eventId": "lifecycle-1", "eventCorpId": "corp",
+        "data": {"timeStamp": 1793750400000, "openConversationId": "cid-one", "corpId": "corp", "title": "New group"}},
+        headers=None)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_uses_existing_internal_route_and_does_not_apply_human_allowlist():
+    channel = _channel()
+    channel._persistent_inbound_callback = AsyncMock(return_value="handled")
+    code, _ = await DingTalkGroupEventHandler(channel).process(_lifecycle_message())
+    assert code == 200
+    event = channel._persistent_inbound_callback.await_args.args[0]
+    assert event.receiving_app_id == "app-test" and event.expected_agent_id == "agent-dingtalk"
+    assert event.to_payload()["event_kind"] == "group_lifecycle"
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_failure_is_not_acknowledged_as_success_and_unknown_events_are_ignored():
+    channel = _channel()
+    channel._persistent_inbound_callback = AsyncMock(side_effect=RuntimeError("private upstream detail"))
+    code, message = await DingTalkGroupEventHandler(channel).process(_lifecycle_message())
+    assert code == 500 and "private" not in message
+    channel._persistent_inbound_callback.reset_mock()
+    assert (await DingTalkGroupEventHandler(channel).process(_lifecycle_message("user_add_org")))[0] == 200
+    channel._persistent_inbound_callback.assert_not_awaited()
+
+
+@pytest.mark.parametrize("bound", [True, False])
+def test_stream_registers_lifecycle_handler_only_for_jiuwenmate(monkeypatch, bound):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk import dingtalk_connect
+
+    client = MagicMock()
+    monkeypatch.setattr(dingtalk_connect, "DingTalkStreamClient", MagicMock(return_value=client))
+    channel = _channel()
+    channel.config.agent_id = "agent-dingtalk" if bound else ""
+    channel._initialize_stream_client()
+    client.register_callback_handler.assert_called_once()
+    assert client.register_all_event_handler.call_count == int(bound)
 
 
 async def _send(channel, *, chat_id="staff-test", **changes):
