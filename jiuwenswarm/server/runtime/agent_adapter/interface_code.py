@@ -514,6 +514,7 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "subagent_resume",
     "read_file",
     "pcs_search",
+    "pcs_read",
     "grep",
     "list_files",
     "glob",

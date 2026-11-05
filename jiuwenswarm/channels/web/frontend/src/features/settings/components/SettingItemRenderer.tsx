@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Select, Switch } from '../../../components/ui';
+import { Button, FieldError, Input, Select, Switch } from '../../../components/ui';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
@@ -29,6 +29,7 @@ function InlineSettingInput({
   const saving = source.savingKeys.has(item.key);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const [error, setError] = useState('');
   const hasChanges = editing && draft.trim() !== value;
   useUnsavedChanges(`settings-input:${item.id}`, hasChanges);
 
@@ -42,23 +43,28 @@ function InlineSettingInput({
 
   const cancel = () => {
     setDraft(value);
+    setError('');
     setEditing(false);
   };
   const save = async () => {
+    setError('');
     await source.save({ [item.key]: draft.trim() }, item.id);
     setEditing(false);
   };
 
   return (
-    <div className="settings-inline-input" data-testid="settings-inline-input" data-variant={item.id}>
+    <div className={`settings-inline-input${error ? ' settings-inline-input--error' : ''}`} data-testid="settings-inline-input" data-variant={item.id}>
       <Input
         type={item.inputType ?? 'text'}
+        inputMode={item.inputMode}
+        invalid={Boolean(error)}
+        aria-describedby={error ? `settings-input-error-${item.id}` : undefined}
         aria-label={t(settingFieldKey(item.key, 'title'))}
         value={editing ? draft : value}
         placeholder={t(settingFieldKey(item.key, 'placeholder'))}
         readOnly={!editing}
         disabled={disabled || saving}
-        onChange={setDraft}
+        onChange={(next) => { setDraft(next); setError(''); }}
         data-testid="settings-inline-input-field"
         data-variant={item.id}
       />
@@ -71,7 +77,7 @@ function InlineSettingInput({
             size="sm"
             variant="primary"
             disabled={disabled || saving || !hasChanges}
-            onClick={() => void save().catch(() => undefined)}
+            onClick={() => void save().catch((cause) => setError(cause instanceof Error ? cause.message : t('common.error')))}
             data-testid="settings-inline-input-save-btn"
             data-variant={item.id}
           >
@@ -82,6 +88,11 @@ function InlineSettingInput({
         <Button size="sm" disabled={disabled || saving} onClick={() => setEditing(true)} data-testid="settings-inline-input-modify-btn" data-variant={item.id}>
           {t('common.modify')}
         </Button>
+      )}
+      {error && (
+        <div id={`settings-input-error-${item.id}`} className="settings-inline-input__error" role="alert">
+          <FieldError testId="settings-inline-input-error">{error}</FieldError>
+        </div>
       )}
     </div>
   );

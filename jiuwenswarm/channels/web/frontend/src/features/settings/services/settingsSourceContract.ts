@@ -12,13 +12,14 @@ const BROWSER_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([
 const LOCALE_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([['preferred_language', 'select']]);
 
 export function isSettingsSource(value: unknown): value is SettingsSource {
-  return value === 'config' || value === 'browser' || value === 'locale';
+  return value === 'config' || value === 'browser' || value === 'locale' || value === 'personalContext';
 }
 
 export function isSettingsSourceKey(source: SettingsSource, key: string): boolean {
   if (source === 'config') return SETTINGS_CONFIG_FIELD_BY_KEY.has(key);
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.has(key);
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.has(key);
+  if (source === 'personalContext') return key === 'max_context_size_mb';
   return false;
 }
 
@@ -29,6 +30,7 @@ export function isSettingsSourceComponent(
 ): boolean {
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.get(key) === component;
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.get(key) === component;
+  if (source === 'personalContext') return key === 'max_context_size_mb' && component === 'input';
   const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);
   if (!field) return false;
   if (component === 'switch') return field.kind === 'boolean';

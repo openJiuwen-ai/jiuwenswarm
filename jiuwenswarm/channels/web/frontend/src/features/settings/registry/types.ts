@@ -5,7 +5,7 @@ export type SettingsModuleId =
   'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
-export type SettingsSource = 'config' | 'browser' | 'locale';
+export type SettingsSource = 'config' | 'browser' | 'locale' | 'personalContext';
 export type SettingValue = string | number | boolean;
 export type SettingsAccessNode =
   | { kind: 'module'; moduleId: string }
@@ -64,6 +64,7 @@ export type SettingItemDefinition =
       component: 'input';
       key: string;
       inputType?: 'text' | 'password';
+      inputMode?: 'text' | 'numeric';
     })
   | (SettingItemBase & {
       component: 'custom';
