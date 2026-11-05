@@ -14,7 +14,7 @@ import math
 import re
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from jiuwenswarm.gateway.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
 from jiuwenswarm.gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
@@ -223,6 +223,12 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "src": LOCALIZED_TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
         "minWidth": {"kind": "number", "min": 0, "max": 4096},
     }, "required": ("title",)},
+    "MediaSurface": {"props": {
+        "kind": token("image", "video", "html"), "src": TEXT, "title": {"kind": "string", "maxBytes": 200},
+        "poster": TEXT, "fit": token("cover", "contain"), "position": token("center", "top", "bottom", "left", "right"),
+        "loop": BOOL, "muted": BOOL, "dim": {"kind": "number", "min": 0, "max": 0.9},
+        "blur": {"kind": "number", "min": 0, "max": 40}, "opacity": {"kind": "number", "min": 0.1, "max": 1},
+    }, "required": ("kind", "src", "title")},
 }
 
 
@@ -387,6 +393,38 @@ def valid_url(value: str, *, iframe: bool = False) -> bool:
         return False
 
 
+MEDIA_URL_PREFIX = "/extension-assets/"
+_MEDIA_PATH_CHARS = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*")
+# Printable ASCII without the space and the backslash.
+_MEDIA_FORBIDDEN = re.compile(r"[^\x21-\x5b\x5d-\x7e]")
+_MEDIA_BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_MEDIA_BAD_SEGMENT = re.compile(r"[/\\\x00-\x1f\x7f]")
+
+
+def valid_media_url(value: str) -> bool:
+    """Accept only site-relative package or data asset paths for MediaSurface.
+
+    The browser copy in ``catalog/components/mediaSurface.ts`` applies the same
+    steps so both sides reach the same verdict.
+    """
+    if _MEDIA_FORBIDDEN.search(value):
+        return False
+    path = re.split(r"[?#]", value, maxsplit=1)[0]
+    if not path.startswith(MEDIA_URL_PREFIX) or not _MEDIA_PATH_CHARS.fullmatch(path) or _MEDIA_BAD_ESCAPE.search(path):
+        return False
+    segments = path[len(MEDIA_URL_PREFIX):].split("/")
+    if len(segments) < 3:
+        return False
+    for segment in segments:
+        try:
+            decoded = unquote(segment, errors="strict")
+        except UnicodeDecodeError:
+            return False
+        if not segment or decoded in (".", "..") or _MEDIA_BAD_SEGMENT.search(decoded):
+            return False
+    return True
+
+
 def _dimension_allowed(value: Any, *, allow_auto: bool) -> bool:
     if finite_number(value):
         return 0 <= value <= 4096
@@ -513,8 +551,12 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "preview content or URL is required"
         if file is not None and "downloadUrl" in file and not valid_url(file["downloadUrl"]):
             return "invalid preview URL"
-    if component == "Panel" and not props["title"].strip():
+    if component in ("Panel", "MediaSurface") and not props["title"].strip():
         return "title is required"
+    if component == "MediaSurface" and any(
+        key in props and not valid_media_url(props[key]) for key in ("src", "poster")
+    ):
+        return "invalid media URL"
     if component == "Iframe":
         title = props["title"]
         titles = [title] if isinstance(title, str) else list(title.values())

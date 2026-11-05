@@ -34,9 +34,12 @@ test('Divider title sources and vertical titles follow the shared props contract
 });
 
 const gatewayCases = JSON.parse(readFileSync(new URL('./fixtures/webuiGatewayCases.json', import.meta.url), 'utf8'));
-for (const { name, root, valid } of gatewayCases) {
+for (const { name, root, valid, slot } of gatewayCases) {
   test(`Gateway component contract: ${name}`, () => {
-    assert.equal(pipeline.processRenderFrame(renderFrame(root)).ok, valid);
+    // Slot cases check root placement on an application slot as the Gateway does.
+    const options = slot
+      ? { target: { scope: 'application', slot_id: slot, package_id: 'pkg.contract', instance_key: 'main' } } : {};
+    assert.equal(pipeline.processRenderFrame(renderFrame(root, options)).ok, valid);
   });
 }
 

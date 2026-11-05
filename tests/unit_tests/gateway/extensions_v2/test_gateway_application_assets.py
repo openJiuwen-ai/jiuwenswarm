@@ -120,6 +120,53 @@ async def test_package_without_client_receives_ready_and_click(tmp_path):
         await runtime.shutdown()
 
 
+async def test_background_package_renders_a_media_surface_from_its_assets(tmp_path):
+    """A package contributing only application.background gets ready and renders MediaSurface (F_10)."""
+    results = []
+
+    async def ready(event, ops, next_handler):
+        target = event.event_input.target
+        src = await ops.ui.asset_url("bg.bin")
+        for root in (
+            RenderNode(component="MediaSurface", props={"kind": "image", "src": src, "title": "Theme"}),
+            RenderNode(component="Box", props={}),
+            RenderNode(component="MediaSurface", props={"kind": "image", "src": "https://example.com/bg.png",
+                                                        "title": "Theme"}),
+        ):
+            results.append(await ops.ui.render(UiRenderInput(
+                target=RenderTarget(session_id="", slot_id=target.slot_id, instance_key=target.instance_key),
+                root=root,
+            )))
+        return UiActionOutput(accepted=True, status="ready")
+
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(LoadedPackage(
+            package_id=PACKAGE, version="1.0.0", root=_package_root(tmp_path, "pkg"),
+            handlers=(HandlerDeclaration("ui.ready", ready, {"target.package_id": PACKAGE}, "ready"),), client={},
+            ui={"apiVersion": 1, "items": [{"type": "web.slot.contribution", "slot": "application.background"}]},
+        ))
+        ws = SimpleNamespace(closed=False)
+        visited, _ = await runtime.intercept(ws, "ready", "webui.dispatch", {
+            "event": "ui.ready", "payload": {},
+            "target": {"scope": "application", "slot_id": "application.background", "instance_key": "main"},
+        })
+        assert visited is True
+        assert runtime.channel.responses[-1]["payload"] == {"accepted": True, "status": "ready"}
+        assert [result.status for result in results] == [
+            RenderStatus.DELIVERED, RenderStatus.REJECTED, RenderStatus.REJECTED,
+        ]
+        record = runtime.registry.get(RenderTarget(
+            session_id="", slot_id="application.background", package_id=PACKAGE, instance_key="main",
+            scope="application", connection_id=await runtime.connection_id(ws),
+        ))
+        generation = runtime.browser.generations[PACKAGE]
+        assert record.root.component == "MediaSurface"
+        assert record.root.props["src"] == f"/extension-assets/{PACKAGE}/{generation}/bg.bin"
+    finally:
+        await runtime.shutdown()
+
+
 async def test_package_without_client_gets_assets_but_not_browser_operations(tmp_path):
     results = {}
 

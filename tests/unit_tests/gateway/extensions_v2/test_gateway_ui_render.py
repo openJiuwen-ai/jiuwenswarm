@@ -23,7 +23,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
     UiRenderInput,
     UiRenderOutput,
 )
-from jiuwenswarm.gateway.extensions_v2.webui.schema import validate_root
+from jiuwenswarm.gateway.extensions_v2.webui.schema import validate_request, validate_root
 
 
 def _contract_node(raw: dict) -> RenderNode:
@@ -48,7 +48,14 @@ CONTRACT_CASES = json.loads((Path(__file__).parents[4] / (
 
 @pytest.mark.parametrize("case", CONTRACT_CASES, ids=lambda case: case["name"])
 def test_gateway_component_contract_matches_browser(case):
-    assert validate_root(_contract_node(case["root"])).ok is case["valid"]
+    root = _contract_node(case["root"])
+    if "slot" not in case:
+        assert validate_root(root).ok is case["valid"]
+        return
+    # Slot cases check root placement as well; every Gateway slot is application-scoped.
+    target = RenderTarget(session_id="", slot_id=case["slot"], package_id="pkg.contract", instance_key="main",
+                          scope="application", connection_id="ws-contract")
+    assert validate_request(UiRenderInput(target=target, root=root)).ok is case["valid"]
 
 
 SHARED_PROP_CASES = json.loads((Path(__file__).parents[4] / (

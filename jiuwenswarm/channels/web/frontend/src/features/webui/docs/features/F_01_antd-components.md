@@ -1,6 +1,6 @@
 # WebUI 组件目录与渲染适配
 
-建档日期：2026-10-30。最近修订：2026-11-04。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+建档日期：2026-10-30。最近修订：2026-11-05。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
 Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)，作为插件侧、后端和前端共同遵循的属性定义；
 本次核对完整字段、嵌套结构、事件、默认值和功能影响，并将后续变更顺序写入仓库规则。
 实施及验证记录在本文件维护；属性清单只在 S_17 维护，现有规则代码继续负责执行，尚无自动生成链路。
@@ -10,7 +10,7 @@ Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../.
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 21 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown` 与 `Icon`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
+目录包含 24 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item` 与 `MediaSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍
@@ -384,3 +384,22 @@ value in a native tooltip. This introduces no new plugin props or navigation cap
 最小宽度、内联详情“插件页面”与 360px 最小宽度。人工核对来源字体 13px、次级文字语义色、
 可选择文字和单行省略均实际生效。截图为本次 plugin-update-200820 输出目录的
 iframe-source-url.png 与 iframe-source-inline.png。本次工具操作未发起模型调用。
+
+### 2026-11-05 MediaSurface 与应用背景
+
+新增 Gateway 专用根组件 MediaSurface（[S_17 §4.24](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)）与
+应用级槽位 application.background（single，rootComponents=['MediaSurface']，strictRoot=true）。
+槽位规则新增 strictRoot，右侧面板改用该标记表达原有的严格根约束；根专用组件列表由 normalizeTree 统一导出。
+适配器按 kind 渲染图片、视频或 sandbox="allow-scripts" 的 iframe，宿主策略经 MediaSurfacePolicyContext 注入；
+WebUIBackgroundHost 在 WebUIAppRoot 中全窗口底层挂载该槽位。行为契约见
+[Gateway S_07](../../../../../../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)，方案与浏览器验证见
+[Gateway F_10](../../../../../../../../gateway/extensions_v2/docs/features/F_10_media-surface-and-background.md)。
+组件总数由 23 调整为 24；没有新增用户可见文字。
+
+验证结果：
+
+- test:webui-contracts 150、test:webui-protocol 14、test:webui-components 193（含 38 条新增 Gateway / 浏览器共享用例与
+  5 条 MediaSurface / 背景宿主 React 用例）、test:webui-renderer 17、test:webui-runtime 19、test:webui-client 22、
+  test:webui-events 93、test:webui-transport 9，均为 0 失败。
+- `npm run build` 成功（tsc 与 vite build）。
+- 内置浏览器验证了图片、视频、超时回退与清除；HTML 页面消息往返的真实浏览器验证待补，原因见 F_10。

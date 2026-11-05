@@ -28,9 +28,9 @@
 | EXTV2-GW-06 | `ops.http.fetch` 与示例包 | 出站 HTTP、白名单策略、[auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) | [F_06](../features/F_06_http-fetch.md) | [S_05](../specs/S_05_http-fetch.md) | `test_gateway_http_fetch.py` | 未登记 | 已实现（单测通过） |
 | EXTV2-GW-07 | 应用级 UI 包与素材交付 | 应用级槽位贡献包统一取得激活代次、交互分派、`ops.ui.asset_url` 与素材；素材路由加沙箱策略；`app_web` 流式转发素材 | [F_08](../features/F_08_application-packages-and-assets.md) | [S_06](../specs/S_06_local-browser-bridge.md)、[S_01](../specs/S_01_gateway-extension-runtime.md) | `test_gateway_browser_bridge.py`、`test_gateway_application_assets.py`、`tests/unit_tests/channels/web/test_app_web_extension_assets.py` | Song Haoran | 已实现（单测通过） |
 | EXTV2-GW-08 | Gateway 存储与包数据目录 | 接入 Core `JsonStore` 与 `ops.store.*`；`ops.data.root()`；数据素材；卸载清理 | [F_09](../features/F_09_package-store-and-data.md) | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_06](../specs/S_06_local-browser-bridge.md) | `test_gateway_package_data.py` | Song Haoran | 已实现（单测通过） |
-| EXTV2-GW-09 | 媒体容器渲染器 | 无操作栏的沙箱容器、自动播放、令牌与来源校验、心跳与结束 | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
-| EXTV2-GW-10 | 应用背景与受控外观 | `application.background`、`ops.appearance.apply` 与半透明模式 | 待建档 | [S_02](../specs/S_02_ui-render.md)、待建档 | 待定 | Song Haoran | 未开始 |
-| EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、定向 `ui.ready`、开场顺序、跳过与时长、`ui.closed` | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
+| EXTV2-GW-09 | 媒体容器与应用背景 | `MediaSurface` 根组件（图片、视频、沙箱页面）、令牌与来源校验的消息协议、`application.background` 槽位与前端背景宿主 | [F_10](../features/F_10_media-surface-and-background.md) | [S_07](../specs/S_07_media-surface.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_ui_render.py`、`test_gateway_application_assets.py`；前端 `test:webui-components`、`test:webui-protocol`、`test:webui-contracts` | Song Haoran | 已实现（单测通过；页面消息往返的浏览器验证待补） |
+| EXTV2-GW-10 | 受控外观 | `ops.appearance.apply`、宿主半透明模式与外观撤销 | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
+| EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、定向 `ui.ready`、开场槽位（复用 `MediaSurface` 的心跳与完成）、开场顺序、跳过与时长、`ui.closed` | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
 | EXTV2-GW-12 | 应用级设置页 | 不依赖会话的应用级设置槽位与桌面路径选择 | 待建档 | [S_02](../specs/S_02_ui-render.md) | 待定 | Song Haoran | 未开始 |
 
 ## 3. 依赖与开工条件
@@ -44,8 +44,8 @@ flowchart LR
     G5 --> G6["GW-06 http.fetch / 独立 Mock 示例"]
     G5 --> G7["GW-07 应用级 UI 包与素材"]
     G7 --> G8["GW-08 存储与数据目录"]
-    G7 --> G9["GW-09 媒体容器"]
-    G9 --> G10["GW-10 背景与外观"]
+    G7 --> G9["GW-09 媒体容器与背景"]
+    G9 --> G10["GW-10 受控外观"]
     G9 --> G11["GW-11 启动门控与开场"]
     G7 --> G12["GW-12 应用级设置页"]
 ```
@@ -68,7 +68,8 @@ flowchart LR
 | GW-06 | 白名单空拒绝一切、`host:port` 匹配、超时与响应体上限、示例包登录成功/失败两条路径 |
 | GW-07 | 无请求绑定的应用级 UI 包可收到 ready/click 与素材；请求绑定与客户端操作仍限于声明 client 的包；素材越界与失活代次被拒绝，USER 请求策略可拒绝或接管素材；沙箱策略头；`app_web` 转发、Range 与流式输出 |
 | GW-08 | 存储按包隔离并跨重载与重启保留；数据目录与数据素材越界、符号链接拒绝；卸载删除且失败可重试；重载保留 |
-| GW-09～GW-12 | 在各自 feature 建档时补充 |
+| GW-09 | 两端字段、根节点与槽位结论一致（共享用例）；图片、视频、页面渲染与宿主策略；消息的来源、令牌与事件校验；就绪超时、错误与减少动态回退；背景层不接收输入、根元素标记；声明背景槽位的包收到 `ui.ready`；真实浏览器显示 |
+| GW-10～GW-12 | 在各自 feature 建档时补充 |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -87,10 +88,12 @@ flowchart LR
 | 2026-11-05 | GW-07～GW-12 | 建立应用级界面能力条目，负责人 Song Haoran；GW-07 开工，方案见 F_08 |
 | 2026-11-05 | GW-07 | 应用级 UI 包与素材交付实现，单测通过（Gateway 扩展 325 项、Web 渠道相关 155 项）；打包版联调待 GW-09，证据见 F_08 |
 | 2026-11-05 | GW-08 | 包存储与数据目录实现，单测通过（Gateway 扩展 331 项），证据见 F_09 |
+| 2026-11-05 | GW-09～GW-11 | 调整拆分：`application.background` 随媒体容器在 GW-09 交付，GW-10 只做受控外观，开场槽位归 GW-11；GW-09 开工，方案见 F_10 |
+| 2026-11-05 | GW-09 | 媒体容器与应用背景实现，单测通过（Gateway 扩展 370 项、前端 WebUI 各套件全部通过、构建成功）；内置浏览器验证图片、视频、超时回退与素材响应头，页面消息往返的浏览器验证待补，证据见 F_10 |
 
 ## 6. 风险与待确认
 
-- Gateway 当前只接入 application.entry 与 application.sidebar.footer；其他槽位沿用所属宿主的链路。
+- Gateway 当前只接入 application.entry、application.sidebar.footer 与 application.background；其他槽位沿用所属宿主的链路。
 - 鉴权由 USER 包负责，旧内置门禁已移除。平台数据路由不因示例账号变化而隔离。
 - Gateway 与 AgentServer 的同名事件语义不同（`ui.click` 在两侧各自注册）；一个包只能归属一侧（`package.domain`），需要两侧能力时拆成两个包。
 - 前端协议桩浏览器验证与真实 Gateway/示例接入分别记录在前端 F_02 和本模块 F_07，不将 Mock 验证解释为真实身份服务验收。

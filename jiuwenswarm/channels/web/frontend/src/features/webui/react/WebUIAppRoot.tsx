@@ -9,6 +9,7 @@ import { webClient } from '../../../services/webClient';
 import { createWebUIAppRuntime } from '../assembly/createWebUIAppRuntime.ts';
 import { componentCatalog } from '../catalog/componentCatalog.ts';
 import { createComponentRendererRegistry } from '../renderer/adapters/componentRegistry.ts';
+import { WebUIBackgroundHost } from './WebUIBackgroundHost.tsx';
 import { WebUIEntryHost } from './WebUIEntryHost.tsx';
 import { WebUIProvider } from './WebUIProvider.tsx';
 import { browserClientCapabilities } from '../client/browserClient.ts';
@@ -51,6 +52,7 @@ export function WebUIAppRoot({ children }: WebUIAppRootProps) {
 
   return (
     <WebUIProvider runtime={app.runtime} registry={app.registry}>
+      <WebUIBackgroundHost />
       <WebUIEntryHost notice={error ? <div role="alert" className="webui-entry-notice" data-testid="webui-client-error">
         {t(error === 'CONFIGURATION_ERROR' ? 'webui.clientConfigurationError' : 'webui.clientOperationError')}
       </div> : undefined}>
