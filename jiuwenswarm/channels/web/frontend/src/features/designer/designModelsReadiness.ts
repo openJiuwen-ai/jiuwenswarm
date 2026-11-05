@@ -12,6 +12,7 @@ import { useSessionStore } from '../../stores/sessionStore';
 import { designChatModelReady, designChatModelUsesAnthropic } from './designChatModelState';
 import { generationProblemFromConfig, type GenerationKind } from './designGenerationReadiness';
 import { nodeGenerationKind, type MaybeNode } from './designerNodeGenerationKind';
+import type { DesignerExecutionGraph } from './executionGraphTypes';
 import type { ModelEntry } from '../../types';
 
 /**
@@ -73,10 +74,10 @@ export async function findDesignChatModelProblem(sessionId?: string | null): Pro
  * text-only graph is not blocked by an image slot it would never call, and the
  * chat model keeps its existing handling (see `findDesignModelsProblem`).
  */
-export async function findDesignRunProblem(nodes: readonly MaybeNode[]): Promise<string | null> {
+export async function findDesignRunProblem(nodes: readonly MaybeNode[], graph?: DesignerExecutionGraph | null): Promise<string | null> {
   const kinds = new Set<GenerationKind>();
   for (const node of nodes) {
-    const kind = nodeGenerationKind(node);
+    const kind = nodeGenerationKind(node, graph);
     if (kind) kinds.add(kind);
   }
   if (kinds.size === 0) return null;

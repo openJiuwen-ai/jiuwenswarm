@@ -71,6 +71,12 @@ class FakeAgent:
     def restore_skill_retrieval_session(self, *args, **kwargs) -> None:
         """Match the child adapter's Skill retrieval restore hook."""
 
+    def configure_initial_execution(self, *, model_name, request=None, can_access=None) -> None:
+        """Accept the first-turn context through the child adapter's public API."""
+        self._initial_execution_model_name = str(model_name or "").strip()
+        self._initial_execution_request = request
+        self._model_selection_can_access = can_access
+
     def persist_skill_retrieval_session_profile(self) -> None:
         """Match the child adapter's public profile persistence hook."""
 
@@ -551,8 +557,7 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
         stop_paused,
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
@@ -577,7 +582,12 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
 
     assert calls == [
         (
@@ -613,14 +623,16 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
     )
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", fake_reload)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
             "payload": resp.payload,
         },
     )
+    from jiuwenswarm.server.runtime import opencode_zen as _opencode_zen
+
+    monkeypatch.setattr(_opencode_zen, "warm_zen_free_models", AsyncMock())
 
     request = AgentRequest(
         request_id="reload-disable-a4p",
@@ -633,7 +645,12 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
 
     assert order == ["reload"]
     reconfigure.assert_not_awaited()
@@ -655,8 +672,7 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
         stop_paused,
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
@@ -676,7 +692,12 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
 
     reload_agents.assert_not_awaited()
     stop_paused.assert_not_awaited()
@@ -692,13 +713,11 @@ async def test_agent_reload_config_handler_applies_proactive_scope_without_agent
 
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "get_config",
+        "jiuwenswarm.common.config.get_config",
         lambda: {"proactive_recommendation": {"enabled": True}},
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
@@ -718,7 +737,12 @@ async def test_agent_reload_config_handler_applies_proactive_scope_without_agent
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
 
     reload_agents.assert_not_awaited()
     proactive_engine.reload_config.assert_called_once_with({"enabled": True})
@@ -754,8 +778,7 @@ async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkey
         AsyncMock(),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
@@ -774,7 +797,12 @@ async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkey
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
     # create_task 调度的 warm 需要让出控制权后才会执行
     await asyncio.sleep(0)
 
@@ -806,8 +834,7 @@ async def test_tool_reload_refreshes_agents_without_model_probes(monkeypatch, sc
     )
     monkeypatch.setattr(opencode_zen, "warm_zen_free_models", warm_zen)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
@@ -828,7 +855,12 @@ async def test_tool_reload_refreshes_agents_without_model_probes(monkeypatch, sc
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
     await asyncio.sleep(0)
 
     reload_agents.assert_awaited_once_with(
@@ -1121,7 +1153,7 @@ def test_deep_adapter_resolve_model_for_request_falls_back_to_session_metadata()
 
 
 def test_deep_adapter_persisted_selection_overrides_last_resolved_model():
-    from jiuwenswarm.common.model_selection import ModelSelection
+    from agent_gateway.common.model_selection import ModelSelection
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         AgentRequest,
         JiuWenSwarmDeepAdapter,

@@ -8,11 +8,15 @@ import { useOrganizationConversationKey } from '../../features/teamOrganization/
 import { useTranslation } from 'react-i18next';
 import { conversationKey, useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Info } from 'lucide-react';
+import { Building2, Info } from 'lucide-react';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { OrganizationTeamsList } from '../teamArea/OrganizationTeamsList';
 import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel';
 import { useTaskPlanningMetrics } from '../teamArea';
 import { ExpandedPanel } from '../teamArea/ExpandedPanel';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
+import { restoreOrganizationGroupHistory } from '../../features/teamOrganization/groupHistory';
+import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
 import { CompactTaskList } from '../teamArea/CompactTaskList';
@@ -150,6 +154,7 @@ export function ToolPanel({
   onCloseFloating,
 }: ToolPanelProps) {
   const { t } = useTranslation();
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
@@ -164,8 +169,8 @@ export function ToolPanel({
   const teamHistoryMessages = useSessionStore(s => s.runtimes[conversationId]?.teamHistoryMessages ?? []);
   const setTeamMembers = useSessionStore(s => s.setTeamMembers);
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
+  const setTeamTaskTimeline = useSessionStore(s => s.setTeamTaskTimeline);
   const setTeamTasks = useSessionStore(s => s.setTeamTasks);
-  const mergeTeamTaskProgressBaseline = useSessionStore(s => s.mergeTeamTaskProgressBaseline);
   const setTeamMemberExecutionEvents = useSessionStore(s => s.setTeamMemberExecutionEvents);
   const setTeamHistoryMessages = useSessionStore(s => s.setTeamHistoryMessages);
   const setTeamHumanShareCommands = useSessionStore(s => s.setTeamHumanShareCommands);
@@ -174,7 +179,7 @@ export function ToolPanel({
   const [teamPlanningExpanded, setTeamPlanningExpanded] = useState(false);
   const [teamMembersExpanded, setTeamMembersExpanded] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
-  const { completedTasks: teamCompletedTasks, progressTasks, teamTasks, totalTasks: teamTotalTasks, now } = useTaskPlanningMetrics();
+  const { completedTasks: teamCompletedTasks, teamTasks, totalTasks: teamTotalTasks } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
   const sessionAssetCount = useSessionAssetsStore(selectSessionAssets(activeSessionId)).length;
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
@@ -329,10 +334,6 @@ export function ToolPanel({
     () => [...applicationPlanningTasks, ...teamTasks],
     [applicationPlanningTasks, teamTasks],
   );
-  const teamPlanningProgress = useMemo(
-    () => [...applicationPlanningTasks, ...progressTasks],
-    [applicationPlanningTasks, progressTasks],
-  );
   const applicationCompleted = applicationPlanningTasks.filter((task) => task.status === 'completed').length;
   const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
@@ -402,15 +403,26 @@ export function ToolPanel({
         if (controller.signal.aborted) return;
         loadingTeamHistorySessionRef.current = null;
         hydratedTeamHistorySessionRef.current = sessionId;
+        restoreOrganizationGroupHistory(sessionId, historyState);
         const current = useSessionStore.getState().runtimes[sessionId];
         const mergedMembers = mergeById(historyState.members, current?.teamMembers ?? [], member => member.member_id);
         if (mergedMembers.length > 0) {
           setTeamMembers(sessionId, mergedMembers);
         }
+        // 离队目录：历史回放为底，叠加恢复期间实时记下的；已回到名册的成员不再算离队。
+        const rosterIds = new Set(mergedMembers.map(member => member.member_id));
+        const mergedDepartedMembers = mergeById(
+          historyState.departedMembers,
+          current?.teamDepartedMembers ?? [],
+          member => member.member_id,
+        ).filter(member => !rosterIds.has(member.member_id));
+        useSessionStore.getState().setTeamDepartedMembers(sessionId, mergedDepartedMembers);
 
         const mergedTaskEvents = mergeById(historyState.taskEvents, current?.teamTaskEvents ?? [], event => event.task_id);
         // Always apply — an empty restored list must clear stale events too.
         setTeamTaskEvents(sessionId, mergedTaskEvents);
+        // 时间线：历史为底，叠加恢复期间已到的实时事件（去重见 mergeTaskTimeline）。
+        setTeamTaskTimeline(sessionId, mergeTaskTimeline(historyState.taskTimeline, current?.teamTaskTimeline ?? []));
 
         // History/snapshot is the authoritative board after restore. Never import
         // live-only task_ids (LLM `id` orphans left in the waiting column from
@@ -421,7 +433,6 @@ export function ToolPanel({
         const liveTasksForMerge = (current?.teamTasks ?? []).filter(task => restoredTaskIds.has(task.task_id));
         const mergedTasks = mergeById(historyState.tasks, liveTasksForMerge, task => task.task_id);
         setTeamTasks(sessionId, mergedTasks);
-        mergeTeamTaskProgressBaseline(sessionId, historyState.taskProgressBaseline);
 
         // 同一次调用在两条路径下的 id 不同（实时 stableEventId vs 历史恢复
         // hist-*），按 id 合并会留下两张卡片；调用/结果改按 (member, kind,
@@ -467,7 +478,6 @@ export function ToolPanel({
   }, [
     isConnected,
     isNewSessionPromotion,
-    mergeTeamTaskProgressBaseline,
     mode,
     sessionId,
     setTeamHistoryMessages,
@@ -475,6 +485,7 @@ export function ToolPanel({
     setTeamMemberExecutionEvents,
     setTeamMembers,
     setTeamTaskEvents,
+    setTeamTaskTimeline,
     setTeamTasks,
   ]);
 
@@ -535,6 +546,7 @@ export function ToolPanel({
                 <TeamMembersPanel
                   variant="expanded"
                   members={teamMembers}
+                  tasks={teamTasks}
                   connectionPresentation={teamConnectionPresentation}
                   selectedMemberId={teamAreaSelectedMemberId ?? ''}
                   selectedMember={teamMembers.find(m => m.member_id === teamAreaSelectedMemberId) ?? null}
@@ -556,8 +568,6 @@ export function ToolPanel({
                 <TaskPlanningPanel
                   variant="expanded"
                   tasks={teamPlanningTasks}
-                  progressTasks={teamPlanningProgress}
-                  now={now}
                   members={teamMembers}
                   totalTasks={teamTotalTasks + applicationPlanningTasks.length}
                   completedTasks={teamCompletedTasks + applicationCompleted}
@@ -689,7 +699,7 @@ export function ToolPanel({
                 const remaining = teamMembersExpanded ? 0 : group.items.length - visible.length;
                 return (
                   <div key={group.runId} className="border-b border-border last:border-b-0">
-                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} executor={group.executor} />
                     <CompactTaskList
                       tasks={visible}
                       members={teamMembers}
@@ -705,6 +715,21 @@ export function ToolPanel({
               })}
             </>
           )}
+        </CollapsibleSection>
+      ),
+    },
+    isTeam && organizationUiEnabled && {
+      key: 'organization',
+      testId: 'tool-panel-organization-pane',
+      render: () => (
+        <CollapsibleSection
+          title={t('team.org.tab')}
+          icon={<Building2 size={16} aria-hidden="true" />}
+          onExpand={() => expandTo('organization')}
+          dataTestId="tool-panel-organization"
+          defaultCollapsed
+        >
+          <OrganizationTeamsList />
         </CollapsibleSection>
       ),
     },

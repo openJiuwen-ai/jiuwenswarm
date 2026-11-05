@@ -15,43 +15,26 @@ export type GroupCatalogViewModel = {
   totalItems: number;
 };
 
-const CATEGORY_ALIASES: Record<string, ReadonlySet<string>> = {
-  ProductDevelopment: new Set(['ProductDevelopment', 'Engineering']),
-  Marketing: new Set(['Marketing']),
-  Efficiency: new Set(['Efficiency']),
-  DataAnalysis: new Set(['DataAnalysis']),
-  ContentCreation: new Set(['ContentCreation', 'Design']),
-  SafetyCompliance: new Set(['SafetyCompliance']),
-  Communication: new Set(['Communication']),
-};
+/**
+ * Category tabs are derived from the loaded marketplace data: every distinct
+ * non-empty category becomes a tab, ordered by frequency. No artificial
+ * "Other" bucket is synthesized, so tabs stay consistent with the catalog.
+ */
+export function collectCategories(categories: readonly string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const raw of categories) {
+    const category = raw.trim();
+    if (!category) continue;
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([key]) => key);
+}
 
 function matchesCategory(category: string, itemCategory: string): boolean {
   if (!category) return true;
-  const aliases = CATEGORY_ALIASES[category];
-  if (aliases) return aliases.has(itemCategory);
-  if (category === 'Other') {
-    return !Object.values(CATEGORY_ALIASES).some((values) => values.has(itemCategory));
-  }
-  return itemCategory === category;
-}
-
-const GROUP_CATEGORY_ALIASES: Record<string, ReadonlySet<string>> = {
-  ProductDevelopment: new Set(['productdevelopment', 'product-development', 'engineering']),
-  Marketing: new Set(['marketing']),
-  Efficiency: new Set(['efficiency']),
-  DataAnalysis: new Set(['dataanalysis', 'data-analysis']),
-  ContentCreation: new Set(['contentcreation', 'content-creation', 'design']),
-  SafetyCompliance: new Set(['safetycompliance', 'safety-compliance']),
-  Communication: new Set(['communication']),
-};
-
-function matchesGroupCategory(category: string, itemCategory: string): boolean {
-  if (!category) return true;
-  const normalized = itemCategory.trim().toLowerCase();
-  const aliases = GROUP_CATEGORY_ALIASES[category];
-  if (aliases) return aliases.has(normalized);
-  if (category === 'Other') return !Object.values(GROUP_CATEGORY_ALIASES).some(values => values.has(normalized));
-  return normalized === category.trim().toLowerCase();
+  return itemCategory.trim() === category;
 }
 
 export function findFirstPreviewableFile(entries: DefinitionFileEntry[]): string | null {
@@ -162,9 +145,13 @@ export function buildGroupCatalogViewModel(
   const filtered = catalog.filter(item => {
     if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') return false;
     if (options.scope === 'mine' && item.source !== 'local' && !item.installed) return false;
-    if (options.installation && options.installation !== 'all'
-      && item.installed !== (options.installation === 'installed')) return false;
-    if (options.scope === 'catalog' && !matchesGroupCategory(options.category, item.category)) return false;
+    if (
+      options.installation &&
+      options.installation !== 'all' &&
+      item.installed !== (options.installation === 'installed')
+    )
+      return false;
+    if (options.scope === 'catalog' && !matchesCategory(options.category, item.category)) return false;
     if (!query) return true;
     if (options.scope === 'mine') return matchesAssetName(query, [item.displayName]);
     const tags = item.tags.map(tag => tag.label).join(' ');

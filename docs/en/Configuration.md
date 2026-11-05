@@ -205,7 +205,7 @@ This section summarizes configuration for search and external services. All item
 | `serper_api_key` | Serper Search | [Serper](https://serper.dev/) |
 | `perplexity_api_key` | Perplexity | [Perplexity](https://www.perplexity.ai/) |
 | `github_token` | GitHub; SkillNet, etc. | [GitHub Tokens](https://github.com/settings/tokens) |
-| `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://teamskills.openjiuwen.com) |
+| `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://swarmskills.openjiuwen.com) |
 
 > ⚠️ **Note**: All optional. If unset, related features may be unavailable or fall back to degraded strategies; exact behavior depends on your product version.
 
@@ -448,7 +448,7 @@ settings are mapped by the JiuwenSwarm Adapter to agent-core's
 | `symphony.skill_retrieval.retrieve.flatten_tree` | `false` | Whether retrieval flattens the skill tree |
 | `symphony.skill_retrieval.retrieve.max_exposure_depth` | `1` | Maximum tree depth exposed by one `skill_branch_explore` call |
 
-> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](symphony.md).
+> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](Symphony.md).
 
 ---
 
@@ -560,3 +560,23 @@ A: No. Tool Security Guardrails corresponds to `permissions.enabled`, which defa
 A: The system automatically detects and hot-reloads the file after saving (most settings take effect immediately; a few require a process restart). If changes do not apply after a long time, check the YAML format or re-save via the Web configuration panel to trigger a refresh.
 
 ---
+
+## Keeping sessions and SQLite trajectories indefinitely
+
+Merge these fields into the existing sections in `config/config.yaml` under the data directory:
+
+```yaml
+session_cleanup:
+  retention_days: 0
+trajectory_ui:
+  retention_days: 0
+  discard_final_span_frames: false
+```
+
+`session_cleanup.retention_days` defaults to `30`. Sessions expire by directory modification time, and orphan file-operation logs are cleaned separately. Zero disables both automatic cleanup operations. The legacy `CLEANUP_PERIOD_DAYS` environment variable overrides the configuration; zero also disables cleanup there. Invalid or negative settings fall back to the default.
+
+`trajectory_ui.retention_days` defaults to `7`. Zero disables both expiry of records inside SQLite and sweeping of idle session databases, including WAL/SHM files. `discard_final_span_frames` defaults to `true`, deleting stream frames replaced by a completed span's final record; set it to `false` to keep these frames too.
+
+Restart services after editing. Session archival requires an explicit operation; there is no scheduled automatic archival. These settings leave manual archive/delete operations and ordinary log/OTel file-exporter rotation available. Disk usage grows as history accumulates.
+
+When the SQLite schema is incompatible, the SQLite backup API first saves the old database, including committed WAL contents, as a standalone database. Only a successful backup permits rebuilding the active store. Archives keep the original filename and schema inside a sibling directory named `<database-filename>.schema-<old-version>.<UTC-timestamp>.<unique-id>.archive/`. They are never automatically expired or overwritten by later upgrades. Archive failure stops initialization and preserves the original database. Read archived history offline with tools compatible with its old schema; the current trajectory UI reads only the new database.

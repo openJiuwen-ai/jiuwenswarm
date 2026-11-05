@@ -282,7 +282,7 @@ class WebAuthorizerBroker:
         event_type: str,
         terminal: dict[str, Any] | None = None,
     ) -> None:
-        from jiuwenswarm.runtime.host_services import send_runtime_push
+        from jiuwenswarm.common.host_services import send_runtime_push
 
         ui_context = dict(request.ui_context)
         route = request.route

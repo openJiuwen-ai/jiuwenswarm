@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 from openjiuwen.harness import persistent_agent as core
 
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.gateway.routing.keys import ChannelKey
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.routing.keys import ChannelKey
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot
 

@@ -79,8 +79,7 @@ backend skills. Electron DMGs are named
 name used by the Python desktop package. Test artifacts retain the distinct
 `electron-test` or `electron-frontend-test` names.
 
-Official macOS releases contain one ARM64 Electron DMG; x86_64 artifacts are
-for local validation only and must not be uploaded to that release. The existing
+Current macOS packages are ARM64 Electron DMGs only; Intel (x86_64) Mac packages and Universal binaries are not supported. Build and validate packages in a native arm64 environment on an Apple Silicon Mac. The existing
 backend installer selection is unchanged, so it does not block pywebview clients
 from selecting the first Electron release. The Electron macOS install helper
 verifies the native architecture and stages a signed, Gatekeeper-approved app before

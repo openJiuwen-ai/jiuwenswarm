@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from agent_gateway.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
 
 from jiuwenswarm.channels.process_cli import protocol
 from jiuwenswarm.channels.process_cli.protocol import (
@@ -22,7 +23,6 @@ from jiuwenswarm.channels.process_cli.protocol import (
     SingleAgentMode,
     WorkspaceSpec,
 )
-from jiuwenswarm.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
 from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.events import RuntimeEvent
 
@@ -374,7 +374,7 @@ unexpected = sorted(
     name for name in sys.modules
     if name == 'jiuwenswarm.runtime.service'
     or name.startswith('jiuwenswarm.server.agent_ws_server')
-    or name.startswith('jiuwenswarm.gateway')
+    or name.startswith('gateway')
     or name == 'websockets'
 )
 print('UNEXPECTED=' + repr(unexpected))
@@ -397,7 +397,7 @@ def test_protocol_modules_have_no_server_or_transport_imports() -> None:
         PROJECT_ROOT / "jiuwenswarm" / "channels" / "process_cli" / "protocol"
     )
     forbidden_prefixes = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server",
         "websockets",
     )

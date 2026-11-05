@@ -18,10 +18,7 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpServerConfig
 
 from jiuwenswarm.common.config import get_mcp_server_config
-from jiuwenswarm.server.runtime.mcp.credential import (
-    CredentialStore,
-    resolve_placeholders,
-)
+from jiuwenswarm.common.external_providers import provider
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
@@ -34,6 +31,11 @@ _PREWARM_MAX_CONCURRENCY = 6
 _PREWARM_STALL_TIMEOUT_S = 120.0
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _credential_store():
+    """CredentialStore 经 common 注入点获取（分层规则 R1：不 import server）。"""
+    return provider("mcp_credential").CredentialStore()
 
 
 def _resolve_string(value: str, resolver) -> str:
@@ -57,7 +59,7 @@ def build_mcp_credential_resolver(name: str) -> Callable[[str], str | None] | No
     if not name:
         return None
     try:
-        store = CredentialStore()
+        store = _credential_store()
         stored = store.get_all(name)
     except Exception:  # noqa: BLE001 — no store / not an MCP → leave as-is
         return None
@@ -254,7 +256,10 @@ def build_enabled_mcp_server_configs(
 
 
 async def preflight_mcp_server_reachable(
-    cfg: McpServerConfig, *, timeout: float | None = None
+    cfg: McpServerConfig,
+    *,
+    timeout: float | None = None,
+    dynamic_token_url: str | None = None,
 ) -> tuple[bool, str]:
     """Reachability + auth probe for HTTP-based MCP servers.
 
@@ -268,6 +273,13 @@ async def preflight_mcp_server_reachable(
     Non-HTTP transports report reachable (no cheap probe). Shared by the
     config-time ``_pre_check_mcp_http_auth`` and cold-start
     ``_register_mcp_server`` so both gates stay identical.
+
+    ``dynamic_token_url`` 非空时（条目携带动态 token 端点 + 实例凭据已下发），
+    先实时取一次凭证并入探活头；**取不到不判失败**——动态头置空照常探活，
+    由网关响应决定可达性（与运行时"取不到照样调用、头置空"语义一致）。
+    同条件下本轮请求级 ext 带 ``X-User-Token`` 时也用它覆盖静态
+    ``Authorization``（仅双 token 网关；普通 MCP 服务的静态凭据不覆盖）。
+    默认 None：请求级/未启用路径行为与原来完全一致。
     """
     transport = (getattr(cfg, "client_type", "") or "").strip().lower()
     if transport not in _HTTP_MCP_TRANSPORTS:
@@ -326,6 +338,44 @@ async def preflight_mcp_server_reachable(
             },
         }
     )
+
+    if dynamic_token_url:
+        # 动态 token（mcp_dynamic_token_patch）：先实时取一次凭证并入探活头。
+        # 取不到不阻断：动态头置空照常探活（与运行时语义一致），网关响应决定
+        # 可达性；token 服务自身的不可达不会让网关被误判为不可注册。
+        from jiuwenswarm.common.mcp_dynamic_token_patch import (
+            TOKEN_HEADER_NAME,
+            TOKEN_HEADER_PREFIX,
+            TOKEN_TIMEOUT_S,
+            fetch_dynamic_token,
+            read_instance_credentials,
+        )
+
+        creds = read_instance_credentials()
+        if creds is not None:
+            # 用户授权逐轮覆盖——**仅双 token 网关**（dynamic_token_url +
+            # 实例凭据已下发，即运行时走 DynamicTokenProvider 的同一批网关）。
+            # 会话内注册发生在本轮对话栈内，探活与真实调用同源；普通 MCP
+            # 服务的静态凭据绝不能被本进程残留的请求级 ext 覆盖（覆盖会
+            # 把服务原有鉴权换成 Keycloak 用户令牌 → 401）。读不到（冷启动
+            # / 后台 / 非企业）保持条目静态头。
+            from jiuwenswarm.common.mcp_dynamic_token_patch import (
+                _current_user_authorization,
+            )
+
+            user_authorization = _current_user_authorization()
+            if user_authorization:
+                headers["Authorization"] = user_authorization
+            try:
+                token = await fetch_dynamic_token(
+                    token_url=dynamic_token_url,
+                    creds=creds,
+                    timeout_s=min(TOKEN_TIMEOUT_S, read_t),
+                )
+            except Exception:  # noqa: BLE001 - 探活不因 token 服务失败而失败
+                headers[TOKEN_HEADER_NAME] = ""
+            else:
+                headers[TOKEN_HEADER_NAME] = TOKEN_HEADER_PREFIX + token
 
     try:
         async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as http:
@@ -403,7 +453,9 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
     # ``Bearer ${BAIDU_ACCESS_TOKEN}`` string. No-op for form-A entries
     # (no placeholders) and for non-MCP entries (empty store).
     try:
-        entry = resolve_placeholders(entry, CredentialStore(), name)
+        entry = provider("mcp_credential").resolve_placeholders(
+            entry, _credential_store(), name
+        )
     except Exception as resolve_exc:  # noqa: BLE001
         logger.debug("[mcp-config] placeholder resolve failed: %s", resolve_exc)
 
@@ -436,7 +488,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
         # task-group teardown) on server errors like 403. That group is NOT
         # an Exception subclass, so it would escape `except Exception` and
         # hang the caller. Coerce it back into a catchable Exception.
-        from jiuwenswarm.server.runtime.mcp.exc_group import reraise_as_exception
+        from jiuwenswarm.common.mcp_exc_group import reraise_as_exception
         reraise_as_exception(exc)
     finally:
         try:
@@ -450,7 +502,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
             if isinstance(exc, (Exception, asyncio.CancelledError)):
                 logger.warning("[mcp-config] fetch disconnect failed: %s", exc)
             else:
-                from jiuwenswarm.server.runtime.mcp.exc_group import (
+                from jiuwenswarm.common.mcp_exc_group import (
                     reraise_as_exception,
                 )
                 try:
@@ -527,7 +579,7 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
         return True, ""
     resolver = None
     try:
-        stored = CredentialStore().get_all(n)
+        stored = _credential_store().get_all(n)
         if stored:
             def resolver(key: str) -> str | None:  # noqa: B023
                 if key in stored:
@@ -601,12 +653,15 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def prewarm_connected_mcps() -> None:
+async def prewarm_connected_mcps(*, report_status: bool = False) -> bool | None:
     """Prewarm ``Runner.resource_mgr`` for every ``state==connected`` MCP.
 
     Probes each so a later ``chat.send`` reconcile hits the existing-entry
     branch (no re-spawn). Failure-isolated per MCP and never downgrades state.
     Safe to call at startup and again from the root adapter (idempotent).
+
+    ``report_status`` returns whether every probe succeeded for capability
+    readiness. The default retains the existing best-effort ``None`` result.
 
     Background fire-and-forget — the service never awaits this task, so a
     slow/cold MCP probe (npx first-install ~30s, HTTP connect) is allowed to
@@ -616,16 +671,13 @@ async def prewarm_connected_mcps() -> None:
     don't overwhelm the host during startup.
     """
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            list_truly_connected_mcps,
-        )
         names = [
             str(r.get("name", "")).strip()
-            for r in list_truly_connected_mcps()
+            for r in provider("mcp_state").list_truly_connected_mcps()
             if r.get("name")
         ]
         if not names:
-            return
+            return True if report_status else None
         logger.info(
             "[mcp-prewarm] prewarming %d connected MCP(s): %s",
             len(names), names,
@@ -633,7 +685,7 @@ async def prewarm_connected_mcps() -> None:
 
         sem = asyncio.Semaphore(_PREWARM_MAX_CONCURRENCY)
 
-        async def _probe_one(name: str) -> None:
+        async def _probe_one(name: str) -> bool:
             async with sem:
                 try:
                     # Only a genuine stall (>> probe's expected worst case)
@@ -649,6 +701,7 @@ async def prewarm_connected_mcps() -> None:
                             "[mcp-prewarm] '%s' prewarm failed: %s "
                             "(will lazy-connect on first chat)", name, reason,
                         )
+                    return bool(ok)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "[mcp-prewarm] '%s' prewarm stalled >%.0fs "
@@ -659,13 +712,16 @@ async def prewarm_connected_mcps() -> None:
                     logger.warning(
                         "[mcp-prewarm] '%s' prewarm error: %s", name, exc,
                     )
+                return False
 
         # Concurrent probes bounded by semaphore — all MCPs start in parallel
         # but at most N execute add_mcp_server at any moment.  Total wall time
         # ≈ the slowest probe alone (not N×), with stall protection only.
-        await asyncio.gather(*[_probe_one(name) for name in names])
+        results = await asyncio.gather(*[_probe_one(name) for name in names])
+        return all(results) if report_status else None
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-prewarm] background prewarm failed: %s", exc)
+        return False if report_status else None
 
 
 def _stable_mcp_server_id(scope: str, name: str, payload: dict[str, Any]) -> str:

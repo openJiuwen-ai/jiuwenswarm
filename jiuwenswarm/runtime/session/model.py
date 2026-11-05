@@ -14,7 +14,19 @@ TEAM_EXECUTION_CONTEXT_METADATA_KEY = "_team_execution_context"
 
 # ``chat.send`` requests carrying this truthy param attach a response
 # subscription to an already-running Team Session without submitting input.
-TEAM_ATTACH_ONLY_PARAM = "attach_only"
+from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM  # noqa: F401,E402  re-export
+
+
+class NoControlTargetError(RuntimeError):
+    """No execution of the Session can take an answer.
+
+    None waits on the interactions it names, or the same answer is already
+    being delivered.
+    """
+
+
+class AnswerInFlightError(NoControlTargetError):
+    """The same answer is already being delivered; that delivery settles what it answers."""
 
 
 class NoControlTargetError(RuntimeError):

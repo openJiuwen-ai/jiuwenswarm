@@ -159,7 +159,7 @@ def test_ignored_request_is_not_a_task_reply_or_failure(tmp_path):
     assert member["calls"] == 2
     assert member["tokens"] == 65
     assert member["companion_days"] == 16
-    assert member["days"] == [{"date": "2026-10-16", "tasks": 2, "minutes": 90, "calls": 2, "tokens": 65}]
+    assert member["days"] == [{"date": "2026-10-16", "tasks": 2, "finished_tasks": 2, "failures": 1, "minutes": 90, "calls": 2, "tokens": 65}]
     assert member["hours"] == [
         {"date": "2026-10-16", "hour": 9, "minutes": 60, "tasks": 1, "tokens": 25},
         {"date": "2026-10-16", "hour": 11, "minutes": 30, "tasks": 1, "tokens": 40},

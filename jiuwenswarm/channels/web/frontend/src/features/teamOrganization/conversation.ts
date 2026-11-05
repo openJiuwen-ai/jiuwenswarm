@@ -10,7 +10,8 @@ import { ownerTeamId } from './ownerIdentity';
 export { ownerTeamId } from './ownerIdentity';
 
 export function expertTeamId(payload: Record<string, unknown>, sessionId: string): string | null {
-  const teamId = String(payload.team_id || payload.team_name || '').trim();
+  const event = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+  const teamId = String(payload.team_id || payload.team_name || event?.team_id || event?.team_name || '').trim();
   if (!teamId || teamId === ownerTeamId(sessionId)) return null;
   // Swarm group chat runs the prompt on the organization owner instance.
   // That instance is not the outer group team, but its reply belongs in the

@@ -6,16 +6,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("share_mode", ["attachment", "upload"])
 @pytest.mark.parametrize("uploaded", [False, True])
 async def test_gateway_feishu_file_reaches_real_sender(tmp_path, monkeypatch, share_mode, uploaded):
-    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path)
-    source = tmp_path / "workspaces/local/agent/sessions/session/output/report.txt"
+    from agent_gateway.channel_manager import persistent_output
+    monkeypatch.setattr(persistent_output, "get_user_workspace_dir", lambda: tmp_path)
+    source = tmp_path / "jiuwenmate/workspaces/local/agent/sessions/session/output/report.txt"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"test123")
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli-test"), MagicMock())
@@ -25,6 +26,7 @@ async def test_gateway_feishu_file_reaches_real_sender(tmp_path, monkeypatch, sh
         "outcome": "delivered", "external_message_id": "om-test",
     })
     manager = ChannelManager(SimpleNamespace())
+    manager.set_persistent_output_file_resolver(persistent_output.resolve_output_file)
     manager.register_channel(channel)
     file = {
         "key": "local/agent/sessions/session/output/report.txt", "name": "report.txt",

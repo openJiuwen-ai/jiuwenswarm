@@ -39,7 +39,7 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WorkspaceStore
 from openjiuwen.harness import persistent_agent as core
 from tests.unit_tests.server.jiuwenmate.test_session_scheduler import FakeCore, FakeService, settle, stub_invocation_builder
 from tests.unit_tests.gateway.test_app_web_handlers import FakeWebChannel, FakeChannelManager
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 
 NOW = datetime(2026, 10, 25, tzinfo=timezone.utc)
 DINGTALK_APP = {"client_id": "app-dingtalk", "client_secret": "fake-secret", "persistent_agent_id": "agent-dingtalk",
@@ -855,7 +855,7 @@ class _AgentServer:
 
 @pytest.fixture
 def web(tmp_path, monkeypatch):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     channel, cm, server = FakeWebChannel(), FakeChannelManager(), _AgentServer()
     path = tmp_path / "config.yaml"
@@ -867,7 +867,7 @@ def web(tmp_path, monkeypatch):
 
     def seed(dingtalk):
         cm.configs["dingtalk"] = dingtalk
-        config_module.dump_yaml_round_trip(path, {"channels": {"dingtalk": dingtalk}})
+        config_module.dump_yaml_round_trip(path, {"channels": dict(cm.configs)})
 
     return SimpleNamespace(channel=channel, cm=cm, server=server, saved=saved, seed=seed)
 
@@ -885,8 +885,7 @@ async def test_binding_moves_the_legacy_app_into_the_list_and_settings_edits_kee
         "client_id": "app-dingtalk", "client_secret": "fake-secret", "config_id": "colleague-a",
     })
     assert bound["ok"] is True
-    attach = web.server.envelopes[-1]
-    assert attach.method == ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value
+    attach, = [item for item in web.server.envelopes if item.method == ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value]
     assert attach.params == {"config_id": "colleague-a", "channel": "dingtalk", "connection_key": "app-dingtalk"}
     saved = web.saved()
     assert "client_id" not in saved and saved["last_sender_id"] == "staff-old"
@@ -978,7 +977,7 @@ async def test_a_malformed_allowlist_survives_binding_and_blocks_a_client_id_cha
 
 @pytest.mark.asyncio
 async def test_overlapping_restarts_leave_every_saved_app_registered():
-    from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.lifecycle import DingTalkChannelSet
+    from agent_gateway.channel_manager.im_platforms.dingtalk.lifecycle import DingTalkChannelSet
 
     apps = [{"client_id": client_id, "client_secret": "fake", "persistent_agent_id": agent_id}
             for client_id, agent_id in (("ordinary", ""), ("app-a", "agent-a"), ("app-b", "agent-b"))]
@@ -1038,7 +1037,7 @@ async def test_unbinding_deletes_only_that_jm_app_and_leaves_the_agent_to_agent_
     assert (await _call(web, "channel.dingtalk.unbind_agent", {"client_id": "ordinary"}))["ok"]
     assert [app["client_id"] for app in web.saved()["apps"]] == ["ordinary", "jm-b"]
     assert web.cm.configs["dingtalk"]["apps"] == web.saved()["apps"]
-    assert not web.server.envelopes
+    assert all(item.method == "agent.reload_config" for item in web.server.envelopes)
 
 
 @pytest.mark.parametrize("mode", ["unbind", "purge"])
@@ -1053,6 +1052,7 @@ async def test_deleting_a_colleague_removes_its_apps_before_agent_server_removes
         {"app_id": "feishu-a", "app_secret": "fake", "persistent_agent_id": "agent-feishu-a"},
         {"app_id": "feishu-other", "app_secret": "fake", "persistent_agent_id": "agent-other"},
     ]}
+    web.seed(web.saved())
     web.server.connections = [
         {"channel": "dingtalk", "connection_key": "jm-a", "agent_id": "agent-jm-a"},
         {"channel": "feishu", "connection_key": "feishu-a", "agent_id": "agent-feishu-a"},
@@ -1147,7 +1147,7 @@ def test_restart_only_fences_the_selected_channel_and_never_requeues_unknown(tmp
     assert repository.claim_pending_result_deliveries(NS, channels=frozenset({"dingtalk"}), now=NOW) == []
 
 async def test_welink_membership_validation_ack_preserves_operation_and_evidence():
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from agent_gateway.message_handler.message_handler import MessageHandler
 
     handler = object.__new__(MessageHandler)
     handler._result_delivery_handler = AsyncMock(return_value={'outcome': 'unknown', 'handoff_target_valid': True})

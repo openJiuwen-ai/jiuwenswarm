@@ -229,6 +229,27 @@ from an explicit user instruction for this workflow's per-run ceiling. Do not
 accept an AI estimate, a default, or a value derived from another budget. If the
 user did not specify a limit, confirm that the field is absent.
 
+### B16. Review gates settle and rework visibly
+
+For each `verify()` gate, confirm that pass, fail, and undecided have explicit
+outcomes. Rework receives `result.feedback`, has a finite round/budget limit,
+and returns a visible failure/degraded result when exhausted. Confirm script
+branches follow the template's mixed-pool fail/undecided precedence. Account
+for one agent call per reviewer.
+
+### B17. Forks preserve session ownership
+
+For each fork, confirm the split uses prior send rounds and a mode supported by
+the actual backend. Parent and child close independently, including on errors.
+Keep fork arguments and position deterministic for resume; later parent turns
+must not be assumed to update the child snapshot.
+
+### B18. Expert routing has deployment context
+
+For each `agent_template` node, confirm the deployment binds an AgentGroup,
+the selected member exists, and its capability snapshot supports the node's
+task. After the first real session turn, member changes must use fork.
+
 ---
 
 ## Part C: Cross-Swarm-Skill consistency (only when publishing multiple together)

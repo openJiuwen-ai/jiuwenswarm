@@ -16,7 +16,7 @@ from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
-from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.config import coerce_subtask_depth, get_config, get_default_models
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_free_model_entries
 
@@ -608,7 +608,14 @@ def load_team_spec_dict(
     spec_dict["teammate_mode"] = team_raw.get("teammate_mode", "build_mode")
     spec_dict["spawn_mode"] = team_raw.get("spawn_mode", "inprocess")
     spec_dict["dispatch_mode"] = team_raw.get("dispatch_mode", "autonomous")
+    # Who materializes the team (F_122): the leader via build_team, or the
+    # framework on start. team_display_name / team_desc only matter under
+    # "framework" and pass through from the raw section unchanged.
+    spec_dict["bootstrap_mode"] = team_raw.get("bootstrap_mode", "leader")
     spec_dict["enable_task_verification"] = team_raw.get("enable_task_verification", False)
+    spec_dict["enable_member_messaging"] = team_raw.get("enable_member_messaging", False)
+    # Scheduled members split their task into subtasks (core F_128); 0 = off.
+    spec_dict["max_subtask_depth"] = coerce_subtask_depth(team_raw.get("max_subtask_depth", 0))
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
     # Experimental switch drives both frontend UI and backend org tools.
@@ -616,8 +623,10 @@ def load_team_spec_dict(
         (config_base.get("experimental") or {}).get("team_organization_ui_enabled", False)
     )
     _apply_swarmflow_budget(spec_dict, team_raw.get("swarmflow_budget"))
-    # Team-level key, independent of the single-agent progressive_tool_enabled
-    # switch; the spec field is named progressive_tool on the engine side.
+    # Team-level key forcing swarmflow workers into progressive exposure; the
+    # spec field is named progressive_tool on the engine side. Leader /
+    # teammate members (and, through the teammate base spec, workers) follow
+    # the top-level progressive_tool_enabled switch in config_specs instead.
     spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents

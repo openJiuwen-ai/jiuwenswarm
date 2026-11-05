@@ -364,7 +364,7 @@ def _populate_zen_free_entries() -> int:
         _populate_lock.release()
 
 
-async def warm_zen_free_models(*, reason: str) -> None:
+async def warm_zen_free_models(*, reason: str, report_status: bool = False) -> bool | None:
     """Async entry point: fetch Zen free models with a start-up timeout.
 
     Mirrors :func:`warm_image_modality_cache`: the synchronous worker runs on a
@@ -383,7 +383,7 @@ async def warm_zen_free_models(*, reason: str) -> None:
             "[OpencodeZen] fetching disabled; skipping warm (reason=%s)",
             reason,
         )
-        return
+        return True if report_status else None
     try:
         await asyncio.wait_for(
             asyncio.to_thread(_populate_zen_free_entries),
@@ -407,6 +407,7 @@ async def warm_zen_free_models(*, reason: str) -> None:
             reason,
         )
         _start_background_retry()
+    return bool(get_zen_free_model_entries()) if report_status else None
 
 
 def _start_background_retry() -> None:

@@ -176,7 +176,7 @@ def test_a_streamed_reply_is_one_trace_row_not_one_character_per_row():
     assert with_tool == ["问题", "先查", "read_file 笔记", "查完了"]
 
 
-def test_the_same_display_name_is_listed_once_per_platform(tmp_path):
+def test_distinct_group_ids_with_the_same_display_name_remain_visible(tmp_path):
     records, groups, archive, _sessions = _records(tmp_path)
     older = groups.resolve(NS, "feishu", "oc_old", now=NOW)
     newer = groups.resolve(NS, "feishu", "oc_new", now=NOW)
@@ -190,7 +190,7 @@ def test_the_same_display_name_is_listed_once_per_platform(tmp_path):
     archive.append(NS, newer.group_chat_id, _message(newer.group_chat_id, 2), source_ref="feishu:message:new")
 
     listed = {(item["platform"], item["id"]) for item in records.list_channels(NS, AGENT)}
-    assert listed == {("feishu", newer.group_chat_id), ("dingtalk", dingtalk.group_chat_id)}
+    assert listed == {("feishu", older.group_chat_id), ("feishu", newer.group_chat_id), ("dingtalk", dingtalk.group_chat_id)}
 
 
 def test_each_speaker_keeps_a_distinct_name(tmp_path):

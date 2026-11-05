@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand';
+import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import { subscribeWithSelector } from 'zustand/middleware';
 import {
   Message,
@@ -35,10 +36,14 @@ import {
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs } from '../utils/timestamp';
+import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   consumePendingQuestion as consumeQueuedQuestion,
   clearPermissionQuestions as clearQueuedPermissionQuestions,
+  dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
+  isAnsweredAskUserQuestion,
+  markQuestionsAnswered as markQueuedQuestionsAnswered,
 } from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
@@ -108,6 +113,7 @@ type TaskInputStatus = 'queued' | 'sending' | 'failed' | 'unknown';
 export interface TaskInputReceipt {
   taskId: string;
   content: string;
+  mediaItems?: MediaItem[];
   requestId?: string;
   status: 'sending' | 'accepted' | 'failed' | 'unknown';
   error?: string;
@@ -246,6 +252,7 @@ export interface ChatRuntime {
    */
   pendingGoalObjectiveBubble: { content: string; timestamp: string } | null;
   inputValue: string;
+  inputSkillPositions: { name: string; offset: number }[];
   /** evolutionStatus 自动清除定时器，按 session 隔离 */
   evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null;
   /** interruptResult 自动清除定时器，按 session 隔离 */
@@ -302,6 +309,7 @@ function createEmptyRuntime(): ChatRuntime {
     pendingA4PAuthorization: null,
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
+    inputSkillPositions: [],
     evolutionStatusClearTimer: null,
     interruptResultClearTimer: null,
   };
@@ -446,6 +454,8 @@ interface ChatState {
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
   enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  /** 登记已答的 ask_user request_id，并移除队列中对应的过期问题。 */
+  markQuestionsAnswered: (sessionId: string, requestIds: Iterable<string>) => void;
   clearPendingQuestions: (sessionId: string) => void;
   setPendingA4PAuthorization: (
     sessionId: string,
@@ -456,7 +466,7 @@ interface ChatState {
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
   clearPermissionQuestions: (sessionId: string) => void;
-  setInputValue: (sessionId: string, value: string) => void;
+  setInputValue: (sessionId: string, value: string, skillPositions?: { name: string; offset: number }[]) => void;
   setSessionError: (sessionId: string, error: string | null) => void;
   setUsageSummary: (sessionId: string, messageId: string, usage: UsageSummary) => void;
   addFileItems: (
@@ -598,7 +608,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
         useChatStore.getState().replaceHistoryMessages(conversationKey(sessionId, teamId), history);
       }
-      messages = messages.filter((message) => !message.teamId);
+      messages = messages.flatMap((message) => {
+        if (!message.teamId) return [message];
+        const ownerMessage = toOwnerTeamMessage(message);
+        return ownerMessage ? [ownerMessage] : [];
+      });
     }
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -1811,13 +1825,22 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
         useChatStore.getState().prependMessages(conversationKey(sessionId, teamId), history);
       }
-      olderFirst = olderFirst.filter((message) => !message.teamId);
+      olderFirst = olderFirst.flatMap((message) => {
+        if (!message.teamId) return [message];
+        const ownerMessage = toOwnerTeamMessage(message);
+        return ownerMessage ? [ownerMessage] : [];
+      });
     }
     if (!olderFirst.length) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      const assigned = assignMessageRenderKeys(runtime, olderFirst);
+      // History pages may overlap live Team events whose transport IDs differ.
+      const existing = new Set(runtime.messages);
+      const incoming = mergeUniqueMessages([...runtime.messages, ...olderFirst])
+        .filter((message) => !existing.has(message));
+      if (!incoming.length) return state;
+      const assigned = assignMessageRenderKeys(runtime, incoming);
       return {
         runtimes: {
           ...state.runtimes,
@@ -1943,7 +1966,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       )
         return state;
       const task = runtime.taskQueue.find((item) => item.id === taskId);
-      if (!task || !['queued', 'failed'].includes(task.status) || !task.content.trim() || task.mediaItems?.length)
+      if (
+        !task || !['queued', 'failed'].includes(task.status) ||
+        (!task.content.trim() && !task.mediaItems?.length) || !areSteerImagesReady(task.mediaItems)
+      )
         return state;
       claimed = task;
       return {
@@ -1959,6 +1985,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               [taskId]: {
                 taskId,
                 content: task.content,
+                ...(task.mediaItems?.length ? { mediaItems: task.mediaItems } : {}),
                 status: 'sending',
                 timestamp: new Date().toISOString(),
                 supplementalInput: {
@@ -2016,6 +2043,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (status === 'accepted' && delivery === 'chat') {
         chatMessage = {
           id: `user-steer-${taskId}`, role: 'user', content: receipt.content, timestamp: receipt.timestamp,
+          ...(receipt.mediaItems?.length ? { mediaItems: receipt.mediaItems } : {}),
         };
       }
       const acceptedMessages = status === 'accepted' && !chatMessage && delivery !== 'stream'
@@ -2023,6 +2051,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             id: `user-steer-${taskId}`,
             role: 'user',
             content: receipt.content,
+            ...(receipt.mediaItems?.length ? { mediaItems: receipt.mediaItems } : {}),
             timestamp: receipt.timestamp,
             supplementalInput: receipt.supplementalInput,
           }])
@@ -2116,6 +2145,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   enqueuePendingQuestion: (sessionId, question) => {
+    if (isAnsweredAskUserQuestion(sessionId, question)) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -2137,6 +2167,25 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const pendingQuestions = consumeQueuedQuestion(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  markQuestionsAnswered: (sessionId, requestIds) => {
+    markQueuedQuestionsAnswered(sessionId, requestIds);
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = dropAnsweredAskUserQuestions(sessionId, runtime.pendingQuestions);
+      if (pendingQuestions.length === runtime.pendingQuestions.length) return state;
       return {
         runtimes: {
           ...state.runtimes,
@@ -2301,14 +2350,18 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setInputValue: (sessionId, value) => {
+  setInputValue: (sessionId, value, skillPositions) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, inputValue: value },
+          [sessionId]: {
+            ...runtime,
+            inputValue: value,
+            inputSkillPositions: skillPositions ?? (value === runtime.inputValue ? runtime.inputSkillPositions : []),
+          },
         },
       };
     });

@@ -1961,10 +1961,10 @@ class PersonalContextHostAPI:
 
         async with self._operation_lock:
             if self._config is None:
-                raw = _read_yaml(self._config_path)
+                raw = await asyncio.to_thread(_read_yaml, self._config_path)
                 if raw is None:
                     return
-                stored, config = _prepare_stored_config(raw)
+                stored, config = await asyncio.to_thread(_prepare_stored_config, raw)
                 try:
                     await self._personal_context.set_configuration(config)
                 except BaseException as exc:

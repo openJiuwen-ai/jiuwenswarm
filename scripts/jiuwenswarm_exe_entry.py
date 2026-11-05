@@ -613,13 +613,17 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
         return None
+    if _pop_flag("--desktop-run-worker-lifecycle"):
+        from jiuwenswarm.server.supervisor.shutdown import main as lifecycle_main
+        lifecycle_main()
+        return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
         _activate_external_cli_runtime_paths()
         from jiuwenswarm.server.app_agentserver import main as agent_main
         agent_main()
         return None
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
-        from jiuwenswarm.gateway.app_gateway import main as gateway_main
+        from agent_gateway.app_gateway import main as gateway_main
         gateway_main()
         return None
     if _DESKTOP_INSTALL_UPDATE in sys.argv:

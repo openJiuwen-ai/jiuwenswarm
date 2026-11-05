@@ -9,7 +9,7 @@ import websockets
 from websockets.datastructures import Headers
 from websockets.http11 import Response
 
-from jiuwenswarm.gateway.channel_manager.web.task_asr import (
+from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     task_asr_endpoint,
     transcribe_task_audio,

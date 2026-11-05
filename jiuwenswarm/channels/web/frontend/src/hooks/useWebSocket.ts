@@ -2782,8 +2782,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             answers[0]?.custom_input?.trim()
             || answers[0]?.selected_options.join(', ').trim()
             || '';
-          // 取消/跳过：不发送 reply，仅关闭对话框（prompt 在后端仍 pending）
+          // 取消/跳过：发显式 skip，后端立即把该轮按"未回答"跳过，
+          // 而不是让问题悬着等人超时；然后再关闭对话框。
           if (!answerText || answerText.includes('已跳过') || answerText.includes('已取消')) {
+            try {
+              await request('chat.swarmflow_reply', {
+                session_id: sessionId,
+                run_id: meta?.run_id ?? '',
+                correlation_id: meta?.correlation_id ?? '',
+                skip: true,
+              });
+            } catch (err) {
+              console.error('[swarmflow_human] chat.swarmflow_reply skip failed:', err);
+            }
             if (pendingQuestion) {
               useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
             }
@@ -5468,6 +5479,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        // Transport replay (runtime_resume after:0) re-delivers a question the
+        // queue already holds or the user already answered; the dedup key is
+        // request_id-based, so the same popup replayed within the window drops.
+        if (shouldDropDuplicatedEvent('chat.ask_user_question', payload)) {
+          return;
+        }
         const questionPayload = payload as Record<string, unknown>;
         const evolutionMeta =
           questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'

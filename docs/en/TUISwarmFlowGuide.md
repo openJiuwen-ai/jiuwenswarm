@@ -183,7 +183,7 @@ modes:
 |-------|-------------|---------|
 | `enable_swarmflow` | When `true`, the Leader may call `swarmflow()` to start runs; when `false`, SwarmFlow **does not** run even in `/mode team` | `false` |
 | `swarmflow_budget` | Leader-level token cap shared by **all** runs in this team; readable in scripts via `budget.total` / `spent()` / `remaining()`. A **positive integer** sets a cap; **unset or `null`** means unbounded | unset (commented in template) |
-| `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; independent of the single-agent `progressive_tool_enabled`; **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
+| `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; `true` forces it on regardless of the top-level `progressive_tool_enabled`, `false` lets workers follow the teammate base spec (i.e. the top-level switch); **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
 | `external_cli_agents` | Third-party CLI member declarations (`claude` / `codex`); doubles as the allowlist for the script's `agent_type` — an undeclared backend cannot be dispatched by a workflow; the Web "Third-Party Agents" setting edits this field | `[]` |
 
 The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). Enable it via one of the paths below on first use.

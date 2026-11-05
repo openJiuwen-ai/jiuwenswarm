@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
-import subprocess
+from functools import partial
 from pathlib import Path
 
 from jiuwenswarm.common.schema.designer_graph import NODE_TYPE_AUDIO, DesignerGraphNode
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_ffmpeg, run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_workspace_dir,
@@ -17,7 +17,6 @@ from jiuwenswarm.server.runtime.designer.handlers.common import (
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
 
 logger = logging.getLogger(__name__)
-_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 SILENT_MUSIC_PLACEHOLDER_TOKEN = "placeholder_silent"
 
 
@@ -74,15 +73,7 @@ def _synthesize_bed(dest: Path, *, duration: float, kind: str) -> bool:
         str(dest.resolve()),
     ]
     try:
-        kwargs: dict[str, object] = {
-            "capture_output": True,
-            "text": True,
-            "timeout": 20,
-        }
-        # CREATE_NO_WINDOW is Windows-only; passing it on Linux/macOS/WSL raises.
-        if os.name == "nt":
-            kwargs["creationflags"] = _CREATE_NO_WINDOW
-        proc = subprocess.run([ffmpeg, *args], **kwargs)
+        proc = run_ffmpeg([ffmpeg, *args], timeout=20)
         return proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0
     except Exception:  # noqa: BLE001
         logger.info("ffmpeg audio bed failed", exc_info=True)
@@ -140,7 +131,7 @@ class MusicNodeHandler:
             graph_workspace_dir(ctx.graph)
             / f"{stem}_{SILENT_MUSIC_PLACEHOLDER_TOKEN}.m4a"
         )
-        if _synthesize_bed(dest, duration=duration, kind="music"):
+        if await run_off_loop(partial(_synthesize_bed, dest, duration=duration, kind="music")):
             return NodeResult(
                 output_ref=file_output_ref(dest, kind=NODE_TYPE_AUDIO, mime_type="audio/mp4"),
                 message=f"music placeholder silent {duration:.0f}s (no music API)",

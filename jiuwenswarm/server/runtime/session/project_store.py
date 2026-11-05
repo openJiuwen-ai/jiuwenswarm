@@ -19,14 +19,14 @@ import os
 import secrets
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
-from jiuwenswarm.common.utils import get_agent_root_dir
-from jiuwenswarm.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
@@ -37,6 +37,7 @@ from jiuwenswarm.common.work_mode import (
     normalize_work_mode,
     resolve_default_project_id,
 )
+from jiuwenswarm.common.utils import get_agent_root_dir
 from jiuwenswarm.server.runtime.session.work_mode import (
     infer_legacy_project_work_mode,
 )
@@ -59,8 +60,22 @@ if sys.platform == "win32":
     import msvcrt
 
     def _acquire(fd: int) -> None:
-        # LK_LOCK 自带 ~10s 重试,超时抛 OSError
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        # LK_LOCK retries once a second: a millisecond metadata write in
+        # another process can otherwise delay admission by a full second.
+        deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                import errno
+
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("timeout acquiring resource file lock") from exc
+                time.sleep(min(0.005, remaining))
 
     def _release(fd: int) -> None:
         try:
@@ -70,7 +85,6 @@ if sys.platform == "win32":
 
 else:
     import fcntl
-    import time
 
     def _acquire(fd: int) -> None:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
@@ -328,7 +342,7 @@ def _normalize_path_for_match(path: str) -> str:
 def _normalize_work_mode_value(work_mode: str) -> str:
     """规范化 work_mode 参数,非法值兜底为 ``"work"``。
 
-    与 :func:`jiuwenswarm.common.work_mode.normalize_work_mode` 一致,
+    与 :func:`gateway.common.work_mode.normalize_work_mode` 一致,
     仅在 store 内部调用时兜底非法入参;公开入口应使用严格解析。
     """
     return normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE)

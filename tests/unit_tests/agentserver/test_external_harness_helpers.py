@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 import json
 import sys
@@ -200,10 +201,10 @@ def test_unbound_deep_agent_does_not_create_runtime_binding(
     install_template("plain-expert", None)
     init_session_metadata(session_id="deep-agent-session")
 
-    result = external_harness_helpers.resolve_external_harness_binding(
+    result = asyncio.run(external_harness_helpers.resolve_external_harness_binding(
         "deep-agent-session",
         {"agent_template_name": "plain-expert"},
-    )
+    ))
 
     assert result == {"kind": "deep_agent"}
     assert "session_runtime_binding" not in get_session_metadata(
@@ -224,10 +225,10 @@ def test_first_external_resolve_returns_runtime_without_persisting(
     package_dir = install_template("codex-expert", "codex")
     init_session_metadata(session_id="external-session")
 
-    result = external_harness_helpers.resolve_external_harness_binding(
+    result = asyncio.run(external_harness_helpers.resolve_external_harness_binding(
         "external-session",
         {"agent_template_name": "codex-expert"},
-    )
+    ))
 
     assert result["kind"] == "external_harness"
     assert result["agent_template_name"] == "codex-expert"
@@ -270,10 +271,10 @@ def test_bound_external_session_rejects_runtime_or_template_switch(
     )
 
     with pytest.raises(ValueError, match="新建会话"):
-        external_harness_helpers.resolve_external_harness_binding(
+        asyncio.run(external_harness_helpers.resolve_external_harness_binding(
             session_id,
             params,
-        )
+        ))
 
 
 @pytest.mark.asyncio
@@ -336,7 +337,7 @@ async def test_external_child_creation_persists_runtime_binding(
     init_session_metadata(session_id="external-session")
     parent = interface_deep.JiuWenSwarmDeepAdapter()
     child = interface_deep.JiuWenSwarmDeepAdapter()
-    binding = external_harness_helpers.resolve_external_harness_binding(
+    binding = await external_harness_helpers.resolve_external_harness_binding(
         "external-session",
         {"agent_template_name": "codex-expert"},
     )
@@ -379,7 +380,7 @@ async def test_deep_agent_child_rejects_external_without_persisting_binding(
     child.mark_as_session_scoped("deep-then-external")
     child.mark_session_mcp_reconcile_started()
     parent._session_adapters["deep-then-external"] = child
-    binding = external_harness_helpers.resolve_external_harness_binding(
+    binding = await external_harness_helpers.resolve_external_harness_binding(
         "deep-then-external",
         {"agent_template_name": "codex-expert"},
     )
@@ -1195,3 +1196,67 @@ async def test_external_template_unload_stops_and_invalidates_child() -> None:
     io.stop.assert_awaited_once()
     assert child._external_harness is None
     assert child._external_harness_binding is None
+
+
+def test_runtime_binding_reads_only_the_manifest_card(
+    install_template: Callable[[str, str | None], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The provider comes from openjiuwen's card; the package is parsed once, in create_harness."""
+    from openjiuwen.harness.resources import extension_loader
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils._workspace_base_dir",
+        tmp_path / ".jiuwenswarm",
+    )
+    install_template("claude-expert", "claudecode")
+    init_session_metadata(session_id="card-session")
+
+    def _no_full_load(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the full AgentTemplate loader must not run while binding")
+
+    # The async loader delegates to this module global, so one patch covers both.
+    monkeypatch.setattr(extension_loader, "load_agent_template_package", _no_full_load)
+    binding = asyncio.run(external_harness_helpers.resolve_external_harness_binding(
+        "card-session",
+        {"agent_template_name": "claude-expert"},
+    ))
+    assert binding["provider_name"] == "claudecode"
+    assert binding["runtime"].config == {"model": "test-model"}
+
+
+def test_runtime_provider_outside_the_host_allowlist_keeps_its_error(
+    install_template: Callable[[str, str | None], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils._workspace_base_dir",
+        tmp_path / ".jiuwenswarm",
+    )
+    install_template("odd-expert", "unknown-provider")
+    init_session_metadata(session_id="odd-session")
+    with pytest.raises(
+        ValueError,
+        match=r"runtime.provider_name must be one of: claudecode, codex, dsh; got 'unknown-provider'",
+    ):
+        asyncio.run(external_harness_helpers.resolve_external_harness_binding(
+            "odd-session",
+            {"agent_template_name": "odd-expert"},
+        ))
+
+
+@pytest.mark.asyncio
+async def test_external_user_input_question_carries_the_interrupt_id() -> None:
+    chunk = OutputSchema(
+        type="__interaction__",
+        index=0,
+        payload={"id": "ext-q", "value": {"kind": "user_input", "prompt": "Which?"}},
+    )
+
+    parsed = await external_harness_helpers._parse_external_chunk(chunk, has_streamed_answer=False)
+
+    assert parsed["request_id"] == "ext-q"
+    assert parsed["interrupt_id"] == "ext-q"
+    assert parsed["kind"] == "ask_user"

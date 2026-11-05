@@ -1,6 +1,6 @@
 # Project & Session Management (Web)
 
-> **Implementation**: `jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py` (handler registration), `jiuwenswarm/gateway/channel_manager/web/git_ws_handler.py` (Git Diff WebSocket), `jiuwenswarm/server/runtime/session/project_store.py` (project storage), `jiuwenswarm/server/runtime/session/session_metadata.py` (session metadata), `jiuwenswarm/server/runtime/session/project_git.py` (Git operations), `jiuwenswarm/server/runtime/session/git_diff_status.py` (Diff aggregation), `jiuwenswarm/server/runtime/session/git_diff_watcher.py` (Diff monitoring)
+> **Implementation**: `gateway/channel_manager/web/app_web_handlers.py` (handler registration), `gateway/channel_manager/web/git_ws_handler.py` (Git Diff WebSocket), `jiuwenswarm/server/runtime/session/project_store.py` (project storage), `jiuwenswarm/server/runtime/session/session_metadata.py` (session metadata), `jiuwenswarm/server/runtime/session/project_git.py` (Git operations), `jiuwenswarm/server/runtime/session/git_diff_status.py` (Diff aggregation), `jiuwenswarm/server/runtime/session/git_diff_watcher.py` (Diff monitoring)
 > **中文版**: [../zh/项目与会话管理.md](../zh/项目与会话管理.md)
 
 ---
@@ -25,6 +25,8 @@ Expert and expert group chats keep model selections per session. Returning to a 
 | **Immutability** | Once `project_id`, `project_dir`, and `work_mode` are bound to a session, they cannot be changed; no cross-project/cross-mode migration API is provided |
 
 ### Communication Convention
+
+In both personal and enterprise editions, Gateway forwards `session.list`, `session.rename`, and `session.pin` to the target AgentServer through E2A. The Server owns session data access. If the Server is stopped, not ready, or disconnected, Gateway returns `SERVICE_UNAVAILABLE` without reading or writing local sessions or loading a local compatibility module.
 
 - Transport: WebSocket JSON messages
 - Request structure: `{ "id": "<req_id>", "method": "<method_name>", "params": { ... } }`

@@ -64,7 +64,7 @@
 }
 
 .chat-layout__surface {
-  min-width: 512px;
+  min-width: 0;
   background: var(--color-surface-card);
 }
 
@@ -352,4 +352,15 @@
 
 input[type="password"]::-ms-reveal {
   display: none;
+}
+
+@media (max-width: 640px) {
+  .chat-workspace {
+    min-width: 0;
+  }
+
+  .chat-input-toolbar,
+  .chat-input-toolbar-left {
+    flex-wrap: wrap;
+  }
 }

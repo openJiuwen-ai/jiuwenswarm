@@ -32,7 +32,7 @@ function fixture() {
   const state = {
     workspace: { selectedProject: null, projects: [] },
     chat: { ensureRuntime: id => events.push(['ensure', id]), setActiveSessionId: id => events.push(['active', id]) },
-    session: { getRuntime: () => null, setMode: (...args) => events.push(['mode', ...args]) },
+    session: { ensureRuntime: id => events.push(['session-runtime', id]), getRuntime: () => null, setMode: (...args) => events.push(['mode', ...args]) },
     applied: [], history: [], events,
     create: async params => {
       events.push(['create', params]);
@@ -47,7 +47,7 @@ test('Design duplex creates and binds an empty saved canvas without sending a us
   const state = fixture();
   try {
     assert.deepEqual(await createDesignerConversation(), {projectId: 'default', sessionId: 'design-new'});
-    assert.deepEqual(state.events, [['create', {projectId: 'default', title: ''}], ['ensure', 'design-new'], ['mode', 'design-new', 'team'], ['active', 'design-new']]);
+    assert.deepEqual(state.events, [['create', {projectId: 'default', title: ''}], ['ensure', 'design-new'], ['session-runtime', 'design-new'], ['mode', 'design-new', 'team']]);
     assert.equal(state.applied[0].metadata.session_id, 'design-new');
     assert.deepEqual(state.history, [['canvas', []]]);
   } finally { delete globalThis.designCreate; }

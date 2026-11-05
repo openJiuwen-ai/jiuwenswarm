@@ -17,18 +17,21 @@ import json
 import re
 from pathlib import Path
 
+import agent_gateway
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
 DESKTOP_APP_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "desktop_app.py"
 MAIN_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "main.cjs"
 PRELOAD_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "preload.cjs"
-FILE_PICKER_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "file_picker.py"
+FILE_PICKER_PY = GATEWAY_ROOT / "channel_manager" / "web" / "file_picker.py"
 APP_WEB_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 VITE_ENV_DTS = (
     REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src" / "vite-env.d.ts"
 )
 FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src"
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
-INSTANCE_LOCK_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "lock.py"
+GATEWAY_LOCK_PY = GATEWAY_ROOT / "gateway_lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
 EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
 BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"
@@ -406,10 +409,12 @@ def test_port_scan_range_matches() -> None:
 def test_shutdown_budget_is_the_documented_divergence() -> None:
     """已知且接受的分歧(评审结论 E: 强杀=崩溃等价, 系统按崩溃容忍设计)。
 
-    Python 统一 8s 预算; Electron SIGTERM 等待 5s + 强杀等待 1.5s。
+    Python 和 Electron 的应用最终退出使用 30s Runtime 预算。
+    Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 8.0
+    assert _python_shutdown_budget_seconds() == 30.0
+    assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
 
@@ -421,7 +426,7 @@ def test_gateway_preflight_wait_matches() -> None:
 
 
 def test_gateway_lock_filename_matches() -> None:
-    python_name = _py_assignment_value(INSTANCE_LOCK_PY, "GATEWAY_LOCK_FILENAME")
+    python_name = _py_assignment_value(GATEWAY_LOCK_PY, "GATEWAY_LOCK_FILENAME")
     assert _js_const(_read(MAIN_CJS), "GATEWAY_LOCK_FILENAME").strip("'\"") == python_name
 
 
@@ -687,9 +692,12 @@ def test_windows_electron_signs_payload_installer_and_uninstaller() -> None:
         "RequireSigning",
     ):
         assert setting in source
-    rcedit_index = source.index("& $Rcedit $ShellExePath")
-    rcedit_end_index = source.index("if ($LASTEXITCODE -ne 0)", rcedit_index)
-    rcedit_command = source[rcedit_index:rcedit_end_index]
+    # Icon and version resources are applied in two rcedit passes on a temp copy
+    # (one-pass icon+version can corrupt the PE on Windows).
+    icon_index = source.index("& $Rcedit $RceditTemp --set-icon $LogoIco")
+    version_index = source.index("& $Rcedit $RceditTemp `", icon_index)
+    rcedit_end_index = source.index("if ($LASTEXITCODE -ne 0)", version_index)
+    rcedit_command = source[icon_index:rcedit_end_index]
     for argument in (
         "--set-icon $LogoIco",
         "--set-version-string FileDescription $BuildDisplayName",
@@ -700,10 +708,11 @@ def test_windows_electron_signs_payload_installer_and_uninstaller() -> None:
         "--set-product-version $BuildVersion",
     ):
         assert argument in rcedit_command
+    assert "Copy-Item -LiteralPath $RceditTemp -Destination $ShellExePath" in source
     payload_sign_index = source.index("Invoke-CodeSigning", rcedit_end_index)
     iscc_index = source.index("& $Iscc @IsccArguments")
     verify_index = source.index("Assert-ValidEmbeddedSignature", iscc_index)
-    assert rcedit_index < payload_sign_index < iscc_index < verify_index
+    assert icon_index < payload_sign_index < iscc_index < verify_index
     assert "$BatchSize = 20" in source
     assert "Invoke-SignToolBatchVerification" in source
     assert "-ForceResignPaths @($ShellExePath)" in source
@@ -996,3 +1005,33 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
         source, "registerHandler('desktop:close-window'"
     )
     assert "requestShutdown()" in explicit_close_handler
+
+
+def test_electron_module_map_matches_python_entry_points() -> None:
+    """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
+
+    M0-c 盲区回归：main.cjs 曾长期残留 gateway.app_gateway
+    （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
+    该映射导致 CI 抓不到开发模式启动断链。
+    """
+    import re as _re
+
+    import tomllib
+
+    main_source = _read(MAIN_CJS)
+    mapping = _re.search(r"const moduleNames = \{(.*?)\}", main_source, _re.S)
+    assert mapping, "serviceCommand module map not found in main.cjs"
+    electron_map = dict(_re.findall(r"(\w+):\s*'([\w.]+)'", mapping.group(1)))
+
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        entry_points = tomllib.load(fh)["project"]["scripts"]
+    # web 服务无独立 pyproject 入口（desktop 专用路径），只断言有入口点
+    # 对应的 agent / gateway 两项。
+    expected = {
+        "agent": entry_points["jiuwenswarm-agentserver"].split(":")[0],
+        "gateway": entry_points["jiuwenswarm-gateway"].split(":")[0],
+    }
+    for service, module in expected.items():
+        assert electron_map[service] == module, (
+            f"{service} module drift: electron {electron_map[service]!r} vs pyproject {module!r}"
+        )

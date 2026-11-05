@@ -12,12 +12,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
 )
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from agent_gateway.channel_manager.persistent_events import (
+    FeishuInboundEvent as GatewayFeishuEvent, InboundDisposition as GatewayDisposition,
+)
+from agent_gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef
@@ -121,7 +124,7 @@ class _Host:
         return self.service.attach_connection(NS, self.colleague(name), "feishu", app_id)
 
     def config_of(self, agent_id: str) -> str:
-        return self.service.connection_of(NS, agent_id).config_id
+        return self.service.get_config(NS, agent_id).agent_id
 
     def fanout(self, bindings, *, access_resolver=None, binding_resolver=None):
         rows = tuple(bindings)
@@ -1081,7 +1084,7 @@ async def test_unclaimed_human_continues_personal_path_and_keeps_local_dedup():
 
     async def unclaimed(_event):
         calls.append("route")
-        return InboundDisposition.UNCLAIMED
+        return GatewayDisposition.UNCLAIMED
 
     channel.set_persistent_group_fanout_callback(unclaimed)
     raw = _raw_feishu_event()
@@ -1097,7 +1100,7 @@ async def test_unclaimed_human_continues_personal_path_and_keeps_local_dedup():
 @pytest.mark.asyncio
 async def test_unclaimed_bot_stays_ignored_and_rejected_or_failed_routes_never_fall_back():
     bot_channel = _feishu_channel()
-    bot_route = AsyncMock(return_value=InboundDisposition.UNCLAIMED)
+    bot_route = AsyncMock(return_value=GatewayDisposition.UNCLAIMED)
     bot_channel.set_persistent_group_fanout_callback(bot_route)
     await bot_channel._on_message(_raw_feishu_event(sender_type="bot"))
     bot_channel._parse_message_content_with_file.assert_not_awaited()
@@ -1105,7 +1108,7 @@ async def test_unclaimed_bot_stays_ignored_and_rejected_or_failed_routes_never_f
 
     rejected_channel = _feishu_channel()
     rejected_channel.set_persistent_group_fanout_callback(
-        AsyncMock(return_value=InboundDisposition.REJECTED)
+        AsyncMock(return_value=GatewayDisposition.REJECTED)
     )
     await rejected_channel._on_message(_raw_feishu_event())
     rejected_channel._parse_message_content_with_file.assert_not_awaited()
@@ -1125,21 +1128,21 @@ async def test_unclaimed_bot_stays_ignored_and_rejected_or_failed_routes_never_f
 @pytest.mark.asyncio
 async def test_channel_manager_wires_feishu_to_message_handler_and_unconfigured_handler_is_unclaimed():
     handler = object.__new__(MessageHandler)
-    handler.set_persistent_group_fanout(None)
+    handler.agent_client = AsyncMock()
     channel = _feishu_channel()
     manager = ChannelManager(handler)
 
     manager.register_channel(channel)
     await channel._on_message(_raw_feishu_event())
 
-    assert handler._persistent_group_fanout is None
+    handler.agent_client.send_request.assert_not_awaited()
     channel._parse_message_content_with_file.assert_awaited_once()
     channel._process_batched_message.assert_awaited_once()
 
 
 def test_channel_manager_wires_only_feishu_apps_with_a_persistent_agent_binding():
     handler = object.__new__(MessageHandler)
-    handler.set_persistent_group_fanout(None)
+    handler.agent_client = AsyncMock()
     manager = ChannelManager(handler)
     personal_channel = _feishu_channel(agent_id="")
     bound_channel = _feishu_channel(agent_id="mate_bound")
@@ -1156,12 +1159,16 @@ async def test_message_handler_delegates_to_configured_fanout():
     handler = object.__new__(MessageHandler)
     fanout = MagicMock()
     fanout.handle = AsyncMock(return_value=InboundDisposition.HANDLED)
-    handler.set_persistent_group_fanout(fanout)
-    event = _event()
+    async def send(envelope):
+        assert envelope.method == "jiuwenmate.feishu.inbound"
+        result = await fanout.handle(FeishuInboundEvent.from_payload(envelope.params["event"]))
+        return SimpleNamespace(ok=True, payload={"disposition": result.value})
 
-    result = await handler.handle_persistent_feishu_event(event)
-
-    assert result is InboundDisposition.HANDLED
+    handler.agent_client = SimpleNamespace(send_request=send)
+    event = _event(expected_agent_id="mate")
+    from dataclasses import asdict
+    result = await handler.handle_persistent_feishu_event(GatewayFeishuEvent(**asdict(event)))
+    assert result is GatewayDisposition.HANDLED
     fanout.handle.assert_awaited_once_with(event)
 
 

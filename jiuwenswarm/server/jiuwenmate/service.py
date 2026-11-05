@@ -562,6 +562,10 @@ class PersistentAgentService:
         if channel not in IM_CHANNELS:
             raise PersistentAgentError(f"unsupported channel {channel!r}")
         require_identifier("connection_key", connection_key)
+        if channel == "welink":
+            for connection in self._repository.connections(namespace_id, config.agent_id):
+                if connection.channel == channel and connection.connection_key.casefold() == connection_key.casefold():
+                    return connection.agent_id
         if self._repository.connection_has_unfinished_work(namespace_id, channel, connection_key):
             raise PersistentAgentError(
                 "Finish or end the legacy connection's running or approval-waiting requests before rebinding.",
@@ -762,7 +766,7 @@ class PersistentAgentService:
             import shutil
             from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
 
-            from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
+            from agent_gateway.channel_manager.im_platforms.welink.welink_binding import (
                 load_welink_section, normalize_welink_section,
             )
 

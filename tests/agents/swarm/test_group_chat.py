@@ -10,7 +10,7 @@ import pytest
 from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 from jiuwenswarm.agents.swarm import group_chat as gc
-from tests.agents.swarm.test_agent_group import _minimal_group
+from tests.agents.swarm.agent_group_fixtures import _minimal_group
 
 
 def spec():

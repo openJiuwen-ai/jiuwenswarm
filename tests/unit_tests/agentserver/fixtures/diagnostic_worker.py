@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 import threading
 import time
@@ -94,6 +95,30 @@ class TrafficRuntime:
                 rail.system_prompt_builder = SystemPromptBuilder(language="en")
                 rail._refresh_dynamic_attachments = runtime_state
                 self.shell_rails.append(rail)
+        if mode == "slow-logging":
+            from jiuwenswarm.common import utils  # noqa: F401
+            from jiuwenswarm.common.background_logging import wrap_log_handlers
+
+            self.log_started = threading.Event()
+            self.log_release = threading.Event()
+            self.log_thread = None
+            runtime = self
+
+            class SlowHandler(logging.Handler):
+                def emit(self, record):
+                    runtime.log_thread = threading.current_thread().name
+                    runtime.log_started.set()
+                    runtime.log_release.wait(120)
+
+            self.slow_logger = logging.getLogger("slow-disk-injection")
+            self.slow_logger.handlers = [SlowHandler()]
+            self.slow_logger.propagate = False
+            self.slow_logger.setLevel(logging.INFO)
+            wrap_log_handlers(self.slow_logger)
+        if mode == "regex-logging":
+            from jiuwenswarm.common import utils  # noqa: F401
+
+            self.utils_origin = utils.__file__
 
     async def attach_gateway_connection(self, ws, send_lock) -> None:
         pass
@@ -105,10 +130,25 @@ class TrafficRuntime:
         self.release.set()
 
     async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        if self.mode == "regex-logging":
+            await ws.send(json.dumps({
+                "request_id": request.request_id, "phase": "regex_starting",
+                "utils_origin": self.utils_origin,
+            }))
+            started = time.monotonic()
+            logging.getLogger("regex-injection").info("payload=%s", "a+" * 100_000)
+            await ws.send(json.dumps({
+                "request_id": request.request_id, "phase": "final",
+                "log_seconds": time.monotonic() - started,
+            }))
+            return
+        if self.mode == "slow-logging":
+            await self._slow_logging_request(ws, request)
+            return
         if self.mode == "slow-shell":
             await self._slow_shell_request(ws, request)
             return
-        if self.mode == "freeze":
+        if self.mode == "freeze" and request.params.get("freeze", True):
             await ws.send(
                 json.dumps({"request_id": request.request_id, "phase": "freezing"})
             )
@@ -128,6 +168,25 @@ class TrafficRuntime:
             )
             await asyncio.sleep(0.001)
         await ws.send(json.dumps({"request_id": request.request_id, "phase": "final"}))
+
+    async def _slow_logging_request(self, ws, request) -> None:
+        started = time.monotonic()
+        self.slow_logger.info("injected disk write: api_key=test-only-secret")
+        async with asyncio.timeout(5):
+            while not self.log_started.is_set():
+                await asyncio.sleep(0.01)
+        await ws.send(json.dumps({
+            "request_id": request.request_id, "phase": "logging_pending",
+            "first_seconds": time.monotonic() - started, "log_thread": self.log_thread,
+        }))
+        # Stay beyond the real 30s transport health contract. The log sink
+        # deliberately remains blocked through final Worker shutdown too.
+        await asyncio.sleep(36)
+        await ws.send(json.dumps({
+            "request_id": request.request_id, "phase": "final",
+            "blocked_seconds": time.monotonic() - started,
+            "sink_pending": not self.log_release.is_set(),
+        }))
 
     async def _slow_shell_request(self, ws, request) -> None:
         ctx = SimpleNamespace(agent=None, session=None)
@@ -177,7 +236,7 @@ class TrafficRuntime:
 def run() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell"], required=True
+        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
     )
     args, remaining = parser.parse_known_args()
 

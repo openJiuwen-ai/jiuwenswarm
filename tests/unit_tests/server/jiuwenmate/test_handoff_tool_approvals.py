@@ -21,11 +21,11 @@ from tests.unit_tests.server.jiuwenmate.test_permission_approvals import NOW, pa
 
 
 def handoff_state(*, origin=True):
-    state, event = paused_request(channel="feishu", principal="feishu:bot:code-bot", target="oc-group", app_id="app-code")
+    state, event = paused_request(namespace_id="local", channel="feishu", principal="feishu:bot:code-bot", target="oc-group", app_id="app-code")
     source = core.GroupMessage(
         message_id="om-handoff", sender_id="architect", sender_name="Architect", sender_kind="agent",
         received_at=NOW, text="please implement")
-    record = replace(state.record, namespace_id="local", request_input=core.RequestInput(
+    record = replace(state.record, request_input=core.RequestInput(
         kind="group_message", text=source.text, source=source, reply_target="oc-group"),
         permission_origin=PermissionOrigin(principal_ref="feishu:user:human-in-app-a", agent_id="architect",
             request_id="root-request", route=RequestRouteSnapshot(channel="feishu", app_id="app-architect",

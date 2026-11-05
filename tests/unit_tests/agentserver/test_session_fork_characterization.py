@@ -65,6 +65,13 @@ def _server(runtime: Any) -> AgentWebSocketServer:
     return server
 
 
+async def _handle_fork(runtime: Any, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+    await handle_session_fork(build_ws_request_context(_server(runtime), ws, request, send_lock))
+
+
 def _parse_sent_response(ws: Any) -> Any:
     ws.send.assert_awaited_once()
     return parse_agent_server_wire_unary(json.loads(ws.send.await_args.args[0]))
@@ -128,7 +135,7 @@ async def test_session_fork_server_preserves_runtime_commit_and_wire_order() -> 
         send=AsyncMock(side_effect=lambda _wire: trace.append("response.send"))
     )
 
-    await _server(runtime)._handle_session_fork(ws, _request(), asyncio.Lock())
+    await _handle_fork(runtime,ws, _request(), asyncio.Lock())
 
     assert trace == [
         "runtime.start",
@@ -177,7 +184,7 @@ async def test_session_fork_server_forwards_message_cutoff() -> None:
         "mcp": ["connector-a"],
     }
 
-    await _server(runtime)._handle_session_fork(ws, request, asyncio.Lock())
+    await _handle_fork(runtime,ws, request, asyncio.Lock())
 
     runtime.prepare_session_fork.assert_awaited_once_with(
         SessionForkInput(
@@ -205,7 +212,7 @@ async def test_session_fork_rejects_invalid_equipment_override() -> None:
     request = _request(channel_id="web")
     request.params["session_equipment_override"] = ["connector-a"]
 
-    await _server(runtime)._handle_session_fork(ws, request, asyncio.Lock())
+    await _handle_fork(runtime,ws, request, asyncio.Lock())
 
     assert trace == []
     runtime.prepare_session_fork.assert_not_awaited()
@@ -222,7 +229,7 @@ async def test_session_fork_rejects_removed_side_option_without_creating_session
     request = _request(channel_id="web")
     request.params["side_conversation"] = True
 
-    await _server(runtime)._handle_session_fork(ws, request, asyncio.Lock())
+    await _handle_fork(runtime,ws, request, asyncio.Lock())
 
     assert trace == []
     runtime.prepare_session_fork.assert_not_awaited()
@@ -320,7 +327,7 @@ async def test_session_fork_crosses_real_runtime_boundary_end_to_end(
     )
 
     try:
-        await _server(runtime)._handle_session_fork(
+        await _handle_fork(runtime,
             ws,
             _request(),
             asyncio.Lock(),
@@ -357,7 +364,7 @@ async def test_session_fork_server_leaves_auto_target_to_runtime() -> None:
     )
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(
+    await _handle_fork(runtime,
         ws,
         _request(target_session_id=None),
         asyncio.Lock(),
@@ -381,7 +388,7 @@ async def test_session_fork_server_preserves_channel_id_without_trimming() -> No
     runtime, _ = _runtime_adapter(trace=trace)
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(
+    await _handle_fork(runtime,
         ws,
         _request(channel_id=" tui "),
         asyncio.Lock(),
@@ -397,7 +404,7 @@ async def test_session_fork_missing_source_stays_before_runtime_start() -> None:
     runtime, _ = _runtime_adapter(trace=trace)
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(
+    await _handle_fork(runtime,
         ws,
         _request(source_session_id="  "),
         asyncio.Lock(),
@@ -442,7 +449,7 @@ async def test_session_fork_runtime_errors_keep_legacy_wire(
     runtime, _ = _runtime_adapter(trace=trace, prepare_error=error)
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(ws, _request(), asyncio.Lock())
+    await _handle_fork(runtime,ws, _request(), asyncio.Lock())
 
     response = _parse_sent_response(ws)
     assert response.ok is False
@@ -459,7 +466,7 @@ async def test_session_fork_commit_error_aborts_uncommitted_lease() -> None:
     )
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(ws, _request(), asyncio.Lock())
+    await _handle_fork(runtime,ws, _request(), asyncio.Lock())
 
     response = _parse_sent_response(ws)
     assert response.ok is False
@@ -478,7 +485,7 @@ async def test_session_fork_abort_error_does_not_replace_commit_error() -> None:
     )
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(ws, _request(), asyncio.Lock())
+    await _handle_fork(runtime,ws, _request(), asyncio.Lock())
 
     response = _parse_sent_response(ws)
     assert response.ok is False
@@ -498,7 +505,7 @@ async def test_session_fork_abort_error_does_not_replace_cancellation() -> None:
     ws = SimpleNamespace(send=AsyncMock())
 
     with pytest.raises(asyncio.CancelledError):
-        await _server(runtime)._handle_session_fork(
+        await _handle_fork(runtime,
             ws,
             _request(),
             asyncio.Lock(),
@@ -521,7 +528,7 @@ async def test_session_fork_abort_cancellation_preserves_primary_cancellation() 
     ws = SimpleNamespace(send=AsyncMock())
 
     with pytest.raises(asyncio.CancelledError) as caught:
-        await _server(runtime)._handle_session_fork(
+        await _handle_fork(runtime,
             ws,
             _request(),
             asyncio.Lock(),
@@ -551,7 +558,7 @@ async def test_session_fork_runtime_start_value_error_keeps_legacy_code(
     runtime.start.side_effect = ValueError(message)
     ws = SimpleNamespace(send=AsyncMock())
 
-    await _server(runtime)._handle_session_fork(ws, _request(), asyncio.Lock())
+    await _handle_fork(runtime,ws, _request(), asyncio.Lock())
 
     runtime.prepare_session_fork.assert_not_awaited()
     response = _parse_sent_response(ws)
@@ -572,7 +579,7 @@ async def test_session_fork_cancellation_propagates_without_wire(
     ws = SimpleNamespace(send=AsyncMock())
 
     with pytest.raises(asyncio.CancelledError):
-        await _server(runtime)._handle_session_fork(
+        await _handle_fork(runtime,
             ws,
             _request(),
             asyncio.Lock(),
@@ -592,7 +599,7 @@ async def test_session_fork_send_failure_does_not_abort_committed_result() -> No
     runtime, _ = _runtime_adapter(trace=trace)
     ws = SimpleNamespace(send=AsyncMock(side_effect=[OSError("send failed"), None]))
 
-    await _server(runtime)._handle_session_fork(ws, _request(), asyncio.Lock())
+    await _handle_fork(runtime,ws, _request(), asyncio.Lock())
 
     runtime.commit_session_provision.assert_awaited_once()
     runtime.abort_session_provision.assert_not_awaited()
@@ -605,7 +612,9 @@ async def test_session_fork_send_failure_does_not_abort_committed_result() -> No
 
 
 def test_session_fork_handler_keeps_transport_and_runtime_boundary() -> None:
-    source = inspect.getsource(AgentWebSocketServer._handle_session_fork)
+    from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+    source = inspect.getsource(handle_session_fork)
 
     for forbidden in (
         "self._agent_manager",
@@ -615,9 +624,10 @@ def test_session_fork_handler_keeps_transport_and_runtime_boundary() -> None:
         "copy_session_context",
         "copy_session_state",
         "AgentCard",
+        "send_lock",
+        "send_wire_payload",
     ):
         assert forbidden not in source
     assert "prepare_session_fork" in source
     assert "commit_session_provision" in source
-    assert "send_lock" in source
-    assert "send_wire_payload" in source
+    assert "send_response" in source

@@ -26,18 +26,18 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from jiuwenswarm.agents.swarm.agent_group import LoadedAgentGroupPackage
+    from openjiuwen.agent_teams.experts import LoadedAgentGroupPackage
 
 from openjiuwen.agent_teams.paths import (
     SKILL_VISIBILITY_FILENAME,
     configure_global_skills_dir,
     team_home,
 )
+from openjiuwen.agent_teams.experts import compose_template_member
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.agent_teams.schema.blueprint import TransportSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -47,7 +47,11 @@ from openjiuwen.agent_teams.schema.team import (
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
-from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_DESIGN,
+    is_code_profile_mode,
+    is_team_mode,
+)
 
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
@@ -64,18 +68,12 @@ from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
-from jiuwenswarm.common.mode_matrix import (
-    NEW_TEAM_DESIGN,
-    is_code_profile_mode,
-    is_team_mode,
-)
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
 
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
-_PROMPT_TEMPLATE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 
 
 def _external_team_publish_url(channel_id: str | None) -> str:
@@ -132,88 +130,10 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
 
 
-def _template_skill_names(template: AgentTemplateSpec) -> list[str]:
-    """Return stable, deduplicated skill directory names from a template."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for skill in template.skills:
-        name = Path(skill.dir).name
-        if name and name not in seen:
-            names.append(name)
-            seen.add(name)
-    return names
-
-
-def _select_prompt_content(content: dict[str, str], language: str) -> str:
-    """Select one localized AgentTemplate prompt using core's fallback order."""
-    if language in content:
-        return content[language]
-    if "en" in content:
-        return content["en"]
-    if "cn" in content:
-        return content["cn"]
-    if content:
-        return next(iter(content.values()))
-    return ""
-
-
-def _render_prompt_text(text: str, params: dict[str, Any]) -> str:
-    """Render the plain ``{{ name }}`` placeholders used by AgentTemplate."""
-
-    def _replace(match: re.Match[str]) -> str:
-        key = match.group(1)
-        return str(params[key]) if key in params else match.group(0)
-
-    return _PROMPT_TEMPLATE_PATTERN.sub(_replace, text)
-
-
-def _template_team_prompt(template: AgentTemplateSpec, member_spec: Any) -> str:
-    """Flatten an AgentTemplate's prompt sections into the Team-owned prompt.
-
-    ``TeamMemberSpec.prompt`` / ``LeaderSpec.prompt`` is the persisted source of
-    truth for a member's private working agreement.  Preserve AgentTemplate
-    priority and localization semantics while moving that content into the Team
-    layer instead of letting ``NativeHarness`` replace prompt sections later.
-    """
-    language = str(getattr(member_spec, "language", None) or "cn").strip() or "cn"
-    workspace = getattr(getattr(member_spec, "workspace", None), "root_path", None)
-    base_params: dict[str, Any] = {
-        "language": language,
-        "workspace": workspace or "",
-    }
-    rendered: list[str] = []
-    for section in sorted(template.prompt_sections, key=lambda item: item.priority):
-        params = {**base_params, **dict(section.render_params or {})}
-        text = _render_prompt_text(
-            _select_prompt_content(section.content, language),
-            params,
-        ).strip()
-        if text:
-            rendered.append(text)
-    return "\n\n".join(rendered)
-
-
 def _merge_team_prompt(existing: str | None, expert_prompt: str) -> str:
     """Append an expert prompt without discarding an existing Team prompt."""
     return "\n\n".join(
         part for part in (str(existing or "").strip(), expert_prompt.strip()) if part
-    )
-
-
-def _with_agent_template(member_spec: Any, template: AgentTemplateSpec) -> Any:
-    """Attach a capability-only template snapshot and seed Skill visibility."""
-    skills: list[str] = []
-    seen: set[str] = set()
-    for name in [*(member_spec.skills or []), *_template_skill_names(template)]:
-        if name and name not in seen:
-            skills.append(name)
-            seen.add(name)
-    runtime_template = template.model_copy(update={"prompt_sections": []})
-    return member_spec.model_copy(
-        update={
-            "agent_template_spec": runtime_template.model_dump(mode="json"),
-            "skills": skills,
-        }
     )
 
 
@@ -222,12 +142,20 @@ def _apply_agent_group(
     agent_group_name: str,
     package: LoadedAgentGroupPackage | None = None,
 ) -> None:
-    """Seed a hybrid roster from one resolved AgentGroup package."""
+    """Seed the team from one resolved AgentGroup package.
+
+    The leader always takes the group's leader template. Under scheduled
+    dispatch the team starts with an empty roster: the group's other members
+    are not assembled here, and the leader spawns the ones a task needs, which
+    core loads from the installed package on demand (``spawn_expert``, inline
+    ``create_task`` members, swarmflow ``agent_template``). Otherwise they
+    become a hybrid predefined roster.
+    """
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_member_display_name,
     )
     if package is None:
-        from jiuwenswarm.agents.swarm.agent_group import (
+        from openjiuwen.agent_teams.experts import (
             load_agent_group_package_bundle,
         )
         from jiuwenswarm.server.runtime.extension_package_manager import (
@@ -239,11 +167,14 @@ def _apply_agent_group(
         )
     templates = package.templates
     package_dir = package.package_dir
+    # The metadata key stays for existing readers; ``agent_group_name`` is the
+    # field core's spawn_expert reads to spawn more instances of a member.
     spec.metadata = {
         **(spec.metadata or {}),
         "agent_group_name": agent_group_name,
         "capabilities": list(package.capabilities),
     }
+    spec.agent_group_name = agent_group_name
 
     leader_base = spec.agents.get("leader")
     teammate_base = spec.agents.get("teammate")
@@ -251,29 +182,25 @@ def _apply_agent_group(
         raise ValueError(
             "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
         )
-    leader_template = templates["leader"]
-    leader_prompt = _template_team_prompt(leader_template, leader_base)
+    leader_member = compose_template_member(leader_base, templates["leader"])
     spec.leader = spec.leader.model_copy(
         update={
-            "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
+            "prompt": _merge_team_prompt(spec.leader.prompt, leader_member.persona),
         }
     )
-    spec.agents["leader"] = _with_agent_template(
-        leader_base,
-        leader_template,
-    )
+    spec.agents["leader"] = leader_member.spec
+    if spec.dispatch_mode == "scheduled":
+        return
 
     predefined_members: list[TeamMemberSpec] = []
     for agent_name, template in templates.items():
         if agent_name == "leader":
             continue
-        member_prompt = _template_team_prompt(template, teammate_base)
+        assembled = compose_template_member(teammate_base.model_copy(deep=True), template)
+        member_prompt = assembled.persona
         external_config = external_cli_agent_spec_from_template(template)
         if external_config is None:
-            spec.agents[agent_name] = _with_agent_template(
-                teammate_base.model_copy(deep=True),
-                template,
-            )
+            spec.agents[agent_name] = assembled.spec
             member = TeamMemberSpec(
                 member_name=agent_name,
                 display_name=resolve_agent_group_member_display_name(
@@ -357,7 +284,7 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     ``DesignerSurfaceSanitizerRail`` (execution is service-driven; the leader
     has no run-control surface).
     """
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
     )
@@ -369,14 +296,13 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
         raise ValueError(
             "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
         )
-    leader_template = templates["leader"]
-    leader_prompt = _template_team_prompt(leader_template, leader_base)
+    leader_member = compose_template_member(leader_base, templates["leader"])
     spec.leader = spec.leader.model_copy(
         update={
-            "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
+            "prompt": _merge_team_prompt(spec.leader.prompt, leader_member.persona),
         }
     )
-    leader_spec = _with_agent_template(leader_base, leader_template)
+    leader_spec = leader_member.spec
 
     # Design-team leader: a conversation surface over the canvas.
     # Rebuild the leader spec instead of extending the config.yaml base:
@@ -453,10 +379,7 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     for agent_name, template in templates.items():
         if agent_name in ("leader", "teammate"):
             continue
-        spec.agents[agent_name] = _with_agent_template(
-            teammate_base.model_copy(deep=True),
-            template,
-        )
+        spec.agents[agent_name] = compose_template_member(teammate_base.model_copy(deep=True), template).spec
     spec.enable_swarmflow = False
     spec.predefined_members = []
     # Team-level swarmflow progressive switch (swarmflow_progressive_tool):
@@ -696,4 +619,56 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
     return dropped
 
 
-__all__ = ["enrich_team_spec_for_swarm", "preflight_team_mcps"]
+def assign_shared_sandbox_sys_operation(spec: Any, deep_agent: Any) -> None:
+    """Point every team member at the main agent's sandbox SysOperation.
+
+    ``setup_agent`` keeps a member's own ``sys_operation`` when the spec
+    already has one. Reusing the main agent's id makes ``SysOperationSpec.resolve``
+    return that registered sandbox instead of creating a local one.
+
+    No-op when the main agent has no sandbox SysOperation.
+    """
+    shared = _shared_sandbox_sys_operation_spec(deep_agent)
+    if shared is None:
+        return
+    agents = getattr(spec, "agents", None)
+    if isinstance(agents, dict):
+        for name, agent_spec in list(agents.items()):
+            if not hasattr(agent_spec, "model_copy"):
+                continue
+            agents[name] = agent_spec.model_copy(update={"sys_operation": shared})
+    reviewer = getattr(spec, "reviewer_agent", None)
+    if hasattr(reviewer, "model_copy"):
+        spec.reviewer_agent = reviewer.model_copy(update={"sys_operation": shared})
+    logger.info(
+        "[swarm.assembly] team members share sandbox sys_operation %s",
+        shared.id,
+    )
+
+
+def _shared_sandbox_sys_operation_spec(deep_agent: Any) -> Any:
+    """Copy the main agent's sandbox card into a member SysOperationSpec."""
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.core.sys_operation.config import SandboxGatewayConfig
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    config = getattr(deep_agent, "deep_config", None)
+    sys_operation = getattr(config, "sys_operation", None)
+    if getattr(sys_operation, "mode", None) != OperationMode.SANDBOX:
+        return None
+    run_config = getattr(sys_operation, "_run_config", None)
+    gateway = getattr(run_config, "config", None)
+    if not isinstance(gateway, SandboxGatewayConfig):
+        return None
+    return SysOperationSpec(
+        id=str(sys_operation.id),
+        mode=OperationMode.SANDBOX,
+        gateway_config=gateway,
+    )
+
+
+__all__ = [
+    "assign_shared_sandbox_sys_operation",
+    "enrich_team_spec_for_swarm",
+    "preflight_team_mcps",
+]

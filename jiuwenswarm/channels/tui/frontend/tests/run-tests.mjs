@@ -278,6 +278,7 @@ for (const cardId of ["card-1", "card-2", "card-3"]) {
     payload: {
       request_id: `request-${cardId}`,
       source: "permission_interrupt",
+      interrupt_id: `intr-${cardId}`,
       questions: [
         {
           header: "Permission",
@@ -292,6 +293,10 @@ for (const cardId of ["card-1", "card-2", "card-3"]) {
 assert.deepEqual(
   capturedPermissionQuestions.map((pending) => pending.questions[0]?.cardId),
   ["card-1", "card-2", "card-3"],
+);
+assert.deepEqual(
+  capturedPermissionQuestions.map((pending) => pending.interruptId),
+  ["intr-card-1", "intr-card-2", "intr-card-3"],
 );
 assert.deepEqual(
   bindPermissionCardAnswer(

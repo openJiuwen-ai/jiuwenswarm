@@ -16,6 +16,7 @@ import type { SettingsModuleTarget } from './settingsNavigation';
 
 export function SettingsPage({
   definition,
+  appVersion,
   isConnected,
   connectionState,
   request,
@@ -32,10 +33,12 @@ export function SettingsPage({
   onExternalCliPendingChoicesChange,
   externalCliDetectResults,
   onExternalCliDetectResultsChange,
+  onRecommendationEnabledChange,
   initialModuleId,
   sidebar,
 }: {
   definition: SettingsPageDefinition;
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
@@ -66,11 +69,13 @@ export function SettingsPage({
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
+  onRecommendationEnabledChange?: (enabled: boolean) => void;
   initialModuleId?: SettingsModuleTarget;
   sidebar?: SettingsSidebarControls;
 }) {
   return (
     <SettingsServicesProvider
+      appVersion={appVersion}
       isConnected={isConnected}
       connectionState={connectionState}
       request={request}
@@ -87,6 +92,7 @@ export function SettingsPage({
       onExternalCliPendingChoicesChange={onExternalCliPendingChoicesChange}
       externalCliDetectResults={externalCliDetectResults}
       onExternalCliDetectResultsChange={onExternalCliDetectResultsChange}
+      onRecommendationEnabledChange={onRecommendationEnabledChange}
     >
       <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} sidebar={sidebar} />
     </SettingsServicesProvider>

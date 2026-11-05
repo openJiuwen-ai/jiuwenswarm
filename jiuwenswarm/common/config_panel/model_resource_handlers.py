@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
     upsert_model_group_resource,
@@ -13,7 +14,6 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
-from jiuwenswarm.common.model_selection import ModelSelection
 
 RESOURCE_OPERATIONS = {
     "models.get": "models.get",
@@ -28,11 +28,12 @@ RESOURCE_OPERATIONS = {
 
 async def find_resource_references(catalog, selection, *, user_id=""):
     """Read the configured Cron backend, never substitute a local file for etcd."""
-    from jiuwenswarm.runtime.cron.factory import create_gateway_cron_store, load_cron_store_settings
+    from jiuwenswarm.common.cron_settings import load_cron_store_settings
+    from jiuwenswarm.common.external_providers import provider
     from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
 
     references = catalog.find_references(selection, include_cron=False)
-    store = await create_gateway_cron_store(catalog.config)
+    store = await provider("cron_store_factory").create_gateway_cron_store(catalog.config)
     is_etcd = load_cron_store_settings(catalog.config).backend == "etcd"
     try:
         await migrate_legacy_cron_selections(store, catalog=catalog, user_id=user_id if is_etcd else None)
@@ -103,13 +104,18 @@ async def model_resource_handler(
 
 
 async def session_selection_handler(channel, ws, req_id, params, session_id):
-    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-    from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+    from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
+    from jiuwenswarm.common.model_selection_store import set_session_model_selection
 
     try:
         params = params or {}
         target = str(params.get("session_id") or session_id or "")
         selection = ModelSelection.model_validate(params.get("model_selection"))
+        if selection.type == "model_group":
+            from jiuwenswarm.common.external_providers import provider
+
+            if (provider("session_metadata").get_session_metadata(target) or {}).get("cron_id"):
+                raise ValueError("Scheduled task sessions only support a single model")
         ModelSelectionResolver().resolve(selection)
         set_session_model_selection(target, selection)
         await channel.send_response(ws, req_id, ok=True, payload={"model_selection": selection.model_dump()})

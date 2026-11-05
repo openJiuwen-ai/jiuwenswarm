@@ -1241,6 +1241,13 @@ body.workspace-resize-active iframe {
     animation: text-muted-breath 2.8s ease-in-out infinite;
   }
 
+  /* 压缩等待时长：等宽数字，避免每秒刷新时宽度跳动 */
+  .context-compression-elapsed {
+    display: inline-block;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   .chat-content--team .context-compression-lines {
     width: min(95%, 920px);
     margin: 0 auto;

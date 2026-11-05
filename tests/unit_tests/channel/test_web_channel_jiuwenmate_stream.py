@@ -5,9 +5,9 @@ import json
 
 import pytest
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from jiuwenswarm.gateway.routing.keys import RoutingKey
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.routing.keys import RoutingKey
 
 STREAM = {
     "event_type": "jiuwenmate.chat.stream",

@@ -18,7 +18,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import {
   Message,
   FileDownloadItem,
@@ -54,9 +55,14 @@ import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
+import { isEnterprise } from '../../edition';
+import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
+import { useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
-import { useChatStore } from '../../stores/chatStore';
+import { conversationKey, useChatStore } from '../../stores/chatStore';
+import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
 import {
   findReferencedAssets,
   normalizePath,
@@ -135,6 +141,7 @@ export function TeamMemberMessageFrame({
   contentClassName,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   showAvatar?: boolean;
@@ -142,9 +149,12 @@ export function TeamMemberMessageFrame({
   contentClassName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   const { i18n } = useTranslation();
-  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const selectedConversation = useOrganizationConversationKey(sessionId);
+  const activeSessionId = sourceTeamId ? conversationKey(sessionId ?? '', sourceTeamId) : selectedConversation;
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
   // 使用名册 display name，查不到退回 member_id。
@@ -203,6 +213,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction = false,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   content: string;
@@ -215,6 +226,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction?: boolean;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   return (
     <TeamMemberMessageFrame
@@ -222,6 +234,7 @@ function TeamLeaderPlainTextMessage({
       showAvatar={showAvatar}
       teamLeaderIdentity={teamLeaderIdentity}
       teamGroupIdentity={teamGroupIdentity}
+      sourceTeamId={sourceTeamId}
     >
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
@@ -263,6 +276,7 @@ export function ContextCompressionLines({
   showSummary?: boolean;
 }) {
   const { t } = useTranslation();
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const showRuntime = Boolean(runtime?.summary);
   const finalSummary = !runtime && showSummary && summary && summary.count > 0 ? summary : null;
   if (!showRuntime && !finalSummary) return null;
@@ -290,6 +304,14 @@ export function ContextCompressionLines({
               ? contextCompressionRunningText(t, runtime?.processor, runtime?.summary ?? '')
               : runtime?.summary}
           </span>
+          {isRunning && runningElapsedSeconds !== undefined && (
+            <span
+              className="context-compression-elapsed"
+              data-testid="chat-panel-context-compression-elapsed"
+            >
+              {contextCompressionElapsedText(t, runningElapsedSeconds)}
+            </span>
+          )}
         </div>
       )}
       {finalSummary && (
@@ -569,6 +591,7 @@ export const MessageItem = memo(function MessageItem({
   onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
+  const agentCatalog = useAgentCatalogStore((state) => state.catalog);
   const {
     id,
     role,
@@ -597,6 +620,14 @@ export const MessageItem = memo(function MessageItem({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const sourceTeam = useTeamSelectorStore((state) => state.runtimes[activeSessionId ?? '']?.teams
+    .find((team) => team.team_id === message.sourceTeamId));
+  const sourceGroupSnapshot = useSessionStore((state) => message.sourceTeamId
+    ? state.runtimes[conversationKey(activeSessionId ?? '', message.sourceTeamId)]?.teamGroupIdentity : null);
+  const sourceGroupIdentity = message.sourceTeamId
+    ? resolveOrganizationTeamIdentity(sourceTeam, [], sourceGroupSnapshot) : null;
+  const sourceTeamLabel = message.sourceTeamId
+    ? resolveOrganizationTeamLabel(sourceTeam, [], message.sourceTeamId) : '';
   // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
   // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
   const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
@@ -888,6 +919,13 @@ export const MessageItem = memo(function MessageItem({
 	           // 面向用户的团队消息直接展示在主会话
 	           if (event.isLeaderToUser || isTeamP2PMessageToUser(event)) {
 	             return (
+	               <div data-testid="chat-panel-user-directed-team-message" data-variant={message.sourceTeamId}>
+                     {message.sourceTeamId && (
+                       <div className="mb-1 text-xs font-medium text-text-muted"
+                         data-testid="chat-panel-message-source-team" data-variant={message.sourceTeamId}>
+                         {sourceTeamLabel}
+                       </div>
+                     )}
 	               <TeamLeaderPlainTextMessage
 	                 member={event.fromMember}
 	                 content={event.content}
@@ -896,9 +934,12 @@ export const MessageItem = memo(function MessageItem({
 	                 isStreaming={isStreaming}
 	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
-	                 teamLeaderIdentity={teamLeaderIdentity}
-	                 teamGroupIdentity={teamGroupIdentityOverride}
+	                 teamLeaderIdentity={message.sourceTeamId
+                       ? { agentTemplateId: '', displayName: sourceTeamLabel } : teamLeaderIdentity}
+	                 teamGroupIdentity={message.sourceTeamId ? sourceGroupIdentity : teamGroupIdentityOverride}
+                     sourceTeamId={message.sourceTeamId}
 	               />
+	               </div>
 	             );
 	           }
 	           
@@ -1045,7 +1086,8 @@ export const MessageItem = memo(function MessageItem({
     ? hasDisplayText || isStreaming
     : Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
   const showFork = Boolean(
-    onForkFromMessage &&
+    !isEnterprise() &&
+      onForkFromMessage &&
       !isStreaming &&
       (role === 'user' || role === 'assistant') &&
       hasBubbleContent
@@ -1079,6 +1121,13 @@ export const MessageItem = memo(function MessageItem({
         )}
         data-testid="chat-panel-bubble-wrapper"
       >
+        {!isUser && message.agentTemplateName && (
+          <div className="chat-message-expert">
+            {agentCatalog?.find(
+              (item) => item.id === message.agentTemplateName || item.runtimePackageName === message.agentTemplateName,
+            )?.displayName || message.agentTemplateName}
+          </div>
+        )}
         {!isUser && (
           <div className="hidden" data-testid="chat-panel-thinking-summary" aria-hidden="true" />
         )}
@@ -1316,14 +1365,19 @@ export function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fetch(file.download_url, { method: 'HEAD' })
+      fileDownloadHead(file.download_url)
         .then((res) => {
-          if (!cancelled && !res.ok) {
-            setExpiredSet((prev) => new Set(prev).add(index));
+          if (!cancelled) {
+            setExpiredSet((prev) => {
+              const next = new Set(prev);
+              if (res.ok && isEnterprise()) next.delete(index);
+              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              return next;
+            });
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && !isEnterprise()) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1345,6 +1399,10 @@ export function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+      window.alert(t('artifacts.downloadFailed', { name: file.name }));
+      return;
+    }
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
@@ -1369,7 +1427,7 @@ export function FileDownloadList({
     const downloadToken = resolveFileDownloadToken(file);
     if (!downloadToken) return;
     if (!sessionId) {
-      window.alert('当前无活跃会话，无法保存 Skill');
+      window.alert(t('chatUi.saveSkillNoSession'));
       return;
     }
 
@@ -1389,7 +1447,7 @@ export function FileDownloadList({
     } catch (error) {
       if (isImportOverwriteRequired(error)) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const overwrite = window.confirm(`${errorMsg}\n是否覆盖保存？`);
+        const overwrite = window.confirm(t('chatUi.saveSkillOverwriteConfirm', { message: errorMsg }));
         if (!overwrite) return;
         try {
           await webRequest('skills.import_local', importParams(true));
@@ -1485,7 +1543,7 @@ export function FileDownloadList({
             {isSkill ? (
               <div className="flex-shrink-0 flex items-center gap-2">
                 {saveSuccessIndex === index && (
-                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">保存成功</span>
+                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">{t('chatUi.saveSkillSuccess')}</span>
                 )}
                 <button
                   type="button"
@@ -1502,9 +1560,9 @@ export function FileDownloadList({
                     event.stopPropagation();
                     void handleSaveSkill(file, index);
                   }}
-                  title={isSaved ? '已保存' : '保存'}
+                  title={isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 >
-                  {isSaving ? '保存中...' : isSaved ? '已保存' : '保存'}
+                  {isSaving ? t('chatUi.saveSkillSaving') : isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 </button>
               </div>
             ) : (

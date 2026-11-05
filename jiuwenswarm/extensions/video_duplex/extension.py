@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.extensions.sdk import (
+from agent_gateway.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
     FrontendContribution,

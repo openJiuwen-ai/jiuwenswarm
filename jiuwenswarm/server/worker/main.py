@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from os import _exit as exit_process
 import signal
 
 
@@ -34,12 +35,18 @@ def _activate_managed_external_cli_paths() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    from jiuwenswarm.common.background_logging import (
+        enable_background_logging,
+        stop_background_logging,
+    )
+
+    enable_background_logging()
     from jiuwenswarm.server.worker.diagnostics import enable_worker_diagnostics
 
     enable_worker_diagnostics()
     parser = argparse.ArgumentParser(prog="jiuwenswarm-runtime-worker")
     parser.add_argument(
-        "--socket", required=True, help="Unix socket or named-pipe path."
+        "--socket", help="Unix socket or named-pipe path (resident mode)."
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18092)
@@ -48,20 +55,52 @@ def main() -> None:
     )
     parser.add_argument("--stub-ready-delay", type=float, default=0.0)
     parser.add_argument("--stub-exit-on-request", action="store_true")
+    parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
+
+    mode = runtime_ipc_mode()
+    if mode == FRONT_LOOPBACK and not args.identity_from_parent:
+        parser.error("front_loopback requires a private parent launch payload")
+    if mode != FRONT_LOOPBACK and not args.socket:
+        parser.error("resident mode requires --socket")
+    code_identity_value = None
+    session_source = None
+    if args.identity_from_parent:
+        from jiuwenswarm.server.supervisor.identity import data_scope, read_launch_payload
+
+        payload = read_launch_payload()
+        code_identity_value = payload["code_identity"]
+        if mode == FRONT_LOOPBACK:
+            from jiuwenswarm.server.ipc.loopback import FrontConnectSessionSource, LoopbackParameters
+
+            session_source = FrontConnectSessionSource(
+                LoopbackParameters.from_payload(
+                    payload.pop("runtime_ipc", None), code_identity=code_identity_value, data_scope=data_scope(),
+                ),
+            )
+        elif payload.get("runtime_ipc") is not None:
+            parser.error("runtime IPC mode does not match the parent launch payload")
     if args.stub:
         from jiuwenswarm.server.worker.stub import StubExit, serve_stub
 
+        exit_code = 1
         try:
             asyncio.run(
                 serve_stub(
-                    args.socket,
+                    args.socket or "",
                     ready_delay=args.stub_ready_delay,
                     exit_on_request=args.stub_exit_on_request,
+                    code_identity_value=code_identity_value,
+                    session_source=session_source,
                 )
             )
+            exit_code = 0
         except StubExit:
             raise SystemExit(1) from None
+        finally:
+            if not stop_background_logging():
+                exit_process(exit_code)
         return
 
     _activate_managed_external_cli_paths()
@@ -69,7 +108,9 @@ def main() -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port))
+    task = loop.create_task(serve_worker(args.socket or "", host=args.host, port=args.port,
+                                       code_identity_value=code_identity_value,
+                                       session_source=session_source))
 
     def _stop() -> None:
         task.cancel()
@@ -79,15 +120,23 @@ def main() -> None:
         loop.add_signal_handler(signal.SIGTERM, _stop)
     except (NotImplementedError, OSError):
         pass
+    exit_code = 1
     try:
         loop.run_until_complete(task)
-    except WorkerForceExit:
-        logging.getLogger(__name__).exception(
-            "[Worker] fatal exit: Runtime dispatch did not stop"
-        )
-        raise SystemExit(1) from None
+        exit_code = 0
+    except WorkerForceExit as exc:
+        logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
+        if stop_background_logging():
+            logging.shutdown()
+        # A cancelled to_thread load may still own non-daemon executor threads.
+        # SystemExit waits for those threads and can exceed the shared deadline.
+        exit_process(1)
     finally:
         loop.close()
+        # logging.shutdown acquires every sink's lock at interpreter exit.
+        # A stuck disk must not make an otherwise drained Worker immortal.
+        if not stop_background_logging():
+            exit_process(exit_code)
 
 
 if __name__ == "__main__":

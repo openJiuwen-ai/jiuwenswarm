@@ -153,14 +153,21 @@ class _MachineRun:
         control: DuplexController | None = None,
     ) -> None:
         self.run_input = run_input
+        from jiuwenswarm.runtime.run_context import RunContext
+        self.run_context = RunContext(
+            request_id=writer.request_id, max_turns=run_input.max_turns,
+            max_budget_usd=run_input.max_budget_usd, host_tools=run_input.host_tools,
+            tool_permissions=(tuple(run_input.permissions["tools"].items())
+                              if run_input.permissions is not None else None),
+        )
         self.writer = writer
         self.client: InProcessRuntimeClient | None = None
         self.request: AgentRequest | None = None
         self.stream: AsyncIterator[RuntimeEvent] | None = None
         self.summary = RunSummary()
         self.limits = RunLimits(
-            max_turns=run_input.max_turns,
-            max_budget_usd=run_input.max_budget_usd,
+            max_turns=self.run_context.max_turns,
+            max_budget_usd=self.run_context.max_budget_usd,
         )
         self.output_json: dict[str, Any] | None = None
         self.error: RuntimeErrorInfo | None = None
@@ -294,13 +301,13 @@ class _MachineRun:
             params["skills"] = list(self.run_input.skills)
         if self.run_input.mcp is not None:
             params["mcp"] = list(self.run_input.mcp)
-        if self.run_input.permissions is not None:
+        if self.run_context.tool_permissions is not None:
             from jiuwenswarm.common.permission_tools import (
                 normalize_permission_tool_name,
             )
 
             tool_levels: dict[str, str] = {}
-            for name, level in self.run_input.permissions["tools"].items():
+            for name, level in self.run_context.tool_permissions:
                 canonical = normalize_permission_tool_name(name)
                 if not canonical or canonical in tool_levels:
                     raise MachineRunError(
@@ -319,7 +326,7 @@ class _MachineRun:
             params=params,
         )
         ready = None
-        if self.run_input.max_turns is not None or self.run_input.host_tools:
+        if self.run_context.max_turns is not None or self.run_context.host_tools:
 
             async def configure(agent: Any) -> None:
                 from jiuwenswarm.channels.process_cli.host_tools import HostCallbackTool
@@ -327,13 +334,13 @@ class _MachineRun:
                 tools = (
                     tuple(
                         HostCallbackTool(spec, self.control.call_host_tool)
-                        for spec in self.run_input.host_tools
+                        for spec in self.run_context.host_tools
                     )
                     if self.control is not None
                     else ()
                 )
                 await agent.configure_process_cli_run(
-                    max_turns=self.run_input.max_turns,
+                    max_turns=self.run_context.max_turns,
                     host_tools=tools,
                 )
 
@@ -522,6 +529,8 @@ async def run_machine(
     still active. A broken pipe is a failed run whose cleanup still happens.
     """
     run = _MachineRun(run_input, writer, control=control)
+    from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
+    context_token = CURRENT_RUN_CONTEXT.set(run.run_context)
     deadline = asyncio.timeout(run_input.timeout_seconds)
     try:
         if control is not None:
@@ -568,8 +577,11 @@ async def run_machine(
         try:
             await run.cleanup()
         finally:
-            if run.session_lease is not None:
-                run.session_lease.release()
+            try:
+                if run.session_lease is not None:
+                    run.session_lease.release()
+            finally:
+                CURRENT_RUN_CONTEXT.reset(context_token)
     return run.result()
 
 

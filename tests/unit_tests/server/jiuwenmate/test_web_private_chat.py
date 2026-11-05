@@ -142,7 +142,8 @@ class ReplyCore:
         elif mode == "file":
             scope = await context.ports.workspace_access.resolve_read_scope(execution)
             content = "周报正文".encode()
-            Path(scope.workspace_root, "周报.md").write_bytes(content)
+            relative_path = f"sessions/{execution.session_id}/output/周报.md"
+            Path(scope.workspace_root, relative_path).write_bytes(content)
             file_event = await emit(
                 core.EventType.OUTPUT_PROPOSED,
                 {
@@ -151,7 +152,7 @@ class ReplyCore:
                     "share_mode": "attachment",
                     "text": "本周周报",
                     "file_ref": "sha256:" + hashlib.sha256(content).hexdigest(),
-                    "file_path": "周报.md",
+                    "file_path": relative_path,
                     "file_size": len(content),
                 },
                 visibility="candidate",
@@ -381,7 +382,7 @@ async def test_failed_requests_show_a_notice_while_ignored_requests_stay_silent(
         assert done["replies"] == []
 
 
-async def test_a_shared_file_is_listed_with_a_download_link_to_its_retained_copy(host, monkeypatch):
+async def test_a_shared_file_is_listed_with_a_download_link_to_its_session_output(host, monkeypatch):
     from jiuwenswarm.common.file_download_token import WebFileDownloadManager, validate_file_download_token
 
     monkeypatch.setenv("JIUWENSWARM_FILE_DOWNLOAD_SECRET", "s" * 64)
@@ -404,7 +405,8 @@ async def test_a_shared_file_is_listed_with_a_download_link_to_its_retained_copy
     token = parse_qs(urlparse(file["download_url"]).query)["token"][0]
     path = Path(validate_file_download_token(token, check_expiry=False)["path"])
     WebFileDownloadManager.reset_instance()
-    assert path.is_relative_to(host.tmp_path / "outputs")
+    session_id = ExecutionRepository(host.db).get_request("local", request["request_id"]).record.session_id
+    assert path == host.tmp_path / "workspaces" / "local" / agent_id / "sessions" / session_id / "output" / "周报.md"
     assert path.read_bytes() == "周报正文".encode()
 
 

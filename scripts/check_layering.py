@@ -5,10 +5,15 @@
 
 规则（白名单内为已知存量，即燃尽清单；白名单外为新增违规）：
 
-  R1  common  禁止 import server / agents / channels / gateway / extensions / symphony
+  R1  common  禁止 import server / agents / channels / gateway / extensions / runtime
   R2  server  禁止 import gateway
-  R3  gateway 禁止 import server / agents / channels
-  R4  gateway/embedded/ 禁止 import server / agents（AgentServer 拷贝）
+  R3  gateway 禁止 import server / agents / channels / runtime
+
+例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
+common / server / runtime 允许反向引用；扩展治理层
+``gateway.extensions.{registry,manager,loader}`` 同理——扩展发现、注册表与
+加载器收敛为单份实现，避免两侧各持一份进程内单例，其在 AgentServer 侧的
+引用不视为违规。其余 ``gateway.*`` 仍属传输层，继续禁止。
 
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
@@ -46,6 +51,8 @@ PKG = "jiuwenswarm"
 
 logger = logging.getLogger(__name__)
 
+_ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
+
 # ---------------------------------------------------------------------------
 # 已知存量（燃尽清单）——随 B1'/A4 消化，消除后此表同步缩减
 # 基线：upstream/develop fbd8d6f41 + browser_config 下沉（2026-10-13 实测）
@@ -53,76 +60,107 @@ logger = logging.getLogger(__name__)
 
 # 键为模块名（点号分隔）。R2 原存量 server/ipc/protocol.py -> gateway.routing.keys
 # 已被上游提交消除（2026-10-13 同步验证），不再列入。
-# 以下三对为 a6b9ea2e0（模型组前后端集成，2026-10-13 21:34 进 develop，晚于
-# 本 MR 创建 1.5 小时——本 MR 的 CI 绿只是跑得早）引入的新增反向引用，
-# 已在 !8029（B1'：model_routing_registry/model_selection_store 下沉、
-# session_metadata 注入化）修复；该 MR 合入后本三对随全表缩减。
+# R1 存量（含 a6b9ea2e0 于 2026-10-13 引入的 3 对）已由 B1'
+# （common 注入化 + 纯模块下沉）全部消除；!8016 合入的临时白名单
+# （14 对）随本 MR 缩减为空。
+# Enterprise 合入临时白名单：common 侧租户/路径/兼容 shim 仍引用 enterprise。
+# 燃尽方向：注入化或下沉到 enterprise 包，消除后再缩减本表。
 KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
-    "jiuwenswarm.common.config_panel.model_resource_handlers": {
-        "jiuwenswarm.server.runtime.model_routing_registry",
-        "jiuwenswarm.server.runtime.session.model_selection_store",
+    "jiuwenswarm.common.e2a.agent_compat": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.file_download_token": {
+        "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
     },
-    "jiuwenswarm.common.model_migration": {
-        "jiuwenswarm.server.runtime.session.session_metadata",
-    },
-    "jiuwenswarm.common.config": {
-        "jiuwenswarm.server.runtime.mcp.state_store",
-        "jiuwenswarm.server.runtime.mcp.registry",
-        "jiuwenswarm.symphony.config",
-    },
-    "jiuwenswarm.common.config_panel.config_set_handlers": {
-        "jiuwenswarm.server.runtime.a2ui.integration",
-        "jiuwenswarm.symphony.config",
-        "jiuwenswarm.server.runtime.team_binding_store",
-        "jiuwenswarm.server.runtime.team_entity_store",
-    },
-    "jiuwenswarm.common.mcp_config": {
-        "jiuwenswarm.server.runtime.mcp.credential",
-        "jiuwenswarm.server.runtime.mcp.exc_group",
-        "jiuwenswarm.server.runtime.mcp.state_store",
-    },
+    "jiuwenswarm.common.local_env_config": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.projectless_workspace": {"jiuwenswarm.enterprise"},
     "jiuwenswarm.common.utils": {
-        "jiuwenswarm.server.runtime.mcp.package_manifest",
+        "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
+        "jiuwenswarm.enterprise.tenant.tenant_paths",
     },
 }
+
+# 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
+# extensions 治理层（registry/manager/loader）同样以 gateway 为唯一实现：
+# 三者持有进程内单例与扩展注册表，双份副本会导致状态分裂。
+# gateway.auth 为登录栈领域共享（sessions.json 等有状态双侧契约需真源单点，
+# 母仓经 common/auth shim 受控消费）。base_crypto 为 CryptoProvider 注入点
+# 接口件，实现与装配（_RegistryCryptoBridge）在 extensions 治理层，
+# 母仓 config/config_panel 经 common/security shim 受控消费。
+# extensions.sdk 为第三方扩展 SPI/基类真源（含 skill source 与制品验签），
+# 母仓 server.runtime.skill 经转发别名单向消费，属拆仓期允许方向。
+ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
+    "gateway.common",
+    "gateway.extensions.registry",
+    "gateway.extensions.manager",
+    "gateway.extensions.loader",
+    "gateway.extensions.base_crypto",
+    "gateway.extensions.sdk",
+    "gateway.auth",
+)
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
-# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）；
-# agents.browser_config 为上游 PR #8083（Jev 集成，2026-10-13）引入，待其
-# 开发稳定后下沉 common（届时缩减此白名单）。
+# Enterprise / manager-config 合入临时白名单（gateway → server/agents/runtime/channels）。
+# 燃尽方向：经 adapter / 回调替代直 import 后再缩减。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
-    "jiuwenswarm.gateway.channel_manager.web.app_web_handlers": {
-        "jiuwenswarm.channels.web.directory_picker",
-        "jiuwenswarm.channels.web.file_picker",
-        "jiuwenswarm.agents.harness.common.browser_config",
+    "gateway.channel_manager.web.app_web_handlers": {
+        "jiuwenswarm.server.control.responses",
+        "jiuwenswarm.server.runtime.session.session_info",
+        "jiuwenswarm.server.runtime.session.session_metadata",
+        "jiuwenswarm.server.runtime.session.session_rename",
+    },
+    "gateway.channel_manager.web.enterprise_files": {
+        "jiuwenswarm.server.runtime.attachments.upload_storage",
+    },
+    "gateway.channel_manager.web.http_routes.share_jobs": {
+        "jiuwenswarm.channels.web.app_web",
+    },
+    "gateway.cron.db_schedule": {
+        "jiuwenswarm.runtime.cron.cron_expr",
+    },
+    "gateway.cron.db_store": {
+        "jiuwenswarm.runtime.cron.cron_job_mutations",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.memory_config": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.task_memory_config": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
+    "gateway.enterprise.config.manager_config.routers.application_config_routers": {
+        "jiuwenswarm.server.runtime.equipment_hub_catalog",
+    },
+    "gateway.storage_assembly.setup": {
+        "jiuwenswarm.agents.harness.common.memory.config",
     },
 }
-KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
-
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
+    # B2.5 后（rebase 1372eda94 实测，含 B2 合入后的 extensions 状态）：
+    # 四大包（agents/server/runtime/symphony）hard 闭包全部归零。
+    # extensions 30 = B2 吸收后的框架件 + AgentOS 客户端 + 上游回流。
+    # gateway 自有只读 dotenv 副本后，根包 dotenv_early 不再从 gateway 可达；
+    # instance_manager 延迟闭包只经母仓 dotenv_early 的 bootstrap 写入到达，一并归零。
     "closure_hard": {
-        "agents": 101, "server": 56, "runtime": 32, "extensions": 19,
-        "observability": 10, "symphony": 8,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        "extensions": 30, "observability": 10,
+        "dotenv_early": 0, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
-        "agents": 333, "server": 162, "extensions": 52, "runtime": 36,
-        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 4,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        # 2026-10-19 rebase 8e0f173b4：上游新功能 lazy 扩散 +104（非解耦退化）
+        "agents": 344, "server": 240, "extensions": 54, "runtime": 43,
+        "symphony": 11, "observability": 11, "instance_manager": 0, "channels": 6,
+        "dotenv_early": 0, "llm_provider_compat_patch": 0,
     },
-    # common 反向引用（R1 存量）：6 个模块、14 个目标对（含 a6b9ea2e0 新增 3 对）
-    "common_backref_modules": 6,
-    "common_backref_imports": 14,
-    # gateway/embedded/ 下 AgentServer 拷贝的规模（A1–A3/A5 迁移对象）
-    "embedded_files": 27,
-    "embedded_loc": 8540,
-    # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 31,
+    # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
+    "common_backref_modules": 0,
+    "common_backref_imports": 0,
+    # gateway 直接 import 的外部（非 gateway/common）模块数。
+    # 本次去掉 dotenv_early，23 → 22。与实测的其余差额是既有燃尽，本次不重刷。
+    "gateway_direct_foreign": 22,
 }
 
 
@@ -130,17 +168,32 @@ BASELINE = {
 # import 图构建
 # ---------------------------------------------------------------------------
 
+def _all_local_top_modules() -> tuple[str, ...]:
+    """本仓全部顶级模块名（含根包单文件），供 R1 白名单式检查。"""
+    tops: set[str] = set()
+    for rel in collect_py_files():
+        parts = rel.split("/")
+        if parts[0] == "gateway":
+            tops.add("gateway")  # M0-c 顶层包：R1 语义下 common 不得 import gateway
+        elif len(parts) >= 2 and parts[0] == PKG:
+            tops.add(parts[1][:-3] if parts[1].endswith(".py") else parts[1])
+    tops.discard("")
+    tops.discard("common")  # R1 语义：common 只能 import common
+    return tuple(sorted(tops))
+
+
 def _git(*args: str) -> str:
     git_path = shutil.which("git") or "git"
     return subprocess.run(
         [git_path, "-C", str(REPO_ROOT), *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     ).stdout
 
 
 def collect_py_files() -> list[str]:
-    tracked = _git("ls-files", f"{PKG}/").splitlines()
-    untracked = _git("ls-files", "--others", "--exclude-standard", f"{PKG}/").splitlines()
+    # M0-c 后 gateway 为顶层包（与 jiuwenswarm 并列）；两者都纳入依赖图
+    tracked = _git("ls-files", f"{PKG}/", "gateway/").splitlines()
+    untracked = _git("ls-files", "--others", "--exclude-standard", f"{PKG}/", "gateway/").splitlines()
     return sorted(f for f in set(tracked) | set(untracked) if f.endswith(".py"))
 
 
@@ -157,8 +210,11 @@ class ImportGraph:
         self.fileset = set(self.files)
         self.modules = {path_to_module(f): f for f in self.files}
         # hard = 模块级 import；lazy = 函数内延迟 import
+        # typing = ``if TYPE_CHECKING:`` 块内 import——运行时永不执行，
+        # 不计入 hard/lazy（R3 与依赖计数均不含），仅收集供人工核对。
         self.hard: dict[str, set[str]] = defaultdict(set)
         self.lazy: dict[str, set[str]] = defaultdict(set)
+        self.typing: dict[str, set[str]] = defaultdict(set)
         self._build()
 
     def _resolve(self, mod: str, name: str) -> str | None:
@@ -201,8 +257,17 @@ class ImportGraph:
             logger.warning("[warn] 语法错误，跳过 %s: %s", rel, exc)
             return
 
-        def walk(node: ast.AST, in_func: bool) -> None:
+        def _is_type_checking_guard(node: ast.AST) -> bool:
+            test = getattr(node, "test", None)
+            if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+                return True
+            return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+        def walk(node: ast.AST, in_func: bool, in_typing: bool = False) -> None:
             for ch in ast.iter_child_nodes(node):
+                if isinstance(ch, ast.If) and _is_type_checking_guard(ch):
+                    walk(ch, in_func, in_typing=True)
+                    continue
                 targets: list[str | None] = []
                 if isinstance(ch, ast.Import):
                     targets = [self._resolve(mod, a.name) for a in ch.names]
@@ -233,9 +298,10 @@ class ImportGraph:
                     walk(
                         ch,
                         in_func or isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)),
+                        in_typing,
                     )
                     continue
-                bucket = self.lazy if in_func else self.hard
+                bucket = self.typing if in_typing else (self.lazy if in_func else self.hard)
                 for t in targets:
                     if t and t != mod:
                         bucket[mod].add(t)
@@ -279,7 +345,19 @@ def _check_rule(
         if not mod.startswith(source_prefixes):
             continue
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
-            if any(tgt.startswith(f"{PKG}.{p}.") or tgt == f"{PKG}.{p}" for p in forbidden_pkgs):
+            # 无状态纯组件（gateway.common）允许被母仓反向引用。
+            if any(
+                tgt == allowed or tgt.startswith(allowed + ".")
+                for allowed in ALLOWED_CROSS_LAYER_PREFIXES
+            ):
+                continue
+            # M0-c 后 gateway 为顶层包：forbidden 匹配需同时覆盖
+            # ``jiuwenswarm.<pkg>`` 与裸顶层 ``<pkg>`` 两种模块名形态。
+            if any(
+                tgt.startswith(f"{PKG}.{p}.") or tgt == f"{PKG}.{p}"
+                or tgt.startswith(f"{p}.") or tgt == p
+                for p in forbidden_pkgs
+            ):
                 violations[mod].add(tgt)
 
     known_flat = {(s, t) for s, ts in known.items() for t in ts}
@@ -308,10 +386,13 @@ def _check_rule(
 
 
 def run_rules(graph: ImportGraph) -> int:
+    global _ALL_LOCAL_PKGS
+    if _ALL_LOCAL_PKGS is None:
+        _ALL_LOCAL_PKGS = _all_local_top_modules()
     exit_code = 0
     exit_code |= _check_rule(
-        graph, "R1 common 禁止 import server/agents/channels/gateway/extensions/symphony",
-        (f"{PKG}.common.",), ("server", "agents", "channels", "gateway", "extensions", "symphony"),
+        graph, "R1 common 禁止 import 任何非 common 的本仓模块（零本仓引用不变量）",
+        (f"{PKG}.common.",), _ALL_LOCAL_PKGS,
         KNOWN_R1_COMMON_BACKREFS,
     )
     exit_code |= _check_rule(
@@ -320,14 +401,9 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime",
+        ("gateway.",), ("server", "agents", "channels", "runtime"),
         KNOWN_R3_GATEWAY_FOREIGN,
-    )
-    exit_code |= _check_rule(
-        graph, "R4 gateway/embedded/ 禁止 import server/agents（AgentServer 拷贝）",
-        (f"{PKG}.gateway.embedded.",), ("server", "agents"),
-        KNOWN_R4_EMBEDDED_FOREIGN,
     )
     return exit_code
 
@@ -345,7 +421,7 @@ def _fmt_delta(cur: int, base: int) -> str:
 
 
 def run_baseline(graph: ImportGraph) -> None:
-    gw_roots = {m for m in graph.modules if m.startswith(f"{PKG}.gateway.")}
+    gw_roots = {m for m in graph.modules if m.startswith("gateway.")}
 
     logger.info("== 闭包（从 gateway 出发可达的外部模块，非 gateway/common）==")
     for label, edges, base_key in (
@@ -356,7 +432,7 @@ def run_baseline(graph: ImportGraph) -> None:
         by_pkg: dict[str, int] = defaultdict(int)
         for m in reach:
             parts = m.split(".")
-            if len(parts) < 2 or m.startswith((f"{PKG}.gateway", f"{PKG}.common")):
+            if len(parts) < 2 or m.startswith(("gateway", f"{PKG}.common")):
                 continue
             by_pkg[parts[1]] += 1
         total = sum(by_pkg.values())
@@ -373,7 +449,7 @@ def run_baseline(graph: ImportGraph) -> None:
     backref_modules, backref_imports = 0, 0
     foreign_prefixes = tuple(
         f"{PKG}.{p}."
-        for p in ("server", "agents", "channels", "gateway", "extensions", "symphony")
+        for p in ("server", "agents", "channels", "gateway", "extensions", "runtime")
     )
     for mod, known in KNOWN_R1_COMMON_BACKREFS.items():
         targets: set[str] = set()
@@ -390,19 +466,10 @@ def run_baseline(graph: ImportGraph) -> None:
         _fmt_delta(backref_imports, BASELINE["common_backref_imports"]),
     )
 
-    emb = [rel for rel in graph.files if rel.startswith("jiuwenswarm/gateway/embedded/")]
-    emb_loc = sum(len((REPO_ROOT / r).read_text(errors="replace").splitlines()) for r in emb)
-    logger.info("\n== gateway/embedded/（AgentServer 拷贝，A1–A3/A5 迁移对象）==")
-    logger.info(
-        "  文件数: %s，行数: %s",
-        _fmt_delta(len(emb), BASELINE["embedded_files"]),
-        _fmt_delta(emb_loc, BASELINE["embedded_loc"]),
-    )
-
     direct = set()
     for mod in gw_roots:
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
-            if len(tgt.split(".")) < 2 or tgt.startswith((f"{PKG}.gateway", f"{PKG}.common")):
+            if len(tgt.split(".")) < 2 or tgt.startswith(("gateway", f"{PKG}.common")):
                 continue
             direct.add(tgt)
     logger.info("\n== gateway 直接 import 的外部模块（非 gateway/common）==")
@@ -415,10 +482,10 @@ def run_baseline(graph: ImportGraph) -> None:
 def run_list_deps(graph: ImportGraph) -> None:
     deps: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for mod in graph.modules:
-        if not mod.startswith(f"{PKG}.gateway."):
+        if not mod.startswith("gateway."):
             continue
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
-            if len(tgt.split(".")) < 2 or tgt.startswith((f"{PKG}.gateway", f"{PKG}.common")):
+            if len(tgt.split(".")) < 2 or tgt.startswith(("gateway", f"{PKG}.common")):
                 continue
             deps[tgt][graph.modules[mod]].add("hard" if tgt in graph.hard.get(mod, set()) else "lazy")
     logger.info("gateway 直接依赖的外部模块（非 gateway/common）：共 %s 个\n", len(deps))
@@ -449,6 +516,8 @@ def main() -> int:
     # 结果走 stdout、无日志前缀：保持 CLI 输出与 UT 断言（读 stdout）不变
     logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.INFO)
 
+    global _ALL_LOCAL_PKGS
+    _ALL_LOCAL_PKGS = _all_local_top_modules()
     graph = ImportGraph()
     if args.baseline:
         run_baseline(graph)

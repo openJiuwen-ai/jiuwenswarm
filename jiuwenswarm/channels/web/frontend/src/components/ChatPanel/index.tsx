@@ -104,8 +104,7 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   buildTopicStarterRequest,
-  topicStarterShowsProviderRefusal,
-  topicStarterShowsRetryAction,
+  topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
   type TopicStarterEvent,
@@ -1328,7 +1327,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   } | null>(null);
   const [recommendationState, setRecommendationState] = useState("");
   const [recommendationRefresh, setRecommendationRefresh] = useState(0);
-  const manualRecommendationRetry = useRef(false);
   const keepSlateOnRefreshRef = useRef(false);
   // The switch event lands before the re-read. Hold that state across the refresh so the
   // prompt changes at once and the effect does not blank it while the request is in flight.
@@ -1338,7 +1336,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
-  const visibleTopicSlate = recommendationState !== 'disabled' && dynamicSlate?.visitId === topicStarterVisitId
+  // Disabled still shows packaged cold-start cards; personalized generation waits on the switch.
+  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId
     ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
@@ -1911,14 +1910,12 @@ export const ChatPanel = React.memo(function ChatPanel({
         return;
       }
       acceptingDynamicRef.current = true;
-      if (payload.enabled && visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
-      if (!payload.enabled) setDynamicSlate(null);
+      // Keep whatever is on screen across the switch: presets while off, personalized while on.
+      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
       recommendationSwitchStateRef.current = payload.enabled ? 'preparing' : 'disabled';
       setRecommendationState(recommendationSwitchStateRef.current);
       setRecommendationRefresh(value => value + 1);
     });
-    const manualRetry = manualRecommendationRetry.current;
-    manualRecommendationRetry.current = false;
     const heldSwitchState = recommendationSwitchStateRef.current;
     recommendationSwitchStateRef.current = null;
     const refillSlateId = refillSlateIdRef.current;
@@ -1927,11 +1924,11 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
     keepSlateOnRefreshRef.current = false;
     setTopicStarterErrorKey(null);
-    setRecommendationState(manualRetry ? "preparing" : (heldSwitchState ?? ""));
+    setRecommendationState(heldSwitchState ?? "");
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {
-      ...requestParams, visit_id: topicStarterVisitId, manual_retry: manualRetry,
+      ...requestParams, visit_id: topicStarterVisitId, manual_retry: false,
       ...(refillSlateId ? { slate_id: refillSlateId } : {}),
     }, { timeoutMs: 60_000 })
       .then(response => {
@@ -2597,25 +2594,36 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {recommendationState === 'disabled' ? (
-                  <p className="w-full text-sm text-text-muted" data-testid="chat-panel-topic-disabled-hint">
-                    {t('chat.topicStarter.disabledHint')}
+                {recommendationState === 'disabled' && visibleTopicSlate?.topics.length ? (
+                  <p className="chat-suggestions__title w-full" data-testid="chat-panel-topic-disabled-hint">
+                    {t('chat.topicStarter.disabledHintWithCards')}
                     <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
                       {t('chat.topicStarter.openSettings')}
                     </button>
                   </p>
-                ) : recommendationState === 'missing_configuration' ? (
-                  <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-topic-configuration-hint">
-                    {t('chat.topicStarter.statusMissingConfiguration')}
-                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-settings" onClick={() => onOpenGeneralSettings?.()}>
-                      {t('chat.topicStarter.openSettings')}
-                    </button>
+                ) : recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
+                  <div
+                    className="chat-suggestions__title"
+                    role="status"
+                    data-testid={
+                      recommendationState === 'missing_configuration'
+                        ? 'chat-panel-topic-configuration-hint'
+                        : 'chat-panel-recommendation-preparation-state'
+                    }
+                  >
+                    {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
+                    {topicStarterShowsSettingsAction(recommendationState) ? (
+                      <button
+                        type="button"
+                        className="ml-2 text-text-link underline"
+                        data-testid="chat-panel-topic-settings"
+                        onClick={() => onOpenGeneralSettings?.()}
+                      >
+                        {t('chat.topicStarter.openSettings')}
+                      </button>
+                    ) : null}
                   </div>
-                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
-                  {recommendationState !== 'provider_unavailable' ? t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate))) : null}
-                  {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}
-                  {topicStarterShowsRetryAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-retry" onClick={() => { manualRecommendationRetry.current = true; if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true; setRecommendationRefresh(value => value + 1); }} className="ml-2 text-text-link underline">{t('chat.topicStarter.retryPreparation')}</button> : null}
-                </div> : null}
+                ) : null}
                 {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (
                   <p role="alert" data-testid="chat-panel-welcome-topic-starter-error">
                     {t(topicStarterErrorKey)}

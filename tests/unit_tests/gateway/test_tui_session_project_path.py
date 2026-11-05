@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from agent_gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
     build_tui_session_create_channel_metadata,
     register_cli_handlers,
@@ -88,7 +88,7 @@ class TestTuiSessionMatchesProjectDir:
 class TestBuildTuiSessionCreateChannelMetadata:
     def test_uses_resolved_project_dir(self, monkeypatch):
         monkeypatch.setattr(
-            "jiuwenswarm.common.utils.resolve_git_branch",
+            "agent_gateway.common.paths.resolve_git_branch",
             lambda _path: "main",
         )
         meta = build_tui_session_create_channel_metadata(
@@ -103,7 +103,7 @@ class TestBuildTuiSessionCreateChannelMetadata:
 
     def test_falls_back_to_params_cwd(self, monkeypatch):
         monkeypatch.setattr(
-            "jiuwenswarm.common.utils.resolve_git_branch",
+            "agent_gateway.common.paths.resolve_git_branch",
             lambda _path: "HEAD",
         )
         meta = build_tui_session_create_channel_metadata(
@@ -123,16 +123,16 @@ class TestInitSessionMetadataChannelMetadata:
         d = tmp_path / "sessions"
         d.mkdir()
         monkeypatch.setattr(
-            "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
             lambda: d,
         )
-        from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
+        from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
 
         _METADATA_CACHE.clear()
         return d
 
     def test_persists_channel_metadata_on_init(self, sessions_dir: Path):
-        from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import init_session_metadata
+        from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
 
         init_session_metadata(
             session_id="tui_new",
@@ -163,18 +163,18 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
     project_dir = str(project)
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root
+        "agent_gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
         lambda: sessions_root,
     )
-    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
 
     _METADATA_CACHE.clear()
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.resolve_git_branch",
+        "agent_gateway.common.paths.resolve_git_branch",
         lambda _path: "HEAD",
     )
 
@@ -184,7 +184,7 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
 
         async def send_request(self, env):
             self.requests.append(env)
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import init_session_metadata
+            from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
 
             init_session_metadata(
                 session_id="tui_6a601aa3_f4ed87",

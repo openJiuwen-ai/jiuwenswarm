@@ -143,7 +143,7 @@ _READY_BANNER = """\
   ✓ Gateway HTTP           http://localhost:20001
 ================================================================
 
-2026-08-05 11:48:17.399 INFO jiuwenswarm.gateway: something else
+2026-08-05 11:48:17.399 INFO gateway: something else
 """
 
 

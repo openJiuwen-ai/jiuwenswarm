@@ -13,12 +13,13 @@ import os
 import time
 from typing import Any, Callable
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -1268,6 +1269,7 @@ class ProjectAdapter(GatewayAdapter):
             ReqMethod.PROJECT_GET_SESSIONS.value,
             ReqMethod.PROJECT_GET_CRON_SESSIONS.value,
             ReqMethod.PROJECT_CRON_RESOLVE_BINDING.value,
+            ReqMethod.PROJECT_LIFECYCLE.value,
             ReqMethod.PROJECT_LIST.value,
             ReqMethod.PROJECT_CREATE.value,
             ReqMethod.PROJECT_RENAME.value,
@@ -1293,7 +1295,8 @@ class ProjectAdapter(GatewayAdapter):
         method = request.req_method
         params = _request_params(request)
         if method not in {ReqMethod.PROJECT_LIST, ReqMethod.PROJECT_INFO, ReqMethod.PROJECT_PINNED_SESSIONS,
-                          ReqMethod.PROJECT_GET_SESSIONS, ReqMethod.PROJECT_GET_CRON_SESSIONS}:
+                          ReqMethod.PROJECT_GET_SESSIONS, ReqMethod.PROJECT_GET_CRON_SESSIONS,
+                          ReqMethod.PROJECT_LIFECYCLE}:
             from jiuwenswarm.server.runtime.session.lifecycle import guard
             try:
                 guard(project_id=str(params.get("project_id") or ""))
@@ -1411,6 +1414,14 @@ class ProjectAdapter(GatewayAdapter):
             return await _run_threaded(
                 request, "project.cron.resolve_binding", _resolve_cron_binding,
                 params, request.channel_id,
+            )
+        if method == ReqMethod.PROJECT_LIFECYCLE:
+            from jiuwenswarm.server.runtime.session.lifecycle import project_admission_snapshot
+
+            return await _run_threaded(
+                request, "project.lifecycle", project_admission_snapshot,
+                str(params.get("project_id") or ""),
+                result_mode="plain",
             )
         if method == ReqMethod.PROJECT_INFO:
             return await _run_threaded(request, "project.info", _load_project_info, params)

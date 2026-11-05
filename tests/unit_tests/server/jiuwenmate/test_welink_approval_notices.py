@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.base import BaseChannel
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
+from agent_gateway.channel_manager.base import BaseChannel
+from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 
 
@@ -51,7 +51,7 @@ def test_approval_unread_survives_restart_and_only_new_notice_reopens_it(tmp_pat
 
 def test_private_notice_keeps_original_reply_task_open():
     import json
-    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_assistant_link import AssistantLink, _QaSlot
+    from agent_gateway.channel_manager.im_platforms.welink.welink_assistant_link import AssistantLink, _QaSlot
 
     link = AssistantLink("ak", "sk")
     slot = _QaSlot(message_id="original", group_id="p2p:user", tool_session_id="task",

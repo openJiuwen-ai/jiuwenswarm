@@ -26,6 +26,7 @@ def information_question(payload):
             raise ValueError(error)
     return dict(
         request_id=payload["request_id"],
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=source,
         questions=deepcopy(questions),
         state="pending",
@@ -49,6 +50,7 @@ def native_approval_question(payload):
         raise ValueError("Invalid approval questions")
     return dict(
         request_id=request_id,
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=payload["source"],
         questions=deepcopy(questions),
         approval_schema=payload.get("approval_schema"),

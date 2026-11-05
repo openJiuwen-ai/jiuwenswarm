@@ -33,6 +33,12 @@ def panel_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
     monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
+    a2ui = SimpleNamespace(
+        get_a2ui_config_payload=lambda raw: {},
+        get_default_a2ui_config_payload=lambda: {},
+    )
+    original_provider = handlers.provider
+    monkeypatch.setattr(handlers, "provider", lambda domain: a2ui if domain == "a2ui" else original_provider(domain))
     return path
 
 
@@ -201,10 +207,28 @@ async def test_agentserver_config_adapter_uses_same_moa_persistence(panel_config
 
 
 def test_transport_log_formatter_redacts_jev_secret():
-    from jiuwenswarm.gateway.routing.agent_client import _to_json
+    from agent_gateway.routing.agent_client import _to_json
 
     payload = {"params": {"config": {"moa_jev_api_key": "test-write-only-secret"}}}
     formatted = _to_json(payload)
     assert "test-write-only-secret" not in formatted
     assert "****" in formatted
     assert payload["params"]["config"]["moa_jev_api_key"] == "test-write-only-secret"
+
+
+@pytest.mark.asyncio
+async def test_a2ui_panel_without_registered_provider(panel_config, monkeypatch):
+    original = handlers.provider
+
+    def without_a2ui(domain):
+        if domain == "a2ui":
+            raise RuntimeError("A2UI provider not registered in Gateway")
+        return original(domain)
+
+    monkeypatch.setattr(handlers, "provider", without_a2ui)
+    monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
+    monkeypatch.delenv("JIUWENSWARM_A2UI_PROTOCOL_VERSION", raising=False)
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_get_handler(channel, None, "get", {}, None)
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    assert channel.send_response.call_args.kwargs["payload"]["a2ui_enabled"] == "true"

@@ -14,12 +14,17 @@ def test_verifier_requires_a_frozen_process(monkeypatch):
 
 
 @pytest.mark.parametrize("missing", [False, True])
-def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missing):
+def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missing, tmp_path):
     monkeypatch.setattr(verifier.sys, "frozen", True, raising=False)
     exports = SimpleNamespace(__all__=["Adapter"], Adapter=object())
     if missing:
         del exports.Adapter
     monkeypatch.setattr(verifier, "gateway_adapter", exports)
+    monkeypatch.setattr(verifier, "files", lambda _: tmp_path)
+    for extension in ("adx", "agent_client", "agentos"):
+        (tmp_path / extension).mkdir()
+        for name in ("extension.yaml", "extension.py"):
+            (tmp_path / extension / name).touch()
     imports = []
     monkeypatch.setattr(verifier, "import_module", imports.append)
     if missing:
@@ -28,7 +33,12 @@ def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missi
         assert not imports
     else:
         verifier.verify_gateway_adapter_bundle()
-        assert imports == ["jiuwenswarm.server.agent_ws_server"]
+        assert imports[0] == "jiuwenswarm.server.agent_ws_server"
+        assert "agent_gateway.channel_manager.im_platforms.welink.welink_runtime" in imports
+        assert "openjiuwen.harness.persistent_agent" in imports
+        (tmp_path / "adx" / "extension.py").unlink()
+        with pytest.raises(RuntimeError, match="adx/extension.py"):
+            verifier.verify_gateway_adapter_bundle()
 
 
 def test_spec_collects_lazy_gateway_adapters():

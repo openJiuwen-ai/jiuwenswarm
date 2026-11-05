@@ -47,7 +47,7 @@ async def test_published_agent_can_execute_bash_in_its_office(tmp_path):
 @pytest.mark.asyncio
 async def test_bash_defaults_to_session_and_exposes_session_output_directory(tmp_path):
     bash, session = tool(tmp_path)
-    command = """python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd()); Path('draft.md').write_text('final'); Path(os.environ['JIUWENMATE_OUTPUT_DIR'], 'final.md').write_text(Path('draft.md').read_text()); Path('output.txt').write_text(os.environ['JIUWENMATE_OUTPUT_DIR'])"""
+    command = '''python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd()); Path('draft.md').write_text('final'); Path(os.environ['JIUWENMATE_OUTPUT_DIR'], 'final.md').write_text(Path('draft.md').read_text()); Path('output.txt').write_text(os.environ['JIUWENMATE_OUTPUT_DIR'])"'''
     result = await bash.invoke({"command": command})
     assert result.success, result
     assert (session / "cwd.txt").read_text() == str(session)
@@ -60,7 +60,7 @@ async def test_relative_bash_workdir_is_resolved_from_the_current_session(tmp_pa
     bash, session = tool(tmp_path)
     nested = session / "nested"
     nested.mkdir()
-    command = """python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd())"""
+    command = '''python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd())"'''
     result = await bash.invoke({"command": command, "workdir": "nested"})
     assert result.success, result
     assert (nested / "cwd.txt").read_text() == str(nested)

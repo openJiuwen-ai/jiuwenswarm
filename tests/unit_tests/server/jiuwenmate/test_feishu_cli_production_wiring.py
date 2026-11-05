@@ -11,7 +11,7 @@ from tests.unit_tests.server.jiuwenmate.test_resource_assembly import MapCatalog
 from tests.unit_tests.server.jiuwenmate.test_feishu_group_production_wiring import _agent_websocket_server_type
 from tests.unit_tests.gateway.test_app_web_handlers import FakeWebChannel, FakeChannelManager
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from tests.unit_tests.server.jiuwenmate.test_lark_cli_runtime import config, setup_cli
@@ -37,7 +37,7 @@ async def ready(manager):
 
 @pytest.mark.asyncio
 async def test_saved_binding_automatically_prepares_agent_cli(tmp_path, monkeypatch, setup_cli):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
     cm.configs["feishu"] = {"apps": []}
@@ -164,7 +164,7 @@ async def test_restart_removes_unbound_capability_without_publishing_a_draft(tmp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["channel.feishu.bind_agent", "channel.feishu.set_conf"])
 async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monkeypatch, method):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
     cm.configs["feishu"] = config()["channels"]["feishu"]
@@ -191,7 +191,7 @@ async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_personal_channel_changes_never_prepare_persistent_cli(tmp_path, monkeypatch):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
     path = tmp_path / "config.yaml"
@@ -213,7 +213,7 @@ async def test_personal_channel_changes_never_prepare_persistent_cli(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_saved_secret_rotation_notifies_the_bound_agent(tmp_path, monkeypatch):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
     cm.configs["feishu"] = config()["channels"]["feishu"]
@@ -239,7 +239,7 @@ async def test_saved_secret_rotation_notifies_the_bound_agent(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_cli_failure_does_not_undo_saved_binding(tmp_path, monkeypatch):
-    from jiuwenswarm.common import config as config_module
+    from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
     cm.configs["feishu"] = {"apps": []}

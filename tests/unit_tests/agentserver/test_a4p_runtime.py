@@ -922,7 +922,7 @@ async def test_disabling_a4p_cancels_pending_and_pushes_terminal_event(
         def get_instance() -> _Server:
             return _Server()
 
-    from jiuwenswarm.runtime import host_services
+    from jiuwenswarm.common import host_services
     monkeypatch.setattr(host_services, "_runtime_push_handler", _Server().send_push)
     task = asyncio.create_task(
         runtime.authorizer.request_authorization(
@@ -1824,7 +1824,7 @@ async def test_a4p_authorization_push_uses_session_channel(monkeypatch: pytest.M
         def get_instance() -> _Server:
             return _Server()
 
-    from jiuwenswarm.runtime import host_services
+    from jiuwenswarm.common import host_services
     monkeypatch.setattr(host_services, "_runtime_push_handler", _Server().send_push)
     assert route is not None
     await runtime.authorizer._send_push(
@@ -2040,7 +2040,7 @@ async def test_a4p_partial_delivery_failure_closes_old_and_new_cards(monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replaces", [None, "previous-mandate"])
 async def test_a4p_terminal_push_only_includes_existing_predecessor(monkeypatch, replaces):
-    from jiuwenswarm.runtime import host_services
+    from jiuwenswarm.common import host_services
 
     sent = []
 

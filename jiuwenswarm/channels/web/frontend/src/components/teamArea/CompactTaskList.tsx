@@ -29,7 +29,7 @@ import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
-import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
+import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, isKnownTaskAssignee, type TeamMember } from './shared';
 import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
 import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 
@@ -84,7 +84,7 @@ export function CompactTaskList({
   return (
     <div className="flex flex-col gap-1">
       {visibleTasks.map(task => {
-        const assigneeExists = Boolean(task.assignee && members.some(member => member.member_id === task.assignee));
+        const assigneeExists = isKnownTaskAssignee(task.assignee, members);
         const assigneeName = getMemberDisplayName(task.assignee || '');
         const title = getBoardTaskTitle(task);
         const columnKey = getTaskColumnKey(task);

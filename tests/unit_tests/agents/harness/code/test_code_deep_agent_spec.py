@@ -34,6 +34,7 @@ from jiuwenswarm.server.runtime.agent_adapter import interface_code
 
 class _FakeCodeAdapter:
     def __init__(self) -> None:
+        self._instance = None
         self.calls: list[str] = []
         self.rail_names: list[str] = []
         self.subagent_config: dict = {}
@@ -58,6 +59,9 @@ class _FakeCodeAdapter:
 
     def _get_tool_build_func(self, tool_name, agent_id):
         raise AssertionError(f"unexpected tool build: {tool_name}/{agent_id}")
+
+    def _register_multimodal_tools(self, _agent_id, *, fail_on_error=False):
+        return []
 
     @staticmethod
     def _tool_owner_id():
@@ -132,7 +136,9 @@ def test_code_config_is_converted_to_spec_snapshot(tmp_path):
         CODE_SUBAGENT_BUNDLE
     ]
     assert spec.rails[0].params == {"configured_rails": ["SkillUseRail"]}
-    assert spec.tools[0].params == {"configured_tools": ["web_free_search"]}
+    assert spec.tools[0].params == {
+        "configured_tools": ["web_free_search"], "include_multimodal": True,
+    }
     assert spec.subagents[0].factory_kwargs == {
         "subagents": {"code_agent": {"enabled": True}},
         "max_iterations": 23,
@@ -375,6 +381,8 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
 
     adapter = interface_code.JiuwenSwarmCodeAdapter()
     create_model = MagicMock(side_effect=AssertionError("config model must not build"))
+    adapter._model_recipes = {"unused": {"model_id": "config-only"}}
+    adapter._model_alias_to_key = {"unused-alias": "unused"}
 
     def create_sys_operation():
         adapter._sys_operation_card = SysOperationCard(
@@ -453,6 +461,8 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         apply_model.assert_called_once_with(aggregator, session_id=adapter._parent_session_id)
     else:
         apply_model.assert_not_called()
+        assert adapter._model_recipes == {}
+        assert adapter._model_alias_to_key == {}
     # Reloads keep the caller Spec's tools untouched, including their configs.
     assert adapter._vision_tools == []
     assert adapter._vision_tools_registered is False

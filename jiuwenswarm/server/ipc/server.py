@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 def _restrict_runtime_dir(parent: Path) -> None:
     """Tighten ``~/.jiuwenswarm/run`` when the socket lives there."""
-    home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
-    run_dir = Path(home) / ".jiuwenswarm" / "run"
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    run_dir = get_user_workspace_dir() / "run"
     if parent != run_dir:
         return
     try:
@@ -68,6 +69,9 @@ def _peer_uid(sock: object) -> int | None:
 class IpcServer:
     """Accept supervisor connections on a Unix socket or a Windows named pipe."""
 
+    reconnectable = True
+    generation: int | None = None
+
     def __init__(self, path: str) -> None:
         self.path = path
         self._queue: asyncio.Queue[IpcConnection] = asyncio.Queue()
@@ -75,14 +79,28 @@ class IpcServer:
         self._listener: object | None = None
         self._thread: threading.Thread | None = None
         self._closed = False
+        self._released = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._owner_lease: object | None = None
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        if os.name == "nt":
-            await self._start_pipe()
-            return
-        await self._start_unix()
+        from filelock import FileLock
+
+        lease_path = Path(self.path + ".owner.lock")
+        lease_path.parent.mkdir(parents=True, exist_ok=True)
+        lease = FileLock(str(lease_path), timeout=0, thread_local=False)
+        lease.acquire()
+        self._owner_lease = lease
+        try:
+            if os.name == "nt":
+                await self._start_pipe()
+            else:
+                await self._start_unix()
+        except BaseException:
+            lease.release()
+            self._owner_lease = None
+            raise
 
     async def _start_unix(self) -> None:
         target = Path(self.path)
@@ -150,20 +168,39 @@ class IpcServer:
     async def accept(self) -> IpcConnection:
         return await self._queue.get()
 
+    async def stop_accepting(self) -> None:
+        """Stop admission while accepted sessions finish their final replies."""
+        if not self._closed:
+            self._closed = True
+            if self._unix is not None:
+                self._unix.close()
+            listener = self._listener
+            if listener is not None:
+                close = getattr(listener, "close", None)
+                if callable(close):
+                    close()
+                self._listener = None
+        # Retrying after cancellation must also drain connections left queued.
+        while not self._queue.empty():
+            await self._queue.get_nowait().close()
+
     async def close(self) -> None:
-        self._closed = True
+        """Release the listener after callers close their accepted sessions."""
+        if self._released:
+            return
+        await self.stop_accepting()
         if self._unix is not None:
-            self._unix.close()
             await self._unix.wait_closed()
             self._unix = None
-        listener = self._listener
-        if listener is not None:
-            close = getattr(listener, "close", None)
-            if callable(close):
-                close()
-            self._listener = None
+        # Another close may release ownership while wait_closed is pending.
+        if self._released:
+            return
         if os.name != "nt":
             try:
                 Path(self.path).unlink()
             except OSError:
                 pass
+        if self._owner_lease is not None:
+            self._owner_lease.release()
+            self._owner_lease = None
+        self._released = True

@@ -451,6 +451,7 @@ async def test_deliver_control_input_persists_ask_user_answer_with_original_requ
     # 替身 reconcile_session_mcp：no-op。
     async def _fake_reconcile(
         _sid, _mcp, *, model_name=None, history_before_request_id=None,
+        execution_request=None,
         retain_moa_snapshot=False, model_selection=None, moa_enabled=None, moa_can_access=None,
     ):
         assert retain_moa_snapshot is True
@@ -534,6 +535,7 @@ def _build_control_input_harness(claw: _InterruptHarness, monkeypatch: pytest.Mo
 
     async def _fake_reconcile(
         _sid, _mcp, *, model_name=None, history_before_request_id=None,
+        execution_request=None,
         retain_moa_snapshot=False, model_selection=None, moa_enabled=None, moa_can_access=None,
     ):
         assert retain_moa_snapshot is True
@@ -576,6 +578,56 @@ def _ask_user_answer_resume_request(answers: list[dict] | None = None) -> AgentR
             "mode": "agent",
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_deliver_control_input_binds_package_allowlist_for_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版续聊不走 process_message，仍要看到当次请求带上的专家包名单。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.allowlist._is_user_owned",
+        lambda kind, package_id: False,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.allowlist._candidate_ids",
+        lambda kind, package_id: {package_id},
+    )
+    claw = _InterruptHarness()
+    _captured, set_fake_stream = _build_control_input_harness(claw, monkeypatch)
+    seen: list[bool] = []
+
+    async def _fake_stream_impl(_self, _request, _inputs):
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+
+        seen.append(allows("agent_template", "granted-expert"))
+        yield AgentResponseChunk(
+            request_id="req-resume-new-456",
+            channel_id="web",
+            payload={"event_type": "chat.final", "content": "继续"},
+            is_complete=True,
+        )
+
+    set_fake_stream(_fake_stream_impl)
+    request = AgentRequest(
+        request_id="req-resume-new-456",
+        channel_id="web",
+        session_id="web-sess-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "source": "ask_user_interrupt",
+            "request_id": "req-original-123",
+            "answers": [{"question": "用哪种方案?", "selected_options": ["方案A"]}],
+            "mode": "agent",
+        },
+        metadata={
+            "package_allowlist": [{"kind": "agent_template", "id": "granted-expert"}],
+        },
+    )
+    async for _ in claw.deliver_control_input(request):
+        pass
+    assert seen == [True]
 
 
 @pytest.mark.asyncio

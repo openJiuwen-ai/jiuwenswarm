@@ -86,6 +86,18 @@ Use `/mcp` commands during conversations to manage MCP servers:
 
 ---
 
+## MCP Apps and Agent Interaction
+
+MCP Apps servers can display interactive views inside Web chat tool results without a separate MCP connection configuration.
+
+- When an App requests a text message, the host previews it and sends it through normal chat only after the user selects Send. Cancel sends nothing. App messages are rejected while the session is processing or its queue is paused.
+- An App can update model context, such as a selected map location or edited budget. Each mounted instance retains only its latest state, attached to the next ordinary chat send in that session. Updating context neither invokes the model nor replaces the user's input.
+- Multiple tool calls may share one UI resource while retaining separate instance state. State is session-scoped, removed on unmount, and not restored as persistent session data.
+- Context accepts text and JSON objects, bounded to 32 KiB per instance, 64 KiB per session, and JSON depth 16. The backend validates it again and labels it untrusted application state, not user authorization or system instructions.
+- Direct App tool calls still require user approval. A server's read-only annotation is only a hint and cannot bypass approval.
+
+---
+
 ## Browser MCP Runtime
 
 Browser automation uses a separate MCP runtime configured via environment variables:

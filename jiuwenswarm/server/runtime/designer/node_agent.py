@@ -28,6 +28,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_role,
 )
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_prompt,
@@ -429,10 +430,7 @@ def parse_agent_template_ref(ref: str) -> tuple[str | None, str]:
 
 
 def flatten_template_prompt(template: Any, *, language: str = "cn") -> str:
-    from jiuwenswarm.agents.swarm.assembly import (
-        _render_prompt_text,
-        _select_prompt_content,
-    )
+    from openjiuwen.harness.resources import render_prompt_content
 
     sections = list(getattr(template, "prompt_sections", None) or [])
     rendered: list[str] = []
@@ -446,10 +444,7 @@ def flatten_template_prompt(template: Any, *, language: str = "cn") -> str:
             "workspace": workspace,
             **dict(getattr(section, "render_params", None) or {}),
         }
-        text = _render_prompt_text(
-            _select_prompt_content(content, language),
-            params,
-        ).strip()
+        text = render_prompt_content(content, language=language, params=params).strip()
         if text:
             rendered.append(text)
     return "\n\n".join(rendered)
@@ -491,7 +486,7 @@ def load_node_agent_template(node: DesignerGraphNode) -> Any | None:
     if group_name is None and member_id in _DESIGNER_MEMBERS:
         group_name = DESIGNER_AGENT_GROUP_NAME
     if group_name:
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+        from openjiuwen.agent_teams.experts import load_agent_group_package
 
         package_dir = _resolve_group_package_dir(group_name)
         if package_dir is None:
@@ -1115,7 +1110,7 @@ class DesignerGraphToolkit:
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             extract_last_frame,
-            resolve_gated_last_frame_chain,
+            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
             stamp_last_frame_onto_next_clips,
             stamp_scene_last_frame_chain,
@@ -1143,7 +1138,7 @@ class DesignerGraphToolkit:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=self.ctx)
+        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, self.ctx)
         if scene_chain:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg
@@ -1392,7 +1387,7 @@ class DesignerGraphToolkit:
             logger.debug("call_video_model wan-prompt stamp failed", exc_info=True)
         try:
             frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-            extracted = extract_last_frame(path, dest=frame_out)
+            extracted = await run_off_loop(extract_last_frame, path, frame_out)
             if extracted is not None:
                 stamp_last_frame_onto_next_clips(
                     graph,
@@ -1424,11 +1419,12 @@ class DesignerGraphToolkit:
                 compose_required_predecessor_ids,
             )
             from jiuwenswarm.server.runtime.designer.handlers.compose import (
-                compose_predecessor_media_ready,
+                compose_predecessors_missing_media,
             )
 
             states = (self.ctx.run or {}).get("node_states") or {}
             waiting: list[str] = []
+            completed: list[str] = []
             required = compose_required_predecessor_ids(
                 self.ctx.graph if isinstance(self.ctx.graph, dict) else {}
             )
@@ -1444,12 +1440,14 @@ class DesignerGraphToolkit:
                 if status not in {"completed", "complete", "done", "success"}:
                     waiting.append(f"{nid}:{status or 'pending'}")
                     continue
-                if not compose_predecessor_media_ready(
-                    self.ctx.graph if isinstance(self.ctx.graph, dict) else {},
-                    self.ctx.run if isinstance(self.ctx.run, dict) else {},
-                    nid,
-                ):
-                    waiting.append(f"{nid}:media_missing")
+                completed.append(nid)
+            missing = await run_off_loop(
+                compose_predecessors_missing_media,
+                deepcopy(self.ctx.graph if isinstance(self.ctx.graph, dict) else {}),
+                deepcopy(self.ctx.run if isinstance(self.ctx.run, dict) else {}),
+                completed,
+            )
+            waiting.extend(f"{nid}:media_missing" for nid in missing)
             if waiting:
                 return (
                     "ffmpeg_compose blocked: waiting for clips/audio "

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -15,10 +16,7 @@ from copy import deepcopy
 from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
-from jiuwenswarm.agents.harness.team import get_team_manager
-from jiuwenswarm.common.config import get_available_models, get_config
-from jiuwenswarm.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     canonicalize_mode_text,
@@ -27,6 +25,10 @@ from jiuwenswarm.common.mode_matrix import (
     normalize_work_mode,
     resolve_new_canonical_mode,
 )
+
+from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from jiuwenswarm.common.config import get_available_models, get_config
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
     resolve_declared_auto_workspace,
@@ -47,7 +49,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result()
+def get_team_manager(channel_id: str | None = None) -> Any:
+    """Keep Team-mode imports outside ordinary single-agent startup."""
+    from jiuwenswarm.agents.harness.team import get_team_manager as resolve
+
+    return resolve(channel_id)
+
+
+ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result(agent_version=get_runtime_version())
 
 
 def _normalize_channel_id(channel_id: str | None) -> str:
@@ -87,7 +96,7 @@ def _auto_permission_request_workspace(request: Any) -> str | None:
     metadata = getattr(request, "metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
     declared = resolve_declared_auto_workspace(params, metadata)
-    return os.path.normcase(str(declared)) if declared is not None else ""
+    return str(declared) if declared is not None else ""
 
 
 def _resolve_request_owner_mode(
@@ -659,7 +668,10 @@ class AgentManager:
         Returns:
             JiuWenSwarm 实例
         """
-        from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+        facade = await asyncio.to_thread(
+            importlib.import_module, "jiuwenswarm.server.runtime.agent_adapter.interface",
+        )
+        agent_class = facade.JiuWenSwarm
 
         for env_key, env_value in self._latest_env_overrides.items():
             key = str(env_key)
@@ -669,12 +681,24 @@ class AgentManager:
                 os.environ[key] = str(env_value)
         channel_key = _normalize_channel_id(agent_key)
         mode_key = _normalize_mode(mode)
+        from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import resolve_sdk_choice
+
+        if resolve_sdk_choice() == "harness":
+            # Import only the backend selected by this request. The adapter
+            # factory and all loop-owned objects are still constructed below
+            # on the Runtime loop after these synchronous imports complete.
+            await asyncio.to_thread(
+                importlib.import_module,
+                "jiuwenswarm.server.runtime.agent_adapter.interface_code" if mode_key == "code"
+                else "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+            )
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
-        project_dir = _normalize_project_dir((config or {}).get("project_dir"))
+        raw_project_dir = str((config or {}).get("project_dir") or "").strip()
+        project_dir = _normalize_project_dir(raw_project_dir)
         if project_dir:
             config = dict(config or {})
-            config["project_dir"] = project_dir
+            config["project_dir"] = os.path.abspath(os.path.expanduser(raw_project_dir))
         agent_cache_key = cache_key or _make_agent_cache_key(mode_key, sub_mode_key, project_dir)
         logger.info(
             "[AgentManager] Creating %s agent (mode=%s, sub_mode=%s, project_dir=%s)",
@@ -683,7 +707,7 @@ class AgentManager:
             sub_mode_key or None,
             project_dir or None,
         )
-        agent = JiuWenSwarm()
+        agent = agent_class()
         agent.set_heartbeat_service(self._heartbeat_service)
         setter = getattr(agent, "set_personal_context_runtime_enabled", None)
         if callable(setter):
@@ -1334,6 +1358,7 @@ class AgentManager:
             agent_definition: dict[str, Any] | None = None,
             agent_definition_fingerprint: str | None = None,
             run_permissions_enabled: bool = False,
+            request: Any | None = None,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -1382,7 +1407,7 @@ class AgentManager:
 
             config = {}
             if project_key:
-                config["project_dir"] = project_key
+                config["project_dir"] = project_dir
             # Surface the channel id to the adapter so session-scoped children
             # can branch their MCP load strategy (TUI = global config.yaml ∪
             # state.json enabled; web = session-level via chat.send's mcp field,
@@ -1395,6 +1420,12 @@ class AgentManager:
                     **config,
                     **_build_acp_agent_config()
                 }
+            # 企业版：创建时带上本次请求，create_instance 才能按 bot 读模型模板。
+            if request is not None:
+                from jiuwenswarm.enterprise import is_enterprise
+
+                if is_enterprise():
+                    config = {**config, "request": request}
             create_kwargs: dict[str, Any] = {"cache_key": cache_key}
             if agent_definition is not None:
                 create_kwargs["agent_definition"] = agent_definition
@@ -1453,6 +1484,12 @@ class AgentManager:
                     sid,
                     cache_key,
                 )
+        return None
+
+    def borrow_agent_nowait(self, agent: "JiuWenSwarm") -> "JiuWenSwarm | None":
+        """Borrow ``agent`` while it is still cached; None once it was retired or recreated."""
+        if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
+            return self._borrow_agent(agent)
         return None
 
     def get_auto_permission_agent_for_session_nowait(
@@ -2176,6 +2213,7 @@ class AgentManager:
                         )
                     agent = await self.get_agent(
                         **get_kwargs,
+                        request=request,
                     )
                     prepare = getattr(agent, "prepare_session", None)
                     if not callable(prepare):
@@ -2203,7 +2241,7 @@ class AgentManager:
             get_kwargs["agent_definition_fingerprint"] = (
                 agent_definition_fingerprint
             )
-        return await self.get_agent(**get_kwargs)
+        return await self.get_agent(**get_kwargs, request=request)
 
     async def process_message(self, request: Any) -> Any:
         """处理非流式请求.

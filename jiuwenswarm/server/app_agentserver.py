@@ -49,18 +49,12 @@ _mark_startup_import_phase("runtime_workspace_deferred")
 _mark_startup_import_phase("entry_module_ready")
 
 
-
 async def _start_supervisor(front: object, host: str, port: int) -> object:
-    """Attach the supervisor and wait until Worker IPC is up.
-
-    ``AGENT_READY`` arrives later on the IPC readiness stream. Control-plane
-    requests are already served by Front.
-    """
+    """Attach the supervisor after Front listens and wait for Worker IPC."""
     from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
-    readiness = getattr(front, "readiness", None)
     supervisor = RuntimeSupervisor(
-        readiness,
+        getattr(front, "readiness", None),
         forwarder=getattr(front, "forwarder", None),
         host=host,
         port=port,
@@ -78,7 +72,21 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
     return supervisor
 
 
+def _install_common_providers() -> None:
+    """装配 common 注入点的 server 侧实现（幂等）。
+
+    Front（主进程）的控制面直接处理 config.*（front/router →
+    control/config_service → config_panel handlers），其中 a2ui/team/
+    mcp_credential 域不经任何功能路径自然加载——不装配则 config.get
+    静默回退默认值、config.set 团队模板保存失败、MCP 凭证占位符不解析。
+    """
+    from jiuwenswarm.server.runtime.provider_setup import install_front
+
+    install_front()
+
+
 async def _run(host: str, port: int) -> None:
+    _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
 
     startup_t0 = time.monotonic()
@@ -97,20 +105,26 @@ async def _run(host: str, port: int) -> None:
     )
 
     front = AgentServerFront(host=host, port=port)
-    await front.start()
-    logger.info(
-        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-        host,
-        port,
-        time.monotonic() - startup_t0,
-    )
-    logger.info(
-        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-        "agent_ws_listening",
-        time.monotonic() - _PROCESS_START_T0,
-        time.monotonic() - startup_t0,
-        front.readiness.snapshot().get("control_ready"),
-    )
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
+
+    websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
+    if websocket_enabled:
+        await front.start()
+        logger.info(
+            "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+            host,
+            port,
+            time.monotonic() - startup_t0,
+        )
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+            "agent_ws_listening",
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+            front.readiness.snapshot().get("control_ready"),
+        )
+    else:
+        logger.info("[AgentServer] WebSocket 门关闭，不听端口")
 
     stop_event = asyncio.Event()
     supervisor: object | None = None

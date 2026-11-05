@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from jiuwenswarm.common import reasoning_injector
-from jiuwenswarm.llm_provider_compat_patch import (
+from jiuwenswarm.common.llm_provider_compat_patch import (
     _coalesce_tool_call_fragments,
     _drop_orphan_tool_calls,
     _patch_anthropic_modelarts,

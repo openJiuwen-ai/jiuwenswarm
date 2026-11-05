@@ -5,24 +5,24 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.common.session_message import (
+from openjiuwen_protocol.message import EventType, Message
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from jiuwenswarm.gateway.routing.keys import RoutingKey
-from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from agent_gateway.routing.keys import RoutingKey
+from agent_gateway.routing.session_sharing import RoutingTarget
 
 
 @pytest.mark.asyncio
 async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        "agent_gateway.channel_manager.web.web_connect.get_logs_dir",
         lambda: tmp_path,
     )
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -39,15 +39,15 @@ async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, mo
 
 def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        "agent_gateway.channel_manager.web.web_connect.get_logs_dir",
         lambda: tmp_path,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
+        "agent_gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
         12,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
+        "agent_gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
         2,
     )
 
@@ -67,6 +67,61 @@ class _FakeClient:
 
     async def send(self, data):
         self.frames.append(json.loads(data))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery_state", ["reconciled", "inactive", "legacy"])
+async def test_web_channel_stream_callback_preserves_delivery_state_and_legacy_payloads(delivery_state):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from agent_gateway.message_handler.message_handler import MessageHandler
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web", app_id="default", user_id="owner", session_id="delivery-session", agent_ref=None,
+    )
+    handler = object.__new__(MessageHandler)
+    handler._stream_app_ids = {}
+    # publish_stream_chunk 会合并 _stream_metadata；__new__ 绕过 __init__，需手挂。
+    handler._stream_metadata = {}
+    handler._handle_evolution_chunk = AsyncMock(return_value=True)
+    handler.publish_robot_messages = channel.send
+    phase = {"event_type": "chat.output_phase", "output_phase_id": "phase-1", "applied_input_ids": ["steer-1"]}
+    draft = {"event_type": "chat.delta", "content": "PROOF", "output_phase_id": "phase-1"}
+    final = {"event_type": "chat.final", "content": "9801 PROOF", "output_phase_id": "phase-1"}
+    if delivery_state != "legacy":
+        phase["delivery_reconciliation_pending"] = delivery_state == "reconciled"
+    if delivery_state == "reconciled":
+        draft["output_suppressed"] = True
+        final["delivery_reconciled"] = True
+    await channel.register_ws(client, routing_key)
+    try:
+        for payload in (phase, draft, final):
+            assert await handler.publish_stream_chunk(
+                AgentResponseChunk(request_id="original-1", channel_id="web", is_complete=False, payload=payload),
+                session_id="delivery-session",
+            )
+        for _ in range(20):
+            if len(client.frames) == 3:
+                break
+            await asyncio.sleep(0.005)
+        assert [frame["event"] for frame in client.frames] == ["chat.output_phase", "chat.delta", "chat.final"]
+        sent_phase, sent_draft, sent_final = [frame["payload"] for frame in client.frames]
+        if delivery_state == "legacy":
+            assert "delivery_reconciliation_pending" not in sent_phase
+        else:
+            assert sent_phase["delivery_reconciliation_pending"] is (delivery_state == "reconciled")
+        assert sent_phase["applied_input_ids"] == ["steer-1"]
+        assert sent_final["content"] == "9801 PROOF" and sent_final["request_id"] == "original-1"
+        assert "output_suppressed" not in sent_final
+        if delivery_state == "reconciled":
+            assert sent_draft["output_suppressed"] is True and sent_final["delivery_reconciled"] is True
+        else:
+            assert "output_suppressed" not in sent_draft and "delivery_reconciled" not in sent_final
+    finally:
+        await channel.unregister_ws(client)
 
 
 @pytest.mark.asyncio

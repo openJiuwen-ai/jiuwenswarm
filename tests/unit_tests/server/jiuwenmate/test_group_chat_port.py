@@ -139,7 +139,10 @@ def test_same_message_concurrent_receivers_and_restart_share_one_record(records)
     assert [item.message_id for item in page.messages] == ["m1"]
 
 
-def test_a_group_discards_messages_older_than_the_latest_hundred(records):
+def test_a_group_discards_messages_beyond_its_retention_limit(records, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate import conversation_archive
+    assert conversation_archive._RETAINED_MESSAGES == 5000
+    monkeypatch.setattr(conversation_archive, "_RETAINED_MESSAGES", 100)
     for number in range(1, 106):
         append(records, number)
     page = records.archive.recent(

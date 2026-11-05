@@ -14,7 +14,7 @@ import sqlite3
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec, register_tool_provider
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
+from agent_gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
 from jiuwenswarm.server.jiuwenmate.welink_office_settings import MAILBOX_PATTERN, WelinkOfficeSettings, discover_mailbox
 
 PROVIDER = 'jiuwenmate.welink_office'

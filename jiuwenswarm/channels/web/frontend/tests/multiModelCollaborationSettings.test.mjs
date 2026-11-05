@@ -240,6 +240,8 @@ test('feature flag defaults off and accepts backend booleans', () => {
 
 test('collaboration and other experimental sections retain their order', () => {
   assert.deepEqual(experimentalSectionIds, [
+    'asr',
+    'task-full-duplex',
     'external-cli-custom-agents',
     'rsi',
     'a2ui',
@@ -427,6 +429,64 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
       assert.equal(loads, 3);
       assert.equal(isMultiModelCollaborationEnabled(), false);
       assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, false);
+    },
+  );
+});
+
+test('confirmed saves preserve shared JEV settings and notify recommendation changes', async () => {
+  let resolveSave;
+  const notifications = [];
+  await mount(
+    {
+      probe: true,
+      config: { prompt_suggestion_enabled: false, jev_typesafe_api_key: '' },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ services, render }) => {
+      services.onRecommendationEnabledChange = (value) => notifications.push(value);
+      await render();
+      let saving;
+      await act(async () => {
+        saving = globalThis.collaborationFixture.controller.save(
+          { prompt_suggestion_enabled: 'true', jev_typesafe_api_key: 'shared-test-key' },
+          'recommendation-and-jev',
+        );
+      });
+      assert.deepEqual(notifications, []);
+      await act(async () => {
+        resolveSave();
+        await saving;
+      });
+      assert.deepEqual(notifications, [true]);
+      assert.equal(globalThis.collaborationFixture.controller.config.prompt_suggestion_enabled, 'true');
+      assert.equal(globalThis.collaborationFixture.controller.config.jev_typesafe_api_key, 'shared-test-key');
+    },
+  );
+});
+
+test('failed saves do not notify recommendation changes or overwrite shared JEV settings', async () => {
+  const notifications = [];
+  await mount(
+    {
+      probe: true,
+      config: { prompt_suggestion_enabled: true, jev_typesafe_api_key: 'saved-test-key' },
+      rejectSave: true,
+    },
+    async ({ services, render }) => {
+      services.onRecommendationEnabledChange = (value) => notifications.push(value);
+      await render();
+      await act(async () => {
+        await assert.rejects(
+          globalThis.collaborationFixture.controller.save(
+            { prompt_suggestion_enabled: 'false', jev_typesafe_api_key: '' },
+            'recommendation-and-jev',
+          ),
+          /save failed/,
+        );
+      });
+      assert.deepEqual(notifications, []);
+      assert.equal(globalThis.collaborationFixture.controller.config.prompt_suggestion_enabled, true);
+      assert.equal(globalThis.collaborationFixture.controller.config.jev_typesafe_api_key, 'saved-test-key');
     },
   );
 });

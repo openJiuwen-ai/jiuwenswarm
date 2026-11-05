@@ -14,26 +14,25 @@ import {
   getBoardTaskTitle,
   getMemberDisplayName,
   getTaskColumnKey,
+  isKnownTaskAssignee,
   type TaskColumnKey,
   type TeamMember,
 } from './shared';
 import { CompactTaskList } from './CompactTaskList';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
-import { getTotalTaskVisualProgressPercent } from './taskProgress';
+import { getTaskProgressPercent } from './taskProgress';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { SwarmflowTreeView } from './SwarmflowTreeView';
 import { SwarmflowGraphView } from './SwarmflowGraphView';
 import type { WorkflowAgent, WorkflowRun } from './workflowTypes';
 import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
 import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
-import { groupByWorkflowRun } from './runGrouping';
+import { clusterByWorkflowRun, groupByWorkflowRun } from './runGrouping';
 import { RunGroupHeader } from './RunGroupHeader';
 
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
   tasks: SessionTeamTask[];
-  progressTasks?: SessionTeamTask[];
-  now?: number;
   members: TeamMember[];
   totalTasks: number;
   completedTasks: number;
@@ -126,8 +125,6 @@ export function ProgressBar({
 
 export function ProgressSection({
   tasks,
-  progressTasks,
-  now,
   groupedTasks,
   completedTasks,
   totalTasks,
@@ -142,8 +139,6 @@ export function ProgressSection({
   workflowRuns,
 }: {
   tasks: SessionTeamTask[];
-  progressTasks?: SessionTeamTask[];
-  now?: number;
   groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
   completedTasks: number;
   totalTasks: number;
@@ -182,7 +177,7 @@ export function ProgressSection({
     );
   }
 
-  const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
+  const progressPercent = getTaskProgressPercent(tasks);
 
   if (displayMode === 'count') {
     // 镜像 worker 的任务卡按 run 分组展示，组头用共享 RunGroupHeader；
@@ -239,7 +234,7 @@ export function ProgressSection({
             const remaining = expanded ? 0 : group.items.length - visible.length;
             return (
               <div key={group.runId} className="border-b border-border last:border-b-0">
-                <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} executor={group.executor} />
                 <CompactTaskList
                   tasks={visible}
                   members={members}
@@ -347,8 +342,6 @@ export function ViewSwitcher({
 export function TaskPlanningPanel({
   variant,
   tasks,
-  progressTasks,
-  now,
   members,
   totalTasks,
   completedTasks,
@@ -383,7 +376,13 @@ export function TaskPlanningPanel({
     return groups;
   }, [tasks]);
 
-  const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
+  // 普通任务 = 没有 run 归属的成员任务；镜像出来的 swarmflow 任务由树视图展示。
+  const ordinaryTasks = useMemo(
+    () => tasks.filter((task) => !task.workflow_run_id),
+    [tasks],
+  );
+
+  const progressPercent = getTaskProgressPercent(tasks);
 
   if (variant === 'compact') {
     const allTasks = tasks;
@@ -419,8 +418,6 @@ export function TaskPlanningPanel({
         )}
         <ProgressSection
           tasks={allTasks}
-          progressTasks={progressTasks}
-          now={now}
           groupedTasks={groupedTasks}
           completedTasks={completedTasks}
           totalTasks={totalTasks}
@@ -457,13 +454,30 @@ export function TaskPlanningPanel({
           {workflowRuns.length > 0 && activeSessionId ? (
             <>
               <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+              {/* 普通任务（无 workflow_run_id）照常展示在 swarmflow 树上方：
+                  以前只要会话里有 run 就把普通任务整段替换掉，teammate 同时跑
+                  普通任务 + swarmflow 时普通任务会凭空消失。 */}
+              {ordinaryTasks.length > 0 && (
+                <div className="shrink-0" data-testid="team-area-task-planning-ordinary-tasks">
+                  <CompactTaskList
+                    tasks={ordinaryTasks}
+                    members={members}
+                    hideAssignee={hideAssignee ?? false}
+                    statusIconAtEnd={statusIconAtEnd}
+                    renderTaskIcon={renderTaskIcon}
+                    maxCollapsedCount={maxCollapsedCount}
+                    expanded={expanded}
+                    emptyText={t('team.noTasks')}
+                    emptyIllustration={emptyIllustration}
+                    workflowRuns={workflowRuns}
+                  />
+                </div>
+              )}
               <SwarmflowTreeView runs={workflowRuns} sessionId={activeSessionId} />
             </>
           ) : (
             <ProgressSection
               tasks={tasks}
-              progressTasks={progressTasks}
-              now={now}
               groupedTasks={groupedTasks}
               completedTasks={completedTasks}
               totalTasks={totalTasks}
@@ -529,6 +543,10 @@ function BoardColumn({
   workflowRuns: WorkflowRun[];
 }) {
   const { t } = useTranslation();
+  // Board columns bucket tasks by status and carry no group headers; same-run
+  // mirrored task cards are clustered instead (run first-appearance order) so
+  // they stay adjacent when multiple runs coexist.
+  const clusteredTasks = clusterByWorkflowRun(tasks);
 
   return (
     <section className="min-w-0" data-testid="team-area-task-planning-board-column" data-variant={column.key}>
@@ -540,7 +558,7 @@ function BoardColumn({
         {t(column.labelKey)} {tasks.length}
       </div>
       <div className="space-y-3" data-testid="team-area-task-planning-board-column-task-list">
-        {tasks.map((task) => {
+        {clusteredTasks.map((task) => {
           return <BoardTaskCard key={task.task_id} task={task} members={members} hideAssignee={hideAssignee} workflowRuns={workflowRuns} />;
         })}
       </div>
@@ -559,7 +577,7 @@ function BoardTaskCard({
   hideAssignee: boolean;
   workflowRuns: WorkflowRun[];
 }) {
-  const assigneeExists = Boolean(task.assignee && members.some((member) => member.member_id === task.assignee));
+  const assigneeExists = isKnownTaskAssignee(task.assignee, members);
   const assigneeName = getMemberDisplayName(task.assignee || '');
   const title = getBoardTaskTitle(task);
   const content = getBoardTaskContent(task);

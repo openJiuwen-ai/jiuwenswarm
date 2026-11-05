@@ -165,12 +165,12 @@ class UpdaterService:
         try:
             self._check(config)
         except Exception as exc:
+            # Preserve the last-known release metadata so the UI can still
+            # show what version / timestamp we saw on the previous successful
+            # check. Invalidate action fields so a stale download URL cannot be
+            # used after the current run failed.
             self._update_status(
-                latest_version="",
                 has_update=False,
-                release_notes="",
-                published_at="",
-                source_type="",
                 asset_name="",
                 matched_asset="",
                 download_url="",

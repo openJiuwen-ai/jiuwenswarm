@@ -15,27 +15,19 @@ const CATALOG_BATCH_SIZE = 30;
 /** 触底判定余量：距滚动底部不足该像素即视为到底。 */
 const LOAD_MORE_THRESHOLD_PX = 40;
 
-const CATEGORIES = [
-  'ProductDevelopment',
-  'Marketing',
-  'Efficiency',
-  'DataAnalysis',
-  'ContentCreation',
-  'SafetyCompliance',
-  'Communication',
-  'Other',
-];
-
 type CatalogPageProps = {
   scope: 'catalog' | 'mine';
   items: AgentCatalogItem[];
   totalItems: number;
   query: string;
   category: string;
+  /** 分类页签：由父组件从广场可见目录动态统计（collectCategories），市场有几个分类出几个页签 */
+  categories?: readonly string[];
   /** 安装态筛选（index.tsx 在进入 view model 前已按它过滤）；非 'all' 时空结果应显示"无匹配"而非"暂无专家" */
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
+  loadingText?: string;
   busyIds: ReadonlySet<string>;
   onCategoryChange: (value: string) => void;
   onRetry: () => void;
@@ -52,9 +44,11 @@ export function CatalogPage({
   totalItems,
   query,
   category,
+  categories = [],
   installation = 'all',
   status,
   error,
+  loadingText,
   busyIds,
   onCategoryChange,
   onRetry,
@@ -134,7 +128,7 @@ export function CatalogPage({
           <CategoryTabs
             items={[
               { value: '', label: t('agentManagement.categoryAll') },
-              ...CATEGORIES.map((item) => ({
+              ...categories.map((item) => ({
                 value: item,
                 label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
               })),
@@ -159,7 +153,7 @@ export function CatalogPage({
             role="status"
           >
             <LoaderCircle className="animate-spin" size={20} aria-hidden="true" />
-            <p>{t('common.loading')}</p>
+            <p>{loadingText || t('common.loading')}</p>
           </div>
         ) : status === 'error' && totalItems === 0 ? (
           <div className="agent-management-state agent-management-state--error" role="alert">

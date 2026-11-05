@@ -197,7 +197,7 @@ async def test_explicit_owner_resume_clears_stop_before_execution_and_restores_o
     monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda *args, **kwargs: metadata)
     monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **kwargs: metadata.update(kwargs))
     server = object.__new__(AgentWebSocketServer)
-    monkeypatch.setattr(server, "_is_targeted_expert_request", lambda request: False)
+    monkeypatch.setattr(server, "_is_targeted_expert_cancel_request", lambda request: False)
 
     async def resume(request, **kwargs):
         assert not organization_execution.owner_is_stopped("session")

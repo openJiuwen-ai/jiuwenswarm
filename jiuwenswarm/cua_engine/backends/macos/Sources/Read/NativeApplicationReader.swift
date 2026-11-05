@@ -103,11 +103,11 @@ final class NativeApplicationReader {
         var scanned = [AXUIElement]()
         func nestedSurfaces(_ parent: AXUIElement) throws -> [AXUIElement] {
             var pending = [parent], found = [AXUIElement](), index = 0
-            while index < pending.count, scanned.count < 512,
+            scan: while index < pending.count, scanned.count < 512,
                   ProcessInfo.processInfo.systemUptime < surfaceDeadline {
                 let node = pending[index]; index += 1
                 try RequestDiagnostics.checkCancellation()
-                if scanned.contains(where: { CFEqual($0, node) }) { continue }
+                for visited in scanned where CFEqual(visited, node) { continue scan }
                 scanned.append(node)
                 for child in AXAccess.elements(node, kAXChildrenAttribute, limit: 128) ?? [] {
                     if ProcessInfo.processInfo.systemUptime >= surfaceDeadline { break }

@@ -130,8 +130,8 @@ async def test_adapter_can_refresh_again_after_runtime_close():
 @pytest.mark.parametrize("remote", [False, True])
 async def test_status_is_proxied_to_owning_worker_in_both_gateway_modes(monkeypatch, remote):
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
 
     adapter = JiuwenMateWebAdapter()
@@ -161,7 +161,7 @@ async def test_status_is_proxied_to_owning_worker_in_both_gateway_modes(monkeypa
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, **kwargs: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     await channel.methods["models.refresh_status"](object(), "status", {}, "chat", "authenticated-user")
     assert channel.send_response.await_args.kwargs["payload"] == adapter.model_refresh_status()

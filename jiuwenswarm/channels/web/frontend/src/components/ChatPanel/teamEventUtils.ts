@@ -1,4 +1,5 @@
 import { Message } from '../../types';
+import { parseTeamHandoff, type TeamHandoff } from '../teamArea/groupChatTimeline';
 
 export interface ParsedTeamEvent {
   type: string;
@@ -10,6 +11,8 @@ export interface ParsedTeamEvent {
   isP2P: boolean;
   isBroadcast: boolean;
   isLeaderToUser: boolean;
+  /** 框架模板消息（调度器交接等）的展示描述；普通消息为 undefined。 */
+  handoff?: TeamHandoff;
 }
 
 export function formatTeamEventTime(ts: number | undefined): string {
@@ -55,6 +58,7 @@ export function parseTeamEventMessage(message: Message): ParsedTeamEvent | null 
       isP2P,
       isBroadcast,
       isLeaderToUser: fromMember === 'team_leader' && !isP2P && !isBroadcast,
+      handoff: parseTeamHandoff(event.handoff),
     };
   } catch {
     return null;
@@ -67,6 +71,33 @@ export function isTeamMemberCollaborationMessage(message: Message): boolean {
     return false;
   }
   return !event.isLeaderToUser && !isTeamP2PMessageToUser(event);
+}
+
+/** Only explicit user-facing Team events are mirrored; collaboration stays Team-local. */
+export function toOwnerTeamMessage(message: Message): Message | null {
+  if (!message.teamId || message.role !== 'system') return null;
+  const event = parseTeamEventMessage(message);
+  if (!event || (!event.isLeaderToUser && !isTeamP2PMessageToUser(event))) return null;
+  return {
+    ...message,
+    id: `owner-team-message-${message.teamId}-${event.messageId || message.id}`,
+    teamId: undefined,
+    sourceTeamId: message.teamId,
+  };
+}
+
+/** Merge restored and live messages by logical Team event identity. */
+export function mergeUniqueMessages(messages: Message[]): Message[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const event = parseTeamEventMessage(message);
+    const key = event
+      ? ['team', message.sourceTeamId || '', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
+      : `${message.id}:${message.content}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function isTeamActivityMessage(message: Message): boolean {

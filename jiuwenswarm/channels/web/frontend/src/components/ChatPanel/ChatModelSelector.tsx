@@ -19,6 +19,7 @@ import {
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
+import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
@@ -34,19 +35,22 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
 }
 
 export default function ChatModelSelector({
-  disabled = false,
+  disabled: disabledByParent = false,
   sessionId,
   includeModelGroups: modelGroupsOverride,
   testIdPrefix = 'chat-panel-model-selector',
+  allowModelGroups = true,
 }: {
   disabled?: boolean;
-  includeModelGroups?: boolean;
-  testIdPrefix?: string;
   /** Session this selector edits. Surfaces that own a session (the design
    * canvas) pass it explicitly: `activeSessionId` follows the app route and can
    * point at another conversation while the surface stays mounted (#5394). */
   sessionId?: string;
+  allowModelGroups?: boolean;
+  includeModelGroups?: boolean;
+  testIdPrefix?: string;
 }): JSX.Element | null {
+  const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
@@ -78,7 +82,9 @@ export default function ChatModelSelector({
   );
   const collaborationEnabled = useMultiModelCollaborationEnabled();
   const singleAgent = supportsMultiModelCollaboration(mode, cronId);
-  const includeModelGroups = modelGroupsOverride ?? (!singleAgent || collaborationEnabled);
+  const groupsAllowed = allowModelGroups && modelGroupsOverride !== false && !cronId;
+  const includeModelGroups = groupsAllowed && (modelGroupsOverride ?? (!singleAgent || collaborationEnabled));
+  const selectableGroups = groupsAllowed ? modelGroups : [];
   const groupBlocked = isConversationModelGroupBlocked({
     mode,
     cronId,
@@ -89,14 +95,15 @@ export default function ChatModelSelector({
   // Deleted/disabled model groups must fall back and be written back (#5424).
   useEffect(() => {
     if (selectedChildTeam) return;
-    if (!boundSessionId || disabled || groupBlocked) return;
+    if (!boundSessionId || disabled) return;
+    if (groupBlocked && groupsAllowed) return;
     if (!selectedModelSelection) return;
     // Empty catalog means models.list has not arrived yet — not that the selection
     // was deleted. Clearing here races metadata restore on refresh (#5860).
     if (isModelCatalogPending(models, modelGroups)) return;
-    if (isModelSelectionAvailable(selectedModelSelection, models, modelGroups)) return;
+    if (isModelSelectionAvailable(selectedModelSelection, models, selectableGroups)) return;
     if (useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
-    const next = resolveAvailableModelSelection(selectedModelSelection, models, modelGroups);
+    const next = resolveAvailableModelSelection(selectedModelSelection, models, selectableGroups);
     if (sameModelSelection(next, selectedModelSelection)) return;
     setSelectionError('');
     if (!next) {
@@ -115,12 +122,13 @@ export default function ChatModelSelector({
     });
   }, [
     boundSessionId,
+    groupsAllowed,
     disabled,
     groupBlocked,
     selectedModelSelection,
     selectedChildTeam,
     models,
-    modelGroups,
+    selectableGroups,
     setSelectedModelSelection,
     t,
   ]);
@@ -134,15 +142,15 @@ export default function ChatModelSelector({
   const catalogPending = isModelCatalogPending(models, modelGroups);
   const healedSelection = selectedModelSelection
     && !catalogPending
-    && !isModelSelectionAvailable(selectedModelSelection, models, modelGroups)
-    ? resolveAvailableModelSelection(selectedModelSelection, models, modelGroups)
+    && !isModelSelectionAvailable(selectedModelSelection, models, selectableGroups)
+    ? resolveAvailableModelSelection(selectedModelSelection, models, selectableGroups)
     : inferredSelection;
   const pickerSelection =
     singleAgent && collaborationEnabled && healedSelection?.type === 'model_group'
       ? { type: 'model_group' as const, id: healedSelection.id }
       : healedSelection;
   const hasSelectableGroup =
-    includeModelGroups && modelGroups.some((group) => group.enabled !== false && Boolean(group.model_group_id));
+    includeModelGroups && selectableGroups.some((group) => group.enabled !== false && Boolean(group.model_group_id));
   if (!selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
 
   const persistSelection = async (next: ModelSelection) => {
@@ -181,7 +189,7 @@ export default function ChatModelSelector({
           void persistSelection(next);
         }}
         disabled={disabled || Boolean(selectedChildTeam)}
-        onAddModel={openModelSettings}
+        onAddModel={disabled ? undefined : openModelSettings}
       />
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid={`${testIdPrefix}-error`}>

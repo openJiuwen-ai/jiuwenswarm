@@ -32,6 +32,7 @@ from typing import (
 from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
+    ProgressiveToolSpec,
     RailSpec,
     SubAgentSpec,
 )
@@ -43,6 +44,13 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import SkillUseRail
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_CODE_NORMAL,
+    NEW_TEAM_CODE_PLAN,
+    NEW_TEAM_DESIGN,
+    TEAM_PLAN_CODE_MODE,
+    is_team_plan_mode,
+)
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
@@ -53,6 +61,7 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
 )
 from jiuwenswarm.common.config import (
     get_evolution_auto_save_enabled,
+    get_progressive_tool_enabled,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
@@ -68,13 +77,6 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from jiuwenswarm.common.mode_matrix import (
-    NEW_TEAM_CODE_NORMAL,
-    NEW_TEAM_CODE_PLAN,
-    NEW_TEAM_DESIGN,
-    TEAM_PLAN_CODE_MODE,
-    is_team_plan_mode,
-)
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset(
@@ -1094,6 +1096,15 @@ def build_member_deep_agent_spec(
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
     }
+    if get_progressive_tool_enabled(config):
+        # Same top-level ``progressive_tool_enabled`` switch the single-agent
+        # adapters read: the member mounts the harness ProgressiveToolRail
+        # (``tool_search`` + deferred tools) exactly like a single agent does.
+        # Team coordination tools stay DIRECT — ``TeamToolRail`` declares
+        # their exposure — so only the long tail is discovered on demand.
+        # Written only when enabled so a disabled switch keeps the base spec
+        # byte-identical (a YAML base spec may carry its own value).
+        update["progressive_tool"] = ProgressiveToolSpec(enabled=True)
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
         # Force off agent-core's enable_task_planning auto-inject path so a YAML

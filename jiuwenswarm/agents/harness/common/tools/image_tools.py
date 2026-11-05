@@ -9,9 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastmcp import FastMCP
-from google import genai
-from google.genai import types
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
@@ -30,7 +27,17 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_MARKER = "home/user"
 
-mcp = FastMCP("vision-mcp-server")
+
+def __getattr__(name):
+    # The exported tool cards are ordinary SDK tools. Their registration does
+    # not require an independent MCP server or its OAuth dependencies.
+    if name != "mcp":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from fastmcp import FastMCP
+
+    server = FastMCP("vision-mcp-server")
+    globals()[name] = server
+    return server
 
 
 class _PathHelper:
@@ -165,6 +172,9 @@ async def _invoke_openai_vision(src: str, q: str) -> str:
 
 
 async def _invoke_gemini_vision(src: str, q: str) -> str:
+    from google import genai
+    from google.genai import types
+
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     if not gemini_key:
         return "[ERROR]: GEMINI_API_KEY is not configured for Gemini vision."
@@ -503,4 +513,3 @@ async def generate_image(
         response_parts.append(f"Original URL: {original_url}")
 
     return "\n".join(response_parts)
-

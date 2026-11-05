@@ -45,8 +45,13 @@ DEFAULT_SWARMFLOW_WORKTREE_ENABLED = False
 DEFAULT_SWARMFLOW_ENABLED = False
 TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
 DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
+DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
+# Depth written when the member-subtask switch is turned on with no depth yet.
+DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH = 2
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
@@ -335,7 +340,7 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return whether both Symphony and its evolution switch are enabled."""
 
-    from jiuwenswarm.symphony.config import (
+    from jiuwenswarm.common.symphony_config import (
         resolve_symphony_enabled,
         resolve_symphony_evolution_enabled,
     )
@@ -2577,7 +2582,7 @@ def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any
 
     The catalog lists the models a CLI offers on its own login (a
     subscription), which the team leader may pick per member through
-    ``spawn_external_cli(builtin_model=...)`` / ``set_member_model``. It is
+    ``spawn_teammate(external_cli={"builtin_model": ...})`` / ``set_member_model``. It is
     carried through verbatim to ``ExternalCliAgentSpec.builtin_models``, so
     dropping unknown keys here would silently disable the capability.
 
@@ -2864,6 +2869,39 @@ def update_team_task_verification_in_config(enabled: bool) -> None:
     _set_config_path(TEAM_TASK_VERIFICATION_CONFIG_PATH, bool(enabled))
 
 
+def update_team_member_messaging_in_config(enabled: bool) -> None:
+    """Update ``modes.team.jiuwen_team.enable_member_messaging`` in config.yaml."""
+    _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
+
+
+def coerce_subtask_depth(value: Any) -> int:
+    """Read ``max_subtask_depth`` leniently: a non-negative int, anything else is 0 (off)."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(depth, 0)
+
+
+def update_team_member_subtasks_in_config(enabled: bool) -> None:
+    """Switch member subtasks via ``modes.team.jiuwen_team.max_subtask_depth``.
+
+    The depth doubles as the switch (core F_128: ``0`` = off). Turning it on
+    keeps a depth the user already configured and writes
+    ``DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH`` otherwise; turning it off writes 0.
+    """
+    if not enabled:
+        _set_config_path(TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
+        return
+    current: Any = get_config_raw()
+    for segment in TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH:
+        current = current.get(segment) if isinstance(current, dict) else None
+    depth = coerce_subtask_depth(current) or DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH
+    _set_config_path(TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, depth)
+
+
 def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:
     """Keep the configured built-in model catalog of each CLI kind.
 
@@ -3076,18 +3114,14 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     # B. mcp/state.json — 已连接 MCP（state==connected）.
     state_mcps: list[dict[str, Any]] = []
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            list_connected_mcps,
-            record_to_mcp_entry,
-        )
-        from jiuwenswarm.server.runtime.mcp.registry import (
-            is_stale_marketplace_record,
-        )
-        for rec in list_connected_mcps():
+        from jiuwenswarm.common.external_providers import provider
+        mcp_state = provider("mcp_state")
+        mcp_registry = provider("mcp_registry")
+        for rec in mcp_state.list_connected_mcps():
             name = rec.get("name", "")
-            if not name or is_stale_marketplace_record(name, rec):
+            if not name or mcp_registry.is_stale_marketplace_record(name, rec):
                 continue
-            entry = record_to_mcp_entry(name, rec)
+            entry = mcp_state.record_to_mcp_entry(name, rec)
             # skill-only MCPs return None
             if entry is not None:
                 state_mcps.append(entry)
@@ -3199,8 +3233,8 @@ def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
 def _mcp_name_in_state(name: str) -> bool:
     """Whether state.json has a record for ``name`` (any state)."""
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
-        return get_mcp_record(name) is not None
+        from jiuwenswarm.common.external_providers import provider
+        return provider("mcp_state").get_mcp_record(name) is not None
     except Exception:  # noqa: BLE001
         return False
 
@@ -3230,10 +3264,11 @@ def upsert_mcp_server(
     if _mcp_name_in_config_yaml(name):
         return upsert_mcp_server_in_config(server)
     # Else state.json is the creation/update home for TUI MCPs.
-    from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
+    from jiuwenswarm.common.external_providers import provider
+    mcp_state = provider("mcp_state")
     prior = _mcp_name_in_state(name)
     enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = upsert_mcp_record(name, server, state=state,
+    rec = mcp_state.upsert_mcp_record(name, server, state=state,
                             integration_type=_integration_type_for(server),
                             enabled=enabled)
     # Shape a config-like entry for the response (carries enabled through).
@@ -3255,11 +3290,10 @@ def set_mcp_server_enabled(name: str, enabled: bool) -> dict[str, Any]:
     if not target:
         raise ValueError("MCP server name is required")
     if _mcp_name_in_state(target):
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            get_mcp_record, set_mcp_enabled,
-        )
-        set_mcp_enabled(target, enabled=enabled)
-        rec = get_mcp_record(target) or {}
+        from jiuwenswarm.common.external_providers import provider
+        mcp_state = provider("mcp_state")
+        mcp_state.set_mcp_enabled(target, enabled=enabled)
+        rec = mcp_state.get_mcp_record(target) or {}
         entry = dict(rec)
         entry["name"] = target
         return entry
@@ -3276,8 +3310,8 @@ def remove_mcp_server(name: str) -> dict[str, Any]:
     if not target:
         raise ValueError("MCP server name is required")
     if _mcp_name_in_state(target):
-        from jiuwenswarm.server.runtime.mcp.state_store import remove_mcp_record
-        removed = remove_mcp_record(target) or {}
+        from jiuwenswarm.common.external_providers import provider
+        removed = provider("mcp_state").remove_mcp_record(target) or {}
         entry = dict(removed)
         entry["name"] = target
         return entry
@@ -3907,7 +3941,7 @@ _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
 _VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
 _DEFAULT_YUANRONG_EXECUTOR = "docker"
-_DEFAULT_YUANRONG_URL = "http://yuanrong.local"
+_DEFAULT_YUANRONG_URL = "http://127.0.0.1:18093"
 _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
     "image",
     "workdir",
@@ -4182,7 +4216,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
       ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
       ``user`` / ``group``
-    - ``url`` 为空时回落占位 ``http://yuanrong.local`` (仅作 cache key)
+    - ``url`` 为空时回落 ``http://127.0.0.1:18093``
 
     Raises:
         ValueError: yaml 里 ``preserve_file_sharing_mode`` 写了非法值时, 直接
@@ -4205,6 +4239,12 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         result["url"] = url or _DEFAULT_YUANRONG_URL
         result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+            if key in sandbox:
+                result[key] = sandbox[key]
+    if sandbox_type == "adx-environment":
+        for key in ("image", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
+                    "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
+                    "schedule_timeout"):
             if key in sandbox:
                 result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":

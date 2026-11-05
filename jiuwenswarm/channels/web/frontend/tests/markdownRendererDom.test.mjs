@@ -529,6 +529,231 @@ test('keeps Markdown behavior compatible while dispatching supported fenced bloc
   }
 });
 
+test('keeps parenthesized source URLs separate from the following Chinese explanation', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    HTMLElement: dom.window.HTMLElement,
+    HTMLIFrameElement: dom.window.HTMLIFrameElement,
+    Node: dom.window.Node,
+    document: dom.window.document,
+    window: dom.window,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = dom.window.document.getElementById('root');
+  const cases = [
+    ['https://sqlite.org/lang_indexedby.html', '正常索引查找的机制是"先在索引上二分找到条目，取出'],
+    ['https://sqlite.org/dbstat.html', '两个前提：连接需以'],
+    ['https://sqlite.org/pragma.html', '局部检查干净而全库检查报错，说明问题在全局/freelist'],
+  ];
+  const markdown = cases.map(([url, explanation]) => `（来源：${url}）。${explanation} \`条件\`。`).join('\n\n');
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(I18nextProvider, { i18n: createI18n() }, createElement(MarkdownRenderer, { content: markdown })),
+      );
+    });
+    const links = Array.from(container.querySelectorAll('a'));
+    assert.equal(links.length, 3);
+    for (const [index, [url, explanation]] of cases.entries()) {
+      const link = links[index];
+      assert.equal(link.getAttribute('href'), url);
+      assert.equal(link.textContent, url);
+      assert.equal(link.parentElement.textContent, `（来源：${url}）。${explanation} 条件。`);
+      let clickedHref = '';
+      link.addEventListener(
+        'click',
+        (event) => {
+          clickedHref = event.currentTarget.getAttribute('href');
+          event.preventDefault();
+        },
+        { once: true },
+      );
+      await act(async () =>
+        link.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true })),
+      );
+      assert.equal(clickedHref, url);
+    }
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('preserves deliberate URL boundaries, code, and streaming source citations', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node,
+    document: dom.window.document,
+    window: dom.window,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = dom.window.document.getElementById('root');
+  const explicitUrl = 'https://example.com/明确）。说明';
+  const referenceUrl = 'https://example.com/引用）。说明';
+  const angleUrl = 'https://example.com/角括号）。说明';
+  const chineseUrl = 'https://example.com/中文/资料?q=北京';
+  const pairedUrl = 'https://example.com/资料（第二版）';
+  const encodedUrl = 'https://example.com/%EF%BC%89%E3%80%82';
+  const unpairedUrl = 'https://example.com/合法）';
+  const markdown = [
+    `（来源：[${explicitUrl}](${explicitUrl})）。明确。`,
+    `（来源：[${referenceUrl}][source]）。引用。`,
+    `[source]: ${referenceUrl}`,
+    `（来源：<${angleUrl}>）。角括号。`,
+    chineseUrl,
+    `（来源：${pairedUrl}）。配对。`,
+    `（来源：${encodedUrl}）。编码。`,
+    unpairedUrl,
+    '(source: https://example.com/english). Explanation.',
+    '`（来源：https://example.com/inline）。代码`',
+    '```text\n（来源：https://example.com/fenced）。代码\n```',
+  ].join('\n\n');
+  let root;
+  try {
+    root = createRoot(container);
+    const render = async (content, isStreaming = false) => {
+      await act(async () => {
+        root.render(createElement(MarkdownRenderer, { content, isStreaming }));
+      });
+    };
+    await render(markdown);
+    const links = Array.from(container.querySelectorAll('a'));
+    const expectedUrls = [
+      explicitUrl,
+      referenceUrl,
+      angleUrl,
+      chineseUrl,
+      pairedUrl,
+      encodedUrl,
+      unpairedUrl,
+      'https://example.com/english',
+    ];
+    assert.equal(links.length, expectedUrls.length);
+    for (const [index, url] of expectedUrls.entries()) {
+      assert.equal(links[index].getAttribute('href'), new URL(url).href);
+      assert.equal(links[index].textContent, url);
+    }
+    assert.equal(container.querySelectorAll('code a').length, 0);
+    assert.equal(container.querySelector('code').textContent, '（来源：https://example.com/inline）。代码');
+    assert.equal(container.querySelector('pre code').textContent.trim(), '（来源：https://example.com/fenced）。代码');
+    await render('（来源：https://sqlite.org/pragma.html', true);
+    assert.equal(container.querySelector('a').getAttribute('href'), 'https://sqlite.org/pragma.html');
+    assert.equal(container.textContent, '（来源：https://sqlite.org/pragma.html');
+    await render('（来源：https://sqlite.org/pragma.html）。检查仍需继续。', true);
+    assert.equal(container.querySelector('a').getAttribute('href'), 'https://sqlite.org/pragma.html');
+    assert.equal(container.querySelector('a').textContent, 'https://sqlite.org/pragma.html');
+    assert.equal(container.textContent, '（来源：https://sqlite.org/pragma.html）。检查仍需继续。');
+    await render('（来源：https://sqlite.org/pragma.html）。检查仍需继续。');
+    assert.equal(container.querySelector('a').getAttribute('href'), 'https://sqlite.org/pragma.html');
+    assert.equal(container.textContent, '（来源：https://sqlite.org/pragma.html）。检查仍需继续。');
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+for (const [name, content, urls, text] of [
+  [
+    'opens source parentheses inside inline formatting',
+    '**（来源：** https://sqlite.org/dbstat.html）。说明',
+    ['https://sqlite.org/dbstat.html'],
+    '（来源： https://sqlite.org/dbstat.html）。说明',
+  ],
+  [
+    'closes source parentheses inside inline formatting',
+    '（**说明）** https://example.com/合法）',
+    ['https://example.com/合法）'],
+    '（说明） https://example.com/合法）',
+  ],
+  [
+    'closes source parentheses inside ordinary link labels',
+    '（[说明）](https://example.com/guide) https://example.com/合法）',
+    ['https://example.com/guide', 'https://example.com/合法）'],
+    '（说明） https://example.com/合法）',
+  ],
+]) {
+  test(name, async () => {
+    const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+    const restore = installGlobals({
+      HTMLElement: dom.window.HTMLElement,
+      Node: dom.window.Node,
+      document: dom.window.document,
+      window: dom.window,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    });
+    const container = dom.window.document.getElementById('root');
+    let root;
+    try {
+      root = createRoot(container);
+      await act(async () => root.render(createElement(MarkdownRenderer, { content })));
+      const links = Array.from(container.querySelectorAll('a'));
+      assert.equal(links.length, urls.length);
+      for (const [index, url] of urls.entries()) {
+        assert.equal(links[index].getAttribute('href'), new URL(url).href);
+      }
+      assert.equal(links.at(-1).textContent, urls.at(-1));
+      assert.equal(container.textContent, text);
+    } finally {
+      if (root) await act(async () => root.unmount());
+      restore();
+      dom.window.close();
+    }
+  });
+}
+
+for (const [name, labelUrl, bareUrl, before, after] of [
+  [
+    'keeps closing parentheses in URL labels separate from source prose',
+    'https://example.com/明确）。说明',
+    'https://sqlite.org/dbstat.html',
+    '（来源：',
+    '、https://sqlite.org/dbstat.html）。继续。',
+  ],
+  [
+    'keeps opening parentheses in URL labels separate from source prose',
+    'https://example.com/明确（说明',
+    'https://example.com/合法）',
+    '参见 ',
+    '，以及 https://example.com/合法）',
+  ],
+]) {
+  test(name, async () => {
+    const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+    const restore = installGlobals({
+      HTMLElement: dom.window.HTMLElement,
+      Node: dom.window.Node,
+      document: dom.window.document,
+      window: dom.window,
+      IS_REACT_ACT_ENVIRONMENT: true,
+    });
+    const container = dom.window.document.getElementById('root');
+    let root;
+    try {
+      root = createRoot(container);
+      for (const link of [`[${labelUrl}](${labelUrl})`, `[${labelUrl}][source]`, `<${labelUrl}>`]) {
+        const content = `${before}${link}${after}\n\n[source]: ${labelUrl}`;
+        await act(async () => root.render(createElement(MarkdownRenderer, { content })));
+        const links = Array.from(container.querySelectorAll('a'));
+        assert.equal(links.length, 2);
+        assert.equal(links[0].getAttribute('href'), new URL(labelUrl).href);
+        assert.equal(links[0].textContent, labelUrl);
+        assert.equal(links[1].getAttribute('href'), new URL(bareUrl).href);
+        assert.equal(links[1].textContent, bareUrl);
+        assert.equal(container.textContent, `${before}${labelUrl}${after}`);
+      }
+    } finally {
+      if (root) await act(async () => root.unmount());
+      restore();
+      dom.window.close();
+    }
+  });
+}
+
 test('preserves internal link handling with either MathML export setting', async () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
   const restore = installGlobals({

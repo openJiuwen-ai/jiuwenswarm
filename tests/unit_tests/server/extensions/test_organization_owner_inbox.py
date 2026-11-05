@@ -153,6 +153,7 @@ async def test_receipt_storage_errors_preserve_turn_terminal_and_history(environ
     )
     launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
     launcher.push_expert_payload = AsyncMock()
+    launcher._flush_expert_history = AsyncMock()
     inputs = {"query": "complete"}
     if failure == "capture":
         monkeypatch.setattr(results, "capture_child_completion", AsyncMock(side_effect=OSError("storage failed")))
@@ -163,6 +164,7 @@ async def test_receipt_storage_errors_preserve_turn_terminal_and_history(environ
         )
     assert await launcher.run_organization_turn(team, "session", inputs)
     runtime.activate.return_value.session.post_run.assert_awaited_once()
+    launcher._flush_expert_history.assert_awaited_once()
     events = [call.args[0]["event_type"] for call in launcher.push_expert_payload.call_args_list]
     assert "org.turn_completed" in events
     assert events[-1] == "chat.processing_status"
@@ -443,6 +445,7 @@ async def test_child_launcher_saves_completion_before_returning_success_to_sched
     )
     launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
     launcher.push_expert_payload = AsyncMock()
+    launcher._flush_expert_history = AsyncMock()
     assert await launcher.run_organization_turn("child", "session", {"query": "complete task"})
     runtime.activate.assert_awaited_once()
     store = environment.store
