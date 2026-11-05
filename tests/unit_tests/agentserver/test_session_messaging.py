@@ -4430,3 +4430,20 @@ async def test_a_first_turn_interaction_without_a_request_id_fails_the_message(
 
     assert result.status == "failed" and "uncorrelated" in result.error
     assert marked == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_without_input_mode_uses_the_documented_default():
+    # The tool layer fills an omitted optional field from the schema; without a default it
+    # passes None, which the service rejects as an unsupported input_mode.
+    toolkit = SessionMessagingToolkit()
+    received = {}
+
+    async def send_message(target_session_id, message, input_mode="steer"):
+        received["input_mode"] = input_mode
+        return {"ok": True}
+
+    toolkit.send_message = send_message
+    tool = next(tool for tool in toolkit.get_tools() if tool.card.name == "session_send_message")
+    await tool.invoke({"target_session_id": "target-1", "message": "count the slides"})
+    assert received["input_mode"] == "steer"
