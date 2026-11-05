@@ -1230,6 +1230,18 @@ class ProcessRuntime(RuntimeAdapter):
         scripts, seccomp BPF, landlock payload) keep the per-call cost low.
         """
         config = BwrapConfig.from_policy(policy, list(command))
+        daemon_python = PYTHON_EXECUTABLE
+        if command == SANDBOX_DAEMON_COMMAND:
+            daemon_python = sys.executable
+            config.command[0] = daemon_python
+            # Parked slots start with system paths only. Bind the server's
+            # venv and standard library before starting the daemon.
+            for prefix in dict.fromkeys((sys.base_prefix, sys.prefix)):
+                if prefix != "/" and not any(
+                    source == target and Path(prefix).is_relative_to(target)
+                    for source, target in config.ro_binds
+                ):
+                    config.ro_binds.append((prefix, prefix))
         process_uid = config.uid
         process_gid = config.gid
         if sandbox_env:
@@ -1302,7 +1314,7 @@ class ProcessRuntime(RuntimeAdapter):
             # keep ``/run`` outside the Landlock allowlist so user code
             # cannot read the launcher / daemon scripts at runtime.
             config.command = [
-                PYTHON_EXECUTABLE,
+                daemon_python,
                 "-S",
                 "-u",
                 SANDBOX_LAUNCHER_PATH,
