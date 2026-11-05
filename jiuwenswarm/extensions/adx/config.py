@@ -106,9 +106,11 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if not isinstance(ssh_known_hosts, str) or any(ord(char) < 32 for char in ssh_known_hosts):
         raise ValueError('gateway.adx.ssh_known_hosts must be a local known_hosts path')
     restart_policy = _restart_policy(settings.get('restart_policy'))
+    sandbox = config.get('sandbox')
+    tool_defaults = sandbox if isinstance(sandbox, dict) and sandbox.get('type') == 'adx-environment' else None
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
-        router=load_agentos_config(config, require_frontend_endpoint=False),
+        router=load_agentos_config(config, require_frontend_endpoint=False, tool_sandbox_defaults=tool_defaults),
         builtin_image=builtin_image, runtime_class=runtime_class,
         builtin_process_from_image=builtin_process_from_image,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,

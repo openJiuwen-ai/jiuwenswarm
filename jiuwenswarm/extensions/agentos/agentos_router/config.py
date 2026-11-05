@@ -377,6 +377,7 @@ def _load_probe_settings(agentos: Mapping[str, Any]) -> RuntimeProbeSettings:
 
 def load_router_config(
     config: dict[str, Any], *, require_frontend_endpoint: bool = True,
+    tool_sandbox_defaults: Mapping[str, Any] | None = None,
 ) -> RouterConfig:
     agent_client = read_mapping_path(config, "gateway", "agent_client")
     agentos = read_mapping_path(config, "gateway", "agentos")
@@ -408,14 +409,16 @@ def load_router_config(
     # startup value and the management plane overrides it at runtime.
     agent_sandbox_cpu = _overlay_int_env(2000, BUILTIN_AGENT_CPU_ENV)
     agent_sandbox_memory = _overlay_int_env(4096, BUILTIN_AGENT_MEMORY_ENV)
-    tool_sandbox_idle_timeout_env = _read_int_env(TOOL_SANDBOX_IDLE_TIMEOUT_ENV)
-    tool_sandbox_idle_timeout_seconds = (
-        600
-        if tool_sandbox_idle_timeout_env is None
-        else tool_sandbox_idle_timeout_env
+    tool_defaults = tool_sandbox_defaults or {}
+    tool_sandbox_idle_timeout_seconds = _overlay_int_env(
+        _read_int(tool_defaults, "idle_timeout", 600), TOOL_SANDBOX_IDLE_TIMEOUT_ENV,
     )
-    tool_sandbox_cpu = _overlay_int_env(2000, TOOL_SANDBOX_CPU_ENV)
-    tool_sandbox_memory = _overlay_int_env(4096, TOOL_SANDBOX_MEMORY_ENV)
+    tool_sandbox_cpu = _overlay_int_env(
+        _read_int(tool_defaults, "cpu", 2000), TOOL_SANDBOX_CPU_ENV,
+    )
+    tool_sandbox_memory = _overlay_int_env(
+        _read_int(tool_defaults, "memory", 4096), TOOL_SANDBOX_MEMORY_ENV,
+    )
 
     disconnect_cleanup_env = _read_float_env(DISCONNECT_CLEANUP_TIMEOUT_ENV)
     disconnect_cleanup_timeout_seconds = (

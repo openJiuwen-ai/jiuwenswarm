@@ -19,7 +19,7 @@ from jiuwenswarm.extensions.adx.control_client import AdxControlClient
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient
 
 
-def _config(monkeypatch, **overrides):
+def _config(monkeypatch, *, sandbox=None, **overrides):
     monkeypatch.setenv('TEST_ADX_KEY', 'platform-secret')
     root = Path(tempfile.mkdtemp(prefix='adx-env-gateway-'))
     for user in ('alice', 'bob'):
@@ -30,7 +30,7 @@ def _config(monkeypatch, **overrides):
     return load_router_config({'gateway': {
         'agent_client': {'type': 'adx_router', 'agent_namespace': 'test'},
         'adx': settings, 'agentos': {'workspace_root': str(root)},
-    }})
+    }, 'sandbox': sandbox})
 
 
 class EnvironmentAPI:
@@ -179,6 +179,28 @@ async def test_users_and_first_creates_are_isolated_and_coalesced(monkeypatch):
         assert len(set(mounts)) == 2 and all(Path(path).is_dir() for path in mounts)
         assert all(body['process']['commands'][0][-1].startswith('exec jiuwenswarm-agentserver')
                    for body in router.test_api.creates)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_builtin_launch_uses_configured_agent_and_tool_resources(monkeypatch):
+    monkeypatch.setenv('AGENTOS_BUILTIN_AGENT_CPU', '750')
+    monkeypatch.setenv('AGENTOS_BUILTIN_AGENT_MEMORY', '1024')
+    monkeypatch.setenv('TOOL_SANDBOX_CPU', '900')
+    monkeypatch.delenv('TOOL_SANDBOX_MEMORY', raising=False)
+    monkeypatch.delenv('TOOL_SANDBOX_IDLE_TIMEOUT', raising=False)
+    router, _ = _router(_config(monkeypatch, sandbox={
+        'type': 'adx-environment', 'cpu': 1000, 'memory': 1536, 'idle_timeout': 60,
+    }))
+    await router.connect('')
+    try:
+        await router.send_request(_request())
+        body, = router.test_api.creates
+        assert (body['cpu'], body['memory']) == (750, 1024)
+        assert body['env']['TOOL_SANDBOX_CPU'] == '900'
+        assert body['env']['TOOL_SANDBOX_MEMORY'] == '1536'
+        assert body['env']['TOOL_SANDBOX_IDLE_TIMEOUT'] == '60'
     finally:
         await router.shutdown()
 
