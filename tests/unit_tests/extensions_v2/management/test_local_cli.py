@@ -51,6 +51,9 @@ async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch
     await manager.init(make_bus())
     monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
     monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_extension_manager", lambda: manager)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+                        lambda: SimpleNamespace(notify_packages_installed=notify))
     package = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
     archive = archive_package(package)
     service = transport.LocalControl("agent", handle)
@@ -59,6 +62,8 @@ async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch
         result, code = await invoke("install", str(archive), "--json")
         assert code == 0 and result["ok"] and result["domain"] == "agent"
         assert result["verification_status"] == "SUCCESS"
+        assert result["ui_notified"] is True
+        notify.assert_awaited_once_with([PACKAGE_ID])
         root = Path(result["install_path"])
         assert root == manager.install_dir / PACKAGE_ID / "1.0.0"
         assert (await manager.registry.context.bus.trigger(Event("test.event", {})))[0] == PACKAGE_ID
@@ -72,6 +77,7 @@ async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch
         assert await manager.registry.context.bus.trigger(Event("test.event", {})) == "reloaded"
         result, code = await invoke("uninstall", PACKAGE_ID)
         assert code == 0 and not result["active"] and not root.exists()
+        notify.assert_awaited_once_with([PACKAGE_ID])
     finally:
         await service.close()
         await manager.shutdown()
