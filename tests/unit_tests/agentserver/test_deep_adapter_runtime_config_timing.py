@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+from jiuwenswarm.server.runtime.agent_adapter.deep import stage_log as stage_log_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -49,8 +50,12 @@ def _make_adapter(stages: list[str]) -> JiuWenSwarmDeepAdapter:
 def _loggers(monkeypatch: pytest.MonkeyPatch) -> tuple[_RecordingLogger, _RecordingLogger]:
     server_log = _RecordingLogger()
     module_log = _RecordingLogger()
+    # ``_stage_breakdown_logger`` lives in stage_log and closes over that
+    # module's ``server_logger`` / ``logger``; patch both binding sites.
     monkeypatch.setattr(interface_deep, "server_logger", server_log)
     monkeypatch.setattr(interface_deep, "logger", module_log)
+    monkeypatch.setattr(stage_log_module, "server_logger", server_log)
+    monkeypatch.setattr(stage_log_module, "logger", module_log)
     return server_log, module_log
 
 

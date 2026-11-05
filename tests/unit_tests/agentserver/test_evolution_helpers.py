@@ -122,6 +122,31 @@ def test_evolution_helpers_parse_approval_and_outcome_events():
     assert evolution_helpers.extract_evolution_request_id(approval) == "team_skill_evolve_req1"
 
 
+def test_evolution_approval_uses_explicit_event_kind_before_legacy_type():
+    legacy = SimpleNamespace(
+        type="chat.ask_user_question",
+        payload={"request_id": "legacy-approval"},
+    )
+    explicit_approval = SimpleNamespace(
+        type="chat.ask_user_question",
+        payload={
+            "request_id": "explicit-approval",
+            "_evolution_meta": {"event_kind": "approval"},
+        },
+    )
+    explicit_progress = SimpleNamespace(
+        type="chat.ask_user_question",
+        payload={
+            "request_id": "explicit-progress",
+            "_evolution_meta": {"event_kind": "progress"},
+        },
+    )
+
+    assert evolution_helpers.is_evolution_approval_event(legacy) is True
+    assert evolution_helpers.is_evolution_approval_event(explicit_approval) is True
+    assert evolution_helpers.is_evolution_approval_event(explicit_progress) is False
+
+
 def test_evolution_helpers_parse_noop_outcome_status_from_sdk_metadata():
     outcome = SimpleNamespace(
         type="llm_reasoning",

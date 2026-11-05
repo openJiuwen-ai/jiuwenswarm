@@ -315,7 +315,8 @@ def _prepare_reload_adapter(
     monkeypatch.setattr(
         adapter, "_omit_unchanged_reload_fields", MagicMock(return_value=({}, {}))
     )
-    monkeypatch.setattr(adapter, "_restore_omitted_reload_fields", MagicMock())
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._restore_omitted_reload_fields", MagicMock())
     monkeypatch.setattr(adapter, "_commit_reload_fingerprints", MagicMock())
     monkeypatch.setattr(
         adapter, "_sync_active_evolution_review_agent_after_reload", MagicMock()

@@ -12,6 +12,8 @@ from jiuwenswarm.common import local_env_config as env_config
 
 FLASH_ENV = "JIUWENSWARM_FLASH_ENABLED"
 SKILL_ENV = "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED"
+FLASH_EVOLUTION_ENV = "JIUWENSWARM_FLASH_EVOLUTION_ENABLED"
+FLASH_SKILL_SLEEP_ENV = "JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED"
 
 
 @pytest.fixture
@@ -20,6 +22,8 @@ def config_file(monkeypatch, tmp_path):
     monkeypatch.setattr(config_module, "get_config_file", lambda: path)
     monkeypatch.delenv(FLASH_ENV, raising=False)
     monkeypatch.delenv(SKILL_ENV, raising=False)
+    monkeypatch.delenv(FLASH_EVOLUTION_ENV, raising=False)
+    monkeypatch.delenv(FLASH_SKILL_SLEEP_ENV, raising=False)
     providers.reset_config_provider()
     config_module.clear_config_cache()
     yield path
@@ -39,6 +43,46 @@ def test_shipped_placeholders_resolve_to_false_without_modifying_raw_config(conf
     assert all(value is False for value in switches(resolved))
     assert config_module.get_config_raw() == raw
     assert not config_file.exists()
+
+
+def test_shipped_flash_evolution_switches_default_to_closed_online_and_resident_sleep(config_file):
+    raw = config_module.get_config_raw()
+    flash = raw.get("flash", {})
+    evolution = flash.get("evolution", {})
+    assert evolution.get("enabled") == f"${{{FLASH_EVOLUTION_ENV}:-false}}"
+    assert evolution.get("skill_sleep", {}).get("enabled") == (
+        f"${{{FLASH_SKILL_SLEEP_ENV}:-true}}"
+    )
+
+    resolved = config_module.get_config()
+    resolved_evolution = resolved.get("flash", {}).get("evolution", {})
+    assert resolved_evolution.get("enabled") is False
+    assert resolved_evolution.get("skill_sleep", {}).get("enabled") is True
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+        ("invalid", False),
+    ],
+)
+def test_flash_evolution_environment_overrides_normalize_to_booleans(
+    config_file, monkeypatch, raw, expected
+):
+    monkeypatch.setenv(FLASH_EVOLUTION_ENV, raw)
+    monkeypatch.setenv(FLASH_SKILL_SLEEP_ENV, "false" if expected else "true")
+    evolution = config_module.get_config().get("flash", {}).get("evolution", {})
+    assert evolution.get("enabled") is expected
+    assert evolution.get("skill_sleep", {}).get("enabled") is (not expected)
 
 
 @pytest.mark.parametrize("name", [FLASH_ENV, SKILL_ENV])
@@ -95,6 +139,20 @@ def test_custom_placeholder_defaults_and_unrelated_strings_are_preserved(config_
     assert config_module.resolve_env_vars("${FLASH_TEST_TEXT}") == "false"
     assert config_module.resolve_env_vars("${FLASH_TEST_MISSING:-false}") == "false"
     assert config_module.resolve_env_vars("${FLASH_TEST_MISSING-false}") == "false"
+
+
+def test_sparse_skill_sleep_section_defaults_to_resident(config_file, monkeypatch):
+    resolved = config_module.resolve_config_env_vars(
+        {
+            "flash": {
+                "evolution": {
+                    "skill_sleep": {"call_threshold": 2},
+                },
+            },
+        }
+    ).get("flash", {}).get("evolution", {})
+    assert resolved.get("skill_sleep", {}).get("enabled") is True
+    assert resolved.get("skill_sleep", {}).get("call_threshold") == 2
 
 
 def test_sandbox_values_survive_sealed_task_overlay_and_child_export(config_file, monkeypatch):

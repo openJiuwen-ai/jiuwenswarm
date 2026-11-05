@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md |
 
 ## 范围 / 边界
@@ -19,7 +19,7 @@
 ## 装配 / 分层关系
 
 ```
-mcp_config.py（基础层，~2720 行）
+mcp_config.py（基础层，~2640 行）
   配置条目 → SDK McpServerConfig 转换 + 安全准入（白名单/SSRF/鉴权）
   请求级 worker 池 + OfficeClaw 工具发现/白名单绑定
         ▲ 复用 _PooledMcpWorker / create_mcp_tool / list_request_mcp_server_tools
@@ -39,7 +39,8 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - **N1 transport 归一**：`http` / `streamable_http` → `streamable-http`；缺省 `stdio`。
   归一发生在 `build_mcp_server_config`，下游只见归一后的值。
 - **N2 安全准入三闸**（fail-closed）：企业版禁本地 stdio；stdio 命令白名单
-  node / python / npx / uvx + 危险参数（`-e` / `-c`）拦截；SSRF 屏蔽内网 / 元数据地址
+  node / python / npx / uvx（python 解释器名精确匹配：`python`、`pythonw`，可带版本号及 `.exe` / `.cmd` / `.bat` 后缀）
+  + 危险参数（`-e` / `-c`）拦截；SSRF 屏蔽内网 / 元数据地址
   （逃生 env `JIUWENSWARM_ALLOW_LOOPBACK_MCP`）。鉴权必须进 `auth_headers`（兼容
   `headers` 别名）。
 - **N3 超时与缓存**：调用 / 发现超时默认 300s；schema 缓存 env

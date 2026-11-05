@@ -82,7 +82,7 @@ class LastIterationFinalizeRail(DeepAgentRail):
             iteration,
             max_iterations,
         )
-        ctx.request_force_finish({"output": output, "result_type": "error"})
+        ctx.request_force_finish({"output": output, "result_type": "error", "finish_reason": "max_iterations"})
 
     @staticmethod
     def _read_max_iterations(ctx: Any) -> int | None:

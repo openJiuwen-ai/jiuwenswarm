@@ -20,6 +20,10 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import (
+    _inject_model_routing_into_inputs,
+    _inject_model_selection_into_inputs,
+)
 
 
 def _request(params: object) -> SimpleNamespace:
@@ -32,7 +36,7 @@ def _extra_of(inputs: dict) -> dict:
 
 def test_inject_writes_flag_for_strict_true():
     inputs: dict = {}
-    JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(
+    _inject_model_routing_into_inputs(
         _request({"enable_routing": True}), inputs
     )
     assert _extra_of(inputs)["enable_routing"] is True
@@ -41,7 +45,7 @@ def test_inject_writes_flag_for_strict_true():
 @pytest.mark.parametrize("value", [False, None, "true", "True", 1, 0, "1", {}, []])
 def test_inject_skips_every_non_boolean_true(value):
     inputs: dict = {}
-    JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(
+    _inject_model_routing_into_inputs(
         _request({"enable_routing": value}), inputs
     )
     assert inputs == {}
@@ -49,14 +53,14 @@ def test_inject_skips_every_non_boolean_true(value):
 
 def test_inject_skips_when_key_absent():
     inputs: dict = {}
-    JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(_request({"model_name": "auto"}), inputs)
+    _inject_model_routing_into_inputs(_request({"model_name": "auto"}), inputs)
     assert inputs == {}
 
 
 def test_inject_skips_non_dict_params():
     for params in (None, "enable_routing=true", ["enable_routing"], 1):
         inputs: dict = {}
-        JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(_request(params), inputs)
+        _inject_model_routing_into_inputs(_request(params), inputs)
         assert inputs == {}
 
 
@@ -64,8 +68,8 @@ def test_inject_coexists_with_model_selection():
     """两个键写进同一层 run_context.extra，互不覆盖。"""
     inputs: dict = {}
     request = _request({"model_name": "deepseek-v4.1-flash", "enable_routing": True})
-    JiuWenSwarmDeepAdapter._inject_model_selection_into_inputs(request, inputs)
-    JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(request, inputs)
+    _inject_model_selection_into_inputs(request, inputs)
+    _inject_model_routing_into_inputs(request, inputs)
 
     extra = _extra_of(inputs)
     assert extra["model_selection"] == "deepseek-v4.1-flash"
@@ -75,8 +79,8 @@ def test_inject_coexists_with_model_selection():
 def test_inject_is_idempotent_and_preserves_other_extra_keys():
     inputs = {"run": {"context": {"extra": {"model_selection": "auto"}}}}
     request = _request({"enable_routing": True})
-    JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(request, inputs)
-    JiuWenSwarmDeepAdapter._inject_model_routing_into_inputs(request, inputs)
+    _inject_model_routing_into_inputs(request, inputs)
+    _inject_model_routing_into_inputs(request, inputs)
 
     extra = _extra_of(inputs)
     assert extra == {"model_selection": "auto", "enable_routing": True}

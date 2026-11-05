@@ -116,6 +116,12 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         }
         await super().before_invoke(ctx)
 
+    async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        """A completed model call ends the failure streak for this ctx."""
+        await super().after_model_call(ctx)
+        if ctx.exception is None:
+            ctx.extra[_RETRY_COUNTS_KEY] = dict.fromkeys(_COUNT_ATTRS, 0)
+
     def _retry_counts(self, ctx: AgentCallbackContext) -> dict[str, int]:
         counts = ctx.extra.get(_RETRY_COUNTS_KEY)
         if not isinstance(counts, dict):

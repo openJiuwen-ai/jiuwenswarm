@@ -11,6 +11,9 @@ import pytest
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _is_foreign_stream_source as facade_is_foreign,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+    _parse_stream_chunk,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -75,7 +78,7 @@ def test_adapter_parser_propagates_source_id_on_tool_call(caplog) -> None:
         },
     )
 
-    parsed = adapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
 
     assert parsed is not None, caplog.text
     assert parsed["event_type"] == "chat.tool_call"

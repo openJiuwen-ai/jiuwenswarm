@@ -192,8 +192,9 @@ def resolve_agent_request_mode(
     OfficeClaw 前台入口传入 ``allow_flash_default=False``，仅接受显式选型。
 
     注：cron / heartbeat / proactive 等后台流水线若发 agent 类 mode，同样会被
-    归到 flash——flash 保留 filesystem / bash / skill / 子代理能力，仅裁掉
-    memory 巩固与 skill 演进（flash 设计即关），单次执行无破坏性，故不单独排除。
+    归到 flash——flash 保留 filesystem / bash / skill / 子代理能力，裁掉
+    memory 巩固；技能自演进按部署配置受限启用（不含 skill_create /
+    review follow-up），单次执行无破坏性，故不单独排除。
     """
     raw_value = getattr(raw_mode, "value", raw_mode)
     mode_text = raw_value.strip().lower() if isinstance(raw_value, str) else ""

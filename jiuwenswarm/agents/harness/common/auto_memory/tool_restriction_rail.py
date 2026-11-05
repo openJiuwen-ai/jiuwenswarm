@@ -15,6 +15,8 @@ but runtime restriction prevents unauthorized tool use.
 from __future__ import annotations
 
 import logging
+import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict
 
@@ -51,6 +53,31 @@ READ_ONLY_BASH_COMMANDS = (
     "stat",
     "file",
 )
+
+_SHELL_SEGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|\||;")
+_SHELL_UNSAFE_TOKENS = (">", "<", "`", "$(", "&", "\n", "\r")
+_FIND_WRITE_ARGS = frozenset(
+    {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+)
+
+
+def _is_read_only_shell_segment(segment: str) -> bool:
+    if any(token in segment for token in _SHELL_UNSAFE_TOKENS):
+        return False
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        return False
+    if not words:
+        return False
+    command = words[0].lower()
+    if command == "git":
+        if " ".join(words[:2]).lower() not in READ_ONLY_BASH_COMMANDS:
+            return False
+        return not any(word == "--output" or word.startswith("--output=") for word in words)
+    if command not in READ_ONLY_BASH_COMMANDS:
+        return False
+    return command != "find" or _FIND_WRITE_ARGS.isdisjoint(words)
 
 
 class AutoMemoryToolRestrictionRail(AgentRail):
@@ -208,25 +235,11 @@ class AutoMemoryToolRestrictionRail(AgentRail):
         Returns:
             True if the command is read-only (no file modification).
         """
-        command = tool_args.get("command", "")
-        if not command:
-            return False
-
-        # Check against read-only command patterns
-        command_lower = command.lower()
-        for allowed_cmd in READ_ONLY_BASH_COMMANDS:
-            if allowed_cmd.lower() in command_lower:
-                return True
-
-        # Also check for explicit read-only flags
-        # e.g., "git status --porcelain" is safe
-        if any(
-            flag in command_lower
-            for flag in ("--status", "--list", "--show", "--print", "--read")
-        ):
-            return True
-
-        return False
+        command = str(tool_args.get("command") or "").strip()
+        segments = [
+            segment for segment in _SHELL_SEGMENT_SEPARATOR_RE.split(command) if segment.strip()
+        ]
+        return bool(segments) and all(_is_read_only_shell_segment(segment) for segment in segments)
 
     def _is_in_memory_dir(self, tool_args: Dict[str, Any]) -> bool:
         """Check if the target path is within memory_dir.

@@ -8,6 +8,7 @@ import inspect
 import logging
 from typing import Any
 
+from jiuwenswarm.common.enterprise_methods import ENTERPRISE_SKILL_ALLOWED_METHODS
 from jiuwenswarm.common.request_identity import (
     merge_routing_into_params,
     web_routing_identity,
@@ -42,21 +43,6 @@ _ENTERPRISE_A2A_ALLOWED = frozenset({
     "a2a.outbound.dispatch.list",
     "a2a.outbound.dispatch.get",
 })
-_ENTERPRISE_SKILL_ALLOWED = frozenset({
-    "skills.list",
-    "skills.get",
-    "skills.toggle",
-    "skills.source.providers",
-    "skills.source.search",
-    "skills.source.install",
-    "skills.updates.check",
-    "skills.update",
-    "skills.enterprise.list",
-    "skills.enterprise.install",
-    "skills.enterprise.uninstall",
-    "skills.enterprise.source.providers",
-    "skills.enterprise.source.search",
-})
 
 
 def is_enterprise_write_forbidden(method: str) -> bool:
@@ -69,7 +55,7 @@ def is_enterprise_write_forbidden(method: str) -> bool:
         return True
     if method.startswith("channel.") and (method.endswith(".set_conf") or method.endswith(".unbind")):
         return True
-    if method.startswith("skills.") and method not in _ENTERPRISE_SKILL_ALLOWED:
+    if method.startswith("skills.") and method not in ENTERPRISE_SKILL_ALLOWED_METHODS:
         return True
     return False
 

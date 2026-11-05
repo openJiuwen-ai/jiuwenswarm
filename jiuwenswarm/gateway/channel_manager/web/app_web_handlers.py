@@ -7337,6 +7337,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
             else:
                 deleted = await cc.delete_job(job_id, group_id=g, bot_id=b, user_id=u)
+        except KeyError:
+            await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
+            return
         except PermissionError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="FORBIDDEN")
             return

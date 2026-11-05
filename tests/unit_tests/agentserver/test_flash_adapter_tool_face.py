@@ -66,26 +66,47 @@ class _FakeAbilityManager:
 
 
 def test_keep_whitelist_retains_skill_and_security_rails() -> None:
-    """技能链与 disabled_tools 的冷启动表项必须存活（reload 复活点对齐）。"""
+    """技能链、受限自演进与 disabled_tools 的冷启动表项必须存活。"""
     adapter = _bare_adapter(JiuwenSwarmFlashAdapter)
     keep = [
         "_skill_rail",
         "_skill_credential_injection_rail",
         "_skill_active_state_rail",
         "_skill_authorization_rail",
+        "_skill_evolution_rail",
+        "_evolution_interrupt_rail",
+        "_skill_sleep_rail",
         "_disabled_tools_rail",
         "_permission_rail",
         "_filesystem_rail",
         "_skill_turbo_prompt_rail",
     ]
     drop = [
-        "_skill_evolution_rail",
+        "_skill_create_rail",
         "_a2a_outbound_toolkit_rail",
         "_symphony_orchestration_rail",
     ]
     infos = [_RailBuildInfo(name, lambda: None) for name in keep + drop]
     filtered = adapter._filter_rail_infos_by_keep(infos)
     assert [info.attr_name for info in filtered] == keep
+
+
+def test_flash_tool_face_keeps_rail_owned_evolution_tools_only() -> None:
+    """Flash accepts the six rail-owned evolution tools, not SkillCreate/TTSE."""
+    drop_names = JiuwenSwarmFlashAdapter._FLASH_TOOL_CARD_DROP_NAMES
+    rail_owned_evolution_tools = {
+        "prepare_skill_evolution",
+        "evolve_review_task",
+        "list_skill_experiences",
+        "read_skill_experiences",
+        "evolve_skill_experiences",
+        "simplify_skill_experiences",
+    }
+    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+
+    assert rail_owned_evolution_tools.isdisjoint(drop_names)
+    assert "_skill_create_rail" not in keep
+    assert "_ttse_rail" not in keep
 
 
 # ── react 覆盖（eager_tools 整表替换 / evolution 深合并 / env 告警） ──

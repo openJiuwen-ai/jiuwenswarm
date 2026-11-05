@@ -8,7 +8,7 @@
 | 编号 / slug | S_07 / llm-call-failure-recovery |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/llm_retry_notify_rail.py`、`context_overflow_recovery_rail.py`；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_build_llm_retry_rail` / `_build_context_overflow_recovery_rail`）、`interface_code.py`（`_FIXED_RAIL_NAMES`）、`jiuwenswarm/server/runtime/skill_turbo/executor.py`（`_build_llm_retry_rail`）、`jiuwenswarm/agents/swarm/config_specs.py` + `providers/builtin_rails.py`（成员 rail 投影） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen/harness/rails/llm_retry_rail.py`（`LLMRetryRail` 父类：repeat 检测参数、`backoff_delay`、`_is_repeat_exception` / `_is_stream_timeout_exception` / `_is_transient_invoke_exception`）、`openjiuwen.harness.rails.base.DeepAgentRail`、`openjiuwen/core/session/stream.OutputSchema` |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-02 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -36,7 +36,7 @@
 
 ## 不变量
 
-- **N1（per-call 预算隔离）**：重试计数唯一权威存储是 `ctx.extra["_llm_retry_counts"]`（三键 `repeat` / `stream_timeout` / `transient_invoke` 各自独立计数）。`before_invoke` 只重置**本 ctx** 的计数——并发共享同一 rail 实例的 `call_llm` / `stream_llm`（SkillTurbo PPT 页收集）互不偷、互不清对方的计数。实例属性（`repeat_retry_count` 等，`_COUNT_ATTRS` 映射）只是观测镜像，供日志 / 外部读数，不参与判定。
+- **N1（per-call 预算隔离）**：重试计数唯一权威存储是 `ctx.extra["_llm_retry_counts"]`（三键 `repeat` / `stream_timeout` / `transient_invoke` 各自独立计数）。`before_invoke` 只重置**本 ctx** 的计数——并发共享同一 rail 实例的 `call_llm` / `stream_llm`（SkillTurbo PPT 页收集）互不偷、互不清对方的计数。预算语义是**连续失败**：`after_model_call` 且 `ctx.exception is None` 时清零本 ctx 三键（重试中的失败尝试也会触发该 hook，但带异常，不清零）。长 invoke 里互不连续的失败不共用一份预算。实例属性（`repeat_retry_count` 等，`_COUNT_ATTRS` 映射）只是观测镜像，供日志 / 外部读数，不参与判定。
 - **N2（原因三分流有序互斥）**：`on_model_exception` 依次判 `_is_repeat_exception` → `_is_stream_timeout_exception` → transient_invoke，**先命中先归类**，一次异常只消耗一个原因的预算。transient_invoke 受 `retry_transient_invoke_errors` 开关；前两类不受。
 - **N3（peek / consume 分离）**：`_peek_retry` 纯预演（供通知文案取 attempt 编号），**不消耗**计数；`_request_retry_or_reset` 才 `counts[reason] += 1` 并 `ctx.request_retry(delay_seconds=delay)`。两处对同一 delay 的 jitter 独立采样——通知展示的 delay 与实际生效 delay 允许不同（均为合法 jitter 值）。
 - **N4（耗尽重置不吞异常）**：某原因计数达 `max_retries` 后，`_request_retry_or_reset` 把该原因计数与镜像属性归零、**不再** `request_retry`，异常继续向上传播（由上层 / 父类框架决定终态）。rail 永不吞掉模型异常。
@@ -101,7 +101,7 @@
 | 键 | yaml 值 | 装配代码 fallback | 说明 |
 |---|---|---|---|
 | `enabled` | true | False（缺省关） | 非 `is True` 即不注册 |
-| `max_retries` | 2 | 2 | 单 invoke 内同类异常重试上限 |
+| `max_retries` | 2 | 2 | 同类异常连续失败的重试上限（N1） |
 | `retry_transient_invoke_errors` | true | True | N2 第三类开关 |
 | `notify_user_on_retry` / `notify_user_on_exhausted` | true / true | True / True | 通知开关 |
 | `repeat_min_pattern_chars` / `repeat_max_pattern_chars` | 2 / 64 | 2 / 64 | 透传父类 |
@@ -116,6 +116,7 @@
 | 场景 | 位置 | 形态 |
 |---|---|---|
 | deep 主链 retry | `interface_deep.py` `_build_llm_retry_rail`（:10113） | enabled 非 True → None；失败 → warning + None（不炸装配） |
+| flash 主链 retry | `interface_flash.py` `_FLASH_RAIL_KEEP` 保留 `_llm_retry_rail` | 复用 deep 构建；移出白名单会让工厂回退 SDK 原版 rail，重试耗尽无用户可见错误 |
 | deep 溢出 | `interface_deep.py` `_build_context_overflow_recovery_rail`（:9648） | `max_recovery_attempts=3` |
 | code 侧溢出 | `interface_code.py` `_FIXED_RAIL_NAMES`（:459）+ build callable | 固定名单去重挂载；断言传 3 |
 | skill_turbo | `executor.py` `_build_llm_retry_rail`（:946） | 同一配置节、同一参数集（与 DeepAgent 一致） |
@@ -136,7 +137,7 @@
 - **P3 通知双形态**：will_retry → `retry_notification`（P2 内）；耗尽 → `error` + `llm_retry_exhausted`。
 - **P4 溢出检测与恢复**：`on_model_exception`（priority 100 先跑，N10）→ N9 检测 → 计数 +1 → 未超限 → N11 恢复（force_compact + override）→ `request_retry(0)`。
 - **P5 溢出熔断**：计数超 `max_recovery_attempts` → `_circuit_break`：error 事件 + 计数归零（N12）。
-- **P6 成功归零**：`after_model_call` 且无异常 → `_consecutive_overflow_count = 0`。
+- **P6 成功归零**：`after_model_call` 且无异常 → `_consecutive_overflow_count = 0`；重试 rail 同一时机清零本 ctx 预算（N1）。
 
 ## 异常分支与退出路径
 
@@ -158,6 +159,7 @@
 | 场景 | 现行为 | 风险 | 测试覆盖 |
 |---|---|---|---|
 | 并发 call_llm / stream_llm 共享 rail 实例 | per-ctx 预算独立（N1） | 计数互偷 → 提前耗尽或超限重试 | `test_concurrent_ctx_keep_independent_retry_budgets`、`test_before_invoke_does_not_reset_sibling_ctx_budget` |
+| 长 invoke 内互不连续的失败 | 成功调用后预算清零（N1） | 分散在几十分钟里的失败共用预算，任务被提前中断 | `test_completed_model_call_restores_budget_for_its_own_ctx_only`、`test_failed_attempt_does_not_restore_budget` |
 | 未传 / 显式 None `backoff_seconds` | 生成序列 5/10/…/60 封顶 | 误把 None 当显式空表 | `test_generated_backoff_sequence_when_not_provided`、`test_explicit_none_backoff_still_uses_generated_sequence`、`test_generated_backoff_sequence_caps_at_max` |
 | 显式传 `backoff_seconds` | 精确执行、零 jitter | 调用方精确调度被抖动 | `test_explicit_backoff_sequence_is_respected`、`test_explicit_backoff_has_no_jitter` |
 | 生成序列逐请求 jitter | 每次采样（N7），两次请求 delay 不同 | 构造期采样导致并发同步 | `test_generated_backoff_applies_per_request_jitter` |

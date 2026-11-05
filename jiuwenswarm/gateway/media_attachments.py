@@ -23,7 +23,37 @@ _SUPPORTED_IMAGE_MIME_TYPES = {
     "image/gif": ".gif",
 }
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
-_MAX_IMAGE_COUNT = 8
+# 与 ``react.multimodal_image_max_count`` 的默认值保持一致；运行时以配置为准，这里只是
+# 读不到配置时的兜底（上传侧先按张数截断，模型侧预算仍会按最老优先再裁一次）。
+_DEFAULT_MAX_IMAGE_COUNT = 8
+
+
+def _max_image_count() -> int:
+    """上传侧图片张数上限：跟随 ``react.multimodal_image_max_count``（默认 8）。
+
+    语义与 rail / 模型侧预算一致：``0 = 不限``（不截断上传件）。只有缺失、负数或
+    非整数配置才回退默认值——把显式 0 当成 8 会让「用户按说明配 0」在不知不觉中
+    丢掉第 9 张之后的图，而模型侧预算还以为不限。
+    """
+
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        react_cfg = (get_config() or {}).get("react") or {}
+        value = react_cfg.get("multimodal_image_max_count")
+    except Exception:
+        return _DEFAULT_MAX_IMAGE_COUNT
+    if value is None:
+        return _DEFAULT_MAX_IMAGE_COUNT
+    # 非整数的浮点（如 0.5）会被 int() 静默截断成 0，而 0 是「不限」——
+    # 一次配置笔误就把上传侧限流关掉。按 docstring 承诺回退默认值。
+    if isinstance(value, float) and not value.is_integer():
+        return _DEFAULT_MAX_IMAGE_COUNT
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_IMAGE_COUNT
+    return parsed if parsed >= 0 else _DEFAULT_MAX_IMAGE_COUNT
 
 
 def normalize_chat_media_attachments(params: dict[str, Any], session_id: str | None) -> None:
@@ -40,7 +70,10 @@ def normalize_chat_media_attachments(params: dict[str, Any], session_id: str | N
         return
 
     stored: list[dict[str, Any]] = []
-    for index, item in enumerate(raw_items[:_MAX_IMAGE_COUNT]):
+    limit = _max_image_count()
+    # 0 = 不限：不能切成 raw_items[:0] 把所有上传件都丢掉。
+    items = raw_items if limit <= 0 else raw_items[:limit]
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
             continue
         if item.get("type") != "image":

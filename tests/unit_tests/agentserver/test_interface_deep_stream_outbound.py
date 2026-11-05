@@ -5,9 +5,14 @@
 from types import SimpleNamespace
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-    JiuWenSwarmDeepAdapter,
     _is_outer_react_tool_result,
     _propagate_stream_source_id,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+    _is_ask_user_payload,
+    _is_hitl_suppress_noise_chunk,
+    _parse_stream_chunk,
+    _run_failure,
 )
 
 
@@ -97,7 +102,7 @@ def test_answer_soft_stop_exhausted_sets_error_code() -> None:
             "soft_stop_recovery_exhausted": True,
         },
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed == {
         "event_type": "chat.error",
         "error": _SOFT_STOP_MSG,
@@ -113,7 +118,7 @@ def test_answer_error_without_soft_stop_has_no_code() -> None:
             "result_type": "error",
         },
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed == {
         "event_type": "chat.error",
         "error": "模型未返回有效内容（空响应），请重试或检查上下文。",
@@ -129,7 +134,7 @@ def test_parse_llm_output_forwards_task_id() -> None:
             "task_id": "task_abc123",
         },
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed["event_type"] == "chat.delta"
     assert parsed["content"] == "完成执行 Stage 5: 模板上下文预处理（5/14）"
     assert parsed["task_id"] == "task_abc123"
@@ -140,14 +145,14 @@ def test_parse_llm_reasoning_forwards_task_id() -> None:
         type="llm_reasoning",
         payload={"content": "内部推理", "task_id": "task_think"},
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed["event_type"] == "chat.reasoning"
     assert parsed["task_id"] == "task_think"
 
 
 def test_parse_llm_output_without_task_id_unchanged() -> None:
     chunk = SimpleNamespace(type="llm_output", payload={"content": "hello"})
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed == {"event_type": "chat.delta", "content": "hello"}
 
 
@@ -161,7 +166,7 @@ def test_parse_llm_output_accepts_openjiuwen_output_key() -> None:
         type="llm_output",
         payload={"output": "我来帮你完成这个任务", "result_type": "answer"},
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed == {
         "event_type": "chat.delta",
         "content": "我来帮你完成这个任务",
@@ -173,7 +178,7 @@ def test_parse_llm_output_prefers_content_over_output() -> None:
         type="llm_output",
         payload={"content": "from-content", "output": "from-output"},
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed["content"] == "from-content"
 
 
@@ -182,7 +187,7 @@ def test_parse_content_chunk_forwards_task_id() -> None:
         type="content_chunk",
         payload={"content": "开始执行 Stage 6: 内容策划（6/14）", "task_id": "task_plan"},
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed["event_type"] == "chat.delta"
     assert parsed["task_id"] == "task_plan"
 
@@ -205,7 +210,7 @@ def test_parse_chat_file_obs_url_is_not_dropped() -> None:
             ]
         },
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed is not None
     assert parsed["event_type"] == "chat.file"
     assert parsed["files"][0]["url"].startswith("http://")
@@ -221,14 +226,14 @@ def test_parse_unknown_chat_delta_payload_forwards_task_id() -> None:
             "task_id": "task_research",
         },
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed["event_type"] == "chat.delta"
     assert parsed["task_id"] == "task_research"
 
 
 def test_same_round_streamed_answer_still_empty_final() -> None:
     answer = "以下是完成情况概要"
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         _answer_chunk(answer),
         _has_streamed_content=True,
         _streamed_text=answer,
@@ -247,10 +252,10 @@ def test_hitl_suppress_noise_keeps_flags() -> None:
         "context.usage",
         "controller_output",
     ):
-        assert JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+        assert _is_hitl_suppress_noise_chunk(
             SimpleNamespace(type=chunk_type, payload={})
         )
-    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+    assert not _is_hitl_suppress_noise_chunk(
         SimpleNamespace(type="__interaction__", payload={})
     )
 
@@ -261,7 +266,7 @@ def test_hitl_suppress_task_failed_not_noise() -> None:
         type="controller_output",
         payload=SimpleNamespace(type="task_failed", data=[]),
     )
-    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(chunk)
+    assert not _is_hitl_suppress_noise_chunk(chunk)
 
 
 def test_hitl_suppress_dict_task_failed_not_noise() -> None:
@@ -270,12 +275,12 @@ def test_hitl_suppress_dict_task_failed_not_noise() -> None:
         type="controller_output",
         payload={"type": "task_failed", "data": [{"text": "model failed"}]},
     )
-    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(chunk)
-    assert JiuWenSwarmDeepAdapter._run_failure(chunk) == (
+    assert not _is_hitl_suppress_noise_chunk(chunk)
+    assert _run_failure(chunk) == (
         "task_failed",
         "model failed",
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed == {"event_type": "chat.error", "error": "model failed"}
 
 
@@ -289,7 +294,7 @@ def test_controller_output_task_interaction_is_dropped() -> None:
             metadata={"task_id": "t1"},
         ),
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
     assert parsed is None
 
 
@@ -299,7 +304,7 @@ def test_controller_output_control_plane_types_are_dropped() -> None:
             type="controller_output",
             payload=SimpleNamespace(type=inner, data=[]),
         )
-        assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+        assert _parse_stream_chunk(chunk) is None
 
 
 def test_controller_output_dict_task_interaction_is_dropped() -> None:
@@ -320,7 +325,7 @@ def test_controller_output_dict_task_interaction_is_dropped() -> None:
             "metadata": {"task_id": "t2"},
         },
     )
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None
 
 
 def test_controller_output_unknown_type_is_dropped() -> None:
@@ -328,36 +333,36 @@ def test_controller_output_unknown_type_is_dropped() -> None:
         type="controller_output",
         payload=SimpleNamespace(type="future_new_type", data=[]),
     )
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None
 
 
 def test_hitl_suppress_cleared_on_resume_or_unknown_chunk() -> None:
     """Content and unknown SDK frames clear suppress (default = resumed)."""
     for chunk_type in ("llm_output", "answer", "chat.file", "task.start", "tool_call"):
-        assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+        assert not _is_hitl_suppress_noise_chunk(
             SimpleNamespace(type=chunk_type, payload={})
         )
-    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+    assert not _is_hitl_suppress_noise_chunk(
         SimpleNamespace(payload={})
     )
 
 
 def test_is_ask_user_payload_detects_ask_user() -> None:
-    assert JiuWenSwarmDeepAdapter._is_ask_user_payload(
+    assert _is_ask_user_payload(
         {"event_type": "chat.ask_user_question", "questions": []}
     )
 
 
 def test_is_ask_user_payload_rejects_non_ask_user() -> None:
-    assert not JiuWenSwarmDeepAdapter._is_ask_user_payload(
+    assert not _is_ask_user_payload(
         {"event_type": "chat.delta", "content": "hi"}
     )
-    assert not JiuWenSwarmDeepAdapter._is_ask_user_payload(None)
+    assert not _is_ask_user_payload(None)
 
 
 def test_streamed_flag_without_visible_text_keeps_final_for_drain() -> None:
     answer = "以下是完成情况概要"
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         _answer_chunk(answer),
         _has_streamed_content=True,
         _streamed_text="",
@@ -371,7 +376,7 @@ def test_after_outer_tool_result_reset_answer_keeps_summary() -> None:
         {"tool_result": {"tool_name": "skill_acceleration_exec", "tool_call_id": "call_1"}}
     ):
         has_streamed_content = False
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         _answer_chunk(),
         _has_streamed_content=has_streamed_content,
     )
@@ -386,7 +391,7 @@ def test_after_inner_tool_result_answer_stays_empty_final() -> None:
     has_streamed_content = True
     if _is_outer_react_tool_result({"tool_call_id": "BashTool_skill_turbo"}):
         has_streamed_content = False
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         _answer_chunk(answer),
         _has_streamed_content=has_streamed_content,
         _streamed_text=answer,
