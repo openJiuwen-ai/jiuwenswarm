@@ -83,7 +83,9 @@
     "entryLabel": "Application view",
     "menuLabel": "Open actions menu",
     "clientOperationError": "Unable to execute the browser operation.",
-    "clientConfigurationError": "Unable to activate browser extension capabilities."
+    "clientConfigurationError": "Unable to activate browser extension capabilities.",
+    "settingsLoadFailed": "Unable to load plugin settings. Reopen Settings to try again.",
+    "settingsContributionError": "Some plugin settings could not be displayed. Check the plugin's settings locations."
   },
   "nav": {
     "chat": "Chat",
@@ -537,6 +539,7 @@
       "hideValue": "Hide value"
     },
     "general": {
+      "display": "Display",
       "preferences": "Interface and connection",
       "language": "Language",
       "languageDescription": "Set the display language for the application interface.",

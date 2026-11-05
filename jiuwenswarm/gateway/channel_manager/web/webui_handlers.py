@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 _WEBUI_METHODS: tuple[tuple[ReqMethod, float | None], ...] = (
     (ReqMethod.WEBUI_DISPATCH, 30.0),
+    (ReqMethod.WEBUI_SETTINGS_CATALOG, 30.0),
 )
 
 

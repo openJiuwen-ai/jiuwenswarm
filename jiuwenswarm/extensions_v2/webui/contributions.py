@@ -7,11 +7,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+import hashlib
+import json
 
 import yaml
 from openjiuwen.core.extension import ActivePackageRecord
 
 from jiuwenswarm.extensions_v2.webui.constants import RENDERER_WEBUI_TREE, slot_spec
+from jiuwenswarm.extensions_v2.webui.settings import SETTINGS_SLOT, parse_settings
 
 _UI_TYPES = frozenset({"web.slot.contribution", "web.locale"})
 
@@ -29,6 +32,7 @@ class UiContribution:
     locale_id: str | None = None
     renderer: Mapping[str, Any] = field(default_factory=dict)
     resources: Mapping[str, str] = field(default_factory=dict)
+    settings: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,16 +43,29 @@ class UiCatalog:
     errors: Mapping[str, str] = field(default_factory=dict)
 
     def allows_slot(self, slot_id: str) -> bool:
-        return any(item.type == "web.slot.contribution" and item.slot == slot_id for item in self.items)
+        return self.allows_target(slot_id, "")
 
-    def allows_target(self, slot_id: str, package_id: str) -> bool:
+    def allows_target(self, slot_id: str, package_id: str, *, instance_key: str = "", scope: str | None = None) -> bool:
         """Check the active package's slot contribution, or broadcast ready slot."""
         return any(item.type == "web.slot.contribution" and item.slot == slot_id
-                   and (not package_id or item.package_id == package_id) for item in self.items)
+                   and (not package_id or item.package_id == package_id)
+                   and item.settings.get("kind", "item") == "item"
+                   and (not item.settings or (
+                       (scope is None or item.settings["scope"] == scope)
+                       and (not instance_key or item.settings["instance_key"] == instance_key)))
+                   for item in self.items)
+
+    def settings_payload(self) -> dict[str, Any]:
+        """Return public metadata, keeping package paths and executable modules private."""
+        payload = {"items": [{"package_id": item.package_id, "id": item.id, **item.settings}
+                             for item in self.items if item.slot == SETTINGS_SLOT], "errors": dict(self.errors)}
+        revision = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        return {"revision": revision, **payload}
 
     def slots(self) -> frozenset[str]:
         return frozenset(
             item.slot for item in self.items if item.type == "web.slot.contribution" and item.slot is not None
+            and item.settings.get("kind", "item") == "item"
         )
 
 
@@ -122,6 +139,7 @@ def load_package_ui(record: ActivePackageRecord) -> tuple[UiContribution, ...] |
 
     contributions: list[UiContribution] = []
     seen: set[str] = set()
+    settings_targets: set[tuple[str, str]] = set()
     for raw_item in raw_items:
         item = _parse_item(record, raw_item)
         if item.type != "web.slot.contribution":
@@ -132,10 +150,15 @@ def load_package_ui(record: ActivePackageRecord) -> tuple[UiContribution, ...] |
         if slot_spec(item.slot or "") is None:
             raise ValueError(f"slot is not allowed: {item.slot}")
         renderer = item.renderer
-        if renderer.get("kind") != RENDERER_WEBUI_TREE:
+        if item.settings.get("kind", "item") == "item" and renderer.get("kind") != RENDERER_WEBUI_TREE:
             raise ValueError(f"renderer.kind must be {RENDERER_WEBUI_TREE}, got {renderer.get('kind')!r}")
         if item.locale_id is not None and item.locale_id not in locales:
             raise ValueError(f"localeId is not declared by this package: {item.locale_id}")
+        if item.settings.get("kind") == "item":
+            target = (item.settings["scope"], item.settings["instance_key"])
+            if target in settings_targets:
+                raise ValueError(f"duplicate settings render target: {target}")
+            settings_targets.add(target)
         contributions.append(item)
 
     # Locale items are part of the catalog too, so callers can resolve titles.
@@ -165,6 +188,9 @@ def _parse_item(record: ActivePackageRecord, raw: object) -> UiContribution:
     if locale_id is not None and not isinstance(locale_id, str):
         raise ValueError("ui item localeId must be a string")
     resources = _parse_resources(record, raw.get("resources"))
+    settings = parse_settings(raw) if item_type == "web.slot.contribution" and raw.get("slot") == SETTINGS_SLOT else {}
+    if "location" in raw and raw.get("slot") != SETTINGS_SLOT:
+        raise ValueError("location is only supported by application.settings")
     return UiContribution(
         package_id=record.package_id,
         type=item_type,
@@ -175,6 +201,7 @@ def _parse_item(record: ActivePackageRecord, raw: object) -> UiContribution:
         locale_id=locale_id,
         renderer=dict(renderer),
         resources=resources,
+        settings=settings,
     )
 
 

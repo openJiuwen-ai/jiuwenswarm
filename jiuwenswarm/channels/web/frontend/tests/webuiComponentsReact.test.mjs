@@ -56,6 +56,8 @@ const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer, FileTree, createComponentState,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
   WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n, buttonIcon, browserClientCapabilities, GatewayImage,
+  usePluginSettings,
+  SettingsServicesProvider,
   panelNavigation,
   requestPanelOpen,
   useWebUIPanels,
@@ -2545,6 +2547,205 @@ test('a plugin display preference hides bars and detail tabs across conversation
     );
     await act(async () => transport.injectRenderFrame(frame(nestedWidget, 6, targetFor('s1'))));
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+test('the plugin settings switch remains available while off after catalog refresh and settings remount', async () => {
+  const transport = createMockTransport();
+  const packageId = 'settings-page-visibility-test';
+  const binding = { key: 'visible', default: true };
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const declaration = {
+    package_id: packageId,
+    id: 'show',
+    kind: 'item',
+    location: { menu: 'general', section: 'display' },
+    scope: 'application',
+    instance_key: 'show',
+    presentation: 'row',
+    title: { zh: '显示测试用量', en: 'Show test usage' },
+  };
+  let revision = '1';
+  let renderRevision = 0;
+  const dispatch = transport.dispatch;
+  transport.dispatch = async (request) => {
+    const result = await dispatch(request);
+    if (request.event === 'ui.ready' && request.target.slotId === 'application.settings') {
+      transport.injectRenderFrame(
+        frame({ component: 'Switch', props: { preference: binding, ariaLabel: 'Usage display' } }, ++renderRevision, {
+          session_id: '',
+          scope: 'application',
+          slot_id: request.target.slotId,
+          package_id: packageId,
+          instance_key: 'show',
+        }),
+      );
+    }
+    return result;
+  };
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const definition = {
+    id: 'test',
+    compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [
+      {
+        id: 'general',
+        titleKey: 'settingsPanel.modules.general.title',
+        icon: () => null,
+        sections: [{ id: 'display', items: [] }],
+      },
+    ],
+  };
+  const request = async () => ({ revision, items: [declaration], errors: {} });
+  function PluginSettings() {
+    const settings = usePluginSettings(definition);
+    const Control = settings.definition.modules[0].sections[0].items[0]?.render;
+    return Control ? createElement(Control) : null;
+  }
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const page = (key) =>
+    createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        SettingsServicesProvider,
+        { request, isConnected: true, connectionState: 'ready' },
+        createElement(PluginSettings, { key }),
+      ),
+    );
+  const control = () => container.querySelector('[data-testid="webui-switch"]');
+  try {
+    await act(async () => root.render(page('first')));
+    assert.ok(control());
+    await click(control());
+    const off = control();
+    assert.equal(off.getAttribute('aria-checked'), 'false');
+    await act(async () => window.dispatchEvent(new window.Event('focus')));
+    assert.equal(control(), off);
+    revision = '2';
+    await act(async () => window.dispatchEvent(new window.Event('focus')));
+    assert.ok(control());
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await act(async () => root.render(page('second')));
+    assert.ok(control());
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
+  }
+});
+
+test('one settings tree mounts application and session items with independent identities', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  const declarations = [
+    {
+      package_id: 'unified-settings-test',
+      id: 'visible',
+      kind: 'item',
+      scope: 'application',
+      instance_key: 'visible',
+      presentation: 'row',
+      title: { zh: '显示用量', en: 'Show usage' },
+      location: { menu: 'general', section: 'display' },
+    },
+    {
+      package_id: 'workbench-settings-test',
+      id: 'settings',
+      kind: 'item',
+      scope: 'session',
+      instance_key: 'workbench',
+      presentation: 'content',
+      location: { menu: 'general', section: 'display' },
+    },
+  ];
+  let revision = 0;
+  const dispatch = transport.dispatch;
+  transport.dispatch = async (request) => {
+    const result = await dispatch(request);
+    if (request.event !== 'ui.ready' || request.target.slotId !== 'application.settings') return result;
+    const application = request.target.scope === 'application';
+    const tree = {
+      component: 'Switch',
+      props: application
+        ? { preference: { key: 'visible', default: true }, ariaLabel: 'Application setting' }
+        : { checked: true, ariaLabel: 'Workbench setting' },
+    };
+    transport.injectRenderFrame(
+      frame(tree, ++revision, {
+        session_id: request.target.sessionId,
+        slot_id: request.target.slotId,
+        package_id: request.target.packageId,
+        instance_key: request.target.instanceKey,
+        ...(application ? { scope: 'application' } : {}),
+      }),
+    );
+    return result;
+  };
+  const definition = {
+    id: 'test',
+    compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [{ id: 'general', titleKey: 'general', icon: () => null, sections: [{ id: 'display', items: [] }] }],
+  };
+  const request = async () => ({ revision: 'unified-1', items: declarations, errors: {} });
+  function SettingsTree({ active }) {
+    const settings = usePluginSettings(definition);
+    return active
+      ? settings.definition.modules[0].sections[0].items.map((item) => createElement(item.render, { key: item.id }))
+      : null;
+  }
+  const page = (sessionId, active = true) =>
+    createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        SettingsServicesProvider,
+        { request, isConnected: true, connectionState: 'ready' },
+        createElement(WebUISlotProvider, { sessionId }, createElement(SettingsTree, { active })),
+      ),
+    );
+  const application = () => container.querySelector('[aria-label="Application setting"]');
+  const workbench = () => container.querySelector('[aria-label="Workbench setting"]');
+  try {
+    await act(async () => root.render(page(null)));
+    const original = application();
+    assert.ok(original);
+    assert.equal(workbench(), null);
+    await act(async () => root.render(page('s1')));
+    assert.equal(application(), original);
+    assert.ok(workbench());
+    await click(application());
+    assert.equal(application().getAttribute('aria-checked'), 'false');
+    assert.equal(workbench().getAttribute('aria-checked'), 'true');
+    await act(async () => root.render(page('s2')));
+    assert.equal(application(), original);
+    assert.ok(workbench());
+    await act(async () => root.render(page('s2', false)));
+    assert.equal(container.querySelectorAll('[data-testid="webui-host"]').length, 0);
+    await act(async () => root.render(page('s2')));
+    assert.equal(application().getAttribute('aria-checked'), 'false');
+    await click(application());
+    assert.equal(application().getAttribute('aria-checked'), 'true');
+    assert.ok(container.querySelector('[data-testid="settings-row-main"]'));
   } finally {
     await act(async () => root.unmount());
     runtime.dispose();

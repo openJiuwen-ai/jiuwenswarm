@@ -83,7 +83,9 @@
     "entryLabel": "应用界面",
     "menuLabel": "打开操作菜单",
     "clientOperationError": "无法执行浏览器操作。",
-    "clientConfigurationError": "无法启用浏览器扩展能力。"
+    "clientConfigurationError": "无法启用浏览器扩展能力。",
+    "settingsLoadFailed": "无法加载插件设置，请重新进入设置页面。",
+    "settingsContributionError": "部分插件设置无法显示，请检查插件的设置位置配置。"
   },
   "nav": {
     "chat": "对话",
@@ -530,6 +532,7 @@
       "hideValue": "隐藏明文"
     },
     "general": {
+      "display": "显示设置",
       "preferences": "界面与连接",
       "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",

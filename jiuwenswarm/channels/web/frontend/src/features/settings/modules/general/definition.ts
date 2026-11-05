@@ -23,5 +23,6 @@ export const generalModule: SettingsModuleDefinition = {
         { id: 'connection-status', component: 'custom', render: ConnectionStatusSetting },
       ],
     },
+    { id: 'display', titleKey: 'settingsPanel.general.display', items: [] },
   ],
 };

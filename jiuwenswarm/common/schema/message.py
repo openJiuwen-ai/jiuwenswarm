@@ -177,6 +177,7 @@ class ReqMethod(Enum):
 
     # WebUI 扩展：上行事件统一入口，事件名在 params.event。
     WEBUI_DISPATCH = "webui.dispatch"
+    WEBUI_SETTINGS_CATALOG = "webui.settings.catalog"
     # Internal Gateway lifecycle notification, not a browser request method.
     WEBUI_CONNECTION_CLOSED = "webui.connection.closed"
 

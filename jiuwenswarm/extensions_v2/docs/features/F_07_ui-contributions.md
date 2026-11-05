@@ -110,7 +110,7 @@ ui:
 入口与页面共享包和实例标识。切换会话不重新挂载入口，也不因 session 变化关闭任务页面。
 离开任务页面查看聊天时，宿主保留已打开的应用范围页面及其 iframe，仅隐藏页面容器；
 返回同一任务入口复用原页面。会话范围菜单页面仍随导航卸载，选择其他插件页面时释放原页面。
-`application.menu`、`application.menu.main` 仍为会话范围，新建空对话中不挂载；设置槽位也允许显式应用范围。
+`application.menu`、`application.menu.main` 仍为会话范围，新建空对话中不挂载；设置范围见 [S_18](../specs/S_18_settings-location.md)。
 平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。新增槽位还需要接入前端，不能只改后端表项；
 前端挂载方式见 [F_08 第 4.5 节](F_08_frontend-render.md#45-会话与全局槽位的挂载)。

@@ -36,6 +36,7 @@ class WebUIDispatchAdapter(GatewayAdapter):
     methods: frozenset[str] = frozenset({
         ReqMethod.WEBUI_DISPATCH.value,
         ReqMethod.WEBUI_CONNECTION_CLOSED.value,
+        ReqMethod.WEBUI_SETTINGS_CATALOG.value,
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
@@ -47,6 +48,13 @@ class WebUIDispatchAdapter(GatewayAdapter):
 
         metadata = request.metadata if isinstance(request.metadata, Mapping) else {}
         trusted_connection = str(metadata.get("ws_id") or "").strip()
+        if request.req_method == ReqMethod.WEBUI_SETTINGS_CATALOG:
+            if request.channel_id != DEFAULT_CHANNEL_ID or not trusted_connection:
+                return build_error_response(request, "web connection required", code=CODE_CONNECTION_REQUIRED)
+            if request.params:
+                return build_error_response(request, "settings catalog accepts no parameters", code=CODE_SCHEMA_ERROR)
+            return AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                                 payload=runtime.catalog().current().settings_payload(), metadata=request.metadata)
         if request.req_method == ReqMethod.WEBUI_CONNECTION_CLOSED:
             if request.channel_id != DEFAULT_CHANNEL_ID:
                 return build_error_response(request, "web connection required", code=CODE_CHANNEL_UNSUPPORTED)
@@ -122,7 +130,8 @@ class WebUIDispatchAdapter(GatewayAdapter):
         if event_name == "ui.ready":
             runtime.remember_ready_client(trusted_connection, target.session_id)
         catalog = runtime.catalog().current()
-        if not catalog.allows_target(target.slot_id, target.package_id):
+        if not catalog.allows_target(target.slot_id, target.package_id, instance_key=target.instance_key,
+                                     scope=target.resolved_scope):
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -149,7 +158,9 @@ class WebUIDispatchAdapter(GatewayAdapter):
             dispatch_kwargs["connection_id"] = trusted_connection
         if event_name == "ui.ready" and not target.package_id and spec.capacity == "list":
             contributions = sorted(
-                (item for item in catalog.items if item.type == "web.slot.contribution" and item.slot == target.slot_id),
+                (item for item in catalog.items if item.type == "web.slot.contribution" and item.slot == target.slot_id
+                 and item.settings.get("kind", "item") == "item"
+                 and (not item.settings or item.settings["scope"] == target.resolved_scope)),
                 key=lambda item: (item.order, item.package_id, item.id),
             )
             package_ids = dict.fromkeys(item.package_id for item in contributions)

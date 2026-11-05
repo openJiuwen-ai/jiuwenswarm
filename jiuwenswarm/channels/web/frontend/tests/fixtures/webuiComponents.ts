@@ -30,6 +30,10 @@ export { WebUIThemeProvider, resolveWebUITheme } from '../../src/features/webui/
 export { default as i18n } from '../../src/i18n/index.ts';
 export { FileTree } from '../../src/features/webui/renderer/adapters/webuiFileTree/FileTree.tsx';
 export { createComponentState } from '../../src/features/webui/renderer/componentState.ts';
+export { orderSettingsNodes, composePluginSettings } from '../../src/features/settings/registry/pluginLocations.ts';
+export { readSettingsCatalog } from '../../src/features/settings/registry/usePluginSettings.tsx';
 export { readPreference, writePreference } from '../../src/features/webui/client/preferences.ts';
+export { usePluginSettings } from '../../src/features/settings/registry/usePluginSettings.tsx';
+export { SettingsServicesProvider } from '../../src/features/settings/services/SettingsServicesProvider.tsx';
 export { panelNavigation, requestPanelOpen } from '../../src/features/webui/client/panelNavigation.ts';
 export { useWebUIPanels } from '../../src/features/webui/react/useWebUIPanels.tsx';
