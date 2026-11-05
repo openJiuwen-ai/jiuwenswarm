@@ -56,6 +56,9 @@
 | `heartbeat` | 播放仍在进行 | 忽略（开场槽位使用） |
 | `complete` | 内容播放完毕 | 忽略（开场槽位使用） |
 
+`ready` 表示内容已可显示。宿主不保证就绪前的页面已获得动画帧（例如应用冷启动时），
+内容页应在自身资源就绪时发送 `ready`，不以首个动画帧为前提；超过就绪时限仍会回退到 `poster`。
+
 宿主只接受同时满足以下条件的消息，其余一律静默丢弃：`event.source` 是该 iframe 当前的 `contentWindow`；
 `type`、`version`、`token` 与当前令牌一致；`event` 属于上表。不依据 `event.origin` 判断（沙箱文档的来源为 `null`）。
 

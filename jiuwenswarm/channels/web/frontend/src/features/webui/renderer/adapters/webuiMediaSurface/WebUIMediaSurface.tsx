@@ -154,8 +154,8 @@ function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs
   }, [context.visible, context.reducedMotion, context.locale]);
 
   if (phase === 'failed') return <Poster src={poster} style={posterStyle} />;
-  // Transparent rather than hidden before ready: browsers may stop rendering hidden cross-origin
-  // frames, and a page that waits for its first animation frame would then never report ready.
+  // Transparent rather than hidden before ready, so readiness does not depend on whether an engine
+  // throttles hidden cross-origin frames (Chromium 157 does not; see Gateway F_10).
   return (
     <>
       <iframe ref={frame} className="webui-media-surface__media" data-testid="webui-media-surface-frame"

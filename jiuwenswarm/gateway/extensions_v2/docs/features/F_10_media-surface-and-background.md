@@ -11,7 +11,7 @@
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) |
 | 方案成熟度 | 已确认，已实现 |
 | 关联规约 | [S_07 媒体容器](../specs/S_07_media-surface.md)、[S_17 组件 Props](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02 渲染](../specs/S_02_ui-render.md) |
-| 验证摘要 | 单元验证通过；真实浏览器验证了图片、视频、超时回退与素材响应头，页面消息往返待补（2026-11-05） |
+| 验证摘要 | 单元验证通过；内置浏览器与 Chromium 157 无头模式验证通过（2026-11-05）；桌面打包版联调随 GW-11 |
 
 ## 2. 背景、目标与范围
 
@@ -168,18 +168,38 @@ F_10-V-09：在会话临时目录搭建本地验证页，用真实 Gateway 运�
 | 清除 | 背景移除，根元素标记撤销 |
 
 内置浏览器拦截所有 iframe 文档请求（`net::ERR_BLOCKED_BY_CLIENT`，属于浏览器面板限制，与素材响应头无关），
-HTML 页面与宿主之间的真实消息往返未能验证；Claude in Chrome 扩展未连接，本机也没有其他 Chromium 内核浏览器。
-验证中据此调整：就绪前 iframe 由隐藏改为完全透明，避免浏览器暂停隐藏的跨源 iframe 渲染后，页面因等待首帧而无法发出 `ready`。
+HTML 页面未能在其中验证。当时据推测将就绪前的 iframe 由隐藏改为完全透明，以免浏览器暂停隐藏的跨源 iframe 渲染、
+页面因等待首帧而无法发出 `ready`；该推测随后未得到证实，见下文。
+
+本机未安装 Chrome，经用户同意下载 Chrome for Testing 157.0.8103.38 的 `chrome-headless-shell`（mac-arm64），
+以临时用户目录启动，通过 CDP 驱动同一验证页。验证页中的内容页在收到宿主消息后，把原消息放入 `heartbeat` 的
+`detail` 回传，以便在沙箱外确认宿主到页面方向：
+
+| 场景 | 结果 |
+| --- | --- |
+| HTML 页面（带 `poster`） | 约 15 ms 内页面收到 `start` 并回传，约 35 ms 时 `ready` 到达；iframe 变为不透明，`poster` 移除。页面消息的 `event.origin` 为 `null` 且来自当前 iframe；页面内本地存储与父页面 DOM 访问被拒绝 |
+| 宿主到页面 | 回传的 `start` 上下文为 `{role: "background", visible: true, reducedMotion: false, locale}` |
+| 页面报告 `error` | 卸载 iframe，显示 `poster` |
+| 减少动态（CDP 模拟） | 有 `poster` 时不创建 iframe；无 `poster` 时页面照常加载，`start` 上下文中 `reducedMotion` 为 true |
+| 页面不报告 `ready` | 1 秒时为透明加载态并显示 `poster`；16 秒时已卸载并显示 `poster` |
+| 清除 | 背景移除，根元素标记撤销 |
+| 不经适配器的沙箱 iframe，页面在首个动画帧后发 `ready` | 隐藏、透明、可见三种情况均在约 15～25 ms 内收到；被不透明 `poster` 覆盖时同样 |
+
+最后一项说明 Chromium 157 不会因隐藏而暂停沙箱 iframe 的渲染，前述推测不成立。透明方案行为相同，
+且不依赖各引擎对隐藏跨源 iframe 的节流策略，予以保留。
+
+首次启动刚下载的浏览器时，第一次渲染的页面收到并回传了 `start`，3 秒内却未发出依赖首个动画帧的 `ready`；
+此后重复同一流程 9 次均就绪（其中 6 次计时，均约 110 ms），未能复现，推测为冷启动时合成帧尚未就绪。15 秒就绪超时覆盖这一情况；
+内容页的写法建议见 [S_07 第 3.2 节](../specs/S_07_media-surface.md)。
 
 ### 8.3 验证结论
 
-单元范围内第 2.2 节场景全部成立；真实浏览器中图片、视频、超时回退、清除与素材响应头成立。
-HTML 页面消息往返只有 jsdom 单元验证，真实浏览器验证待补。
+单元范围内第 2.2 节场景全部成立。真实浏览器中，图片、视频、超时回退、清除与素材响应头在内置浏览器中成立，
+HTML 页面的双向消息、错误回退与减少动态在 Chromium 157 无头模式中成立。桌面打包版（Electron）尚未联调。
 
 ## 9. 风险与已知遗留
 
 ### 9.2 已知遗留
 
 - 背景在宿主界面不透明时不可见，待 GW-10。
-- HTML 页面与宿主的消息往返尚未在 Chromium 或 Electron 中实际验证（见第 8.2 节）。
 - 桌面应用内的打包版联调随 GW-11 进行。
