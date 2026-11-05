@@ -31,6 +31,7 @@
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | `false` 时整体不装配 |
 | `install_dir` | str | `extension_pkgs` | 与 AgentServer 共享的安装目录；相对路径基于用户工作目录，解析为绝对路径 |
+| `data_dir` | str | `extension/gateway` | Gateway 包存储与数据目录的根；相对路径基于用户工作目录，解析为绝对路径；启动时不创建 |
 | `http.allowed_hosts` | list[str] | `[]` | 空表示拒绝一切出站请求；条目为 `host` 或 `host:port` |
 | `http.timeout_ms` | int | `3000` | 上限 `5000`；非法值回落默认 |
 | `http.max_body_bytes` | int | `1048576` | 上限 `4194304`；非法值回落默认 |
@@ -53,6 +54,19 @@
 | Handler 层级 | 只能是 USER；登记按包事务化，任一声明失败则整包回滚并报 `FAILED`，不会半注册 |
 
 版本选择：同一 `package.id` 取最高版本目录。
+
+### 3.1 包存储与数据目录
+
+| 能力 | 接口 | 位置 |
+| --- | --- | --- |
+| 持久化键值 | agent-core `ops.store.get/set/delete/keys`，经 `store.*` 事件链执行，按调用包隔离 | `<data_dir>/store/<package_id>.json` |
+| 包数据目录 | `ops.data.root() -> Path`，仅活动包可用，首次调用时创建 | `<data_dir>/packages/<package_id>/` |
+| 数据素材 | `ops.ui.asset_url(path, source="data")`，见 [浏览器接入规约](S_06_local-browser-bridge.md) | 包数据目录的 `public/` |
+
+`runtime.start()` 在 `ops.build` 前把 `JsonStore(<data_dir>/store)` 绑定到总线，停机时解除绑定。
+生命周期：重载、升级（安装更高版本）与停机保留；经管理门面卸载时先删除该包的存储与数据目录，
+再删除安装副本；删除数据失败时返回 `EXTENSION_DATA_WRITE_FAILED` 并保留安装副本，再次卸载可重试。
+包数据目录及其上级不得为符号链接。设计与验证见 [F_09](../features/F_09_package-store-and-data.md)。
 
 ## 4. 事件契约
 
@@ -117,9 +131,11 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 2. `ops.build` 只在 `runtime.start()` 内执行一次，先于任何包发布。
 3. `runtime.active` 只统计 USER handler。
 4. 帧拦截超时 5 秒；超时或异常按 `forward` 继续。
-5. 停机会注销全部 USER 与 BUILTIN handler 并清空状态存储。
+5. 停机会注销全部 USER 与 BUILTIN handler 并清空进程内状态存储（`UiStateStore`）；包存储与数据目录保留。
 6. `extensions_v2` 不 import `jiuwenswarm.extensions_v2`，也不 import AgentServer 业务模块。
 7. connection 作用域状态在 socket 关闭时清除；session 与 global 由写入方或停机清理。
+8. 包只能通过 Handler 的包身份访问自己的存储与数据目录，不能指定其他包。
+9. 包存储与数据目录只在卸载时删除；删除失败不删除安装副本。
 
 ## 10. 验证索引
 
@@ -132,6 +148,8 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 | 本地方法表 | `test_gateway_request.py` |
 | 渲染与槽位契约 | `test_gateway_ui_render.py`（契约细节见 [S_02](S_02_ui-render.md)） |
 | 出站 HTTP 白名单与预算 | `test_gateway_http_fetch.py`（契约细节见 [S_05](S_05_http-fetch.md)） |
+| 包存储、数据目录、数据素材与卸载清理 | `test_gateway_package_data.py` |
+| 应用级 UI 包与素材路由 | `test_gateway_application_assets.py` |
 
 
 ## 本机扩展管理 CLI

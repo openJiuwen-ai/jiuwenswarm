@@ -27,7 +27,7 @@
 | EXTV2-GW-05 | `ui.click` | entry/footer 上行分派与动作校验 | [F_07](../features/F_07_local-login-integration.md) | [S_06](../specs/S_06_local-browser-bridge.md) | `test_gateway_browser_bridge.py` | 未登记 | 已实现（单测通过） |
 | EXTV2-GW-06 | `ops.http.fetch` 与示例包 | 出站 HTTP、白名单策略、[auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) | [F_06](../features/F_06_http-fetch.md) | [S_05](../specs/S_05_http-fetch.md) | `test_gateway_http_fetch.py` | 未登记 | 已实现（单测通过） |
 | EXTV2-GW-07 | 应用级 UI 包与素材交付 | 应用级槽位贡献包统一取得激活代次、交互分派、`ops.ui.asset_url` 与素材；素材路由加沙箱策略；`app_web` 流式转发素材 | [F_08](../features/F_08_application-packages-and-assets.md) | [S_06](../specs/S_06_local-browser-bridge.md)、[S_01](../specs/S_01_gateway-extension-runtime.md) | `test_gateway_browser_bridge.py`、`test_gateway_application_assets.py`、`tests/unit_tests/channels/web/test_app_web_extension_assets.py` | Song Haoran | 已实现（单测通过） |
-| EXTV2-GW-08 | Gateway 存储与包数据目录 | 接入 Core `JsonStore` 与 `ops.store.*`；与存储同生命周期的包数据目录 | 待建档 | [S_01](../specs/S_01_gateway-extension-runtime.md) | 待定 | Song Haoran | 未开始 |
+| EXTV2-GW-08 | Gateway 存储与包数据目录 | 接入 Core `JsonStore` 与 `ops.store.*`；`ops.data.root()`；数据素材；卸载清理 | [F_09](../features/F_09_package-store-and-data.md) | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_06](../specs/S_06_local-browser-bridge.md) | `test_gateway_package_data.py` | Song Haoran | 已实现（单测通过） |
 | EXTV2-GW-09 | 媒体容器渲染器 | 无操作栏的沙箱容器、自动播放、令牌与来源校验、心跳与结束 | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
 | EXTV2-GW-10 | 应用背景与受控外观 | `application.background`、`ops.appearance.apply` 与半透明模式 | 待建档 | [S_02](../specs/S_02_ui-render.md)、待建档 | 待定 | Song Haoran | 未开始 |
 | EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、定向 `ui.ready`、开场顺序、跳过与时长、`ui.closed` | 待建档 | 待建档 | 待定 | Song Haoran | 未开始 |
@@ -67,7 +67,8 @@ flowchart LR
 | GW-05 | 槽位/包/实例不匹配拒绝、payload 越界拒绝、实例清除后回执 `inactive` |
 | GW-06 | 白名单空拒绝一切、`host:port` 匹配、超时与响应体上限、示例包登录成功/失败两条路径 |
 | GW-07 | 无请求绑定的应用级 UI 包可收到 ready/click 与素材；请求绑定与客户端操作仍限于声明 client 的包；素材越界与失活代次被拒绝，USER 请求策略可拒绝或接管素材；沙箱策略头；`app_web` 转发、Range 与流式输出 |
-| GW-08～GW-12 | 在各自 feature 建档时补充 |
+| GW-08 | 存储按包隔离并跨重载与重启保留；数据目录与数据素材越界、符号链接拒绝；卸载删除且失败可重试；重载保留 |
+| GW-09～GW-12 | 在各自 feature 建档时补充 |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -85,6 +86,7 @@ flowchart LR
 | 2026-11-04 | GW-02 | 移除旧 BUILTIN 认证门禁及 auth.status，统一由 USER handler 完成鉴权；更新回归后 Gateway 130 项测试通过，范围与迁移见 F_02 |
 | 2026-11-05 | GW-07～GW-12 | 建立应用级界面能力条目，负责人 Song Haoran；GW-07 开工，方案见 F_08 |
 | 2026-11-05 | GW-07 | 应用级 UI 包与素材交付实现，单测通过（Gateway 扩展 325 项、Web 渠道相关 155 项）；打包版联调待 GW-09，证据见 F_08 |
+| 2026-11-05 | GW-08 | 包存储与数据目录实现，单测通过（Gateway 扩展 331 项），证据见 F_09 |
 
 ## 6. 风险与待确认
 

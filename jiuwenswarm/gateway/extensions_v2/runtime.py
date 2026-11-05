@@ -17,7 +17,9 @@ import asyncio
 import functools
 import inspect
 import logging
+import shutil
 from contextlib import nullcontext
+from pathlib import Path
 from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
 from typing import Any
@@ -31,6 +33,10 @@ from openjiuwen.core.events import (
     PackageMetadata,
     SessionContext,
 )
+
+from openjiuwen.core.events.ops_impl.store import configure_store, unconfigure_store
+from openjiuwen.core.extension.data import JsonStore
+from openjiuwen.core.extension.data.json_values import valid_package_id
 
 from jiuwenswarm.gateway.extensions_v2 import bootstrap
 from jiuwenswarm.gateway.extensions_v2.builtin.router import GatewayLocalRouter, LocalRequest
@@ -65,6 +71,9 @@ class GatewayRuntime:
         self.config = config
         self.bus = ExtensionEventBus()
         self.store = UiStateStore()
+        # Persistent package data, separate from the in-process UiStateStore above.
+        self.data_store = JsonStore(Path(config.data_dir) / "store")
+        self._data_store_bound = False
         self.router = GatewayLocalRouter()
         self.webui = GatewayWebUIRuntime(
             bus=self.bus,
@@ -94,6 +103,7 @@ class GatewayRuntime:
             return
         bootstrap.register_event_types(self.bus, self)
         self._builtin_ids.extend(bootstrap.register_handlers(self.bus, self))
+        self._bind_package_data()
         await self.bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
         for package in load_gateway_packages(self.config.install_dir):
             try:
@@ -127,6 +137,9 @@ class GatewayRuntime:
         self._packages.clear()
         await self.webui.shutdown()
         self.store.clear()
+        if self._data_store_bound:
+            unconfigure_store(self.bus)
+            self._data_store_bound = False
         self.browser.connections.clear()
         self.browser.generations.clear()
         self._started = False
@@ -235,6 +248,48 @@ class GatewayRuntime:
                 self._user_handlers[event_type] = remaining
             else:
                 self._user_handlers.pop(event_type, None)
+
+    # ── package store and data ────────────────────────────────────────────
+
+    def _bind_package_data(self) -> None:
+        """Bind the package store before ``ops.build``.
+
+        The bus already carries agent-core's ``store.*`` events and the
+        ``ops.store`` / ``ops.package`` namespaces; they need a bound store.
+        """
+
+        if not self._data_store_bound:
+            configure_store(self.bus, self.data_store)
+            self._data_store_bound = True
+
+    def is_active_package(self, package_id: str) -> bool:
+        """True when ``package_id`` is currently published."""
+
+        return any(package.package_id == package_id for package in self._packages)
+
+    def package_data_dir(self, package_id: str) -> Path:
+        """Return ``<data_dir>/packages/<package_id>`` without creating it.
+
+        Raises:
+            ValueError: The id is invalid or a directory on the path is a symlink.
+        """
+
+        if not valid_package_id(package_id):
+            raise ValueError("invalid package id")
+        base = Path(self.config.data_dir)
+        directory = base / "packages" / package_id
+        for path in (base, base / "packages", directory):
+            if path.is_symlink():
+                raise ValueError("package data path must not be a symlink")
+        return directory
+
+    async def cleanup_package_data(self, package_id: str) -> None:
+        """Delete the store and data directory of an uninstalled package."""
+
+        await self.data_store.cleanup_package(package_id, reason="uninstall")
+        directory = self.package_data_dir(package_id)
+        if directory.exists():
+            await asyncio.to_thread(shutil.rmtree, directory)
 
     def active_packages(self) -> tuple[LoadedPackage, ...]:
         """Return the packages currently published on this runtime."""

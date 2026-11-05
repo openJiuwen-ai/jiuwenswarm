@@ -163,6 +163,17 @@ class GatewayPackageManager:
                     "uninstall",
                     operation_error(StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED, package_id=package_id),
                 )
+            try:
+                # Data goes first: if it cannot be removed the copies stay, so
+                # a repeated uninstall can retry instead of reporting "not installed".
+                await self._runtime.cleanup_package_data(package_id)
+            except Exception as exc:  # noqa: BLE001 - surface as a report and keep the copies
+                logger.warning("[GatewayExtensions] cannot delete data of %s: %s", package_id, exc)
+                return _failure(
+                    package_id,
+                    "uninstall",
+                    operation_error(StatusCode.EXTENSION_DATA_WRITE_FAILED, reason=str(exc)),
+                )
             failure: OperationError | None = None
             for package in versions:
                 try:

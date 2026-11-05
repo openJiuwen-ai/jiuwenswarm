@@ -22,6 +22,7 @@ from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, ExtensionEventBus, Hand
 from jiuwenswarm.gateway.extensions_v2.core_handlers.request_core import build_request_core_handler
 from jiuwenswarm.gateway.extensions_v2.event_types.gateway import register_gateway_request_events
 from jiuwenswarm.gateway.extensions_v2.handler_ops.gateway_ops import build_gateway_ops_build_handler
+from jiuwenswarm.gateway.extensions_v2.handler_ops.data_ops import build_data_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
 from jiuwenswarm.gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, EVENT_GATEWAY_DISCONNECT, EVENT_UI_RENDER
 from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
@@ -70,6 +71,14 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
         bus.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
             build_http_ops_build_handler(runtime.config.http),
+            {},
+            HandlerLevel.BUILTIN,
+        )
+    )
+    handler_ids.append(
+        bus.register_event_handler(
+            OPS_BUILD_EVENT_TYPE,
+            build_data_ops_build_handler(runtime),
             {},
             HandlerLevel.BUILTIN,
         )
