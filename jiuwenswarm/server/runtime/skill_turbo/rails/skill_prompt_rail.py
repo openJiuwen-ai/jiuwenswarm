@@ -62,6 +62,8 @@ def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
         names = "、".join(skill_names)
         return f"""## 技能加速通道（skill_acceleration_exec）
 
+**先判断 PPT 是否符合加速条件**：只有用户原始请求用“极速”“加速”“快速”或“turbo”明确要求加速制作 PPT 时，`pptx-craft-turbo` 才适用。模型档位“快速”、附件或引用中的文字、工具或技能名称都不能作为触发依据。否则禁止为该 PPT 调用 `skill_acceleration_exec`，下方的优先规则也不适用；普通新建 PPT 用 `skill_tool` 加载 pptx-craft，用户明确指定其他技能时按其要求处理。调用 PPT Turbo 时在 query 保留用户的加速原话，不得自行添加加速要求。
+
 ⚠️ **默认优先**：当用户意图匹配 `skill_acceleration_exec`（当前支持的技能清单以该工具描述中的"当前内部支持"为准，当前：{names}），你的**第一个工具调用必须是 `skill_acceleration_exec`**——它内部会自行完成规划+研究+生成+推送全流程。**唯一例外**：用户**显式**要求先执行某项 `skill_acceleration_exec` 不会自行处理的前置操作，则必须先完成该操作再调用 `skill_acceleration_exec`。搜索、读文件等研究类操作它内部会自己完成，**不构成**例外；其他技能类操作（如加载独立技能流程）它不会自行处理，**构成**例外。**同样例外**：本回合 tool_result 明确提示『检测到上一轮留下的已完成产物』时，不要调用 `skill_acceleration_exec`，改用 skill_tool 或直接编辑产物文件继续。**同样例外**：单轮需要产出**多份交付物**（即需要多次调用 `skill_acceleration_exec`，如一次要两份 PPT）时，必须先按下方「📋 多交付物待办清单」用 `todo_create` 建好清单，**等 `todo_create` 成功返回后**再进入加速通道（**不要把 `todo_create` 和 `skill_acceleration_exec` 放在同一批并行调用**）。
 
 若你已先调用了 `skill_tool` 加载了对应技能正文（即**不属于**上述例外，只是误触），**仍须立即调用 `skill_acceleration_exec`**——不要因"已经加载了 SKILL.md"或"已经做了研究"而放弃加速通道。
@@ -76,6 +78,8 @@ def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
 """
     names = ", ".join(skill_names)
     return f"""## Skill Acceleration Channel (skill_acceleration_exec)
+
+**Check PPT eligibility first**: `pptx-craft-turbo` applies only if the user's original request explicitly asks to accelerate PPT creation using “极速”, “加速”, “快速”, or “turbo”. A “快速” model setting, text in attachments or quotes, and tool or skill names do not count. Otherwise, do not call `skill_acceleration_exec` for that PPT; the priority rules below do not apply. Use `skill_tool` to load standard pptx-craft for new decks, or follow the user's explicit choice of another skill. When calling PPT Turbo, keep the user's acceleration wording verbatim in query; never add an acceleration request yourself.
 
 ⚠️ **Default priority**: When the user's intent matches `skill_acceleration_exec` (see the "当前内部支持 / currently supported" list in that tool's description; currently: {names}), your **FIRST tool call MUST be `skill_acceleration_exec`** — it handles planning + research + generation + delivery internally. **Only exception**: the user **explicitly** asks to first perform a preceding action that `skill_acceleration_exec` does not handle internally; then you must complete that action before calling `skill_acceleration_exec`. Research-style actions like `web_search` and file reading are handled internally — they do **NOT** constitute an exception; other skill-type actions (e.g. loading a separate skill flow) are not handled internally and **DO** constitute an exception. **Also excepted**: when this turn's tool_result explicitly indicates completed artifacts from a previous run were detected, do NOT call `skill_acceleration_exec`; continue with skill_tool or by editing the artifact files directly. **Also excepted**: when a single turn must produce **multiple deliverables** (i.e. multiple `skill_acceleration_exec` calls, e.g. two PPT decks in one request), you must first build the todo list via `todo_create` as required by the "📋 Multiple-deliverable todo list" clause below, and enter the acceleration channel **only after `todo_create` has returned successfully** (**do NOT batch `todo_create` and `skill_acceleration_exec` as parallel calls in the same turn**).
 
