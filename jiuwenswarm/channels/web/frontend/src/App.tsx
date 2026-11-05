@@ -1,4 +1,3 @@
-import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -532,8 +531,6 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
-  // 再次点击已激活的“实验”图标时递增，作为展开 RSI 实验栏的信号（对齐 chat 图标展开会话栏的行为）
-  const [rsiRailExpandNonce, setRsiRailExpandNonce] = useState(0);
   const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
     try {
       return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
