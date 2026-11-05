@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../../../services/gatewayFetch';
 import { Download, Replace, ScanSearch, Trash } from 'lucide-react';
 import { useCallback, useRef, useState, type ChangeEvent, type MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -66,7 +67,7 @@ export function DesignerNodeActionBar({ nodeId, nodeType }: DesignerNodeActionBa
         saved = await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
       } else if (material.textUrl) {
         try {
-          const response = await fetch(material.textUrl);
+          const response = await gatewayFetch(material.textUrl);
           if (response.ok) {
             saved = await downloadPreviewFile({ filename, content: await response.text() });
           }

@@ -235,6 +235,68 @@ async def test_team_delete_finalizes_participant_that_prepared_it(env, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_deleting_a_live_run_notifies_once_before_release(env, tmp_path, monkeypatch):
+    import json
+    import jiuwenswarm.extensions_v2.assembly as assembly
+    from jiuwenswarm.server.runtime.session.end_notifications import ExtensionSessionEndParticipant
+
+    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
+    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "extensions")
+    output = tmp_path / "end-receipts.jsonl"
+    monkeypatch.setenv("RUNTIME_END_OUTPUT", str(output))
+    monkeypatch.setenv("RUNTIME_END_SESSIONS", str(env.root))
+    source = tmp_path / "reader"
+    source.mkdir()
+    (source / "manifest.yaml").write_text(
+        "schemaVersion: 1\npackage:\n  id: runtime.end-reader\n  version: 1.0.0\n"
+        "extensions:\n  - id: reader\n    runtime: backend\n    module: extension.py\n", encoding="utf-8",
+    )
+    (source / "extension.py").write_text('''from dataclasses import asdict
+import json
+import os
+from pathlib import Path
+class Extension:
+    def register(self, registrar):
+        registrar.register_event_handler("session.end", self.on_end, {}, "user")
+    async def on_end(self, event, ops, next_handler):
+        receipt = await next_handler(event)
+        row = {"receipt": asdict(receipt), "session_id": ops.session_context.session_id,
+               "exists_after_core": (Path(os.environ["RUNTIME_END_SESSIONS"]) / event.event_input.sessionId).is_dir()}
+        with Path(os.environ["RUNTIME_END_OUTPUT"]).open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row) + "\\n")
+        return receipt
+def create_extension():
+    return Extension()
+''', encoding="utf-8")
+    host = await assembly.install_extensions()
+    assert host is not None
+    participant = ExtensionSessionEndParticipant()
+    registry = RuntimeParticipantRegistry(host_run_end=(participant,))
+    registry.replace_session_participants(activity=(), delete=(env.participant,))
+    runtime = AgentRuntime(
+        agent_manager=Manager(env.events), initializer=AsyncMock(), plan_controller=Plan(env.events),
+        session_delete_lifecycle=Lifecycle(env.events), participant_registry=registry,
+    )
+    path = env.root / "terminal"
+    path.mkdir()
+    try:
+        assert (await host.manager.install([source]))[0].status == "SUCCESS"
+        await runtime.cleanup_session(channel_id="web", session_id="terminal")
+        assert not output.exists()  # An offline history has no active Runtime run.
+        await runtime._register_session(channel_id="web", session_id="terminal")
+        results = await asyncio.gather(*(runtime.delete_session(channel_id="web", session_id="terminal") for _ in range(2)))
+        assert all(result.ok and result.deleted for result in results)
+        rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) == 1 and rows[0]["exists_after_core"] is True
+        assert rows[0]["receipt"] == {"sessionId": "terminal"}
+        assert rows[0]["session_id"] == "terminal"
+        assert not path.exists() and participant._attempted == {"terminal": 1}
+        assert env.events.count("runner.release") == 1
+    finally:
+        await assembly.shutdown_extensions()
+
+
+@pytest.mark.asyncio
 async def test_partial_before_is_entered_and_release_is_independent(env):
     (env.root / "s2").mkdir()
     env.participant.before_error = True

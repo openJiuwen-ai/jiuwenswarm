@@ -1,0 +1,79 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Gateway-local builtin methods used by the ``local`` route.
+
+``local`` means "the Gateway answers this frame itself". The router owns a
+small closed table of methods it can answer; an unknown method is rejected with
+``ROUTE_UNSUPPORTED`` instead of being silently forwarded, so a package that
+asked for a local answer learns that no builtin executor exists for it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Final
+
+CODE_ROUTE_UNSUPPORTED: Final[str] = "ROUTE_UNSUPPORTED"
+
+LocalHandler = Callable[["LocalRequest"], Awaitable["LocalResponse"]]
+
+
+def _empty_mapping() -> Mapping[str, Any]:
+    return MappingProxyType({})
+
+
+@dataclass(frozen=True, slots=True)
+class LocalRequest:
+    """One frame the chain asked the Gateway to answer locally."""
+
+    method: str
+    params: Mapping[str, Any] = field(default_factory=_empty_mapping)
+    connection_id: str = ""
+    session_id: str | None = None
+    user_id: str | None = None
+    headers: Mapping[str, str] = field(default_factory=_empty_mapping)
+
+
+@dataclass(frozen=True, slots=True)
+class LocalResponse:
+    """Builtin answer for one local frame."""
+
+    ok: bool
+    payload: Mapping[str, Any] = field(default_factory=_empty_mapping)
+    error: Mapping[str, Any] = field(default_factory=_empty_mapping)
+
+
+class GatewayLocalRouter:
+    """Closed table of methods the Gateway can answer without AgentServer."""
+
+    def __init__(self) -> None:
+        self._methods: dict[str, LocalHandler] = {}
+
+    def register(self, method: str, handler: LocalHandler) -> None:
+        """Add one builtin method; the last registration wins."""
+
+        name = method.strip() if isinstance(method, str) else ""
+        if not name or not callable(handler):
+            raise ValueError("a local method needs a name and a callable handler")
+        self._methods[name] = handler
+
+    def methods(self) -> frozenset[str]:
+        """Return the registered local methods."""
+
+        return frozenset(self._methods)
+
+    async def execute(self, request: LocalRequest) -> LocalResponse:
+        """Answer one local frame or reject an unknown method."""
+
+        handler = self._methods.get(request.method)
+        if handler is None:
+            return LocalResponse(
+                ok=False,
+                error={
+                    "code": CODE_ROUTE_UNSUPPORTED,
+                    "message": f"no gateway builtin for method: {request.method}",
+                },
+            )
+        return await handler(request)

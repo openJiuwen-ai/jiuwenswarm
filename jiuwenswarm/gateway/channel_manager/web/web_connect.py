@@ -99,6 +99,7 @@ _TRAJECTORY_HINT_COALESCE_SECONDS = 0.016
 _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
     {
         "connection.ack",
+        "extensions.v2.installed",
         "todo.updated",
         "chat.tool_call",
         "chat.tool_update",
@@ -515,6 +516,15 @@ class WebChannel(BaseWsChannel):
         text = str(uid).strip()
         return text or None
 
+    def ws_by_id(self, ws_id: str) -> Any | None:
+        """按 ws_id 返回仍存活的连接（扩展运行时按物理地址下发帧）。"""
+        if not isinstance(ws_id, str) or not ws_id:
+            return None
+        ws = self._ws_by_id.get(ws_id)
+        if ws is None or bool(getattr(ws, "closed", False)):
+            return None
+        return ws
+
     @staticmethod
     def _connection_user_id(ws: Any) -> str | None:
         return WebChannel.connection_user_id(ws)
@@ -721,8 +731,14 @@ class WebChannel(BaseWsChannel):
             return
 
         try:
+            from jiuwenswarm.gateway.extensions_v2 import init_gateway_extensions
+
+            await init_gateway_extensions(self)
             await self._start_uvicorn_server()
         finally:
+            from jiuwenswarm.gateway.extensions_v2 import shutdown_gateway_extensions
+
+            await shutdown_gateway_extensions()
             self._stop_trajectory_hints()
 
     async def _start_uvicorn_server(self) -> None:
@@ -766,6 +782,9 @@ class WebChannel(BaseWsChannel):
         """停止 WebSocket 服务并清理连接."""
         self._running = False
         self._stop_trajectory_hints()
+        from jiuwenswarm.gateway.extensions_v2 import shutdown_gateway_extensions
+
+        await shutdown_gateway_extensions()
 
         all_clients = list(self.clients)
         close_tasks = [client.close(code=1001, reason="server shutdown") for client in all_clients]
@@ -911,6 +930,9 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            # webui.* 为插件渲染帧，payload 携带渲染树（target/revision/mode/root），
+            # 归约为 {session_id, content} 后前端解析不出槽位与节点。
+            or event_name.startswith("webui.")
         )
 
     @staticmethod
@@ -1868,6 +1890,22 @@ class WebChannel(BaseWsChannel):
                     code="BAD_REQUEST",
                 )
                 return
+
+        # ── Gateway 扩展运行时：原生分发前拦截本帧 ──
+        # 无 USER handler 时直接返回 (False, params)，路径与未接入扩展一致。
+        # request_context.headers 随帧透传：认证门禁只判断 authorization 是否存在，
+        # token 校验由 USER 扩展包负责。
+        from jiuwenswarm.gateway.extensions_v2 import intercept_gateway_frame
+
+        request_context = data.get("request_context")
+        if request_context is not None and not isinstance(request_context, dict):
+            await self.send_response(ws, req_id, ok=False, error="invalid request context", code="BAD_REQUEST")
+            return
+        _visited, params = await intercept_gateway_frame(
+            ws, req_id, method, params, request_context=request_context,
+        )
+        if _visited:
+            return
 
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。

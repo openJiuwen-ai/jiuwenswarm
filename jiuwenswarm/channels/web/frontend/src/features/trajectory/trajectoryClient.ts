@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 /** Same-origin HTTP client for the JiuwenSwarm trajectory read API. */
 
 import { getApiBase } from '../../utils/env';
@@ -129,7 +130,7 @@ export async function getTrajectoryArchive(
   sessionId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<Blob> {
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/archive`,
   ), {
     cache: 'no-store',
@@ -221,7 +222,7 @@ export async function getTrajectorySessionUsage(
   sessionId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<TrajectorySessionUsageResponse> {
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/usage`,
   ), {
     cache: 'no-store',
@@ -261,7 +262,7 @@ export async function listTrajectorySubjects(
   const query = new URLSearchParams({
     after_revision: String(options.afterRevision ?? 0),
   });
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/subjects?${query.toString()}`,
   ), {
     cache: 'no-store',
@@ -299,7 +300,7 @@ export async function getTrajectorySubjectRecords(
     since_revision: String(options.sinceRevision ?? 0),
     limit: String(options.limit ?? 1000),
   });
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}`
     + `/subjects/${encodeURIComponent(subjectId)}/records?${query.toString()}`,
   ), {
@@ -427,7 +428,7 @@ export async function getTrajectoryStreamFrames(
     since_frame_seq: String(options.sinceFrameSeq ?? 0),
     limit: String(options.limit ?? 500),
   });
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/stream-frames?${query.toString()}`,
   ), {
     cache: 'no-store',
@@ -518,7 +519,7 @@ export async function getTrajectoryCheckpoints(
   sessionId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<TrajectoryCheckpointsResponse> {
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/checkpoints`,
   ), {
     cache: 'no-store',
@@ -557,7 +558,7 @@ export async function getTrajectorySequences(
 ): Promise<{ sequences: Record<string, string[]>; blobs: Record<string, string> }> {
   if (hashes.length === 0) return { sequences: {}, blobs: {} };
   const query = new URLSearchParams({ hashes: hashes.join(','), since_revision: '0' });
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/sequences?${query.toString()}`,
   ), {
     cache: 'no-store',
@@ -581,7 +582,7 @@ export async function getTrajectoryRawRecord(
   spanId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<unknown> {
-  const response = await fetch(trajectoryUrl(
+  const response = await gatewayFetch(trajectoryUrl(
     `/api/trajectory/sessions/${encodeURIComponent(sessionId)}`
     + `/traces/${encodeURIComponent(traceId)}/spans/${encodeURIComponent(spanId)}/raw`,
   ), {

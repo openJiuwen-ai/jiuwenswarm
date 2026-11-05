@@ -13,12 +13,15 @@ import { resolveUserId } from '../utils/userId';
 import i18n from '../i18n';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
+import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
 type StateHandler = (state: WebConnectionState) => void;
 
 interface PendingRequest {
+  control: boolean;
+  settled: Set<() => void>;
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number | undefined;
@@ -60,6 +63,19 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
     return;
   }
 
+  const data = entry.data as Record<string, unknown> | null;
+  if (data && typeof data === 'object') {
+    if (data.event === 'client.operation') entry = { ...entry, data: { type: data.type, event: data.event } };
+    else if (data.type === 'res') entry = { ...entry, data: { type: data.type, id: data.id, ok: data.ok, code: data.code } };
+    else if (typeof data.event === 'string' && data.event.startsWith('webui.')) {
+      entry = { ...entry, data: { type: data.type, event: data.event } };
+    }
+    else if (data.method === 'webui.dispatch') entry = { ...entry, data: { type: data.type, id: data.id, method: data.method } };
+    else if ('request_context' in data) {
+      const { request_context: _context, ...safe } = data;
+      entry = { ...entry, data: safe };
+    }
+  }
   const body = {
     ...entry,
     at: new Date().toISOString(),
@@ -78,6 +94,31 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
 }
 
 class WebClient {
+  private connectionRetainers = 0;
+  retainConnection(): () => void {
+    this.connectionRetainers++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.connectionRetainers === 0) void this.disconnect();
+    };
+  }
+  constructor() {
+    browserClientCapabilities.setInvocationWaiter((id) => {
+      const pending = this.pending.get(id);
+      return pending ? new Promise<void>((resolve) => pending.settled.add(resolve)) : Promise.resolve();
+    });
+    browserClientCapabilities.subscribe(({ phase }) => {
+      if (phase !== 'changing') return;
+      for (const [id, pending] of this.pending) {
+        if (pending.control) continue;
+        window.clearTimeout(pending.timeoutId);
+        this.finishPending(id);
+        pending.reject(this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', id, false));
+      }
+    });
+  }
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
   private handlers = new Map<string, Set<EventHandler>>();
@@ -130,6 +171,7 @@ class WebClient {
   }
 
   async connect(options: WebConnectOptions = {}): Promise<void> {
+    this.lastConnectOptions = options;
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -137,7 +179,6 @@ class WebClient {
       return this.connectPromise;
     }
 
-    this.lastConnectOptions = options;
     this.manualClose = false;
     this.updateState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
@@ -150,7 +191,7 @@ class WebClient {
       ws.onopen = () => {
         logDevWsTraffic({
           direction: 'lifecycle',
-          data: { event: 'open', url },
+          data: { event: 'open' },
         });
         this.reconnectAttempts = 0;
         this.updateState('ready');
@@ -275,21 +316,26 @@ class WebClient {
 
     const id = this.generateRequestId();
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const message: WsRequest = {
+    const message: WsRequest = browserClientCapabilities.bindWebSocket({
       type: 'req',
       id,
       method,
       params: params ?? {},
       ...(options.isStream ? { is_stream: true } : {}),
-    };
+    });
+
+    if (method !== 'webui.dispatch' && browserClientCapabilities.isChanging()) {
+      throw this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', id, false);
+    }
 
     return new Promise<T>((resolve, reject) => {
       const timeoutId = timeoutMs === 0 ? undefined : window.setTimeout(() => {
-        this.pending.delete(id);
+        this.finishPending(id);
         reject(this.createWebError(i18n.t('network.requestTimeout'), 'REQUEST_TIMEOUT', id, true));
       }, timeoutMs);
 
       const pending: PendingRequest = {
+        control: method === 'webui.dispatch', settled: new Set(),
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,
@@ -303,7 +349,7 @@ class WebClient {
             return;
           }
           window.clearTimeout(timeoutId);
-          this.pending.delete(id);
+          this.finishPending(id);
           reject(this.createWebError(i18n.t('network.requestAborted'), 'REQUEST_ABORTED', id, false));
         };
         if (options.signal.aborted) {
@@ -323,7 +369,7 @@ class WebClient {
         this.ws!.send(JSON.stringify(message));
       } catch (error) {
         window.clearTimeout(timeoutId);
-        this.pending.delete(id);
+        this.finishPending(id);
         reject(error);
       }
     });
@@ -348,13 +394,17 @@ class WebClient {
       throw this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_NOT_READY', undefined, true);
     }
 
-    const message: WsRequest = {
+    const message: WsRequest = browserClientCapabilities.bindWebSocket({
       type: 'req',
       id: this.generateRequestId(),
       method,
       params: params ?? {},
       ...(options.isStream ? { is_stream: true } : {}),
-    };
+    });
+
+    if (browserClientCapabilities.isChanging()) {
+      throw this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', message.id, false);
+    }
 
     logDevWsTraffic({
       direction: 'outgoing',
@@ -378,7 +428,7 @@ class WebClient {
     } catch {
       logDevWsTraffic({
         direction: 'incoming',
-        data: { rawData, parse: 'failed' },
+        data: { parse: 'failed' },
       });
       return;
     }
@@ -387,7 +437,7 @@ class WebClient {
     if (!message) {
       logDevWsTraffic({
         direction: 'incoming',
-        data: { parsed, normalize: 'ignored' },
+        data: { normalize: 'ignored' },
       });
       return;
     }
@@ -402,6 +452,10 @@ class WebClient {
       this.resolvePending(message);
       return;
     }
+
+    if (!message.event.startsWith('connection.') && !message.event.startsWith('webui.')
+      && message.event !== 'client.operation' && message.event !== 'client.declarations'
+      && browserClientCapabilities.isUnavailable()) return;
 
     this.resolveRuntimeAcceptedPending(message);
     this.dispatchEvent(message);
@@ -475,7 +529,7 @@ class WebClient {
       return;
     }
     window.clearTimeout(pending.timeoutId);
-    this.pending.delete(message.id);
+    this.finishPending(message.id);
 
     if (message.ok) {
       pending.resolve(message.payload);
@@ -506,7 +560,7 @@ class WebClient {
       return;
     }
     window.clearTimeout(pending.timeoutId);
-    this.pending.delete(requestId);
+    this.finishPending(requestId);
     if (message.event === 'runtime.accepted') {
       pending.resolve(message.payload);
       return;
@@ -557,15 +611,23 @@ class WebClient {
   }
 
   private rejectAllPending(error: WebError): void {
-    this.pending.forEach((entry) => {
+    this.pending.forEach((entry, id) => {
       window.clearTimeout(entry.timeoutId);
+      this.finishPending(id);
       entry.reject(error);
     });
     this.pending.clear();
   }
 
+  private finishPending(id: string): void {
+    const pending = this.pending.get(id);
+    this.pending.delete(id);
+    pending?.settled.forEach((resolve) => resolve());
+  }
+
   private updateState(state: WebConnectionState): void {
     this.state = state;
+    if (state === 'closed' || state === 'reconnecting') browserClientCapabilities.suspendConnection();
     this.stateHandlers.forEach((handler) => {
       handler(state);
     });

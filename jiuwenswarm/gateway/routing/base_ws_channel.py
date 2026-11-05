@@ -142,6 +142,30 @@ class BaseWsChannel(BaseWebChannel):
             evict_previous,
         )
 
+    async def ensure_ws_id(self, ws: Any) -> str:
+        """Return the ws_id of ``ws``, assigning one when the socket is new.
+
+        A connection that only sends application-scoped frames (``ui.ready`` /
+        ``ui.click`` without ``session_id``) is never passed to ``register_ws``,
+        yet the Gateway must address downstream frames by ws_id. This allocates
+        the same physical id, outbound queue and writer that ``register_ws``
+        would create.
+        """
+        ws_key = id(ws)
+        async with self._lock:
+            ws_id = self._id_by_ws.get(ws_key)
+            if ws_id is not None:
+                return ws_id
+            ws_id = uuid.uuid4().hex
+            setattr(ws, "_jiuwen_ws_id", ws_id)
+            self._ws_by_id[ws_id] = ws
+            self._id_by_ws[ws_key] = ws_id
+            self._send_queues[ws_id] = asyncio.Queue(maxsize=_SEND_QUEUE_MAX_FRAMES)
+            self._writers[ws_id] = asyncio.create_task(
+                self._writer_loop(ws, ws_id), name=f"ws-writer-{ws_id}"
+            )
+            return ws_id
+
     async def unregister_ws(self, ws: Any) -> list[RoutingKey]:
         """断连时扫描 _clients_by_key 摘除死 ws，并清理 ws_id 映射。
 

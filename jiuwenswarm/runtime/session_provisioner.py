@@ -1052,7 +1052,7 @@ class RuntimeSessionProvisioner:
         previous: SessionLifecycleTarget | None,
         view_id: str,
     ) -> None:
-        participants = self._participant_registry.snapshot_activity()
+        participants = self._participant_registry.snapshot_foreground()
         if not participants:
             self._participant_registry.remember_target(target)
             return

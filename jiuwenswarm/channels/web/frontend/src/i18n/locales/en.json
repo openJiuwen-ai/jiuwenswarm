@@ -1,4 +1,39 @@
 {
+  "extensionCommand": {
+    "invalidArgs": "Invalid command arguments. Usage:",
+    "singleLineOnly": "Enter one extension command per line. Run /extension for usage.",
+    "usageTitle": "Extension package commands:",
+    "usageInstall": "/extension install <absolute ZIP file path>",
+    "packageIdHint": "package_id identifies a package. Find it with /extension query.",
+    "installZipOnly": "Only ZIP extension packages are supported. Provide an absolute .zip file path.",
+    "installSourceInvalid": "Check that the .zip file exists and its path is absolute. Directories cannot be installed.",
+    "packageIdRule": "Use a 1-128 character package_id: start with a letter or digit; use letters, digits, . _ -; no '..'.",
+    "install": "installation",
+    "query": "query",
+    "uninstall": "uninstallation",
+    "reload": "hot reload",
+    "operationSuccess": "Extension package {{action}} succeeded",
+    "operationFailed": "Extension package {{action}} failed",
+    "packageId": "package_id: {{packageId}}",
+    "failureReason": "Reason: {{reason}}",
+    "version": "Version: {{version}}",
+    "installPath": "Installation directory: {{path}}",
+    "activeState": "Status: active",
+    "inactiveState": "Status: installed, inactive",
+    "packageIdUnavailable": "The package_id is unavailable. Check the package manifest.yaml.",
+    "reloadHint": "After editing code in this directory, run: {{command}}",
+    "pathUnavailable": "The installation directory could not be confirmed. Use query to check it.",
+    "queryHint": "Run {{command}} to check the current state before deciding whether to retry.",
+    "empty": "No extension packages or installed copies found.",
+    "invalidResponse": "No valid response was received. The result is unconfirmed.",
+    "noErrorDetails": "No details were provided.",
+    "unknownOutcome": "The operation result is unconfirmed. Do not repeat it without checking.",
+    "requestFailed": "The extension package request failed.",
+    "connectionLost": "The request timed out or the connection was interrupted.",
+    "serviceUnavailable": "The extension service is unavailable. Please try again later.",
+    "currentState": "Current state at reconciliation time; this does not confirm the original operation succeeded:",
+    "queryFailed": "State reconciliation failed: {{reason}}"
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -41,6 +76,12 @@
     "unavailableTitle": "The interface cannot be displayed right now",
     "retry": "Please try again later or regenerate the result",
     "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
+  },
+  "webui": {
+    "entryLabel": "Application view",
+    "menuLabel": "Open actions menu",
+    "clientOperationError": "Unable to execute the browser operation.",
+    "clientConfigurationError": "Unable to activate browser extension capabilities."
   },
   "nav": {
     "chat": "Chat",
@@ -5319,5 +5360,42 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
+  },
+  "webuiIframe": {
+    "loading": "Loading page...",
+    "slow": "This page is taking longer to load. Reload or open it in a new tab.",
+    "error": "Unable to load page",
+    "inactive": "Page stopped. It will reload when restored.",
+    "displayMode": "Page display mode",
+    "fit": "Fit panel",
+    "desktop": "Desktop width",
+    "desktopHint": "Use a page width of at least 1280px with horizontal scrolling",
+    "reload": "Reload page",
+    "openSource": "Open original URL in a new tab"
+  },
+  "webuiFiles": {
+    "treeLabel": "Workspace files",
+    "treeTitle": "Files",
+    "resizeTree": "Resize file tree",
+    "emptyTree": "This directory is empty",
+    "tree": {
+      "unavailable": "This session has no available working directory",
+      "unsupported": "File browsing is unavailable in this session mode",
+      "error": "Unable to complete the operation. Expand the directory or select the file again.",
+      "limit": "Directory expansion or request limit reached. Collapse some directories first.",
+      "readFailed": "Some directories could not be read. Expand them again to retry.",
+      "truncated": "Directory contents exceed the display budget. Showing partial results."
+    },
+    "previewTitle": "Preview",
+    "preview": {
+      "empty": "Select a file to preview",
+      "loading": "Reading file…",
+      "missing": "This file no longer exists",
+      "unsupported": "Preview is not supported for this file format",
+      "too_large": "File exceeds the text preview limit (1 MiB)",
+      "forbidden": "Files outside this session directory cannot be accessed",
+      "unavailable": "File preview is unavailable for this session",
+      "error": "Unable to read this file. Select it again to retry."
+    }
   }
 }

@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-authorize
+  version: 1.0.0
+  displayName: Session Authorization Probe
+extensions:
+  - id: authorization-probe
+    runtime: backend
+    module: extension.py

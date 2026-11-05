@@ -1,0 +1,53 @@
+import { createRendererRegistry } from '../types.ts';
+import { WebUIBox } from './webuiBox/WebUIBox.tsx';
+import { WebUIText } from './webuiText/WebUIText.tsx';
+import { WebUIButton } from './webuiButton/WebUIButton.tsx';
+import { WebUIInput } from './webuiInput/WebUIInput.tsx';
+import { WebUISwitch } from './webuiSwitch/WebUISwitch.tsx';
+import { WebUISelect } from './webuiSelect/WebUISelect.tsx';
+import { WebUITreeSelect } from './webuiTreeSelect/WebUITreeSelect.tsx';
+import { WebUISlider } from './webuiSlider/WebUISlider.tsx';
+import { WebUITabs } from './webuiTabs/WebUITabs.tsx';
+import { WebUIEmpty } from './webuiEmpty/WebUIEmpty.tsx';
+import { WebUIImage } from './webuiImage/WebUIImage.tsx';
+import { WebUIDivider } from './webuiDivider/WebUIDivider.tsx';
+import { WebUICard } from './webuiCard/WebUICard.tsx';
+import { WebUITag } from './webuiTag/WebUITag.tsx';
+import { WebUIPanel } from './webuiPanel/WebUIPanel.tsx';
+import { WebUIFileTree } from './webuiFileTree/WebUIFileTree.tsx';
+import { WebUIFilePreview } from './webuiFilePreview/WebUIFilePreview.tsx';
+import { WebUIIframe } from './webuiIframe/WebUIIframe.tsx';
+import { WebUIAvatar } from './webuiAvatar/WebUIAvatar.tsx';
+import { WebUIForm, WebUIFormItem } from './webuiForm/WebUIForm.tsx';
+import { WebUIDropdown } from './webuiDropdown/WebUIDropdown.tsx';
+import { WebUIIcon } from './webuiIcon/WebUIIcon.tsx';
+
+export function createComponentRendererRegistry() {
+  return createRendererRegistry({
+    Box: WebUIBox,
+    Text: WebUIText,
+    Button: WebUIButton,
+    Input: WebUIInput,
+    Switch: WebUISwitch,
+    Select: WebUISelect,
+    TreeSelect: WebUITreeSelect,
+    Slider: WebUISlider,
+    Tabs: WebUITabs,
+    Empty: WebUIEmpty,
+    Image: WebUIImage,
+    Divider: WebUIDivider,
+    Card: WebUICard,
+    Tag: WebUITag,
+    Panel: WebUIPanel,
+    FileTree: WebUIFileTree,
+    FilePreview: WebUIFilePreview,
+    Iframe: WebUIIframe,
+    Avatar: WebUIAvatar,
+    Form: WebUIForm,
+    'Form.Item': WebUIFormItem,
+    Dropdown: WebUIDropdown,
+    Icon: WebUIIcon,
+  });
+}
+
+export const componentRendererRegistry = createComponentRendererRegistry();

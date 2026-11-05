@@ -156,3 +156,5 @@
 | `features/rsi` | `rsi` | RSI 任务列表、创建、详情与优化过程画布 |
 
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |
+
+| `features/webui` | `webui` | 插件 WebUI 渲染槽位;渲染树到 React 组件映射;交互回传;错误态 |

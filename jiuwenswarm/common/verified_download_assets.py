@@ -32,7 +32,9 @@ def _default_asset_root() -> Path:
     configured = str(os.getenv("JIUWENSWARM_DOWNLOAD_ASSET_ROOT") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    owner_id = os.getuid() if hasattr(os, "getuid") else os.getpid()
+    owner_id = os.getuid() if hasattr(os, "getuid") else hashlib.sha256(
+        str(Path.home()).encode("utf-8")
+    ).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"jiuwenswarm-download-assets-{owner_id}"
 
 
@@ -77,8 +79,22 @@ class VerifiedDownloadAssetOwner:
         *,
         file_name: str,
         expires_at: float,
+        source_fd: int | None = None,
     ) -> VerifiedDownloadAsset:
-        """Atomically capture one stable delivery-time snapshot."""
+        """Capture a snapshot, optionally from an already authorized descriptor.
+
+        When supplied, ``source_fd`` stays open but its offset advances to EOF.
+        The descriptor must refer to the file authorized by the caller.
+
+        Args:
+            source_path: Source file path, used when no descriptor is supplied.
+            file_name: Original filename used to preserve the snapshot suffix.
+            expires_at: Unix timestamp after which the snapshot is reclaimed.
+            source_fd: Optional caller-owned, authorized regular-file descriptor.
+
+        Returns:
+            The staged immutable asset and its download claims.
+        """
 
         if expires_at <= self._now_fn():
             raise ValueError("download_asset_expired")
@@ -90,10 +106,7 @@ class VerifiedDownloadAssetOwner:
         sealed_path = self.root / f"{asset_id}{suffix}"
         sidecar_path = self._sidecar_path(asset_id)
         try:
-            actual_size, actual_digest = self._copy_verified_source(
-                source,
-                sealed_path,
-            )
+            actual_size, actual_digest = self._copy_verified_source(source, sealed_path, source_fd=source_fd)
             payload = {
                 "asset_id": asset_id,
                 "sealed_path": sealed_path.as_posix(),
@@ -258,26 +271,32 @@ class VerifiedDownloadAssetOwner:
     def _copy_verified_source(
         source: Path,
         destination: Path,
+        *,
+        source_fd: int | None = None,
     ) -> tuple[int, str]:
-        try:
-            source_stat = source.stat(follow_symlinks=False)
-        except OSError as exc:
-            raise ValueError("download_asset_source_not_file") from exc
-        if not stat.S_ISREG(source_stat.st_mode) or source.is_symlink():
-            raise ValueError("download_asset_source_not_file")
-        read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        source_fd = os.open(source, read_flags, 0o600)
+        if source_fd is None:
+            try:
+                source_stat = source.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ValueError("download_asset_source_not_file") from exc
+            if not stat.S_ISREG(source_stat.st_mode) or source.is_symlink():
+                raise ValueError("download_asset_source_not_file")
+            read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            read_fd = os.open(source, read_flags, 0o600)
+        else:
+            read_fd = os.dup(source_fd)
         destination_fd: int | None = None
         try:
-            opened_source_stat = os.fstat(source_fd)
+            opened_source_stat = os.fstat(read_fd)
             if not stat.S_ISREG(opened_source_stat.st_mode):
                 raise ValueError("download_asset_source_not_file")
+            os.lseek(read_fd, 0, os.SEEK_SET)
+            write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
             destination_fd = os.open(destination, write_flags, 0o600)
             digest = hashlib.sha256()
             copied = 0
             while True:
-                chunk = os.read(source_fd, _DIGEST_CHUNK_SIZE)
+                chunk = os.read(read_fd, _DIGEST_CHUNK_SIZE)
                 if not chunk:
                     break
                 _write_all(destination_fd, chunk)
@@ -290,7 +309,7 @@ class VerifiedDownloadAssetOwner:
             os.chmod(destination, 0o400)
             return copied, actual_digest
         finally:
-            os.close(source_fd)
+            os.close(read_fd)
             if destination_fd is not None:
                 os.close(destination_fd)
 
@@ -355,6 +374,8 @@ class VerifiedDownloadAssetOwner:
         if path.parent.resolve(strict=False) != self.root:
             return
         try:
+            if os.name == "nt" and path.exists() and not path.is_symlink():
+                path.chmod(stat.S_IRUSR | stat.S_IWUSR)
             path.unlink(missing_ok=True)
         except OSError:
             logger.warning("Failed to remove verified download asset path=%s", path)

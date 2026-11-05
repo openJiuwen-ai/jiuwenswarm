@@ -1,3 +1,5 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
+import { GatewayImage, GatewayVideo, needsGatewayResource, downloadGatewayResource } from '../../features/webui/client/GatewayResources';
 /**
  * MessageItem 组件
  *
@@ -51,6 +53,7 @@ import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
+import { WebUIHost } from '../../features/webui';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
@@ -957,6 +960,15 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
+        {!isUser && !isStreaming && !hideMeta && message.outputOrder?.requestId ? (
+          <WebUIHost
+            slotId="conversation.session.content.after"
+            sessionId={activeSessionId}
+            instanceKey={message.outputOrder.requestId}
+            className="mt-2 mb-3"
+          />
+        ) : null}
+
         {!isStreaming && !hideMeta && (
           <div
             data-testid="chat-panel-message-meta"
@@ -1053,6 +1065,23 @@ export const MessageItem = memo(function MessageItem({
                 {tooltip}
               </div>
             )}
+
+            {!isUser && message.outputOrder?.requestId ? (
+              <>
+                <WebUIHost
+                  slotId="message.assistant.meta"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+                <WebUIHost
+                  slotId="conversation.turn.footer.actions"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+              </>
+            ) : null}
           </div>
         )}
       </div>
@@ -1119,7 +1148,7 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fetch(file.download_url, { method: 'HEAD' })
+      gatewayFetch(file.download_url, { method: 'HEAD' })
         .then((res) => {
           if (!cancelled && !res.ok) {
             setExpiredSet((prev) => new Set(prev).add(index));
@@ -1148,6 +1177,11 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
+    if (needsGatewayResource(file.download_url)) {
+      try { await downloadGatewayResource(file.download_url, file.name || 'download'); }
+      catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
+      return;
+    }
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
@@ -1258,7 +1292,7 @@ function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <img
+                <GatewayImage
                   src={skillPackageIcon}
                   alt=""
                   aria-hidden="true"
@@ -1341,7 +1375,7 @@ function FileDownloadList({
             )}
             </div>
             {showImagePreview && (
-              <img
+              <GatewayImage
                 src={file.download_url}
                 alt={displayName}
                 className="chat-panel-file-download-image-preview"
@@ -1350,15 +1384,15 @@ function FileDownloadList({
               />
             )}
             {showVideoPreview && (
-              <video
+              <GatewayVideo
+                src={file.download_url}
                 controls
                 preload="metadata"
                 className="chat-panel-file-download-video-preview"
                 data-testid="chat-panel-file-download-video-preview"
                 onClick={(event) => event.stopPropagation()}
               >
-                <source src={file.download_url} type={file.mime_type} />
-              </video>
+              </GatewayVideo>
             )}
           </div>
         );

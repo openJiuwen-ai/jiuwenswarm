@@ -77,7 +77,7 @@ from openjiuwen.core.sys_operation import (
     SysOperationCard,
     OperationMode,
 )
-from openjiuwen.core.sys_operation.cwd import init_cwd
+from openjiuwen.core.sys_operation.cwd import get_cwd, get_project_root, init_cwd
 from openjiuwen.harness import (
     AudioModelConfig,
     DeepAgent,
@@ -2000,6 +2000,7 @@ class JiuWenSwarmDeepAdapter:
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
         self._permission_runtime_paths: RuntimeWorkspacePaths | None = None
+        self._session_workspace_snapshot: RuntimeWorkspacePaths | None = None
         self._platform_trusted_root: Path | None = None
         self._agent_name: str = "main_agent"
         # 是否是 code-agent 形态. 基类 (deep adapter) 默认 False, 由子类
@@ -4469,6 +4470,12 @@ class JiuWenSwarmDeepAdapter:
     def _mark_session_active(self, session_id: str) -> None:
         """Increment the active-task count for *session_id*."""
         sid = self._resolve_interrupt_session_id(session_id)
+        # TODO(compact): Connect the native busy gate only after main-flow integration is approved.
+        # from jiuwenswarm.extensions_v2.assembly import get_compaction_service
+        # compact = get_compaction_service()
+        # if compact is not None and compact.is_compacting(sid):
+            # from openjiuwen.core.context_engine import CompactionError
+            # raise CompactionError("COMPACT_BUSY")
         self._active_session_ids[sid] += 1
 
     def _unmark_session_active(self, session_id: str, *, cleanup_rail: bool = True) -> None:
@@ -4482,6 +4489,12 @@ class JiuWenSwarmDeepAdapter:
         count = self._active_session_ids.get(sid, 0)
         if count <= 1:
             self._active_session_ids.pop(sid, None)
+            # TODO(compact): Do not schedule extension precompute from native task completion yet.
+            # from jiuwenswarm.extensions_v2.assembly import get_compaction_service
+            # compact = get_compaction_service()
+            # if compact is not None:
+                # config = get_config().get("react", {}).get("context_engine_config", {}).get("compaction_precompute", {})
+                # compact.schedule_precompute(sid, enabled=config.get("enabled", False) is True, ratio=config.get("ratio", 0.8))
             if cleanup_rail and self._stream_event_rail is not None:
                 try:
                     self._stream_event_rail.cleanup_session(sid)
@@ -4533,6 +4546,18 @@ class JiuWenSwarmDeepAdapter:
             or self._active_session_ids
             or self._session_agent_tasks
         )
+
+    def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Return only a selected session's immutable, already-bound paths."""
+        sid = self._session_adapter_key(session_id)
+        if self._is_session_scoped_adapter:
+            if sid != self._session_adapter_key(self._parent_session_id):
+                return None
+            if self._external_harness_binding is not None:
+                return None
+            return self._session_workspace_snapshot
+        child = self._get_cached_session_adapter(session_id)
+        return child.get_session_workspace_paths(session_id) if child is not None else None
 
     def is_external_harness_session(self, session_id: str | None = None) -> bool:
         """Return whether the selected session child owns an External Harness."""
@@ -8671,6 +8696,10 @@ class JiuWenSwarmDeepAdapter:
         # 的中断恢复请求回退使用，避免回退到 config.yaml 默认占位模型。
         self._last_resolved_model = model
         self._active_request_model = model
+
+        from jiuwenswarm.server.runtime.session.history_context import capture_history_model
+
+        capture_history_model(session_id, model)
 
     @staticmethod
     def _resolve_skill_mode(
@@ -13762,7 +13791,8 @@ class JiuWenSwarmDeepAdapter:
             self._instance.deep_config.language = resolved_language
 
     def _seed_runtime_cwd(
-        self, cwd: str | None = None, workspace: str | None = None
+        self, cwd: str | None = None, workspace: str | None = None,
+        *, session_id: str | None = None,
     ) -> None:
         """Seed Core's CwdState holder from the request/runtime cwd.
 
@@ -13781,6 +13811,12 @@ class JiuWenSwarmDeepAdapter:
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = workspace_root
         init_cwd(runtime_cwd, project_root=workspace_root, workspace=workspace_root)
+        from jiuwenswarm.server.runtime.session.history_context import capture_history_workspace
+
+        capture_history_workspace(
+            session_id, cwd=runtime_cwd,
+            project_root=workspace_root if self._project_dir else None,
+        )
 
     @staticmethod
     def _resolve_request_task_name(
@@ -13998,6 +14034,27 @@ class JiuWenSwarmDeepAdapter:
             task_workspace = str(runtime_paths.runtime_workspace_root)
             task_cwd = str(runtime_paths.cwd)
 
+        if bind_request:
+            if runtime_paths is not None:
+                self._session_workspace_snapshot = runtime_paths
+            else:
+                workspace_root = Path(task_workspace).expanduser()
+                cwd_path = Path(task_cwd).expanduser()
+                has_explicit_project = bool(
+                    runtime_config.workspace
+                    or runtime_config.project_dir
+                    or self._project_dir
+                )
+                self._session_workspace_snapshot = RuntimeWorkspacePaths(
+                    internal_workspace_dir=Path(
+                        self._workspace_dir or str(get_agent_workspace_dir())
+                    ).expanduser(),
+                    runtime_workspace_root=workspace_root,
+                    cwd=cwd_path,
+                    project_root=workspace_root,
+                    is_projectless=not has_explicit_project,
+                )
+
         task_workspace_root = (
             str(runtime_paths.runtime_workspace_root)
             if runtime_paths is not None and runtime_paths.is_projectless
@@ -14022,7 +14079,7 @@ class JiuWenSwarmDeepAdapter:
             # workspace.root_path (~/.jiuwenswarm/agent/workspace).
             deep_config.cwd = task_cwd
             deep_config.project_root = task_workspace
-        self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
+        self._seed_runtime_cwd(task_cwd, workspace=task_workspace, session_id=runtime_config.session_id)
         if runtime_paths is not None and runtime_paths.is_projectless:
             setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
         resolved_language = self._resolve_runtime_language()
@@ -14348,6 +14405,12 @@ class JiuWenSwarmDeepAdapter:
 
     async def _cleanup_adapter_resources(self) -> None:
         """Release adapter-owned external runtime resources."""
+        # TODO(compact): Native compaction bindings are not installed in this interface-only stage.
+        # from jiuwenswarm.extensions_v2.assembly import get_compaction_service
+        # compact = get_compaction_service()
+        # context = getattr(self, "_extension_compact_context", None)
+        # if compact is not None and context is not None:
+            # compact.unbind(context.session_id)
         from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
             stop_external_harness,
         )
@@ -16736,6 +16799,20 @@ class JiuWenSwarmDeepAdapter:
         mode: str = "agent",
         channel_id: str | None = None,
     ) -> dict[str, Any] | None:
+        """Dispatch Worker slash commands through the extension boundary."""
+        from jiuwenswarm.server.runtime.commands.adapter_commands import run_adapter_slash_command
+
+        return await run_adapter_slash_command(
+            self, query, session_id, mode, channel_id, self._handle_native_slash_command,
+        )
+
+    async def _handle_native_slash_command(
+        self,
+        query: Any,
+        session_id: str = "default",
+        mode: str = "agent",
+        channel_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """Intercept slash commands before agent invocation.
 
         Returns result dict if handled, None to proceed normally.
@@ -17340,6 +17417,80 @@ class JiuWenSwarmDeepAdapter:
                 cleanup.callback(reset_command_execution, command_token)
             yield
 
+    async def _ensure_extension_session_started(
+        self, request: AgentRequest, inputs: dict[str, Any], model_info: dict[str, object] | None,
+    ) -> None:
+        """Notify new activations after trusted runtime binding, before input."""
+        if request.req_method is not ReqMethod.CHAT_SEND:
+            return
+        from openjiuwen.core.events import SessionContext
+        from jiuwenswarm.extensions_v2.assembly import get_extension_manager
+        from jiuwenswarm.server.runtime.session.model_selection_store import SESSION_MODEL_INFO_KEY
+
+        manager = get_extension_manager()
+        if manager is None:
+            return
+        metadata: dict[str, object] = {}
+        if self._project_dir:
+            metadata["project_root"] = get_project_root()
+        if model_info is not None:
+            metadata[SESSION_MODEL_INFO_KEY] = dict(model_info)
+        context = SessionContext(request.session_id or "default", cwd=get_cwd(), metadata=metadata)
+        # TODO(compact): Keep session.start unchanged; native compaction binding is deferred.
+        # self._bind_extension_compaction(context.session_id, context=context)
+        await manager.ensure_session_started(
+            context, request_id=request.request_id or "", channel_id=request.channel_id or "",
+            is_interactive=inputs.get("supports_user_interaction", True) is True,
+            surface="desktop" if request.channel_id == "web" else None,
+        )
+
+    def _bind_extension_compaction(self, session_id: str, *, context=None):
+        """Reserved native binding; production call sites are deliberately disabled."""
+        from jiuwenswarm.extensions_v2.assembly import get_compaction_service
+        from openjiuwen.core.events import SessionContext
+        service = get_compaction_service()
+        if service is None:
+            return None
+        if getattr(self, "_external_harness_binding", None) is not None:
+            service.mark_unsupported(session_id)
+            return None
+        instance = getattr(self, "_instance", None)
+        react_agent = getattr(instance, "react_agent", None)
+        engine = getattr(react_agent, "context_engine", None)
+        if engine is None:
+            return None
+        if context is None:
+            context = getattr(self, "_extension_compact_context", None)
+            if context is None or context.session_id != session_id:
+                root = getattr(self, "_project_dir", None)
+                context = SessionContext(session_id, cwd=str(root) if root else None,
+                                         metadata={"project_root": str(root)} if root else {})
+        self._extension_compact_context = context
+        async def after_commit(trigger, result):
+            if trigger != "plugin":
+                return
+            from jiuwenswarm.server.runtime.session.session_history import append_compact_history_records
+            native = engine.get_context(session_id=session_id)
+            state = getattr(native, "_last_compaction", {})
+            summary = state.get("compact_summary", "")
+            if summary:
+                await asyncio.to_thread(
+                    append_compact_history_records, session_id=session_id,
+                    request_id=state.get("operation_id", "compact"),
+                    channel_id=str(context.metadata.get("channel_id") or "web"),
+                    summary=summary, timestamp=time.time(), trigger="plugin",
+                    stats={"raw_total_tokens": result.tokens_before, "total_tokens": result.tokens_after},
+                    mode="agent",
+                )
+        service.bind(
+            engine, context,
+            busy=lambda: bool(self._active_session_ids.get(session_id, 0))
+            or self._session_has_other_running_agent_tasks(session_id),
+            after_commit=after_commit,
+            processor_types=["MessageSummaryOffloader", "RoundLevelCompressor"],
+        )
+        return service
+
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
@@ -17347,8 +17498,11 @@ class JiuWenSwarmDeepAdapter:
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.session.history_context import history_context_scope
 
-            with self._bind_permission_request_context(request):
+            with self._bind_permission_request_context(request), history_context_scope(
+                request.session_id or "default", request_id=request.request_id,
+            ):
                 async with bind_task_execution(request, self, inputs):
                     return await self._process_message_impl(request, inputs)
 
@@ -17535,6 +17689,9 @@ class JiuWenSwarmDeepAdapter:
             resolved_model,
             session_id=request.session_id,
         )
+        from jiuwenswarm.server.runtime.session.model_selection_store import capture_runtime_model_info
+
+        extension_start_model_info = capture_runtime_model_info(resolved_model)
         # Attach subscriptions are passive observers, not executions; see the
         # streaming twin of this guard for the full rationale.
         if not _is_attach_only_subscription(request.params):
@@ -17589,6 +17746,7 @@ class JiuWenSwarmDeepAdapter:
                     interaction_resume=self._is_eternal_interaction_resume(request.params),
                 )
             )
+            await self._ensure_extension_session_started(request, inputs, extension_start_model_info)
             inputs = dict(inputs)
             inputs = self._prepare_multimodal_image_inputs(
                 request,
@@ -18053,8 +18211,11 @@ class JiuWenSwarmDeepAdapter:
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.session.history_context import history_context_scope
 
-            with self._bind_permission_request_context(request):
+            with self._bind_permission_request_context(request), history_context_scope(
+                request.session_id or "default", request_id=request.request_id,
+            ):
                 async with bind_task_execution(request, self, inputs):
                     async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
                         async for chunk in stream:
@@ -18582,6 +18743,7 @@ class JiuWenSwarmDeepAdapter:
         output_phase_id: str | None = None
         pending_input_ids: set[str] = set()
         output_sequence = 0
+        latest_extension_context_usage: dict[str, Any] | None = None
 
         def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
             if not isinstance(parsed, dict):
@@ -18601,7 +18763,16 @@ class JiuWenSwarmDeepAdapter:
         ) -> dict[str, Any]:
             nonlocal had_assistant_output, had_tool_output, emitted_terminal_chat_final
             nonlocal run_answer_final, output_sequence
+            nonlocal latest_extension_context_usage
             event_type = payload.get("event_type")
+            if (
+                event_type == "context.usage" and payload.get("session_id") == session_id
+                and payload.get("depth", 0) == 0 and not payload.get("parent_invocation_id")
+                and not payload.get("member_name") and not payload.get("team_id")
+            ):
+                # Capture the primary window before asynchronous notification;
+                # a later live window must not change this turn's observation.
+                latest_extension_context_usage = copy.deepcopy(payload)
             if output_phase_id and isinstance(event_type, str) and event_type.startswith("chat."):
                 output_sequence += 1
                 payload = {**payload, "output_phase_id": output_phase_id,
@@ -18700,6 +18871,9 @@ class JiuWenSwarmDeepAdapter:
             resolved_model,
             session_id=request.session_id,
         )
+        from jiuwenswarm.server.runtime.session.model_selection_store import capture_runtime_model_info
+
+        extension_model_info = capture_runtime_model_info(resolved_model)
         # An attach-only subscription is a passive observer: marking the
         # session active for its stream lifetime would make every model
         # switch fail with "session is executing".  The unregister/unmark in
@@ -18760,6 +18934,7 @@ class JiuWenSwarmDeepAdapter:
                     interaction_resume=self._is_eternal_interaction_resume(request.params),
                 )
             )
+            await self._ensure_extension_session_started(request, inputs, extension_model_info)
             if self._stream_event_rail is not None:
                 self._stream_event_rail.reset_abort(session_id)
             inputs = dict(inputs)
@@ -19849,6 +20024,31 @@ class JiuWenSwarmDeepAdapter:
             if context_window_tokens is not None:
                 payload["context_window_tokens"] = context_window_tokens
 
+            from jiuwenswarm.extensions_v2.event_types.context_usage import (
+                ContextUsageUpdate,
+                notify_context_usage,
+            )
+
+            cache_hit_rate = summary.get("cache_hit_rate")
+            notify_context_usage(
+                ContextUsageUpdate(
+                    session_id=session_id,
+                    request_id=rid,
+                    input_tokens=usage_accumulator["input_tokens"],
+                    output_tokens=usage_accumulator["output_tokens"],
+                    total_tokens=usage_accumulator["total_tokens"],
+                    cache_tokens=usage_accumulator["cache_tokens"],
+                    cache_hit_rate=cache_hit_rate if isinstance(cache_hit_rate, str) else None,
+                    context_window_tokens=context_window_tokens,
+                    usage_percent=context_usage_percent,
+                    model=payload.get("model") if isinstance(payload.get("model"), str) else None,
+                ),
+                cwd=get_cwd(),
+                project_root=get_project_root() if self._project_dir else None,
+                model_info=extension_model_info,
+                context_usage=latest_extension_context_usage,
+            )
+
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -20916,6 +21116,8 @@ class JiuWenSwarmDeepAdapter:
             *,
             return_state: bool = False,
             processor_types: list[str] | None = None,
+            # TODO(compact): Reserve instructions until native integration resumes.
+            # instructions: str | None = None,
     ) -> dict[str, Any]:
         """主动触发上下文压缩。
 
@@ -20937,6 +21139,7 @@ class JiuWenSwarmDeepAdapter:
                     session=session,
                     return_state=return_state,
                     processor_types=processor_types,
+                    # instructions=instructions,
                 )
             finally:
                 await self._evict_idle_session_adapters()
@@ -20957,6 +21160,24 @@ class JiuWenSwarmDeepAdapter:
             context, react_agent, session_id
         )
 
+        # TODO(compact): Retain the future manual bridge; execute the original compression path.
+        # compact_service = self._bind_extension_compaction(session_id)
+        # if compact_service is not None:
+            # from jiuwenswarm.extensions_v2.event_types.session_compact import SessionCompacted
+            # decision = await compact_service.run(session_id, trigger="manual", instructions=instructions, processor_types=processor_types)
+            # compact_result = {
+                # "result": "compressed" if isinstance(decision, SessionCompacted) else "noop",
+                # "state": getattr(context, "_last_compaction", {}) if isinstance(decision, SessionCompacted) else {},
+                # "skip": getattr(decision, "skip", None),
+            # }
+        # else:
+            # compact_result = await context_engine.compress_context(
+                # session=session,
+                # session_id=session_id,
+                # return_state=True,
+                # processor_types=processor_types,
+                # instructions=instructions,
+            # )
         compact_result = await context_engine.compress_context(
             session=session,
             session_id=session_id,
@@ -20980,6 +21201,9 @@ class JiuWenSwarmDeepAdapter:
             result = compact_result
 
         response: dict[str, Any] = {"result": result}
+        # TODO(compact): The native manual response retains its original contract.
+        # if isinstance(compact_result, dict) and compact_result.get("skip"):
+            # response["skip"] = compact_result["skip"]
         if return_state and state:
             response["state"] = state
             compact_summary = state.get("compact_summary")

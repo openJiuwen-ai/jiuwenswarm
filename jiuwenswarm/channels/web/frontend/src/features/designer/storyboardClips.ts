@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { designerAssetTextUrl } from './designerAssetUrl';
 import {
   DESIGNER_NODE_ROLE_STORYBOARD,
@@ -120,7 +121,7 @@ export function storyboardTextUrl(
 }
 
 export async function fetchStoryboardText(url: string): Promise<string> {
-  const response = await fetch(url);
+  const response = await gatewayFetch(url);
   if (!response.ok) throw new Error(String(response.status));
   return response.text();
 }

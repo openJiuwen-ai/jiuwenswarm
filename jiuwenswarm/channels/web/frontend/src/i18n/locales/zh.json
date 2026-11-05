@@ -1,4 +1,39 @@
 {
+  "extensionCommand": {
+    "invalidArgs": "命令参数有误，用法如下：",
+    "singleLineOnly": "扩展包命令每次只能输入一行。请执行 /extension 查看用法。",
+    "usageTitle": "扩展包命令：",
+    "usageInstall": "/extension install <ZIP 文件的绝对路径>",
+    "packageIdHint": "package_id 是扩展包标识，可通过 /extension query 查看。",
+    "installZipOnly": "安装只支持 ZIP 扩展包，请提供 .zip 文件的绝对路径。",
+    "installSourceInvalid": "无法安装，请检查 .zip 文件是否存在、路径是否完整。目录不能作为安装来源。",
+    "packageIdRule": "请提供有效的 package_id：1～128 位，以英文字母或数字开头，只允许英文字母、数字、点、下划线和连字符，不能包含连续两个点。",
+    "install": "安装",
+    "query": "查询",
+    "uninstall": "卸载",
+    "reload": "热重载",
+    "operationSuccess": "扩展包{{action}}成功",
+    "operationFailed": "扩展包{{action}}失败",
+    "packageId": "package_id：{{packageId}}",
+    "failureReason": "失败原因：{{reason}}",
+    "version": "版本：{{version}}",
+    "installPath": "安装目录：{{path}}",
+    "activeState": "状态：已生效",
+    "inactiveState": "状态：已安装，未生效",
+    "packageIdUnavailable": "未取得 package_id，请检查扩展包的 manifest.yaml。",
+    "reloadHint": "修改上述目录内的代码后，执行：{{command}}",
+    "pathUnavailable": "未取得对应安装目录，请通过查询核对。",
+    "queryHint": "请先执行 {{command}} 查看当前状态，再决定是否重试。",
+    "empty": "未查询到扩展包或安装副本。",
+    "invalidResponse": "未取得有效响应，结果尚未确认。",
+    "noErrorDetails": "未提供详细原因。",
+    "unknownOutcome": "操作结果未确认，请勿直接重复操作。",
+    "requestFailed": "扩展包管理请求失败。",
+    "connectionLost": "请求超时或连接中断。",
+    "serviceUnavailable": "扩展服务暂不可用，请稍后再试。",
+    "currentState": "以下是核对时的当前状态，不代表原操作成功：",
+    "queryFailed": "状态核对失败：{{reason}}"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -41,6 +76,12 @@
     "unavailableTitle": "界面内容暂时无法显示",
     "retry": "请稍后重试或重新生成结果",
     "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
+  },
+  "webui": {
+    "entryLabel": "应用界面",
+    "menuLabel": "打开操作菜单",
+    "clientOperationError": "无法执行浏览器操作。",
+    "clientConfigurationError": "无法启用浏览器扩展能力。"
   },
   "nav": {
     "chat": "对话",
@@ -5291,5 +5332,42 @@
     "reject": "拒绝",
     "approve": "授权",
     "waiting": "处理中..."
+  },
+  "webuiIframe": {
+    "loading": "页面加载中...",
+    "slow": "页面加载较慢，可重新加载或在新标签页打开",
+    "error": "页面加载失败",
+    "inactive": "页面已停止，恢复后将重新加载",
+    "displayMode": "页面显示模式",
+    "fit": "适应面板",
+    "desktop": "桌面宽度",
+    "desktopHint": "使用至少 1280px 的网页宽度，可横向滚动",
+    "reload": "重新加载页面",
+    "openSource": "在新标签页打开原始地址"
+  },
+  "webuiFiles": {
+    "treeLabel": "工作区文件",
+    "treeTitle": "文件",
+    "resizeTree": "调整文件树宽度",
+    "emptyTree": "目录中没有文件",
+    "tree": {
+      "unavailable": "当前会话尚无可用工作目录",
+      "unsupported": "此会话模式暂不支持文件浏览",
+      "error": "目录操作失败，请重新展开目录或选择文件",
+      "limit": "已达到目录展开或请求大小限制，请先收起部分目录",
+      "readFailed": "部分目录未能读取，可以重新展开目录重试",
+      "truncated": "目录内容超过显示预算，当前仅显示部分文件"
+    },
+    "previewTitle": "预览",
+    "preview": {
+      "empty": "选择文件以预览",
+      "loading": "正在读取文件…",
+      "missing": "文件已不存在",
+      "unsupported": "暂不支持预览此文件格式",
+      "too_large": "文件超过文本预览大小限制（1 MiB）",
+      "forbidden": "无法访问此会话目录范围以外的文件",
+      "unavailable": "当前会话的文件预览暂不可用",
+      "error": "文件读取失败，请重新选择文件"
+    }
   }
 }

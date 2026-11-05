@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../services/gatewayFetch';
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import { applyStyle } from 'html-to-image/es/apply-style';
 import { cloneNode as cloneHtmlNode } from 'html-to-image/es/clone-node';
@@ -1513,7 +1514,7 @@ export function ShareImageExportRunner({
         const snapshotUrl = jobId
           ? `/share-api/jobs/${encodeURIComponent(jobId)}/snapshot`
           : `/share-api/snapshot?session_id=${encodeURIComponent(sessionId || '')}`;
-        const response = await fetch(snapshotUrl, {
+        const response = await gatewayFetch(snapshotUrl, {
           cache: 'no-store',
           signal: abortController.signal,
         });

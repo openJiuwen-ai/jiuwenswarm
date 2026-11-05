@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, useSyncExternalStore, type HTMLAttribut
 import { Check, CircleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../components/ui';
+import { WebUIHost } from '../webui';
 import { SettingItemRenderer, SettingsConfirmDialog, SettingsSection } from './components';
 import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefinition } from './registry/types';
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
@@ -242,6 +243,7 @@ export function SettingsPageLayout({
                 </div>
               </SettingsSourceProvider>
             </InlineSaveFeedbackContext.Provider>
+            <WebUIHost slotId="application.settings" />
           </div>
         </main>
       )}

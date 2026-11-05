@@ -28,8 +28,8 @@
   z-index: 30;
 }
 
-.tool-panel-floating>div>div:not(:last-child) {
-  border-bottom: 1px solid var(--color-tool-panel-divider, #ededed);
+.tool-panel-floating > .tool-panel-collapsed-content > div:not(:last-child) {
+  border-bottom: 1px solid var(--color-tool-panel-divider, var(--color-border-default));
 }
 
 .toolpanel-status-card:hover {

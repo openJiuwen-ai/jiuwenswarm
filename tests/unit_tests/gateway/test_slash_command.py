@@ -378,7 +378,7 @@ def test_first_batch_registry_ids() -> None:
 def test_web_slash_picker_command_contract() -> None:
     commands = list_builtin_commands({"work_mode": "code.normal"})["commands"]
     assert [command["name"] for command in commands] == [
-        "fork", "compact", "plan", "goal", "persist",
+        "fork", "compact", "plan", "goal", "persist", "extension",
     ]
     assert commands[0]["usage"] == "/fork"
     assert commands[0]["req_method"] == "session.fork"
@@ -396,6 +396,11 @@ def test_web_slash_picker_command_contract() -> None:
     assert commands[4]["usage"] == "/persist <任务>"
     assert commands[4]["execution"] == "session.create"
     assert commands[4]["requires_session"] is False
+    assert commands[5]["name"] == "extension"
+    assert commands[5]["takesArgs"] is True
+    assert commands[5]["requires_session"] is False
+    assert commands[5]["execution"] == "rpc"
+    assert commands[5]["usage"] == "/extension <install|query|uninstall|reload> [args]"
 
 
 def test_web_slash_picker_descriptions_are_bilingual_and_backward_compatible() -> None:
@@ -406,6 +411,7 @@ def test_web_slash_picker_descriptions_are_bilingual_and_backward_compatible() -
         "切换计划模式（只读规划 → 审批 → 执行）",
         "设置、查看、暂停、恢复或清除持续目标",
         "开启永续会话并开始任务（仅限新会话，创建后不可更改）",
+        "安装、查询、卸载或热重载 V2 扩展包",
     ]
     assert [command["description"] for command in commands] == expected_legacy_descriptions
     for command in commands:

@@ -1,0 +1,22 @@
+.webui-page-host {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 960px;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0%;
+  margin-inline: auto;
+  padding: 28px 32px 40px;
+}
+
+@media (max-width: 640px) {
+  .webui-page-host {
+    padding: 20px 16px 28px;
+  }
+}
+
+/* Iframe roots fill the page without reading-width or padding constraints. */
+.webui-page-host:has(.webui-iframe) {
+  max-width: none;
+  padding: 0;
+}

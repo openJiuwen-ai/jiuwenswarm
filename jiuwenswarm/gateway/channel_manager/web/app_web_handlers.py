@@ -417,6 +417,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "group.member.add", "group.history.get",
     "initialize",
     "session.switch",
+    "session.detach",
     "session.fork",
     "acp.tool_response",
     "team.delete",
@@ -611,6 +612,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "group.member.add", "group.history.get",
     "initialize",
     "session.switch",
+    "session.detach",
     "session.fork",
     "acp.tool_response",
     "team.templates.list",
@@ -5366,6 +5368,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     from jiuwenswarm.gateway.channel_manager.web.designer_handlers import register_designer_handlers
     register_designer_handlers(channel, lambda: _resolve(agent_client))
+
+    from jiuwenswarm.gateway.channel_manager.web.webui_handlers import register_webui_handlers
+    register_webui_handlers(channel, lambda: _resolve(agent_client))
+
+    from jiuwenswarm.gateway.channel_manager.web.extension_package_handlers import register_extension_package_handlers
+
+    register_extension_package_handlers(channel, lambda: _resolve(agent_client))
 
     channel.register_method("project.list", _project_list)
     channel.register_method("project.info", _project_info)

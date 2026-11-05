@@ -542,17 +542,45 @@ class SessionMessageService:
                 "UNSUPPORTED_TARGET", "target Session does not support Agent messaging"
             )
 
+        from jiuwenswarm.server.runtime.session.session_message_events import route_session_message
+
+        async def enqueue(text: str) -> dict[str, Any]:
+            return await self._enqueue_message(
+                source, target_session_id=target_session_id, content=text,
+                input_mode=input_mode, hop_count=hop_count, source_metadata=source_metadata,
+            )
+
+        return await route_session_message(
+            source_session_id=source.session_id, target_session_id=target_session_id,
+            text=content, input_mode=input_mode, source_metadata=source_metadata,
+            target_metadata=target_metadata, commit=enqueue,
+        )
+
+    async def _enqueue_message(
+        self,
+        source: SessionMessageSource,
+        *,
+        target_session_id: str,
+        content: str,
+        input_mode: str,
+        hop_count: int,
+        source_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep the original mailbox operation behind both delivery hooks."""
         owner_scope_id = str(source.user_id or "local").strip() or "local"
         async with self._target_state_lock:
             if target_session_id in self._blocked_targets:
                 raise SessionMessagingError(
                     "NOT_FOUND_OR_FORBIDDEN", "target Session is being deleted"
                 )
-            current_target_metadata = await asyncio.to_thread(
-                self._session_metadata, target_session_id
+            current_source_metadata, current_target_metadata = await asyncio.gather(
+                asyncio.to_thread(self._session_metadata, source.session_id),
+                asyncio.to_thread(self._session_metadata, target_session_id),
             )
             if (
-                not current_target_metadata
+                not current_source_metadata or not current_target_metadata
+                or not self._owner_matches(current_source_metadata, source.user_id)
+                or not self._supported(current_source_metadata)
                 or not self._owner_matches(current_target_metadata, source.user_id)
                 or not self._supported(current_target_metadata)
             ):

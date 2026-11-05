@@ -569,6 +569,8 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     assert runtime_rail.runtime_paths["task_outputs_dir"] == str(task_root / "outputs")
     assert deep_config.cwd == str(task_root / "work")
     assert deep_config.project_root == str(task_root)
+    assert adapter._session_workspace_snapshot.runtime_workspace_root == task_root
+    assert adapter._session_workspace_snapshot.is_projectless is True
 
     explicit_project = tmp_path / "explicit-project"
     explicit_project.mkdir()
@@ -591,6 +593,8 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     }
     assert deep_config.cwd == str(explicit_project)
     assert deep_config.project_root == str(explicit_project)
+    assert adapter._session_workspace_snapshot.runtime_workspace_root == explicit_project
+    assert adapter._session_workspace_snapshot.is_projectless is False
 
 
 def test_agent_projectless_resolution_does_not_promote_legacy_cwd(tmp_path):
@@ -747,3 +751,42 @@ async def test_manager_project_identity_respects_explicit_and_admitted_values(
     assert vars(request) == original_fields
     assert request.params is params
     assert params == original_params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.code.normal", "agent.code.plan"])
+async def test_deep_code_profile_keeps_a_bound_workspace_snapshot(tmp_path, monkeypatch, mode):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    default_workspace = tmp_path / "code-workspace"
+    default_workspace.mkdir()
+    internal = tmp_path / "internal"
+    internal.mkdir()
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "tasks"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(tmp_path / "registry"))
+    monkeypatch.setattr(interface_deep, "get_default_project_session_workspace_dir", lambda sid: default_workspace)
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = SimpleNamespace(ability_manager=SimpleNamespace(add=lambda *_: None))
+    adapter._workspace_dir = str(internal)
+    adapter._project_dir = None
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "en")
+    monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda sid: "web")
+    monkeypatch.setattr(adapter, "_schedule_runtime_state_write", lambda **kw: None)
+    monkeypatch.setattr(adapter, "_sync_a4p_tools_for_runtime", lambda *args: None)
+    monkeypatch.setattr(adapter, "_update_rails_for_mode", AsyncMock())
+    monkeypatch.setattr(adapter, "_set_user_interaction_enabled", AsyncMock())
+    monkeypatch.setattr(adapter, "_update_tools_for_mode", AsyncMock())
+    monkeypatch.setattr(adapter, "_update_session_tools", AsyncMock())
+    monkeypatch.setattr(adapter, "_refresh_acp_runtime_tools", lambda *args: None)
+    monkeypatch.setattr(adapter, "_update_prompt_for_mode", lambda *args: None)
+    await adapter._update_runtime_config(adapter._RuntimeConfig(session_id="s1", mode="agent.work.normal"))
+    previous = adapter._session_workspace_snapshot
+    assert previous is not None
+    await adapter._update_runtime_config(adapter._RuntimeConfig(session_id="s1", mode=mode))
+    paths = adapter._session_workspace_snapshot
+    assert paths is not None
+    assert paths.runtime_workspace_root == default_workspace
+    assert paths.cwd == default_workspace
+    assert paths.is_projectless is True
+    await adapter._apply_runtime_config(adapter._RuntimeConfig(session_id="s1", mode=mode), bind_request=False)
+    assert adapter._session_workspace_snapshot is paths

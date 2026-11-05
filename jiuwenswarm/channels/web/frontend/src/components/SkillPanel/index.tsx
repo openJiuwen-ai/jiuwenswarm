@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
@@ -668,7 +669,7 @@ export function SkillPanel({
     async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const uploadResp = await fetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
+      const uploadResp = await gatewayFetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
         throw createUploadError(uploadData.code, uploadResp.status);

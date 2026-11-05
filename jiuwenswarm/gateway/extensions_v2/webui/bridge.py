@@ -1,0 +1,385 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Application UI and browser commands for the local Gateway integration."""
+
+from __future__ import annotations
+
+import hashlib
+import asyncio
+import json
+import re
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
+from uuid import uuid4
+
+from openjiuwen.core.events import Event, EventHandlerOps, EventHandlerOpsBuilder, SessionContext
+
+from jiuwenswarm.gateway.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestInput, GatewayRequestOutput, WEBUI_DISPATCH_METHOD
+from jiuwenswarm.gateway.extensions_v2.webui.models import (
+    RenderNode, RenderTarget, RenderStatus, UiActionInput, UiActionOutput, UiRenderInput, UiRenderOutput,
+)
+from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS
+from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
+
+SLOTS = frozenset({"application.entry", "application.sidebar.footer"})
+ASSET_PREFIX = "/extension-assets/"
+IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~\da-z-]+$", re.IGNORECASE | re.ASCII)
+FORBIDDEN = frozenset({"__proto__", "prototype", "constructor"})
+_CALLER: ContextVar[tuple[str, str] | None] = ContextVar("gateway_browser_caller", default=None)
+
+
+def json_copy(value: Any, *, maximum: int = 96 * 1024, depth: int = 16) -> Any:
+    """Validate bounded, finite JSON and isolate it from its producer."""
+    def visit(item: Any, level: int) -> None:
+        if level > depth:
+            raise ValueError("JSON nesting limit exceeded")
+        if isinstance(item, dict):
+            if any(not isinstance(key, str) or key in FORBIDDEN for key in item):
+                raise ValueError("invalid object key")
+            for member in item.values():
+                visit(member, level + 1)
+        elif isinstance(item, list):
+            for member in item:
+                visit(member, level + 1)
+        elif item is not None and not isinstance(item, (str, bool, int, float)):
+            raise ValueError("value is not JSON")
+    visit(value, 0)
+    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    if len(encoded.encode("utf-8")) > maximum:
+        raise ValueError("JSON byte limit exceeded")
+    return json.loads(encoded)
+
+
+def tree_nodes(root: RenderNode) -> dict[str, RenderNode]:
+    """Index the authoritative render snapshot using browser node paths."""
+    nodes: dict[str, RenderNode] = {}
+
+    def walk(node: RenderNode, key: str) -> None:
+        nodes[key] = node
+        for index, child in enumerate(node.children):
+            walk(child, f"{key}.{index}")
+        field = "children" if node.component == "Tabs" else "label" if node.component == "Dropdown" else ""
+        if field:
+            for index, item in enumerate(node.props.get("items", ())):
+                content = item.get(field, ())
+                if isinstance(content, (list, tuple)):
+                    for child_index, child in enumerate(content):
+                        walk(child, f"{key}.items.{index}.{field}.{child_index}")
+
+    walk(root, "0")
+    return nodes
+
+
+@dataclass
+class BrowserConnection:
+    """State owned by one live browser socket."""
+
+    ws: Any
+    epoch: str = field(default_factory=lambda: uuid4().hex)
+    declaration_signature: str = ""
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+class BrowserBridge:
+    """Bind package operations to trusted connection and package identities."""
+
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+        self.connections: dict[str, BrowserConnection] = {}
+        self.generations: dict[str, str] = {}
+        self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
+
+    @property
+    def enabled(self) -> bool:
+        return any(package.client for package in self.runtime.active_packages())
+
+    def validate_package(self, package) -> None:
+        """Validate browser declarations before publication."""
+        if not package.client:
+            return
+        if set(package.client) != {"requestBindings"}:
+            raise ValueError("client only accepts requestBindings")
+        bindings = package.client["requestBindings"]
+        if not isinstance(bindings, list):
+            raise ValueError("requestBindings must be a list")
+        targets: list[tuple[str, list[str]]] = []
+        for active in self.runtime.active_packages():
+            if active.package_id != package.package_id:
+                for binding in active.client.get("requestBindings", []):
+                    target = binding["target"]
+                    targets.append((binding["type"], [target["name"].lower()] if binding["type"] == "http" else target["path"]))
+        for binding in json_copy(bindings):
+            if not isinstance(binding, dict) or set(binding) != {"type", "source", "target"}:
+                raise ValueError("invalid request binding")
+            source, target = binding["source"], binding["target"]
+            if not isinstance(source, dict) or set(source) - {"key", "path"}:
+                raise ValueError("invalid binding source")
+            self._storage_key(source.get("key"))
+            self._path(source.get("path", []))
+            if not isinstance(target, dict) or not isinstance(target.get("prefix", ""), str):
+                raise ValueError("invalid binding target")
+            if binding["type"] == "http":
+                name = target.get("name")
+                if (set(target) - {"location", "name", "prefix"} or target.get("location") != "header"
+                        or not isinstance(name, str) or not HEADER_NAME.fullmatch(name)):
+                    raise ValueError("invalid HTTP binding")
+                parts = [name.lower()]
+            elif binding["type"] == "websocket":
+                parts = target.get("path")
+                self._path(parts)
+                if (set(target) - {"location", "path", "prefix"} or target.get("location") != "message"
+                        or len(parts) < 2 or parts[0] != "request_context"):
+                    raise ValueError("invalid WebSocket binding")
+            else:
+                raise ValueError("unsupported binding transport")
+            for transport, existing in targets:
+                length = min(len(parts), len(existing))
+                if transport == binding["type"] and parts[:length] == existing[:length]:
+                    raise ValueError("request binding targets overlap")
+            targets.append((binding["type"], parts))
+        items = package.ui.get("items", [])
+        if package.ui.get("apiVersion") != 1 or not isinstance(items, list) or not items:
+            raise ValueError("browser package needs ui.apiVersion and contributions")
+        if any(not isinstance(item, dict) or item.get("type") != "web.slot.contribution"
+               or item.get("slot") not in SLOTS for item in items):
+            raise ValueError("unsupported local application contribution")
+
+    def published(self, package_id: str, generation: str) -> None:
+        if any(package.package_id == package_id and package.client for package in self.runtime.active_packages()):
+            self.generations[package_id] = generation
+
+    def frame_generation(self, package_id: str) -> str | None:
+        """Keep client frames attributed to the activation that initiated them."""
+        caller = _CALLER.get()
+        return caller[1] if caller is not None and caller[0] == package_id else self.generations.get(package_id)
+
+    def build_render_guard_handler(self):
+        """Reject inactive client calls before the authoritative render tree changes."""
+        async def guard(event, ops, next_handler):
+            del ops
+            request = event.event_input
+            caller = _CALLER.get()
+            if isinstance(request, UiRenderInput) and caller is not None and caller[0] == request.target.package_id:
+                package_id, generation = caller
+                if self.generations.get(package_id) != generation:
+                    return UiRenderOutput(status=RenderStatus.REJECTED)
+            return await next_handler(event)
+        return guard
+
+    @contextmanager
+    def caller_scope(self, package_id: str, generation: str):
+        """Keep delayed operations bound to the registration that started them."""
+        token = _CALLER.set((package_id, generation))
+        try:
+            yield
+        finally:
+            _CALLER.reset(token)
+
+    def released(self, package_id: str) -> None:
+        self.generations.pop(package_id, None)
+        self.runtime.registry.drop_package(package_id)
+
+    async def connect(self, ws: Any, connection_id: str) -> None:
+        """Deliver trusted declarations before processing a business frame."""
+        connection = self.connections.setdefault(connection_id, BrowserConnection(ws))
+        async with connection.lock:
+            await self._declare(connection)
+
+    async def _declare(self, connection: BrowserConnection) -> None:
+        packages = [{"packageId": package.package_id, "activationGeneration": self.generations[package.package_id],
+                     "requestBindings": package.client["requestBindings"]}
+                    for package in self.runtime.active_packages() if package.client]
+        signature = json.dumps(packages, sort_keys=True)
+        if signature != connection.declaration_signature:
+            await self.runtime.channel.send_event(connection.ws, "client.declarations", {
+                "clientProtocolVersion": 1, "gatewayInstanceId": self.gateway_id,
+                "connectionEpoch": connection.epoch, "packages": packages,
+            })
+            connection.declaration_signature = signature
+
+    def drop_connection(self, connection_id: str) -> None:
+        self.connections.pop(connection_id, None)
+
+    def register_events(self, bus) -> None:
+        async def core(event, ops, next_handler):
+            del ops, next_handler
+            if not isinstance(event.event_input, UiActionInput):
+                raise TypeError("UI events require UiActionInput")
+            return UiActionOutput(accepted=False, status="unhandled")
+        for event_name in sorted(UPSTREAM_EVENTS):
+            bus.register_event_type(event_name, match_pattern_subset, core)
+
+    def build_request_dispatch_handler(self):
+        """Dispatch application UI only after the USER request policy continues."""
+        async def dispatch_request(event, ops, next_handler):
+            request = event.event_input
+            if (not self.enabled or not isinstance(request, GatewayRequestInput)
+                    or request.transport != "websocket" or request.method != WEBUI_DISPATCH_METHOD):
+                return await next_handler(event)
+            receipt = await self.dispatch(request, ops.session_context)
+            if receipt is None:
+                return await next_handler(event)
+            response = {"accepted": receipt.accepted, "status": receipt.status}
+            if receipt.code:
+                response["code"] = receipt.code
+            return GatewayRequestOutput(handled=True, route="consume", response=response)
+        return dispatch_request
+
+    def build_ops_handler(self):
+        async def asset_url(ops, path: str):
+            package, _ = self._caller(ops)
+            self.asset_file(package.package_id, self.generations[package.package_id], path)
+            return f"{ASSET_PREFIX}{package.package_id}/{self.generations[package.package_id]}/{path}"
+        async def storage_set(ops, key: str, value: Any):
+            return await self.operation(ops, "local_storage.set", {"key": key, "value": value})
+        async def storage_delete(ops, key: str):
+            return await self.operation(ops, "local_storage.delete", {"key": key})
+        async def page_reload(ops):
+            return await self.operation(ops, "page.reload", {})
+        async def build(event, ops, next_handler):
+            del ops
+            builder = await next_handler(event)
+            if not isinstance(builder, EventHandlerOpsBuilder):
+                raise TypeError("ops.build must return EventHandlerOpsBuilder")
+            builder.add_method("ui", "asset_url", asset_url)
+            builder.add_namespace("client")
+            builder.add_method("client", "local_storage_set", storage_set)
+            builder.add_method("client", "local_storage_delete", storage_delete)
+            builder.add_method("client", "page_reload", page_reload)
+            return builder
+        return build
+
+    def _caller(self, ops: EventHandlerOps):
+        metadata = ops.session_context.metadata if ops.session_context else {}
+        package_id = ops.package_metadata.package_id if ops.package_metadata else ""
+        package = next((item for item in self.runtime.active_packages() if item.package_id == package_id and item.client), None)
+        connection = self.connections.get(metadata.get("connection_id"))
+        if package is None or connection is None or connection.ws.closed:
+            raise ValueError("inactive package or browser connection")
+        if _CALLER.get() != (package_id, self.generations.get(package_id)):
+            raise ValueError("package call belongs to an inactive activation")
+        return package, connection
+
+    async def operation(self, ops: EventHandlerOps, method: str, params: dict[str, Any]) -> dict:
+        package, connection = self._caller(ops)
+        if method == "page.reload":
+            if params:
+                raise ValueError("page.reload does not accept parameters")
+        elif method in {"local_storage.set", "local_storage.delete"}:
+            self._storage_key(params.get("key"))
+            if method == "local_storage.set":
+                params = {"key": params["key"], "value": json_copy(params["value"], maximum=64 * 1024, depth=8)}
+        else:
+            raise ValueError("unsupported browser operation")
+        metadata = ops.session_context.metadata
+        request_id = metadata.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("browser operations require a current request id")
+        await self.runtime.channel.send_event(connection.ws, "client.operation", {
+            "clientProtocolVersion": 1, "invocation_id": request_id,
+            "connection_epoch": connection.epoch, "package_id": package.package_id,
+            "activation_generation": self.generations[package.package_id], "method": method,
+            "params": params, "deadline": int(time.time() * 1000) + 30_000,
+        })
+        return {"accepted": True, "status": "queued"}
+
+    async def dispatch(self, request, context: SessionContext) -> UiActionOutput | None:
+        params = request.params
+        target = params.get("target")
+        if not isinstance(target, Mapping):
+            return None
+        package_id = target.get("package_id", "")
+        own = [package for package in self.runtime.active_packages() if package.client]
+        if package_id and not any(package.package_id == package_id for package in own):
+            return None
+        slot_id = target.get("slot_id")
+        if slot_id not in SLOTS:
+            return None
+        if (set(params) - {"event", "target", "payload"} or set(target) - {"scope", "slot_id", "package_id", "instance_key"}
+                or target.get("scope") != "application"):
+            return UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
+        event_name = params.get("event")
+        instance_key = target.get("instance_key", "")
+        if not isinstance(instance_key, str) or (instance_key and not IDENTIFIER.fullmatch(instance_key)):
+            return UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
+        raw_payload = params.get("payload", {})
+        if not isinstance(raw_payload, Mapping):
+            return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+        payload = json_copy(dict(raw_payload), maximum=64 * 1024)
+        if event_name == "ui.ready":
+            accepted = False
+            for package in own:
+                if package_id and package_id != package.package_id:
+                    continue
+                if not any(item.get("slot") == slot_id for item in package.ui["items"]):
+                    continue
+                scoped = RenderTarget(session_id="", slot_id=slot_id, package_id=package.package_id,
+                                      instance_key=instance_key, scope="application", connection_id=request.connection_id)
+                result = await self.runtime.bus.trigger(Event(event_name, UiActionInput(
+                    event_name, scoped, MappingProxyType(payload), request.request_context,
+                )), context)
+                accepted = accepted or (isinstance(result, UiActionOutput) and result.accepted)
+            return UiActionOutput(accepted=accepted, status="ready" if accepted else "unhandled")
+        if event_name not in UPSTREAM_EVENTS or not package_id:
+            return UiActionOutput(accepted=False, status="invalid_event", code="SCHEMA_ERROR")
+        scoped = RenderTarget(session_id="", slot_id=slot_id, package_id=package_id, instance_key=instance_key,
+                              scope="application", connection_id=request.connection_id)
+        record = self.runtime.registry.get(scoped)
+        if record is None or record.root is None or payload.get("revision") != record.revision:
+            return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
+        nodes = tree_nodes(record.root)
+        if set(payload) != {"node_key", "revision", "action_id", "args", "data"}:
+            return UiActionOutput(accepted=False, status="invalid_action", code="SCHEMA_ERROR")
+        if not isinstance(payload.get("node_key"), str):
+            return UiActionOutput(accepted=False, status="invalid_action", code="SCHEMA_ERROR")
+        node = nodes.get(payload["node_key"])
+        action = (node.events or {}).get(event_name) if node else None
+        if (not action or payload["action_id"] != action["id"] or payload["args"] != action.get("args", {})
+                or not self._valid_action(node, event_name, payload["data"], nodes)):
+            return UiActionOutput(accepted=False, status="invalid_action", code="SCHEMA_ERROR")
+        result = await self.runtime.bus.trigger(Event(event_name, UiActionInput(
+            event_name, scoped, MappingProxyType(payload), request.request_context,
+        )), context)
+        return result if isinstance(result, UiActionOutput) else UiActionOutput(accepted=False, status="unhandled")
+
+    @staticmethod
+    def _valid_action(node: RenderNode, event: str, data: Any, nodes: dict[str, RenderNode]) -> bool:
+        if not validate_event_data(node.component, event, data, node.props):
+            return False
+        if node.component != "Button" or "form" not in node.props:
+            return True
+        forms = [item for item in nodes.values() if item.component == "Form"
+                 and item.props.get("name") == node.props["form"]]
+        if len(forms) != 1:
+            return False
+        fields = {item.props["name"] for item in tree_nodes(forms[0]).values() if item.component == "Form.Item"}
+        return set(data) == fields
+
+    def asset_file(self, package_id: str, generation: str, relative: str) -> Path:
+        if self.generations.get(package_id) != generation:
+            raise ValueError("inactive package asset")
+        package = next(item for item in self.runtime.active_packages() if item.package_id == package_id and item.client)
+        root = (package.root / "assets").resolve()
+        path = (root / relative).resolve()
+        if not root.is_relative_to(package.root.resolve()) or not path.is_relative_to(root) or path == root or not path.is_file():
+            raise ValueError("asset path is outside the package")
+        return path
+
+    @staticmethod
+    def _storage_key(key: Any) -> None:
+        if not isinstance(key, str) or not key.strip() or len(key.encode("utf-8")) > 128:
+            raise ValueError("invalid localStorage key")
+
+    @staticmethod
+    def _path(parts: Any) -> None:
+        if (not isinstance(parts, list) or len(parts) > 8
+                or any(not isinstance(part, str) or not part or part in FORBIDDEN for part in parts)):
+            raise ValueError("invalid binding path")

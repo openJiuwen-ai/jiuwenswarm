@@ -23,6 +23,7 @@ from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.workspace_files import SessionWorkspaceFiles
 
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
@@ -206,6 +207,8 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
+from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
+from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
 
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
@@ -1168,6 +1171,11 @@ class AgentWebSocketServer:
             plan_controller=_SERVER_PLAN_CONTROLLER,
         )
         self._agent_manager = self._runtime.agent_manager
+        self.session_workspace_files = SessionWorkspaceFiles(
+            snapshot=lambda channel_id, session_id: self._agent_manager.get_session_workspace_paths(
+                channel_id, session_id,
+            ),
+        )
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
@@ -1197,6 +1205,8 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+            WebUIDispatchAdapter(),
+            PackageManagementAdapter(),
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2084,6 +2094,8 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+                    WebUIDispatchAdapter(),
+                    PackageManagementAdapter(),
                 ):
                     self._adapter_registry.register(adapter)
 
@@ -2144,13 +2156,23 @@ class AgentWebSocketServer:
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+        from jiuwenswarm.server.runtime.session.attach_notifications import (
+            ExtensionSessionAttachParticipant,
+        )
+        from jiuwenswarm.server.runtime.session.end_notifications import (
+            ExtensionSessionEndParticipant,
+        )
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
 
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
-        registry = RuntimeParticipantRegistry()
+        self._session_association_participant = ExtensionSessionAttachParticipant()
+        registry = RuntimeParticipantRegistry(host_run_end=(ExtensionSessionEndParticipant(
+            release_attachments=self._session_association_participant.release_for_end,
+        ),))
+        registry.register_host_foreground(self._session_association_participant)
         lease = owner.attach_runtime(registry)
         return AgentRuntime(
             agent_manager=agent_manager,
@@ -2495,6 +2517,9 @@ class AgentWebSocketServer:
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack",
+                # A released view only cleans up its existing association;
+                # its exact identity is checked even if the Session archived.
+                "session.detach",
             }
             # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
             # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。
@@ -2546,6 +2571,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SESSION_DETACH:
+                await self._handle_session_detach(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
@@ -4961,6 +4989,35 @@ class AgentWebSocketServer:
                 ws, encode_agent_response_for_wire(response, response_id=request.request_id)
             )
 
+    async def _handle_session_detach(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Release one current view identity without ending its Session."""
+        params = request.params if isinstance(request.params, dict) else {}
+        participant = getattr(self, "_session_association_participant", None)
+        if participant is None:
+            ok, payload = False, {"error": "Session associations are not ready", "code": "NOT_READY"}
+        else:
+            try:
+                detached = await participant.detach(
+                    channel_id=request.channel_id,
+                    session_id=params.get("session_id"),
+                    view_id=params.get("view_id"),
+                    attachment_id=params.get("attachment_id"),
+                )
+                ok, payload = True, {
+                    "session_id": params["session_id"], "surface_id": params["view_id"],
+                    "attachment_id": params["attachment_id"], "detached": detached,
+                }
+            except ValueError as exc:
+                ok, payload = False, {"error": str(exc), "code": "BAD_REQUEST"}
+            except LookupError as exc:
+                ok, payload = False, {"error": str(exc), "code": "STALE_ATTACHMENT"}
+        response = AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id, ok=ok,
+            payload=payload, metadata=request.metadata,
+        )
+        async with send_lock:
+            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Translate ``session.switch`` between WebSocket wire and Runtime."""
         params = request.params if isinstance(request.params, dict) else {}
@@ -6254,7 +6311,10 @@ class AgentWebSocketServer:
             timestamp = _dt.datetime.now().timestamp()
 
         try:
-            await run_history_io(append_history_record,
+            from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
+
+            record_kwargs = dict(
                 session_id=session_id,
                 request_id=request_id,
                 channel_id=channel_id,
@@ -6264,6 +6324,17 @@ class AgentWebSocketServer:
                 event_type=event_type,
                 mode=mode,
             )
+            handled, append_result = await try_append_platform_history(
+                record_kwargs, source="history.append_record",
+                idempotency_key=f"history.append_record:{request_id}:{role}",
+            )
+            if handled:
+                if append_result is None:
+                    raise SessionHistoryError("INVALID_MESSAGE")
+                if append_result.status == "rejected":
+                    raise SessionHistoryError("APPEND_REJECTED")
+            else:
+                await run_history_io(append_history_record, **record_kwargs)
             # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
             # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
             # 的 title 回填空标题；已有标题（正常 run 的 auto_title）不覆盖。
@@ -8396,6 +8467,16 @@ class AgentWebSocketServer:
                 execution_subject=execution_subject,
             )
             try:
+                # TODO(compact): Keep command.compact on its original path; extension integration is deferred.
+                # options = {"session_id": session_id, "return_state": True,
+                           # "processor_types": _MANUAL_COMPACT_PROCESSOR_TYPES}
+                # instructions = params.get("instructions")
+                # if instructions is not None:
+                    # if not isinstance(instructions, str):
+                        # raise ValueError("compact instructions must be a string")
+                    # options["instructions"] = instructions
+                # result_data = await agent.compress_context(**options)
+
                 result_data = await agent.compress_context(
                     session_id=session_id,
                     return_state=True,
@@ -8505,6 +8586,8 @@ class AgentWebSocketServer:
                     payload={
                         "result": result,
                         "stats": stats,
+                        # TODO(compact): Do not add extension decisions to the native command response yet.
+                        # **({"skip": result_data["skip"]} if result_data.get("skip") else {}),
                         **({"summary": summary} if summary else {}),
                         **({"compact_summary": summary} if summary else {}),
                     },

@@ -81,6 +81,7 @@ class ReqMethod(Enum):
     SESSION_PREVIEW = "session.preview"
     SESSION_CREATE = "session.create"
     SESSION_SWITCH = "session.switch"
+    SESSION_DETACH = "session.detach"
     SESSION_DELETE = "session.delete"
     SESSION_INPUT_INTENT = "session.input.intent"
     SESSION_RENAME = "session.rename"
@@ -173,6 +174,16 @@ class ReqMethod(Enum):
     DESIGNER_RUN_GET = "designer.run.get"
     DESIGNER_RUN_PAUSE = "designer.run.pause"
     DESIGNER_RUN_CANCEL = "designer.run.cancel"
+
+    # WebUI 扩展：上行事件统一入口，事件名在 params.event。
+    WEBUI_DISPATCH = "webui.dispatch"
+    # Internal Gateway lifecycle notification, not a browser request method.
+    WEBUI_CONNECTION_CLOSED = "webui.connection.closed"
+
+    EXTENSIONS_V2_QUERY = "extensions.v2.query"
+    EXTENSIONS_V2_INSTALL = "extensions.v2.install"
+    EXTENSIONS_V2_UNINSTALL = "extensions.v2.uninstall"
+    EXTENSIONS_V2_RELOAD = "extensions.v2.reload"
 
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)

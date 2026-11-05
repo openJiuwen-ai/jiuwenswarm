@@ -13,6 +13,7 @@ import logging
 import os
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,10 @@ class AgentAdapter(Protocol):
     The Facade (JiuWenSwarm) depends only on this interface; individual
     adapter modules implement it without any coupling to each other.
     """
+
+    def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Return an existing session's bound paths without creating runtime."""
+        ...
 
     async def create_instance(self, config: dict[str, Any] | None = None, *,
                               mode: str = "claw", sub_mode: str = None) -> None:
