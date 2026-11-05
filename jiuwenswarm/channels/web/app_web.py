@@ -1884,9 +1884,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         """
         query = parse_qs(parsed.query)
         token = (query.get("token") or [""])[0]
-        if not token and "multipart/form-data" in (self.headers.get("Content-Type") or "").lower():
-            self._handle_designer_upload()
-            return
         if not token:
             self._write_json(400, {"error": "missing_token"})
             return
@@ -1965,36 +1962,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(raw)
-
-    def _handle_designer_upload(self) -> None:
-        """Design canvas asset upload (multipart ``file``, no token).
-
-        The body is always read (or drained) before replying: answering while the
-        browser is still sending resets the connection and fetch() reports
-        "Failed to fetch" instead of the status.
-        """
-        from jiuwenswarm.channels.web.designer_upload_http import (
-            MAX_DESIGNER_UPLOAD_BYTES,
-            designer_upload_dir,
-            handle_designer_upload_http,
-        )
-
-        length = self._parse_content_length()
-        if length > MAX_DESIGNER_UPLOAD_BYTES:
-            remaining = length
-            while remaining > 0:
-                chunk = self.rfile.read(min(remaining, 1024 * 1024))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-            self._write_json(413, {"error": "file_too_large", "files": [], "errors": [{"error": "file_too_large"}]})
-            return
-        status, payload = handle_designer_upload_http(
-            content_type=self.headers.get("Content-Type", ""),
-            body=self._read_request_body(),
-            upload_dir=designer_upload_dir(Path(self.workspace_root)),
-        )
-        self._write_json(status, payload)
 
     def _handle_skill_sync_post(self, parsed) -> None:
         """POST /skill-sync/{diff,package,apply}：Server/Client 分离部署技能同步."""
