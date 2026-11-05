@@ -155,6 +155,17 @@ async def test_self_hosted_host_without_profile_gets_vllm_wire(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["10.20.30.40", "localhost", "llm-gateway"])
+async def test_self_hosted_deepseek_disables_thinking(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    model = "DeepSeek-V4.1-Flash"
+    _settings(monkeypatch, {"api_base": f"http://{host}:8000/v1", "model_name": model})
+    wire = _OpenAIWire([_completion(model, "ok")]).install(monkeypatch)
+
+    assert (await _call())["ok"] is True
+    assert wire.extra_body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
 async def test_generic_openai_profile_on_ip_still_gets_vllm_wire(monkeypatch: pytest.MonkeyPatch) -> None:
     _settings(
         monkeypatch,
@@ -257,10 +268,11 @@ async def test_minimal_level_is_used_when_listed(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("api_base", ["https://api.moonshot.cn/v1", "http://10.20.30.40:8000/v1"])
 async def test_always_on_model_sends_no_reasoning_and_reads_reasoning_content(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, api_base: str,
 ) -> None:
-    _settings(monkeypatch, {"api_base": "https://api.moonshot.cn/v1", "model_name": "kimi-k2-thinking"})
+    _settings(monkeypatch, {"api_base": api_base, "model_name": "kimi-k2-thinking"})
     wire = _OpenAIWire([_completion("kimi-k2-thinking", "", reasoning_content='{"plan": 1}')]).install(monkeypatch)
 
     result = await _call()
