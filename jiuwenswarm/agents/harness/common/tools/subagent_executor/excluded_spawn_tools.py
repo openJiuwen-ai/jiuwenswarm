@@ -81,7 +81,14 @@ def _register_fork_inherited_tool_filter() -> None:
             exc_info=True,
         )
         return
-    register_inherited_tool_filter(filter_excluded_spawn_tools)
+    try:
+        register_inherited_tool_filter(filter_excluded_spawn_tools)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[excluded_spawn_tools] fork inherited-tool filter registration failed",
+            exc_info=True,
+        )
+        return
     _FILTER_REGISTERED = True
 
 
