@@ -860,7 +860,11 @@ def register_video_live_handler(
                 scope.removeprefix("task-duplex:"), owner)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
         except Exception as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=duplex_failure(exc, stage="Core 回执", request_id=req_id),
+                code="CORE_RECEIPT_REJECTED",
+            )
 
     handlers = {
         "video.realtime.config": _realtime_config,
