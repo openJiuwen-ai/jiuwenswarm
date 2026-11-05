@@ -870,6 +870,66 @@ test('organization details show nested tasks, resolved ownership and actionable 
   );
 });
 
+test('Summary Team and its task appear below the Owner and root task in organization panels', async () => {
+  // Same relationships as web_1a1a58aaf21_cbda90ef0f13: the Summary Task has no parent.
+  const teams = [
+    { team_id: 'summary', display_name: 'Organization Summary Team' },
+    { team_id: 'expert', display_name: 'Technical Team' },
+    { team_id: 'owner', is_owner: true, display_name: 'Business Team' },
+  ];
+  const tasks = [
+    { task_id: 'summary-task', task_type: 'organization.summary', parent_task_id: null, root_task_id: 'root',
+      status: 'COMPLETED', assignment: { team_id: 'summary' } },
+    { task_id: 'root', root_task_id: 'root', status: 'COMPLETED', assignment: { team_id: 'owner' } },
+    { task_id: 'technical-task', parent_task_id: 'root', status: 'COMPLETED', assignment: { team_id: 'expert' } },
+  ];
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'org.snapshot' ? { organization: { organization_id: 'org', owner_team_id: 'owner', leaders: teams }, tasks }
+        : method === 'agent_groups.list' ? { agentGroups: [] } : { members: [], tasks: [] },
+    async ({ root }) => {
+      const rootTask = document.querySelector('[data-task-id="root"]');
+      const summaryTask = document.querySelector('[data-task-id="summary-task"]');
+      assert.equal(rootTask.dataset.variant, 'root');
+      assert.equal(summaryTask.dataset.variant, 'sub');
+      assert.ok(rootTask.querySelector('[data-testid="team-area-org-task-children"]').contains(summaryTask));
+      assert.equal(document.querySelectorAll('[data-testid="team-area-org-info-task-row"][data-variant="root"]').length, 1);
+      assert.equal(document.querySelector('[data-testid="team-area-org-task-progress"][data-variant="root"]').textContent.trim(), '3/3');
+      const subteams = document.querySelector('[data-testid="team-area-org-info-subteams"][data-variant="owner"]');
+      assert.equal(subteams.parentElement.firstElementChild.dataset.variant, 'owner');
+      assert.ok(subteams.querySelector('[data-testid="team-area-org-team-toggle"][data-variant="summary"]'));
+      assert.ok(subteams.querySelector('[data-testid="team-area-org-team-toggle"][data-variant="expert"]'));
+      assert.equal(subteams.querySelector('[data-testid="team-area-org-team-toggle"][data-variant="owner"]'), null);
+      for (const variant of ['compact', 'cards']) {
+        await act(async () => root.render(React.createElement(OrganizationTeamsList, { groups: [], variant })));
+        const branch = document.querySelector('[data-testid="team-area-organization-team-branch"][data-variant="owner"]');
+        assert.equal(branch.firstElementChild.dataset.variant, 'owner');
+        const children = branch.querySelector('[data-testid="team-area-organization-subteams"]');
+        assert.equal(children.querySelectorAll('[data-testid="team-area-organization-team"]').length, 2);
+        const summary = children.querySelector('[data-testid="team-area-organization-team"][data-variant="summary"]');
+        await act(async () => summary.click());
+        assert.equal(useTeamSelectorStore.getState().runtimes.session.selectedTeamId, 'summary');
+      }
+      assert.equal(tasks[0].parent_task_id, null);
+    },
+  );
+});
+
+test('summary display nesting preserves missing roots, explicit parents and cycle safety', () => {
+  const tree = buildOrganizationTaskTree([
+    { task_id: 'root' },
+    { task_id: 'other' },
+    { task_id: 'summary', task_type: 'organization.summary', root_task_id: 'root', parent_task_id: 'other' },
+    { task_id: 'missing', task_type: 'organization.summary', root_task_id: 'absent' },
+    { task_id: 'ordinary', root_task_id: 'root' },
+    { task_id: 'self', task_type: 'organization.summary', root_task_id: 'self' },
+    { task_id: 'cycle-a', task_type: 'organization.summary', root_task_id: 'cycle-b' },
+    { task_id: 'cycle-b', parent_task_id: 'cycle-a' },
+  ]);
+  assert.deepEqual(tree.map((node) => node.key), ['root', 'other', 'missing', 'ordinary', 'self', 'cycle-a', 'cycle-b']);
+  assert.deepEqual(tree[1].children.map((node) => node.key), ['summary']);
+});
+
 test('organization roster shows every expert and summary Team and navigates isolated conversations', async () => {
   const teams = [
     { team_id: 'owner', is_owner: true, display_name: 'Owner' },
@@ -893,7 +953,7 @@ test('organization roster shows every expert and summary Team and navigates isol
         assert.equal(useTeamSelectorStore.getState().runtimes.session.selectedTeamId, teamId);
         assert.equal(document.getElementById('conversation-key').textContent,
           teamId === 'owner' ? 'session' : `session::${teamId}`);
-        assert.equal(document.querySelector(`[data-variant="${teamId}"]`).getAttribute('aria-pressed'), 'true');
+        assert.equal(document.querySelector(`[data-testid="team-area-organization-team"][data-variant="${teamId}"]`).getAttribute('aria-pressed'), 'true');
         assert.ok(calls.some((call) => call.method === 'team.snapshot' && call.params.team_name === teamId));
       }
       await act(async () => useTeamSelectorStore.setState((state) => ({ runtimes: {
