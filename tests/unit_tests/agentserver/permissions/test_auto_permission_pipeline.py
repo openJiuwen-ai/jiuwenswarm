@@ -205,7 +205,7 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         cards = queue.reconcile(snapshot(state), root_session_id="session-a").cards
         assert len(cards) == 2 and executed == []
         answer = InteractiveInput()
-        answer.update(cards[0].key.invocation_id, {
+        answer.update(cards[0].key.tool_call_id, {
             "approved": case != "reject", "auto_confirm": False, "feedback": "",
         })
         dispatch = RootPermissionDispatch(queue)
@@ -256,7 +256,7 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
             assert len(remaining) == 1 and remaining[0].key == cards[1].key
             assert callbacks.count(("resume", "outer-0:target")) == 1
             next_answer = InteractiveInput()
-            next_answer.update(cards[1].key.invocation_id, {
+            next_answer.update(cards[1].key.tool_call_id, {
                 "approved": True, "auto_confirm": False, "feedback": "",
             })
             next_prepared = dispatch.prepare_resume(

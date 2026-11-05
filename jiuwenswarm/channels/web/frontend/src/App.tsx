@@ -1,4 +1,3 @@
-import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -6,6 +5,7 @@ import {
   getMultiModelCollaborationRevision,
   isMultiModelCollaborationEnabled,
 } from './features/multiModelCollaboration/featureConfig';
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.

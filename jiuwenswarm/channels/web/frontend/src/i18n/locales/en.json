@@ -1604,6 +1604,8 @@
       "running": "Compressing context",
       "completed": "Context compression completed {{count}} time(s)",
       "failed": "Context compression failed",
+      "cancelled": "Context compression cancelled",
+      "paused": "Context compression paused",
       "close": "Close context compression notice"
     },
     "elapsed": {
@@ -2082,6 +2084,8 @@
       "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
       "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
     },
+    "contextCompressionCancelled": "Context compression cancelled; it will be re-evaluated on the next request",
+    "contextCompressionPaused": "Context compression paused; it will be re-evaluated when the task resumes",
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",

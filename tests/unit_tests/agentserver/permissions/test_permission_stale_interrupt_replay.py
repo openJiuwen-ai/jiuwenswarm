@@ -67,7 +67,7 @@ async def _run_full_allow_flow(h, monkeypatch, *, mode):
         answer["answers"][0]["card_id"] = (
             h.adapter._root_permission_queue.snapshot_scope(
                 root_session_id=h.adapter._parent_session_id,
-            )[0].invocation_id
+            )[0].tool_call_id
         )
     result = await _request(h, **answer)
     assert result.ok, (result.payload, h.script.calls, h.executions)
@@ -231,7 +231,7 @@ async def _managed_voice_delegation(h, monkeypatch, query):
     """
     from contextlib import asynccontextmanager
 
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
 
     @asynccontextmanager
     async def no_binding(_request, _adapter, _inputs):

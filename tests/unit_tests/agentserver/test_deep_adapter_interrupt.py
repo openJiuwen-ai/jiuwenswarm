@@ -585,7 +585,7 @@ async def test_unconfirmed_interaction_cancel_quarantines_inflight_permission() 
     )
     answer = InteractiveInput()
     answer.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {
             "approved": True,
             "auto_confirm": False,
@@ -701,7 +701,7 @@ async def test_fresh_cutover_consumes_admitted_answer_before_late_callback() -> 
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-race", incoming)
@@ -851,7 +851,7 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
     )
     resume_input = InteractiveInput()
     resume_input.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     resume_request = AgentRequest(
@@ -921,7 +921,7 @@ def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> No
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-claimed-handoff", incoming)
@@ -980,7 +980,7 @@ async def test_permission_resume_preaccept_failure_restores_exact_pending_card(
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-preaccept", incoming)
@@ -1573,7 +1573,7 @@ def test_permission_resume_dispatch_reuses_frozen_root_context() -> None:
     )
     incoming = InteractiveInput()
     incoming.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("root-session", incoming)
