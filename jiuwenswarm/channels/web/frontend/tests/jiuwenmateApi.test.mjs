@@ -931,3 +931,20 @@ test('WeLink office setup uses colleague-scoped status, connect and disconnect R
     ['jiuwenmate.welink_office.disconnect', { agent_id: 'agent-1' }],
   ]);
 });
+
+
+test('reply mode saves independently of a deleted model and never publishes pending settings', async () => {
+  let stored = { ...wireColleague, capabilities: { ...wireColleague.capabilities, model: 'removed#9' } };
+  const api = createJiuwenMateApi(async (method, params) => {
+    if (method === JIUWENMATE_METHODS.settingsGet) return { settings: stored };
+    if (method === JIUWENMATE_METHODS.settingsUpdate) stored = { ...stored, ...params.settings };
+    if (method === JIUWENMATE_METHODS.publish) throw new Error('model is not available: model not found');
+    if (method === JIUWENMATE_METHODS.get) return { colleague: stored };
+    return {};
+  });
+  for (const mode of ['passive', 'adaptive']) {
+    const saved = await api.saveSettings('agent-1', [], { groupReplyMode: mode });
+    assert.equal(saved.groupReplyMode, mode);
+    assert.equal(saved.capabilities.model, 'removed#9');
+  }
+});
