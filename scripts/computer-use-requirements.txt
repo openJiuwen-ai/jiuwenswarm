@@ -1,0 +1,2 @@
+# Python 3.11 support: computer-use#14. Pin the merged commit after approval.
+computer-use-toolkit @ git+https://gitcode.com/openJiuwen/computer-use.git@refs/merge-requests/14/head
