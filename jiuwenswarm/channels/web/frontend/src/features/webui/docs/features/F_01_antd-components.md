@@ -402,4 +402,4 @@ WebUIBackgroundHost 在 WebUIAppRoot 中全窗口底层挂载该槽位。行为�
   5 条 MediaSurface / 背景宿主 React 用例）、test:webui-renderer 17、test:webui-runtime 19、test:webui-client 22、
   test:webui-events 93、test:webui-transport 9，均为 0 失败。
 - `npm run build` 成功（tsc 与 vite build）。
-- 内置浏览器验证了图片、视频、超时回退与清除；HTML 页面消息往返的真实浏览器验证待补，原因见 F_10。
+- 内置浏览器验证了图片、视频、超时回退与清除；HTML 页面的双向消息、错误回退与减少动态在 Chromium 157 无头模式中验证，记录见 F_10。
