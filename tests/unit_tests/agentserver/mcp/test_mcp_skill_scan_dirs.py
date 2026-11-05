@@ -84,3 +84,47 @@ def test_session_child_multiple_selections() -> None:
     roots = adapter._skill_scan_dirs()
     assert len(roots) == 3  # agent skills dir + feishu + ctrip
     assert "/ws/mcp/skills/dingtalk" not in roots
+
+
+def test_project_dir_adds_project_skill_roots_after_agent_skills_dir(tmp_path) -> None:
+    """A project set from the frontend adds its .agents/.claude skill roots.
+
+    They follow the agent skills dir (an installed Skill keeps precedence over a
+    same-named project Skill) and are listed even before they exist, so a
+    directory created mid-session is found by the next refresh.
+    """
+    from jiuwenswarm.common.utils import get_agent_skills_dir
+
+    for session_scoped in (False, True):
+        adapter = _make_adapter(session_scoped=session_scoped)
+        adapter._skill_manager = _skill_mgr_mock([])
+        adapter._project_dir = str(tmp_path)
+        roots = adapter._skill_scan_dirs()
+        assert roots == [
+            str(get_agent_skills_dir()),
+            str(tmp_path.resolve() / ".agents" / "skills"),
+            str(tmp_path.resolve() / ".claude" / "skills"),
+        ]
+
+
+def test_no_project_dir_adds_no_project_skill_roots() -> None:
+    """Without a project only the agent skills dir is scanned."""
+    adapter = _make_adapter(session_scoped=False)
+    adapter._skill_manager = _skill_mgr_mock([])
+    adapter._project_dir = None
+    assert len(adapter._skill_scan_dirs()) == 1
+
+
+def test_project_skill_roots_precede_selected_mcp_dirs(tmp_path) -> None:
+    """Project roots sit between the agent skills dir and session MCP dirs."""
+    adapter = _make_adapter(session_scoped=True, selected={"feishu"})
+    adapter._skill_manager = _skill_mgr_mock([
+        {"name": "feishu", "dir": "/ws/mcp/skills/feishu"},
+    ])
+    adapter._project_dir = str(tmp_path)
+    roots = adapter._skill_scan_dirs()
+    assert roots[1:] == [
+        str(tmp_path.resolve() / ".agents" / "skills"),
+        str(tmp_path.resolve() / ".claude" / "skills"),
+        "/ws/mcp/skills/feishu",
+    ]
