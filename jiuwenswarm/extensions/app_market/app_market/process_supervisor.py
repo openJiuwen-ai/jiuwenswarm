@@ -53,6 +53,56 @@ class ProcessSupervisor:
         self._tracked: dict[int, object] = {}
         # 存储 Popen 对象以便正确管理生命周期
         self._processes: dict[int, subprocess.Popen] = {}
+        # Retain process identities before graceful shutdown can orphan children.
+        self._children: dict[int, dict[int, psutil.Process]] = {}
+
+    def track_children(self, pid: int) -> None:
+        """Remember descendants while their parent is still available."""
+        if not _HAS_PSUTIL:
+            return
+        process = self._processes.get(pid)
+        if process is not None and process.poll() is not None:
+            return
+        try:
+            children = self._children.setdefault(pid, {})
+            for child in psutil.Process(pid).children(recursive=True):
+                children[child.pid] = child
+        except psutil.NoSuchProcess:
+            pass
+
+    async def _finish_stop(self, pid: int) -> bool:
+        """Reclaim the owned tree before dropping its tracking handles."""
+        if pid in self._tracked:
+            await self.force_kill(pid)
+        children = list(self._children.get(pid, {}).values())
+        for child in children:
+            try:
+                # Process.kill checks identity, protecting against PID reuse.
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        deadline = asyncio.get_running_loop().time() + 2
+        while True:
+            remaining = []
+            for child in children:
+                try:
+                    if child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+                        remaining.append(child)
+                except psutil.NoSuchProcess:
+                    pass
+            job_active = False
+            if sys.platform == "win32" and _HAS_WIN32JOB and pid in self._tracked:
+                accounting = win32job.QueryInformationJobObject(
+                    self._tracked[pid], win32job.JobObjectBasicAccountingInformation,
+                )
+                job_active = accounting["ActiveProcesses"] > 0
+            if not remaining and not job_active:
+                self._cleanup_tracking(pid)
+                return True
+            if asyncio.get_running_loop().time() >= deadline:
+                self._logger.warning("进程树尚未退出 pid=%d", pid)
+                return False
+            await asyncio.sleep(0.1)
 
     @staticmethod
     def script_command(script: str, interpreter: str | None, args: list[str]) -> list[str]:
@@ -159,10 +209,10 @@ class ProcessSupervisor:
     ) -> bool:
         """停止进程，返回 True 表示成功停止"""
         try:
+            self.track_children(pid)
             if not self.is_alive(pid):
                 self._logger.info("进程 %d 已不在运行", pid)
-                self._cleanup_tracking(pid)
-                return True
+                return await self._finish_stop(pid)
 
             # 如果提供停止脚本，先执行
             if stop_script:
@@ -190,9 +240,8 @@ class ProcessSupervisor:
             deadline = asyncio.get_event_loop().time() + timeout
             while asyncio.get_event_loop().time() < deadline:
                 if not self.is_alive(pid):
-                    self._cleanup_tracking(pid)
                     self._logger.info("进程 %d 已停止", pid)
-                    return True
+                    return await self._finish_stop(pid)
                 await asyncio.sleep(0.5)
 
             # 超时后强制终止
@@ -200,8 +249,7 @@ class ProcessSupervisor:
             await self.force_kill(pid)
             for _ in range(20):
                 if not self.is_alive(pid):
-                    self._cleanup_tracking(pid)
-                    return True
+                    return await self._finish_stop(pid)
                 await asyncio.sleep(0.1)
             return False
 
@@ -283,6 +331,7 @@ class ProcessSupervisor:
 
     def _cleanup_tracking(self, pid: int) -> None:
         """清理进程追踪记录"""
+        self._children.pop(pid, None)
         tracked = self._tracked.pop(pid, None)
         if tracked is not None and sys.platform == "win32" and _HAS_WIN32JOB:
             try:

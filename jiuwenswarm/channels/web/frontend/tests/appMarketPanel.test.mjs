@@ -29,7 +29,11 @@ await i18next
 const { AppMarketPanel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/index.mjs');
 const { webClient } = await import('../node_modules/.cache/app-market-panel/services/webClient.mjs');
 const { webAppViews } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/webAppViews.mjs');
-test.afterEach(() => webAppViews.close('gomoku'));
+const { closeAppMarketView } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/appMarketViews.mjs');
+test.afterEach(async () => {
+  await closeAppMarketView('gomoku');
+  await closeAppMarketView('second');
+});
 const app = {
   app_id: 'gomoku',
   name: 'Gomoku',
@@ -46,6 +50,10 @@ const running = {
   created_at: '2026-10-23',
   url: 'http://127.0.0.1:8080/gomoku.html',
 };
+const secondApp = { ...app, app_id: 'second', name: 'Second' };
+const secondInstance = { ...running, app_id: 'second', instance_id: 'second-active', port: 8081,
+  url: 'http://127.0.0.1:8081/index.html', web_url: 'http://workswarm-app-second.localhost:8081/index.html' };
+const card = id => document.querySelector(`[data-testid="app-market-card"][data-variant="${id}"]`);
 const find = (id) => document.querySelector(`[data-testid="${id}"]`);
 const click = async (element) => act(async () => element.click());
 const tick = async () =>
@@ -83,6 +91,11 @@ async function mount(handler) {
   window.confirm = () => true;
   const root = createRoot(document.getElementById('root'));
   await act(async () => root.render(React.createElement(AppMarketPanel)));
+  let mounted = true;
+  const unmount = async () => {
+    if (mounted) await act(async () => root.unmount());
+    mounted = false;
+  };
   return {
     calls,
     opened,
@@ -90,8 +103,9 @@ async function mount(handler) {
       await act(async () => intervals[0]());
       await tick();
     },
+    unmount,
     close: async () => {
-      await act(async () => root.unmount());
+      await unmount();
       webClient.request = previous;
       globalThis.setInterval = previousInterval;
     },
@@ -99,6 +113,50 @@ async function mount(handler) {
 }
 
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
+
+for (const action of ['stop', 'delete']) {
+  test(`${action} closes only the selected desktop application when two apps are running`, async () => {
+    const closed = [];
+    const windows = new Map();
+    let instances = [running, secondInstance];
+    window.jiuwenDesktop = {
+      isElectron: true,
+      openMarketApp: async (appId, url) => { windows.set(appId, url); return true; },
+      closeMarketApp: async appId => { closed.push(appId); windows.delete(appId); return true; },
+    };
+    const ctx = await mount((method, params) => {
+      if (method === 'app_market.list') return { apps: [app, secondApp] };
+      if (method === 'app_market.stop' || method === 'app_market.delete') {
+        instances = instances.filter(item => item.app_id !== secondApp.app_id);
+        return { stopped: true, deleted: true };
+      }
+      return { instances };
+    });
+    try {
+      await click(card('gomoku').querySelector('[data-testid="app-market-open"]'));
+      const secondCard = card('second');
+      await click(secondCard.querySelector('[data-testid="app-market-open"]'));
+      assert.deepEqual([...windows], [[app.app_id, running.url], [secondApp.app_id, secondInstance.url]]);
+      window.dispatchEvent(new CustomEvent('jiuwenclaw-desktop-browser-tab-change', {
+        detail: { sessionId: '', flags: { requested: true, closed: true } },
+      }));
+      await tick();
+      assert.equal(ctx.calls.some(({ method }) => method === 'app_market.stop'), false);
+      await click(secondCard.querySelector(`[data-testid="app-market-${action === 'stop' ? 'toggle' : 'delete'}"]`));
+      assert.deepEqual(closed, ['second']);
+      assert.deepEqual([...windows], [[app.app_id, running.url]]);
+      const requests = ctx.calls.filter(({ method }) => ['app_market.stop', 'app_market.delete'].includes(method));
+      assert.deepEqual(requests, [{
+        method: `app_market.${action}`,
+        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second' },
+      }]);
+      assert.equal(instances.some(item => item.instance_id === running.instance_id), true);
+    } finally {
+      delete window.jiuwenDesktop;
+      await ctx.close();
+    }
+  });
+}
 
 test('application cards reuse market layout and display metadata with an accessible stopped icon', async () => {
   const ctx = await mount((method) => response(method));
@@ -161,6 +219,32 @@ test('starting is immediate, prevents duplicate starts and opens the returned en
   }
 });
 
+test('a starting app does not replace a page the user opened later', async () => {
+  const pending = deferred();
+  const instances = [secondInstance];
+  const ctx = await mount((method) => {
+    if (method === 'app_market.list') return { apps: [app, secondApp] };
+    if (method === 'app_market.start') return pending.promise;
+    return { instances };
+  });
+  try {
+    await click(card('gomoku').querySelector('[data-testid="app-market-toggle"]'));
+    assert.equal(card('gomoku').querySelector('[data-testid="app-market-status"]').ariaLabel, 'Starting');
+    // The user explicitly switches to another running app while the start is
+    // still in flight; its completion must not take the pane back.
+    await click(card('second').querySelector('[data-testid="app-market-open"]'));
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'second');
+    await act(async () => pending.resolve(running));
+    await tick();
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'second');
+    assert.equal(document.querySelector('[data-testid="app-market-web-view"][data-variant="gomoku"]'), null);
+    assert.equal(card('gomoku').querySelector('[data-testid="app-market-status"]').ariaLabel, 'Running');
+    assert.ok(card('gomoku').querySelector('[data-testid="app-market-open"]'));
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('stop shows stopping immediately and returns to stopped when the operation completes', async () => {
   const pending = deferred();
   let instances = [running];
@@ -206,15 +290,37 @@ test('initial load failures are visible instead of appearing as an empty success
   }
 });
 
-test('polling updates an externally stopped app without restarting it', async () => {
-  let instances = [running];
-  const ctx = await mount((method) => response(method, instances));
+test('Web polling removes only the stopped instance, even after leaving the market', async () => {
+  let instances = [running, secondInstance];
+  const ctx = await mount(method => method === 'app_market.list' ? { apps: [app, secondApp] } : { instances });
   try {
-    instances = [{ ...running, state: 'stopped' }];
+    const frame = id => document.querySelector(`[data-testid="app-market-web-view"][data-variant="${id}"]`);
+    await click(card('gomoku').querySelector('[data-testid="app-market-open"]'));
+    const firstPage = frame('gomoku');
+    await click(card('second').querySelector('[data-testid="app-market-open"]'));
+    const secondPage = frame('second');
+    assert.equal(firstPage.src, running.url);
+    assert.equal(secondPage.src, secondInstance.web_url);
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'second');
+    instances = [{ ...running, state: 'stopped' }, secondInstance];
     await ctx.poll();
-    assert.equal(find('app-market-status').getAttribute('aria-label'), 'Not started');
-    assert.ok(find('app-market-toggle'));
-    assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.start').length, 0);
+    assert.equal(card('gomoku').querySelector('[data-testid="app-market-status"]').ariaLabel, 'Not started');
+    assert.equal(firstPage.isConnected, false);
+    assert.equal(frame('second'), secondPage);
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'second');
+
+    instances = [{ ...secondInstance, instance_id: 'second-restarted' }];
+    await ctx.poll();
+    assert.equal(secondPage.isConnected, false);
+    await click(card('second').querySelector('[data-testid="app-market-open"]'));
+    const restartedPage = frame('second');
+    assert.equal(restartedPage.src, secondInstance.web_url);
+
+    await ctx.unmount();
+    instances = [];
+    await ctx.poll();
+    assert.equal(restartedPage.isConnected, false);
+    assert.equal(ctx.calls.some(({ method }) => ['app_market.start', 'app_market.stop'].includes(method)), false);
   } finally {
     await ctx.close();
   }
@@ -239,6 +345,7 @@ test('an old poll cannot overwrite a newly started instance', async () => {
     await click(find('app-market-toggle'));
     await act(async () => oldPoll.resolve({ instances: [] }));
     assert.equal(find('app-market-status').getAttribute('aria-label'), 'Running');
+    assert.equal(find('app-market-web-view').src, running.url);
   } finally {
     await ctx.close();
   }

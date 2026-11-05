@@ -99,6 +99,43 @@ class StatusManager:
             self._logger.debug("拉取状态失败 port=%d: %s", port, e)
             return None
 
+    async def request_shutdown(self, port: int, token: str) -> bool:
+        """请求应用通过 /_workswarm/shutdown 自行清理并退出。
+
+        返回 True 仅表示应用接受了停止请求；是否退出仍需由调用方
+        继续观察进程存活。应用未实现该端点（404/超时/连接失败）时
+        返回 False，调用方应回退到强制终止。
+        """
+        url = f"http://127.0.0.1:{port}/_workswarm/shutdown"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            if _HAS_HTTPX:
+                async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
+                    resp = await client.post(url, headers=headers)
+                    return resp.status_code == 200
+            # 退回到 urllib（同步调用，包装在线程中）
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._shutdown_with_urllib, url, headers)
+        except Exception as e:
+            self._logger.debug("请求应用停止失败 port=%d: %s", port, e)
+            return False
+
+    @staticmethod
+    def _shutdown_with_urllib(
+        url: str, headers: dict[str, str]
+    ) -> bool:
+        """使用 urllib 同步请求应用停止"""
+        import urllib.request
+        import urllib.error
+
+        try:
+            req = urllib.request.Request(url, headers=headers, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
     @staticmethod
     def _pull_with_urllib(
         url: str, headers: dict[str, str]

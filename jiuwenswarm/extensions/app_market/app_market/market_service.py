@@ -285,8 +285,8 @@ class MarketService:
     async def stop_app(self, instance_id: str) -> bool:
         """停止应用实例并回收资源。
 
-        流程：停止脚本 → 释放端口 → 更新状态。应用自行清理其会话。
-        优雅停止超时 10 秒，超时后强制回收。
+        流程：优雅停止请求 → 停止脚本/强制回收 → 释放端口 → 更新状态。
+        应用自行清理的宽限 8 秒，强制回收超时 10 秒。
         """
         try:
             instance = self._storage.load_instance(instance_id)
@@ -300,6 +300,11 @@ class MarketService:
             instance.state = "stopping"
             self._status_manager.update_state(instance_id, "stopping")
             self._storage.save_instance(instance)
+
+            # 先请求应用自行清理并退出；Windows 上没有 SIGTERM 等价物，
+            # 直接强杀会让应用的退出清理（如删除其角色会话）永远没有机会执行。
+            if instance.pid:
+                await self._graceful_shutdown(instance)
 
             # 停止进程
             if instance.pid:
@@ -337,6 +342,34 @@ class MarketService:
         except Exception as e:
             self._logger.error("停止实例失败: %s", e)
             return False
+
+    async def _graceful_shutdown(self, instance: AppInstance) -> None:
+        """请求应用通过 /_workswarm/shutdown 自行清理并退出。
+
+        应用未实现该端点或未在宽限期内退出时不做任何处理，
+        由调用方继续走停止脚本/强制终止路径。
+        """
+        try:
+            if not self._supervisor.is_alive(instance.pid):
+                return
+            self._supervisor.track_children(instance.pid)
+            if not await self._status_manager.request_shutdown(instance.port, instance.status_token):
+                return
+            self._logger.info(
+                "已请求应用自行停止: instance=%s port=%d", instance.instance_id, instance.port
+            )
+            deadline = asyncio.get_event_loop().time() + 8
+            while asyncio.get_event_loop().time() < deadline:
+                self._supervisor.track_children(instance.pid)
+                if not self._supervisor.is_alive(instance.pid):
+                    self._logger.info("应用已自行退出: instance=%s", instance.instance_id)
+                    return
+                await asyncio.sleep(0.25)
+            self._logger.warning(
+                "应用未在宽限期内自行退出，回退强制终止: instance=%s", instance.instance_id
+            )
+        except Exception as e:
+            self._logger.debug("优雅停止请求失败: %s", e)
 
     async def _cleanup_instance(
         self, instance: AppInstance, manifest: AppManifest | None

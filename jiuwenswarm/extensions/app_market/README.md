@@ -34,7 +34,8 @@ sequenceDiagram
 ```
 
 - **上架**：技能调用应用市场的发布能力，登记应用入口、名称、描述和图标，生成市场卡片。
-- **运行**：市场分配应用端口，注入 WorkSwarm Gateway 访问地址并启动应用；停止时回收应用进程和端口；角色会话由应用退出逻辑清理。
+- **运行**：市场分配应用端口，注入 WorkSwarm Gateway 访问地址并启动应用；停止时先经 `/_workswarm/shutdown`（状态令牌鉴权）请求应用自行清理并退出（宽限 8 秒，让应用的退出清理如删除角色会话有机会执行），超时或应用未实现该端点时回退停止脚本与强制终止，随后回收端口；角色会话的删除由应用在退出处理中完成。
+- **页面联动**：Web 内嵌页面和 Electron 独立窗口按应用 ID 隔离；关闭页面不停止服务，停止/删除成功后只关闭对应应用容器，不影响其他应用或聊天 browser 页签。
 - **状态上报**：每个运行实例签发独立的状态令牌（经 `WORKSWARM_STATUS_TOKEN` 注入），应用按 push 主动上报运行状态，或由市场按 pull 轮询应用的 `/_workswarm/status` 读取（静态托管默认 pull）。上报携带单调递增序号，旧消息不会覆盖新状态；市场据此跟踪 `starting / running / stopping` 生命周期——启动后等待应用进入 `running`（最长 30 秒），发现应用自行退出则转入 `stopping` 清理。
 - **AI 能力**：应用自己的客户端或服务直接访问 Gateway，不经过应用市场。应用按 AI 角色管理会话，复用默认模型策略和历史；超时、重试、清空及退出删除均由应用负责。
 
@@ -54,7 +55,9 @@ Text-only NPCs can create sessions with `execution_profile:"app_role"` and `role
 
 普通 Web 端保留应用市场右侧 sandbox iframe 内嵌面板（应用须允许嵌入），支持展开、收起、关闭页面。Electron 使用独立的内置浏览器窗口，不显示子窗口任务栏按钮；最小化后从应用市场“打开／恢复应用”恢复，重复打开不重载当前对局。
 
-关闭窗口或页面不停止服务；停止/删除成功后关闭对应容器。两端不依赖聊天会话或浏览器无头模式。Electron 沿用稳定 app_id 的持久分区；Web 数据属于浏览器来源，两端不合并数据。localStorage 等按协议、主机、端口隔离，端口改变不会自动迁移。多存档、世界状态及 NPC 会话绑定由应用存档系统负责。修改桌面主进程后需重启 Electron。
+关闭窗口或页面后服务继续运行。实例停止、删除或从实例列表消失时，市场清理其对应容器。Electron 使用按应用 ID 划分的持久分区。Web 为每个应用分配专属的 `*.localhost` 主机，避免端口复用时读到其他应用的缓存。浏览器存储按协议、主机和端口隔离，原 `127.0.0.1` 来源的数据不会自动迁移。多存档、世界状态及 NPC 会话绑定由应用存档系统负责。
+
+Closing an app page leaves its service running. The market removes the corresponding page when its instance stops or disappears. Web apps use distinct `*.localhost` origins so a reused port cannot pick up another app's cached resources. Browser storage from the previous `127.0.0.1` origin does not migrate automatically. Electron uses a persistent partition for each app.
 
 ## 应用开发技能
 

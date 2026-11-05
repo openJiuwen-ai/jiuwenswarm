@@ -141,6 +141,7 @@ class AppMarketManager:
             if inst.pid and state in ("running", "starting"):
                 if not self._service._supervisor.is_alive(inst.pid):
                     state = "stopped"
+            url, web_url = self._instance_urls(inst.app_id, inst.port)
             result.append(
                 {
                     "instance_id": inst.instance_id,
@@ -150,7 +151,8 @@ class AppMarketManager:
                     "detail": inst.detail,
                     "created_at": inst.created_at,
                     "started_at": inst.started_at,
-                    "url": self._instance_url(inst.app_id, inst.port),
+                    "url": url,
+                    "web_url": web_url,
                 }
             )
         return {"instances": result}
@@ -159,13 +161,15 @@ class AppMarketManager:
         instance = await self._service.start_app(app_id, owner_id=owner_id)
         if instance is None or instance.state != "running":
             return None
+        url, web_url = self._instance_urls(instance.app_id, instance.port)
         return {
             "instance_id": instance.instance_id,
             "app_id": instance.app_id,
             "port": instance.port,
             "state": instance.state,
             "detail": instance.detail,
-            "url": self._instance_url(instance.app_id, instance.port),
+            "url": url,
+            "web_url": web_url,
         }
 
     def start_error(self, app_id: str) -> str:
@@ -173,10 +177,13 @@ class AppMarketManager:
         latest = max(instances, key=lambda item: item.created_at, default=None)
         return latest.detail if latest and latest.detail else "启动失败"
 
-    def _instance_url(self, app_id: str, port: int) -> str:
+    def _instance_urls(self, app_id: str, port: int) -> tuple[str, str]:
         manifest = self._service.get_app(app_id)
         entry = manifest.page_entry_path if manifest else None
-        return f"http://127.0.0.1:{port}/" + quote((entry or "").replace("\\", "/").lstrip("/"), safe="/")
+        path = quote((entry or "").replace("\\", "/").lstrip("/"), safe="/")
+        # Isolate the entire browser origin, including cached assets and service workers.
+        digest = hashlib.sha256(app_id.encode("utf-8")).hexdigest()[:24]
+        return f"http://127.0.0.1:{port}/{path}", f"http://workswarm-app-{digest}.localhost:{port}/{path}"
 
     async def stop_app(self, instance_id: str, owner_id: str = "") -> bool:
         instance = self._service.get_instance(instance_id)

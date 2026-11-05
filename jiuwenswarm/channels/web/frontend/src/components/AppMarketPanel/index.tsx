@@ -6,6 +6,10 @@ import { CategoryTabs } from '../ui/CategoryTabs/CategoryTabs';
 import { PageCard } from '../ui/PageCard/PageCard';
 import { Button } from '../ui/Button/Button';
 import { AppMarketBrowserPane } from './AppMarketBrowserPane';
+import {
+  closeAppMarketView, hasAppMarketView, readAppMarketInstances, trackAppMarketView, watchAppMarketInstances,
+  type InstanceInfo,
+} from './appMarketViews';
 import { webAppViews } from './webAppViews';
 import './AppMarketPanel.css';
 
@@ -17,17 +21,6 @@ interface AppInfo {
   version: string;
   description: string;
   icon_url?: string;
-}
-
-interface InstanceInfo {
-  instance_id: string;
-  app_id: string;
-  port: number;
-  state: string;
-  detail: string;
-  url?: string;
-  created_at: string;
-  started_at?: string | null;
 }
 
 type AppState = 'stopped' | 'starting' | 'running' | 'stopping';
@@ -71,10 +64,9 @@ export function AppMarketPanel() {
     try { return localStorage.getItem(hintKey) !== '1'; } catch { return true; }
   });
   const [activeTab, setActiveTab] = useState<Tab>('all');
-  const [activeApp, setActiveApp] = useState<AppInfo | null>(null);
+  const [activeApp, setActiveApp] = useState<(AppInfo & { instanceId: string }) | null>(null);
   const [paneExpanded, setPaneExpanded] = useState(false);
   const openRevision = useRef(0);
-  const openingAppId = useRef<string | null>(null);
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [instances, setInstances] = useState<InstanceInfo[]>([]);
   const [listState, setListState] = useState<LoadState>('loading');
@@ -82,6 +74,10 @@ export function AppMarketPanel() {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const actionLocks = useRef(new Set<string>());
   const instanceRevision = useRef(0);
+  // Newest user intent for which page should be shown. Starting an app opens
+  // it only while this token is still current, so a slow start cannot replace
+  // a page the user opened or dismissed after clicking start.
+  const viewIntent = useRef(0);
 
   const instanceMap = useMemo(() => {
     const map = new Map<string, InstanceInfo>();
@@ -109,9 +105,10 @@ export function AppMarketPanel() {
 
   const fetchInstances = useCallback(async () => {
     const revision = instanceRevision.current;
-    const data = await webRequest<{ instances?: InstanceInfo[] }>('app_market.instances', {});
+    const next = await readAppMarketInstances();
+    setActiveApp(current => current && hasAppMarketView(current.app_id, current.instanceId) ? current : null);
     // An older poll must not overwrite a start/stop response received in the meantime.
-    if (revision === instanceRevision.current) setInstances(data.instances || []);
+    if (next && revision === instanceRevision.current) setInstances(next);
   }, []);
 
   const showError = useCallback(
@@ -125,35 +122,45 @@ export function AppMarketPanel() {
   const openApplication = async (app: AppInfo, instance: InstanceInfo) => {
     if (!instance.url) return;
     const revision = ++openRevision.current;
-    openingAppId.current = app.app_id;
+    let untrack: (() => void) | undefined;
     try {
       const desktop = window.jiuwenDesktop;
       if (desktop?.isElectron) {
         if (!desktop.openMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
+        untrack = trackAppMarketView(instance, () => desktop.closeMarketApp?.(app.app_id) ?? false);
         if (!(await desktop.openMarketApp(app.app_id, instance.url, app.name))) {
           throw new Error(t('appMarket.openFailed'));
         }
       } else {
-        webAppViews.open(app.app_id, instance.url, app.name);
+        untrack = trackAppMarketView(instance, () => webAppViews.close(app.app_id));
+        webAppViews.open(app.app_id, instance.web_url || instance.url, app.name);
+        if (revision === openRevision.current) setActiveApp({ ...app, instanceId: instance.instance_id });
       }
-      if (!isElectron && revision === openRevision.current) setActiveApp(app);
     } catch (error) {
+      untrack?.();
       if (revision === openRevision.current) showError('appMarket.openFailed', error);
     }
   };
 
   const hideApplication = () => {
+    ++viewIntent.current;
     ++openRevision.current;
     setActiveApp(null);
   };
 
-  const closeApplication = async (app: AppInfo) => {
+  const closeApplication = async (app: AppInfo, instanceId?: string, errorKey = 'appMarket.panelCloseFailed') => {
+    ++viewIntent.current;
     try {
-      const closed = isElectron ? await window.jiuwenDesktop?.closeMarketApp?.(app.app_id) : webAppViews.close(app.app_id);
-      if (!closed) throw new Error(t('appMarket.panelCloseFailed'));
-      if (openingAppId.current === app.app_id) ++openRevision.current;
-      setActiveApp(current => current?.app_id === app.app_id ? null : current);
-    } catch (error) { showError('appMarket.panelCloseFailed', error); }
+      const closed = await closeAppMarketView(app.app_id, instanceId, () => {
+        if (!isElectron) return webAppViews.close(app.app_id);
+        const desktop = window.jiuwenDesktop;
+        if (!desktop?.closeMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
+        return desktop.closeMarketApp(app.app_id);
+      });
+      if (!closed) throw new Error(t(errorKey));
+      setActiveApp(current => current?.app_id === app.app_id && (!instanceId || current.instanceId === instanceId)
+        ? null : current);
+    } catch (error) { showError(errorKey, error); }
   };
 
   useEffect(() => () => { ++openRevision.current; }, []);
@@ -173,15 +180,7 @@ export function AppMarketPanel() {
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Silent like the marketplace list fetches: a failed poll must not
-      // toast every 3 seconds; the next tick recovers once the request layer
-      // is available again.
-      void fetchInstances().catch(() => undefined);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [fetchInstances]);
+  useEffect(() => watchAppMarketInstances(fetchInstances), [fetchInstances]);
 
   const beginAction = (appId: string, action: PendingAction) => {
     if (actionLocks.current.has(appId)) return false;
@@ -203,6 +202,7 @@ export function AppMarketPanel() {
 
   const handleStart = async (app: AppInfo) => {
     if (!beginAction(app.app_id, 'starting')) return;
+    const intent = ++viewIntent.current;
     try {
       const instance = await webRequest<InstanceInfo>(
         'app_market.start',
@@ -214,7 +214,9 @@ export function AppMarketPanel() {
       setInstances((current) => [...current.filter((item) => item.app_id !== app.app_id), instance]);
       setMessage({ text: t('appMarket.startSuccess'), error: false });
       // Page loading must not keep the running application's operation lock.
-      void openApplication(app, instance);
+      // Do not steal the pane if the user opened or dismissed another page
+      // while this start was in flight.
+      if (intent === viewIntent.current) void openApplication(app, instance);
     } catch (error) {
       showError('appMarket.startFailed', error);
       // Refresh without holding the optimistic state after a failed start.
@@ -235,22 +237,7 @@ export function AppMarketPanel() {
         current.map((item) => (item.instance_id === instance.instance_id ? { ...item, state: 'stopped' } : item)),
       );
       setMessage({ text: t('appMarket.stopSuccess'), error: false });
-      const desktop = window.jiuwenDesktop;
-      if (desktop?.isElectron) {
-        try {
-          if (!desktop.closeMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
-          if (!(await desktop.closeMarketApp(app.app_id))) throw new Error(t('appMarket.closeWindowFailed'));
-          if (openingAppId.current === app.app_id) ++openRevision.current;
-          setActiveApp(current => current?.app_id === app.app_id ? null : current);
-        } catch (error) {
-          // Window cleanup must not report an already successful service stop as failed.
-          showError('appMarket.closeWindowFailed', error);
-        }
-      } else {
-        webAppViews.close(app.app_id);
-        if (openingAppId.current === app.app_id) ++openRevision.current;
-        setActiveApp(current => current?.app_id === app.app_id ? null : current);
-      }
+      await closeApplication(app, instance.instance_id, 'appMarket.closeWindowFailed');
       await fetchInstances();
     } catch (error) {
       showError('appMarket.stopFailed', error);
@@ -375,7 +362,10 @@ export function AppMarketPanel() {
                           aria-label={t('appMarket.openRestore')}
                           disabled={busy}
                           icon={isElectron ? <AppWindow size={16} aria-hidden="true" /> : <ExternalLink size={16} aria-hidden="true" />}
-                          onClick={() => void openApplication(app, instance)}
+                          onClick={() => {
+                            ++viewIntent.current;
+                            void openApplication(app, instance);
+                          }}
                         >
                           {t('appMarket.openRestore')}
                         </Button>
@@ -423,9 +413,9 @@ export function AppMarketPanel() {
       </div>
       </div>
       {!isElectron && activeApp && (
-        <AppMarketBrowserPane key={activeApp.app_id} appId={activeApp.app_id} name={activeApp.name}
+        <AppMarketBrowserPane key={activeApp.instanceId} appId={activeApp.app_id} name={activeApp.name}
           expanded={paneExpanded} onExpand={() => setPaneExpanded(current => !current)}
-          onHide={hideApplication} onClose={() => void closeApplication(activeApp)}
+          onHide={hideApplication} onClose={() => void closeApplication(activeApp, activeApp.instanceId)}
           onError={error => showError('appMarket.openFailed', error)} />
       )}
     </div>

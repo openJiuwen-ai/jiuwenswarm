@@ -31,6 +31,8 @@ description: |
 
 | 操作 | 既有接口及参数 | 约束 |
 |---|---|---|
+| 优雅停止 | 应用自身 `POST /_workswarm/shutdown`，请求头 `Authorization: Bearer <WORKSWARM_STATUS_TOKEN>` | 自带 `scripts/app_server.py` 的应用必须实现：校验令牌后清理角色会话（中断、删除并确认）再退出；响应 200 后尽快退出。市场停止时先调用它并最多等待 8 秒，未实现或超时才强杀，强杀不会触发任何退出处理。纯静态托管由市场模板内置 |
+| 页面来源与缓存 | Web 使用应用专属的 `*.localhost` 主机，桌面使用 `127.0.0.1`。应用服务端所有响应带 `Cache-Control: no-store` | 自带服务器的 Host 校验必须按端口放行 `127.0.0.1`、`localhost` 及任意 `*.localhost`（市场 Web 入口为 `workswarm-app-<摘要>.localhost:<port>`），页面通过同源路径加载资源和调用应用接口。`WORKSWARM_APP_URL` 是本地服务地址，页面从实际浏览器来源构造 URL。纯静态托管由模板内置 |
 | 创建 | Web `/ws`：`session.create`，`create_token`、`persist_session:false`、`mode:"agent"`、`project_id`、`work_mode`、`title` | 项目与工作模式继承创建应用的会话；纯对话角色指定 `execution_profile:"app_role"` 和 `role_instructions`；保存真实 `session_id`；不指定模型 |
 | 检查 | Web：`session.get_metadata`，`session_id` | 仅明确 `NOT_FOUND/SESSION_NOT_FOUND` 才补建；断连、超时、鉴权错误不代表会话丢失 |
 | 消息 | Web：`chat.send`，`session_id`、`query/content`、`mode/work_mode`，`is_stream:true` | accepted 不是答案；匹配 session 和 request ID 的 `chat.final`，忽略旧请求重放和 keepalive；错误、审批或提问明确处理 |
@@ -45,7 +47,7 @@ description: |
 - 每用户、每应用、每个稳定 AI 角色最多一个活动会话；N 个角色最多 N 个会话。应用保存绑定和幂等创建 token，初始化串行执行，多标签页不能并发建会话或请求同一角色。不使用时间戳或局号作为 role_id。
 - 默认 `persist_session:false`，仍保留普通多轮历史；该参数不是聊天历史保存开关。不要为保存对局开启永续记忆，不修改元数据绕过创建配置。
 - 独立对局默认新局重置：清空本地棋盘，检查并复用角色会话，中断并 rewind 历史，成功后才启用操作；缺失才创建新会话。新局首轮重新初始化，禁止旧棋盘搭配新会话。
-- 应用负责优雅退出和会话清理，市场只终止进程；在停止脚本或进程退出处理里中断、删除并确认，不依赖页面 unload。强杀或断网后保留绑定，下一次启动先完成待清理任务。不要按标题批量删除普通会话。
+- 应用负责优雅退出和会话清理，市场只终止进程；在 `/_workswarm/shutdown` 处理或进程退出处理里中断、删除并确认，不依赖页面 unload。市场请求优雅停止后最多等待 8 秒，超时强杀且不触发退出处理，因此清理逻辑要在此窗口内完成。强杀或断网后保留绑定，下一次启动先完成待清理任务。不要按标题批量删除普通会话。
 - 首轮一次写清角色、规则、初始状态、后续增量输入和输出 schema，以及重复操作的语义。后续省略 instruction，只发 `{"state_delta":{"last_move":[row,col,color]}}` 这类短增量；WorkSwarm 保留历史，不重发规则、棋盘或历史记录。
 - 超时重试复用同一会话，只重发当前操作增量；即使首轮超时也不重发全量或 reset。首轮明确重复 last_move 是同一次操作重试，不能重复落子；已完成时返回同一结果。更复杂业务使用应用自己的操作标识和幂等校验，不能只依赖模型口头承诺。
 - 应用自行设置有限的端到端等待时间和重试次数，考虑供应商限流退避，避免短时间重复发送、叠加重试。显示等待时长和错误，并允许重开/取消；不要把 keepalive 当作答案。不更改 WorkSwarm 通用重试策略。
