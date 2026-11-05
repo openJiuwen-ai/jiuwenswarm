@@ -176,6 +176,10 @@ export interface AskUserQuestionPayload {
     correlation_id: string;
     agent_id: string;
     agent_name: string;
+    /** Member name currently hosting the run; null/absent = no team context (no popup source prefix). */
+    executor?: string | null;
+    /** The run's META name, shown in the popup source prefix. */
+    workflow_name?: string | null;
   };
 }
 
