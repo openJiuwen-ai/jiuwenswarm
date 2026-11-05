@@ -115,6 +115,7 @@ try:
         CallbackHandler,
         CallbackMessage,
         AckMessage,
+        EventHandler,
     )
     from dingtalk_stream.chatbot import ChatbotMessage
 
@@ -122,6 +123,7 @@ try:
 except ImportError:
     DINGTALK_AVAILABLE = False
     CallbackHandler = object
+    EventHandler = object
     CallbackMessage = None
     AckMessage = None
     ChatbotMessage = None
@@ -252,6 +254,42 @@ class DingTalkHandler(CallbackHandler):
             logger.error(f"处理钉钉消息时出错: {e}")
             # 返回OK以避免钉钉服务器重试循环
             return AckMessage.STATUS_OK, "Error"
+
+
+class DingTalkGroupEventHandler(EventHandler):
+    """Receive subscribed Stream EVENTs separately from robot message CALLBACKs."""
+
+    def __init__(self, channel):
+        super().__init__()
+        self.channel = channel
+
+    async def process(self, message):
+        from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import GROUP_EVENT_TYPES, DingTalkGroupEvent
+
+        raw = message.data
+        headers = getattr(message, "headers", None)
+        kind = raw.get("eventType") if isinstance(raw, dict) else None
+        kind = kind or getattr(headers, "event_type", None)
+        if kind not in GROUP_EVENT_TYPES or not self.channel.config.agent_id:
+            return AckMessage.STATUS_OK, "ignored"
+        try:
+            event = DingTalkGroupEvent.from_stream(
+                raw, app_id=self.channel.persistent_app_id, agent_id=self.channel.config.agent_id, headers=headers,
+            )
+        except (TypeError, ValueError):
+            logger.warning("[DingTalk] invalid group lifecycle event rejected")
+            return AckMessage.STATUS_BAD_REQUEST, "invalid lifecycle event"
+        callback = self.channel._persistent_inbound_callback
+        if callback is None:
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle route unavailable"
+        try:
+            result = await callback(event)
+        except Exception as exc:
+            logger.warning("[DingTalk] group lifecycle delivery failed (%s)", type(exc).__name__)
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle delivery failed"
+        if getattr(result, "value", result) != "handled":
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle event not accepted"
+        return AckMessage.STATUS_OK, "OK"
 
 
 class DingTalkChannel(BaseChannel):
@@ -630,6 +668,8 @@ class DingTalkChannel(BaseChannel):
         # 注册标准处理器
         handler = DingTalkHandler(self)
         self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
+        if self.config.agent_id:
+            self._client.register_all_event_handler(DingTalkGroupEventHandler(self))
 
         logger.info("钉钉机器人已启动（Stream模式）")
 

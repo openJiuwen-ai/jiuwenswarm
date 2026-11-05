@@ -210,6 +210,7 @@ def stub_invocation_builder(monkeypatch, addenda=None):
                 fingerprint=self.fingerprint,
                 system_prompt=self.system_prompt,
                 tools=update.get("tools", self.tools),
+                rails=update.get("rails", self.rails),
             )
 
     def build(snapshot, request, execution, *, ports, system_prompt_addendum=None):
@@ -229,6 +230,7 @@ def stub_invocation_builder(monkeypatch, addenda=None):
             fingerprint=lambda: request.config_fingerprint,
             system_prompt=None,
             tools=[],
+            rails=[],
         ), context
 
     monkeypatch.setattr(execution_driver, "build_invocation", build)
