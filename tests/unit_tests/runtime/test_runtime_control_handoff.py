@@ -18,11 +18,11 @@ async def _respond(coordinator, card, *reissued, streaming=True):
             for item in reissued:
                 yield item
         return [item async for item in coordinator.deliver_control_stream(
-            "session-a", card, output, suspension_key=lambda item: item,
+            "session-a", (card,), output, interaction_ids=lambda item: frozenset({item}),
         )]
     return await coordinator.deliver_control(
-        "session-a", card, lambda: asyncio.sleep(0, result=list(reissued)),
-        suspension_key=lambda item: item,
+        "session-a", (card,), lambda: asyncio.sleep(0, result=list(reissued)),
+        interaction_ids=frozenset,
     )
 
 
@@ -103,7 +103,7 @@ async def test_answer_before_previous_control_eof_releases_original_owner(second
     async def consume_original():
         return [item async for item in coordinator.run_stream(
             "session-a", "original", SessionWorkKind.CHAT_STREAM, original,
-            suspension_key=lambda item: item,
+            interaction_ids=lambda item: frozenset({item}),
         )]
 
     async def first():
@@ -115,7 +115,7 @@ async def test_answer_before_previous_control_eof_releases_original_owner(second
     try:
         await asyncio.wait_for(published.wait(), 1)
         continuation = coordinator.deliver_control_stream(
-            "session-a", "card-a", first, suspension_key=lambda item: item,
+            "session-a", ("card-a",), first, interaction_ids=lambda item: frozenset({item}),
         )
         assert await anext(continuation) == "card-b"
         await _respond(coordinator, "card-b", streaming=second_streaming)
@@ -180,7 +180,7 @@ async def test_unsuccessful_stream_handoff_preserves_parent_for_retry(cancelled)
         error = asyncio.CancelledError if cancelled else ValueError
         with pytest.raises(error):
             _ = [item async for item in coordinator.deliver_control_stream(
-                "session-a", "card-a", fail, suspension_key=lambda item: item,
+                "session-a", ("card-a",), fail, interaction_ids=lambda item: frozenset({item}),
             )]
         assert coordinator.has_control_target("session-a", "card-a")
         assert coordinator.has_control_target("session-a", "card-b")

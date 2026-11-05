@@ -393,6 +393,8 @@ class RuntimeSessionCoordinator:
                 )
 
             control_ids = interaction_ids(value) if interaction_ids is not None else frozenset()
+            if control_ids:
+                claimed = frozenset(answered) | control_ids
             heartbeat_root = self._heartbeat_root(parent)
             if control_ids and heartbeat_root is not None:
                 parent.waiting_control_ids -= claimed
@@ -492,6 +494,7 @@ class RuntimeSessionCoordinator:
             session_id, answered, duplicate="interaction answer is already in progress"
         )
         claimed = parent.waiting_control_ids
+        reissued: set[str] = set()
         parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
         try:
             handle = self._new_execution(
@@ -513,6 +516,7 @@ class RuntimeSessionCoordinator:
                     async for item in stream:
                         control_ids = interaction_ids(item) if interaction_ids else frozenset()
                         if control_ids:
+                            reissued.update(control_ids)
                             self._registry.mark_awaiting_control(handle, control_ids)
                             self._refresh_control_gate(record)
                         yield item
@@ -531,6 +535,8 @@ class RuntimeSessionCoordinator:
                     self._registry.mark_waiting(parent)
                 raise
             else:
+                if reissued:
+                    claimed = frozenset(answered) | reissued
                 self._answered(parent, claimed, was_waiting=parent_was_waiting)
                 if handle.waiting_control_ids:
                     self._registry.mark_waiting(handle)
@@ -574,11 +580,11 @@ class RuntimeSessionCoordinator:
         self, parent: SessionExecutionHandle, claimed: frozenset[str], *, was_waiting: bool
     ) -> None:
         parent.waiting_control_ids -= claimed
-        if was_waiting or (
-            parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-            and not parent.waiting_control_ids
-        ):
-            self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
+        if was_waiting or parent.state is SessionExecutionState.WAITING_FOR_CONTROL:
+            if parent.waiting_control_ids:
+                self._registry.mark_waiting(parent)
+            else:
+                self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
 
     async def stream_session_input(
         self,

@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from jiuwenswarm.common import model_catalog
-from jiuwenswarm.common.model_selection import ModelSelection
+from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _model_name_names_selection
 

@@ -95,12 +95,12 @@ async def test_cleanup_cancellation_preserves_original_startup_error(
     async def stop():
         raise asyncio.CancelledError("cleanup cancelled")
 
-    async def start(_host, _port, _signals, *, runtime, on_constructed, startup_t0):
-        runtime.server = SimpleNamespace(stop=stop)
+    async def start(_host, _port, *, on_constructed, telemetry):
+        await on_constructed(SimpleNamespace(stop=stop))
         raise original
 
-    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
-    monkeypatch.setattr(lifecycle, "_start_worker_runtime", start)
+    monkeypatch.setattr(lifecycle.runtime_backend, "preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(lifecycle.runtime_bootstrap, "_construct_runtime_server", start)
     with pytest.raises(type(original)) as caught:
         await lifecycle.start_worker_runtime("127.0.0.1", 18000, SimpleNamespace())
     assert caught.value is original
@@ -122,12 +122,12 @@ async def test_repeated_cancellation_does_not_interrupt_failed_startup_cleanup(
         await release.wait()
         stopped.set()
 
-    async def start(_host, _port, _signals, *, runtime, on_constructed, startup_t0):
-        runtime.server = SimpleNamespace(stop=stop)
+    async def start(_host, _port, *, on_constructed, telemetry):
+        await on_constructed(SimpleNamespace(stop=stop))
         raise original
 
-    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
-    monkeypatch.setattr(lifecycle, "_start_worker_runtime", start)
+    monkeypatch.setattr(lifecycle.runtime_backend, "preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(lifecycle.runtime_bootstrap, "_construct_runtime_server", start)
     task = asyncio.create_task(lifecycle.start_worker_runtime("127.0.0.1", 18000, SimpleNamespace()))
     try:
         await asyncio.wait_for(entered.wait(), 2)
@@ -168,7 +168,7 @@ async def test_registry_close_finishes_after_shutdown_task_is_cancelled(worker_c
 
     owner.aclose = close
     runtime = lifecycle.WorkerRuntime(
-        server=SimpleNamespace(), stop_event=asyncio.Event(), callback_registry_owner=owner,
+        server=SimpleNamespace(worker_callback_registry_owner=owner), stop_event=asyncio.Event(),
     )
     runtime._shutdown_owned_resources = teardown
     task = asyncio.create_task(runtime.shutdown())
@@ -213,8 +213,8 @@ async def test_stuck_partial_server_cleanup_is_bounded_and_releases_waiters(
         except asyncio.CancelledError:
             await release.wait()
 
-    async def start(_host, _port, _signals, *, runtime, on_constructed, startup_t0):
-        runtime.server = SimpleNamespace(stop=stop)
+    async def start(_host, _port, *, on_constructed, telemetry):
+        await on_constructed(SimpleNamespace(stop=stop))
         waiting_calls.append(asyncio.create_task(asyncio.to_thread(
             lambda: asyncio.run(worker_callback_framework.register("event", lambda: None)),
         )))
@@ -222,8 +222,8 @@ async def test_stuck_partial_server_cleanup_is_bounded_and_releases_waiters(
         raise original
 
     monkeypatch.setattr(worker_callback_framework, "register", register)
-    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
-    monkeypatch.setattr(lifecycle, "_start_worker_runtime", start)
+    monkeypatch.setattr(lifecycle.runtime_backend, "preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(lifecycle.runtime_bootstrap, "_construct_runtime_server", start)
     monkeypatch.setattr(lifecycle, "_STARTUP_FAILURE_CLEANUP_TIMEOUT", 0.02, raising=False)
     task = asyncio.create_task(lifecycle.start_worker_runtime("127.0.0.1", 18000, SimpleNamespace()))
     try:

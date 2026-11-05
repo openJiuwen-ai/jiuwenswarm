@@ -69,7 +69,10 @@ def test_provider_loader_uses_only_a_trusted_host_import_and_fails_closed(monkey
     assert load_agent_mail_runtime_provider() is None
 
 
-def test_provider_loader_uses_the_packaged_local_runtime_by_default(monkeypatch):
+def test_provider_loader_uses_the_packaged_local_runtime_by_default(monkeypatch, tmp_path):
+    npx = tmp_path / "npx"
+    npx.touch(mode=0o755)
+    monkeypatch.setenv("JIUWENMATE_AGENT_MAIL_NPX", str(npx))
     monkeypatch.delenv("JIUWENMATE_AGENT_MAIL_RUNTIME_PROVIDER", raising=False)
 
     assert isinstance(load_agent_mail_runtime_provider(), LocalAgentMailRuntime)

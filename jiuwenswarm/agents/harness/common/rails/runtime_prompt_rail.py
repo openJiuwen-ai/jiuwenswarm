@@ -123,7 +123,8 @@ class RuntimePromptRail(DeepAgentRail):
             if self.system_prompt_builder is not None:
                 self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
             return
-        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+        if self.system_prompt_builder is not None:
+            apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
 
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""

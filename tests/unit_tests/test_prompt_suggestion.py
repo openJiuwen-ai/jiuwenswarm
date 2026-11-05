@@ -793,7 +793,7 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
             self.methods = {}
             self.responses = []
 
-        def register_method(self, name, handler):
+        def register_method(self, name, handler, *, local_only=False):
             self.methods[name] = handler
 
         def on_connect(self, _handler):

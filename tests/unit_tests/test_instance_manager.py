@@ -1325,10 +1325,9 @@ class TestStartServicesFallback:
 
         # Make index-1 group occupied; everything else free
         occupied = set(calculate_instance_ports(1).values())
-        real = is_port_available
 
         def fake(host, port):
-            return port not in occupied and real(host, port)
+            return port not in occupied
 
         monkeypatch.setattr(
             "jiuwenswarm.instance_manager.config.is_port_available", fake
@@ -1376,10 +1375,9 @@ class TestStartServicesFallback:
 
         # Force ONLY the index-0 group to be occupied; every higher index free.
         occupied = set(calculate_instance_ports(0).values())
-        real = is_port_available
 
         def fake(host, port):
-            return port not in occupied and real(host, port)
+            return port not in occupied
 
         monkeypatch.setattr(
             "jiuwenswarm.instance_manager.config.is_port_available", fake
