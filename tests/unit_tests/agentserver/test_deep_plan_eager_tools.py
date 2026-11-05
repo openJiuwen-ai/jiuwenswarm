@@ -1,0 +1,137 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Deep adapter must pin plan mode tools eager so the approval rail sees exit_plan_mode.
+
+deferred 工具经 invoke_tool 嵌套执行不经过 before_tool_call 链路
+（progressive_tool_rail 直接 invoke 目标工具），PlanApprovalInterruptRail
+只匹配顶层 ctx.inputs.tool_name，拦不到 invoke_tool 包装下的
+exit_plan_mode，Web plan 审批卡静默缺失（issue 5223 E2E 实证）。
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from openjiuwen.core.foundation.tool import ToolCard
+
+from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
+from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import InvokeToolInput
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    _PLAN_MODE_EAGER_TOOLS,
+    JiuWenSwarmDeepAdapter,
+)
+
+
+_LAZY_CONFIG = {"tool_lazy_load": {"enabled": True, "eager_tools": ["read_file"]}}
+
+
+def _rail(mode):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._session_instance_mode = mode
+    rail = adapter._build_progressive_tool_rail(dict(_LAZY_CONFIG))
+    assert rail is not None
+    return rail
+
+
+def _card(name, description="tool description"):
+    return ToolCard(id=f"id-{name}", name=name, description=description, input_params={})
+
+
+def _context(rail, cards, model_name="glm-5"):
+    agent = SimpleNamespace(
+        model_name=model_name,
+        ability_manager=SimpleNamespace(list=lambda: list(cards)),
+        system_prompt_builder=None,
+    )
+    rail.init(agent)
+    return SimpleNamespace(agent=agent, inputs=SimpleNamespace(tools=list(cards)))
+
+
+@pytest.mark.parametrize("mode", ["agent", "agent.plan", None])
+def test_plan_capable_mode_pins_plan_tools_eager(mode):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._session_instance_mode = mode
+    config = dict(_LAZY_CONFIG)
+    rail = adapter._build_progressive_tool_rail(config)
+    assert rail is not None
+    assert set(_PLAN_MODE_EAGER_TOOLS) <= set(rail.eager_tools)
+    # 与 code 侧同款纪律：追加不得回写调用方 config。
+    assert config["tool_lazy_load"]["eager_tools"] == ["read_file"]
+
+
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+def test_team_mode_does_not_pin_plan_tools_eager(mode):
+    # team 装配不挂 plan rails（无 AgentModeRail 过滤/审批 rail），钉 eager 会外泄。
+    rail = _rail(mode)
+    assert not set(_PLAN_MODE_EAGER_TOOLS) & set(rail.eager_tools)
+
+
+def test_flash_adapter_does_not_pin_plan_tools_eager():
+    # flash 白名单裁掉 plan rails，经 super() 复用 deep 建轨时也不得钉 eager。
+    from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
+        JiuwenSwarmFlashAdapter,
+    )
+
+    adapter = JiuwenSwarmFlashAdapter()
+    rail = adapter._build_progressive_tool_rail(dict(_LAZY_CONFIG))
+    assert rail is not None
+    assert not set(_PLAN_MODE_EAGER_TOOLS) & set(rail.eager_tools)
+
+
+@pytest.mark.asyncio
+async def test_plan_tools_survive_progressive_filter_and_invoke_tool_refusal():
+    rail = _rail("agent")
+    eager = [
+        _card(name)
+        for name in ["tools_search", "invoke_tool", "read_file", *_PLAN_MODE_EAGER_TOOLS]
+    ]
+    deferred = [_card("wps_1", "large schema description " * 50)]
+    ctx = _context(rail, eager + deferred)
+
+    await rail.before_model_call(ctx)
+
+    names = {tool.name for tool in ctx.inputs.tools}
+    assert set(_PLAN_MODE_EAGER_TOOLS) <= names
+    assert "wps_1" not in names
+
+    # 防线 1：exit_plan_mode 已常驻可见，经 invoke_tool 调用被拒绝，
+    # 模型只能直呼（直呼走 before_tool_call 审批链）。
+    result = await rail._invoke_target_tool(
+        None, InvokeToolInput(tool_name="exit_plan_mode", arguments={})
+    )
+    assert result["success"] is False
+    assert "常驻可见工具" in result["error"]
+
+    # 阳性对照：deferred 工具经 invoke_tool 仍可正常调用，拒绝只因 eager。
+    target = SimpleNamespace(card=deferred[0], invoke=AsyncMock(return_value="ok"))
+    rail._lookup_tool_instance = lambda tool_id: (
+        target if tool_id == target.card.id else None
+    )
+    result = await rail._invoke_target_tool(
+        None, InvokeToolInput(tool_name="wps_1", arguments={})
+    )
+    assert result["success"] is True
+    target.invoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_plan_eager_additions_do_not_bypass_disabled_tools():
+    # 与 code 侧 test_code_eager_additions_do_not_bypass_disabled_tools 对齐：
+    # eager 追加不得绕过统一工具开关（黑名单）。
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._session_instance_mode = "agent"
+    rail = adapter._build_progressive_tool_rail(
+        {
+            "tool_lazy_load": {"enabled": True, "eager_tools": []},
+            "disabled_tools": ["exit_plan_mode"],
+        }
+    )
+    assert rail is not None
+    cards = [_card("exit_plan_mode"), _card("wps_deferred")]
+    ctx = _context(rail, cards)
+    await rail.before_model_call(ctx)
+    assert [tool.name for tool in ctx.inputs.tools] == []
+    result = await rail._invoke_target_tool(
+        None, InvokeToolInput(tool_name="exit_plan_mode", arguments={})
+    )
+    assert result["success"] is False

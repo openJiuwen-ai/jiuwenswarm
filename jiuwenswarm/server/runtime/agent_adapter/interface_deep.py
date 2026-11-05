@@ -962,6 +962,14 @@ _AGENT_CARD_ID = "jiuwenswarm"
 _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
+# plan 三工具与 code 侧 _CODE_EAGER_TOOLS 对齐钉 eager（plan 是会话运行期
+# 状态，非 plan 态由 AgentModeRail._HIDDEN_IN_NORMAL 滤掉 enter/exit_plan_mode、
+# work profile 另滤 switch_mode，不会外泄）。否则 plan 态下它们沦为 deferred，
+# 模型只能经 tools_search→invoke_tool 调用，而 ProgressiveToolRail 的嵌套
+# invoke 不经过 before_tool_call 链路，PlanApprovalInterruptRail 永远拦不到
+# exit_plan_mode，审批卡静默缺失（issue 5223 E2E 实证）。
+_PLAN_MODE_EAGER_TOOLS = ("switch_mode", "enter_plan_mode", "exit_plan_mode")
+
 
 _RESOLVED_ARTIFACT_DIRS: dict[str, str] = {}
 
@@ -8015,12 +8023,26 @@ class JiuWenSwarmDeepAdapter:
             deepresearch_context_provider=self._get_deepresearch_tool_context,
             active_skill_provider=self._get_progressive_active_skill,
         )
+        if rail is not None and self._plan_eager_tools_applicable():
+            rail.eager_tools = list(
+                dict.fromkeys([*rail.eager_tools, *_PLAN_MODE_EAGER_TOOLS])
+            )
         if rail is not None:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] ProgressiveToolRail mounted mode=%s",
                 "progressive" if rail.enabled else "skill-gate-only",
             )
         return rail
+
+    def _plan_eager_tools_applicable(self) -> bool:
+        """plan 三工具钉 eager 仅适用于实际挂载 plan rails 的装配。
+
+        plan rails 按 mode 跳过集挂载（见 _build_agent_rails 内注释）；team
+        装配无审批链，钉 eager 只会让 enter/exit_plan_mode 外泄到 schema。
+        子类裁掉 plan rails 时须覆写为 False（见 flash）。
+        """
+        mode = getattr(self, "_session_instance_mode", None) or "agent"
+        return mode not in {"team", "team.plan", "code.team"}
 
     def _get_progressive_active_skill(self) -> str | None:
         """Return active-skill state for this adapter's current session."""
