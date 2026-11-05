@@ -10,6 +10,18 @@
     "retry": "Retry",
     "login": "Go to login"
   },
+  "skillPackInstall": {
+    "title": "Review SkillPack installation",
+    "summary": "Review the Pack and its locked member versions. Matching local Skills will be reused; missing members will be downloaded from this Hub. Nothing is installed until you confirm.",
+    "actions": { "reuse": "Reuse local", "download": "Download", "blocked": "Blocked" },
+    "blocked": "Resolve the listed conflicts before installing. Existing Skills will not be overwritten.",
+    "cancel": "Cancel",
+    "confirm": "Confirm installation",
+    "invalidPlan": "The installation plan is incomplete. Refresh the marketplace and try again.",
+    "changed": "The installation plan changed. Select the SkillPack again to review the latest plan.",
+    "refreshed": "The installation plan has changed. Review the members and confirm again.",
+    "validationFailed": "SkillPack validation failed. Download it again and check its members."
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -3251,6 +3263,7 @@
     }
   },
   "skills": {
+    "inventoryBusy": "The skill library is busy. Please try again shortly.",
     "title": "Skills",
     "subtitle": "Manage and install skills available to the agent.",
     "tabs": {
@@ -3275,6 +3288,18 @@
       "builtin": "Built-in Skills",
       "local": "Local Skills",
       "skillPack": "Skill Packs"
+    },
+    "mySkillsKindTabs": {
+      "skill": "Skills",
+      "team": "Team Skills",
+      "multimodal": "Multimodal",
+      "packs": "Skill Packs"
+    },
+    "mySkillsKindEmpty": {
+      "skill": "No skills yet",
+      "team": "No team skills yet",
+      "multimodal": "No multimodal skills yet",
+      "packs": "No skill packs yet"
     },
     "noPrebuiltSkills": "No prebuilt skills",
     "noUserSkills": "No user-installed skills",
@@ -5639,7 +5664,10 @@
     "sectionError": "Error",
     "charUnit": "chars",
     "clickToViewDetail": "Click to view details",
-    "runIdTooltip": "Run ID: {{id}}"
+    "runIdTooltip": "Run ID: {{id}}",
+    "executorTooltip": "currently hosted by {{name}}",
+    "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
+    "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",

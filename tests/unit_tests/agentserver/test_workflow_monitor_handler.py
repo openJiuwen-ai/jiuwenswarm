@@ -970,3 +970,86 @@ class TestWorkflowActivityBatching:
         assert {run: by_run[run]["phases"][0]["agents"][0]["activity"][0]["content"] for run in ("r1", "r2")} == {
             "r1": "r1", "r2": "r2",
         }
+
+
+# ---------------------------------------------------------------------------
+# executor — run attribution consumption chain (synthetic events)
+# ---------------------------------------------------------------------------
+
+class TestExecutorConsumptionChain:
+    """Synthetic events with / without executor flow the whole chain:
+    raw event → _extract_progress → WorkflowRunState → workflow.updated delta.
+
+    The agent-core schema field lands in its own MR; these tests use the wire
+    shapes it will produce (WorkflowProgress payload, dict payload, getattr
+    fallback) so the jiuwenswarm consumption chain is verified independently
+    of that landing order.
+    """
+
+    @pytest.mark.anyio
+    async def test_model_payload_started_delta_carries_executor(self) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+
+        results = await _run_handler_with_events(
+            handler, monitor,
+            [_FakeRawEvent(kind="workflow_started", workflow_name="t", executor="alice")],
+        )
+
+        assert len(results) == 1
+        assert results[0]["workflow"]["executor"] == "alice"
+        run = next(iter(handler.get_run_states().values()))
+        assert run.executor == "alice"
+
+    @pytest.mark.anyio
+    async def test_dict_payload_started_delta_carries_executor(self) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+
+        results = await _run_handler_with_events(
+            handler, monitor,
+            [SimpleNamespace(payload={
+                "kind": "workflow_started", "run_id": _DEFAULT_RUN_ID,
+                "workflow_name": "t", "executor": "bob",
+            })],
+        )
+
+        assert len(results) == 1
+        assert results[0]["workflow"]["executor"] == "bob"
+
+    @pytest.mark.anyio
+    async def test_legacy_dict_payload_without_executor_is_none(self) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+
+        results = await _run_handler_with_events(
+            handler, monitor,
+            [SimpleNamespace(payload={
+                "kind": "workflow_started", "run_id": _DEFAULT_RUN_ID, "workflow_name": "t",
+            })],
+        )
+
+        assert len(results) == 1
+        assert results[0]["workflow"]["executor"] is None
+        snapshot = handler.get_workflow_snapshot()
+        assert snapshot[0]["executor"] is None
+
+    @staticmethod
+    def test_object_fallback_copies_executor() -> None:
+        h = WorkflowMonitorHandler.__new__(WorkflowMonitorHandler)
+        h._session_id = "s"
+
+        class _Payload:
+            kind = "workflow_started"
+            run_id = "wf_1"; workflow_name = "w"; description = None; phase = None
+            label = None; prompt = None; model = None; outcome = None; text = None
+            phases = None; correlation_id = None; node_type = None; agent_id = None; answer = None
+            executor = "carol"
+
+        class _Ev:
+            def get_payload(self) -> object:
+                return _Payload()
+
+        p = h._extract_progress(_Ev())
+        assert p is not None
+        assert p.executor == "carol"

@@ -104,6 +104,8 @@ _SESSION_MESSAGING_TOOL_NAMES = frozenset(
         "session_message_resolve",
         "session_continue_queued",
         "session_read",
+        # Sedimentation uses the same Host-authenticated request ownership.
+        "skillpack_distill",
     }
 )
 

@@ -11285,8 +11285,15 @@ class JiuWenSwarmDeepAdapter:
     ) -> SymphonyOrchestrationRail | None:
         """Build dynamic Symphony orchestration prompt guidance."""
         try:
+            from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import SkillPackRouter
+
             return SymphonyOrchestrationRail(
                 config_base=lambda: self._config_base_cache,
+                skillpack_router=SkillPackRouter(
+                    manager=lambda: self._skill_manager,
+                    toolkit=lambda: self._get_or_create_skill_retrieval_toolkit(),
+                    model=lambda: self._model,
+                ),
             )
         except Exception as exc:
             logger.warning(
@@ -16842,6 +16849,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id,
                 answers,
                 request.params,
+                session_id=session_id,
             )
             resolved = bool(response_payload.get("resolved"))
         elif request_id.startswith("team_skill_evolve_"):
@@ -16883,6 +16891,8 @@ class JiuWenSwarmDeepAdapter:
         request_id: str,
         answers: list[Any],
         params: Any,
+        *,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Resolve a Symphony candidate without accepting a client path."""
 
@@ -16929,6 +16939,7 @@ class JiuWenSwarmDeepAdapter:
             package_id=(str(params.get("package_id") or "").strip() or None),
             integrity=(str(params.get("integrity") or "").strip() or None),
             skill_manager=self._skill_manager,
+            session_id=session_id,
         )
         if receipt.get("installed") and receipt.get("newly_installed"):
             refresh_warnings: list[str] = []
@@ -16987,18 +16998,25 @@ class JiuWenSwarmDeepAdapter:
         session_id = params.get("session_id") or request.session_id or ""
         run_id = params.get("run_id")
         corr = params.get("correlation_id") or ""
+        # ``skip: true`` — the person pressed the popup's skip button; the
+        # turn is skipped now instead of hanging until the human timeout.
+        skip = bool(params.get("skip"))
         answer = params.get("answer") or ""
         logger.info(
             "[WF_DBG] chat.swarmflow_reply req channel_id=%s session_id=%s request_id=%s "
-            "run_id=%s correlation_id=%s answer_len=%d",
+            "run_id=%s correlation_id=%s skip=%s answer_len=%d",
             request.channel_id,
             session_id,
             request.request_id,
             run_id,
             corr,
+            skip,
             len(answer) if isinstance(answer, str) else 0,
         )
-        if not session_id or not corr or answer == "":
+        # skip=true is a valid payload without an answer; otherwise the answer
+        # must be non-empty.
+        has_payload = skip or answer != ""
+        if not session_id or not corr or not has_payload:
             logger.warning(
                 "[WF_DBG] chat.swarmflow_reply res ok=False session_id=%s correlation_id=%s error=missing_params",
                 session_id,
@@ -17017,6 +17035,31 @@ class JiuWenSwarmDeepAdapter:
         from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
 
         from openjiuwen.agent_teams.schema.events import format_swarmflow_human_reply_target
+
+        if skip:
+            # Sentinel lives in agent-core alongside the human-turn skip logic
+            # this reply feeds; imported here (skip-only path) so a plain
+            # answer never touches this symbol.
+            try:
+                from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+            except ImportError:
+                # A pinned core without the sentinel would render the skip
+                # literal as the person's own words; fail instead. This branch
+                # disappears once the pin moves past the sentinel.
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] swarmflow skip reply rejected: "
+                    "pinned agent-core lacks HUMAN_REPLY_SKIP, skip cannot take "
+                    "effect; session_id=%s corr=%s",
+                    session_id, corr,
+                )
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload={"ok": False, "error": "agent-core pin predates HUMAN_REPLY_SKIP"},
+                    metadata=request.metadata,
+                )
+            answer = HUMAN_REPLY_SKIP
 
         target = format_swarmflow_human_reply_target(corr, run_id)
         msg = HumanAgentMessage(

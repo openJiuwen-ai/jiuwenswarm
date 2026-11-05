@@ -576,6 +576,7 @@ export function AgentManagementPanel({
         await client.installSkill(skill);
         await loadSkills(view === 'group-create' ? { includeTeamMarketplace: true } : {});
       } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'skill_install_cancelled') return;
         onError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
         setBusySkillId(null);
@@ -1279,18 +1280,19 @@ export function AgentManagementPanel({
         setMineKind('agent');
         setMineQuery('');
       }
-      setUploadDialogOpen(false);
-      setUploadError(null);
-      setGroupUploadDialogOpen(false);
-      setView('mine');
       if (installFailed) {
-        // Show the raw backend error in the same inline notice slot the
-        // success message uses, replacing the old canned "imported but
-        // install failed" text.
-        showActionNotice(installErrorMessage || t('agentManagement.states.actionError'), true);
+        // Keep the dialog open and show the error inside it so the user can
+        // see what went wrong without losing the upload context (#5431).
+        if (kind === 'group') setGroupUploadError(installErrorMessage || t('agentManagement.states.actionError'));
+        else setUploadError(installErrorMessage || t('agentManagement.states.actionError'));
       } else if (installOutcomeUnknown) {
-        showActionNotice(t('agentManagement.states.installOutcomeUnknown'), true);
+        if (kind === 'group') setGroupUploadError(t('agentManagement.states.installOutcomeUnknown'));
+        else setUploadError(t('agentManagement.states.installOutcomeUnknown'));
       } else {
+        setUploadDialogOpen(false);
+        setUploadError(null);
+        setGroupUploadDialogOpen(false);
+        setView('mine');
         showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
       }
     } catch (error) {

@@ -10,6 +10,18 @@
     "retry": "重试",
     "login": "前往登录"
   },
+  "skillPackInstall": {
+    "title": "确认 SkillPack 安装计划",
+    "summary": "查看 Pack 及其锁定的成员版本。本地一致的 Skill 将复用，缺失成员将从同一 Hub 下载。确认前不会安装。",
+    "actions": { "reuse": "复用本地", "download": "下载", "blocked": "阻断" },
+    "blocked": "请先解决上述冲突再安装，现有 Skill 不会被覆盖。",
+    "cancel": "取消",
+    "confirm": "确认安装",
+    "invalidPlan": "安装计划不完整，请刷新技能广场后重试。",
+    "changed": "安装计划已变化，请重新选择 SkillPack 查看最新计划。",
+    "refreshed": "安装计划已更新，请重新检查成员并确认。",
+    "validationFailed": "技能包校验失败，请重新下载并检查成员状态。"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -3188,6 +3200,7 @@
     }
   },
   "skills": {
+    "inventoryBusy": "技能目录正在被其他操作占用，请稍后重试。",
     "title": "技能",
     "subtitle": "管理并安装智能体可用的技能。",
     "tabs": {
@@ -3212,6 +3225,18 @@
       "builtin": "内置技能",
       "local": "本地",
       "skillPack": "技能包"
+    },
+    "mySkillsKindTabs": {
+      "skill": "技能",
+      "team": "团队技能",
+      "multimodal": "多模态",
+      "packs": "技能包"
+    },
+    "mySkillsKindEmpty": {
+      "skill": "暂无技能",
+      "team": "暂无团队技能",
+      "multimodal": "暂无多模态技能",
+      "packs": "暂无技能包"
     },
     "noPrebuiltSkills": "暂无预置技能",
     "noUserSkills": "暂无用户自装技能",
@@ -5576,7 +5601,10 @@
     "sectionError": "错误",
     "charUnit": "字符",
     "clickToViewDetail": "点击查看详情",
-    "runIdTooltip": "运行 ID：{{id}}"
+    "runIdTooltip": "运行 ID：{{id}}",
+    "executorTooltip": "当前由 {{name}} 执行",
+    "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
+    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
   },
   "a4pSettings": {
     "title": "A4P 预授权",

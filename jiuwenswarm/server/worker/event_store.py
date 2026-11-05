@@ -256,7 +256,53 @@ class WorkerEventStore:
             } for record in records],
         }
 
+    def retire_session_interactions(self, request: AgentRequest) -> None:
+        """Mark a session's pending interactions retired after an interrupt.
+
+        chat.interrupt (pause/cancel) ends the current round; an ask_user the
+        round was holding can no longer be answered and the paused session must
+        not stay "processing". Without this the next metadata query sees
+        is_processing + a buffered ask_user frame and the forced after:0
+        replay re-opens the popup.
+
+        A cancel with params.target_request_id retires only that request's
+        record: the same scope also carries the owner turn and other rounds
+        whose pending interactions must stay answerable. An already-returned
+        record still counts — its suspended ask_user is as unanswerable as a
+        live one once its round is the cancel target. Retiring a non-active
+        record also releases its ``_active`` slot here: ``finish`` kept the
+        slot because the suspended interaction made the record look busy, and
+        without the release every retired round leaks one slot until the
+        dispatch limit rejects all later work.
+        """
+        scope = request_scope(request)
+        # Legacy clients pass the cancel target as request_id — same fallback
+        # as admission._dispatch_cancel and dispatcher._drop_queued_cancel.
+        params = request.params or {}
+        target = str(params.get("target_request_id") or params.get("request_id") or "")
+        retired: list[str] = []
+        for record in self.records.values():
+            if record.scope != scope:
+                continue
+            if record.is_passive_subscription:
+                continue
+            if target and str(record.request.request_id or "") != target:
+                continue
+            record.interactions.clear()
+            record.is_processing = False
+            if not record.active:
+                retired.append(record.dispatch_id)
+        # finish() may trim self.records, so it runs after the iteration;
+        # active records keep their slot for the cancel/complete path.
+        for dispatch_id in retired:
+            self.finish(dispatch_id)
+
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
+        # Admission is decided by the dispatcher's recoverable-control filter,
+        # which reads the live execution state. A dispatch record's pending
+        # interactions cannot tell a finished question from the continuation
+        # the same round is currently waiting on, so filtering here would drop
+        # the live one.
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
                 if owner == scope and frame["sequence"] > after]

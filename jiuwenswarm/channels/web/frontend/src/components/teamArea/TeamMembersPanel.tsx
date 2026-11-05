@@ -61,6 +61,7 @@ import {
   type TeamTaskTimelineEntry,
 } from './groupChatTimeline';
 import { groupByWorkflowRun, type WorkflowRunGroup } from './runGrouping';
+import { isWorkflowRunEnded, type WorkflowStatus } from './workflowTypes';
 import { RunGroupHeader } from './RunGroupHeader';
 
 type TeamMembersPanelProps = {
@@ -1003,20 +1004,31 @@ function MemberRunGroupedList({
   groups: WorkflowRunGroup<TeamMember>[];
   renderRow: (member: TeamMember) => ReactNode;
 }) {
+  // 一个会话能攒好几个 run、每个 run 十几二十个 worker，全部平铺太长：
+  // 每个组头给一个展开/收起，默认展开还在跑的、收起已结束的。
+  const [collapsedRuns, setCollapsedRuns] = useState<Record<string, boolean>>({});
   return (
     <>
       {ungrouped.map(renderRow)}
-      {groups.map((group) => (
-        <div key={group.runId}>
-          <RunGroupHeader
-            name={group.name}
-            shortId={group.shortId}
-            status={group.status}
-            runId={group.runId}
-          />
-          {group.items.map(renderRow)}
-        </div>
-      ))}
+      {groups.map((group) => {
+        const collapsed = collapsedRuns[group.runId] ?? isWorkflowRunEnded(group.status as WorkflowStatus);
+        return (
+          <div key={group.runId}>
+            <RunGroupHeader
+              name={group.name}
+              shortId={group.shortId}
+              status={group.status}
+              runId={group.runId}
+              executor={group.executor}
+              collapsed={collapsed}
+              onToggle={() =>
+                setCollapsedRuns((prev) => ({ ...prev, [group.runId]: !collapsed }))
+              }
+            />
+            {!collapsed && group.items.map(renderRow)}
+          </div>
+        );
+      })}
     </>
   );
 }
