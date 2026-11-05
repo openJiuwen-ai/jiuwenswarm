@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Requests through the proxy must recover a dropped AgentServer transport."""
 
 import asyncio
@@ -259,5 +261,85 @@ async def test_reconnect_timeout_closes_partial_socket_and_allows_next_request(t
         transport.ack_gate = None
         assert (await invoke(client, entry))[0]
         assert len(transport.calls) == 3
+    finally:
+        await client.disconnect()
+
+
+async def test_initial_connect_is_not_duplicated_by_proxy_requests(transport, monkeypatch):
+    client = WebSocketAgentServerClient()
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+    original_connect = transport.connect
+
+    async def slow_connect(uri, **kwargs):
+        connecting.set()
+        await release.wait()
+        return await original_connect(uri, **kwargs)
+
+    # Exercise the window before a WebSocket has been assigned, not only ACK.
+    monkeypatch.setattr("websockets.legacy.client.connect", slow_connect)
+    startup = asyncio.create_task(client.connect("ws://agentserver:18092"))
+    try:
+        await asyncio.wait_for(connecting.wait(), 1)
+        for entry in ("proxy", "fetch"):
+            ok, payload = await invoke(client, entry, timeout=0.05)
+            assert not ok and payload["code"] == "SERVICE_UNAVAILABLE"
+        release.set()
+        await asyncio.wait_for(startup, 1)
+        assert (await invoke(client, "proxy"))[0]
+        assert len(transport.calls) == 1
+    finally:
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+        await client.disconnect()
+
+
+async def test_second_cancellation_during_cleanup_preserves_reconnect(transport):
+    client = WebSocketAgentServerClient()
+    request = None
+    try:
+        await client.connect("ws://agentserver:18092")
+        await drop(client, transport.sockets[0])
+        transport.ack_gate = asyncio.Event()
+        request = asyncio.create_task(invoke(client, "proxy", timeout=None))
+        async with asyncio.timeout(1):
+            while len(transport.sockets) < 2:
+                await asyncio.sleep(0)
+        socket = transport.sockets[-1]
+        await asyncio.wait_for(socket.reading_ack.wait(), 1)
+        closing = asyncio.Event()
+
+        async def slow_close():
+            closing.set()
+            await asyncio.Event().wait()
+
+        socket.close = slow_close
+        request.cancel()
+        await asyncio.wait_for(closing.wait(), 1)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        transport.ack_gate = None
+        assert (await invoke(client, "proxy"))[0]
+        assert len(transport.calls) == 3
+    finally:
+        if request is not None:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+        await client.disconnect()
+
+
+async def test_failed_initial_connect_leaves_retries_to_startup(transport):
+    client = WebSocketAgentServerClient()
+    try:
+        transport.error = ConnectionRefusedError("not started")
+        with pytest.raises(ConnectionRefusedError):
+            await client.connect("ws://agentserver:18092")
+        transport.error = None
+        ok, payload = await invoke(client, "proxy")
+        assert not ok and payload["code"] == "SERVICE_UNAVAILABLE"
+        assert len(transport.calls) == 1
+        await client.connect("ws://agentserver:18092")
+        assert (await invoke(client, "proxy"))[0]
     finally:
         await client.disconnect()
