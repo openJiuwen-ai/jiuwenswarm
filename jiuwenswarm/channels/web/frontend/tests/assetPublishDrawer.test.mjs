@@ -862,6 +862,323 @@ test('cancelling sign-out keeps the stored Hub authorization and its records', a
   sessionStorage.removeItem('marketplace_oauth_access_token');
   sessionStorage.removeItem('marketplace_oauth_provider');
 });
+test('SkillPack shows one public member plan and resumes review progress in the shared drawer', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  const members = [
+    { name: 'notes', version: '1.0.0', action: 'reuse', review: 'approved' },
+    { name: 'risk', version: '2.0.0', action: 'publish', visibility: 'public' },
+  ];
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => ({ ...draft, members });
+  assetPublishApi.commit = async () => ({
+    operation_id: 'skillpack-operation', execution_status: 'uploading',
+    stage: 'waiting_member_review', members, result: null, error: null,
+  });
+  await act(async () => openAssetPublish({ kind: 'skillpack', local_id: 'release-pack' }));
+  await tick();
+  assert.equal(find('asset-publish-force'), null);
+  assert.equal(document.querySelectorAll('[name="asset-publish-visibility"]').length, 1);
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  assert.match(find('asset-publish-pack-consent').textContent, /publish.*members publicly/);
+  assert.match(find('asset-publish-pack-member-list').textContent, /notes.*1.0.0.*Reuse published/s);
+  assert.match(find('asset-publish-pack-member-list').textContent, /risk.*2.0.0.*Publish member first/s);
+  await act(async () => find('asset-publish-commit').click());
+  await tick();
+  assert.match(find('asset-publish-result-status').textContent, /Waiting for member reviews/);
+  assert.equal(find('asset-publish-new-version'), null);
+  assert.equal(find('asset-publish-pack-consent'), null);
+  await act(async () => find('asset-publish-close').click());
+});
+
+test('SkillPack action-required stages stop polling and show recovery guidance', async () => {
+  const originalTimeout = globalThis.setTimeout;
+  const scheduled = [];
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay === 2000 || delay === 5000) scheduled.push(delay);
+    return originalTimeout(callback, delay === 2000 ? 0 : delay, ...args);
+  };
+  try {
+    for (const [stage, code, label] of [
+      ['reconcile_upload', 'SKILLPACK_UPLOAD_UNCONFIRMED', /upload.*confirm|confirm.*upload/i],
+      ['reauth_required', 'AUTH_REQUIRED', /sign in/i],
+    ]) {
+      scheduled.length = 0;
+      let calls = 0;
+      const queued = {
+        kind: 'skillpack', operation_id: stage, execution_status: 'uploading',
+        stage: 'publishing_members', result: null, error: null,
+      };
+      assetPublishApi.describe = async () => ({ ...description, records: [queued] });
+      assetPublishApi.status = async () => {
+        calls++;
+        // Also tolerate an older server that still reports uploading here.
+        return { ...queued, stage, error: { code } };
+      };
+      await act(async () => openAssetPublish({ kind: 'skillpack', local_id: stage }));
+      await tick();
+      await tick();
+      assert.equal(calls, 1);
+      assert.deepEqual(scheduled, [2000]);
+      assert.match(find('asset-publish-result-status').textContent, label);
+      assert.ok(find('asset-publish-retry-pack'));
+      assert.equal(find('asset-publish-new-version'), null);
+      await act(async () => find('asset-publish-close').click());
+    }
+  } finally {
+    globalThis.setTimeout = originalTimeout;
+  }
+});
+
+test('paused SkillPack retries its persisted operation once without preparing or losing members', async () => {
+  for (const [stage, code] of [
+    ['reconcile_upload', 'SKILLPACK_UPLOAD_UNCONFIRMED'],
+    ['reauth_required', 'AUTH_REQUIRED'],
+    ['blocked', 'SKILLPACK_HUB_CHECK_FAILED'],
+  ]) {
+    const paused = {
+      operation_id: `paused-${stage}`, execution_status: 'failed', stage, error: { code }, result: null,
+      members: [{ name: 'notes', version: '1.0.0', action: 'publish', review: 'approved' }],
+    };
+    sessionStorage.setItem('marketplace_oauth_access_token', 'refreshed-token');
+    assetPublishApi.describe = async () => ({ ...description, records: [paused] });
+    let prepares = 0;
+    assetPublishApi.prepare = async () => { prepares++; return draft; };
+    const commits = [];
+    let finish;
+    assetPublishApi.commit = (draftId, requestId) => {
+      commits.push({ draftId, requestId });
+      return new Promise((resolve) => { finish = resolve; });
+    };
+    await act(async () => openAssetPublish({ kind: 'skillpack', local_id: stage }));
+    await tick();
+    assert.equal(commits.length, 0);
+    assert.ok(find('asset-publish-form'));
+    assert.equal(find('asset-publish-retry-pack'), null);
+    await act(async () => find('asset-publish-record').click());
+    assert.equal(find('asset-publish-result-edit'), null);
+    await act(async () => {
+      find('asset-publish-retry-pack').click();
+      find('asset-publish-retry-pack').click();
+    });
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0].draftId, paused.operation_id);
+    assert.match(commits[0].requestId, /^[a-f0-9-]{36}$/);
+    assert.equal(find('asset-publish-retry-pack').disabled, true);
+    await act(async () => finish({ ...paused, execution_status: 'uploading', stage: 'waiting_member_review', error: null }));
+    await tick();
+    assert.equal(prepares, 0);
+    assert.equal(find('asset-publish-retry-pack'), null);
+    assert.match(find('asset-publish-result-status').textContent, /Waiting for member reviews/);
+    assert.match(find('asset-publish-pack-member-list').textContent, /notes.*Approved/s);
+    await act(async () => find('asset-publish-close').click());
+  }
+});
+
+test('retry action is unavailable without login and never applies to ordinary Skill publishing', async () => {
+  const paused = {
+    operation_id: 'paused-auth', draft_id: 'paused-auth', execution_status: 'failed',
+    stage: 'reauth_required', error: { code: 'AUTH_REQUIRED' }, result: null,
+  };
+  let commits = 0;
+  assetPublishApi.commit = async () => { commits++; return paused; };
+  assetPublishApi.describe = async () => ({ ...description, records: [paused] });
+  sessionStorage.removeItem('marketplace_oauth_access_token');
+  await act(async () => openAssetPublish({ kind: 'skillpack', local_id: 'no-login' }));
+  await tick();
+  assert.ok(find('asset-publish-login'));
+  assert.equal(find('asset-publish-retry-pack'), null);
+  assert.equal(find('asset-publish-record'), null);
+  assert.equal(commits, 0);
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  await act(async () => openAssetPublish({ kind: 'skillpack', local_id: 'token-expired' }));
+  await tick();
+  await act(async () => find('asset-publish-record').click());
+  sessionStorage.removeItem('marketplace_oauth_access_token');
+  // Recheck authorization at invocation even before the UI receives an auth event.
+  await act(async () => find('asset-publish-retry-pack').click());
+  assert.equal(commits, 0);
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'ordinary' }));
+  await tick();
+  await act(async () => find('asset-publish-record').click());
+  assert.equal(find('asset-publish-retry-pack'), null);
+  assert.ok(find('asset-publish-result-edit'));
+  assert.equal(commits, 0);
+  await act(async () => find('asset-publish-close').click());
+});
+
+test('SkillPack coerces private defaults and OAuth metadata to the public-only publish scope', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  for (const kind of ['skillpack', 'skill']) {
+    for (const restore of [false, true]) {
+      assetPublishApi.describe = async () => ({
+        ...description, defaults: { ...defaults, visibility: 'private' },
+      });
+      const prepared = [];
+      assetPublishApi.prepare = async (_reference, metadata) => {
+        prepared.push(metadata);
+        return draft;
+      };
+      try {
+        const reference = { kind, local_id: `visibility-${kind}-${restore}` };
+        if (restore) {
+          sessionStorage.setItem('asset-publish-metadata', JSON.stringify({
+            reference, metadata: { ...defaults, visibility: 'private' },
+          }));
+          await act(async () => window.dispatchEvent(new dom.window.Event('oauth-callback-complete')));
+        } else await act(async () => openAssetPublish(reference));
+        await tick();
+        const selected = document.querySelector('[name="asset-publish-visibility"]:checked');
+        assert.ok(selected, `${kind} must display its selected publish scope`);
+        assert.equal(prepared.length, 0);
+        await act(async () => find('asset-publish-form').dispatchEvent(
+          new dom.window.Event('submit', { bubbles: true, cancelable: true }),
+        ));
+        await tick();
+        assert.equal(prepared[0].visibility, kind === 'skillpack' ? 'public' : 'private');
+      } finally {
+        if (find('asset-publish-close')) await act(async () => find('asset-publish-close').click());
+      }
+    }
+  }
+});
+
+test('uncertain SkillPack retry recovers the original operation by polling, without a second commit', async () => {
+  const originalTimeout = globalThis.setTimeout;
+  const timers = [];
+  const scheduled = [];
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay !== 2000 && delay !== 5000) return originalTimeout(callback, delay, ...args);
+    scheduled.push({ callback, delay });
+    const timer = originalTimeout(() => {}, 60000);
+    timers.push(timer);
+    return timer;
+  };
+  try {
+    for (const recoveredStage of ['reconcile_upload', 'waiting_member_review']) {
+      scheduled.length = 0;
+      const paused = {
+        operation_id: `retry-${recoveredStage}`, draft_id: `draft-${recoveredStage}`,
+        execution_status: 'failed', stage: 'reconcile_upload',
+        error: { code: 'SKILLPACK_UPLOAD_UNCONFIRMED' }, result: null,
+        members: [{ name: 'notes', version: '1.0.0', action: 'publish', review: 'approved' }],
+      };
+      sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+      assetPublishApi.describe = async () => ({ ...description, records: [paused] });
+      let commits = 0;
+      let rejectCommit;
+      assetPublishApi.commit = (draftId) => {
+        commits++;
+        assert.equal(draftId, paused.draft_id);
+        return new Promise((_resolve, reject) => { rejectCommit = reject; });
+      };
+      const statusIds = [];
+      assetPublishApi.status = async (operationId) => {
+        statusIds.push(operationId);
+        if (statusIds.length === 1) throw new Error('network unavailable');
+        return {
+          ...paused, stage: recoveredStage,
+          execution_status: recoveredStage === 'reconcile_upload' ? 'failed' : 'uploading',
+        };
+      };
+      await act(async () => openAssetPublish({ kind: 'skillpack', local_id: recoveredStage }));
+      await tick();
+      await act(async () => find('asset-publish-record').click());
+      await act(async () => find('asset-publish-retry-pack').click());
+      assert.equal(scheduled.length, 0, 'do not poll stale status while the retry request is in flight');
+      await act(async () => rejectCommit(new Error('response lost')));
+      await tick();
+      assert.equal(find('asset-publish-retry-pack').disabled, true);
+      assert.equal(scheduled.length, 1, 'uncertain retry must start status recovery');
+      assert.equal(scheduled[0].delay, 2000);
+      await act(async () => scheduled[0].callback());
+      assert.equal(find('asset-publish-retry-pack').disabled, true, 'status failure must keep the operation locked');
+      assert.equal(scheduled[1].delay, 5000);
+      await act(async () => scheduled[1].callback());
+      await tick();
+      assert.deepEqual(statusIds, [paused.operation_id, paused.operation_id]);
+      assert.equal(commits, 1);
+      if (recoveredStage === 'reconcile_upload') {
+        assert.equal(find('asset-publish-retry-pack').disabled, false);
+        assert.equal(scheduled.length, 2, 'confirmed paused operations do not poll forever');
+      } else {
+        assert.equal(find('asset-publish-retry-pack'), null);
+        assert.match(find('asset-publish-result-status').textContent, /Waiting for member reviews/);
+        assert.ok(scheduled.length > 2, 'resumed operations continue normal status polling');
+      }
+      assert.match(find('asset-publish-pack-member-list').textContent, /notes.*Approved/s);
+      await act(async () => find('asset-publish-close').click());
+    }
+  } finally {
+    if (find('asset-publish-close')) await act(async () => find('asset-publish-close').click());
+    globalThis.setTimeout = originalTimeout;
+    for (const timer of timers) clearTimeout(timer);
+  }
+});
+
+test('refresh rechecks a temporarily unavailable description before enabling publish', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  let describes = 0;
+  let records = 0;
+  assetPublishApi.describe = async () => {
+    describes++;
+    return describes === 1
+      ? { ...description, can_publish: false, errors: [{ code: 'HUB_REQUEST_FAILED' }] }
+      : description;
+  };
+  assetPublishApi.records = async () => { records++; return { records: [] }; };
+  try {
+    await act(async () => openAssetPublish({ kind: 'skillpack', local_id: 'recover-description' }));
+    await tick();
+    assert.equal(find('asset-publish-prepare').disabled, true);
+    await act(async () => find('asset-publish-refresh').click());
+    await tick();
+    assert.equal(describes, 2);
+    assert.equal(records, 1);
+    assert.equal(find('asset-publish-prepare').disabled, false);
+  } finally {
+    if (find('asset-publish-close')) await act(async () => find('asset-publish-close').click());
+  }
+});
+
+test('unavailable SkillPack member download is explained in both languages without a guessed cause', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => ({
+    ...draft, can_submit: false,
+    errors: [{ code: 'SKILLPACK_MEMBER_UNAVAILABLE' }],
+    members: [{
+      name: 'notes', version: '1.0.0', action: 'blocked',
+      error: { code: 'SKILLPACK_MEMBER_UNAVAILABLE' },
+    }],
+  });
+  try {
+    for (const [language, message] of [
+      ['en', /member version is not publicly downloadable.*review and listing status/i],
+      ['zh', /成员版本当前不可公开下载，请检查审核\/上架状态后重新检查/],
+    ]) {
+      await act(async () => i18next.changeLanguage(language));
+      await act(async () => openAssetPublish({ kind: 'skillpack', local_id: `unavailable-${language}` }));
+      await tick();
+      await act(async () => find('asset-publish-form').dispatchEvent(
+        new dom.window.Event('submit', { bubbles: true, cancelable: true }),
+      ));
+      await tick();
+      assert.match(document.body.textContent, message);
+      assert.equal(find('asset-publish-commit').disabled, true);
+      await act(async () => find('asset-publish-close').click());
+    }
+  } finally {
+    if (find('asset-publish-close')) await act(async () => find('asset-publish-close').click());
+    await act(async () => i18next.changeLanguage('en'));
+  }
+});
+
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;
   let called = 0;

@@ -142,6 +142,11 @@ class WorkflowProgress(BaseModel):
     # provider reported no split
     token_input: Optional[int] = None
     token_output: Optional[int] = None
+    # Run attribution: the member currently hosting the run via swarmflow
+    # (the relaunch host on a resume; the leader itself for a leader-hosted
+    # run). Narration, completion injections and resume handoff all read it;
+    # None only when the event carries no team context.
+    executor: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +343,11 @@ class WorkflowRunState(BaseModel):
     # Absolute path of the script driving this run, set from the workflow_started
     # event for advisory cold-start context; distinct from ``script`` above.
     script_path: Optional[str] = None
+    # Member name currently hosting the run (relaunch host on a resume; the
+    # leader's own name for a leader-hosted run). Refreshed on every started
+    # event, so badge and resume handoff always follow the latest host; None
+    # only for legacy events with no team context.
+    executor: Optional[str] = None
     # Disk-restored after a cold start with no live controller handle; the
     # frontend greys this run's control buttons until a launch-plane relaunch
     # (leader advisory) brings it back.
@@ -392,6 +402,17 @@ class WorkflowRunState(BaseModel):
     @property
     def is_terminal(self) -> bool:
         return self._is_terminal_status(self.status)
+
+    def _phase_may_run(self) -> bool:
+        """True while the run itself is live, so phase cards may enter running.
+
+        A phase/agent event landing after the run was parked or finalized must
+        not resurrect its phase card to ``running`` — a paused run card
+        carrying a running phase is a mixed UI state. A resume re-emits
+        ``workflow_started`` first (which flips the run back to running), so
+        the normal pause→resume path is untouched.
+        """
+        return not self.is_terminal and self.status != "paused"
 
     @staticmethod
     def _is_terminal_status(status: str) -> bool:
@@ -495,19 +516,26 @@ class WorkflowRunState(BaseModel):
         return True
 
     def pause_if_running(self) -> bool:
-        """Mark a non-terminal run as paused (non-terminal, resumable). Returns True if changed.
+        """Park a non-terminal run as paused (non-terminal, resumable). Returns True if changed.
 
         Mirrors ``_on_workflow_paused`` but returns a bool instead of a delta —
         used by teardown to park a run without stamping completed_at/duration.
+        An already-paused run is re-scanned rather than skipped: a parked run
+        whose phases were left ``running`` (stale events after the park, or a
+        restore-time run-level flip) reads as a mixed paused-run / running-phase
+        state, and a re-park heals it.
         """
-        if self.is_terminal or self.status == "paused":
+        if self.is_terminal:
             return False
+        changed = self.status != "paused"
         self.status = "paused"
         for phase in self.phases:
             if phase.status == "running":
                 phase.status = "paused"
-            self._pause_running_agents(phase)
-        return True
+                changed = True
+            if self._pause_running_agents(phase):
+                changed = True
+        return changed
 
     def _stamp_workflow_terminal(self, status: str) -> None:
         """Set workflow to a terminal status with completion timestamp and duration."""
@@ -536,19 +564,22 @@ class WorkflowRunState(BaseModel):
                 self._stamp_agent_terminal(agent, terminal_status)
         self._refresh_phase_counts(phase)
 
-    def _pause_running_agents(self, phase: WorkflowPhaseState) -> None:
+    def _pause_running_agents(self, phase: WorkflowPhaseState) -> bool:
         """Pause still-running agents in ``phase`` to ``paused`` (non-terminal).
 
         Unlike :meth:`_finalize_running_agents`, this does NOT stamp
         ``completed_at`` / ``duration_ms`` — a paused agent is not finished, it
         will be reactivated on resume. ``waiting_for_human`` nodes are also
         paused (their pending reply is cancelled by the pause's abort), so the
-        frontend does not spin forever.
+        frontend does not spin forever. Returns True when any agent changed.
         """
+        changed = False
         for agent in phase.agents:
             if agent.status in ("running", "waiting_for_human"):
                 agent.status = "paused"
+                changed = True
         self._refresh_phase_counts(phase)
+        return changed
 
     def _finalize_running_phases(self, terminal_status: str) -> None:
         """Mark all running / paused phases and their agents as terminal.
@@ -643,6 +674,7 @@ class WorkflowRunState(BaseModel):
         """
         iter_key = iteration or 1
         target = self._find_phase_by_name(phase_name, iter_key)
+        phase_may_run = self._phase_may_run()
         if target is None:
             # Fallback: try a planned card with iteration=None (treated as 1)
             # so the first real phase() call reuses the planned card.
@@ -653,16 +685,18 @@ class WorkflowRunState(BaseModel):
             if target is None:
                 phase_id = self._generate_phase_id(phase_name)
                 target = WorkflowPhaseState(
-                    id=phase_id, name=phase_name, status="running", iteration=iter_key,
+                    id=phase_id, name=phase_name,
+                    status="running" if phase_may_run else "paused",
+                    iteration=iter_key,
                 )
                 self.phases.append(target)
                 logger.warning(
                     "[WF_DBG WorkflowRunState] phase %s#%s not in plan, created on the fly",
                     phase_name, iter_key,
                 )
-            else:
+            elif phase_may_run:
                 target.status = "running"
-        else:
+        elif phase_may_run:
             target.status = "running"
 
         sealed: Optional[WorkflowPhaseState] = None
@@ -918,7 +952,8 @@ class WorkflowRunState(BaseModel):
             WorkflowRunState._is_terminal_status(a.status) for a in phase.agents
         )
 
-    def _refresh_phase_counts(self, phase: WorkflowPhaseState) -> None:
+    @staticmethod
+    def _refresh_phase_counts(phase: WorkflowPhaseState) -> None:
         """Recompute a phase card's counters from its agent list (derived).
 
         ``agent_count`` is the total number of agent instances on the card;
@@ -1099,6 +1134,11 @@ class WorkflowRunState(BaseModel):
         self.name = progress.workflow_name or "workflow"
         self.summary = progress.description or ""
         self.script_path = progress.script_path
+        # Executor reflects whoever hosts the run right now (leader included);
+        # a None from an unattributed event clears nothing but a new member
+        # name takes over.
+        if progress.executor is not None:
+            self.executor = progress.executor
         self.status = "running"
         was_recovered = self.recovered
         self.recovered = False
@@ -1239,7 +1279,8 @@ class WorkflowRunState(BaseModel):
         if parent is None and parent_name:
             logger.warning("[WF_DBG child] parent_phase=%s NOT FOUND in phases=%s",
                            parent_name, [p.name for p in self.phases])
-        if parent is not None and parent.status == "planned":
+        phase_may_run = self._phase_may_run()
+        if parent is not None and parent.status == "planned" and phase_may_run:
             parent.status = "running"
         # Resume replays the script's ``workflow()`` calls, re-emitting the same
         # child PHASE events. Reuse the existing child card (by name, which
@@ -1248,7 +1289,7 @@ class WorkflowRunState(BaseModel):
         # phase list by one card per child.
         existing = self._find_child_phase_by_name(progress.phase)
         if existing is not None:
-            if not self._is_terminal_status(existing.status):
+            if phase_may_run and not self._is_terminal_status(existing.status):
                 existing.status = "running"
             logger.info("[WF_DBG child] run=%s reuse card=%s parent=%s (resume re-declared)",
                         self.id, existing.name, parent_name)
@@ -1260,7 +1301,7 @@ class WorkflowRunState(BaseModel):
             name=progress.phase,
             phase_type="child",
             parent_phase=parent_name,
-            status="running",
+            status="running" if phase_may_run else "paused",
         )
         self.phases.append(phase)
         logger.info("[WF_DBG child] run=%s card=%s parent=%s parent_status=%s",
@@ -1433,6 +1474,12 @@ class WorkflowRunState(BaseModel):
     def _on_agent_started(self, progress: WorkflowProgress) -> dict[str, Any]:
         """Add a new agent, entering its phase and sealing the previous one."""
         self._apply_nested_phase(progress, "agent_started")
+        # Agent cards follow the run's liveness like phase cards do: an
+        # agent_started landing after the run was parked enters paused, so a
+        # paused run never shows a running agent. A resume re-emits
+        # workflow_started first (it flips the run back to running), so the
+        # relaunch path still enters running.
+        agent_status = "running" if self._phase_may_run() else "paused"
 
         def _label() -> str:
             if progress.label:
@@ -1452,7 +1499,7 @@ class WorkflowRunState(BaseModel):
 
         def _make_state(aid: str, label: str) -> WorkflowAgentState:
             return WorkflowAgentState(
-                id=aid, name=label, status="running",
+                id=aid, name=label, status=agent_status,
                 prompt=progress.prompt, model=progress.model,
                 started_at=WorkflowRunState._now_iso(),
                 kind="human" if progress.node_type in ("human", "human_session") else "agent",
@@ -1475,7 +1522,7 @@ class WorkflowRunState(BaseModel):
             stamps are cleared so a running node does not carry stale terminal
             timestamps.
             """
-            existing.status = "running"
+            existing.status = agent_status
             existing.prompt = progress.prompt
             existing.model = progress.model
             existing.agent_type = progress.agent_type
@@ -1492,7 +1539,10 @@ class WorkflowRunState(BaseModel):
                 _reuse_existing(existing)
             else:
                 child_phase.agents.append(agent_state)
-            if self._is_terminal_status(child_phase.status) or child_phase.status == "paused":
+            phase_may_run = self._phase_may_run()
+            if phase_may_run and (
+                self._is_terminal_status(child_phase.status) or child_phase.status == "paused"
+            ):
                 child_phase.status = "running"
                 logger.info("[WF_DBG child] reactivated child phase=%s (new agent arrived)", child_phase.name)
             self._refresh_phase_counts(child_phase)
@@ -1500,7 +1550,9 @@ class WorkflowRunState(BaseModel):
             if child_phase.parent_phase:
                 parent = self._find_parent_author_phase(name=child_phase.parent_phase)
                 if parent is not None:
-                    if self._is_terminal_status(parent.status) or parent.status == "paused":
+                    if phase_may_run and (
+                        self._is_terminal_status(parent.status) or parent.status == "paused"
+                    ):
                         parent.status = "running"
                         logger.info("[WF_DBG parent] reactivated parent=%s (new agent on child=%s)",
                                     parent.name, child_phase.name)
@@ -1508,8 +1560,8 @@ class WorkflowRunState(BaseModel):
                     logger.debug("[WF_DBG parent] parent=%s agent_count=%s (refreshed after child=%s start)",
                                 parent.name, parent.agent_count, child_phase.name)
             self._refresh_run_agent_counts()
-            logger.debug("[WF_DBG WorkflowRunState] agent %s -> running, child_phase=%s",
-                         label, child_phase.name)
+            logger.debug("[WF_DBG WorkflowRunState] agent %s -> %s, child_phase=%s",
+                         label, agent_status, child_phase.name)
             if parent is not None:
                 return self._build_phases_delta([parent, child_phase])
             return self._build_phase_delta(child_phase)
@@ -1534,7 +1586,7 @@ class WorkflowRunState(BaseModel):
         if sealed_phase is not None:
             self._refresh_phase_counts(sealed_phase)
         self._refresh_run_agent_counts()
-        logger.info("[WF_DBG WorkflowRunState] agent %s -> running, phase=%s", label, target_phase.name)
+        logger.info("[WF_DBG WorkflowRunState] agent %s -> %s, phase=%s", label, agent_status, target_phase.name)
         if sealed_phase is not None:
             return self._build_phases_delta([sealed_phase, target_phase])
         return self._build_phase_delta(target_phase)
@@ -1621,12 +1673,14 @@ class WorkflowRunState(BaseModel):
         )
         if phase is None or agent is None:
             return None
-        agent.status = "waiting_for_human"
+        # A human turn landing while the run is parked must not flip the card
+        # to waiting_for_human — same liveness gate as _on_human_replied.
+        agent.status = "waiting_for_human" if self._phase_may_run() else "paused"
         agent.correlation_id = progress.correlation_id
         agent.human_prompt = progress.prompt
         logger.info(
-            "[WF_DBG WorkflowRunState] agent %s -> waiting_for_human, phase=%s",
-            agent.name, phase.name,
+            "[WF_DBG WorkflowRunState] agent %s -> %s, phase=%s",
+            agent.name, agent.status, phase.name,
         )
         return self._build_phase_delta(phase)
 
@@ -1638,7 +1692,9 @@ class WorkflowRunState(BaseModel):
         )
         if phase is None or agent is None:
             return None
-        agent.status = "running"
+        # A reply landing while the run is parked must not flip the card back
+        # to running — same liveness gate as _on_agent_started.
+        agent.status = "running" if self._phase_may_run() else "paused"
         agent.human_reply = progress.answer
         logger.info(
             "[WF_DBG WorkflowRunState] agent %s -> replied, phase=%s",
@@ -1755,6 +1811,9 @@ class WorkflowRunState(BaseModel):
             "name": self.name,
             "summary": self.summary,
             "status": self.status,
+            # Run attribution rides the top-level deltas (started / paused);
+            # the frontend's incremental merge keeps fields later deltas omit.
+            "executor": self.executor,
             "agent_count": self.agent_count,
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
@@ -1842,6 +1901,9 @@ class WorkflowRunState(BaseModel):
         result["estimated_token_count"] = self.estimated_token_count
         result["budget"] = self.budget
         result["workflow_budget"] = self.workflow_budget
+        # Run attribution: the member currently hosting the run (None = legacy
+        # event without team context — the frontend renders no badge).
+        result["executor"] = self.executor
         if self.budget_exhausted_scope is not None:
             result["budget_exhausted_scope"] = self.budget_exhausted_scope
         # A disk-restored run with no live controller ticket: the frontend

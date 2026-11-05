@@ -5589,7 +5589,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 {micTooltipNode}
 
                 <ApplicationPluginTaskInputActions
-                  eligible={fullDuplexActionEligible && !isTeamMode}
+                  eligible={fullDuplexActionEligible && (!isTeamMode || isDesignLanding)}
                   hasTextDraft={hasTextDraft}
                   sessionId={activeSessionId}
                   ensureSession={onEnsureSession}

@@ -104,30 +104,24 @@ async def test_free_text_keeps_rail_and_epoch_intact(answer_host, monkeypatch, m
 
 
 @pytest.mark.asyncio
-async def test_pending_manual_answer_with_unrelated_card_id_drops_to_free_text(
+async def test_pending_manual_answer_with_conflicting_alias_preserves_pending(
     answer_host, monkeypatch
 ):
-    """A manual answer that points at a stale card (no live card) must not be
-    re-bound to a pending Core INTERRUPTION_KEY. Either the stale answer is
-    rejected, or the free text is preserved as new chat. Never silently
-    auto-execute the old tool."""
+    """Reject a conflicting alias without altering the pending continuation."""
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+        RootPermissionQueueError,
+    )
+
     h = answer_host
     await _interrupt(h, monkeypatch, mode="manual", kind="permission")
-    h.script.responses = [AssistantMessage(content="ok")]
+    before = deepcopy(_pending_state(h))
 
     foreign = {
         "source": "permission_interrupt",
         "request_id": "foreign-call-id",
         "answers": [{"selected_options": ["allow_once"], "card_id": "foreign-card"}],
     }
-    try:
-        result = await _request(h, **foreign)
-    except Exception:
-        result = None
-
-    if result is not None:
-        assert h.executions == [], (
-            "stale manual answer must not auto-execute the pending tool"
-        )
-        assert _pending_state(h) is None or not _pending_state(h).interrupted_tools
-    assert h.adapter._permission_state.permission_epoch is not None or _pending_state(h) is None
+    with pytest.raises(RootPermissionQueueError, match="permission_card_alias_conflict"):
+        await _request(h, **foreign)
+    assert h.executions == []
+    assert _pending_state(h) == before

@@ -701,7 +701,7 @@ export function ToolPanel({
                 const remaining = teamMembersExpanded ? 0 : group.items.length - visible.length;
                 return (
                   <div key={group.runId} className="border-b border-border last:border-b-0">
-                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} executor={group.executor} />
                     <CompactTaskList
                       tasks={visible}
                       members={teamMembers}

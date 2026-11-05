@@ -312,7 +312,7 @@ def _permission_answer_for_card(
     if not isinstance(raw_card_id, str):
         return []
     card_id = raw_card_id.strip()
-    if not card_id or len(card_id) > 128:
+    if not card_id or len(card_id) > 512:
         return []
     return [
         {

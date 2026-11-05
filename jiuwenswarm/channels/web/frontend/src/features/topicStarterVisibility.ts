@@ -264,43 +264,29 @@ export function buildSessionBoundEvent(slate: TopicStarterVisibleSlate, realSess
 }
 
 const SETTINGS_PREPARATION_STATES = new Set(['disabled', 'missing_configuration', 'provider_unavailable']);
-const EMPTY_RETRY_PREPARATION_STATES = new Set(['failed', 'no_content', 'waiting_for_input']);
 
-export function topicStarterShowsStatus(state: string | null | undefined, hasCards: boolean): boolean {
+export function topicStarterShowsStatus(state: string | null | undefined, _hasCards = false): boolean {
   if (!state || state === 'ready') {
     return false;
   }
-  if (state === 'disabled' || state === 'missing_configuration') {
+  // Settings blockers keep a go-to-settings hint. Soft-wait copy only while preparing;
+  // once preparation ends, presets (or personalized cards) cover the page—no empty tip.
+  if (SETTINGS_PREPARATION_STATES.has(state)) {
     return true;
   }
-  return !hasCards || state === 'preparing' || state === 'failed' || state === 'provider_unavailable';
+  return state === 'preparing';
 }
 
-export function topicStarterStatusMessageKey(state: string, hasCards: boolean): string {
-  if (hasCards) {
-    if (state === 'preparing') {
-      return 'chat.topicStarter.statusPreparingWithCards';
-    }
-    if (state === 'disabled' || state === 'missing_configuration') {
-      return 'chat.topicStarter.statusNeedsSettings';
-    }
-    return 'chat.topicStarter.statusUpdateIncomplete';
-  }
-  if (state === 'preparing') {
-    return 'chat.topicStarter.statusPreparing';
-  }
+export function topicStarterStatusMessageKey(state: string, _hasCards = false): string {
+  // Homepage keeps two copy jobs only: soft wait vs go-to-settings.
   if (SETTINGS_PREPARATION_STATES.has(state)) {
     return 'chat.topicStarter.statusNeedsSettings';
   }
-  return 'chat.topicStarter.statusNoCards';
+  return 'chat.topicStarter.statusPreparing';
 }
 
 export function topicStarterShowsSettingsAction(state: string): boolean {
   return SETTINGS_PREPARATION_STATES.has(state);
-}
-
-export function topicStarterShowsRetryAction(state: string): boolean {
-  return EMPTY_RETRY_PREPARATION_STATES.has(state) || state === 'provider_unavailable';
 }
 
 export function topicStarterShowsProviderRefusal(state: string): boolean {

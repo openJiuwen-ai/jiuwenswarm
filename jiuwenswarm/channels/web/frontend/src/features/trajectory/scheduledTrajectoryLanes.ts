@@ -3,6 +3,7 @@
 import type {
   ScheduledReviewDecision,
   ScheduledReviewRun,
+  ScheduledTask,
   TeamControlModel,
 } from './teamControlTimeline';
 import {
@@ -44,18 +45,63 @@ export interface ScheduledTeamLaneSections {
   reviewRunCount: number;
 }
 
+export interface ScheduledTaskRun {
+  key: string;
+  tasks: ScheduledReviewerTask[];
+  member?: TeamMemberLaneModel;
+}
+
+function memberForAssignee(
+  assignee: string | undefined,
+  members: readonly TeamMemberLaneModel[],
+): TeamMemberLaneModel | undefined {
+  const normalized = assignee?.trim();
+  if (!normalized) return undefined;
+  return members.find(member => (
+    member.subjectId === normalized
+    || member.subjectId.endsWith(`:${normalized}`)
+    || member.label === normalized
+  ));
+}
+
+export function scheduledTaskMember(
+  task: ScheduledReviewerTask,
+  members: readonly TeamMemberLaneModel[],
+): TeamMemberLaneModel | undefined {
+  return memberForAssignee(task.assignee, members);
+}
+
+export function groupScheduledTaskRuns(
+  members: readonly TeamMemberLaneModel[],
+  tasks: readonly ScheduledReviewerTask[],
+): ScheduledTaskRun[] {
+  const runs: ScheduledTaskRun[] = [];
+  for (const task of tasks) {
+    const member = scheduledTaskMember(task, members);
+    const previous = runs[runs.length - 1];
+    if (
+      member !== undefined
+      && previous?.member?.subjectId === member.subjectId
+    ) {
+      previous.tasks.push(task);
+      continue;
+    }
+    runs.push({
+      key: `task-run:${task.taskId}:${member?.subjectId ?? 'unassigned'}`,
+      tasks: [task],
+      ...(member === undefined ? {} : { member }),
+    });
+  }
+  return runs;
+}
+
 export function scheduledMemberDisplayName(
   assignee: string,
   members: readonly TeamMemberLaneModel[],
 ): string {
   const normalized = assignee.trim();
   if (normalized === '') return assignee;
-  const member = members.find(lane => (
-    lane.subjectId === normalized
-    || lane.subjectId.endsWith(`:${normalized}`)
-    || lane.label === normalized
-  ));
-  return member?.label ?? assignee;
+  return memberForAssignee(normalized, members)?.label ?? assignee;
 }
 
 interface ReviewerIdentity {
@@ -120,6 +166,29 @@ function reviewKey(taskId: string, round: number, reviewer: string): string {
   return `${taskId}\0${round}\0${reviewer}`;
 }
 
+const MEANINGFUL_CANCEL_EVENTS = new Set([
+  'submitted',
+  'vote',
+  'revision',
+  'verified',
+  'escalated',
+  'anomaly',
+]);
+
+/**
+ * A cancellation is worth a detailed trace card only when the task reached a
+ * review/exception milestone. Create/start/unblock -> cancel churn is summary
+ * data, not a useful expandable trace.
+ */
+export function shouldShowScheduledTaskDetail(
+  task: ScheduledTask,
+  hasReviewerLanes: boolean,
+): boolean {
+  if (task.phase !== 'cancelled') return true;
+  if (hasReviewerLanes || task.reviews.length > 0) return true;
+  return task.events.some(event => MEANINGFUL_CANCEL_EVENTS.has(event.kind));
+}
+
 /**
  * Keep every physical Reviewer subject independent while adding the display
  * hierarchy Task -> Round -> Reviewer -> Attempt.
@@ -178,11 +247,21 @@ export function buildScheduledTeamLaneSections(
     ]);
   }
 
-  const modeledTaskIds = model?.tasks.map(task => task.taskId) ?? [];
+  const modeledTasks = model?.tasks ?? [];
+  const modelTaskById = new Map(modeledTasks.map(task => [task.taskId, task]));
+  const modeledTaskIds = modeledTasks.map(task => task.taskId);
   const taskEntries = [
     ...modeledTaskIds
       .map((taskId, index) => ({ taskId, taskIndex: index + 1 }))
-      .filter(({ taskId }) => reviewerByTask.has(taskId)),
+      .filter(({ taskId }) => {
+        const task = modelTaskById.get(taskId);
+        const hasReviewerLanes = reviewerByTask.has(taskId);
+        if (task !== undefined && !shouldShowScheduledTaskDetail(task, hasReviewerLanes)) {
+          return false;
+        }
+        return hasReviewerLanes
+          || memberForAssignee(task?.assignee, members) !== undefined;
+      }),
     ...[...reviewerByTask.keys()]
       .filter(taskId => !modeledTaskIds.includes(taskId))
       .sort((left, right) => left.localeCompare(right))

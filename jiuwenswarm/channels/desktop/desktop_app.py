@@ -27,7 +27,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from logging.handlers import RotatingFileHandler
 
@@ -81,6 +81,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
 _MACOS_RUNTIME_REF: weakref.ReferenceType[Any] | None = None
+
 DESKTOP_WINDOW_PREFERENCES_FILENAME = "desktop-window.json"
 CLOSE_ACTION_ASK = "ask"
 CLOSE_ACTION_HIDE = "hide"
@@ -88,6 +89,69 @@ CLOSE_ACTION_QUIT = "quit"
 VALID_CLOSE_ACTIONS = frozenset(
     {CLOSE_ACTION_ASK, CLOSE_ACTION_HIDE, CLOSE_ACTION_QUIT}
 )
+
+
+# Only the current frontend origin may request microphone access.
+_WK_MEDIA_CAPTURE_MICROPHONE = 1  # WKMediaCaptureTypeMicrophone
+_WK_PERMISSION_GRANT = 1  # WKPermissionDecisionGrant
+_WK_PERMISSION_DENY = 2  # WKPermissionDecisionDeny
+
+
+def _install_macos_media_capture_permission(get_frontend_url: Callable[[], str]) -> None:
+    """给 pywebview 的 WKUIDelegate 补上媒体授权回调。
+
+    pywebview 的 BrowserDelegate 没实现
+    webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:，
+    WKWebView 因此直接拒绝 getUserMedia（NotAllowedError，不弹框）。
+    回调只在网页调用 getUserMedia 时触发，所以启动阶段不会要权限；
+    放行后首次使用由 macOS 弹系统麦克风授权。getDisplayMedia 不走这个回调。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import objc  # type: ignore[import-not-found]
+        from webview.platforms.cocoa import BrowserView
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] media permission hook unavailable: %s", exc)
+        return
+    delegate_cls = BrowserView.BrowserDelegate
+    if getattr(delegate_cls, "_jiuwenswarm_media_permission_installed", False):
+        return
+
+    def media_permission(_self, _webview, origin, _frame, media_type, decision_handler):
+        allowed = False
+        try:
+            expected = urlsplit(get_frontend_url())
+            default_port = 443 if expected.scheme == "https" else 80
+            expected_origin = (expected.scheme, expected.hostname, expected.port or default_port)
+            request_origin = (
+                str(origin.protocol()), str(origin.host()), int(origin.port()) or default_port,
+            )
+            allowed = (
+                expected.scheme in {"http", "https"}
+                and request_origin == expected_origin
+                and int(media_type) == _WK_MEDIA_CAPTURE_MICROPHONE
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+        logger.info(
+            "[desktop] media capture request type=%s allowed=%s",
+            media_type, allowed,
+        )
+        decision_handler(_WK_PERMISSION_GRANT if allowed else _WK_PERMISSION_DENY)
+
+    objc.classAddMethods(
+        delegate_cls,
+        [
+            objc.selector(
+                media_permission,
+                selector=b"webView:requestMediaCapturePermissionForOrigin:"
+                b"initiatedByFrame:type:decisionHandler:",
+                signature=b"v@:@@@q@?",
+            )
+        ],
+    )
+    delegate_cls._jiuwenswarm_media_permission_installed = True  # pylint: disable=protected-access
 
 
 def _desktop_window_preferences_path() -> Path:
@@ -756,8 +820,6 @@ class _WindowApi:
     @staticmethod
     def open_external_url(url: str) -> bool:
         """Open SkillHub OAuth in the system browser, outside the desktop WebView."""
-        from urllib.parse import urlsplit
-
         base = (
             os.getenv("SKILLHUB_OAUTH_BASE_URL")
             or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
@@ -779,8 +841,6 @@ class _WindowApi:
 
         Only plain http(s) URLs without embedded credentials are accepted.
         """
-        from urllib.parse import urlsplit
-
         parsed = urlsplit(str(url))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
@@ -802,7 +862,7 @@ class _WindowApi:
         import html as html_module
         import re
         import urllib.request
-        from urllib.parse import parse_qs, urlsplit
+        from urllib.parse import parse_qs
 
         if not isinstance(options, dict):
             return None
@@ -3269,6 +3329,7 @@ nohup {q_executable} >/dev/null 2>&1 &
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
+        _install_macos_media_capture_permission(lambda: self.frontend_display_url)
 
         self.window = webview.create_window(
             window_title,
