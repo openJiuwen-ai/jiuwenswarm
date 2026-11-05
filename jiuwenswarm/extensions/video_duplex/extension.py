@@ -44,6 +44,9 @@ def _load_backend() -> Any:
 class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
     plugin_id = "video-duplex"
 
+    def __init__(self, backend: Any) -> None:
+        self._backend = backend
+
     def is_enabled(self) -> bool:
         return self._backend.video_duplex_enabled()
 
@@ -207,7 +210,6 @@ async def register_extensions(registry: Any) -> list[VideoDuplexApplicationPlugi
             type(exc).__name__, exc,
         )
         return []
-    extension = VideoDuplexApplicationPlugin()
-    extension._backend = backend
+    extension = VideoDuplexApplicationPlugin(backend)
     registry.register_application_plugin(extension)
     return [extension]

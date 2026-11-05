@@ -50,7 +50,10 @@ async def test_missing_dependency_skips_registration(compatible_modules, missing
 
 @pytest.mark.asyncio
 async def test_old_tool_signature_skips_registration(compatible_modules, caplog):
-    compatible_modules["jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools"].qwen_omni_tools = lambda: []
+    def legacy_tools():
+        return []
+
+    compatible_modules["jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools"].qwen_omni_tools = legacy_tools
     registry = Mock()
     assert await extension.register_extensions(registry) == []
     registry.register_application_plugin.assert_not_called()

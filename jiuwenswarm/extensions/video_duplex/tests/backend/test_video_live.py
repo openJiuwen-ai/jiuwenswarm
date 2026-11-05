@@ -13,6 +13,9 @@ import struct
 from types import SimpleNamespace
 import wave
 
+from agent_gateway.channel_manager.web.media.normalizer import (
+    normalize_chat_media_attachments,
+)
 import openai
 import pytest
 import websockets
@@ -32,9 +35,6 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_live,
     video_search,
     video_voice,
-)
-from agent_gateway.channel_manager.web.media.normalizer import (
-    normalize_chat_media_attachments,
 )
 
 

@@ -2,6 +2,8 @@
 import type { RealtimeBrief } from './types.js';
 import { announceLanguageInstruction, normalizeReplyLanguage } from './replyLanguage.js';
 
+export const APPROVAL_SOURCES = new Set(['confirm_interrupt']);
+
 export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
   'Follow the configured reply language. Preserve user-provided data, task IDs and file paths exactly.',
   'Every question about current task progress, counts or stopping requires a fresh jiuwen_task_query; never infer status from conversation history. For overall progress, omit query/job_id and use summary; jobs contains only paginated details. all_finished includes failure and cancellation; only all_succeeded means all succeeded. For unfinished details, use status=unfinished and paginate with next_offset.',
