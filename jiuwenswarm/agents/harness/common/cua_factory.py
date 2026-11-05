@@ -51,6 +51,9 @@ def build_cua_agent_config(
         f"Public Computer Use SDK interface:\n```python\n{api}\n```"
     )
     if sys.platform == "darwin":
-        spec.system_prompt += "\nOn macOS, use cua_repl for desktop operations; the legacy single-step backend is unavailable.\n"
+        spec.system_prompt += (
+            "\nOn macOS, use cua_repl for desktop operations; "
+            "the legacy single-step backend is unavailable.\n"
+        )
     spec.parallel_tool_calls = False
     return spec

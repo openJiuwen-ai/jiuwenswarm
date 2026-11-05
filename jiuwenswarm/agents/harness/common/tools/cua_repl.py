@@ -103,5 +103,3 @@ class CuaReplTool(Tool):
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
-
-

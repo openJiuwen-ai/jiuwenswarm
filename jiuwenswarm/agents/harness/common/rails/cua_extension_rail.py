@@ -52,13 +52,15 @@ class CuaExtensionRail(AgentRail):
         self.session_id = session_id
 
     async def before_tool_call(self, ctx):
-        if (self.native_rail is not None and isinstance(ctx.inputs, ToolCallInputs)
-                and ctx.inputs.tool_name in self.native_tool_names and not ctx.extra.get("_skip_tool")):
-            self.native_rail._verified = False  # pylint: disable=protected-access
-            try:
-                await self.native_rail.before_invoke(ctx)
-            finally:
-                self.native_rail._verified = True  # pylint: disable=protected-access
+        if self.native_rail is None or not isinstance(ctx.inputs, ToolCallInputs):
+            return
+        if ctx.inputs.tool_name not in self.native_tool_names or ctx.extra.get("_skip_tool"):
+            return
+        self.native_rail._verified = False  # pylint: disable=protected-access
+        try:
+            await self.native_rail.before_invoke(ctx)
+        finally:
+            self.native_rail._verified = True  # pylint: disable=protected-access
 
     async def after_tool_call(self, ctx):
         inputs = ctx.inputs
