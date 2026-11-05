@@ -129,6 +129,19 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.skillnet.evaluate': { verb: 'POST', path: '/skills/skillnet/actions/evaluate', kind: 'unary' },
   'skills.evolution.get': { verb: 'GET', path: '/skills/evolution', kind: 'unary' },
   'skills.evolution.save': { verb: 'PUT', path: '/skills/evolution', kind: 'unary' },
+  'team.templates.list': { verb: 'GET', path: '/teams/templates', kind: 'unary' },
+  'team.bindings.list': { verb: 'GET', path: '/teams/bindings', kind: 'unary' },
+  'team.binding.create': { verb: 'POST', path: '/teams/bindings', kind: 'unary' },
+  'team.session.bind': {
+    verb: 'POST',
+    path: '/teams/{team_name}/sessions/{session_id}/bind',
+    kind: 'unary',
+  },
+  'team.runtime.dissolve': {
+    verb: 'POST',
+    path: '/sessions/{session_id}/team/runtime/dissolve',
+    kind: 'unary',
+  },
   'project.list': { verb: 'GET', path: '/projects', kind: 'unary' },
   'project.info': { verb: 'GET', path: '/projects/{project_id}', kind: 'unary' },
   'project.get_sessions': { verb: 'GET', path: '/projects/{project_id}/sessions', kind: 'unary' },
@@ -249,7 +262,12 @@ export function assembleWebRest(
     return null;
   }
   const values = { ...(params ?? {}) };
-  const { path, used } = fillPath(row.path, values);
+  // v2: team.session.bind always requires team_name (no dynamic entry openers).
+  let pathTemplate = row.path;
+  if (name === 'team.session.bind') {
+    pathTemplate = '/teams/{team_name}/sessions/{session_id}/bind';
+  }
+  const { path, used } = fillPath(pathTemplate, values);
   const remaining = applyMethodBody(name, remainingParams(values, used));
   const useQuery = row.verb === 'GET' || row.kind === 'history-stream';
   return {

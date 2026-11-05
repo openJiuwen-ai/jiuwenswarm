@@ -2034,6 +2034,112 @@ function AppContent() {
     enterNewConversation(targetMode);
   }, [enterNewConversation, setMode]);
 
+  /**
+   * 专家团绑定前：保证有真实 session（欢迎页 ``new`` 会先 session.create），
+   * 再交给 ``team.binding.create`` + ``team.session.bind``。
+   */
+  const ensureSessionForExpertTeam = useCallback(async (): Promise<string> => {
+    const currentSessionId = sessionIdRef.current;
+    if (currentSessionId && currentSessionId !== NEW_CONVERSATION_ID) {
+      setMode(currentSessionId, 'team');
+      return currentSessionId;
+    }
+
+    if (creatingSessionRef.current) {
+      throw new Error(t('multiSession.errors.create'));
+    }
+    creatingSessionRef.current = true;
+    setMode(NEW_CONVERSATION_ID, 'team');
+    const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+    const runtimeSettings = {
+      mode: 'team' as AgentMode,
+      selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+      projectDir: newRuntime?.projectDirectory ?? null,
+    };
+    const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
+    const preservedProject = newConversationProjectRef.current;
+    const workContext = {
+      project_id: baseWorkContext.project_id || preservedProject?.project_id,
+      project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
+      work_mode: useWorkspaceStore.getState().workMode,
+    };
+    // 标题必须先空着：首条用户消息才会按内容自动命名（前后端都认 empty title）。
+    // 写死「专家团」/「未命名对话」都会挡住自动改名。
+    try {
+      const createParams: Record<string, unknown> = {
+        create_token: generateUuidV4(),
+        mode: 'team',
+        is_swarm: true,
+        title: '',
+        work_mode: workContext.work_mode,
+      };
+      const previousSession = newConversationPreviousSessionRef.current;
+      if (previousSession) {
+        createParams.previous_session_id = previousSession.sessionId;
+        createParams.previous_mode = previousSession.mode;
+      }
+      if (runtimeSettings.selectedModelName) {
+        createParams.model_name = runtimeSettings.selectedModelName;
+      }
+      if (workContext.project_id) {
+        createParams.project_id = workContext.project_id;
+      }
+      if (workContext.project_dir) {
+        createParams.project_dir = workContext.project_dir;
+      }
+      const created = await createConversationSession(request, createParams);
+      const newSid = created.session_id;
+      const createdSession = registerCreatedConversation(
+        created.session_id,
+        runtimeSettings,
+        Date.now(),
+        '',
+        {
+          project_id: created.project_id || workContext.project_id,
+          project_dir: created.project_dir || workContext.project_dir,
+          work_mode: created.work_mode || workContext.work_mode,
+        },
+      );
+      const pendingSkills = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.selectedSkills ?? [];
+      pendingSkills.forEach((skill) => useSessionStore.getState().addSelectedSkill(newSid, skill));
+      useSessionStore.getState().clearSelectedSkills(NEW_CONVERSATION_ID);
+      if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
+        usePlanStore.getState().setActive(newSid, true, {
+          explicitEntry: usePlanStore
+            .getState()
+            .hasPendingExplicitEntry(NEW_CONVERSATION_ID),
+        });
+      }
+      usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      pendingNewConversationRef.current = false;
+      useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
+      sessionIdsCreatedInThisPageRef.current.add(newSid);
+      useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+      // 只建会话、尚未发消息，不要留在 processing
+      useChatStore.getState().setProcessing(newSid, false);
+      sessionIdRef.current = newSid;
+      setSessionId(newSid);
+      useChatStore.getState().setActiveSessionId(newSid);
+      navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
+      newConversationProjectRef.current = null;
+      newConversationPreviousSessionRef.current = null;
+      return newSid;
+    } catch (error) {
+      console.error('Failed to create conversation for expert team bind:', error);
+      const quotaHit = isWorkspaceQuotaError(error);
+      setCreateErrorNotice(quotaHit
+        ? {
+          title: t('multiSession.errors.quotaExceededTitle'),
+          message: t('multiSession.errors.quotaExceeded'),
+        }
+        : { title: t('multiSession.errors.create') });
+      throw error instanceof Error ? error : new Error(t('multiSession.errors.create'));
+    } finally {
+      creatingSessionRef.current = false;
+    }
+  }, [navigate, request, setMode, t]);
+
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
@@ -2908,6 +3014,7 @@ function AppContent() {
                       onResumeGoal={resumeGoal}
                       onClearGoal={handleClearGoal}
                       onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
+                      ensureSessionForExpertTeam={ensureSessionForExpertTeam}
                     />}
                     chatLabel={t('nav.chat')}
                     mode={mode}

@@ -7,14 +7,19 @@ import { webRequest } from '../../services/webClient';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 
 /** 与后端 TEAM_SKILLS_HUB_BASE_URL 默认值一致（info 请求失败时的回退） */
-const DEFAULT_TEAMSKILLS_HUB_BASE_URL = 'https://teamskills.openjiuwen.com';
+const DEFAULT_TEAMSKILLS_HUB_BASE_URL = 'https://swarmskills.openjiuwen.com';
 
 type LoadState = 'idle' | 'loading' | 'success' | 'error';
+
+/** SPI 源缺失时回退到 develop 同款 legacy Hub RPC。 */
+const LEGACY_HUB_SOURCE_ID = '__legacy_teamskillshub__';
 
 type TeamSkillsHubSkillItem = {
   source_id: string;
   skill_id?: string;
   version_id: string;
+  /** legacy teamskillshub.search 字段 */
+  asset_id?: string;
   name: string;
   display_name?: string;
   summary?: string;
@@ -124,23 +129,26 @@ export function TeamSkillsHubModal({
           error_message?: string;
           providers?: SkillSourceDescriptor[];
         }>('skills.source.providers', withSession());
-        const provider = (data.providers || []).find(item => item.enabled !== false && (item.capabilities || []).includes('search'));
+        const provider = (data.providers || []).find(
+          (item) => item.enabled !== false && (item.capabilities || []).includes('search'),
+        );
         const selected = provider?.source_id || provider?.source || '';
-        if (!data.success || !selected) {
-          throw new Error(data.error_message || t('skills.teamskillshub.errors.searchFailed'));
+        if (!cancelled) {
+          // SPI 源未注册时回退 legacy Hub（与 develop 一致），避免整页直接失败。
+          setSourceId(selected || LEGACY_HUB_SOURCE_ID);
+          setLoadState('idle');
         }
-        if (!cancelled) setSourceId(selected);
-      } catch (error) {
-        if (cancelled) return;
-        setResults([]);
-        setLoadState('error');
-        showMessage('error', error instanceof Error ? error.message : t('skills.teamskillshub.errors.searchFailed'));
+      } catch {
+        if (!cancelled) {
+          setSourceId(LEGACY_HUB_SOURCE_ID);
+          setLoadState('idle');
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [open, showMessage, t, withSession]);
+  }, [open, withSession]);
 
   useEffect(() => {
     if (!open || !sourceId) return;
@@ -168,41 +176,6 @@ export function TeamSkillsHubModal({
       setQuery(externalSearchQuery);
     }
   }, [externalSearchQuery, embedded]);
-
-  useEffect(() => {
-    if (embedded && sourceId && query.trim()) {
-      const q = query.trim();
-      setLoadState('loading');
-      setMessage(null);
-      void (async () => {
-        try {
-          const data = await webRequest<{
-            success: boolean;
-            error_message?: string;
-            items?: TeamSkillsHubSkillItem[];
-          }>(
-            'skills.source.search',
-            withSession({
-              source_id: sourceId,
-              q,
-              page: 1,
-              page_size: 50,
-            }),
-          );
-          if (!data.success) {
-            throw new Error(data.error_message || t('skills.teamskillshub.errors.searchFailed'));
-          }
-          setResults(data.items || []);
-          setLoadState('success');
-        } catch (error) {
-          console.error(error);
-          setResults([]);
-          setLoadState('error');
-          showMessage('error', error instanceof Error ? error.message : t('skills.teamskillshub.errors.searchFailed'));
-        }
-      })();
-    }
-  }, [query, embedded, showMessage, sourceId, t, withSession]);
 
   useEffect(() => {
     if (!open) return;
@@ -247,23 +220,58 @@ export function TeamSkillsHubModal({
     setLoadState('loading');
     setMessage(null);
     try {
-      const data = await webRequest<{
-        success: boolean;
-        error_message?: string;
-        items?: TeamSkillsHubSkillItem[];
-      }>(
-        'skills.source.search',
-        withSession({
-          source_id: sourceId,
-          q,
-          page: 1,
-          page_size: 50,
-        }),
-      );
-      if (!data.success) {
-        throw new Error(data.error_message || t('skills.teamskillshub.errors.searchFailed'));
+      if (sourceId === LEGACY_HUB_SOURCE_ID) {
+        const data = await webRequest<{
+          success: boolean;
+          detail?: string;
+          skills?: Array<{
+            asset_id?: string;
+            name?: string;
+            display_name?: string;
+            summary?: string;
+            version?: string;
+            updated_at?: string | number;
+          }>;
+        }>('skills.teamskillshub.search', withSession({ q, limit: 50 }));
+        if (!data.success) {
+          throw new Error(data.detail || t('skills.teamskillshub.errors.searchFailed'));
+        }
+        setResults(
+          (data.skills || []).map((item) => {
+            const assetId = String(item.asset_id || '').trim();
+            const name = String(item.name || assetId).trim();
+            return {
+              source_id: LEGACY_HUB_SOURCE_ID,
+              asset_id: assetId,
+              skill_id: assetId,
+              version_id: String(item.version || '').trim() || 'latest',
+              name,
+              display_name: String(item.display_name || name).trim(),
+              summary: item.summary,
+              version: item.version,
+              updated_at: item.updated_at,
+            };
+          }),
+        );
+      } else {
+        const data = await webRequest<{
+          success: boolean;
+          error_message?: string;
+          items?: TeamSkillsHubSkillItem[];
+        }>(
+          'skills.source.search',
+          withSession({
+            source_id: sourceId,
+            q,
+            page: 1,
+            page_size: 50,
+          }),
+        );
+        if (!data.success) {
+          throw new Error(data.error_message || t('skills.teamskillshub.errors.searchFailed'));
+        }
+        setResults(data.items || []);
       }
-      setResults(data.items || []);
       setLoadState('success');
     } catch (error) {
       console.error(error);
@@ -272,6 +280,12 @@ export function TeamSkillsHubModal({
       showMessage('error', error instanceof Error ? error.message : t('skills.teamskillshub.errors.searchFailed'));
     }
   }, [query, showMessage, sourceId, t, withSession]);
+
+  useEffect(() => {
+    if (embedded && sourceId && query.trim()) {
+      void handleSearch();
+    }
+  }, [query, embedded, sourceId, handleSearch]);
 
   const handleInstall = useCallback(
     async (item: TeamSkillsHubSkillItem) => {
@@ -282,35 +296,64 @@ export function TeamSkillsHubModal({
       let force = false;
       try {
         while (true) {
-          const data = await webRequest<{
-            success: boolean;
-            error_code?: string;
-            error_message?: string;
-            skill?: { name: string };
-          }>(
-            'skills.source.install',
-            withSession({
-              source_id: item.source_id || sourceId,
-              skill_id: item.skill_id,
-              version_id: item.version_id,
-              force,
-            }),
-          );
+          const useLegacy =
+            sourceId === LEGACY_HUB_SOURCE_ID || Boolean(item.asset_id && !item.skill_id);
+          const data = useLegacy
+            ? await webRequest<{
+                success: boolean;
+                detail?: string;
+                detail_key?: string;
+                skill?: { name: string };
+              }>(
+                'skills.teamskillshub.install',
+                withSession({
+                  asset_id: item.asset_id || item.skill_id,
+                  force,
+                }),
+              )
+            : await webRequest<{
+                success: boolean;
+                error_code?: string;
+                error_message?: string;
+                skill?: { name: string };
+              }>(
+                'skills.source.install',
+                withSession({
+                  source_id: item.source_id || sourceId,
+                  skill_id: item.skill_id,
+                  version_id: item.version_id,
+                  force,
+                }),
+              );
           if (!data.success) {
+            const errorCode =
+              ('error_code' in data && data.error_code) ||
+              ('detail_key' in data && data.detail_key) ||
+              '';
             // 已安装冲突：弹确认框询问是否覆盖
-            if (!force && data.error_code === 'skill_already_installed') {
-              const confirmed = window.confirm(t('skills.teamskillshub.replaceConfirm', { name: item.name }));
+            if (
+              !force &&
+              (errorCode === 'skill_already_installed' ||
+                String(errorCode).includes('skillAlreadyInstalled'))
+            ) {
+              const confirmed = window.confirm(
+                t('skills.teamskillshub.replaceConfirm', { name: item.name }),
+              );
               if (confirmed) {
                 force = true;
                 continue;
               }
               return;
             }
-            throw new Error(data.error_message || t('skills.teamskillshub.errors.installFailed'));
+            throw new Error(
+              ('error_message' in data && data.error_message) ||
+                ('detail' in data && data.detail) ||
+                t('skills.teamskillshub.errors.installFailed'),
+            );
           }
           // 安装成功
           const skillName = data.skill?.name || item.name;
-          setInstalledSkillKeys(prev => new Set([...prev, itemKey]));
+          setInstalledSkillKeys((prev) => new Set([...prev, itemKey]));
           showMessage('success', t('skills.teamskillshub.messages.installed', { name: skillName }));
           await onInstalled?.(skillName);
           break;
