@@ -41,6 +41,40 @@ NS = "workspace-1"
 AGENT = "mate_dev"
 NOW = datetime(2026, 10, 16, 9, 0, tzinfo=timezone.utc)
 CONTENT = b"weekly report\n"
+
+
+def test_owner_artifacts_include_existing_outputs_from_all_employee_sessions(tmp_path):
+    store = WorkspaceStore(tmp_path / "workspaces")
+    for session_id in ("session-1", "session-2"):
+        session = store.ensure_session(NS, AGENT, session_id)
+        (session / "output" / "report.md").write_bytes(CONTENT)
+        (session / "draft.md").write_bytes(b"private draft")
+    other = store.ensure_session(NS, "other-agent", "session-3")
+    (other / "output" / "other.md").write_bytes(CONTENT)
+
+    files = WorkspaceOutputFiles(store).list_artifacts(NS, AGENT)
+
+    assert len(files) == 2
+    assert {file["path"] for file in files} == {
+        "sessions/session-1/output/report.md", "sessions/session-2/output/report.md"
+    }
+    assert all(file["download_url"] and file["size"] == len(CONTENT) for file in files)
+    assert len({file["output_id"] for file in files}) == 2
+
+
+def test_owner_artifacts_exclude_links_and_missing_workspaces(tmp_path):
+    store = WorkspaceStore(tmp_path / "workspaces")
+    files = WorkspaceOutputFiles(store)
+    assert files.list_artifacts(NS, AGENT) == []
+    output = store.ensure_session(NS, AGENT, "session-1") / "output"
+    external = tmp_path / "external.md"
+    external.write_bytes(CONTENT)
+    try:
+        (output / "linked.md").symlink_to(external)
+        (output.parent.parent / "linked-session").symlink_to(output.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert files.list_artifacts(NS, AGENT) == []
 FILE_REF = "sha256:" + hashlib.sha256(CONTENT).hexdigest()
 SNAPSHOT = publish_spec(
     AGENT,
