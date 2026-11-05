@@ -1,6 +1,6 @@
 # Swarm Skills 团队技能
 
-jiuwenSwarm 的 **Swarm Skills（团队技能）** 是一种面向多 Agent 协作的标准化能力包。它不是单个 Agent 的能力补丁，而是把一次优秀的团队协作流程沉淀为可复用、可复制、可进化的团队协作 SOP，让复杂任务不再每次都从零开始临时编排。
+JiuwenSwarm 的 **Swarm Skills（团队技能）** 是一种面向多 Agent 协作的标准化能力包。它不是单个 Agent 的能力补丁，而是把一次优秀的团队协作流程沉淀为可复用、可复制、可进化的团队协作 SOP，让复杂任务不再每次都从零开始临时编排。
 
 ---
 
@@ -8,7 +8,7 @@ jiuwenSwarm 的 **Swarm Skills（团队技能）** 是一种面向多 Agent 协�
 
 ### 1.1 Swarm Skills 的定位
 
-Swarm Skills 是 jiuwenSwarm 技能体系中的**多 Agent 协作层**。如果说 Agent Skill（详见 [技能文档](技能.md)）解决的是"一个 Agent 怎么做事"，那么 Swarm Skills 解决的就是"一个 Agent 团队怎么配合做事"。
+Swarm Skills 是 JiuwenSwarm 技能体系中的**多 Agent 协作层**。如果说 Agent Skill（详见 [技能文档](技能.md)）解决的是"一个 Agent 怎么做事"，那么 Swarm Skills 解决的就是"一个 Agent 团队怎么配合做事"。
 
 在传统的 AI Agent 使用中，面对复杂任务时，用户往往需要手动编排多个 Agent 的协作方式——谁来做什么、谁先谁后、出了问题怎么办。这种方式每次都要从零开始，协作质量不稳定，流程难以复用。Swarm Skills 的出现，正是为了解决这个痛点：
 
@@ -31,9 +31,9 @@ Swarm Skills 是 jiuwenSwarm 技能体系中的**多 Agent 协作层**。如果�
 
 ### 1.3 Swarm Skills 的通用性
 
-Swarm Skills 不只局限于 jiuwenSwarm 平台。它的核心设计理念——角色分工、协作流程、边界约束——是一种通用的团队协作能力封装方式，可以适配到支持相关协作标准的其他 AI Agent 框架中。这意味着：
+Swarm Skills 不只局限于 JiuwenSwarm 平台。它的核心设计理念——角色分工、协作流程、边界约束——是一种通用的团队协作能力封装方式，可以适配到支持相关协作标准的其他 AI Agent 框架中。这意味着：
 
-- 在 jiuwenSwarm 中创建的 Swarm Skill，理论上可以迁移到其他支持类似协作标准的平台使用。
+- 在 JiuwenSwarm 中创建的 Swarm Skill，理论上可以迁移到其他支持类似协作标准的平台使用。
 - Swarm Skills 的标准化结构（5 文件规范）为跨框架互操作提供了基础。
 - 社区贡献的 Swarm Skill 可以在不同平台间共享，共建团队技能生态。
 
@@ -396,7 +396,7 @@ Swarm Skills 需要在 Agent Team 集群模式下运行。在使用前，请确�
 
 **步骤一：从 Swarm Skills Hub 获取现成技能**
 
-1. 打开 jiuwenSwarm 的「技能」面板
+1. 打开 JiuwenSwarm 的「技能」面板
 2. 点击「Swarm Skills Hub 在线搜索」
 3. 输入关键词搜索所需的团队技能（如"医疗会诊"、"研究报告"等）
 4. 点击「安装」将技能装入全局技能库
@@ -418,7 +418,7 @@ Swarm Skills 需要在 Agent Team 集群模式下运行。在使用前，请确�
 
 > **技能装在哪里**：无论 Swarm Skill 还是普通 Agent Skill，安装后都只存在一份实体，统一位于全局技能库 `~/.jiuwenswarm/agent/workspace/skills/`。团队和团队成员不会各自拿到一份副本，它们只有一份可见性声明，用来决定各自能看见库里的哪些技能（默认继承全库）。因此安装一次即对全团队生效，无需在团队内再分发。
 
-**步骤二：在 jiuwenSwarm 中使用**
+**步骤二：在 JiuwenSwarm 中使用**
 
 安装完成后，Swarm Skill 会自动出现在可用技能列表中：
 
@@ -514,7 +514,7 @@ Swarm Skills 采用标准化的结构定义（5 文件规范），具备跨框�
 
 **阶段二：专家评估（并行）**
 
-
+![专家评估](../assets/images/jiuwenswarm专家评估.png)
 
 ```
 [internist] 评估内科方面：
@@ -544,7 +544,7 @@ Swarm Skills 采用标准化的结构定义（5 文件规范），具备跨框�
 
 **阶段四：输出结果**
 
-
+![医疗就诊案例](../assets/images/jiuwenswarm医疗就诊案例.png)
 
 ```markdown
 # 会诊报告 #2024-001
@@ -580,6 +580,8 @@ Swarm Skills 采用标准化的结构定义（5 文件规范），具备跨框�
 ```
 
 以下截图展示了医疗会诊 Swarm Skill 在 JiuwenSwarm 中的实际执行结果，包括已完成的任务列表和生成的会诊报告文件：
+
+![医疗报告生成](../assets/images/jiuwenswarm医疗报告生成.png)
 
 
 
@@ -649,13 +651,13 @@ Swarm Skills 采用标准化的结构定义（5 文件规范），具备跨框�
 
 ### 5.1 使用 swarmskill-creator 创建新的 Swarm Skill
 
-jiuwenSwarm 提供了 `swarmskill-creator` 技能，帮助用户创建、转换或修改 Swarm Skill。它内置了标准化的模板、决策树和自动化验证器，确保创建的 Swarm Skill 符合规范。
+JiuwenSwarm 提供了 `swarmskill-creator` 技能，帮助用户创建、转换或修改 Swarm Skill。它内置了标准化的模板、决策树和自动化验证器，确保创建的 Swarm Skill 符合规范。
 
 ![swarmskill-creator](../assets/images/swarmskill-creator.png)
 
 **获取与安装**：
 
-`swarmskill-creator` 是 jiuwenSwarm 的内置技能，无需额外安装。如果您的环境中没有该技能，可以通过以下方式获取：
+`swarmskill-creator` 是 JiuwenSwarm 的内置技能，无需额外安装。如果您的环境中没有该技能，可以通过以下方式获取：
 
 ```bash
 # 从技能中心搜索并安装
@@ -933,7 +935,7 @@ A: 默认地址为 `https://swarmskills.openjiuwen.com`，可通过环境变量 
 ---
 
 *文档版本：v2.0*
-*适用对象：jiuwenSwarm 用户、技能开发者*
+*适用对象：JiuwenSwarm 用户、技能开发者*
 *最后更新：2026-07-13*
 ---
 
