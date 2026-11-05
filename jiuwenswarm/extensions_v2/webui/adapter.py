@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
@@ -11,6 +12,7 @@ from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.webui_resources import encode_resource_route
 from jiuwenswarm.extensions_v2.webui.constants import (
     CODE_CHANNEL_UNSUPPORTED,
     CODE_CONNECTION_REQUIRED,
@@ -37,6 +39,7 @@ class WebUIDispatchAdapter(GatewayAdapter):
         ReqMethod.WEBUI_DISPATCH.value,
         ReqMethod.WEBUI_CONNECTION_CLOSED.value,
         ReqMethod.WEBUI_SETTINGS_CATALOG.value,
+        ReqMethod.WEBUI_RESOURCE_READ.value,
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
@@ -47,6 +50,22 @@ class WebUIDispatchAdapter(GatewayAdapter):
             return build_error_response(request, "WebUI extension is not installed", code=CODE_WEBUI_DISABLED)
 
         metadata = request.metadata if isinstance(request.metadata, Mapping) else {}
+        if request.req_method == ReqMethod.WEBUI_RESOURCE_READ:
+            params = request.params
+            if (request.channel_id != DEFAULT_CHANNEL_ID or not isinstance(params, dict)
+                    or set(params) != {"resource_id", "path", "connection_id"}
+                    or any(not isinstance(value, str) for value in params.values())):
+                return build_error_response(request, "Invalid WebUI resource request", code=CODE_SCHEMA_ERROR)
+            route = encode_resource_route(request.user_id or "", request.session_id or "", params["connection_id"])
+            try:
+                data, media_type = await runtime.resources.read(params["resource_id"], params["path"], route=route)
+            except (ValueError, FileNotFoundError):
+                return build_error_response(request, "WebUI resource not found", code="NOT_FOUND")
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                payload={"data": base64.b64encode(data).decode("ascii"), "media_type": media_type},
+            )
+
         trusted_connection = str(metadata.get("ws_id") or "").strip()
         if request.req_method == ReqMethod.WEBUI_SETTINGS_CATALOG:
             if request.channel_id != DEFAULT_CHANNEL_ID or not trusted_connection:

@@ -77,6 +77,10 @@ class WebUICatalogService:
         self._signature: tuple[tuple[str, str, int], ...] = ()
         self._catalog = UiCatalog()
 
+    def active_package(self, package_id: str) -> ActivePackageRecord | None:
+        """Return the current trusted activation, without accepting a caller filesystem root."""
+        return next((record for record in self._records_provider() if record.package_id == package_id), None)
+
     def current(self) -> UiCatalog:
         records = tuple(self._records_provider())
         signature = tuple(

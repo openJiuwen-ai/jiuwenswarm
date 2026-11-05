@@ -176,3 +176,24 @@ Handler 从 `payload["data"]` 读取事件数据；单个节点不再支持 acti
 
 `application.entry` 为应用范围，以当前 Web 连接为身份，不要求会话。首次访问时挂载，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。`application.sidebar.footer`、`task.function` 与 `task.function.main` 同样使用应用范围；任务入口和页面在空对话中可用，切换会话保持实例。其余槽位默认使用真实会话，设置槽位也允许显式应用范围。文件组件与请求校验、回执见
 [F_07](../docs/features/F_07_ui-contributions.md)。
+
+## 插件文件页面
+
+插件通过 `ops.ui.create_resource_dir()` 获得当前插件及会话/连接专用的输出目录。
+在 `async with directory:` 中完成 HTML、CSS 等文件的写入，退出上下文后调用
+`ops.ui.asset_url("index.html", resource_id=directory.resource_id)`，再用 Iframe.src 渲染返回的 URL。
+同目录的相对文件引用保持有效，`src={"zh": ..., "en": ...}` 按宿主语言选择页面。
+插件安装包内已有文件使用 `ops.ui.asset_url("page.css")`，路径相对安装包 assets 目录；静态文件原地读取。
+新帧成功投递后释放旧输出目录，失败/取消时释放新目录；完整契约见 [S_19](../docs/specs/S_19_webui-resources.md)。
+
+阻塞写入在线程中完成时，使用公共取消等待方法，确保连续取消也不会使目录先于写入线程被删除：
+
+```python
+import asyncio
+from jiuwenswarm.extensions_v2.webui.resources import complete_before_cancel
+
+async with directory:
+    await complete_before_cancel(asyncio.to_thread(write_page, directory.path))
+```
+
+操作结束后传播取消；同时发生的 I/O 异常保留为取消异常的 `__cause__`。文件路由允许沙箱内的 ES module 和相对 JSON 请求，保持原有沙箱和资源校验。

@@ -42,6 +42,9 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - SDK 适配器 `with_client_ops` 通过组合公开 Ops 提供 `ops.client.local_storage.set/delete` 与 `ops.client.page.reload()`。
 - page.reload 无需单独授权，参数为空；插件显式决定何时刷新，存储变化不自动重建业务页面。
 - 素材只读暴露活动包 assets 目录，路径须位于该目录，包失活后不可读取。
+- `/extension-assets/{package_id}/{generation}/{path}` 与 AgentServer 文件路由自身的成功及错误响应返回
+  `Access-Control-Allow-Origin: *`，支持不透明源沙箱中的 ES module 和相对 JSON 请求；不开放凭据跨源读取。
+  包激活、路径和 URL 授权校验保持有效；`gateway.request` 的提前拒绝、接管及失败响应保持既有行为，不全局添加 CORS。
 - Web UI 静态服务将 `/extension-assets/` 请求按原路径转发到 WebChannel HTTP 服务，与 Vite 开发服务保持一致。
   GET/HEAD 保留后端状态码、内容类型和缓存策略；无效或过期素材返回后端的 404，不返回 SPA HTML。
 
@@ -81,3 +84,6 @@ Declarations contain no grant fields. Operations retain invocation_id for reques
 carry unused operation identifiers.
 The built frontend server forwards `/extension-assets/` to WebChannel HTTP, preserving GET/HEAD responses and backend
 errors instead of serving the SPA entry page. Asset identity and activation checks remain owned by the Gateway.
+Successful and error responses produced by the two file routes include `Access-Control-Allow-Origin: *`
+for opaque-origin sandbox modules and JSON fetches, without credentialed cross-origin access. This does not
+alter resource authorization or add CORS to ordinary routes or early policy denial, consumption and failure responses.

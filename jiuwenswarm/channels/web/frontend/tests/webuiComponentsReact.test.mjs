@@ -576,6 +576,80 @@ test('Iframe selects complete localized documents and keeps the fixed sandbox wi
   }
 });
 
+test('Iframe selects localized file URLs, releases the old document and retains its sandbox', async () => {
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('en'));
+  const urls = { zh: '/extension-assets/_agent/route/set/zh.html', en: '/extension-assets/_agent/route/set/en.html' };
+  const app = await setup({
+    component: 'Iframe', props: { title: { zh: '详情', en: 'Details' }, src: urls },
+  }, { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.getAttribute('src'), urls.en);
+    assert.equal(first.hasAttribute('srcdoc'), false);
+    await act(async () => i18n.changeLanguage('zh'));
+    const translated = app.container.querySelector('iframe');
+    assert.notEqual(first, translated);
+    assert.equal(translated.getAttribute('src'), urls.zh);
+    assert.equal(translated.title, '详情');
+    assert.equal(translated.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+    await app.activity(false);
+    assert.equal(app.container.querySelector('iframe'), null);
+    await app.activity(true);
+    assert.equal(app.container.querySelector('iframe').getAttribute('src'), urls.zh);
+  } finally {
+    await app.close();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
+
+for (const { pageUrl, apiBase, expectedBase } of [
+  {
+    pageUrl: 'file:///Applications/Jiuwen/dist/index.html',
+    apiBase: 'http://127.0.0.1:19000',
+    expectedBase: 'http://127.0.0.1:19000',
+  },
+  {
+    pageUrl: 'file:///C:/Jiuwen/dist/index.html',
+    apiBase: 'http://127.0.0.1:19000',
+    expectedBase: 'http://127.0.0.1:19000',
+  },
+  {
+    pageUrl: 'https://web.example/chat/new',
+    apiBase: 'https://gateway.example/agent/',
+    expectedBase: 'https://gateway.example/agent',
+  },
+]) {
+  test(`Iframe resolves plugin resources through the configured Gateway from ${pageUrl}`, async () => {
+    const previousUrl = window.location.href;
+    const desktop = window.jiuwenDesktop;
+    const resourcePath = '/extension-assets/_agent/route/set/en.html';
+    let app;
+    dom.reconfigure({ url: pageUrl });
+    assert.equal(window.location.href, pageUrl);
+    window.jiuwenDesktop = { apiBase };
+    try {
+      app = await setup({ component: 'Iframe', props: { title: 'Details', src: resourcePath } },
+        { ...target, slot_id: 'conversation.panel.right' });
+      const iframe = app.container.querySelector('iframe');
+      const expected = expectedBase + resourcePath;
+      assert.equal(iframe.src, expected);
+      assert.equal(app.container.querySelector('[data-testid="webui-iframe-open-source"]').href, expected);
+      assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, expected);
+      assert.equal(new URL('details.css', iframe.src).href, expectedBase + resourcePath.replace('en.html', 'details.css'));
+      assert.equal(iframe.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+      await app.replace({ component: 'Iframe', props: { title: 'External', src: 'https://example.com/page' } });
+      assert.equal(app.container.querySelector('iframe').src, 'https://example.com/page');
+      await app.replace({ component: 'Iframe', props: { title: 'Host page', src: '/preview' } }, 3);
+      assert.equal(app.container.querySelector('iframe').getAttribute('src'), '/preview');
+    } finally {
+      if (app) await app.close();
+      dom.reconfigure({ url: previousUrl });
+      window.jiuwenDesktop = desktop;
+    }
+  });
+}
+
 test('plugin text follows the interface language without remounting or resetting the switch', async () => {
   const previousLanguage = i18n.language;
   await act(async () => i18n.changeLanguage('zh'));

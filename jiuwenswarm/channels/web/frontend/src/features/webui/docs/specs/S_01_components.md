@@ -190,6 +190,6 @@ Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍�
 
 ## 显式打开右侧面板
 
-Iframe.srcDoc、title 的完整多语言规则和 Button.openPanel 字段以 [S_17](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) 为准。Button 继续使用 ui.click；明确成功回执后，客户端依据可信源实例派生同包、同会话右侧目标。失活源实例、未渲染目标和拒绝/未知回执不触发导航。后台 replace 不产生导航意图，关闭的插件 Tab 仅在用户显式再次打开时恢复。
+Iframe.src、srcDoc、title 的完整多语言规则和 Button.openPanel 字段以 [S_17](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) 为准。Button 继续使用 ui.click；明确成功回执后，客户端依据可信源实例派生同包、同会话右侧目标。失活源实例、未渲染目标和拒绝/未知回执不触发导航。后台 replace 不产生导航意图，关闭的插件 Tab 仅在用户显式再次打开时恢复。
 
 Inline iframe documents and their tab titles follow the host language. An accepted explicit button action opens only a live panel owned by the same plugin and session on the calling client. Ordinary render updates never select or reopen a tab.

@@ -1,4 +1,4 @@
-import { component, text, validURL } from './shared.ts';
+import { component, validURL } from './shared.ts';
 import { hasNonEmptyLocalizedText, localizedTextRule } from './localizedText.ts';
 
 function validIframeURL(value: unknown): boolean {
@@ -21,7 +21,7 @@ function validIframeURL(value: unknown): boolean {
 export const iframeRule = component(
   'Iframe',
   {
-    src: text,
+    src: localizedTextRule,
     srcDoc: localizedTextRule,
     title: localizedTextRule,
     minWidth: { kind: 'number', min: 0, max: 4096 },
@@ -37,7 +37,8 @@ export const iframeRule = component(
         return 'Iframe requires exactly one document source';
       if (props.srcDoc !== undefined)
         return hasNonEmptyLocalizedText(props.srcDoc) ? null : 'Iframe document is required';
-      return validIframeURL(props.src) ? null : 'invalid Iframe URL';
+      const sources = typeof props.src === 'string' ? [props.src] : Object.values(props.src as Record<string, string>);
+      return sources.every(validIframeURL) ? null : 'invalid Iframe URL';
     },
   },
 );

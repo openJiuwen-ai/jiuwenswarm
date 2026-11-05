@@ -160,3 +160,27 @@ Downstream frames use schema_version=1.
 
 `application.entry` uses application scope and the current Web connection, without a session. It mounts on first visit and stores a browser visit marker after ready is accepted; later refreshes skip it. Clear or failure closes the entry. `application.sidebar.footer`, `task.function` and `task.function.main` also use application scope. Task navigation and its page work in an empty conversation and retain their instances across session changes. Other slots default to a real session; the settings slot also accepts explicit application scope.
 See [F_07](../docs/features/F_07_ui-contributions.md) for file components, request validation and acknowledgements.
+
+## Plugin file pages
+
+Obtain a plugin- and session/connection-scoped output directory with `ops.ui.create_resource_dir()`.
+Write HTML, CSS and other page files inside `async with directory:`. After leaving the write context,
+call `ops.ui.asset_url("index.html", resource_id=directory.resource_id)` and render that URL with Iframe.src.
+Relative child resources remain in the same directory; `src={"zh": ..., "en": ...}` follows the host language.
+Use `ops.ui.asset_url("page.css")` for existing files under the installed plugin's assets directory; static files are read in place.
+Release the previous output after successful frame delivery, or the new output on failure/cancellation.
+[S_19](../docs/specs/S_19_webui-resources.md) defines access, publication and cleanup.
+
+Use the shared cancellation helper for blocking writes in a thread. Repeated cancellation must not allow
+the directory to be deleted before the writer finishes:
+
+```python
+import asyncio
+from jiuwenswarm.extensions_v2.webui.resources import complete_before_cancel
+
+async with directory:
+    await complete_before_cancel(asyncio.to_thread(write_page, directory.path))
+```
+
+Cancellation propagates after the operation finishes; a simultaneous I/O failure becomes its `__cause__`.
+File routes permit sandboxed ES modules and relative JSON requests while retaining sandbox and resource validation.

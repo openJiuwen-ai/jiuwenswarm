@@ -557,3 +557,14 @@ test('localized icon-only buttons require a nonempty accessible label in both la
     );
   }
 });
+
+
+test('normalized client frames retain their host activation stamp for the view lifetime', () => {
+  const root = { component: 'Text', props: { value: 'Client view' } };
+  const result = pipeline.processRenderFrame({ ...renderFrame(root), activation_generation: 'current-activation' });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.activationGeneration, 'current-activation');
+  for (const activation_generation of [null, false, '', {}]) {
+    assert.equal(pipeline.processRenderFrame({ ...renderFrame(root), activation_generation }).ok, false);
+  }
+});

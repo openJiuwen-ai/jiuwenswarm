@@ -439,16 +439,20 @@ file=null 表示无文件；非空对象至少提供 content 或 downloadUrl，n
 
 | 属性 | 类型 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- | --- |
-| `src` | string | 与 srcDoc 二选一 | — | 网页地址，遵循本组件的严格 URL 规则 |
+| `src` | LocalizedText | 与 srcDoc 二选一 | — | 网页或插件资源地址；每种语言分别遵循本组件的严格 URL 规则 |
 | `srcDoc` | LocalizedText | 与 src 二选一 | — | 插件生成的完整 HTML 文档，每种语言最长 16 KiB，去空白后非空 |
 | `title` | LocalizedText（每种语言 <= 200 UTF-8 字节） | 是 | — | 页面名称 / 右侧页签名称，各语言去空白后必须非空 |
 | `minWidth` | number（>= 0，<= 4096） | 否 | `0` | iframe 文档的最小宽度，单位 px；容器不足此宽度时由宿主外层提供横向滚动 |
 
-只允许作为具备专用根许可的树根，无子节点或事件。URL 额外拒绝控制字符、反斜杠、三斜杠开头、凭据、无效 authority 与端口。宿主固定 sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"，不含 allow-same-origin，插件不可覆盖。iframe 宽度取容器可用宽度与 minWidth 中较大者；URL 和内联文档采用相同规则，不提供适应 / 桌面宽度切换。容器尺寸变化只调整布局，不重建浏览上下文；插件发送 replace 仍遵循整树重建契约。同 URL/文档刷新、URL 模式的外链打开与 15 秒慢加载提示为宿主功能。仅在 active 且 connected 时创建，隐藏 / 断连时卸载，不承诺保活。src 与 srcDoc 必须且只能提供一个；文档和标题独立按宿主语言选择，切换文档释放旧浏览上下文，不接受不完整的语言映射。
+只允许作为具备专用根许可的树根，无子节点或事件。URL 额外拒绝控制字符、反斜杠、三斜杠开头、凭据、无效 authority 与端口。宿主固定 sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"，不含 allow-same-origin，插件不可覆盖。iframe 宽度取容器可用宽度与 minWidth 中较大者；URL 和内联文档采用相同规则，不提供适应 / 桌面宽度切换。容器尺寸变化只调整布局，不重建浏览上下文；插件发送 replace 仍遵循整树重建契约。同 URL/文档刷新、URL 模式的外链打开与 15 秒慢加载提示为宿主功能。仅在 active 且 connected 时创建，隐藏 / 断连时卸载，不承诺保活。src 与 srcDoc 必须且只能提供一个；地址、文档和标题独立按宿主语言选择，切换文档释放旧浏览上下文，不接受不完整的语言映射。
+
+以 `/extension-assets/` 开头的插件资源地址由宿主按配置的 Gateway API 基址解析；保留基址的路径前缀。没有显式 API 基址时保持同源相对地址。Electron FrontendOnly 的 file:// 页面使用桌面注入的 HTTP(S) API 基址；普通宿主相对网页和外部绝对地址保持原语义。iframe、来源展示和打开外链使用同一解析后的地址。
+
+插件文件 URL 的部署基址由宿主统一解析，前端不按文件所在后端进程查浏览器能力清单。HTML 继续通过原生 iframe URL 加载，保留相对 CSS 引用。
 
 srcDoc 不开放宿主权限；仍使用同一固定 sandbox。文档随语言变化重建；没有 src 时不显示打开外链按钮。
 
-宿主工具栏只读展示来源：URL 文档显示插件声明的 src，内联文档显示随宿主语言切换的“插件页面 / Plugin page”。来源文字可选择复制，超出可用宽度时单行省略，悬停显示完整值。此处不提供地址编辑，也不表示跨域 iframe 内部导航后的当前 URL。
+宿主工具栏只读展示来源：URL 文档显示实际使用的 src（插件资源为解析后的 Gateway 地址），内联文档显示随宿主语言切换的“插件页面 / Plugin page”。来源文字可选择复制，超出可用宽度时单行省略，悬停显示完整值。此处不提供地址编辑，也不表示跨域 iframe 内部导航后的当前 URL。
 
 
 ### 4.19 Avatar

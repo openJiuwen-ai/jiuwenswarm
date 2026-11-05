@@ -51,13 +51,16 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
         return JSONResponse({"code": "UNSUPPORTED_HTTP_ROUTE"}, status_code=400)
 
     async def package_asset(package_id: str, generation: str, path: str):
+        headers = {"Access-Control-Allow-Origin": "*"}
         runtime = runtime_provider()
         if runtime is None:
-            return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=headers)
         try:
             resource = runtime.browser.asset_file(package_id, generation, path)
         except (ValueError, StopIteration):
-            return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
-        return FileResponse(resource, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+            return JSONResponse({"code": "NOT_FOUND"}, status_code=404, headers=headers)
+        return FileResponse(
+            resource, headers={**headers, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     app.add_api_route("/extension-assets/{package_id}/{generation}/{path:path}", package_asset, methods=["GET", "HEAD"])

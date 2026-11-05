@@ -185,7 +185,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     },
     "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
     "Iframe": {"props": {
-        "src": TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
+        "src": LOCALIZED_TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
         "minWidth": {"kind": "number", "min": 0, "max": 4096},
     }, "required": ("title",)},
     "Dropdown": {
@@ -464,12 +464,17 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             documents = [document] if isinstance(document, str) else list(document.values())
             if any(not value.strip() for value in documents):
                 return "iframe document is required"
+        source = props.get("src")
+        if source is not None:
+            sources = [source] if isinstance(source, str) else source.values()
+            if any(not valid_url(value, iframe=True) for value in sources):
+                return "invalid iframe URL"
     if component == "Avatar":
         style = props.get("style", {})
         if any(key in style and re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", style[key]) is None
                for key in ("backgroundColor", "color")):
             return "Avatar colors must use hexadecimal notation"
-    url_fields = {"Button": ("href",), "Avatar": ("src",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
+    url_fields = {"Button": ("href",), "Avatar": ("src",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback")}
     if any(key in props and not valid_url(props[key], iframe=component == "Iframe") for key in url_fields.get(component, ())):
         return "invalid resource URL"
     if component == "Image":

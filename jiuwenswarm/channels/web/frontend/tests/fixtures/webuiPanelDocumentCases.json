@@ -275,5 +275,75 @@
       }
     },
     "valid": false
+  },
+  {
+    "name": "localized resource URLs",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/extension-assets/_agent/route/set/zh.html",
+          "en": "/extension-assets/_agent/route/set/en.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "localized URL missing language",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized URL unsafe translation",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html",
+          "en": "file:///tmp/page.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized URL empty translation",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html",
+          "en": " "
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized URL unknown language",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html",
+          "en": "/en.html",
+          "fr": "/fr.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
   }
 ]
