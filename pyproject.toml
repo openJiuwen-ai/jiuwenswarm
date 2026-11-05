@@ -199,13 +199,7 @@ jiuwenswarm = [
 ]
 
 [tool.uv]
-# 按包覆盖依赖使用已验证的 uv 版本，构建镜像需保持一致。
-required-version = ">=0.12.1,<1.0"
 default-groups = ['dev']
-# DeepSearch 的旧分支声明交由本项目的 AgentCore EE 依赖统一解析，保留 observability。
-override-dependencies = [
-    { package = { name = "openjiuwen-deepsearch" }, dependencies = ["openjiuwen[observability]"] },
-]
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }

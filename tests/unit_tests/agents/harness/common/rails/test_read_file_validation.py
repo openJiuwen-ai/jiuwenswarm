@@ -4,13 +4,21 @@
 
 from __future__ import annotations
 
+import pytest
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     _looks_like_binary_payload,
+    build_native_image_tool_error,
+    build_provided_image_read_error,
+    extract_paths_from_arguments,
     is_image_file_path,
     is_non_text_file_path,
+    is_remote_image_url,
+    is_vision_tool,
     validate_read_file_result,
+    vision_tool_image_targets,
+    vision_tool_targets_all_provided,
 )
 
 _SVG_WITH_BASE64 = (
@@ -122,6 +130,67 @@ def test_empty_result_still_rejected() -> None:
     assert ok is False
 
 
+@pytest.mark.parametrize(
+    ("language", "forbidden_phrase"),
+    [("cn", "无需再调用 read_file"), ("en", "do not call read_file")],
+    ids=["cn", "en"],
+)
+def test_provided_image_read_error_forbids_read_file(language, forbidden_phrase) -> None:
+    error = build_provided_image_read_error("/uploads/home.png", language=language)
+
+    assert error.startswith("[READ_FILE_ERROR]")
+    assert "/uploads/home.png" in error
+    assert forbidden_phrase in error
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"file_paths": ["/uploads/a.png", "/uploads/b.png"]}, ["/uploads/a.png", "/uploads/b.png"]),
+        ({"file_path": "/uploads/a.png"}, ["/uploads/a.png"]),
+    ],
+    ids=["batch", "single"],
+)
+def test_extract_paths_from_arguments_covers_single_and_batch(arguments, expected) -> None:
+    # 批量拒绝（N4）依赖这里把 file_paths 摊平成路径列表。
+    assert extract_paths_from_arguments(arguments) == expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected"),
+    [
+        ("visual_question_answering", True),
+        ("vision_qa", True),
+        ("VisionQA", True),
+        ("image_reading", True),
+        # agent-core 的真实 OCR 工具名 + 前端 / 权限投影的显示名别名。
+        ("image_ocr", True),
+        ("ImageOCR", True),
+        ("  image_ocr  ", True),
+        ("read_file", False),
+        ("bash", False),
+        ("", False),
+    ],
+)
+def test_is_vision_tool_recognizes_vqa_and_ocr_names(tool_name, expected) -> None:
+    """``image_ocr`` 漏登记会让原生看图仍去调 OCR（CR-8）；别名两侧都要认。"""
+
+    assert is_vision_tool(tool_name) is expected
+
+
+@pytest.mark.parametrize(
+    ("language", "required_phrase"),
+    [("cn", "像素"), ("en", "Do not call")],
+    ids=["cn", "en"],
+)
+def test_native_image_tool_error_is_language_aware(language, required_phrase) -> None:
+    error = build_native_image_tool_error(language=language)
+
+    assert error.startswith("[VISION_TOOL_SKIPPED]")
+    assert "visual_question_answering" in error
+    assert required_phrase in error
+
+
 def test_svg_is_read_as_text_not_image() -> None:
     """SVG 是文本 XML：前置拦截与后置校验都不应把它当图片。"""
     assert is_image_file_path("diagram.svg") is False
@@ -143,3 +212,67 @@ def test_image_extensions_still_blocked() -> None:
 
     assert ok is False
     assert error is not None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://example.com/a.png", True),
+        ("http://example.com/a.png", True),
+        ("  HTTP://example.com/a.png  ", True),
+        ("/uploads/a.png", False),
+        ("C:\\work\\a.png", False),
+        ("", False),
+    ],
+)
+def test_is_remote_image_url_detects_http(value, expected) -> None:
+    """远程 HTTP(S) 图片的目标不能按"已提供像素"拦截，read_file 无法替代抓取。"""
+
+    assert is_remote_image_url(value) is expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected"),
+    [
+        ("visual_question_answering", {"image_path_or_url": "/u/a.png", "question": "?"}, ["/u/a.png"]),
+        ("image_ocr", {"image_path_or_url": "https://x/a.png", "prompt": "ocr"}, ["https://x/a.png"]),
+        ("image_reading", {"local_url": "/u/a.png"}, ["/u/a.png"]),
+        ("image_reading", {"remote_url": "https://x/a.png"}, ["https://x/a.png"]),
+        # 未附带图片 / 缺参 → 未知目标
+        ("visual_question_answering", {"question": "?"}, []),
+        ("visual_question_answering", {}, []),
+        ("image_ocr", None, []),
+    ],
+)
+def test_vision_tool_image_targets_extracts_path_or_url(tool_name, arguments, expected) -> None:
+    assert vision_tool_image_targets(tool_name, arguments) == expected
+
+
+def test_vision_tool_targets_all_provided_blocks_only_provided_local_path(tmp_path) -> None:
+    """已提供的本地目标→拦；远程 / 未知 / 未提供目标→放行（ND：避免误封远程图片）。"""
+    provided = tmp_path / "a.png"
+    provided.write_bytes(b"fake")
+
+    assert vision_tool_targets_all_provided(
+        "visual_question_answering",
+        {"image_path_or_url": str(provided), "question": "?"},
+        [str(provided)],
+    ) is True
+
+    assert vision_tool_targets_all_provided(
+        "visual_question_answering",
+        {"image_path_or_url": "https://cdn.example.com/b.png", "question": "?"},
+        [str(provided)],
+    ) is False
+
+    assert vision_tool_targets_all_provided(
+        "visual_question_answering",
+        {"image_path_or_url": str(tmp_path / "unknown.png"), "question": "?"},
+        [str(provided)],
+    ) is False
+
+    assert vision_tool_targets_all_provided(
+        "visual_question_answering",
+        {"question": "no image arg"},
+        [str(provided)],
+    ) is False

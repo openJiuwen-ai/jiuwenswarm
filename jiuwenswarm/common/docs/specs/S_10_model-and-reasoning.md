@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_10 / model-and-reasoning |
 | 关联模块 | jiuwenswarm/common/{model_client_extensions, model_config_validation, model_identity, openrouter_attribution, reasoning_config, reasoning_injector}.py |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -37,7 +37,7 @@
   `react` 三处。
 - **N5 reasoning 三层白名单**：provider ∈ {openai, deepseek, dashscope}；host 判定
   `deepseek_official`（api.deepseek.com）/ `dashscope_bailian`（dashscope +
-  compatible-mode）；模型仅 deepseek-v4-pro / flash / flash-0731
+  compatible-mode）；模型仅 deepseek-v4-pro / flash / flash-0731 / v4.1-flash / v4.1-flash-1017
   （`SUPPORTED_DEEPSEEK_V4_MODELS`）。三层全过才注入。
 - **N6 reasoning_level 是内部字段**：注入前从 runtime config **剥离**、绝不透传 SDK；
   level 归一 off / low / medium / high，effort 映射 low/medium/high → high。

@@ -85,6 +85,7 @@ async def test_deadline_returns_failure_and_cancels_only_this_call(debug_capture
     ({"error": "completion_timeout"}, "completion_timeout"),
     ({"result_type": "error", "message": "provider unavailable"}, "provider unavailable"),
     ({"result_type": "error", "output": "private output"}, "subagent_error"),
+    ({"result_type": "error", "output": "private output", "finish_reason": "max_iterations"}, "max_iterations_reached"),
 ])
 async def test_error_result_never_becomes_empty_success(debug_capture, result, reason):
     run = AsyncMock(return_value=result)

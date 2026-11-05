@@ -13,9 +13,6 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[manifest]
-overrides = [{ package = { name = "openjiuwen-deepsearch" }, dependencies = [{ name = "openjiuwen", extras = ["observability"] }] }]
-
 [[package]]
 name = "a2a-sdk"
 version = "1.0.0"
@@ -3513,7 +3510,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable-ee#c5ab8040df77cdd69b8c2dd3176724e789e2a8c3" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable-ee#8215f2c296e6ddba2584a44e97babc5981385ad4" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },

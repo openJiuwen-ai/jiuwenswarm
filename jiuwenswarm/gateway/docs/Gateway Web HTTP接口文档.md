@@ -1633,7 +1633,7 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/us
 
 出参（`data.deleted`）：`true`/`false`。
 
-失败：任务不存在 → `404 NOT_FOUND`；无权限 → `403 FORBIDDEN`。
+失败：任务不存在或无权访问 → `404 NOT_FOUND`（跨用户不区分"不存在"与"无权访问"，按防枚举统一返回 404）。
 
 ##### `cron.job.toggle` — `POST /cron/jobs/{id}/actions/toggle`
 
@@ -1905,7 +1905,7 @@ X-Session-Id: web_a1b2c3d4e5f6
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `force_refresh` / `forceRefresh` / `refresh` | bool | 否 | 为真时 Agent 同步全量 `du` 后再返回；默认只读 Agent 进程内缓存 |
+| `force_refresh` | bool | 否 | 为真时 Agent 同步全量 `du` 后再返回；默认只读 Agent 进程内缓存 |
 | `session_id` | string | 否 | 真实聊天会话 id（亦可 `X-Session-Id`）；用于企业版 Runtime 路由 |
 
 - **返回参数**（`data`）：

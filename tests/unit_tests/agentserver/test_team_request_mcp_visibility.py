@@ -25,6 +25,7 @@ from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from tests.unit_tests.agentserver.test_request_scoped_office_claw_mcp import (
     _bare_session_adapter, _ResourceManager,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _session_adapter_key
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +57,7 @@ async def test_request_tools_are_visible_to_all_llm_members(mode, source, sessio
             member_name="analyst", display_name="Analyst", role_type=TeamRole.TEAMMATE,
         )],
     )
-    session_key = interface_deep.JiuWenSwarmDeepAdapter._session_adapter_key(session_id)
+    session_key = interface_deep._session_adapter_key(session_id)
     enrich_team_spec_for_swarm(spec, session_id=session_key, mode=mode, channel_id="web", config_base={})
     agents = {role: DeepAgent(AgentCard(id="test-" + role, name=role)) for role in ["entry", *roles]}
     rails = {

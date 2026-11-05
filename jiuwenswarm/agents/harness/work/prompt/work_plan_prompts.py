@@ -211,6 +211,7 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "web_search",
     "web_free_search",
     "web_paid_search",
+    "fetch_webpage",
     "web_fetch",
     "web_fetch_webpage",
 )

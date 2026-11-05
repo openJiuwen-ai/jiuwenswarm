@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Flash 模式适配器 — 极简单 agent profile。
+"""Flash 模式适配器 — 轻量受限 agent profile。
 
 仿照 :class:`JiuwenSwarmCodeAdapter` 的「独立 mode + 继承 DeepAdapter」结构，flash
 是和 agent / code 平级的独立 mode：``create_adapter(mode="flash")`` 工厂分叉，
@@ -17,9 +17,9 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 不再由 ``flash.enabled`` 将普通 Agent 请求自动转换为 Flash；其它渠道和后台
 来源沿用各自的既有路由策略。具体准入与会话续接由 ``_shared`` 的模式解析负责。
 flash 白名单包含 ``_context_overflow_recovery_rail``（仅上下文溢出兜底，
-正常路径零开销），但不含 ``_llm_retry_rail`` 等重试类健壮性 rail，
-长文档 / 弱网任务的容错仍弱于 normal，部署时需评估所选 Flash profile
-的能力边界。
+正常路径零开销）与 ``_llm_retry_rail``（不保留时工厂回退 SDK 原版 rail，
+重试耗尽没有用户可见错误），其余健壮性 rail 不保留，长文档 / 弱网任务的容错
+仍弱于 normal，部署时需评估所选 Flash profile 的能力边界。
 
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
@@ -45,8 +45,8 @@ flash 行为由类常量定义：
   ``_update_agent_rails()`` 动态注册 context_assemble / memory 等 rail，绕过
   ``_instantiate_rails`` 的白名单裁剪——flash 覆盖此方法不调 ``_update_agent_rails()``，
   单独装配身份上下文和记忆，并卸载白名单外的动态 rail。
-- :meth:`try_start_dreaming` / :meth:`try_stop_dreaming` — no-op。flash 是「无自演进」
-  profile，memory dreaming（被动记忆巩固）属自演进范畴，不挂。
+- :meth:`try_start_dreaming` / :meth:`try_stop_dreaming` — no-op。flash 支持
+  受限 skill 自演进，但不挂 memory dreaming（被动记忆巩固）与 TTSE。
 
 工具面 override（rail 构建 / 工具卡注册两个层面，类都来自
 ``jiuwenswarm.agents.harness.flash`` 包）：
@@ -131,6 +131,7 @@ from jiuwenswarm.agents.harness.flash import (
     SlimSysOperationRail,
 )
 from jiuwenswarm.common.config import (
+    coerce_config_bool,
     get_evolution_review_trigger_enabled,
     get_skill_create_enabled,
     resolve_string_or_list_config,
@@ -166,8 +167,27 @@ logger = logging.getLogger(__name__)
 _FLASH_TURBO_TOOL_NAME = "skill_acceleration_exec"
 
 
+def _flash_evolution_enabled(config: dict[str, Any] | None) -> bool:
+    """Return the Flash-only online skill-evolution switch (default false)."""
+    flash = config.get("flash") if isinstance(config, dict) else None
+    evolution = flash.get("evolution") if isinstance(flash, dict) else None
+    if not isinstance(evolution, dict):
+        return False
+    return coerce_config_bool(evolution.get("enabled", False), default=False)
+
+
+def _flash_skill_sleep_enabled(config: dict[str, Any] | None) -> bool:
+    """Return the Flash-only SkillSleep switch (default true, as in Deep)."""
+    flash = config.get("flash") if isinstance(config, dict) else None
+    evolution = flash.get("evolution") if isinstance(flash, dict) else None
+    skill_sleep = evolution.get("skill_sleep") if isinstance(evolution, dict) else None
+    if not isinstance(skill_sleep, dict):
+        return True
+    return coerce_config_bool(skill_sleep.get("enabled", True), default=True)
+
+
 class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
-    """Flash 模式适配器 — 极简单 agent profile（单轮、无 task loop、无自演进）。
+    """Flash 模式适配器 — 极简单 agent profile（单轮、无 task loop）。
 
     继承 :class:`JiuWenSwarmDeepAdapter`，通过工具工厂、配置合并和 rail 生命周期
     扩展点注入 flash 行为；覆盖五个宿主方法
@@ -182,12 +202,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     _defer_image_sdk_imports = True
 
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
-    # react/evolution 覆盖：深合并进 config_base 的 react 段。这些是 flash「单轮、
-    # 无 task loop、无自演进」的定义性属性，非可调参数。
+    # react/evolution 覆盖：深合并进 config_base 的 react 段。这些是 flash
+    # 「单轮、无 task loop、无 SkillCreate / review follow-up」的定义性属性，
+    # 非可调参数。``skill_evolution`` 交给部署配置决定，Flash 只挂受限演进 rail。
     #   enable_task_loop=false       — flash 不跑多轮 task 协调循环，只单轮 ReAct。
-    #   skill_evolution=false        — 门控游离的 SkillEvolutionRail（由
-    #                                  get_evolution_enabled 读，不走 keep/drop 表）；
-    #                                  keep/drop 碰不到它，必须这里关。
     #   skill_create=false           — 与 review_trigger 同为 false，否则触发 force-revive
     #                                  把 enable_task_loop 强拉回 true。
     #   review_trigger=false         — 同上。
@@ -201,7 +219,6 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     _FLASH_REACT_OVERRIDE: dict[str, Any] = {
         "enable_task_loop": False,
         "evolution": {
-            "skill_evolution": False,
             "skill_create": False,
             "review_trigger": False,
         },
@@ -231,7 +248,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     # ListSkillTool 由其 setup() 注册（全仓库无其它注册点），技能目录/引导 prompt
     # 也由它注入。「技能执行」≠「技能演进」：前者是跑已安装技能，flash 必须保留
     # （否则 search/install 得到却执行不了，后台 skill_turbo PPT 等直接失败）；
-    # 后者（SkillEvolutionRail / SkillCreateRail）属自演进，flash 不留。两者分开。
+    # 后者中的受限演进 rail（SkillEvolutionRail / EvolutionInterruptRail /
+    # SkillSleepRail）由本仓保留，SkillCreate 仍排除。两者分开。
     # _skill_credential_injection_rail：技能 envs（react.skill_envs 凭证）注入，
     # 没有 it 则带凭证的技能跑不起来，与 _skill_rail 同进同出。
     # _ask_user_rail：交互请求由 _set_user_interaction_enabled（在
@@ -243,6 +261,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_runtime_prompt_rail",
         "_response_prompt_rail",
         "_stream_event_rail",
+        # 上传图片进主模型：MultimodalImageRail 把引用行物化为像素并写入历史；
+        # 漏掉它 flash 只能靠 read_file 现读上传图。
+        "_multimodal_image_rail",
         
          # deepresearch_execute 依赖此 rail 绑定执行上下文并桥接原生 HITL。
         "_deepresearch_execution_rail",
@@ -269,6 +290,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # 上下文溢出兜底：413/ModelArts.81001 input-token-limit 时
         # 由该 rail 设置 force_compact 并在重试前压缩上下文。正常请求不触发。
         "_context_overflow_recovery_rail",
+        # 重试耗尽要发 chat.error：SDK 原版 rail 不通知，长任务失败时用户只看到“完成”。
+        "_llm_retry_rail",
         # _filesystem_rail: SlimSysOperationRail（flash override），init() 注册
         #   Read/Write/Edit/Glob/Grep/Bash，不注册 powershell/list_files；
         #   丢掉=无文件/shell 能力。
@@ -280,6 +303,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_skill_rail",
         "_flash_skill_selection_rail",
         "_skill_credential_injection_rail",
+        # 受限技能自演进：在线被动演进、主动演进审批/中断、离线休眠训练。
+        # SkillCreate / review follow-up 仍不进入 Flash profile。
+        "_skill_evolution_rail",
+        "_evolution_interrupt_rail",
+        "_skill_sleep_rail",
         # _skill_active_state_rail / _skill_authorization_rail: 活跃技能状态与
         #   skill_tool 授权门禁——保持与 normal 对等的技能链（上游 flash 裁掉了
         #   这两个，本仓决策保留）。
@@ -332,6 +360,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         super().__init__(workspace_dir=workspace_dir, agent_id=agent_id, service_id=service_id)
         self._flash_startup_preparations = {}
         self._flash_context_rail_lock = asyncio.Lock()
+        self._flash_evolution_rail_lock = asyncio.Lock()
         self._flash_context_agent_sysop = None
 
     @contextmanager
@@ -954,7 +983,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
            ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
            白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
            engine/provider 配置入口，独立于内置 memory 的模式开关。
-        3. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
+        3. 受限自演进 reconcile：只挂载/卸载 ``SkillEvolutionRail``、
+           ``EvolutionInterruptRail`` 和 ``SkillSleepRail``，不进入父类全量
+           ``_update_agent_rails()``；
+        4. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
            可能被父类/旧 reload 残留注册的动态 rail。
 
         白名单内的 rail（task_planning / context_processor / skill 等）冷启动已由
@@ -971,8 +1003,81 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         await self._handle_memory_rail_by_config("agent")
         await self._handle_external_memory_rail_by_config()
         await self._handle_office_ace_user_profile_rail_by_config()
+        await self._reconcile_flash_evolution_rails()
         await self._drop_non_whitelist_dynamic_rails()
         self._refresh_rail_observability_snapshot()
+
+    async def _reconcile_flash_evolution_rails(self) -> None:
+        """Reconcile only the restricted skill-evolution rails for Flash.
+
+        Online evolution is Flash-only and opt-in through
+        ``flash.evolution.enabled``. SkillSleep is independently gated by
+        ``flash.evolution.skill_sleep.enabled`` and defaults to the same
+        resident-rail contract as DeepAdapter; whether it trains is still
+        decided by the per-skill ``selfEvolution`` setting. A dedicated lock
+        serializes registration, unregistration, and reconciliation across
+        concurrent requests and reloads. The register→await→cache sequence has
+        suspend points, so sharing the context-rail lock would mix two
+        unrelated failure domains and permit interleaved half-mounted state.
+        """
+        async with self._flash_evolution_rail_lock:
+            full_config = self._config_base_cache
+            if _flash_evolution_enabled(full_config):
+                await self._ensure_active_evolution_rails_registered()
+            elif (
+                self._skill_evolution_rail is not None
+                or self._evolution_interrupt_rail is not None
+            ):
+                try:
+                    await self._unconfigure_active_evolution_rails()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmFlashAdapter] active evolution rail unconfigure failed: %s",
+                        exc,
+                    )
+
+            if _flash_skill_sleep_enabled(full_config):
+                await self._reconcile_skill_sleep_rail()
+            elif self._skill_sleep_rail is not None:
+                try:
+                    await self._unconfigure_skill_sleep_rail()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuwenSwarmFlashAdapter] SkillSleepRail unconfigure failed: %s",
+                        exc,
+                    )
+
+    async def _reconcile_evolution_rails(self) -> None:
+        """Keep Flash reloads on the restricted evolution rail set.
+
+        The inherited DeepAdapter reconcile also mounts TTSE. Flash intentionally
+        excludes TTSE and reads only the Flash evolution switches above, so
+        reload must not widen the Flash profile through the parent implementation.
+        """
+        await self._reconcile_flash_evolution_rails()
+
+    def _sync_active_evolution_review_agent_after_reload(self) -> None:
+        """Restore the Flash evolution reviewer after a DeepAgent reload.
+
+        Flash online evolution is gated by the Flash-specific switch, not the
+        inherited global ``react.evolution`` switch. A retained rail must
+        therefore restore its review subagent even when the global switch is
+        disabled.
+        """
+        if self._instance is None or self._skill_evolution_rail is None:
+            return
+        if not _flash_evolution_enabled(self._config_base_cache):
+            return
+
+        register_review_agent = getattr(
+            self._skill_evolution_rail,
+            "_register_evolution_review_agent",
+            None,
+        )
+        if callable(register_review_agent):
+            register_review_agent(self._instance)
+
+        self._refresh_active_evolution_rail_refs()
 
     async def _ensure_flash_context_rail(self) -> None:
         """Attach workspace identity without enabling the full agent profile."""
@@ -1037,9 +1142,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     async def try_start_dreaming(self, busy_checker=None) -> None:
         """no-op：flash 不启 memory dreaming.
 
-        flash 是「无自演进」profile（``enable_task_loop=false`` / ``skill_evolution=
-        false``），memory dreaming（被动记忆巩固，跑在 idle 时合并会话记忆）属自演进
-        范畴，与 flash 语义不符。父类 ``try_start_dreaming`` 对 flash 落到
+        flash 的受限 skill 自演进不包含 memory dreaming。memory dreaming
+        （被动记忆巩固，跑在 idle 时合并会话记忆）属于 memory 子系统，与
+        flash 语义不符。父类 ``try_start_dreaming`` 对 flash 落到
         ``_dreaming_mode="agent"``（interface_deep.py:9044，``mode.startswith("agent")``
         else ``"agent"``）仍会启 dreaming，故这里显式 no-op 拦截，避免 flash facade
         误启后台记忆巩固。
@@ -1420,6 +1525,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ("_office_ace_user_profile_rail", "OfficeAceUserProfileRail"),
         ("_skill_evolution_rail", "SkillEvolutionRail"),
         ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
+        ("_skill_sleep_rail", "SkillSleepRail"),
         ("_skill_create_rail", "SkillCreateRail"),
     )
 
