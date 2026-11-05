@@ -820,8 +820,6 @@ class _WindowApi:
     @staticmethod
     def open_external_url(url: str) -> bool:
         """Open SkillHub OAuth in the system browser, outside the desktop WebView."""
-        from urllib.parse import urlsplit
-
         base = (
             os.getenv("SKILLHUB_OAUTH_BASE_URL")
             or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
@@ -843,8 +841,6 @@ class _WindowApi:
 
         Only plain http(s) URLs without embedded credentials are accepted.
         """
-        from urllib.parse import urlsplit
-
         parsed = urlsplit(str(url))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
@@ -866,7 +862,7 @@ class _WindowApi:
         import html as html_module
         import re
         import urllib.request
-        from urllib.parse import parse_qs, urlsplit
+        from urllib.parse import parse_qs
 
         if not isinstance(options, dict):
             return None
