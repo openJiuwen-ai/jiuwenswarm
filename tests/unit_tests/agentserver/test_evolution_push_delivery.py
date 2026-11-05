@@ -1191,7 +1191,7 @@ async def test_team_skill_evolve_approval_passes_selected_record_ids(monkeypatch
         lambda request_id, channel_id=None: rail,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.refresh_team_shared_skill_links_across_managers",
+        "jiuwenswarm.agents.harness.team.reload_team_skill_views_across_managers",
         lambda session_id: None,
     )
 
