@@ -201,7 +201,8 @@ def _scene_name(cfg: dict[str, Any], lang: str = "en") -> str:
         if not place:
             continue
         # A short label is a place name; a long clause is prose, not a name.
-        if len(place.split()) <= 8:
+        # CJK writes without spaces, so cap characters as well as words.
+        if len(place.split()) <= 8 and len(place) <= 40:
             return place
     setting = str(cfg.get("setting_id") or "").strip()
     if setting and not setting.lower().startswith("set_"):

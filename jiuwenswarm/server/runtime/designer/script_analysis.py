@@ -1233,7 +1233,9 @@ def _normalize_llm_analysis(
             seen.setdefault(sid, sh)
         norm_scenes = []
         for sid, first in seen.items():
-            place = str(first.get("setting_description") or "").strip()
+            # The shot carries its setting text under these keys; the older
+            # name was never part of a shot entry, so the fallback was always "".
+            place = str(first.get("setting_description") or first.get("setting") or "").strip()
             norm_scenes.append({"id": sid, "name": place, "description": place})
     if not norm_shots:
         return None
