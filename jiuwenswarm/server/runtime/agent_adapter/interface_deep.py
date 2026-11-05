@@ -8571,7 +8571,7 @@ class JiuWenSwarmDeepAdapter:
             raw = getattr(request, "metadata", None)
             meta = raw if isinstance(raw, dict) else None
         identity = web_routing_identity(meta)
-        routing = {}
+        routing: dict[str, str] = {}
         for key in ("group_id", "bot_id", "user_id"):
             value = identity.get(key)
             if isinstance(value, str) and value.strip():
