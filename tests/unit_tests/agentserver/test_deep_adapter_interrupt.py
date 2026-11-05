@@ -1223,7 +1223,7 @@ async def test_interaction_cancel_skips_pause_when_no_goal() -> None:
 ])
 async def test_interaction_cancel_stops_scheduler_task_before_cancel_round(channel, managed_cua, resumed, monkeypatch) -> None:
     """A synchronous task_tool subagent must not block the interrupt response."""
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
     monkeypatch.setattr(execution, "close_task_output", AsyncMock())
     child_started = asyncio.Event()
     child_cancelled = asyncio.Event()

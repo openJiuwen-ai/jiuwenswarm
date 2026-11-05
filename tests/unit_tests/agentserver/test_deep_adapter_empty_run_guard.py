@@ -240,7 +240,8 @@ async def test_moa_output_consumer_owns_and_closes_progress(monkeypatch, close_e
     assert mailbox is not None
     observe_round.assert_not_called()
     if close_early:
-        await asyncio.wait_for(stream.aclose(), 1)
+        async with asyncio.timeout(1):
+            await stream.aclose()
     else:
         release.set()
         events = _payload_events([chunk async for chunk in stream])

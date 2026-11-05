@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+from importlib.util import find_spec
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -310,7 +311,7 @@ async def test_proxied_model_save_notifies_persistent_agents_with_the_saved_conf
 @pytest.mark.asyncio
 async def test_partial_persistent_reload_does_not_retry_or_restart_the_gateway():
     # Execute the real nested save callback without constructing the Gateway.
-    source = Path(__file__).resolve().parents[3] / "jiuwenswarm/gateway/app_gateway.py"
+    source = Path(find_spec("agent_gateway.app_gateway").origin)
     tree = ast.parse(source.read_text(encoding="utf-8"))
     callback = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_on_config_saved")
     response = parse_agent_server_wire_unary(encode_agent_response_for_wire(AgentResponse(

@@ -162,7 +162,10 @@ async def test_group_id_selects_real_session_before_files_and_routing(method, mo
         {},
     )
     assert seen[0].session_id == "group-one"
-    assert process_files.await_args.kwargs["session_id"] == "group-one"
+    if method == "chat.send":
+        assert process_files.await_args.kwargs["session_id"] == "group-one"
+    else:
+        process_files.assert_not_awaited()
     assert register_ws.await_args.args[1].session_id == "group-one"
     assert channel._ws_sessions[id(ws)] == {"group-one"}
 

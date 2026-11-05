@@ -1009,7 +1009,7 @@ async def test_two_cards_of_one_round_cannot_resume_it_at_once() -> None:
         return "done"
 
     first = asyncio.create_task(
-        coordinator.deliver_control("session-a", ("card-1",), slow_answer, interaction_ids=lambda item: frozenset({item}))
+        coordinator.deliver_control("session-a", ("card-1",), slow_answer)
     )
     await asyncio.sleep(0)
     # A near-simultaneous click on the other card must not inject a second

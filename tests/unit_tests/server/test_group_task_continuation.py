@@ -721,8 +721,8 @@ async def test_private_leader_question_waits_for_answer_without_ending_execution
     resumed = asyncio.Event()
 
     class Owner:
-        async def send_input(self, request):
-            assert request.inputs["query"].user_inputs["private-question"]["answers"] == {"Budget?": "Low"}
+        async def send(self, query):
+            assert query.user_inputs["private-question"]["answers"] == {"Budget?": "Low"}
             resumed.set()
 
     owner = Owner()

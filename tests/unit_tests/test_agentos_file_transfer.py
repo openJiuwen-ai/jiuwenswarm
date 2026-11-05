@@ -806,7 +806,7 @@ class _RecordingChannel:
         self.responses: list[dict[str, Any]] = []
         self.container_file_client = None
 
-    def register_method(self, method: str, handler) -> None:
+    def register_method(self, method: str, handler, *, local_only=False) -> None:
         self.handlers[method] = handler
 
     def on_connect(self, _handler) -> None:

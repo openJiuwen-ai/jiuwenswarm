@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -183,7 +184,9 @@ async def test_local_runtime_reports_other_identity_failures_as_errors(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_local_runtime_starts_official_cli_and_returns_its_oauth_url(tmp_path):
+@pytest.mark.parametrize(("platform", "opener_name"), [("darwin", "open"), ("linux", "xdg-open")])
+async def test_local_runtime_starts_official_cli_and_returns_its_oauth_url(tmp_path, monkeypatch, platform, opener_name):
+    monkeypatch.setattr("sys.platform", platform)
     class Process:
         pid = 4321
 
@@ -197,7 +200,7 @@ async def test_local_runtime_starts_official_cli_and_returns_its_oauth_url(tmp_p
     def popen(args, *, stdout, env, **kwargs):
         assert args == ['npx', '--yes', '--package=@tencent-qqmail/agently-cli@1.0.18', 'agently-cli', 'auth', 'login']
         assert '.agent-mail-bin' in env['PATH']
-        opener = Path(env['PATH'].split(':', 1)[0]) / 'open'
+        opener = Path(env['PATH'].split(os.pathsep, 1)[0]) / opener_name
         assert opener.read_text(encoding='utf-8') == '#!/bin/sh\nexit 0\n'
         assert len(list((tmp_path / 'd29deebbd3878c9a' / 'auth').glob('*.frontend'))) == 1
         stdout.write(('请访问 https://agent.qq.com/oauth?ticket=opaque-token' + chr(10)).encode())

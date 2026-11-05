@@ -51,7 +51,7 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_user_workspace(tmp_path):
+def _isolate_user_workspace(tmp_path_factory):
     """Keep data written by unit tests (sessions, etc.) out of the real ~/.jiuwenswarm."""
     from jiuwenswarm.server.runtime.session import session_metadata
 
@@ -59,7 +59,7 @@ def _isolate_user_workspace(tmp_path):
     # so the drain below uses the real queue/clock instead of a test's stubs.
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
-        data = tmp_path / "_unit_workspace" / ".jiuwenswarm"
+        data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
         config_dir = data / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
