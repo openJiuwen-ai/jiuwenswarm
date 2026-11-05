@@ -172,12 +172,41 @@ def _format_tool_result_for_stream(result: Any) -> str:
     if result is None:
         return ""
     text = _deepresearch_completed_content(result)
+    if text is None and isinstance(result, dict):
+        text = _tool_result_dict_text(result)
     if text is None:
         text = str(result)
     limit = _resolve_tool_result_display_max_chars()
     if limit == 0 or len(text) <= limit:
         return text
     return text[:limit]
+
+
+def _tool_result_dict_text(result: dict) -> str | None:
+    """dict 结果的帧展示文本（CR-6）。
+
+    relay-claw 前端直接把 ``payload.result`` 作为工具卡片 detail，因此归一后的
+    dict 不能退化为 ``str(dict)`` repr（单引号、display 与 data.content 重复、
+    截断在半截 dict 处）。取值顺序与 ``render_tool_result_for_llm`` 同语义：
+    display → error_message（失败态）→ data.content → 紧凑 JSON。
+    """
+    display = result.get("display")
+    if isinstance(display, str) and display.strip():
+        return display
+    status = result.get("status")
+    if isinstance(status, str) and status != "success":
+        message = result.get("error_message")
+        if isinstance(message, str) and message.strip():
+            return message
+    data = result.get("data")
+    if isinstance(data, dict):
+        content = data.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    try:
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -314,8 +343,16 @@ def _infer_tool_result_error(value: Any) -> bool | None:
                 return False
         if _boolish_true(value.get("is_error")) or _boolish_true(value.get("isError")):
             return True
+        if _boolish_false(value.get("ok")):
+            return True
         status = value.get("status")
         if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure"}:
+            return True
+        result_type = value.get("result_type")
+        if isinstance(result_type, str) and result_type.strip().lower() == "error":
+            return True
+        kind = value.get("kind")
+        if isinstance(kind, str) and kind.strip().lower() == "error":
             return True
         for key in ("exit_code", "exitCode", "returncode", "return_code"):
             exit_failed = _nonzero_exit(value.get(key))
@@ -1068,7 +1105,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "tool_name": getattr(tc, "name", ""),
                 "tool_call_id": tc_id,
                 "result": "[Interrupted] Tool execution cancelled by user.",
-                "status": "error",
+                # T1 统一 schema：取消是 cancelled 而非 error（工具失败才用 error）
+                "status": "cancelled",
+                "success": False,
+                "error_code": "tool_cancelled",
             })
             self._inflight_tool_calls.pop(tc_id, None)
         logger.info(
@@ -1814,6 +1854,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 if error_state:
                     tool_result_payload["status"] = "error"
                     tool_result_payload["is_error"] = True
+            if isinstance(raw_output, dict):
+                # T1 统一 schema：成败明细键提升到帧顶层（前端白名单已含
+                # error_code/error_message/display），原始形状保留在 raw_output
+                for key in ("error_code", "error_message", "display"):
+                    if key in raw_output and key not in tool_result_payload:
+                        tool_result_payload[key] = raw_output[key]
             source_skill = _resolve_source_skill(session)
             if source_skill:
                 tool_result_payload["source_skill"] = source_skill
