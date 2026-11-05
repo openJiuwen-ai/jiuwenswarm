@@ -215,3 +215,4 @@ Thanks to all developers who have contributed to JiuwenSwarm: [View Contributor 
 This project is licensed under [Apache License 2.0](LICENSE).
 
 This product serves solely as a workflow orchestration tool and does not embed any AI model capabilities. When users integrate AI models for specific business scenarios, they shall bear full responsibility for compliance obligations under the EU AI Act and other relevant regulatory frameworks.
+
