@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -769,3 +770,30 @@ def test_work_and_code_assembly_include_one_sdk_budget_rail(monkeypatch, mode):
     budget_rails = [rail for rail in rails if isinstance(rail, WebResearchBudgetRail)]
     assert len(budget_rails) == 1
     assert adapter._web_research_budget_rail is budget_rails[0]
+
+
+@pytest.mark.parametrize("mode", ["agent", "code"])
+@pytest.mark.parametrize("failure", ["missing_module", "constructor"])
+def test_optional_search_budget_failure_does_not_abort_agent_assembly(monkeypatch, caplog, mode, failure):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+    from openjiuwen.harness.rails import web_research_rail
+
+    adapter = JiuWenSwarmDeepAdapter() if mode == "agent" else JiuwenSwarmCodeAdapter()
+    original_instantiate = adapter._instantiate_rails
+
+    def instantiate_selected(infos, config):
+        selected = [info for info in infos if info.attr_name == "_web_research_budget_rail"]
+        assert len(selected) == 1
+        return original_instantiate(selected, config)
+
+    monkeypatch.setattr(adapter, "_instantiate_rails", instantiate_selected)
+    if failure == "missing_module":
+        monkeypatch.setitem(sys.modules, "openjiuwen.harness.rails.web_research_rail", None)
+    else:
+        monkeypatch.setattr(web_research_rail, "WebResearchBudgetRail", Mock(side_effect=RuntimeError("invalid budget")))
+
+    rails = adapter._build_agent_rails({}, {"permissions": {"enabled": False}}, mode=mode)
+    assert all(type(rail).__name__ != "WebResearchBudgetRail" for rail in rails)
+    assert any(type(rail).__name__ == "PromptSuggestionForkRail" for rail in rails)
+    assert "WebResearchBudgetRail create failed" in caplog.text

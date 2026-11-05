@@ -11096,10 +11096,16 @@ class JiuWenSwarmDeepAdapter:
         return SessionMessagingRouteRail()
 
     @staticmethod
-    def _build_web_research_budget_rail() -> Any:
-        from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+    def _build_web_research_budget_rail() -> Any | None:
+        try:
+            from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
 
-        return WebResearchBudgetRail()
+            return WebResearchBudgetRail()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] WebResearchBudgetRail create failed: %s", exc
+            )
+            return None
 
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""

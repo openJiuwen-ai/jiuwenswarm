@@ -46,6 +46,11 @@ files:
   备用市场最终接受的来源才记录。不得在包装层重新放回拒绝候选或添加另一套市场重试。
 - 必须同时使用含 `_on_search_results` 与 `WebResearchBudgetRail` 的 SDK；旧 SDK 缺钩子时工具返回明确错误，
   不能降级成没有来源记录的“正常”搜索。只更新 Swarm 不足以升级 SDK 行为。
+- `WebResearchBudgetRail` 导入或构造失败时记录警告并跳过该可选 Rail，不能阻止 Work/Code 会话创建；
+  其余 Rail 仍照常装配。该降级不表示检索预算已生效，应安装匹配 SDK 后重启。
+- Core/Gateway 候选仅用于 editable 开发验证。wheel、sdist 与 PyInstaller 入口校验主依赖、extras、
+  uv overrides、uv sources 及已有锁文件，拒绝非官方仓库、浮动修订或同一依赖的不一致固定版本。
+  转 Ready 仅代表进入检视，不解除发布阻断；需先合入对应官方仓、分别统一切换官方完整 SHA、更新锁文件并复测。
 - 两个默认 rail builder 都包含一份 `WebResearchBudgetRail`；Code 动态配置对该 Rail 去重。
   新 invocation、新并发会话有独立预算；同一 invocation 的模型轮次和并行工具共享。
 - 免费来源仅支持 DDG（含 reader 入口）与 Bing；环境模板提供独立开关和检索预算。

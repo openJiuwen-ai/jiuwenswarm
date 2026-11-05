@@ -16,11 +16,11 @@ resolution-markers = [
 
 [manifest]
 overrides = [
-    { name = "openjiuwen", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
+    { name = "openjiuwen", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
 ]
 
 [[package]]
@@ -77,7 +77,7 @@ dependencies = [
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=a9e4d447033f0eadf5e8583c06cfb8993e01e539#a9e4d447033f0eadf5e8583c06cfb8993e01e539" }
+source = { git = "https://gitcode.com/m056838700/agent-gateway.git?rev=f5d36cc780b215fe092f49974fcb25899de05ad1#f5d36cc780b215fe092f49974fcb25899de05ad1" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -3809,7 +3809,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.20"
-source = { git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b#3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" }
+source = { git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc#85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -7309,7 +7309,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=a9e4d447033f0eadf5e8583c06cfb8993e01e539" },
+    { name = "agent-gateway", git = "https://gitcode.com/m056838700/agent-gateway.git?rev=f5d36cc780b215fe092f49974fcb25899de05ad1" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7361,12 +7361,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/m056838700/agent-core.git?rev=3781cec780ce12d88ad4be4a6bf68d0ab6b7a91b" },
+    { name = "openjiuwen", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/m056838700/agent-core.git?rev=85cdd56a625a762c44df9c019d0d8daa7ba4b0fc" },
     { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=cbbadde9101db6e3d75e4ef2b9bdb6029fd92088" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
