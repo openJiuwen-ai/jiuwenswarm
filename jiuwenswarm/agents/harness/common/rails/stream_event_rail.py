@@ -37,9 +37,6 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
 )
-from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-    strip_image_content_from_model_context,
-)
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
@@ -49,10 +46,26 @@ from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
     fix_whitespace_path_arguments,
 )
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
+    build_non_text_read_error,
+    build_provided_image_read_error,
     extract_path_from_arguments,
+    extract_paths_from_arguments,
     handle_read_file_before_tool_call,
+    is_image_file_path,
+    is_non_text_file_path,
     is_read_file_tool,
+    is_vision_tool,
     normalize_read_file_tool_outcome,
+    reject_read_file,
+    reject_vision_tool_for_native_image,
+    vision_tool_targets_all_provided,
+)
+from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
+    PROVIDED_IMAGE_PATHS_KEY,
+    mark_native_images_sent,
+    mark_provided_image_paths,
+    native_images_sent,
+    provided_image_paths,
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
@@ -66,6 +79,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     get_todo_generation_token,
     snapshot_includes_persistent_todos,
 )
+from jiuwenswarm.common.todo_snapshot import versioned_todo_output
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
@@ -73,7 +87,6 @@ from jiuwenswarm.common.tool_display import (
 )
 from jiuwenswarm.common.todo_snapshot import (
     format_todos_for_frontend,
-    overlay_serial_todo_statuses,
 )
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
@@ -81,6 +94,9 @@ from jiuwenswarm.common.utils import fix_json_arguments, logger
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify", "todo"])
 _EARLY_CHECKPOINT_EXTRA_KEY = "_jiuwenswarm_early_checkpoint_done"
 _WHITESPACE_PATH_FIXES_EXTRA_KEY = "_jiuwenswarm_whitespace_path_fixes"
+_PROVIDED_IMAGE_PATHS_EXTRA_KEY = PROVIDED_IMAGE_PATHS_KEY
+# 已按原文件重新出图的路径（invoke 级）：同一张图只允许重读一次，避免重复 base64。
+_RE_READ_IMAGE_PATHS_EXTRA_KEY = "_jiuwenswarm_re_read_image_paths"
 _EARLY_CHECKPOINT_ENV = "JIUWENCLAW_EARLY_CHECKPOINT"
 
 
@@ -93,6 +109,10 @@ def _early_checkpoint_disabled_by_env() -> bool:
 # non-enterprise runs. Enterprise deploy normally sets the env (e.g. 500).
 _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS = 60000
 _TOOL_RESULT_DISPLAY_MAX_CHARS_LIMIT = 100_000
+
+# DeepResearch 执行信封 schema_version（与 execution.EXECUTION_SCHEMA 对齐，
+# 此处用字面量避免向 tools/deepresearch 反向 import 拉起整条 deepresearch 栈）。
+_DEEPRESEARCH_EXECUTION_SCHEMA = "openjiuwen.deepresearch.execute.v1"
 
 
 def _resolve_source_skill(session: Any = None) -> str:
@@ -129,10 +149,31 @@ def _resolve_tool_result_display_max_chars() -> int:
     return parsed
 
 
+def _deepresearch_completed_content(result: Any) -> str | None:
+    """Return the deepresearch completed envelope's content, else None.
+
+    Matches ``schema_version == openjiuwen.deepresearch.execute.v1`` +
+    ``kind == "completed"`` with a string ``content``; falls back to None
+    for any other shape so callers can default to ``str(result)``.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("schema_version") != _DEEPRESEARCH_EXECUTION_SCHEMA:
+        return None
+    if result.get("kind") != "completed":
+        return None
+    content = result.get("content")
+    if not isinstance(content, str):
+        return None
+    return content
+
+
 def _format_tool_result_for_stream(result: Any) -> str:
     if result is None:
         return ""
-    text = str(result)
+    text = _deepresearch_completed_content(result)
+    if text is None:
+        text = str(result)
     limit = _resolve_tool_result_display_max_chars()
     if limit == 0 or len(text) <= limit:
         return text
@@ -632,12 +673,121 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             "language", None,
         ) or "cn"
 
-    def _read_image_multimodal_enabled(self) -> bool:
-        deep_config = (
-            getattr(self._deep_agent, "deep_config", None)
-            or getattr(self._deep_agent, "_deep_config", None)
+    def _native_read_image_enabled(self) -> bool:
+        """Whether read_file should inline image bytes into the main model.
+
+        ``deep_config.enable_read_image_multimodal`` is the single resolved
+        source of truth (already derived from the model's declared image
+        capability).  When it is on, the read_file_validation pre-check must
+        not reject image paths — the actual ReadFileTool will attach pixels.
+        """
+        deep_config = getattr(self._deep_agent, "deep_config", None) or getattr(
+            self._deep_agent, "_deep_config", None
         )
         return bool(getattr(deep_config, "enable_read_image_multimodal", False))
+
+    def _native_image_pixels_sent(self, ctx: AgentCallbackContext | None = None) -> bool:
+        """原生看图**且**本次请求确实把像素发出去了。
+
+        视觉工具护栏只在这种情况拦截：能力位为真但像素没到（注入失败 / 预算全
+        卸载）时模型看不见图，VQA 是唯一兜底，必须放行。
+        """
+
+        if not self._native_read_image_enabled():
+            return False
+        # 张数由发送侧写在 agent 树上；ctx.agent 可能是包装对象，rail 自己持的
+        # _deep_agent 才是稳定的写入目标，两处都读一遍取较大值。
+        candidates = [getattr(ctx, "agent", None), getattr(self, "_deep_agent", None)]
+        return any(
+            native_images_sent(ctx=ctx, agent=candidate) > 0
+            for candidate in candidates
+            if candidate is not None
+        )
+
+    def _provided_image_paths(self, ctx: AgentCallbackContext) -> list[str]:
+        """本次请求已随消息提供**像素**的图片路径（请求级快照）。
+
+        只读 ContextVar（上传清单）在两种场景下会说谎：工具跨任务 / 线程执行时
+        ContextVar 会丢；而"上传了"不等于"像素进了消息"（预算淘汰 / 引用行没解析 /
+        读文件失败都会 0 张）。因此权威快照由 ``MultimodalImageRail.before_model_call``
+        （内层 ctx，与工具钩子共享同一个 extra）按注入后的历史实际 ``attached`` 集合
+        写入；缺失时才就地按历史计算一次并回填。
+        """
+
+        cached = provided_image_paths(ctx)
+        if cached is not None:
+            # 空列表也是权威事实（这次确实没有像素），据此放行 read_file 重读。
+            return cached
+        return self._compute_provided_image_paths(ctx)
+
+    def _compute_provided_image_paths(self, ctx: AgentCallbackContext) -> list[str]:
+        """快照缺失时的回退：按当前历史里 ``attached`` 的图片路径现算一次。
+
+        读不到历史（``ctx.context is None`` / 读取异常）时**不写**快照——无法确认
+        负载，留给下一个 ``before_model_call`` 的权威写入点；此刻按"未知即空"返回，
+        宁可放行 read_file（模型最多多读一张图）也不误判"已提供"。
+        """
+
+        from jiuwenswarm.agents.harness.common.multimodal import (
+            collect_provided_image_paths,
+        )
+
+        context = getattr(ctx, "context", None)
+        if context is None:
+            return []
+        try:
+            messages = list(context.get_messages() or [])
+        except Exception:
+            logger.debug(
+                "[StreamEventRail] read messages for provided image paths failed",
+                exc_info=True,
+            )
+            return []
+        try:
+            paths = collect_provided_image_paths(messages)
+        except Exception:
+            logger.debug(
+                "[StreamEventRail] collect provided image paths failed",
+                exc_info=True,
+            )
+            return []
+        return mark_provided_image_paths(ctx, paths)
+
+    def _re_read_image_paths(self, ctx: AgentCallbackContext) -> list[str]:
+        """本次 invoke 已放行"重新出图"的图片路径（可原地 append 的可变列表）。"""
+
+        extra = getattr(ctx, "extra", None)
+        if not isinstance(extra, dict):
+            return []
+        cached = extra.get(_RE_READ_IMAGE_PATHS_EXTRA_KEY)
+        if isinstance(cached, list):
+            return cached
+        created: list[str] = []
+        extra[_RE_READ_IMAGE_PATHS_EXTRA_KEY] = created
+        return created
+
+    def _omitted_image_paths(self, ctx: AgentCallbackContext) -> list[str]:
+        """历史里像素已被卸载的图片路径。
+
+        不缓存成 invoke 级快照：预算卸载发生在本轮 ``before_model_call``，同一轮
+        内随后的 ``read_file`` 就应该能按原文件重新出图。消息文本扫描成本很低。
+        """
+
+        context = getattr(ctx, "context", None)
+        if context is None:
+            return []
+        try:
+            messages = context.get_messages()
+        except Exception:  # pragma: no cover - defensive context guard
+            return []
+        from jiuwenswarm.agents.harness.common.multimodal import (
+            collect_omitted_image_paths,
+        )
+
+        try:
+            return collect_omitted_image_paths(list(messages))
+        except Exception:  # pragma: no cover - 护栏失败放行原始判定
+            return []
 
     def _tool_interrupted_message(self, tool_name: str) -> str:
         """Build a language-aware tool interruption message."""
@@ -932,6 +1082,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
+        # 已提供图片快照**不能**在这里写：BEFORE_INVOKE 是 DeepAgent 外层事件，
+        # 而 BEFORE_MODEL_CALL / BEFORE_TOOL_CALL 经 _BRIDGE_EVENTS 桥接到内层
+        # ReActAgent，两边 ctx.extra 是两个不同 dict——写在外层等于工具钩子永远
+        # 读不到（现场"已提供图片重复读未拦"就是这么漏的）。权威快照在
+        # before_model_call（内层 ctx）写；这里只把跨请求残留的张数归零。
+        mark_native_images_sent(agent=getattr(ctx, "agent", None), count=0)
         if not isinstance(ctx.inputs, InvokeInputs):
             return
         # Subagents have no session on their before_invoke (ctx.session is None);
@@ -1005,6 +1161,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        # 请求级图片路径快照不在这里预写：此时像素还没注入，按上传清单 / 历史现状写
+        # 只会固化成错误事实。权威写入点是 ``MultimodalImageRail.before_model_call``
+        # （注入后按实际 attached 集合写，内层 ctx 与工具钩子共享同一个 extra）。
         sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
         if self._abort_requested.get(sid, False):
@@ -1018,8 +1177,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._ensure_tool_call_goal_prompt()
 
         if ctx.context is not None:
-            if not self._read_image_multimodal_enabled():
-                strip_image_content_from_model_context(ctx.context)
             await self._fix_incomplete_tool_context(ctx)
 
         await self._maybe_early_checkpoint(ctx)
@@ -1232,9 +1389,98 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     # entries are popped in after_tool_call keyed by tool_call_id.
                     ctx.extra.setdefault(_WHITESPACE_PATH_FIXES_EXTRA_KEY, {})[tool_call_id] = fixes
             if is_read_file_tool(tool_name):
-                path = extract_path_from_arguments(getattr(tc, "arguments", {}))
-                if path:
-                    handle_read_file_before_tool_call(ctx, path)
+                arguments = getattr(tc, "arguments", {})
+                paths = extract_paths_from_arguments(arguments)
+                native_image_enabled = self._native_read_image_enabled()
+                if native_image_enabled:
+                    from jiuwenswarm.agents.harness.common.multimodal import (
+                        is_provided_image_path,
+                    )
+
+                    provided_paths = self._provided_image_paths(ctx)
+                    omitted_paths = self._omitted_image_paths(ctx)
+                    re_read_paths = self._re_read_image_paths(ctx)
+                    duplicate = []
+                    re_read: list[str] = []
+                    for path in paths:
+                        if not is_provided_image_path(path, provided_paths):
+                            continue
+                        if is_provided_image_path(path, omitted_paths) and not (
+                            is_provided_image_path(path, re_read_paths)
+                            or is_provided_image_path(path, re_read)
+                        ):
+                            # 这张图的像素已被预算卸载 / 读取失败：允许按原文件重新
+                            # 出图（重新缩小编码），而不是放大已压糊的历史像素。
+                            re_read.append(path)
+                            continue
+                        duplicate.append(path)
+                    if re_read:
+                        re_read_paths.extend(re_read)
+                        logger.info(
+                            "[stream_event_rail] allow image re-read from original file: %s",
+                            re_read,
+                        )
+                    if duplicate:
+                        # 本次请求已随消息提供像素，禁止重复读取同一张图（含
+                        # file_paths 批量读里的任意一项）——重复读只会多一份 base64。
+                        reject_read_file(
+                            ctx,
+                            build_provided_image_read_error(
+                                duplicate[0],
+                                language=self._get_prompt_language(),
+                            ),
+                        )
+                    else:
+                        # 原生开启时放行 read_file 对图片的读取，交给 ReadFileTool
+                        # 内联像素；非图片二进制路径仍拒绝纯文本读取。
+                        blocking = None
+                        for path in paths:
+                            if is_non_text_file_path(path) and not is_image_file_path(path):
+                                blocking = path
+                                break
+                        if blocking:
+                            reject_read_file(
+                                ctx,
+                                build_non_text_read_error(
+                                    blocking,
+                                    language=self._get_prompt_language(),
+                                ),
+                            )
+                        else:
+                            path = extract_path_from_arguments(arguments)
+                            if path and not is_image_file_path(path):
+                                handle_read_file_before_tool_call(ctx, path)
+                else:
+                    path = extract_path_from_arguments(arguments)
+                    if path:
+                        handle_read_file_before_tool_call(ctx, path)
+                    else:
+                        # 批量读没有单一路径时，逐个检查 file_paths 里的非文本项。
+                        blocking = next(
+                            (item for item in paths if is_non_text_file_path(item)),
+                            None,
+                        )
+                        if blocking:
+                            reject_read_file(
+                                ctx,
+                                build_non_text_read_error(
+                                    blocking,
+                                    language=self._get_prompt_language(),
+                                ),
+                            )
+            if is_vision_tool(tool_name) and self._native_image_pixels_sent(ctx):
+                # 视觉工具只拦"目标图片已在最终窗口提供"的重复调用。远程 URL /
+                # 未知目标 / 未随消息提供像素的本地图必须保留兜底路径：模型已经收到
+                # 图 A 再调 VQA 分析远程图 B 是必要调用，拦掉等于封死远程图片输入
+                # （read_file 不能替代 HTTP(S) 地址）。判定按最终窗口的 provided
+                # 快照逐目标比对，而不是"本轮存在任意图片"的一刀切。
+                arguments = getattr(tc, "arguments", {}) if tc else {}
+                if vision_tool_targets_all_provided(
+                    tool_name, arguments, self._provided_image_paths(ctx)
+                ):
+                    reject_vision_tool_for_native_image(
+                        ctx, language=self._get_prompt_language()
+                    )
             # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
             # 绝不碰 display_name（team 成员名等业务字段）。
             model_display, cleaned_args = extract_call_goal(
@@ -1490,6 +1736,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     todo_sid,
                     tool_name=tool_name,
                     arguments=getattr(tc, "arguments", None),
+                    snapshot=getattr(ctx.inputs.tool_result, "todo_snapshot", None),
                 )
 
     # ------------------------------------------------------------------
@@ -1641,44 +1888,36 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         *,
         tool_name: str = "",
         arguments: Any = None,
+        snapshot: dict | None = None,
     ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
-        todo_tool = self._get_todo_tool()
-        if todo_tool is None:
-            logger.debug("[StreamEventRail] TodoListTool not available")
-            return
-
-        try:
-            todos_data = await todo_tool.load_todos(session_id)
-        except Exception as exc:
-            logger.debug(
-                "[StreamEventRail] Failed to load todos: %s", exc
-            )
-            return
-
-        # 请求隔离：todo.updated 是全量快照旁路（todo 工具 after_tool_call
-        # 全量推 todo.json），按 generation token 剔除已被新一轮请求取代的
-        # 旧代条目，防止旧任务的 completed 条目重新弹回前端。未打标条目
-        # （legacy 磁盘残留）与无 token 会话（fail-open）原样放行。
+        # New tools return their committed snapshot; rereading here could pair
+        # this call's outcome with another concurrent commit.
+        if snapshot is None:
+            todo_tool = self._get_todo_tool()
+            if todo_tool is None:
+                return
+            try:
+                items = await todo_tool.load_todos(session_id)
+                loaded = getattr(items, "snapshot", None)
+                if loaded is not None and not loaded.exists:
+                    return
+                snapshot = loaded.document() if loaded is not None else None
+                todos_data = items
+            except Exception:
+                logger.debug("Todo snapshot unavailable", exc_info=True)
+                return
+        else:
+            todos_data = snapshot["todos"]
         try:
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
-        if generation_token or tool_name:
-            before = len(todos_data)
+        if not versioned_todo_output() and (generation_token or tool_name):
             if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
                 todos_data = filter_todos_for_display(todos_data, generation_token)
             else:
                 todos_data = filter_todos_for_execution(todos_data, generation_token)
-            if len(todos_data) != before:
-                logger.info(
-                    "[StreamEventRail] todo.updated filtered stale-generation "
-                    "todos: session_id=%s generation_token=%s before=%d after=%d",
-                    session_id,
-                    generation_token,
-                    before,
-                    len(todos_data),
-                )
 
         # Parent StreamEventRail only: team-member rails use their own
         # workspace and must not feed request_summaries.tasks.
@@ -1701,16 +1940,30 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ),
             )
 
-        todos = overlay_serial_todo_statuses(
-            self._format_todos_for_frontend(todos_data)
-        )
+        if snapshot is not None:
+            from dataclasses import replace
+
+            from openjiuwen.harness.tools.todo_store import decode_snapshot
+
+            from jiuwenswarm.common.todo_snapshot import project_todo_snapshot
+
+            # Legacy items were already filtered using the tool intent above;
+            # a second generation filter would hide cross-turn reminders.
+            todos = project_todo_snapshot(replace(decode_snapshot(snapshot), todos=todos_data))
+            payload = {"todos": todos}
+            if todos.todo_meta is not None:
+                payload["todo_meta"] = todos.todo_meta
+        else:
+            from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
+
+            payload = {"todos": overlay_serial_todo_statuses(self._format_todos_for_frontend(todos_data))}
 
         try:
             await session.write_stream(
                 OutputSchema(
                     type="todo.updated",
                     index=0,
-                    payload={"todos": todos},
+                    payload=payload,
                 )
             )
         except Exception:

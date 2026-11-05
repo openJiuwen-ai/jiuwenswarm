@@ -24,6 +24,12 @@ sandbox:
   url: http://127.0.0.1:8321
   type: jiuwenbox
   policy_file: windows-policy.yaml
+  # 空闲 reaper 周期(秒):稳态沙箱数 ≈ 创建速率 × TTL,须与 Box 内存容量匹配
+  # (≈14.4MB/个)。两个键必须留在模板里——_deep_merge 会剔除 override 独有键,
+  # 缺席即 update_conf 写入的值永远到不了运行时(issue#5718)。部署时由
+  # update_conf 按 JIUWENBOX_IDLE_TTL_SECONDS/CHECK_INTERVAL_SECONDS 覆写。
+  idle_ttl_seconds: 180
+  idle_check_interval: 60
 
 a2ui:
   enabled: false
@@ -311,8 +317,8 @@ models:
         timeout: 360
         # 流式：等待首个分片的最大时间（秒）。放宽以兼容 reasoning/思考模型思考期的静默
         stream_first_chunk_timeout: 300
-        # 流式：分片之间的最大空闲等待时间（秒）
-        stream_idle_timeout: 60
+        # 流式：分片之间的最大空闲等待时间（秒）。部分模型的 tool 参数不增量下发，生成长参数时会静默较久
+        stream_idle_timeout: 180
         verify_ssl: true
         custom_headers: {}
       model_config_obj:
@@ -322,6 +328,10 @@ models:
         # 值取自环境变量 LLM_MAX_TOKENS
         # 未设置时回落 32768；jiuwenswarm 自身 .env 的同名变量优先级更高
         max_tokens: ${LLM_MAX_TOKENS:-32768}
+      # 该主模型的原生能力模态（OpenAI 风格）：只有 modalities 含 image 才走原生看图；
+      # 未声明 / 不含 image / 其它值一律按不支持处理（走 VQA / 视觉工具链），不再内置能力表猜测。
+      # 按前端「图片输入」开关下发 MODEL_MODALITIES（text,image / 不传即 text）。
+      modalities: ${MODEL_MODALITIES:-text}
       is_default: true
   video:
     model_client_config:
@@ -608,6 +618,17 @@ react:
   enable_task_execution_rail: true
   max_iterations: 100
   model_name: ${MODEL_NAME}
+  # 原生图片输入没有 react 级开关：是否走原生看图由每个模型条目自己的
+  # modalities 是否含 image 决定（含 image 才开启，其余一律走 VQA 工具链，见 models.defaults）。
+  # 单次请求图片预算（与模型无关）：超出时把最老的图片替换成文字说明并写入历史，
+  # 之后不再自动加回。字节数 0 = 不限；张数 0 = 不限（默认 8 张；gateway 上传侧
+  # 同读该张数配置截断上传件）。
+  multimodal_image_budget: 0
+  # 图片视觉 token 预算：按分辨率（OpenAI tile 算法）计量图片在上下文窗口的占用，
+  # 而不是按 base64 字符长度；计量按**缩小后的发送尺寸**（最长边 1536）折算。
+  # 0 = 不限。
+  multimodal_image_token_budget: 0
+  multimodal_image_max_count: 8
   skill_mode: all
   # Per-skill credential env vars injected into shell tools when a skill is active.
   # OfficeClaw sync writes real values here (e.g. hwocr HWOCR_AK/HWOCR_SK). Empty {} is a
@@ -634,14 +655,14 @@ react:
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:
-    enabled: true                  # 总开关，默认关闭
+    enabled: true                  # 总开关
     eager_tools:                    # 常驻可见工具列表
       - tools_search
       - invoke_tool
       - web_search
       - fetch_webpage
       - ask_user
-      - task_tool
+      - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
       - send_file_to_user
       - list_files
       - read_file
@@ -653,10 +674,10 @@ react:
       - skill_tool
       - skill_complete
       - skill_acceleration_exec
+      - office_claw_list_wishes
       - todo_create
       - todo_list
       - todo_modify
-      - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
       - subagent_spawn              # 运行时六个工具常驻，否则主 agent 每次都要先 tools_search 再 invoke_tool
       - subagent_wait
       - subagent_list
@@ -669,8 +690,11 @@ react:
       - write_memory
       - edit_memory
       - external_memory_search
-    enable_for_models:             # 模型白名单（空=全部启用）
+    # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
+    # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
+    enable_for_models:
       - glm
+      - deepseek
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表
@@ -726,14 +750,18 @@ react:
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
 
     enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
+    # 精确 token 计数（tiktoken BPE）：false 时用字符估算，但图片块已按像素视觉 token
+    # 计价（不会把 base64 当文本算）。true 时文本走 BPE、图片仍按像素；首次加载可能
+    # 需要下载词表（agent-core 有后台预热）。默认关闭。
+    # enable_tiktoken_counter: false
     # debug 记录目录；留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
     # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
     # context_debug_dir:
 
     # 压缩召回：压缩器替换原始消息时，把原文分块归档到会话目录 compression_recall/，
-    # 模型可通过 [[COMPRESSION_RECALL: id=...]] 标记按需召回原文。默认关闭。
+    # 模型可通过 [[COMPRESSION_RECALL: id=...]] 标记按需召回原文。默认开启。
     compression_recall_config:
-      enabled: false               # true 开启压缩召回（仅对对话/当前轮/轮次级三个压缩器生效）
+      enabled: true                # true 开启压缩召回（仅对对话/当前轮/轮次级三个压缩器生效）
       chunk_size_tokens: 3000      # 归档分块大小（tokens）
       chunk_overlap_tokens: 500    # 相邻分块重叠（tokens，须小于 chunk_size_tokens）
 
@@ -789,6 +817,13 @@ react:
       reasoning_preview_max_chars: 512     # 摘要里 reasoning 预览的最大字符数
       bailout_threshold: 3                 # reasoning 规则压缩次数达此值后中止
       tool_args_bailout_threshold: 2       # 工具入参规则压缩次数达此值后终止
+      # 豁免异步轮询作为断墙：image_get_run 直调与 invoke_tool 包装调用（按名豁免，脱离本段循环网，靠会话超时等兜底）
+      ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
+        - tool_name: invoke_tool
+          argument_equals:
+            tool_name: image_get_run
   # Skills 在线自演进配置
   evolution:
     enabled: true             # true = 启用在线 Skills 自演进（挂载后被动扫描始终开启）
@@ -987,7 +1022,7 @@ execution_guard:
   llm_retry_rail:
     # 总开关。关闭后不注册 LLMRetryRail，也不会额外拦截重复输出/流式帧超时
     enabled: true
-    # 单次 invoke 内同一类异常最多重试次数；超过后把异常继续抛给上层
+    # 同一类异常连续失败的最多重试次数，模型调用成功后清零；超过后把异常继续抛给上层
     max_retries: 2
     # 非流式 invoke 遇到 Connection error / Request timed out 等瞬时错误时是否自动重试
     retry_transient_invoke_errors: true
@@ -1007,15 +1042,24 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 策略级鉴权失败 / 凭证探测断路器（单 agent / flash）。
+  stalled_access:
+    enabled: true
+    auth_threshold: 5
+    probe_threshold: 3
+    window_seconds: 1800
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
-  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  # 不是 issue 级 OPEN/HALF_OPEN 恢复型熔断；
+  # non_retryable_tool 检测器也在此开关下；默认部署使用 agent_ras，
+  # 不消费 tool_result_contract，因此默认不会触发该检测器。
   circuit_breaker:
     enabled: false
     warning_threshold: 10
     critical_threshold: 20
     global_breaker_threshold: 30
     unknown_tool_threshold: 10
+    non_retryable_threshold: 3
 
 # Agent RAS 整体配置
 agent_ras:
@@ -1036,6 +1080,8 @@ agent_ras:
       # Match the outer tool and selected top-level arguments exactly.
       # Add rules for other polling functions without exempting the whole tool.
       ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
         - tool_name: invoke_tool
           argument_equals:
             tool_name: image_get_run
@@ -1631,6 +1677,18 @@ web_search:
   paid_provider_order:
     - petal
     - bocha
+  # Image discovery settings for the web image channel (search -> download -> multimodal).
+  # 相关性由搜索引擎排序负责，客户端只做结构性校验（内网地址/占位图/最小尺寸/去重）。
+  image_search:
+    max_images: 6              # 单次最多下载张数（上限 12）
+    max_pages: 3               # 兜底抓页时最多解析多少个结果页（上限 5）
+    min_image_side: 200        # 仅用于滤掉图标/表情等小图，不做相关性判断
+    max_bytes_per_image: 6291456    # 单图字节上限（6MB）
+    max_total_bytes: 18874368       # 单次总字节上限（18MB），超出即停止
+    # 搜索引擎返回的图片结果已按查询相关性排序，默认独占本次检索，不掺网页扒图。
+    prefer_provider_images: true
+    # 仅在 provider 无图、或上面为 false 且张数不足时，才抓结果页 <img> 补足。
+    allow_page_fallback: false
 
 modes:
   # 一级模式 agent / code / team
@@ -1722,6 +1780,24 @@ modes:
 
       storage:
         type: sqlite
+        # SQLite pool / WAL knobs → openjiuwen DatabaseConfig via StorageSpec.params.
+        # Omitted keys fall back to product defaults in config_loader
+        # (_SQLITE_STORAGE_DEFAULTS). Explicit values below override defaults.
+        params:
+          # connection_string: team.db   # relative → ~/.…/agent-teams/team.db
+          db_timeout: 5
+          db_enable_wal: true
+          read_pool_size: 16
+          write_pool_size: 2
+          wal_checkpoint_interval_s: 30.0
+
+      # Process-wide Team LLM admission (especially when enable_swarmflow is false).
+      # max_concurrent_llm_calls: concurrent member LLM calls across the process.
+      #   null/omitted → 4 when swarmflow off, 0 (disabled) when swarmflow on
+      #   0            → disable this rail
+      #   N>0          → hard ceiling (queues excess callers)
+      resource_admission:
+        max_concurrent_llm_calls:
 
       # ============================================================
       # Team 级共享记忆（TeamMemoryConfig）
@@ -1774,6 +1850,15 @@ flash:
   enabled: ${JIUWENSWARM_FLASH_ENABLED:-false}
   # 必须在模板声明：启动清理及配置合并会删除模板中不存在的字段。
   # 模块可独立删除；这些默认值不启用功能，也不影响其他 Agent mode。
+  # Flash 专属受限技能自演进开关：
+  #   evolution.enabled=false（默认）— Flash 不挂在线被动演进 / HITL 审批 rail，
+  #     不继承全局 react.evolution.enabled，避免升级后静默开启。
+  #   evolution.skill_sleep.enabled=true（默认）— 保持 Deep 的 SkillSleep 常驻契约，
+  #     是否离线训练仍由技能级 selfEvolution 决定；两者独立。
+  evolution:
+    enabled: ${JIUWENSWARM_FLASH_EVOLUTION_ENABLED:-false}
+    skill_sleep:
+      enabled: ${JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED:-true}
   skill_selection:
     enabled: ${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}
     catalog_check_interval_s: 5.0

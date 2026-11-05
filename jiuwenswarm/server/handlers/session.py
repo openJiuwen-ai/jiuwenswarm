@@ -971,30 +971,32 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
             todo_root=todo_root,
             generation_token=generation_token,
         )
-        todo_chunk = AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload={
-                "event_type": "todo.updated",
-                "todos": todos,
-                "session_id": session_id.strip(),
-            },
-            is_complete=False,
-        )
-        wire_todo = encode_agent_chunk_for_wire(
-            todo_chunk,
-            response_id=request.request_id,
-            sequence=next_sequence,
-        )
-        if not await ctx.sink.send_wire(wire_todo):
-            logger.warning(
-                "[history.get] todo snapshot send failed: request_id=%s "
-                "session_id=%s todo_count=%s",
-                request.request_id,
-                session_id.strip(),
-                len(todos),
+        if todos is not None:
+            todo_chunk = AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "todo.updated",
+                    "todos": todos,
+                    **({"todo_meta": todos.todo_meta} if todos.todo_meta is not None else {}),
+                    "session_id": session_id.strip(),
+                },
+                is_complete=False,
             )
-        next_sequence += 1
+            wire_todo = encode_agent_chunk_for_wire(
+                todo_chunk,
+                response_id=request.request_id,
+                sequence=next_sequence,
+            )
+            if not await ctx.sink.send_wire(wire_todo):
+                logger.warning(
+                    "[history.get] todo snapshot send failed: request_id=%s "
+                    "session_id=%s todo_count=%s",
+                    request.request_id,
+                    session_id.strip(),
+                    len(todos),
+                )
+            next_sequence += 1
 
     done_chunk = AgentResponseChunk(
         request_id=request.request_id,

@@ -124,6 +124,70 @@ async def test_report_type_uses_params_and_isolated_execution_contexts():
 
 
 @pytest.mark.asyncio
+async def test_deepresearch_followup_flows_to_execution_context():
+    """metadata.deepresearch_followup 经提取→请求上下文→rail 绑定到执行上下文。
+
+    结构不合法时按未携带处理（告警降级，不拒绝请求）。
+    """
+    valid_request = AgentRequest(
+        request_id="request-followup",
+        channel_id="officeclaw",
+        session_id="session-followup",
+        params={},
+        metadata={
+            "deepresearch_followup": {
+                "v": 1,
+                "action": "upgrade_latest_brief",
+                "source_report_id": "brief-conv-1",
+            }
+        },
+    )
+    invalid_request = AgentRequest(
+        request_id="request-invalid",
+        channel_id="officeclaw",
+        session_id="session-invalid",
+        params={},
+        metadata={"deepresearch_followup": {"v": 2, "action": "unknown"}},
+    )
+    plain_request = AgentRequest(
+        request_id="request-plain",
+        channel_id="officeclaw",
+        session_id="session-plain",
+    )
+
+    followup = interface_deep._extract_deepresearch_followup(valid_request)
+    assert followup == {
+        "v": 1,
+        "action": "upgrade_latest_brief",
+        "source_report_id": "brief-conv-1",
+    }
+    assert interface_deep._extract_deepresearch_followup(invalid_request) is None
+    assert interface_deep._extract_deepresearch_followup(plain_request) is None
+
+    set_request_context(
+        session_id="session-followup",
+        request_id="request-followup",
+        channel_id="officeclaw",
+        mode="agent",
+        deepresearch_followup=followup,
+    )
+    try:
+        rail = DeepResearchExecutionRail(model_provider=lambda: None)
+        ctx = _execution_rail_context("session-followup")
+        await rail.before_tool_call(ctx)
+        try:
+            execution_context = de._execution_context.get()
+            assert execution_context.deepresearch_followup == followup
+        finally:
+            await rail.after_tool_call(ctx)
+    finally:
+        clear_request_context(
+            session_id="session-followup",
+            request_id="request-followup",
+        )
+
+
+@pytest.mark.asyncio
 async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
     service_id = "progressive-test-service"
     agent_id = "office"
@@ -368,3 +432,67 @@ async def test_deferred_tool_lookup_keeps_default_timeout_boundary():
         "error": "Tool lookup for 'missing_deferred' timed out after 0.01s",
         "tool_name": "missing_deferred",
     }
+
+@pytest.mark.parametrize('permission,allowed', [(None, False), ('ask', False), ('deny', False), ('allow', True)])
+def test_material_paths_require_explicit_read_permission(permission, allowed):
+    from openjiuwen.harness.security.models import PermissionLevel
+    adapter = SimpleNamespace(_current_request_route={'materials_context': {
+        'files': [{'path': '/uploaded/a.txt', 'name': 'a.txt'}], 'scope': 's', 'original_query': '参考附件'}},
+        _resolve_permission_config_for_agent=Mock(return_value={'enabled': True}),
+        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=Mock(
+            return_value=(PermissionLevel(permission) if permission else None, None)))))
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    assert context['files'][0]['read_allowed'] is allowed
+    assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
+
+
+@pytest.mark.asyncio
+async def test_disabled_permissions_prepare_current_request_material(tmp_path):
+    import json
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import prepare_materials
+
+    root = tmp_path.resolve()
+    attachment = root / 'material.txt'
+    attachment.write_text('fictional regression material: queue 42 to 17 seconds', encoding='utf-8')
+    resolve_config = Mock(return_value={'enabled': False})
+    adapter = SimpleNamespace(
+        _current_request_route={'session_id': 'material-session', 'materials_context': {
+            'files': [{'path': str(attachment), 'name': attachment.name}],
+            'scope': 'material-session', 'output_dir': str(root),
+            'original_query': '必须使用附件为核心材料，允许联网',
+        }},
+        _permission_rail=None,
+        _resolve_permission_config_for_agent=resolve_config,
+    )
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    reference = await prepare_materials(context, 'e7c43dd6-2d6e-4093-8c97-4d894fd0fef1')
+    payload = json.loads(Path(reference['path']).read_text())
+    assert payload['materials'][0]['content'] == attachment.read_text()
+    assert reference['results'][0]['status'] == 'ready'
+    resolve_config.assert_called_once_with(session_id='material-session')
+    assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
+
+
+@pytest.mark.parametrize('config', [
+    {'enabled': True}, {}, {'enabled': None}, {'enabled': 'false'}, {'enabled': 0}, None, [],
+])
+def test_missing_material_permission_engine_stays_closed(config):
+    adapter = SimpleNamespace(
+        _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
+        _permission_rail=None,
+        _resolve_permission_config_for_agent=Mock(return_value=config),
+    )
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    assert context['files'][0]['read_allowed'] is False
+
+
+def test_material_permission_config_failure_stays_closed():
+    check = Mock(return_value=('allow', None))
+    adapter = SimpleNamespace(
+        _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
+        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=check)),
+        _resolve_permission_config_for_agent=Mock(side_effect=RuntimeError('configuration unavailable')),
+    )
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    assert context['files'][0]['read_allowed'] is False
+    check.assert_not_called()

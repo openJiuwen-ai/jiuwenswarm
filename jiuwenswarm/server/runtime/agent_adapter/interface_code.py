@@ -55,6 +55,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
     _agent_ras_kwargs_from_config,
+    _build_multimodal_image_rail,
     _deep_agent_kv_cache_affinity_config,
     _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
@@ -98,7 +99,6 @@ from jiuwenswarm.common.coding_memory_paths import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
 from jiuwenswarm.common.utils import (
-    DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
     get_agent_workspace_dir,
     get_default_project_session_workspace_dir,
 )
@@ -642,7 +642,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             workspace=workspace,
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
-            enable_read_image_multimodal=DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
+            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config, model),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
@@ -726,6 +726,17 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
+            _RailBuildInfo(
+                "_multimodal_image_rail",
+                _build_multimodal_image_rail,
+                {
+                    # 与 DeepAdapter 对齐：请求时回退到 deep_config.enable_read_image_multimodal。
+                    "enable_image_multimodal": None,
+                    "max_total_bytes": config.get("multimodal_image_budget"),
+                    "max_visual_tokens": config.get("multimodal_image_token_budget"),
+                    "max_count": config.get("multimodal_image_max_count"),
+                },
+            ),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo(
@@ -770,6 +781,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
+            # 与上游 02957a531 对齐：挂到链路末端（context_processor 之后），
+            # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
+            _RailBuildInfo(
+                "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
         ]
 
         normalized_sub_mode = _normalize_code_sub_mode(sub_mode)
@@ -1518,6 +1534,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt
             )
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled
+            eternal_conversation_rail.configure_runtime(
+                enabled=runtime_config.eternal_conversation_enabled,
+                session_id=runtime_config.session_id,
+                request_id=runtime_config.request_id,
+                mode=runtime_config.mode,
+                channel=resolved_channel,
+                project_dir=runtime_config.project_dir or self._project_dir,
+                model=getattr(self, "_active_request_model", None) or self._model,
+                interaction_resume=runtime_config.interaction_resume,
+            )
+            if self._eternal_conversation_enabled and self._context_processor_rail is not None:
+                self.shutdown_context_session_memory(self._context_processor_rail)
         # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
         # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。

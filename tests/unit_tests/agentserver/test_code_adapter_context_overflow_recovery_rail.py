@@ -27,8 +27,31 @@ from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail impo
 
 _RAIL_BUILD_NAMES = getattr(_ic_mod, "_RAIL_BUILD_NAMES")
 _RailBuildInfo = getattr(_ic_mod, "_RailBuildInfo")
+_build_multimodal_image_rail = getattr(_ic_mod, "_build_multimodal_image_rail")
 JiuwenSwarmCodeAdapter = _ic_mod.JiuwenSwarmCodeAdapter
 _FIXED_RAIL_NAMES = getattr(JiuwenSwarmCodeAdapter, "_FIXED_RAIL_NAMES")
+
+
+def _capture_rail_infos():
+    """桩掉 _instantiate_rails，返回 _build_agent_rails 组装的 RailBuildInfo 列表。
+
+    _build_agent_rails 末尾会调 _instantiate_rails 把 RailBuildInfo 列表实例化成
+    rail 列表；桩成原样返回可避免真实 rail 构造的重依赖，只校验条目本身。
+    """
+    adapter = JiuwenSwarmCodeAdapter()
+    captured: list = []
+    real_instantiate = adapter._instantiate_rails
+
+    def _passthrough_instantiate(rail_infos, config_base, *args, **kwargs):
+        captured.extend(rail_infos)
+        return rail_infos
+
+    object.__setattr__(adapter, "_instantiate_rails", _passthrough_instantiate)
+    try:
+        adapter._build_agent_rails(config={}, config_base={}, mode="code")
+    finally:
+        object.__setattr__(adapter, "_instantiate_rails", real_instantiate)
+    return adapter, captured
 
 
 # ─── TC-001: _FIXED_RAIL_NAMES 含 ContextOverflowRecoveryRail ─────────────
@@ -69,23 +92,7 @@ def test_build_agent_rails_includes_context_overflow_recovery_rail_entry():
     rail 列表，因此桩掉 _instantiate_rails 让它原样返回 rail_infos，避免触发真实
     rail 构造的重依赖，只校验 RailBuildInfo 的 attr_name 与 build_func。
     """
-    adapter = JiuwenSwarmCodeAdapter()
-
-    # 桩 _instantiate_rails：直接返回传入的 rail_infos（不实例化），便于检查条目
-    captured: list = []
-    real_instantiate = adapter._instantiate_rails
-
-    def _passthrough_instantiate(rail_infos, config_base, *args, **kwargs):
-        captured.extend(rail_infos)
-        return rail_infos
-
-    object.__setattr__(adapter, "_instantiate_rails", _passthrough_instantiate)
-    try:
-        adapter._build_agent_rails(config={}, config_base={}, mode="code")
-    finally:
-        object.__setattr__(adapter, "_instantiate_rails", real_instantiate)
-
-    rail_infos = captured
+    adapter, rail_infos = _capture_rail_infos()
     attr_names = [ri.attr_name for ri in rail_infos]
     assert "_context_overflow_recovery_rail" in attr_names, (
         "fixed rail list should contain _context_overflow_recovery_rail entry"
@@ -98,11 +105,7 @@ def test_build_agent_rails_includes_context_overflow_recovery_rail_entry():
         f"_context_processor_rail (got proc_idx={proc_idx}, recovery_idx={recovery_idx})"
     )
     # build_func 应复用父类 _build_context_overflow_recovery_rail（静态方法）
-    recovery_info = rail_infos[recovery_idx]
-    assert recovery_info.build_func == adapter._build_context_overflow_recovery_rail, (
-        "recovery rail build_func should be the inherited parent static method "
-        "_build_context_overflow_recovery_rail"
-    )
+    assert rail_infos[recovery_idx].build_func == adapter._build_context_overflow_recovery_rail
 
 
 # ─── TC-004: _build_context_overflow_recovery_rail 可调用且返回 rail/None ──
@@ -126,3 +129,22 @@ def test_build_context_overflow_recovery_rail_callable_returns_rail_or_none():
         assert result._max_recovery_attempts == 3, (
             "ContextOverflowRecoveryRail should be built with max_recovery_attempts=3"
         )
+
+
+# ─── TC-005: code 模式固定列表含 MultimodalImageRail ────────────────────────
+
+
+def test_build_agent_rails_includes_multimodal_image_rail_entry():
+    """CodeAdapter 的会话必须挂 MultimodalImageRail，否则上传图片进不了主模型。
+
+    回归：web 会话走 CodeAdapter，固定 rail 列表漏了该 rail，导致上传图只以
+    引用行路径出现，模型只能调用 read_file 现读图片。
+    """
+    _, captured = _capture_rail_infos()
+    attr_names = [ri.attr_name for ri in captured]
+    assert "_multimodal_image_rail" in attr_names, (
+        "code mode fixed rails should contain _multimodal_image_rail"
+    )
+    # builder 已从类方法提升到 deep.model_factory，interface_code 直接引用模块级实现
+    multimodal_info = captured[attr_names.index("_multimodal_image_rail")]
+    assert multimodal_info.build_func == _build_multimodal_image_rail

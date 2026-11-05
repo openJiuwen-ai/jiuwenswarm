@@ -11,7 +11,6 @@ import ipaddress
 import json
 import os
 import re
-import sys
 import threading
 import time
 import weakref
@@ -336,6 +335,9 @@ def _safe_id_part(value: str, *, default: str) -> str:
     return (normalized or default)[:48]
 
 
+_PYTHON_COMMAND_RE = re.compile(r"pythonw?(\d+(\.\d+)*t?)?(\.exe|\.cmd|\.bat)?")
+
+
 def _normalize_stdio_command_kind(command: str) -> str:
     """将 command 归一化为 'node'、'python'、'npx' 或 'uvx'。
 
@@ -349,7 +351,7 @@ def _normalize_stdio_command_kind(command: str) -> str:
     normalized = raw.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if normalized in ("node", "node.exe"):
         return "node"
-    if normalized.startswith("python"):
+    if _PYTHON_COMMAND_RE.fullmatch(normalized):
         return "python"
     if normalized in ("npx", "npx.exe", "npx.cmd", "npx.bat"):
         return "npx"
@@ -415,131 +417,15 @@ def _check_dangerous_args(tool_name: str, args: list) -> None:
         arg_str = str(arg).strip()
         if arg_str in _DANGEROUS_ARGS_PATTERN:
             raise ValueError(
-                f"安全拦截阻断：工具 '{tool_name}' 的 args 包含危险标志 '{arg_str}'，"
-                "禁止通过参数注入执行任意代码。"
+                f"MCP 配置校验未通过：工具 '{tool_name}' 的 args 包含不允许的标志 '{arg_str}'，"
+                "不支持通过参数内联执行代码。"
             )
         for dangerous_prefix in ("-e=", "--eval=", "-c=", "--command="):
             if arg_str.lower().startswith(dangerous_prefix):
                 raise ValueError(
-                    f"安全拦截阻断：工具 '{tool_name}' 的 args 包含危险标志 '{arg_str}'，"
-                    "禁止通过参数注入执行任意代码。"
+                    f"MCP 配置校验未通过：工具 '{tool_name}' 的 args 包含不允许的标志 '{arg_str}'，"
+                    "不支持通过参数内联执行代码。"
                 )
-
-
-def _trusted_cat_cafe_stdio_roots() -> list[Path]:
-    roots: list[Path] = []
-    raw = (os.getenv("CAT_CAFE_MCP_CWD") or "").strip()
-    if raw:
-        try:
-            roots.append(Path(raw).expanduser().resolve())
-        except OSError:
-            pass
-    try:
-        roots.append((Path.home() / ".office-claw").resolve())
-    except OSError:
-        pass
-    try:
-        roots.append(Path(sys.executable).resolve().parent)
-    except OSError:
-        pass
-    lp = (os.getenv("LOCALAPPDATA") or "").strip()
-    if lp:
-        inst = Path(lp) / "Programs" / "OfficeClaw"
-        try:
-            if inst.exists():
-                roots.append(inst.resolve())
-        except OSError:
-            pass
-    for env_key in ("ProgramFiles", "ProgramFiles(x86)"):
-        base = os.getenv(env_key, "").strip()
-        if not base:
-            continue
-        inst = Path(base) / "OfficeClaw"
-        try:
-            if inst.exists():
-                roots.append(inst.resolve())
-        except OSError:
-            pass
-    seen: set[str] = set()
-    out: list[Path] = []
-    for r in roots:
-        key = os.path.normcase(str(r))
-        if key not in seen:
-            seen.add(key)
-            out.append(r)
-    return out
-
-
-def _path_is_under_trusted_root(path: Path, roots: list[Path]) -> bool:
-    try:
-        rp = path.resolve()
-    except OSError:
-        return False
-    for root in roots:
-        try:
-            rp.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def _validate_cat_cafe_request_scoped_stdio(params: dict[str, Any]) -> None:
-    """限制请求级 stdio：禁止内联代码执行面，脚本路径须在受信根目录下。
-
-    npx/uvx 为包运行器，参数为包名及其参数，不适用本地脚本路径受信根校验
-    （代码来源为包仓库而非本地文件，信任决策在于包名而非路径）。
-    """
-    cmd = str(params.get("command") or "").strip()
-    args = params.get("args") or []
-    if not isinstance(args, list):
-        raise ValueError("stdio MCP 的 args 须为列表")
-
-    kind = _normalize_stdio_command_kind(cmd)
-    flat = [str(a) for a in args]
-    lowered = [a.strip().lower() for a in flat]
-    if any(x == "-c" or x == "--command" for x in lowered):
-        raise ValueError("请求级 cat_cafe_mcp 禁止使用 python -c / --command")
-    if kind == "node" and any(x in ("-e", "--eval") for x in lowered):
-        raise ValueError("请求级 cat_cafe_mcp 禁止使用 node -e / --eval")
-
-    if kind in ("npx", "uvx"):
-        return
-
-    cwd_path: Path | None = None
-    cwd_raw = params.get("cwd")
-    if isinstance(cwd_raw, str) and cwd_raw.strip():
-        try:
-            cwd_path = Path(cwd_raw).expanduser().resolve()
-        except OSError as exc:
-            raise ValueError(f"请求级 cat_cafe_mcp cwd 无效: {cwd_raw}") from exc
-        if not _path_is_under_trusted_root(cwd_path, _trusted_cat_cafe_stdio_roots()):
-            raise ValueError(f"请求级 cat_cafe_mcp cwd 不在受信根目录下: {cwd_path}")
-
-    roots = _trusted_cat_cafe_stdio_roots()
-    for a in flat:
-        s = a.strip()
-        if not s or s.startswith("-"):
-            continue
-        path_like_suffix = s.lower().endswith((".js", ".mjs", ".cjs", ".py"))
-        if "/" not in s and "\\" not in s and not path_like_suffix:
-            continue
-        candidate = Path(s).expanduser()
-        if not candidate.is_absolute() and cwd_path is None:
-            raise ValueError(
-                "请求级 cat_cafe_mcp 使用相对脚本路径时必须提供位于受信根下的 cwd"
-            )
-        try:
-            if cwd_path is not None and not candidate.is_absolute():
-                resolved = (cwd_path / candidate).resolve()
-            else:
-                resolved = candidate.resolve()
-        except OSError:
-            continue
-        if not _path_is_under_trusted_root(resolved, roots):
-            raise ValueError(
-                f"请求级 cat_cafe_mcp 参数路径不在受信根目录下: {resolved}"
-            )
 
 
 _REQUEST_REMOTE_BLOCKED_HOSTS = frozenset(
@@ -800,6 +686,10 @@ _office_claw_mcp_schema_inflight: dict[
 ] = {}
 _office_claw_mcp_schema_cache_lock = threading.Lock()
 _office_claw_mcp_schema_generation = 0
+# Orphaned entries (keys nobody computes anymore after a bundle upgrade) are
+# bounded by this cap instead of an invalidation signal. Realistic cardinality
+# is <20 (agent/toolset configs); clearing on overflow costs one re-discovery.
+_OFFICE_CLAW_MCP_SCHEMA_CACHE_MAX_ENTRIES = 128
 
 
 def _office_claw_mcp_schema_cache_enabled() -> bool:
@@ -809,10 +699,63 @@ def _office_claw_mcp_schema_cache_enabled() -> bool:
     )
 
 
+_OFFICE_CLAW_MCP_BUNDLE_MAX_FILES = 256
+# Node 启动参数中“取文件/模块值”的 flag:其值为启动辅助脚本(--require
+# polyfill 等),只做单文件指纹;第一个位置参数才是 MCP 入口,做目录树扫描。
+_NODE_FILE_VALUED_FLAGS = frozenset(
+    {"--require", "-r", "--import", "--experimental-loader", "--loader"}
+)
+
+
+def _fingerprint_bundle_tree(root: Path) -> list[dict[str, Any]] | None:
+    """Stat every file under ``root`` recursively, skipping node_modules and
+    source maps. Returns ``None`` when the tree exceeds the file cap so the
+    caller can refuse to cache rather than fingerprint an unbounded tree."""
+    entries: list[dict[str, Any]] = []
+    stack: list[Path] = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError:
+            continue
+        for child in children:
+            if child.name == "node_modules":
+                continue
+            try:
+                if child.is_dir():
+                    stack.append(child)
+                    continue
+            except OSError:
+                continue
+            if child.name.endswith(".map"):
+                continue
+            if len(entries) >= _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES:
+                logger.warning(
+                    "OfficeClaw MCP bundle tree exceeded %d files under %s; "
+                    "bypassing the schema cache for this config",
+                    _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES,
+                    root,
+                )
+                return None
+            try:
+                stat = child.stat()
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "path": _normalized_path(str(child)),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
+            )
+    return sorted(entries, key=lambda entry: entry["path"])
+
+
 def _office_claw_mcp_build_fingerprint(
     params: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    """Fingerprint the MCP bundle file(s) so a rebuild rotates the cache key.
+) -> list[dict[str, Any]] | None:
+    """Fingerprint the MCP bundle so a rebuild rotates the cache key.
 
     Relative script paths in ``command``/``args`` are resolved against
     ``params["cwd"]`` first — the stdio MCP process is spawned with that cwd,
@@ -820,6 +763,20 @@ def _office_claw_mcp_build_fingerprint(
     to the sidecar process cwd. Resolving against the process cwd alone would
     either miss the real bundle or stat the wrong file, so a bundle rebuild
     would not change the fingerprint and the cache would serve a stale schema.
+
+    The interpreter (``command``) is fingerprinted as a single file. The
+    first positional script arg (the Node entry) additionally fingerprints
+    its owning directory tree: the entry file is typically a thin shell that
+    imports the toolset modules next to it, so a rebuild that only touches
+    those imports must still rotate the key. ``node_modules`` and ``*.map``
+    files are skipped. File-valued Node flags (``--require``/``--import``
+    startup polyfills) are single-file fingerprinted instead — their owning
+    directory (e.g. a full-source ``scripts/`` checkout with hundreds of
+    files) must not trip the bundle cap and silently disable the cache.
+
+    Returns ``None`` when a bundle tree exceeds ``_OFFICE_CLAW_MCP_BUNDLE_MAX_FILES``
+    files — the caller then bypasses the cache instead of trusting a
+    fingerprint it could not fully compute.
     """
     fingerprints: list[dict[str, Any]] = []
     base_dirs: list[Path] = []
@@ -827,49 +784,119 @@ def _office_claw_mcp_build_fingerprint(
     if cwd_raw:
         base_dirs.append(Path(cwd_raw).expanduser())
     base_dirs.append(Path.cwd())
-    candidates = [params.get("command"), *(params.get("args") or [])]
-    seen: set[str] = set()
-    for candidate in candidates:
-        raw = str(candidate or "").strip()
-        if not raw:
-            continue
+    seen_paths: set[str] = set()
+    expanded_dirs: set[str] = set()
+
+    def _resolve(raw: str) -> Path | None:
         probe = Path(raw).expanduser()
-        resolved: Path | None = None
         if probe.is_absolute():
-            resolved = probe
-        else:
-            for base in base_dirs:
-                candidate_path = base / probe
-                if candidate_path.is_file():
-                    resolved = candidate_path
-                    break
-        if resolved is None:
-            try:
-                resolved = probe.resolve(strict=False)
-            except OSError:
-                continue
-        resolved_str = str(resolved)
-        if not resolved.is_file() or resolved_str in seen:
-            continue
-        seen.add(resolved_str)
+            return probe
+        for base in base_dirs:
+            candidate_path = base / probe
+            if candidate_path.is_file():
+                return candidate_path
+        try:
+            return probe.resolve(strict=False)
+        except OSError:
+            return None
+
+    def _stat_once(resolved: Path) -> None:
+        normalized = _normalized_path(str(resolved))
+        if normalized in seen_paths:
+            return
         try:
             stat = resolved.stat()
         except OSError:
-            continue
+            return
+        seen_paths.add(normalized)
         fingerprints.append(
             {
-                "path": _normalized_path(resolved_str),
+                "path": normalized,
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
             }
         )
-    return fingerprints
+
+    command_raw = str(params.get("command") or "").strip()
+    if command_raw:
+        resolved = _resolve(command_raw)
+        if resolved is not None and resolved.is_file():
+            _stat_once(resolved)
+
+    args = [str(value or "").strip() for value in params.get("args") or []]
+    entry_scanned = False
+    saw_positional = False
+    index = 0
+    while index < len(args):
+        raw = args[index]
+        index += 1
+        if not raw:
+            continue
+        if raw.startswith("-"):
+            flag, _, inline_value = raw.partition("=")
+            value_raw = inline_value or None
+            if (
+                value_raw is None
+                and flag in _NODE_FILE_VALUED_FLAGS
+                and index < len(args)
+            ):
+                value_raw = args[index]
+                index += 1
+            if value_raw is None:
+                continue
+            resolved = _resolve(value_raw)
+            if resolved is not None and resolved.is_file():
+                # --require/--import 启动辅助脚本:单文件指纹(同 #5347 基线)。
+                # 其所在目录(如完整源码的 scripts/,数百个受版本管理文件)
+                # 不做树扫描,否则会撞 _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES 把
+                # 整个缓存废掉(OpenHarmony 启动形态,见 !9045 评审复现)。
+                _stat_once(resolved)
+            continue
+        resolved = _resolve(raw)
+        resolves_to_file = resolved is not None and resolved.is_file()
+        if not saw_positional:
+            # 首个位置参数(node 入口)是唯一的 entry 候选
+            saw_positional = True
+            if resolves_to_file:
+                entry_scanned = True
+                parent_key = _normalized_path(str(resolved.parent))
+                if parent_key in expanded_dirs:
+                    _stat_once(resolved)
+                else:
+                    expanded_dirs.add(parent_key)
+                    tree = _fingerprint_bundle_tree(resolved.parent)
+                    if tree is None:
+                        return None
+                    for entry in tree:
+                        if entry["path"] in seen_paths:
+                            continue
+                        seen_paths.add(entry["path"])
+                        fingerprints.append(entry)
+            # 首个位置参数解析失败(相对路径漂移/CLI 占位符):entry 缺失,
+            # 循环结束后拒绝缓存——后续位置参数(脚本参数)不顶替 entry,
+            # 其父目录树不得进入指纹顶缺(见 !9045 CR-1)。
+            continue
+        if resolves_to_file:
+            # 入口之后的位置参数是传给脚本的参数,单文件指纹
+            _stat_once(resolved)
+    if saw_positional and not entry_scanned:
+        # 首个位置参数未解析成文件 → 真实 bundle 目录不在指纹内。基于不完整
+        # 指纹的键会让 bundle 变化永不轮换(永久 stale 且无日志),此处直接
+        # 返回 None 拒绝缓存,不依赖 command 单文件指纹形成键。
+        return None
+    return sorted(fingerprints, key=lambda entry: entry["path"])
 
 
-def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str:
+def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str | None:
     raw_excluded = str(
         (params.get("env") or {}).get("OFFICE_CLAW_MCP_EXCLUDED_TOOLS") or ""
     )
+    build_files = _office_claw_mcp_build_fingerprint(params)
+    if not build_files:
+        # No local bundle files (remote-style config), an unresolved entry
+        # positional, or an oversized bundle tree: the key could never
+        # rotate on a change, so refuse to cache.
+        return None
     payload = {
         "command": _normalized_path(str(params.get("command") or "")),
         "args": [str(value) for value in params.get("args") or []],
@@ -877,7 +904,7 @@ def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str:
         "excluded_tools": sorted(
             {item.strip() for item in raw_excluded.split(",") if item.strip()}
         ),
-        "build_files": _office_claw_mcp_build_fingerprint(params),
+        "build_files": build_files,
     }
     return hashlib.sha256(
         json.dumps(
@@ -889,11 +916,12 @@ def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str:
 def invalidate_office_claw_mcp_schema_cache() -> None:
     """Drop the entire OfficeClaw MCP schema cache and abort coalesced discovery.
 
-    Called when the agent catalog revision changes (Relay resync) so that a
-    rebuilt MCP bundle or changed excluded-tool set is re-discovered instead
-    of serving a stale schema. Bumping ``_office_claw_mcp_schema_generation``
-    also prevents any in-flight discovery task from writing back into a newer
-    generation.
+    Manual/test hook: production no longer calls this automatically. The
+    cache key embeds the bundle tree fingerprint, so a rebuilt bundle or a
+    changed excluded-tool set rotates the key on its own; orphaned entries
+    are bounded by the entry-count cap. Bumping
+    ``_office_claw_mcp_schema_generation`` also prevents any in-flight
+    discovery task from writing back into a newer generation.
     """
     global _office_claw_mcp_schema_generation
     with _office_claw_mcp_schema_cache_lock:
@@ -1032,7 +1060,7 @@ async def _run_mcp_worker(
     - stdio（默认/缺省）：起 ``stdio_client`` + ``ClientSession`` 进程。
       仅供 OfficeClaw Relay 身份 pin 后的 worker 使用；用户可配连接器入口已切断。
     - sse / streamable-http：复用 openjiuwen 的 ``SseClient`` / ``StreamableHttpClient``，
-      connect 后长连接复用（自带 owner-task/cancel-scope/超时/重连 + auth 注入）。
+      connect 后长连接复用；HTTP 上下文由本 worker 持有，SSE 由 SDK owner 持有。
 
     全程在本 task 内执行，使 stdio 的 anyio task group / cancel scope 不逃逸到
     外来 task。task 被 cancel（清理）或队列收到 ``None`` 哨兵时退出（关闭 stdio 进程 / 远端连接）。
@@ -1048,12 +1076,17 @@ async def _run_mcp_worker(
     worker.call_timeout_s = call_timeout_s
 
     async with AsyncExitStack() as stack:
+        # queue.get 被取消或清理期间新入队，也必须解除等待者；此回调最后执行。
+        stack.push_async_callback(
+            _drain_queue_with_error, worker,
+            McpWorkerStoppedError(f"MCP worker stopped: server={worker.server_name}"),
+        )
         try:
             if client_type in ("sse", "streamable-http"):
                 session = await _enter_remote_mcp_session(stack, params, client_type)
             else:
                 session = await _enter_stdio_mcp_session(stack, params)
-        except Exception as exc:
+        except BaseException as exc:
             # 初始化失败：失败已排队的 caller，退出以便下次 invoke 时 acquire 重建。
             logger.warning(
                 "request-scoped MCP worker init failed: server=%s transport=%s error=%s",
@@ -1061,30 +1094,26 @@ async def _run_mcp_worker(
                 client_type,
                 exc,
             )
-            await _drain_queue_with_error(worker, exc)
+            # worker 自身仍传播取消，但排队 caller 应收到工具失败而非用户取消。
+            mapped = exc if isinstance(exc, Exception) else McpWorkerStoppedError(
+                f"MCP worker initialization interrupted: server={worker.server_name}"
+            )
+            await _drain_queue_with_error(worker, mapped)
+            if not isinstance(exc, Exception):
+                raise
             return
         while True:
             req = await worker.queue.get()
             if req is None:
                 break
             try:
-                # 超时分派：
-                # - stdio：必须用 anyio.fail_after（cancel scope）。MCP stdio transport 的
-                #   anyio task group / cancel scope 要求进入与退出在同一 task；asyncio.wait_for
-                #   把协程放到新 Task 跑，会破坏该不变量。
-                # - remote（sse/streamable-http）：相反，必须用 asyncio.wait_for。remote
-                #   transport（尤其 streamable-http）内部自带后台 task + anyio cancel scope；
-                #   若用 anyio.fail_after 在本 task 套一层 scope，外层 scope 与 transport 后台
-                #   task 的 scope 跨 task 退出会抛 "Attempted to exit a cancel scope that isn't
-                #   the current tasks's current cancel scope"（企查查 streamable-http 实测故障）。
-                #   asyncio.wait_for 在新 Task 里跑协程，scope 隔离，与 SseClient 自身超时
-                #   机制（同样 asyncio.wait_for）一致，已由百度网盘 SSE 实证可行。
+                # remote 的 patch 可能在调用中重连，因此整个调用也留在 owner。
                 try:
                     if client_type in ("sse", "streamable-http"):
-                        result = await asyncio.wait_for(
-                            session.call_tool(req.tool_name, arguments=req.arguments),
-                            timeout=call_timeout_s,
-                        )
+                        async with asyncio.timeout(call_timeout_s):
+                            result = await session.call_tool(
+                                req.tool_name, arguments=req.arguments
+                            )
                     else:
                         with anyio.fail_after(call_timeout_s):
                             result = await session.call_tool(
@@ -1101,13 +1130,7 @@ async def _run_mcp_worker(
                         req.tool_name,
                         call_timeout_s,
                     )
-                    # remote transport（sse/streamable-http）：SseClient/StreamableHttpClient
-                    # 的 _submit 把调用转发到其内部 owner_task 串行执行；外层 cancel 只取消
-                    # 等待方的 future，不会取消 owner_task 上正在跑的命令。若 continue 复用
-                    # worker，下次 invoke 投的新命令会排在未完成的旧命令后面，最长阻塞 60s
-                    # （SseClient 内部 asyncio.wait_for 上限）。故超时即退出 worker：AsyncExitStack
-                    # 关闭触发 disconnect（SseClient 内部 cancel owner_task 清掉未完成命令），
-                    # 下次 invoke 的 acquire 发现 worker 已死便重建。
+                    # 超时后退出 remote worker，在 owner 上关闭连接；下次 acquire 重建。
                     if client_type in ("sse", "streamable-http"):
                         await _drain_queue_with_error(worker, exc)
                         break
@@ -1189,10 +1212,11 @@ async def _enter_remote_mcp_session(
 
     rebuild_cfg = _build_remote_mcp_config(params.get("server_name") or "", params, client_type)
     client = client_cls(rebuild_cfg)
-    # mcp_call_timeout_patch 把 SseClient/StreamableHttpClient 的 call_tool/list_tools
-    # 包了内层 anyio.fail_after：不经 ToolMgr._create_client 自建的 client 不会被打
-    # _jws_call_timeout，内层按 300s 默认先掐断，令 params["timeout_s"] 失效。按
-    # _run_mcp_worker 的口径（下发合法值直接生效）在此补打。
+    if client_type == "sse":
+        from jiuwenswarm.common.mcp_call_timeout_patch import manage_sse_owner_cleanup
+
+        manage_sse_owner_cleanup(client)
+    # 自建 client 不经 ToolMgr._create_client，需补打调用超时印章。
     call_timeout_s = (
         _positive_timeout_s(params.get("timeout_s"))
         or _MCP_CALL_TOOL_TIMEOUT_S
@@ -1202,49 +1226,17 @@ async def _enter_remote_mcp_session(
         _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
         call_timeout_s,
     )
-    # remote transport（sse/streamable-http）的 client.connect 内部 enter async
-    # context manager（streamable-http 尤其用 anyio TaskGroup + cancel scope）。
-    # connect 失败时 anyio cancel()+uncancel() 本 task，抛出 CancelledError；它是
-    # BaseException（Py3.8+），外层 ``except Exception`` 抓不住，会一路泄漏杀死流式
-    # 任务。用 asyncio.wait_for 套住防卡死，再显式 except CancelledError + cancelling()
-    # 区分：anyio 内部取消（cancelling()==0）→ 当连接失败跳过；外层真取消 → re-raise。
-    try:
-        connected = await asyncio.wait_for(
-            client.connect(timeout=discovery_timeout),
-            timeout=discovery_timeout,
-        )
-    except asyncio.TimeoutError:
-        raise RuntimeError(  # pylint: disable=raise-missing-from
-            f"remote MCP client connect timed out after {discovery_timeout}s: "
-            f"{rebuild_cfg.server_path}"
-        )
-    except asyncio.CancelledError:
-        if is_asyncio_outer_cancellation():
-            raise
-        logger.warning(
-            "request-scoped MCP worker init cancelled (anyio internal), "
-            "isolating as connect failure: server=%s transport=%s path=%s",
-            rebuild_cfg.server_name,
-            client_type,
-            rebuild_cfg.server_path,
-        )
-        raise RuntimeError(  # pylint: disable=raise-missing-from
-            f"remote MCP client connect cancelled (anyio internal): "
-            f"{rebuild_cfg.server_path}"
-        )
+    # worker 就是生命周期 owner；不能只把 connect 移到 wait_for 的子任务。
+    from jiuwenswarm.common.mcp_call_timeout_patch import disconnect_remote_mcp_client
+
+    # 提前登记，覆盖 initialize 中断等半连接路径。SDK 已成功关闭时 helper 不重复关闭。
+    stack.push_async_exit(lambda *exc: disconnect_remote_mcp_client(client, *exc))
+    async with asyncio.timeout(discovery_timeout):
+        connected = await client.connect(timeout=discovery_timeout)
     if not connected:
         raise RuntimeError(
             f"remote MCP client connect returned false: {rebuild_cfg.server_path}"
         )
-    # 把 disconnect 注册进 stack，worker 退出时统一关连接。
-
-    async def _disconnect() -> None:
-        try:
-            await client.disconnect(timeout=10.0)
-        except Exception as exc:
-            logger.debug("remote MCP client disconnect failed: %s", exc)
-
-    stack.push_async_callback(_disconnect)
     return _RemoteMcpCallAdapter(client)
 
 
@@ -1291,6 +1283,80 @@ def _remote_mcp_result_to_text(raw: Any) -> str:
         except (TypeError, ValueError):
             return str(raw)
     return str(raw)
+
+
+_MCP_SUMMARY_MAX_CHARS = 4_000
+
+
+def _mcp_binary_summary(mime_type: Any, data: Any) -> str:
+    label = str(mime_type) if mime_type else "unknown"
+    unit = "base64 chars" if isinstance(data, str) else "bytes"
+    return f"[binary content: {label}, {len(data)} {unit}]"
+
+
+def _redact_mcp_binary_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if key in {"data", "blob"} and isinstance(item, (str, bytes, bytearray)):
+                mime_type = value.get("mimeType") or value.get("mime_type")
+                value[key] = _mcp_binary_summary(mime_type, item)
+                continue
+            value[key] = _redact_mcp_binary_fields(item)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _redact_mcp_binary_fields(item)
+    return value
+
+
+def _mcp_non_text_summary(item: Any) -> Any:
+    mime_type = getattr(item, "mimeType", None) or getattr(item, "mime_type", None)
+    data = getattr(item, "data", None)
+    if data is not None:
+        if mime_type and str(mime_type).startswith("image/"):
+            unit = "base64 chars" if isinstance(data, str) else "bytes"
+            return f"[image content: {mime_type}, {len(data)} {unit}]"
+        return _mcp_binary_summary(mime_type, data)
+    if hasattr(item, "model_dump"):
+        dumped = item.model_dump(exclude_none=True)
+        return _redact_mcp_binary_fields(dumped)
+    return str(item)
+
+
+def _stringify_mcp_summary(value: Any) -> str:
+    text = str(value)
+    if len(text) <= _MCP_SUMMARY_MAX_CHARS:
+        return text
+    return text[:_MCP_SUMMARY_MAX_CHARS] + "...[truncated]"
+
+
+def _extract_mcp_result_text(result: Any) -> str | None:
+    """合并 CallToolResult 的全部 text block，并保留非 text block 摘要。
+
+    remote 路径已经由 openjiuwen 的 ``extract_mcp_tool_result_content`` 处理；
+    stdio 路径直接拿到原生 ``CallToolResult``，不能只取 ``content[-1]``，
+    否则正文后追加的元数据块、图片或二进制资源会让前面的文本丢失。
+    非 text block 一律生成有界摘要，禁止把 base64/blob 原文塞进模型上下文。
+    """
+    content = getattr(result, "content", None)
+    if not content:
+        return None
+    parts: list[str] = []
+    for item in content:
+        text = getattr(item, "text", None)
+        if isinstance(text, str):
+            if text:
+                parts.append(text)
+            continue
+        summary = _mcp_non_text_summary(item)
+        if summary is not None:
+            parts.append(
+                summary if isinstance(summary, str) else _stringify_mcp_summary(summary)
+            )
+    if parts:
+        return "\n".join(parts)
+    if all(isinstance(getattr(item, "text", None), str) for item in content):
+        return getattr(content[-1], "text", None)
+    return None
 
 
 async def _drain_queue_with_error(worker: _PooledMcpWorker, exc: BaseException) -> None:
@@ -1349,9 +1415,7 @@ async def shutdown_pooled_mcp_worker(
     if task is None:
         return
     # Ask the owner loop to exit gracefully, then await (cancel as fallback).
-    # 用 anyio.fail_after 而非 asyncio.wait_for：后者在新 Task 里跑协程，会破坏
-    # MCP transport（stdio 的 task group / remote 的 SseClient owner-task）的
-    # anyio cancel-scope 不变量，与 _run_mcp_worker 内部的超时机制保持一致。
+    # 等待既有 owner task 不会改变上下文归属；超时取消后仍等它完成 finally。
     try:
         worker.queue.put_nowait(None)
     except Exception as exc:
@@ -2306,6 +2370,10 @@ async def _list_remote_mcp_connector_tools(
     # _run_mcp_worker 用 connect_params 字段经 _build_remote_mcp_config 重建 client。
     rebuild_cfg = _build_remote_mcp_config(server_name, connect_params, client_type)
     client = client_cls(rebuild_cfg)
+    if client_type == "sse":
+        from jiuwenswarm.common.mcp_call_timeout_patch import manage_sse_owner_cleanup
+
+        manage_sse_owner_cleanup(client)
     # 同 _enter_remote_mcp_session：自建 client 不经 ToolMgr._create_client，需补打
     # _jws_call_timeout，否则 mcp_call_timeout_patch 的内层 300s 默认会先掐断长调用。
     setattr(
@@ -2313,91 +2381,42 @@ async def _list_remote_mcp_connector_tools(
         "_jws_call_timeout",
         _connector_timeout or _MCP_CALL_TOOL_TIMEOUT_S,
     )
-    connected = False
-    try:
-        try:
-            # remote transport（sse/streamable-http）的 client.connect 内部会 enter
-            # async context manager（streamable-http transport 尤其用 anyio cancel
-            # scope）；若用 anyio.fail_after 包，外层 scope 与 transport 的 scope 跨
-            # task 退出会抛 "Attempted to exit a cancel scope that isn't the current
-            # tasks's current cancel scope"（实测企查查 streamable-http 即此故障）。
-            # 改用 asyncio.wait_for：在新 task 里跑协程，scope 隔离，与 SseClient
-            # 内部超时机制（同样用 asyncio.wait_for）一致。
-            connected = await asyncio.wait_for(
-                client.connect(timeout=discovery_timeout),
-                timeout=discovery_timeout,
-            )
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "request-scoped MCP connector '%s' discovery timed out after "
-                "%.0fs (connect/list_tools hung)",
-                server_name,
-                discovery_timeout,
-            )
-            return [], {}
-        except asyncio.CancelledError:
-            # connect 失败时 anyio TaskGroup cancel()+uncancel() 本 task 抛
-            # CancelledError（BaseException，Py3.8+）；``except Exception`` 在下方
-            # 抓不住，会泄漏杀死流式任务。cancelling()==0 → anyio 内部取消 → 当
-            # 该连接器连接失败跳过（返回空）；cancelling()>0 → 外层真取消 → re-raise。
-            if is_asyncio_outer_cancellation():
-                raise
-            logger.warning(
-                "request-scoped MCP connector '%s' connect cancelled (anyio "
-                "internal), isolating as connect failure: transport=%s path=%s",
-                server_name,
-                client_type,
-                connect_params["server_path"],
-            )
-            return [], {}
-        if not connected:
-            logger.warning(
-                "request-scoped MCP connector '%s' (%s) connect failed: %s",
-                server_name,
-                client_type,
-                connect_params["server_path"],
-            )
-            return [], {}
-        try:
-            # 同理避免 anyio.fail_after 撞 streamable-http transport 的 cancel scope。
-            # StreamableHttpClient.list_tools 的 timeout 参数当前未生效（直接调
-            # session.list_tools 无超时），必须靠这层 asyncio.wait_for 兜底防卡死。
-            tools = await asyncio.wait_for(
-                client.list_tools(timeout=discovery_timeout),
-                timeout=discovery_timeout,
-            )
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "request-scoped MCP connector '%s' list_tools timed out after %.0fs",
-                server_name,
-                discovery_timeout,
-            )
-            return [], {}
-        except asyncio.CancelledError:
-            # list_tools 与 connect 共用 anyio TaskGroup，失败时同样 cancel() 本
-            # task 抛 CancelledError。隔离语义同 connect：内部取消跳过该连接器，
-            # 外层真取消 re-raise。
-            if is_asyncio_outer_cancellation():
-                raise
-            logger.warning(
-                "request-scoped MCP connector '%s' list_tools cancelled (anyio "
-                "internal), isolating as discovery failure: transport=%s path=%s",
-                server_name,
-                client_type,
-                connect_params["server_path"],
-            )
-            return [], {}
-        tool_defs = [
-            {
-                "name": getattr(t, "name", "") or "",
-                "description": getattr(t, "description", "") or "",
-                "input_params": getattr(t, "input_params", None)
-                or getattr(t, "inputSchema", {})
-                or {},
-            }
-            for t in (tools or [])
-        ]
+    from jiuwenswarm.common.mcp_call_timeout_patch import disconnect_remote_mcp_client
+
+    async def _discover() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        # 两个阶段各自保留 deadline；finally 仍由进入 transport 的任务执行。
+        async with AsyncExitStack() as stack:
+            stack.push_async_exit(lambda *exc: disconnect_remote_mcp_client(client, *exc))
+            async with asyncio.timeout(discovery_timeout):
+                connected = await client.connect(timeout=discovery_timeout)
+            if not connected:
+                raise RuntimeError("remote MCP client connect returned false")
+            async with asyncio.timeout(discovery_timeout):
+                tools = await client.list_tools(timeout=discovery_timeout)
+            tool_defs = [
+                {
+                    "name": getattr(t, "name", "") or "",
+                    "description": getattr(t, "description", "") or "",
+                    "input_params": getattr(t, "input_params", None)
+                    or getattr(t, "inputSchema", {})
+                    or {},
+                }
+                for t in (tools or [])
+            ]
         return tool_defs, connect_params
+
+    try:
+        # 外层限制包含清理的完整生命周期，不拆分 connect/disconnect 所属任务。
+        return await asyncio.wait_for(_discover(), timeout=2 * discovery_timeout + 10.0)
+    except asyncio.CancelledError:
+        if is_asyncio_outer_cancellation():
+            raise
+        logger.warning(
+            "请求级 MCP 连接器 '%s' (%s) 发现阶段内部取消，跳过当前连接器",
+            server_name,
+            client_type,
+        )
+        return [], {}
     except Exception as exc:
         logger.warning(
             "request-scoped MCP connector '%s' (%s) tool discovery failed: %s",
@@ -2406,16 +2425,6 @@ async def _list_remote_mcp_connector_tools(
             exc,
         )
         return [], {}
-    finally:
-        if connected:
-            try:
-                await client.disconnect(timeout=10.0)
-            except Exception as exc:
-                logger.debug(
-                    "request-scoped MCP connector '%s' discovery disconnect failed: %s",
-                    server_name,
-                    exc,
-                )
 
 
 def _remote_mcp_client_cls(client_type: str) -> Any | None:
@@ -2473,6 +2482,11 @@ async def _discover_and_cache_office_claw_mcp_schema(
         frozen = copy.deepcopy(tools)
         with _office_claw_mcp_schema_cache_lock:
             if generation == _office_claw_mcp_schema_generation:
+                if (
+                    len(_office_claw_mcp_schema_cache)
+                    >= _OFFICE_CLAW_MCP_SCHEMA_CACHE_MAX_ENTRIES
+                ):
+                    _office_claw_mcp_schema_cache.clear()
                 _office_claw_mcp_schema_cache[cache_key] = frozen
         logger.info(
             "OfficeClaw MCP schema cache filled: key=%s tools=%s duration_ms=%.1f",
@@ -2503,8 +2517,10 @@ async def list_office_claw_mcp_tools(
     same event loop + generation + key are coalesced into one in-flight
     producer task; waiters are pure consumers wrapped in ``asyncio.shield``,
     so a cancelled waiter cannot abort the shared discovery or evict it from
-    the in-flight table. ``invalidate_office_claw_mcp_schema_cache`` drops
-    everything on catalog revision change. Setting the env var to
+    the in-flight table. Freshness is decided by the key itself (it embeds
+    the bundle tree fingerprint), not by any external invalidation signal;
+    orphaned entries are bounded by an entry-count cap, and configs with no
+    local bundle files (remote-style) are never cached. Setting the env var to
     ``0/false/no/off`` falls back to the uncached path.
     """
 
@@ -2512,6 +2528,10 @@ async def list_office_claw_mcp_tools(
         return await _list_office_claw_mcp_tools_uncached(params)
 
     cache_key = _office_claw_mcp_schema_cache_key(params)
+    if cache_key is None:
+        # No local bundle files (remote-style config) or an oversized bundle
+        # tree: the key could never rotate on a change, so bypass the cache.
+        return await _list_office_claw_mcp_tools_uncached(params)
     with _office_claw_mcp_schema_cache_lock:
         generation = _office_claw_mcp_schema_generation
         loop_key = (id(asyncio.get_running_loop()), generation, cache_key)
@@ -2535,6 +2555,47 @@ async def list_office_claw_mcp_tools(
     return copy.deepcopy(tools)
 
 
+_LIST_CONNECTORS_TOOL = "office_claw_list_connectors"
+_GET_CONNECTOR_TOOLS_TOOL = "office_claw_get_connector_tools"
+_CONNECTOR_CATALOG_TOOL_NAMES = frozenset({_LIST_CONNECTORS_TOOL, _GET_CONNECTOR_TOOLS_TOOL})
+CONNECTOR_DISCOVERY_FAILED = "工具发现失败（连接器进程未能启动或连接被关闭）"
+CONNECTOR_NO_TOOLS = "未提供任何可用工具（工具可能已全部停用）"
+
+
+def annotate_connector_catalog_result(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    text: str | None,
+    unavailable: Mapping[str, str],
+    *,
+    is_error: bool = False,
+) -> str | None:
+    if tool_name not in _CONNECTOR_CATALOG_TOOL_NAMES or not unavailable:
+        return text
+    queried = ""
+    if tool_name == _GET_CONNECTOR_TOOLS_TOOL:
+        queried = str(arguments.get("connectorName") or "").strip().casefold()
+    # 查询参数名由宿主 MCP 服务定义；取不到查询名时按列出连接器全量标注，避免参数名变化后静默失效
+    if queried:
+        hits = {name: reason for name, reason in unavailable.items() if name.casefold() == queried}
+    else:
+        hits = dict(unavailable)
+    if not hits:
+        return text
+    lines = "\n".join(f"- {name}：{reason}" for name, reason in sorted(hits.items()))
+    # 宿主返回的错误文本原样保留，但不能称作"目录记录"
+    preface = "以上为连接器目录记录，不代表本轮可调用。" if text and not is_error else ""
+    note = (
+        f"[本次请求的连接器实际加载结果] {preface}"
+        "以下连接器本次请求没有加载任何工具，目录中列出的它们的工具在本轮均不可调用：\n"
+        f"{lines}\n"
+        f"不要再重复调用 {_LIST_CONNECTORS_TOOL} / {_GET_CONNECTOR_TOOLS_TOOL} 重试；"
+        "请直接告知用户该连接器当前不可用（可稍后重试，或在连接器页面重新连接、检查网络与代理），"
+        "并继续完成不依赖它的部分。"
+    )
+    return f"{text}\n\n{note}" if text else note
+
+
 class RequestScopedOfficeClawMcpTool(Tool):
     """Invoke one OfficeClaw tool through a long-lived request-scoped process.
 
@@ -2553,6 +2614,7 @@ class RequestScopedOfficeClawMcpTool(Tool):
         server_name: str = "",
         *,
         use_global_pool: bool = False,
+        remote_tool_name: str = "",
     ) -> None:
         super().__init__(card)
         # Deep-copy env so concurrent registrations cannot mutate each other's
@@ -2565,6 +2627,17 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._request_id = str(request_id or "")
         self._server_name = str(server_name or "")
         self._use_global_pool = bool(use_global_pool)
+        self._unavailable_connectors: dict[str, str] = {}
+        # 对外可改名（避免遮蔽内置工具），但远程 MCP 服务器只认原始工具名。
+        self._remote_tool_name = str(remote_tool_name or getattr(card, "name", "") or "")
+
+    @property
+    def server_name(self) -> str:
+        """只读暴露工具所属来源，不改变请求级连接身份。"""
+        return self._server_name
+
+    def set_unavailable_connectors(self, unavailable: Mapping[str, str]) -> None:
+        self._unavailable_connectors = dict(unavailable)
 
     async def _acquire_mcp_session(self, *, force_rebuild: bool = False):
         if self._use_global_pool:
@@ -2641,18 +2714,20 @@ class RequestScopedOfficeClawMcpTool(Tool):
             ) from exc
 
         arguments = inputs if isinstance(inputs, dict) else {}
+        remote_name = self._remote_tool_name or self._card.name
         try:
             session = await self._acquire_mcp_session()
             try:
-                result = await session.call_tool(self._card.name, arguments=arguments)
+                result = await session.call_tool(remote_name, arguments=arguments)
             except Exception:
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
                 session = await self._acquire_mcp_session(force_rebuild=True)
-                result = await session.call_tool(self._card.name, arguments=arguments)
-            result_content: str | None = None
-            if result.content:
-                result_content = getattr(result.content[-1], "text", None)
-            return {"result": result_content}
+                result = await session.call_tool(remote_name, arguments=arguments)
+            text = annotate_connector_catalog_result(
+                remote_name, arguments, _extract_mcp_result_text(result),
+                self._unavailable_connectors, is_error=getattr(result, "isError", False) is True,
+            )
+            return {"result": text}
         except Exception as exc:
             raise build_error(
                 StatusCode.TOOL_MCP_EXECUTION_ERROR,
@@ -2664,6 +2739,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
 
 
 __all__ = [
+    "CONNECTOR_DISCOVERY_FAILED",
+    "CONNECTOR_NO_TOOLS",
     "OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG",
     "OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX",
     "MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX",
@@ -2671,6 +2748,7 @@ __all__ = [
     "OfficeClawMcpRegistration",
     "RequestScopedOfficeClawMcpTool",
     "acquire_request_scoped_mcp_session",
+    "annotate_connector_catalog_result",
     "bind_active_office_claw_mcp_tools",
     "bind_office_claw_from_agent",
     "clear_agent_office_claw_tool_ids",
@@ -2713,8 +2791,5 @@ __all__ = [
     "_optional_auth_dict",
     "_pick_mcp_url",
     "_check_dangerous_args",
-    "_path_is_under_trusted_root",
-    "_trusted_cat_cafe_stdio_roots",
-    "_validate_cat_cafe_request_scoped_stdio",
     "_validate_request_scoped_remote_mcp",
 ]

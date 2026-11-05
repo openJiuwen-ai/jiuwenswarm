@@ -49,12 +49,13 @@ def _identity_from_params(params: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def _force_refresh(params: dict[str, Any]) -> bool:
-    for key in ("force_refresh", "forceRefresh", "refresh"):
-        raw = params.get(key)
-        if raw is True:
-            return True
-        if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
-            return True
+    # HTTP query ``force_refresh=1`` 经 _coerce_query_value 会变成 int 1
+    # （1/0 不收成布尔，以免截胡页码），故整型真值也要认。
+    raw = params.get("force_refresh")
+    if raw is True or raw == 1:
+        return True
+    if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     return False
 
 

@@ -136,17 +136,19 @@ agents/harness/common/tools/               ← 本模块管辖（2 文件）
 
 ## 测试
 
-pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉（`-o addopts=""`）。本模块测试集中在 `tests/unit_tests/agentserver/`（历史路径；skill_turbo 在 `tests/unit_tests/server/runtime/skill_turbo/`，勿混）：
+pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保留 asyncio 模式
+（`-o addopts="--asyncio-mode=auto"`；**不能整个清空**——清空会让 async 用例全部报错）。
+本模块测试集中在 `tests/unit_tests/agentserver/`（历史路径；skill_turbo 在 `tests/unit_tests/server/runtime/skill_turbo/`，勿混）：
 
 ```powershell
 # 模块单测（按文件挑选：manager / rails / toolkits / prebuilt / grant store）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/ -k "skill" -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/ -k "skill" -o addopts="--asyncio-mode=auto"
 
 # 重点单文件
-.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_skill_manager_path_safety.py tests/unit_tests/agentserver/test_skill_credential_injection_rail.py tests/unit_tests/agentserver/test_skill_active_state.py tests/unit_tests/agentserver/test_skill_toolkits.py -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_skill_manager_path_safety.py tests/unit_tests/agentserver/test_skill_credential_injection_rail.py tests/unit_tests/agentserver/test_skill_active_state.py tests/unit_tests/agentserver/test_skill_toolkits.py -o addopts="--asyncio-mode=auto"
 
 # 企业账本锁 / 预置
-.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_skill_manager_enterprise_state.py tests/unit_tests/agentserver/test_skill_prebuilt_guards.py tests/unit_tests/agentserver/test_skill_prebuilt_parse.py -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_skill_manager_enterprise_state.py tests/unit_tests/agentserver/test_skill_prebuilt_guards.py tests/unit_tests/agentserver/test_skill_prebuilt_parse.py -o addopts="--asyncio-mode=auto"
 ```
 
 - **改 SKILL_GATE / 执行位判定**：必须覆盖跨技能拦截、多技能拆分、逃生口停注、引号内分隔符不拆、`2>&1` 不拆、解释器 flag 跳过。

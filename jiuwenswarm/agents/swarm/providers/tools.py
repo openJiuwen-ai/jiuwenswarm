@@ -43,7 +43,7 @@ from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
     JiuwenHarnessFetchWebpageTool,
     JiuwenHarnessWebSearchTool,
 )
-from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+from jiuwenswarm.agents.harness.common.tools.image_tools import _ensure_image_dependencies, generate_image
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
@@ -97,6 +97,9 @@ from jiuwenswarm.common.tool_ownership import mark_stateless
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 logger = logging.getLogger(__name__)
+
+# Swarm retains eager image setup; only actual Flash adapters defer it.
+_ensure_image_dependencies()
 
 # Provider name constants; namespaced under the shared "swarm." prefix.
 SKILL_TOOLKIT = "swarm.skill_toolkit"

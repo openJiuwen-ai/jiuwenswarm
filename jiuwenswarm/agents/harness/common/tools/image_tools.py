@@ -9,12 +9,10 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 from typing import Any, Callable
 
 from dotenv import load_dotenv
-from fastmcp import FastMCP
-from google import genai
-from google.genai import types
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
@@ -31,11 +29,50 @@ from jiuwenswarm.common.local_env_config import get_local_config
 
 
 logger = logging.getLogger(__name__)
+# Keep dotenv before the adapter's runtime override, never in delayed SDK setup.
 load_dotenv(verbose=True, override=True)
 
 _SANDBOX_MARKER = "home/user"
 
-mcp = FastMCP("vision-mcp-server")
+if _TYPE_CHECKING:
+    from fastmcp import FastMCP
+    from google import genai
+    from google.genai import types
+
+    mcp: FastMCP
+
+_IMAGE_DEPENDENCY_EXPORTS = ("FastMCP", "genai", "types", "mcp")
+_image_dependencies_lock = threading.RLock()
+_image_dependencies_loaded = False
+
+
+def _ensure_image_dependencies() -> None:
+    """Initialize the original image SDKs once; only Flash defers this setup."""
+    global _image_dependencies_loaded
+    if _image_dependencies_loaded:
+        return
+    with _image_dependencies_lock:
+        if _image_dependencies_loaded:
+            return
+        from fastmcp import FastMCP as fast_mcp_type
+        from google import genai as genai_module
+        from google.genai import types as genai_types
+
+        server = fast_mcp_type("vision-mcp-server")
+        # Publish only after success so a failed initialization can be retried.
+        globals().update(FastMCP=fast_mcp_type, genai=genai_module, types=genai_types, mcp=server)
+        _image_dependencies_loaded = True
+
+
+def __getattr__(name: str) -> Any:
+    if name in _IMAGE_DEPENDENCY_EXPORTS:
+        _ensure_image_dependencies()
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_IMAGE_DEPENDENCY_EXPORTS))
 
 
 class _PathHelper:
@@ -207,6 +244,7 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
     if not gemini_key:
         return "[ERROR]: GEMINI_API_KEY is not configured for Gemini vision."
 
+    _ensure_image_dependencies()
     try:
         mime = _MimeResolver.from_path(src)
         if os.path.exists(src):
@@ -1150,3 +1188,5 @@ async def generate_image(inputs: dict[str, Any], **kwargs) -> str:
 
     return "\n".join(response_parts)
 
+# Preserve historical wildcard exports, including the deferred SDK objects.
+__all__ = [name for name in globals() if not name.startswith("_")] + list(_IMAGE_DEPENDENCY_EXPORTS)

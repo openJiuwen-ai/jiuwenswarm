@@ -6,6 +6,7 @@ import pytest
 from jiuwenswarm.agents.harness.common.rails.model_routing import capability as capability_module
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.model_identity import build_model_identity_reference
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -97,7 +98,14 @@ def test_legacy_cache_build_populates_identity_index(monkeypatch):
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._model_cache = {}
     adapter._model_identity_to_keys = {}
-    monkeypatch.setattr(adapter, "_build_model_from_entry", lambda mcc, mco: model)
+    capability_kwargs: dict = {}
+
+    def _build(mcc, mco, **kwargs):
+        capability_kwargs.update(kwargs)
+        return model
+
+    # builder 已从类方法提升到 deep.model_factory，interface_deep 命名空间持有该符号
+    monkeypatch.setattr(interface_deep, "_build_model_from_entry", _build)
 
     adapter._build_model_cache_legacy(
         {
@@ -109,10 +117,14 @@ def test_legacy_cache_build_populates_identity_index(monkeypatch):
                         "client_provider": "OpenAI",
                     },
                     "model_config_obj": {},
+                    # legacy 段也必须把图片能力声明透传给 Model，否则回退路径丢能力
+                    "modalities": ["text"],
                 }
             }
         }
     )
+
+    assert capability_kwargs == {"modalities": ["text"]}
 
     ref = build_model_identity_reference(
         "glm-5.3",
@@ -133,7 +145,7 @@ def _registry_adapter():
     adapter._model_identity_to_keys, adapter._model_identity_owners = {}, {}
     adapter._model_entry_by_ref = {}
     adapter._tier_model_cache = {}
-    adapter._build_model_from_entry = lambda mcc, mco: SimpleNamespace(
+    interface_deep._build_model_from_entry = lambda mcc, mco, *args, **kwargs: SimpleNamespace(
         model_client_config=SimpleNamespace(
             api_key=mcc.get("api_key"),
             custom_headers=dict(mcc.get("custom_headers") or {}),

@@ -205,6 +205,8 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.AVATAR_PROMPT,
         registry.TEAM_WORKSPACE_REPORT_PATH,
         registry.CONTEXT_PROCESSOR,
+        registry.CONTEXT_OVERFLOW_RECOVERY,
+        registry.TEAM_ADMISSION,
         registry.PERSONAL_CONTEXT,
         registry.PLUGIN_RAILS,
         registry.SKILL_RETRIEVAL_PROMPT,
@@ -527,7 +529,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 21
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 23
     assert rail_names == expected
     disabled_tools = next(
         spec for spec in rails_specs if spec.type == registry.DISABLED_TOOLS
@@ -1833,6 +1835,8 @@ _EXPECTED_CODE_RAIL_NAMES_LEADER: frozenset[str] = frozenset(
         registry.CODE_AGENT_MODE,
         registry.STRUCTURED_ASK_USER,
         registry.CONTEXT_PROCESSOR,
+        registry.CONTEXT_OVERFLOW_RECOVERY,
+        registry.TEAM_ADMISSION,
         registry.CODE_AGENT_RAIL,
         registry.USER_HOOKS,
         registry.CODE_SKILL_USE,

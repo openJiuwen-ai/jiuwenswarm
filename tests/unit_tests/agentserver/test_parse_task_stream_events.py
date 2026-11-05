@@ -9,6 +9,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def test_event_type_accepts_task_lifecycle_values() -> None:
@@ -42,7 +43,7 @@ def test_parse_stream_chunk_forwards_task_update_snapshot() -> None:
         "parent_request_id": "req-1",
         "timestamp": 1.5,
     }
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) == expected
+    assert _parse_stream_chunk(chunk) == expected
     assert parse_stream_chunk(chunk) == expected
 
 
@@ -70,7 +71,7 @@ def test_parse_stream_chunk_forwards_task_start_and_complete() -> None:
         },
     )
 
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(start_chunk) == {
+    assert _parse_stream_chunk(start_chunk) == {
         "event_type": "task.start",
         "task_id": "todo:1",
         "task_content": "写封面",
@@ -79,7 +80,7 @@ def test_parse_stream_chunk_forwards_task_start_and_complete() -> None:
         "parent_request_id": "req-1",
         "timestamp": 1.0,
     }
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(complete_chunk) == {
+    assert _parse_stream_chunk(complete_chunk) == {
         "event_type": "task.complete",
         "task_id": "todo:1",
         "task_content": "写封面",
@@ -92,5 +93,5 @@ def test_parse_stream_chunk_forwards_task_start_and_complete() -> None:
 
 def test_parse_stream_chunk_drops_task_update_without_payload_dict() -> None:
     chunk = SimpleNamespace(type="task.update", payload="not-a-dict")
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None
     assert parse_stream_chunk(chunk) is None

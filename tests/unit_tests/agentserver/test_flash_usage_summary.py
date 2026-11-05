@@ -8,6 +8,12 @@ import pytest
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
 
 
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _accumulate_usage,
+    _new_usage_accumulator,
+)
+
+
 def _adapter(runtime_model):
     adapter = JiuwenSwarmFlashAdapter.__new__(JiuwenSwarmFlashAdapter)
     adapter._model_request_config = SimpleNamespace(model_name="deepseek-v4.1-flash")
@@ -18,9 +24,9 @@ def _adapter(runtime_model):
 
 
 def _summary(adapter, *, with_usage=True, perf_usage_fallback=None):
-    usage = adapter._new_usage_accumulator()
+    usage = _new_usage_accumulator()
     if with_usage:
-        adapter._accumulate_usage(usage, {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12})
+        _accumulate_usage(usage, {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12})
     return adapter._log_and_make_usage_summary_chunk(
         request_id="r1",
         channel_id="officeclaw",

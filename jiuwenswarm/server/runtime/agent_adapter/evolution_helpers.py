@@ -650,9 +650,15 @@ def resolve_evolution_event_timeout_sec(
 
 
 def is_evolution_approval_event(evt: Any) -> bool:
+    payload = event_payload_dict(evt)
+    meta = evolution_meta_from_payload(payload)
+    event_kind = meta.get("event_kind")
+    if isinstance(event_kind, str) and event_kind:
+        return event_kind == "approval"
+    # Legacy rail events predate ``_evolution_meta.event_kind``; preserve their
+    # approval transport compatibility. Explicit non-approval metadata above wins.
     if event_type(evt) == "chat.ask_user_question":
         return True
-    payload = event_payload_dict(evt)
     return payload.get("event_type") == "chat.ask_user_question"
 
 

@@ -1090,11 +1090,11 @@ def _request_with_connectors(
 @pytest.mark.asyncio
 async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     """A connector tool whose short name collides with a *built-in* agent tool
-    (e.g. ``filesystem.read_file`` vs the agent's ``read_file``) must be skipped
-    in place — the rest of the connector's tools and the overall registration
-    must survive. Previously this raised ``RuntimeError`` which propagated to the
-    outer ``except`` and rolled back the entire registration, leaving
-    ``tools_search`` with 0 matches and the LLM falling back to web_search."""
+    (e.g. ``filesystem.read_file`` vs the agent's ``read_file``) is renamed to
+    the LLM-safe ``server_tool`` form at staging instead of being skipped — the
+    rest of the connector's tools and the overall registration must survive.
+    Previously the tool was skipped entirely, leaving ``tools_search`` with 0
+    matches and the LLM falling back to web_search."""
 
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
@@ -1150,18 +1150,13 @@ async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: 
 
     # Registration succeeds (not rolled back to None).
     assert registration is not None
-    # Only list_dir made it into the registration — read_file was skipped.
-    assert registration.tool_names == ("list_dir",)
-    # The built-in read_file mapping is untouched.
+    # read_file stages under the server-prefixed LLM-safe name; list_dir keeps
+    # its raw name — the built-in read_file mapping stays untouched.
+    assert registration.tool_names == ("filesystem_read_file", "list_dir")
     assert (
             adapter._instance.ability_manager.get("read_file") is builtin_read_file
     )
-    # No orphaned resource entry for the skipped read_file tool.
-    skipped_id = next(
-        (tid for tid in registration.tool_ids if tid.endswith(".read_file")),
-        None,
-    )
-    assert skipped_id is None
+    assert adapter._instance.ability_manager.get("filesystem_read_file") is not None
 
 
 @pytest.mark.asyncio
@@ -1666,3 +1661,454 @@ def test_batch_registration_does_not_hide_transitive_import_failure(monkeypatch)
     with pytest.raises(ModuleNotFoundError) as captured:
         adapter._install_staged_request_mcp_tools(interface_deep._RequestMcpToolBuffers())
     assert captured.value is failure
+
+
+@pytest.mark.asyncio
+async def test_multi_block_mcp_result_keeps_payload_not_only_trailer() -> None:
+    """MCP 正文 + 元数据尾块必须合并，不能只返回 content[-1]。"""
+    from mcp.types import CallToolResult, TextContent
+
+    payload = '{"summary":"1.3.1 创建或发起电子签约","parameters":[1,2,3]}'
+    trailer = '{"doc_version":"5.7"}'
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-merge.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-merge",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[
+                    TextContent(type="text", text=payload),
+                    TextContent(type="text", text=trailer),
+                ]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert result["result"] == payload + "\n" + trailer
+
+
+def test_request_scoped_tool_defaults_remote_name_to_card_name() -> None:
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(id="office-claw-request-x.office-claw.multi", name="multi", input_params={}),
+        {"command": "node", "args": [], "cwd": "."},
+    )
+
+    assert tool._remote_tool_name == "multi"
+
+
+@pytest.mark.asyncio
+async def test_shadow_renamed_tool_calls_remote_original_name() -> None:
+    """改名只作用于对外暴露名；远程 MCP 服务器必须收到原始工具名。"""
+    from mcp.types import CallToolResult, TextContent
+
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-shadow.doubao-search.doubao_search_web_search",
+            name="doubao_search_web_search",
+            description="renamed connector tool",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-shadow",
+        "doubao-search",
+        remote_tool_name="web_search",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(content=[TextContent(type="text", text="ok")])
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+        patch(
+            "jiuwenswarm.common.mcp_config.annotate_connector_catalog_result",
+            side_effect=lambda *args, **kwargs: "ok",
+        ) as annotate,
+    ):
+        result = await tool._invoke_with_active_binding({})
+
+    assert session.call_tool.await_args.args[0] == "web_search"
+    # catalog 标注同样必须按远端原始工具名判定，否则改名后的工具永远匹配不到。
+    assert annotate.call_args.args[0] == "web_search"
+    assert result["result"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_mixed_text_and_image_result_keeps_text_payload() -> None:
+    """文本说明 + 图片的 MCP 结果必须同时保留正文和图片占位。"""
+    from mcp.types import CallToolResult, ImageContent, TextContent
+
+    payload = '{"summary":"endpoint document","parameters":[1,2,3]}'
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-mixed.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-mixed",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[
+                    TextContent(type="text", text=payload),
+                    ImageContent(type="image", data="aGk=", mimeType="image/png"),
+                ]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert result["result"] == payload + "\n[image content: image/png, 4 base64 chars]"
+
+
+@pytest.mark.asyncio
+async def test_audio_content_result_uses_bounded_binary_summary() -> None:
+    """AudioContent 的 base64 不能原样进入模型上下文。"""
+    from mcp.types import AudioContent, CallToolResult, TextContent
+
+    payload = '{"summary":"endpoint document"}'
+    audio_data = "A" * 10_000
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-audio.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-audio",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[
+                    TextContent(type="text", text=payload),
+                    AudioContent(
+                        type="audio", data=audio_data, mimeType="audio/wav"
+                    ),
+                ]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert payload in result["result"]
+    assert audio_data not in result["result"]
+    assert "[binary content: audio/wav, 10000 base64 chars]" in result["result"]
+
+
+@pytest.mark.asyncio
+async def test_embedded_resource_blob_is_summarized() -> None:
+    """EmbeddedResource 的 blob 不能被 model_dump 原样序列化进结果。"""
+    from mcp.types import (
+        BlobResourceContents,
+        CallToolResult,
+        EmbeddedResource,
+        TextContent,
+    )
+
+    payload = '{"summary":"endpoint document"}'
+    blob = "B" * 10_000
+    resource = EmbeddedResource(
+        type="resource",
+        resource=BlobResourceContents(
+            uri="file:///x.bin",
+            blob=blob,
+            mimeType="application/octet-stream",
+        ),
+    )
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-blob.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-blob",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(type="text", text=payload), resource]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert payload in result["result"]
+    assert blob not in result["result"]
+    assert (
+        "[binary content: application/octet-stream, 10000 base64 chars]"
+        in result["result"]
+    )
+
+
+def test_custom_data_block_without_mime_type_is_summarized() -> None:
+    from jiuwenswarm.common.mcp_config import _mcp_non_text_summary
+
+    summary = _mcp_non_text_summary(SimpleNamespace(data="C" * 10_000))
+
+    assert summary == "[binary content: unknown, 10000 base64 chars]"
+
+
+def _catalog_tool_list() -> list[dict[str, object]]:
+    return [
+        {"name": "office_claw_list_connectors", "description": "list", "input_params": {"type": "object"}},
+        {"name": "office_claw_get_connector_tools", "description": "tools", "input_params": {"type": "object"}},
+    ]
+
+
+async def _invoke_catalog_tool(
+    registration: OfficeClawMcpRegistration, tool_name: str, arguments: dict[str, object], catalog_text: str,
+    *, is_error: bool = False,
+) -> str:
+    from mcp.types import CallToolResult, TextContent
+
+    tool = next(item for item in registration.tool_instances if item.card.name == tool_name)
+    result = CallToolResult(content=[TextContent(type="text", text=catalog_text)], isError=is_error)
+    session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch("jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"),
+    ):
+        result = await tool._invoke_with_active_binding(arguments)
+    return result["result"]
+
+
+async def _register_with_connector_discovery(
+    monkeypatch: pytest.MonkeyPatch, discovery: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
+) -> tuple[JiuWenSwarmDeepAdapter, OfficeClawMcpRegistration]:
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_catalog_tool_list()))
+
+    async def _fake_discovery(server_name, config):
+        return discovery[server_name]
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", AsyncMock(side_effect=_fake_discovery))
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(_valid_config(), connectors={name: {"command": "npx"} for name in discovery})
+    )
+    return adapter, registration
+
+
+@pytest.mark.asyncio
+async def test_failed_connector_discovery_is_reported_on_catalog_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.mcp_config import CONNECTOR_DISCOVERY_FAILED
+
+    adapter, registration = await _register_with_connector_discovery(
+        monkeypatch,
+        {
+            "huaweicloud-devkit": ([], {}),
+            "filesystem": ([{"name": "list_dir", "description": "", "input_params": {}}], {"command": "node"}),
+        },
+    )
+    catalog_text = '{"connector":{"name":"huaweicloud-devkit","status":"connected","enabled":true},"tools":[]}'
+    try:
+        assert "list_dir" in registration.tool_names
+        text = await _invoke_catalog_tool(
+            registration, "office_claw_get_connector_tools", {"connectorName": "huaweicloud-devkit"}, catalog_text,
+        )
+        assert text.startswith(catalog_text)
+        assert f"- huaweicloud-devkit：{CONNECTOR_DISCOVERY_FAILED}" in text
+        assert "不要再重复调用" in text
+
+        other = await _invoke_catalog_tool(
+            registration, "office_claw_get_connector_tools", {"connectorName": "filesystem"}, catalog_text,
+        )
+        assert other == catalog_text
+
+        listed = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, catalog_text)
+        assert "huaweicloud-devkit" in listed.removeprefix(catalog_text)
+        assert "filesystem：" not in listed
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+@pytest.mark.asyncio
+async def test_host_error_text_is_kept_but_not_called_catalog_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter, registration = await _register_with_connector_discovery(monkeypatch, {"huaweicloud-devkit": ([], {})})
+    error_text = "Callback failed (409): Connector is not connected: huaweicloud-devkit"
+    try:
+        for arguments in ({"connectorName": "huaweicloud-devkit"}, {}):
+            text = await _invoke_catalog_tool(
+                registration, "office_claw_get_connector_tools", arguments, error_text, is_error=True,
+            )
+            assert text.startswith(error_text)
+            assert "- huaweicloud-devkit：" in text
+            assert "以上为连接器目录记录" not in text
+        ok = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, "{}")
+        assert "以上为连接器目录记录" in ok
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+@pytest.mark.asyncio
+async def test_connector_without_tools_is_reported_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.mcp_config import CONNECTOR_NO_TOOLS
+
+    adapter, registration = await _register_with_connector_discovery(
+        monkeypatch, {"huaweicloud-devkit": ([], {"_mcp_client_type": "stdio"})},
+    )
+    try:
+        text = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, "{}")
+        assert f"- huaweicloud-devkit：{CONNECTOR_NO_TOOLS}" in text
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+@pytest.mark.asyncio
+async def test_healthy_connectors_leave_catalog_result_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter, registration = await _register_with_connector_discovery(
+        monkeypatch, {"filesystem": ([{"name": "list_dir", "description": "", "input_params": {}}], {"command": "node"})},
+    )
+    try:
+        text = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, '{"total":1}')
+        assert text == '{"total":1}'
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+def test_annotation_only_applies_to_catalog_tools() -> None:
+    from jiuwenswarm.common.mcp_config import annotate_connector_catalog_result
+
+    unavailable = {"huaweicloud-devkit": "工具发现失败"}
+    assert annotate_connector_catalog_result("office_claw_post_message", {}, "ok", unavailable) == "ok"
+    annotated = annotate_connector_catalog_result(
+        "office_claw_get_connector_tools", {"connectorName": "HuaweiCloud-DevKit"}, None, unavailable,
+    )
+    assert annotated is not None and annotated.startswith("[本次请求的连接器实际加载结果]")
+
+
+def test_get_connector_tools_without_name_falls_back_to_full_annotation() -> None:
+    from jiuwenswarm.common.mcp_config import annotate_connector_catalog_result
+
+    unavailable = {"huaweicloud-devkit": "工具发现失败", "flaky-demo": "工具发现失败"}
+    for arguments in ({}, {"connectorName": "  "}, {"name": "huaweicloud-devkit"}):
+        text = annotate_connector_catalog_result("office_claw_get_connector_tools", arguments, "err", unavailable)
+        assert "- huaweicloud-devkit：" in text and "- flaky-demo：" in text
+    other = annotate_connector_catalog_result(
+        "office_claw_get_connector_tools", {"connectorName": "filesystem"}, "ok", unavailable,
+    )
+    assert other == "ok"
+
+
+def test_empty_catalog_text_has_no_dangling_preface() -> None:
+    from jiuwenswarm.common.mcp_config import annotate_connector_catalog_result
+
+    unavailable = {"huaweicloud-devkit": "工具发现失败"}
+    with_text = annotate_connector_catalog_result("office_claw_list_connectors", {}, "{}", unavailable)
+    assert "以上为连接器目录记录" in with_text
+    for empty in (None, ""):
+        note = annotate_connector_catalog_result("office_claw_list_connectors", {}, empty, unavailable)
+        assert "以上" not in note and "- huaweicloud-devkit：" in note
+
+
+@pytest.mark.asyncio
+async def test_builtin_shadowed_connector_tool_is_renamed_not_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connector tool named like a built-in stages under ``server_tool`` instead of being skipped."""
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    adapter = _bare_session_adapter()
+    adapter._instance.ability_manager.cards["web_search"] = ToolCard(
+        id="builtin-web-search", name="web_search", description="builtin", input_params={}
+    )
+
+    buffers = interface_deep._RequestMcpToolBuffers()
+    interface_deep._stage_request_mcp_tools(
+        _request(),
+        "doubao-search",
+        [{"name": "web_search", "description": "doubao web search", "input_params": {"type": "object"}}],
+        {"command": "node"},
+        buffers,
+        staged_name_resolver=adapter._resolve_shadow_safe_tool_name,
+    )
+    adapter._install_staged_request_mcp_tools(buffers)
+
+    assert buffers.tool_names == ["doubao_search_web_search"]
+    assert buffers.tool_ids[0].endswith(".doubao-search.doubao_search_web_search")
+    assert adapter._instance.ability_manager.get("web_search").id == "builtin-web-search"
+    assert adapter._instance.ability_manager.get("doubao_search_web_search") is not None
+    assert len(resource_manager.tools) == 1
+
+
+@pytest.mark.asyncio
+async def test_unshadowed_connector_tool_keeps_raw_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    adapter = _bare_session_adapter()
+
+    buffers = interface_deep._RequestMcpToolBuffers()
+    interface_deep._stage_request_mcp_tools(
+        _request(),
+        "doubao-search",
+        [{"name": "custom_search", "description": "free name", "input_params": {"type": "object"}}],
+        {"command": "node"},
+        buffers,
+        staged_name_resolver=adapter._resolve_shadow_safe_tool_name,
+    )
+    adapter._install_staged_request_mcp_tools(buffers)
+
+    assert buffers.tool_names == ["custom_search"]
+    assert adapter._instance.ability_manager.get("custom_search") is not None
+    assert len(resource_manager.tools) == 1

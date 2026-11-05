@@ -68,8 +68,9 @@ def test_resolve_string_or_list_config_rejects_malformed_values(value):
 
 def test_build_disabled_tools_rail_fails_closed_on_malformed_config():
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.server.runtime.agent_adapter.deep import adapter_statics
 
-    with patch.object(interface_deep.logger, "error") as error_log, pytest.raises(
+    with patch.object(adapter_statics.logger, "error") as error_log, pytest.raises(
         TypeError
     ):
         interface_deep.JiuWenSwarmDeepAdapter._build_disabled_tools_rail(

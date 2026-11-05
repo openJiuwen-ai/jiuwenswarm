@@ -11,20 +11,12 @@ from jiuwenswarm.server.runtime.a2ui.runtime.prompt import (
 )
 
 
-def test_a2ui_prompt_discourages_icon_ligature_dependency():
-    instruction = build_a2ui_autonomy_instruction("en")
-
-    assert "Avoid A2UI Icon for semantic content" in instruction
-    assert "Material Symbols" in instruction
-    assert "emoji or text labels" in instruction
-
-
 def test_a2ui_prompt_is_autonomous_not_forced():
     instruction = build_a2ui_autonomy_instruction("en")
 
-    assert "A2UI is optional" in instruction
-    assert "If A2UI is not appropriate, answer in plain text" in instruction
-    assert "Do not promise to show the result with A2UI and then output only Markdown" in instruction
+    assert "plain text" in instruction
+    assert "narrative explanation" in instruction
+    assert "markdown mock" in instruction
     assert "Mandatory A2UI account-action gate" not in instruction
     assert "browser_preflight_submit" not in instruction
 
@@ -33,7 +25,180 @@ def test_a2ui_prompt_discourages_nested_templates():
     instruction = build_a2ui_autonomy_instruction("en")
 
     assert "Do not nest templates" in instruction
-    assert "flatten repeated item details" in instruction
+    assert "indexed valueMap" in instruction
+    assert "keys must not repeat" in instruction
+    assert "Do not use collection absolute paths" in instruction
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "不要在模板渲染出的组件内部嵌套 template" in zh
+    assert "key 不能重复" in zh
+    assert "不要在模板内使用集合绝对路径" in zh
+
+
+def test_a2ui_prompt_titles_input_components_with_text():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "for TextField and Slider the inline label MUST" in en
+    assert "CheckBox, DateTimeInput, and Slider MUST have" in en
+    assert '{"literalString": ""}' in en
+    assert "Wrap each Text title and its input component together in a Column." in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "TextField 与 Slider 的内联 label" in zh
+    assert "CheckBox、DateTimeInput、Slider 各自在正上方加一个 Text" in zh
+    assert '{"literalString": ""}' in zh
+    assert "共同包在一个 Column 里。" in zh
+
+
+def test_a2ui_prompt_heading_text_is_plain_text():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Titles MUST be plain text" in en
+    assert "MUST NOT contain any Markdown syntax" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "标题必须是纯文本" in zh
+    assert "禁止任何 Markdown 语法" in zh
+
+
+def test_a2ui_prompt_component_fit():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Card/list is not a universal fallback" in en
+    assert "single object detail layout, not a multi-card demo" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "不是万能 fallback" in zh
+    assert "不要生成多卡片 demo" in zh
+
+
+def test_a2ui_prompt_wraps_outermost_ui_in_card():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "outermost structured UI MUST be wrapped in a Card" in en
+    assert "single component id" in en
+    assert "Column for vertical" in en
+    assert "do not wrap the List of Cards in an extra outer Card" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "最外层结构化 UI 统一用 Card 作为容器壳承载" in zh
+    assert "child 只收一个组件 id" in zh
+    assert "纵向 Column、横向 Row、重复列表 List" in zh
+    assert "card-list 请求时不要再在外层包额外 Card" in zh
+
+
+def test_a2ui_prompt_enforces_single_parent_tree():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "single-parent" in en
+    assert "children.explicitList" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "单亲树" in zh
+    assert "不得再出现在任何 Column/Row/List 的 children.explicitList" in zh
+
+
+def test_a2ui_prompt_multiplechoice_single_select_max_one():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "single-select, set maxAllowedSelections to 1" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "maxAllowedSelections 必须设为 1" in zh
+
+
+def test_a2ui_prompt_action_button_row_order():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "MUST go into a horizontal Row" in en
+    assert "the primary button goes first" in en
+    assert "Candidate-selection buttons inside a card list" in en
+    assert "Do not add a Divider above the button row" in en
+    assert "only one primary button" not in en
+    assert "bottom of the Card" not in en
+    assert 'distribution to "end"' not in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "必须放进一个 Row" in zh
+    assert "主要按钮放第一位" in zh
+    assert "候选选择按钮" in zh
+    assert "不要在表单底部按钮行上方添加 Divider" in zh
+    assert "主要按钮只设一个" not in zh
+    assert "放在 Card 底部" not in zh
+    assert 'distribution="end"' not in zh
+    assert "右对齐" not in zh
+
+
+def test_a2ui_prompt_forbids_reset_and_clear_form_buttons():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Do NOT add buttons that reset or clear form values" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "清空表单值的按钮" in zh
+
+
+def test_a2ui_prompt_title_usage_hint_structure():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert 'usageHint "h1"' in en
+    assert 'usageHint "h2"' in en
+    assert 'usageHint "h3"' in en
+    assert "no section grouping" in en
+    assert 'inside the section MUST use usageHint "h3"' in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert 'usageHint "h1"' in zh
+    assert 'usageHint "h2"' in zh
+    assert 'usageHint "h3"' in zh
+    assert "没有分组" in zh
+    assert "分组内每个输入组件正上方的标题必须用 usageHint \"h3\"" in zh
+
+
+def test_a2ui_prompt_cancel_button_only_when_needed():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "only when genuinely needed" in en
+    assert "do NOT add a Cancel button by default" in en
+    assert "no-op buttons with no real effect" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "确有需要" in zh
+    assert "默认不要添加" in zh
+    assert "暂不需要" in zh
+
+
+def test_a2ui_prompt_image_url_reachable_rule():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Do not invent image URLs" in en
+    assert "upload.wikimedia.org thumbnail" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "不要编造图片 URL" in zh
+    assert "upload.wikimedia.org thumbnail" in zh
+
+
+def test_a2ui_prompt_forbids_emoji_in_ui_text():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Emoji MUST NOT be used anywhere in A2UI UI text" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "A2UI 界面全面禁止使用 emoji" in zh
 
 
 def test_a2ui_prompt_defines_hotel_booking_actions():
@@ -48,7 +213,7 @@ def test_a2ui_prompt_defines_hotel_booking_actions():
 def test_a2ui_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("en")
 
-    assert "modal" in instruction
+    assert "does not support Modal" in instruction
     assert "floating overlay" in instruction
     assert "inline status" in instruction
     assert "plain text" in instruction
@@ -57,7 +222,7 @@ def test_a2ui_prompt_discourages_unsupported_popup_components():
 def test_a2ui_zh_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("zh")
 
-    assert "弹窗" in instruction
+    assert "不支持 Modal" in instruction
     assert "浮层" in instruction
     assert "行内状态" in instruction
     assert "纯文本" in instruction
@@ -114,8 +279,8 @@ def test_a2ui_zh_prompt_section_is_readable():
     prompt = build_a2ui_prompt_section("zh")
 
     assert "你是 jiuwenswarm 的 A2UI 生成器" not in prompt
-    assert "JiuwenSwarm 支持可选的 A2UI 输出格式" in prompt
-    assert "当用户需要列表、卡片、表单" in prompt
+    assert "JiuwenSwarm 支持 A2UI 输出格式" in prompt
+    assert "交互场景用 A2UI" in prompt
     assert "浣犳槸" not in prompt
     assert "鐢熸垚" not in prompt
 
@@ -124,7 +289,7 @@ def test_a2ui_en_prompt_does_not_use_generator_identity():
     prompt = build_a2ui_prompt_section("en")
 
     assert "You are jiuwenswarm's A2UI generator" not in prompt
-    assert "JiuwenSwarm supports an optional A2UI output format" in prompt
+    assert "JiuwenSwarm supports A2UI output format" in prompt
 
 
 def test_a2ui_zh_client_event_prompt_is_readable():
@@ -148,3 +313,93 @@ def test_a2ui_zh_client_event_prompt_is_readable():
     assert "张三" in prompt
     assert "submit_form" in prompt
     assert "浣犳敹" not in prompt
+
+
+def test_a2ui_officeclaw_component_rules_scoped_by_channel():
+    """七条组件规则按 channel 分流：officeclaw 含、web 不含、默认(None)含（向后兼容 repair）。
+
+    移出主段的 7 条：Card 布局壳 / 输入绑定与标题 / 标题 usageHint / 文本纯净 /
+    按钮行 / 重置清空 / 取消按钮。selections path + maxAllowed 留公共主段。
+    """
+    # 默认（None）= 向后兼容，含全部 7 条（repair 场景拿不到 channel，需完整规则）
+    default_en = build_a2ui_autonomy_instruction("en")
+    assert "outermost structured UI MUST be wrapped in a Card" in default_en
+    assert "for TextField and Slider the inline label MUST" in default_en
+    assert "Do NOT add buttons that reset or clear form values" in default_en
+
+    # officeclaw 含 7 条
+    oc_en = build_a2ui_autonomy_instruction("en", channel="officeclaw")
+    assert "outermost structured UI MUST be wrapped in a Card" in oc_en
+    assert "for TextField and Slider the inline label MUST" in oc_en
+    assert 'usageHint "h1"' in oc_en
+    assert "Titles MUST be plain text" in oc_en
+    assert "MUST go into a horizontal Row" in oc_en
+    assert "Do NOT add buttons that reset or clear form values" in oc_en
+    assert "do NOT add a Cancel button by default" in oc_en
+
+    oc_zh = build_a2ui_autonomy_instruction("zh", channel="officeclaw")
+    assert "最外层结构化 UI 统一用 Card 作为容器壳承载" in oc_zh
+    assert "TextField 与 Slider 的内联 label" in oc_zh
+    assert '禁止添加"重置"、"清空"' in oc_zh
+
+    # web 不含 7 条（防止影响 web channel）—— 用整句带上下文反向断言，不用泛词
+    web_en = build_a2ui_autonomy_instruction("en", channel="web")
+    assert "outermost structured UI MUST be wrapped in a Card" not in web_en
+    assert "for TextField and Slider the inline label MUST" not in web_en
+    assert 'usageHint "h1"' not in web_en
+    assert "Titles MUST be plain text" not in web_en
+    assert "MUST go into a horizontal Row" not in web_en
+    assert "Do NOT add buttons that reset or clear form values" not in web_en
+    assert "do NOT add a Cancel button by default" not in web_en
+
+    web_zh = build_a2ui_autonomy_instruction("zh", channel="web")
+    assert "最外层结构化 UI 统一用 Card 作为容器壳承载" not in web_zh
+    assert "TextField 与 Slider 的内联 label" not in web_zh
+    assert '禁止添加"重置"、"清空"' not in web_zh
+
+    # 公共规则（输入绑定 / Button child / selections / Id-uniqueness / Repeat-data）对所有 channel 都在
+    for ch in (None, "web", "officeclaw"):
+        en = build_a2ui_autonomy_instruction("en", channel=ch)
+        assert "bind its value/selections to a data model path" in en
+        assert 'Button MUST use "child" to reference a component id' in en
+        assert "single-select, set maxAllowedSelections to 1" in en
+        assert "single-parent" in en
+        assert "Do not nest templates" in en
+
+
+def test_a2ui_prompt_section_passes_channel_through():
+    """build_a2ui_prompt_section 透传 channel：web 版不含 7 条，officeclaw 版含。"""
+    web_section = build_a2ui_prompt_section("en", channel="web")
+    oc_section = build_a2ui_prompt_section("en", channel="officeclaw")
+    assert "outermost structured UI MUST be wrapped in a Card" not in web_section
+    assert "outermost structured UI MUST be wrapped in a Card" in oc_section
+
+
+def test_a2ui_channel_normalization_not_web():
+    """CR-12: channel 归一化——大小写/空白变体视作 web，不注入 officeclaw 规则。"""
+    for variant in ("WEB", "Web", " web ", "WEB "):
+        en = build_a2ui_autonomy_instruction("en", channel=variant)
+        assert "outermost structured UI MUST be wrapped in a Card" not in en, variant
+        assert "for TextField and Slider the inline label MUST" not in en, variant
+
+
+def test_a2ui_repair_prompt_respects_channel():
+    """CR-11: repair 路径透传 channel——web 的 repair prompt 不含 officeclaw 专属规则。"""
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+    spec = get_protocol_spec()
+    web_repair = spec.build_repair_prompt(
+        invalid_content="<a2ui-json>[]</a2ui-json>",
+        validation_error="test error",
+        user_query="test",
+        channel="web",
+    )
+    assert "outermost structured UI MUST be wrapped in a Card" not in web_repair
+    assert "for TextField and Slider the inline label MUST" not in web_repair
+
+    oc_repair = spec.build_repair_prompt(
+        invalid_content="<a2ui-json>[]</a2ui-json>",
+        validation_error="test error",
+        user_query="test",
+        channel="officeclaw",
+    )
+    assert "outermost structured UI MUST be wrapped in a Card" in oc_repair

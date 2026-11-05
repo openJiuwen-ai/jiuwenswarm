@@ -504,6 +504,8 @@ def test_work_plan_whitelist_excludes_side_effect_tools():
     allowed = set(WORK_PLAN_ALLOWED_TOOLS)
 
     assert {"ask_user", "read_file", "write_file", "exit_plan_mode"} <= allowed
+    # Deep 模式实际注册的联网工具名，缺了 plan 阶段只能搜索、无法读取结果页。
+    assert {"web_search", "fetch_webpage"} <= allowed
     # task_tool 不得进白名单：子 agent 有独立 session 与 plan_mode 状态，
     # 父 agent 的 plan 约束不传播，委派即可绕开只读约束（评审定论）。
     assert "task_tool" not in allowed

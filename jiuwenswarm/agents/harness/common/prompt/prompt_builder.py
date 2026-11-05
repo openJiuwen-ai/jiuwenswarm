@@ -28,6 +28,7 @@ class PromptPriority(IntEnum):
     TODO = 85
     # thinking_discipline 紧挨最终可见回复之前：思考与 tool_calls 职责分工，高于 RESPONSE。
     THINKING_DISCIPLINE = 115
+    A2UI_BOOST = 117
     # final_visible_reply 放在 system 最末，强调约束工具/todo 结束后必须再发一轮完整纯文本 final；
     # UI 主要展示「最后一轮无 tool_calls」的正文。
     FINAL_VISIBLE_REPLY = 120
@@ -37,6 +38,7 @@ class LocalSectionName:
     """Local section names for optional JiuwenSwarm prompt sections."""
 
     A2UI = "a2ui"
+    A2UI_BOOST = "a2ui_boost"
     THINKING_DISCIPLINE = "thinking_discipline"
     FINAL_VISIBLE_REPLY = "final_visible_reply"
 
@@ -387,6 +389,13 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 
 **调用方式**：使用文件的绝对路径作为参数调用 `send_file_to_user` 工具。
 
+**用户说没收到文件时**：如果用户明确表示没有收到文件、要求“再发一次/重新发送/文件呢”，
+调用 `send_file_to_user` 时设置 `force=true`，绕过本会话的重复发送保护。
+`force` 只用于用户明确要求重发的场景，普通首次发送不要设置。
+
+**不要用 PPT 翻译工具发送普通文件**：`invoke_pptx_translation` 只用于翻译已打开的 PPT；
+发送/找回已生成的 md、html、docx、xlsx 等文件必须使用 `send_file_to_user`。
+
 **跨 channel 投递**：`send_file_to_user` 接受可选参数 `target_channels`（字符串数组），
 用于指定文件投递的目标 channel（如 `["feishu", "xiaoyi", "web"]`）。
 - 用户在某个 channel（如飞书）请求发送文件、或要求把文件发给指定 channel 时，传入 `target_channels`。
@@ -541,6 +550,14 @@ When the `send_file_to_user` tool is available in your tool list, you **must** p
 - After the user actively invokes file generation/modification tools such as `write_file` and `write_text_file`
 
 **How to call**: Use the absolute file path(s) as the parameter to invoke the `send_file_to_user` tool.
+
+**When the user says they did not receive the file**: if the user explicitly reports a missing
+file or asks to resend it, call `send_file_to_user` with `force=true` to bypass the session-level
+duplicate guard. Do not set `force` for an ordinary first delivery.
+
+**Do not use the PPT translation tool to send ordinary files**: `invoke_pptx_translation` is only
+for translating an already-open PPT. Use `send_file_to_user` for md, html, docx, xlsx, and other
+deliverables.
 
 **Cross-channel delivery**: `send_file_to_user` accepts an optional `target_channels` parameter
 to specify delivery targets by channel id (e.g. `["feishu", "xiaoyi", "web"]`).

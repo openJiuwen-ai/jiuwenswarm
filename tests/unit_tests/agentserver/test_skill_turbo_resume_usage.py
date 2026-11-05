@@ -5,6 +5,14 @@ from __future__ import annotations
 
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _account_deepresearch_sdk_usage,
+    _accumulate_usage,
+    _extract_deepresearch_sdk_usage,
+    _extract_usage_metadata,
+    _new_usage_accumulator,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _rewrite_skill_turbo_usage_chunk
 
 
 def test_extract_usage_from_skill_turbo_llm_usage_payload() -> None:
@@ -19,7 +27,7 @@ def test_extract_usage_from_skill_turbo_llm_usage_payload() -> None:
         "plan_name": "p4_content_plan",
         "task_id": "task_abc",
     }
-    meta = JiuWenSwarmDeepAdapter._extract_usage_metadata(payload)
+    meta = _extract_usage_metadata(payload)
     assert meta == payload["usage_metadata"]
 
 
@@ -29,7 +37,7 @@ def test_extract_usage_ignores_non_usage_events() -> None:
         "usage_metadata": {"input_tokens": 1},
         "tool_call": {"name": "write_file"},
     }
-    assert JiuWenSwarmDeepAdapter._extract_usage_metadata(payload) is None
+    assert _extract_usage_metadata(payload) is None
 
 
 def test_rewrite_skill_turbo_usage_chunk_to_usage_metadata() -> None:
@@ -48,7 +56,7 @@ def test_rewrite_skill_turbo_usage_chunk_to_usage_metadata() -> None:
         },
         is_complete=False,
     )
-    rewritten, meta = JiuWenSwarmDeepAdapter._rewrite_skill_turbo_usage_chunk(
+    rewritten, meta = _rewrite_skill_turbo_usage_chunk(
         chunk, session_id="sess-1"
     )
     assert meta is not None
@@ -70,7 +78,7 @@ def test_rewrite_passes_through_existing_usage_metadata() -> None:
             "session_id": "sess-1",
         },
     )
-    rewritten, meta = JiuWenSwarmDeepAdapter._rewrite_skill_turbo_usage_chunk(
+    rewritten, meta = _rewrite_skill_turbo_usage_chunk(
         chunk, session_id="sess-1"
     )
     assert rewritten is chunk
@@ -114,14 +122,14 @@ def test_resume_usage_loop_accumulates_and_keeps_other_events() -> None:
         ),
         AgentResponseChunk(request_id="r1", channel_id="c1", payload=None, is_complete=True),
     ]
-    acc = JiuWenSwarmDeepAdapter._new_usage_accumulator()
+    acc = _new_usage_accumulator()
     out: list[AgentResponseChunk] = []
     for chunk in chunks:
-        rewritten, usage_meta = JiuWenSwarmDeepAdapter._rewrite_skill_turbo_usage_chunk(
+        rewritten, usage_meta = _rewrite_skill_turbo_usage_chunk(
             chunk, session_id="sess-1"
         )
         if rewritten is not None and usage_meta is not None:
-            JiuWenSwarmDeepAdapter._accumulate_usage(acc, usage_meta)
+            _accumulate_usage(acc, usage_meta)
             out.append(rewritten)
             continue
         out.append(chunk)
@@ -171,22 +179,22 @@ def test_deepresearch_sdk_usage_is_accounted_once_from_terminal_tool_result(
     }
     recorded: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep."
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers."
         "record_deepresearch_sdk_token_usage",
         lambda request_id, usage_id, value: recorded.append(
             (request_id, usage_id, value)
         ),
     )
-    accumulator = JiuWenSwarmDeepAdapter._new_usage_accumulator()
+    accumulator = _new_usage_accumulator()
     accounted: set[str] = set()
 
-    first = JiuWenSwarmDeepAdapter._account_deepresearch_sdk_usage(
+    first = _account_deepresearch_sdk_usage(
         payload,
         request_id="request-1",
         usage_accumulator=accumulator,
         accounted_usage_ids=accounted,
     )
-    second = JiuWenSwarmDeepAdapter._account_deepresearch_sdk_usage(
+    second = _account_deepresearch_sdk_usage(
         payload,
         request_id="request-1",
         usage_accumulator=accumulator,
@@ -229,4 +237,4 @@ def test_deepresearch_sdk_usage_rejects_invalid_or_nonterminal_payloads() -> Non
                 },
             }
         }
-        assert JiuWenSwarmDeepAdapter._extract_deepresearch_sdk_usage(payload) is None
+        assert _extract_deepresearch_sdk_usage(payload) is None

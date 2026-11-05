@@ -17,6 +17,20 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
 )
 
 
+@pytest.fixture(autouse=True)
+def persisted_snapshot_boundary(tmp_path, monkeypatch):
+    # Algorithm mocks now also supply the authoritative file read used by events.
+    import json
+    original = TaskExecutionRail._get_todo_workspace_path
+    def path_for(rail, session_id):
+        if "_load_todo_from_json" not in rail.__dict__:
+            return original(rail, session_id)
+        path = tmp_path / f"{id(rail)}.json"
+        path.write_text(json.dumps(rail._load_todo_from_json(session_id)))
+        return path
+    monkeypatch.setattr(TaskExecutionRail, "_get_todo_workspace_path", path_for)
+
+
 class _FakeSession:
     def __init__(self, session_id: str = "sess-parallel") -> None:
         self.events: list[object] = []
@@ -238,6 +252,7 @@ async def test_later_complete_is_deferred_until_earlier_completes(monkeypatch) -
         for row in getattr(update, "payload", {}).get("tasks", [])
     }
     assert statuses["search_temp"] == "in_progress"
+    # Default legacy output keeps the serial mask until the earlier item completes.
     assert statuses["load_skill"] == "pending"
 
     session.events.clear()
@@ -321,4 +336,3 @@ async def test_rebuilt_deferred_flush_after_new_invoke(monkeypatch) -> None:
     assert payloads[0]["task_id"] == "todo:search_temp"
     assert payloads[1]["task_id"] == "todo:load_skill"
     assert payloads[2]["task_id"] == "todo:load_skill"
-

@@ -29,6 +29,11 @@ _CANCEL_GRACE_SECONDS = 1.0
 # Admission threshold, not an eviction limit: in-flight failures may add more.
 _MAX_PENDING_CLEANUP = 64
 _PENDING_CLEANUP: set[asyncio.Task[Any]] = set()
+# Fixed text, so it stays safe to surface; without it the parent has to guess and redoes the work.
+_MAX_ITERATIONS_REASON = (
+    "max_iterations_reached: the subagent ran out of iterations before finishing. "
+    "Files it already wrote remain in the workspace; inspect them before retrying or redoing the work."
+)
 
 
 @dataclass
@@ -52,8 +57,10 @@ def raise_for_subagent_error(result: Any) -> None:
     """
     if isinstance(result, dict) and result.get("result_type") != "interrupt":
         if result.get("error") or result.get("result_type") == "error":
-            reason = result.get("error") or result.get("message") or "subagent_error"
-            raise RuntimeError(f"subagent_failed: {reason}")
+            reason = result.get("error") or result.get("message")
+            if not reason and result.get("finish_reason") == "max_iterations":
+                reason = _MAX_ITERATIONS_REASON
+            raise RuntimeError(f"subagent_failed: {reason or 'subagent_error'}")
 
 
 def ensure_subagent_available(child: Any) -> None:

@@ -508,34 +508,47 @@ class TeamMonitorHandler(BaseMonitorHandler):
         "未就绪"语义处理。
         """
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
-        from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
 
         from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+        from jiuwenswarm.agents.harness.team.config_loader import build_team_database_config
 
         if not team_name:
             return None
-        db_path = resolve_team_sqlite_db_path(get_config())
-        if db_path is None:
+        try:
+            db_config = build_team_database_config(get_config())
+            if not str(getattr(db_config, "connection_string", "") or "").strip():
+                logger.warning(
+                    "[TeamMonitorHandler] get_member_list_from_db skipped: "
+                    "empty connection_string team_name=%s",
+                    team_name,
+                )
+                return None
+            db = get_shared_db(db_config)
+
+            # db.member dao 在 initialize() 后才挂载（未初始化时为 None），故必须先
+            # initialize；幂等，runtime 已起过则 no-op。
+            await db.initialize()
+            members = await db.member.get_team_members(team_name, status=None)
+
+            return [
+                {
+                    "member_id": m.member_name,
+                    "name": m.display_name,
+                    "status": m.status,
+                    "execution_status": m.execution_status,
+                    "mode": m.mode,
+                    "role": m.role,
+                }
+                for m in members or []
+            ]
+        except Exception as e:
+            logger.warning(
+                "[TeamMonitorHandler] get_member_list_from_db failed: "
+                "team_name=%s error=%s",
+                team_name,
+                e,
+            )
             return None
-        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
-
-        # db.member dao 在 initialize() 后才挂载（未初始化时为 None），故必须先
-        # initialize；幂等，runtime 已起过则 no-op。
-        await db.initialize()
-        members = await db.member.get_team_members(team_name, status=None)
-
-        return [
-            {
-                "member_id": m.member_name,
-                "name": m.display_name,
-                "status": m.status,
-                "execution_status": m.execution_status,
-                "mode": m.mode,
-                "role": m.role,
-            }
-            for m in members or []
-        ]
 
     @staticmethod
     async def get_team_snapshot_from_db(
@@ -558,22 +571,28 @@ class TeamMonitorHandler(BaseMonitorHandler):
         """
         from openjiuwen.agent_teams.context import reset_session_id, set_session_id
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
-        from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
 
-        from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+        from jiuwenswarm.agents.harness.team.config_loader import build_team_database_config
         from jiuwenswarm.common.config import get_config
 
         sid = str(session_id or "").strip()
         tname = str(team_name or "").strip()
         if not sid or not tname:
             return None
-        db_path = resolve_team_sqlite_db_path(get_config())
-        if db_path is None:
-            return None
-
-        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
-        token = set_session_id(sid)
+        token = None
         try:
+            db_config = build_team_database_config(get_config())
+            if not str(getattr(db_config, "connection_string", "") or "").strip():
+                logger.warning(
+                    "[TeamMonitorHandler] get_team_snapshot_from_db skipped: "
+                    "empty connection_string session_id=%s team_name=%s",
+                    sid,
+                    tname,
+                )
+                return None
+
+            db = get_shared_db(db_config)
+            token = set_session_id(sid)
             await db.initialize()
             # DAO model factories map historical tables without bind-time DDL.
             team_info = await db.team.get_team(tname)
@@ -627,7 +646,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
             )
             return None
         finally:
-            reset_session_id(token)
+            if token is not None:
+                reset_session_id(token)
 
     @staticmethod
     async def get_team_dependencies_from_db(
@@ -651,22 +671,28 @@ class TeamMonitorHandler(BaseMonitorHandler):
         """
         from openjiuwen.agent_teams.context import reset_session_id, set_session_id
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
-        from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
 
-        from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+        from jiuwenswarm.agents.harness.team.config_loader import build_team_database_config
         from jiuwenswarm.common.config import get_config
 
         sid = str(session_id or "").strip()
         tname = str(team_name or "").strip()
         if not sid or not tname:
             return None
-        db_path = resolve_team_sqlite_db_path(get_config())
-        if db_path is None:
-            return None
-
-        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
-        token = set_session_id(sid)
+        token = None
         try:
+            db_config = build_team_database_config(get_config())
+            if not str(getattr(db_config, "connection_string", "") or "").strip():
+                logger.warning(
+                    "[TeamMonitorHandler] get_team_dependencies_from_db skipped: "
+                    "empty connection_string session_id=%s team_name=%s",
+                    sid,
+                    tname,
+                )
+                return None
+
+            db = get_shared_db(db_config)
+            token = set_session_id(sid)
             await db.initialize()
             edges = await db.task.get_team_dependencies(tname) or []
             return [
@@ -687,4 +713,5 @@ class TeamMonitorHandler(BaseMonitorHandler):
             )
             return None
         finally:
-            reset_session_id(token)
+            if token is not None:
+                reset_session_id(token)

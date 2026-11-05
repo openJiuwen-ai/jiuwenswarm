@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
+from jiuwenswarm.agents.harness.common.tools import command_tools
 from jiuwenswarm.agents.harness.common.tools.command_tools import (
     _looks_like_posix,
     _resolve_execution_plan,
@@ -15,6 +17,8 @@ from jiuwenswarm.agents.harness.common.tools.command_tools import (
     _translate_posix_segment_for_powershell,
     _available_bash,
     _available_powershell,
+    _build_subprocess_env,
+    _runtime_python_dir,
 )
 
 
@@ -219,3 +223,45 @@ class TestResolveExecutionPlanNonWindows:
     def test_auto_routes_to_bash(self) -> None:
         plan, use_shell, resolved_shell = _resolve_execution_plan("mkdir -p dir", "auto")
         assert resolved_shell in ("bash", "sh")
+
+
+# ── _runtime_python_dir / Windows PATH hardening ────────────────────
+
+
+class TestRuntimePythonDir:
+    def test_custom_install_root_from_executable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """自定义盘安装（D:\\Application\\OfficeAce）由 sys.executable 直接解析。"""
+        python_dir = tmp_path / "tools" / "python"
+        python_dir.mkdir(parents=True)
+        (python_dir / "python.exe").write_bytes(b"")
+        monkeypatch.setattr(command_tools.sys, "executable", str(python_dir / "python.exe"))
+
+        assert _runtime_python_dir() == str(python_dir)
+
+    def test_venv_scripts_layout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        scripts = tmp_path / "venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "python.exe").write_bytes(b"")
+        monkeypatch.setattr(command_tools.sys, "executable", str(scripts / "python.exe"))
+
+        assert _runtime_python_dir() == str(scripts)
+
+    def test_skips_directory_without_python_exe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """冻结入口（同级没有 python.exe）不得向 PATH 注入无效目录。"""
+        exe_dir = tmp_path / "OfficeAce"
+        exe_dir.mkdir()
+        monkeypatch.setattr(command_tools.sys, "executable", str(exe_dir / "OfficeAce.exe"))
+
+        assert _runtime_python_dir() is None
+
+    def test_returns_none_for_empty_executable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(command_tools.sys, "executable", "")
+
+        assert _runtime_python_dir() is None
+
+
+class TestWindowsPathHardeningNonWindows:
+    def test_returns_none_on_non_windows(self) -> None:
+        if os.name == "nt":
+            pytest.skip("Non-Windows-only")
+        assert _build_subprocess_env(None) is None

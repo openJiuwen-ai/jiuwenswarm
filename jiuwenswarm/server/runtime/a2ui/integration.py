@@ -26,10 +26,43 @@ _A2UI_CONFIG_DEFAULT_PAYLOAD: dict[str, str] = {
 
 _A2UI_CHANNEL_ID = "web"
 
+# relay-claw 走 officeclaw channel，a2ui 对其原生生效（与 web 同等）。
+_A2UI_CHANNEL_IDS = frozenset({"web", "officeclaw"})
+
+# a2ui 流式 probe（pending render chunk）机制的适用渠道。
+# officeclaw (relay-claw) 启用 probe → suppress 自动激活（扣 a2ui delta + 原 chat.final
+# + 改写 is_complete，relay-claw 不 break）。probe 的 <a2ui-json>\n 占位帧会与 delta 拆分
+# 的 <a2ui 前半在累积 content 里拼接产生 -json> 污染，只能由前端 chat.final
+# replace_final 覆写（patchMessage({content}=finalized)）清掉。
+# 依赖关系（勿按"已部署"理解）：该前端能力在 relay-claw PR #5508 中实现，尚未合入
+# dev-stable/main、未部署。合入顺序必须 relay-claw 先行；在此之前 officeclaw 的
+# suppress 会把不可清洗的 <a2ui 前半 + probe 占位留在累积 content 里，属行为回退。
+# 若无法保证顺序，应把 officeclaw 的翻转收敛到配置开关，前端部署后再开启。
+_A2UI_PROBE_CHANNEL_IDS = frozenset({"web", "officeclaw"})
+
 
 def is_a2ui_channel(channel: str | None) -> bool:
     """Return whether the channel can natively run A2UI."""
-    return str(channel or "").strip().lower() == _A2UI_CHANNEL_ID
+    return str(channel or "").strip().lower() in _A2UI_CHANNEL_IDS
+
+
+def is_a2ui_probe_channel(channel: str | None) -> bool:
+    """Return whether the channel consumes A2UI streaming probe (pending render) chunks."""
+    return str(channel or "").strip().lower() in _A2UI_PROBE_CHANNEL_IDS
+
+
+# officeclaw (relay-claw) 启用服务端 A2UI repair/retry/finalize：
+# suppress 扣住原 chat.final（不上 wire）+ 改写 is_complete（relay-claw 不 break），
+# post-stream repair 后发送 finalized（前端首次收到，不是"重发"）。
+# 依赖 relay-claw PR #5508 的 chat.final a2ui replace_final / a2ui_resend 消费能力
+# （尚未合入 dev-stable/main、未部署）。合入顺序 relay-claw #5508 先行；否则 content
+# 仍按 delta 语义累积，probe 污染无法覆写清洗。
+_A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web", "officeclaw"})
+
+
+def should_finalize_repair(channel: str | None) -> bool:
+    """Return whether the channel runs server-side A2UI repair/retry/resend."""
+    return str(channel or "").strip().lower() in _A2UI_FINALIZE_REPAIR_CHANNEL_IDS
 
 
 def _to_bool(value: Any) -> bool:
@@ -71,15 +104,27 @@ def build_user_prompt_if_a2ui_event(
 
     Returns ``None`` when the payload is not an A2UI client event or when A2UI is
     disabled, allowing the normal user prompt builder to continue unchanged.
+    client_event 形态但被渠道/开关门控挡下时留 warning：此时 dict 会走普通
+    prompt 路径被 json.dumps 进提示词（模型可解读但非成品 prompt），日志便于定位
+    前后端开关不一致（如 env 单侧强开、YAML truthy 变体、关开关瞬间的竞态）。
     """
+    if not isinstance(content, dict) or content.get("type") != "a2ui.client_event":
+        return None
+
     if not is_a2ui_channel(channel):
+        logger.warning(
+            "A2UI client event received on non-a2ui channel %r; "
+            "falling back to raw-dict prompt (channel gate)",
+            channel,
+        )
         return None
 
     a2ui_config = _get_runtime_a2ui_config()
     if not a2ui_config.enabled:
-        return None
-
-    if not isinstance(content, dict) or content.get("type") != "a2ui.client_event":
+        logger.warning(
+            "A2UI client event received while a2ui disabled; "
+            "falling back to raw-dict prompt (feature gate)",
+        )
         return None
 
     return _build_a2ui_client_event_prompt(content, channel, language)
@@ -98,6 +143,14 @@ async def finalize_assistant_response_if_a2ui(
     if not is_a2ui_channel(channel):
         return content
 
+    # officeclaw (relay-claw) 启用 suppress + repair（与 web 对齐）：
+    # suppress 扣住原 chat.final + 改写 is_complete，post-stream repair 后
+    # 发送 finalized（前端首次收到）。覆写依赖 relay-claw PR #5508 的
+    # replace_final / a2ui_resend 消费（尚未合入 dev-stable/main、未部署），
+    # 合入顺序须 relay-claw 先行，否则累积的 <a2ui 前半 + probe 污染无法清洗。
+    if not should_finalize_repair(channel):
+        return content
+
     try:
         a2ui_config = _get_runtime_a2ui_config()
     except Exception:
@@ -113,6 +166,7 @@ async def finalize_assistant_response_if_a2ui(
         repair_call=repair_call if callable(repair_call) else None,
         a2ui_enabled=a2ui_config.enabled,
         retry_without_a2ui_call=retry_without_a2ui_call if callable(retry_without_a2ui_call) else None,
+        channel=channel,
     )
 
 

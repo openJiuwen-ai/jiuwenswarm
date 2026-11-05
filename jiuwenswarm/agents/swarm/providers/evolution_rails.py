@@ -714,7 +714,10 @@ class TeamTTSEInput(ConstructionInput):
     )
     dream_interval: int = param_field(
         default=50,
-        description="Non-follow-up iterations between dream attempts. Matches the single-agent default, not TTSEConfig's 20.",
+        description=(
+            "Non-follow-up iterations between dream attempts. "
+            "Matches the single-agent default, not TTSEConfig's 20."
+        ),
     )
     dream_min_hours: float = param_field(
         default=24.0,

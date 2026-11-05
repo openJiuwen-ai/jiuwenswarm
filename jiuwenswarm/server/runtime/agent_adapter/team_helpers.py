@@ -1104,9 +1104,10 @@ _TEAM_BUILDING_EVENT_TYPES = frozenset({
 })
 
 
-# 团队推理/正文按时间片合并后再广播。1 秒与 !1981 的 subagent
-# chat.delta 合并间隔相同；技能加速当前是 3 秒，子代理镜像是 0.3 秒或 200 字。
-_TEAM_DELTA_FLUSH_SECONDS = 1.0
+# 团队推理/正文按时间片合并后再广播。100 毫秒仍像流式；
+# 心跳靠帧数下降和发送缓冲让路，不必收成 1 秒一帧。
+# 技能加速当前是 3 秒，子代理镜像是 0.3 秒或 200 字。
+_TEAM_DELTA_FLUSH_SECONDS = 0.1
 _TEAM_DELTA_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
 _TEAM_DELTA_TERMINAL_EVENTS = frozenset({
     "chat.final",
@@ -1169,6 +1170,7 @@ class _TeamDeltaCoalescer:
         if not text:
             return
         key = self._bucket_key(event)
+        self._flush_other_kind(channel_id, session_id, key)
         self._flush_expired(channel_id, session_id, now, except_key=key)
         bucket = self._buckets.get(key)
         if bucket is None:
@@ -1195,6 +1197,18 @@ class _TeamDeltaCoalescer:
         keys = [key for key in self._buckets if key[0] == role and key[1] == member]
         for key in keys:
             self._flush_key(channel_id, session_id, key)
+
+    def _flush_other_kind(
+        self,
+        channel_id: str | None,
+        session_id: str,
+        key: tuple[str, str, str, str],
+    ) -> None:
+        """同一说话人、同一来源的另一种增量先发出，避免正文插到思考前面。"""
+        for other in list(self._buckets):
+            if other == key or not _same_team_speaker(key, other):
+                continue
+            self._flush_key(channel_id, session_id, other)
 
     def _flush_expired(
         self,
@@ -1227,6 +1241,14 @@ class _TeamDeltaCoalescer:
         bucket.parts = []
         bucket.since = time.monotonic()
         _broadcast_event(channel_id, session_id, merged)
+
+
+def _same_team_speaker(
+    key: tuple[str, str, str, str],
+    other: tuple[str, str, str, str],
+) -> bool:
+    """key 是 (role, member_name, event_type, stream_source_id)。"""
+    return (key[0], key[1], key[3]) == (other[0], other[1], other[3])
 
 
 def _broadcast_event(

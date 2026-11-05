@@ -108,6 +108,39 @@ async def test_finalize_a2ui_assistant_content_repairs_parseable_invalid_respons
 
 
 @pytest.mark.asyncio
+async def test_finalize_a2ui_assistant_content_never_returns_empty_when_repair_unavailable(monkeypatch):
+    """Regression for case #26 (2026-10-29): officeclaw stream finalize.
+
+    When the adapter has no model instance, repair_call returns None. That used
+    to coerce to "" and validate vacuously as "repaired", making the entry
+    return empty content. interface.py then skips the suppressed-final resend
+    and the persisted assistant message keeps only the probe residue
+    (prose + "<a2ui<a2ui-json>"), silently dropping the whole form.
+
+    The entry must always return non-empty content so the resend path fires.
+    """
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+
+    monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
+
+    async def repair_call(prompt: str):
+        return None
+
+    result = await finalize_a2ui_assistant_content(
+        INVALID_A2UI_RESPONSE,
+        user_query="帮我做订机票和订酒店两个表单",
+        request_id="req-repair-unavailable",
+        repair_call=repair_call,
+        a2ui_enabled=True,
+    )
+
+    assert isinstance(result, str)
+    assert result.strip() != ""
+    # 降级不得保留破损协议块（前端会把它当正文/污染）
+    assert "<a2ui-json>" not in result
+
+
+@pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_leaves_valid_response_unchanged(monkeypatch):
     from jiuwenswarm.server.runtime.a2ui.runtime import response_finalization
     from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content

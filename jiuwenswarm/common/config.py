@@ -165,19 +165,23 @@ def _normalize_flash_config(config: dict[str, Any]) -> None:
     flash = config.get("flash")
     if not isinstance(flash, dict):
         return
+    evolution = flash.get("evolution")
+    skill_sleep = evolution.get("skill_sleep") if isinstance(evolution, dict) else None
     switches = (
-        (flash, "JIUWENSWARM_FLASH_ENABLED"),
-        (flash.get("skill_selection"), "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED"),
+        (flash, "JIUWENSWARM_FLASH_ENABLED", False),
+        (flash.get("skill_selection"), "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", False),
+        (evolution, "JIUWENSWARM_FLASH_EVOLUTION_ENABLED", False),
+        (skill_sleep, "JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED", True),
     )
-    for section, env_name in switches:
+    for section, env_name, default_value in switches:
         if not isinstance(section, dict):
             continue
-        value = section.get("enabled", False)
+        value = section.get("enabled", default_value)
         if isinstance(value, bool):
             # 旧 YAML / provider 的布尔值仅作回退；复用与模板相同的占位符解析。
             default = str(value).lower()
             value = resolve_env_vars("${" + env_name + ":-" + default + "}")
-        section["enabled"] = coerce_config_bool(value, default=False)
+        section["enabled"] = coerce_config_bool(value, default=default_value)
 
 
 def resolve_config_env_vars(config: dict[str, Any]) -> dict[str, Any]:
