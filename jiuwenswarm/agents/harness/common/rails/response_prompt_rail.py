@@ -240,10 +240,12 @@ class ResponsePromptRail(DeepAgentRail):
                             "cn": build_a2ui_prompt_section(
                                 "cn",
                                 include_browser_workflows=include_browser_workflows,
+                                channel=channel,
                             ),
                             "en": build_a2ui_prompt_section(
                                 "en",
                                 include_browser_workflows=include_browser_workflows,
+                                channel=channel,
                             ),
                         },
                         priority=PromptPriority.A2UI,
