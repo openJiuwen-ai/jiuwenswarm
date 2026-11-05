@@ -376,104 +376,6 @@ def _complete_history_request(
     return completion_receipt
 
 
-def _session_message_owns_completion(request: AgentRequest) -> bool:
-    """Session-message turns get their terminal row from AgentWebSocketServer."""
-
-    params = request.params if isinstance(request.params, dict) else {}
-    return isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) or bool(
-        getattr(request, "trusted_session_message_route", None)
-    )
-
-
-_COMPLETION_ANNOUNCEMENTS: set[asyncio.Task[None]] = set()
-
-# A writer that died (or a saturated history queue) must not hold the turn open forever.
-_HISTORY_RECEIPT_WAIT_SECONDS = 30.0
-
-
-async def _await_history_receipt(completion_receipt: Future[None]) -> None:
-    """Wait for the terminal row to reach disk, bounded, without cancelling the writer.
-
-    Shielded: cancelling this wait must not cancel the writer's receipt. A wait that times
-    out leaves the receipt to resolve on its own and lets the turn finish.
-    """
-
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(asyncio.wrap_future(completion_receipt)),
-            timeout=_HISTORY_RECEIPT_WAIT_SECONDS,
-        )
-    except TimeoutError:
-        logger.warning(
-            "history completion receipt not confirmed within %.0fs",
-            _HISTORY_RECEIPT_WAIT_SECONDS,
-        )
-
-
-def _announce_durable_completion(
-    session_id: str,
-    request_id: str,
-    completion_receipt: Future[None],
-) -> None:
-    """Tell the gateway once the request's terminal row is on disk.
-
-    A gateway that stopped waiting for the request (cancel, transport error)
-    has no other way to learn when AgentServer finishes unwinding it.
-    """
-
-    loop = asyncio.get_running_loop()
-
-    def announce() -> None:
-        task = loop.create_task(WebSocketGatewayPushTransport().send_push({
-            "channel_id": "",
-            "session_id": session_id,
-            "request_id": request_id,
-            "payload": {"event_type": SESSION_REQUEST_COMPLETED_EVENT},
-        }))
-        _COMPLETION_ANNOUNCEMENTS.add(task)
-        task.add_done_callback(_COMPLETION_ANNOUNCEMENTS.discard)
-        from jiuwenswarm.server.runtime.recommendation_host import (
-            active_recommendation_host,
-        )
-
-        host = active_recommendation_host()
-        if host is not None:
-            try:
-                host.on_chat_completed(session_id, request_id)
-            except Exception:  # noqa: BLE001 - replenishment must not block the receipt
-                logger.warning(
-                    "topic replenishment after completion failed: session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
-
-    # Observe the receipt with a done callback so no cancelled waiter can
-    # cancel the receipt the history writer still has to resolve.
-    def on_written(receipt: Future[None]) -> None:
-        if not receipt.cancelled() and receipt.exception() is None:
-            loop.call_soon_threadsafe(announce)
-
-    completion_receipt.add_done_callback(on_written)
-
-
-def _complete_history_request(
-    session_id: str,
-    request_id: str,
-    *,
-    terminal_status: str = "success",
-) -> Future[None] | None:
-    """Persist the request boundary, then announce it to the gateway once durable."""
-
-    completion_receipt = enqueue_history_request_completion(
-        session_id,
-        request_id,
-        terminal_status=terminal_status,
-    )
-    if completion_receipt is not None:
-        _announce_durable_completion(session_id, request_id, completion_receipt)
-    return completion_receipt
-
-
 def _history_user_content(params: Any, query: Any) -> Any:
     """返回写入历史记录的用户消息内容.
 
@@ -2629,21 +2531,11 @@ class JiuWenSwarm:
             )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
-        card_ids = (
-            _permission_card_ids_from_answers(answers)
-            if source == "permission_interrupt" else []
-        )
-        if not card_ids:
+        if source == "permission_interrupt" and _validate_permission_card_alias(request_id, answers):
+            # The Smart queue reserves its head by tool call id.
+            interactive_input.update(request_id, confirm_payload)
+        else:
             address(confirm_payload)
-            return interactive_input
-        # A Smart queue card is answered by its own id; the queue re-keys it.
-        interactive_input.update(card_ids[0], confirm_payload)
-        logger.info(
-            "[JiuWenSwarm] PermissionRail card InteractiveInput.update: "
-            "request_id=%s card_id=%s",
-            request_id,
-            card_ids[0],
-        )
         return interactive_input
 
     async def _handle_skilldev_request(self, request: AgentRequest) -> AgentResponse | None:

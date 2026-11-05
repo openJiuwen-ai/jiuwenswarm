@@ -319,8 +319,7 @@ def test_native_approval_preserves_long_call_alias(size):
     assert answers[0]["card_id"] == call_id
 
 
-@pytest.mark.parametrize("mode,work_mode", [("agent", "work"), ("team.design", "")])
-def test_answer_input_preserves_permission_card_id(mode, work_mode):
+def test_answer_input_preserves_permission_card_id():
     request = AgentTaskExecutor.answer_input({
         "request_id": "video-core-1",
         "core_session_id": "core-session",
@@ -347,22 +346,6 @@ def test_answer_input_preserves_permission_card_id(mode, work_mode):
     },)
     assert request.interrupt_id == "intr-approval"
     assert request.to_agent_request().params["interrupt_id"] == "intr-approval"
-
-
-def test_projected_questions_keep_the_interrupt_id_of_the_event():
-    voice = information_question(dict(
-        request_id="q", interrupt_id="intr-q", source="ask_user_interrupt",
-        questions=[{"question": "预算？"}],
-    ))
-    native = native_approval_question({
-        "request_id": "core-approval", "interrupt_id": "intr-approval", "source": "permission_interrupt",
-        "questions": [{"question": "允许执行？"}],
-    })
-    legacy = information_question(dict(request_id="q", source="ask_user_interrupt", questions=[{"question": "预算？"}]))
-
-    assert voice["interrupt_id"] == "intr-q"
-    assert native["interrupt_id"] == "intr-approval"
-    assert legacy["interrupt_id"] == ""
 
 
 def test_projected_questions_keep_the_interrupt_id_of_the_event():
@@ -408,7 +391,7 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path,
         task = submit(service, "native-permission")
         await until(lambda: store.read(task["id"])["status"] == "waiting_user"
                     and store.read(task["id"])["output_closed"])
-        answer = [{"question": "允许执行？", "custom_input": "", "selected_options": ["allow"]}]
+        answer = [{"selected_options": ["allow_once"], **answer_extra}]
         with pytest.raises(ValueError, match="card options"):
             await service.answer("user", "voice", task["id"], "voice-answer", token(service, task), answers=answer)
         with pytest.raises(ValueError):

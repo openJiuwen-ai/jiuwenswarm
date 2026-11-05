@@ -143,11 +143,6 @@ export function DesignerChatPanel() {
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
-
-  // Design has no model switch: a missing chat model means no leader round can
-  // run at all, so warn here instead of failing only after the user sends
-  // (#5266). Re-checked when the model catalog size changes or a config change
-  // is pushed, since generation-slot switches never change the catalog.
   const ensureDuplexSession = useCallback(async () => {
     if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
     try {
@@ -160,6 +155,10 @@ export function DesignerChatPanel() {
     }
   }, [sessionId, domainGraph, t]);
 
+  // Design has no model switch: a missing chat model means no leader round can
+  // run at all, so warn here instead of failing only after the user sends
+  // (#5266). Re-checked when the model catalog size changes or a config change
+  // is pushed, since generation-slot switches never change the catalog.
   const [blockedProblem, setBlockedProblem] = useState('');
   const [configRevision, setConfigRevision] = useState(0);
   useEffect(() => {

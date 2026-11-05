@@ -233,13 +233,13 @@ def test_an_answer_without_an_interrupt_id_is_addressed_to_the_tool_call() -> No
     assert interactive.interrupt_answers == {}
 
 
-def test_a_smart_card_answer_stays_keyed_by_its_card_id() -> None:
+def test_a_smart_card_answer_stays_keyed_by_the_request_id() -> None:
     interactive = JiuWenSwarm._build_interactive_input_from_answers(
         "batch-call-1",
-        [{"selected_options": ["本次允许"], "card_id": "batch-invocation-1"}],
+        [{"selected_options": ["本次允许"], "card_id": "batch-call-1"}],
         source="permission_interrupt",
         interrupt_id="intr-1",
     )
 
-    assert set(interactive.user_inputs) == {"batch-invocation-1"}
+    assert set(interactive.user_inputs) == {"batch-call-1"}
     assert interactive.interrupt_answers == {}
