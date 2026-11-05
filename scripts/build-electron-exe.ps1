@@ -617,11 +617,13 @@ New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 # Copy the mature Electron desktop shell (main.cjs, preload.cjs, launch.cjs, target_mcp_wrapper.cjs)
 Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "target_mcp_wrapper.cjs") -Destination $AppDir -Force
 
@@ -724,9 +726,11 @@ if ($FrontendOnly) {
 $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
+    (Join-Path $AppDir "update_shutdown.cjs"),
     (Join-Path $AppDir "cdp_port.cjs"),
     (Join-Path $AppDir "browser_downloads.cjs"),
     (Join-Path $AppDir "browser_download_bubble.cjs"),
+    (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
     (Join-Path $AppDir "dist\bubble.html"),

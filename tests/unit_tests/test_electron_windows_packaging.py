@@ -10,6 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.common.update_shutdown import (
+    complete_shutdown_receipt,
+    create_shutdown_receipt,
+    require_clean_shutdown,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -159,23 +164,43 @@ def test_normal_upgrade_does_not_run_uninstall_config_cleanup():
     assert '--desktop-reset-external-cli-config' not in prepare
 
 
-def test_windows_update_helper_waits_then_launches_interactive_installer(tmp_path):
+@pytest.mark.parametrize("receipt_state", ["ok", "missing", "pending", "failed"])
+def test_windows_update_helper_waits_then_launches_interactive_installer(tmp_path, receipt_state):
     # Isolate the real helper function from optional GUI imports.
     source = (ROOT / "jiuwenswarm/channels/desktop/desktop_app.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                     and node.name == "_launch_windows_installer_helper")
     events = []
+
+    def port_released(_host, port, **_kwargs):
+        events.append(("port", port))
+        return True
+
     env = {
         "Path": Path, "logger": logging.getLogger(__name__),
         "BACKEND_PORT": 19000, "FRONTEND_PORT": 5173,
         "BACKEND_HOST": "127.0.0.1", "FRONTEND_HOST": "127.0.0.1",
         "wait_for_pid_exit": lambda pid: events.append(("parent", pid)),
-        "_wait_for_port_release": lambda host, port, **kw: events.append(("port", port)),
+        "require_clean_shutdown": require_clean_shutdown,
+        "_shutdown_runtime_before_update": lambda: events.append(("worker", "closed")),
+        "_wait_for_port_release": port_released,
         "subprocess": SimpleNamespace(DEVNULL=-3, Popen=lambda args, **kw: events.append(("launch", args, kw))),
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), "helper", "exec"), env)
     target = tmp_path / "WorkSwarm setup.exe"
-    env[function.name](str(target), "WorkSwarm.exe", 123, 19001, 5174)
-    assert events[:3] == [("parent", 123), ("port", 19001), ("port", 5174)]
-    assert events[3] == ("launch", [str(target.resolve())], {"stdout": -3, "stderr": -3})
+    receipt = tmp_path / "missing.result"
+    if receipt_state != "missing":
+        receipt = create_shutdown_receipt(tmp_path)
+        if receipt_state in {"ok", "failed"}:
+            complete_shutdown_receipt(receipt, ok=receipt_state == "ok")
+    if receipt_state != "ok":
+        with pytest.raises(RuntimeError, match="Update refused"):
+            env[function.name](str(target), "WorkSwarm.exe", 123, 19001, 5174,
+                               shutdown_receipt=str(receipt))
+        assert events == [("parent", 123)]
+        return
+    env[function.name](str(target), "WorkSwarm.exe", 123, 19001, 5174,
+                       shutdown_receipt=str(receipt))
+    assert events[:4] == [("parent", 123), ("worker", "closed"), ("port", 19001), ("port", 5174)]
+    assert events[4] == ("launch", [str(target.resolve())], {"stdout": -3, "stderr": -3})

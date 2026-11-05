@@ -1341,7 +1341,7 @@ class AgentWebSocketServer:
         # dispatch occurs before the legacy handler chain below.
         self._adapter_registry = AdapterRegistry()
         for adapter in (
-            VoiceTaskServerAdapter(),
+            VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
@@ -2207,6 +2207,20 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        # Runtime startup owns the preparation registry and heartbeat services.
+        # Join it before releasing those resources, including a completed task
+        # whose exception still needs to be retrieved.
+        warmup = self._checkpointer_warmup_task
+        self._checkpointer_warmup_task = None
+        if warmup is not None:
+            if not warmup.done():
+                warmup.cancel()
+            try:
+                await warmup
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
         close_client_attachments()
         await self._stop_recommendation_host()
         preparation = getattr(self, "_preparation_registry", None)
@@ -2268,17 +2282,6 @@ class AgentWebSocketServer:
         session_message_service = getattr(self, "_session_message_service", None)
         if session_message_service is not None:
             await session_message_service.stop()
-        # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
-        warmup = self._checkpointer_warmup_task
-        self._checkpointer_warmup_task = None
-        if warmup is not None and not warmup.done():
-            warmup.cancel()
-            try:
-                await warmup
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[AgentWebSocketServer] checkpointer warmup cancel failed: %s", exc)
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
         mcp_prewarm = self._mcp_prewarm_task
@@ -2366,7 +2369,7 @@ class AgentWebSocketServer:
                 self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
-                    VoiceTaskServerAdapter(),
+                    VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),

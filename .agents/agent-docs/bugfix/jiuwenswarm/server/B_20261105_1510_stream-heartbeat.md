@@ -89,6 +89,16 @@ Issue #6093 的视频合成案例暴露业务循环同步等待时，通信心�
 
 上述为本地行为证据，不等同于修订后 Linux 全量 UT 或远端 CodeCheck 通过。按仓库约束未运行本地格式化或静态检查；原始附件、复现日志和 XML 结果保存在工作区外 `.codex-temp/stream-heartbeat-ci-20261105`。
 
+### 同步 develop 的 Worker 退出清理改动
+
+再次合入远端 develop `3022087e9294b466dd4cc1c2bf993a471a748686`，解决 Supervisor、诊断 Worker fixture 和 IPC 故障测试三处冲突：
+
+- Supervisor 采用上游统一退出期限与强制退出结果记录，保留为强制终止后观察进程退出预留预算的约束；本 PR 的独立心跳、业务归因和诊断失败隔离继续有效。
+- 诊断 fixture 采用上游 `configure(mode)` 入口，同时保留 `heartbeat-loss` 和 `freeze-long` 模式。
+- 故障测试通过上游的 `sitecustomize` 向生产 `jiuwenswarm.server.worker.main` 入口注入 Runtime fixture，移除旧的启动命令替换，兼容上游新增的部署身份和退出校验。
+
+合并后的 Windows / Python 3.11.15 回归：19 个 Worker/IPC/身份/退出/恢复文件，397 passed、13 skipped、16 deselected；四个真实进程场景全部通过。resident 与 loopback 缺失心跳时约 30.2 秒触发超时，loopback 业务阻塞 60 秒仍保持同一 Worker 并完成排队请求；默认 180 秒场景约 180.359 秒触发恢复，首条告警及重启日志保留业务归因，新 Worker 完成后续请求。原生 Unix socket 和 POSIX 信号用例仍需对应平台 CI；本轮未重复此前 `9c549e6c6` 的真实模型/浏览器截图验收。原始结果保存在工作区外 `.codex-temp/stream-heartbeat-conflict-20261105`。
+
 ## 防错模式与资料同步
 
 同步中英文日志说明和当前 IPC spec。关键回归覆盖普通业务帧不得终止心跳读取，以及首条告警必须已有实际阻塞业务上下文。记录仅保留标识与栈位置，并在消费端重新限制大小与字段。

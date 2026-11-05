@@ -26,6 +26,8 @@ def _make_adapter(
     monkeypatch.setattr(interface_deep, "get_config", lambda: config)
     monkeypatch.setattr(interface_deep, "is_paid_search_enabled", lambda: False)
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = None
+    adapter._is_session_scoped_adapter = False
     adapter._config_base_cache = config
     adapter._skill_manager = None
     adapter._vision_model_config = None
@@ -40,6 +42,7 @@ def _make_adapter(
     adapter._tool_retrieval_session_enabled = False
     adapter._iter_runtime_audio_tools = lambda agent_id: []
     adapter._skill_retrieval_tools_enabled_for_runtime = lambda config_base: False
+    adapter._tool_retrieval_tools_enabled_for_runtime = lambda config_base: False
     adapter._register_shared_tool = lambda tool: None
     registered: dict[str, Any] = {}
     adapter._register_agent_owned_tool = lambda tool, owner_id: registered.update(

@@ -361,6 +361,27 @@ async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
     assert details.session_message_id is None
 
 
+@pytest.mark.parametrize("browser_attached", [False, True])
+@pytest.mark.parametrize("managed_design", [False, True])
+def test_managed_design_request_keeps_its_own_result_waiter(monkeypatch, browser_attached, managed_design):
+    from jiuwenswarm.agents.harness import team
+
+    monkeypatch.setattr(team, "get_team_manager", lambda _: SimpleNamespace(
+        has_interactive_waiter=lambda _: browser_attached,
+    ))
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    request = AgentRequest(
+        request_id="voice-task", channel_id="video_tool", session_id="design-chat",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "team.design", **({"managed_task_binding": {"endpoint": "gateway", "task_id": "task"}}
+                                         if managed_design else {})},
+    )
+    kind = runtime._team_waiter_kind(request, work_kind=SessionWorkKind.TEAM_REQUEST, background=False)
+    expected = (TeamWaiterKind.REQUEST if managed_design else
+                TeamWaiterKind.NONE if browser_attached else TeamWaiterKind.PERSISTENT)
+    assert kind is expected
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("work_mode", ["work", "code"])
 async def test_stale_team_attachment_does_not_execute_or_preempt_heartbeat(
@@ -3210,6 +3231,32 @@ async def test_runtime_context_is_inherited_by_child_tasks_and_isolated() -> Non
 
 
 @pytest.mark.asyncio
+async def test_unary_receipt_cleanup_failure_still_resets_runtime_context(monkeypatch) -> None:
+    from jiuwenswarm.extensions.video_duplex.backend import session_receipts
+
+    async def initialize() -> None:
+        return None
+
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(), initializer=initialize,
+        plan_controller=FakePlanController(),
+    )
+    monkeypatch.setattr(runtime, "_is_session_input_request", lambda _: False)
+    monkeypatch.setattr(runtime, "session_work_kind", lambda _: None)
+    monkeypatch.setattr(runtime, "_invoke_started", AsyncMock(return_value=[]))
+
+    def fail_cleanup(_):
+        assert get_current_runtime() is runtime
+        raise RuntimeError("receipt cleanup failed")
+
+    monkeypatch.setattr(session_receipts, "finish_request", fail_cleanup)
+    previous = get_runtime_context()
+    with pytest.raises(RuntimeError, match="receipt cleanup failed"):
+        await runtime.invoke(_chat_request("cleanup-failure"))
+    assert get_runtime_context() is previous
+
+
+@pytest.mark.asyncio
 async def test_runtime_context_is_available_during_early_stream_close() -> None:
     manager = FakeAgentManager()
     observed: list[tuple[object, object]] = []
@@ -4158,6 +4205,69 @@ async def test_agent_server_stop_replaces_runtime_after_closed_cleanup_error(
     assert previous_runtime.closed is True
     assert server.get_runtime() is not previous_runtime
     assert server.get_runtime().agent_manager is server.get_agent_manager()
+
+
+@pytest.mark.asyncio
+async def test_agent_server_stop_joins_startup_before_closing_preparation(
+    monkeypatch,
+) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = AgentWebSocketServer()
+    runtime = server.get_runtime()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+
+    async def start_runtime() -> None:
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            order.append("startup_finished")
+
+    runtime.start = AsyncMock(side_effect=start_runtime)
+    server._heartbeat_runtime.start = AsyncMock()
+    server._on_runtime_ready = MagicMock()
+    server._bootstrap_internal_jiuwenbox = AsyncMock()
+    await server.start()
+    warmup = server._checkpointer_warmup_task
+    await asyncio.wait_for(entered.wait(), 1)
+    preparation = server._preparation_registry
+    close_preparation = preparation.close
+
+    async def close_and_release() -> None:
+        await close_preparation()
+        order.append("preparation_closed")
+        release.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(preparation, "close", close_and_release)
+    await server.stop()
+
+    assert order == ["startup_finished", "preparation_closed"]
+    assert warmup.cancelled()
+    assert server._checkpointer_warmup_task is None
+    server._on_runtime_ready.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_server_stop_retrieves_completed_startup_failure(caplog) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = AgentWebSocketServer()
+
+    async def fail_startup() -> None:
+        raise RuntimeError("startup failed before stop")
+
+    warmup = asyncio.create_task(fail_startup(), name="runtime-start")
+    server._checkpointer_warmup_task = warmup
+    await asyncio.wait({warmup})
+    with caplog.at_level(logging.WARNING):
+        await server.stop()
+
+    assert "checkpointer warmup stop failed: startup failed before stop" in caplog.text
+    assert server._checkpointer_warmup_task is None
 
 
 @pytest.mark.asyncio

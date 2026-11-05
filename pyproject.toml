@@ -189,6 +189,8 @@ namespaces = false
 "*" = ["LICENSE"]
 jiuwenswarm = [
     "channels/process_cli/protocol/schema.json",
+    "agents/harness/common/auto_harness/issue_fix/code_rule.txt",
+    "server/runtime/agent_adapter/browser_runtime_network_guard.js",
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
@@ -211,6 +213,8 @@ jiuwenbox = [
 
 [tool.setuptools.exclude-package-data]
 jiuwenswarm = [
+    "resources/.env",
+    "resources/*.lock",
     "channels/web/frontend/node_modules/**",
     "channels/web/frontend/node_modules/*",
     "resources/agent/workspace/skills/project-maintainer/**/*",
