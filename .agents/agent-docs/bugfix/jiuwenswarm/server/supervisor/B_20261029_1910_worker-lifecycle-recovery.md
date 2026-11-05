@@ -29,6 +29,8 @@ files:
   - jiuwenswarm/channels/desktop/electron/main.cjs
   - scripts/jiuwenswarm.spec
   - tests/unit_tests/agentserver/test_worker_legacy_compatibility.py
+  - tests/unit_tests/scripts/test_electron_lifecycle_assembly.py
+  - tests/unit_tests/test_electron_windows_packaging.py
 designs: []
 design_note: 修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。
 ---
@@ -193,3 +195,52 @@ foundation `5c5b09d468e2132a91aa091057bd8e74892ca363`，本轮八个文件定向
 不能把上述通过结果解释为原始 locked 安装已修复或原生平台、云端 CodeCheck 已验收。
 
 原生 DMG/EXE 的真实打包退出及升级，需要对应平台使用该 PR 当前提交构建后复验。#5964 原机器的物理内存/SDK 初始化触发原因仍需要同进程时间线与系统事件证据；本修复覆盖已复现的日志 sink 阻塞风险和不可自行恢复的状态机。
+
+## 2026-11-05 develop 提交整理与复验
+
+本轮以 develop `260657025fa74f9ee8235c06678716f779bf1066` 合入既有 PR !9259，
+通用资源与测试修正提交为 `a3bb602da`。验证期间主干推进到
+`ccb7569f7096a6ec52b7f8a3c0d8f508a6e7a5f5`，仅修正英文 SUMMARY 的文档链接大小写，
+已合入为 `8f1f4c81a`；没有改变已验证的生产逻辑或依赖。
+
+与此前临时装配区分，本候选保留主干的依赖声明与锁文件：Core 为 `4dbaa84ca568af3f181da4f9cd26b713a5b73039`，
+Gateway 为 `a9e4d447033f0eadf5e8583c06cfb8993e01e539`，foundation 为 `d4a8761c8a561b1ee1b8a4333def0077b308e709`。
+Windows / Python 3.11.15 下使用缓存执行 `uv sync --locked --extra dev --extra cua` 成功，
+解析 330 个包，安装环境的 306 个分发包通过依赖一致性核查。首次在线安装因 PyPI 网络超时
+失败，离线重试未修改依赖声明或锁文件；实际导入位置为本候选源码及该候选独立环境。
+
+此前本地装配中确认必要的资源补齐本次进入生产 PR：WHL/sdist 携带 browser network guard
+和 code rules；冻结后端还明确携带 Process CLI schema、Designer skills、独立 Gateway 的
+动态模块、YAML 与分发元数据。冻结资源排除根目录真实 `.env`、运行锁和各层 `__pycache__`，
+保留 `.env.template`、嵌套技能目录及项目维护技能的既有排除规则。本地 Gateway 路径、临时
+Gateway 版本和为验收包固定的新 Core 等依赖覆盖仍未进入 PR。
+
+整套定向执行 766 项：753 passed、12 skipped、1 failed。唯一失败为升级助手旧夹具缺少
+新的 `require_clean_shutdown` 依赖、关闭成功凭据及端口已释放返回值，和历史云端 UT 报告中
+的同一消费方失败一致；该云端 HTML 的实际 GIT_COMMIT 为 `b0cb684c`，不能归给当前 HEAD。
+夹具现使用真实凭据函数，分别检查 missing/pending/failed 时不启动安装器，以及成功时先
+确认 Worker 关闭、等待端口释放再启动安装器。资源收集测试归并到已有的装配测试文件。
+受影响用例复验 33 passed；期间没有修改生产代码。合并去重并移除被替换的旧夹具后，
+现行验证用例集合为 757 passed、12 skipped；不是把一次失败运行改写成整套一次通过。
+跳过项均为 Windows 下不适用的 Unix socket、POSIX 进程组或不同平台的心跳场景。
+Electron 全部现有测试为 99 passed、1 skipped。本地没有运行格式化或静态检查。
+
+另以真实 Runtime、真实控制台中断和操作系统进程句柄验证 3 项：加载中连续 Ctrl+C、
+AGENT_READY 后连续 Ctrl+C、只终止 Front 后重连同一 PID/创建时间的 Worker 再显式最终关闭。
+三项 Worker 退出码均为 0，作用域内无进程、监听或原有异步/I/O 清理异常；没有调用真实模型。
+源码重连探针最初沿用 WHL 构建身份前置检查，在启动产品进程前即失败，随后改为严格核验
+当前源码导入位置并重跑通过；没有为源码伪造安装包身份。
+
+实际构建的资源核查用 WHL 与 sdist 均比对 29 个运行旁置文件；WHL 另通过 1,849 项 RECORD
+哈希，两个分发物均保留模板并排除真实 `.env` 与运行锁。这组产物未构建前端，不作为完整
+桌面交付包。真实 PyInstaller 收集 hook 在本候选锁定环境中得到 Gateway 509 个模块、
+3 个 YAML、分发元数据及 Designer 26 个技能文件；这不替代当前候选的原生后端重编译验收。
+
+此前交付的完整 Windows 成品为 `de90750a592049662881561e384fc23c1a8336ad` 装配，基于
+develop `26acdaddae1fa0daf0f888f8012f0284a2548204` 和相同 PR `8383acc6a`，Core 为
+`8ede5297c9e6dea59337b6ea9d2fc81c803a7bee`，配套 Gateway 为本地元数据版本。
+其 EXE 3 项、已安装 WHL 5 项进程验收全部通过，Worker 均退出 0，无相关残留；EXE 原生
+关闭窗口选择退出由用户点击后自动核验，另外两项由应用既有 IPC 触发正式退出。完整成品
+的依赖覆盖和实际构建身份不同于本候选，只作为对应成品的独立证据。原生 macOS/DMG、
+openEuler、真实模型和覆盖安装升级仍未验收，#6063 不随本 PR 关闭。当前 HEAD 的远端
+CodeCheck/全仓 UT 以推送后的独立结果为准，不沿用历史云端结果。

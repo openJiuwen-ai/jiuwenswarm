@@ -17,6 +17,9 @@ files:
   - jiuwenswarm/server/worker/service.py
   - jiuwenswarm/server/ipc/stream.py
   - jiuwenswarm/server/agent_ws_server.py
+  - scripts/jiuwenswarm.spec
+  - pyproject.toml
+  - MANIFEST.in
 ---
 
 # Runtime Worker 生命周期与恢复规约
@@ -31,6 +34,12 @@ Supervisor 负责连接、验证、故障分类及恢复；Worker 负责 Runtime
 2. HELLO 通过协议、数据/部署/代码身份和进程创建时间校验后才可分发请求或行使退出权限。代码身份包含安装依赖观察；WHL 与原生后端构建 ID 区分同源码重新构建。受控成品在构建时校验内容，运行时读取成品身份并观察实际依赖，源码运行继续校验内容。
 3. 历史端点未知归属不阻断新部署的独立端点启动，也不自动获得清理权。Python 无部署身份的历史进程必须由操作者显式指定 PID，继续经过 OS 用户、解释器、模块和 socket 参数验证；不同已声明部署不可被接管。
 4. resident 连接、关闭、替换采用端点启动锁；进程生命周期锁释放与 PID 退出均须可观察。PID 创建时间变化时禁止强杀。front_loopback 校验一次性连接的 generation 和部署/构建身份，退出仍核验创建时间；已回收附属 Worker 的 PID 被复用时只清除旧身份。
+
+## 分发资源
+
+1. WHL、sdist 和冻结后端须保留运行时按模块相邻路径读取的 browser network guard、code rules、Process CLI schema 和 Designer skills；嵌套技能文件保持原目录关系。
+2. 独立 Gateway 的动态导入模块、运行 YAML 与分发元数据须进入冻结后端。依赖版本来自对应候选的声明及锁文件，不能依赖构建机额外挂载的源码。
+3. 资源根目录的真实 `.env`、运行锁及 `__pycache__` 不进入冻结成品；保留模板与运行必需资源。资源完整性、实际 Runtime 就绪及进程退出分别验证，不能互相替代。
 
 ## 最终关闭与升级
 

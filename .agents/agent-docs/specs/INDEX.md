@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: 刘瑜
-author_email: liuyu524@huawei.com
+author: xinyang_bali
+author_email: 835397263@qq.com
 generated: true
 ---
 
@@ -49,7 +49,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
+| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, scripts/jiuwenswarm.spec, pyproject.toml, MANIFEST.in | — |
 
 <a id="module-4"></a>
 
@@ -81,7 +81,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
+| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, scripts/jiuwenswarm.spec, pyproject.toml, MANIFEST.in | — |
 
 <a id="module-8"></a>
 
@@ -99,7 +99,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
+| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, scripts/jiuwenswarm.spec, pyproject.toml, MANIFEST.in | — |
 
 <a id="module-10"></a>
 
@@ -107,7 +107,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py | — |
+| [S_01_worker-lifecycle](jiuwenswarm/server/supervisor/S_01_worker-lifecycle.md) | S | Runtime Worker 生命周期与恢复规约 | 刘瑜 | jiuwenswarm/server/supervisor, jiuwenswarm/server/worker, jiuwenswarm/server/ipc, jiuwenswarm/channels/desktop | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/resident_lifecycle.py, jiuwenswarm/server/supervisor/shutdown.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/worker/service.py, jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/agent_ws_server.py, scripts/jiuwenswarm.spec, pyproject.toml, MANIFEST.in | — |
 
 <a id="module-11"></a>
 
