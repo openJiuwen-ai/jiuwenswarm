@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from jiuwenswarm.common.schema.message import Message
@@ -66,3 +68,37 @@ def test_webui_render_frames_preserve_complete_payload(
         **payload,
         "session_id": "webui-session",
     }
+
+
+@pytest.mark.parametrize("session_id", ["", "webui-session"])
+async def test_install_notification_preserves_package_ids_on_web_downlink(session_id: str) -> None:
+    channel = object.__new__(WebChannel)
+    socket = object()
+    channel._session_busy = {}
+    channel._clients_by_key = {}
+    channel._ws_by_id = {"ws-1": socket, "ws-other": object()}
+    channel._a4p_rebound_ws = {}
+    channel._broadcast_to = AsyncMock()
+    payload = {
+        "event_type": "extensions.v2.installed",
+        "package_ids": ["sample.counter", "another.pkg"],
+        "session_id": session_id,
+    }
+    message = Message(
+        id="extension-installed-test",
+        type="event",
+        channel_id="web",
+        session_id=session_id or None,
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload=payload,
+        metadata={"ws_id": "ws-1"},
+    )
+
+    await channel.send(message)
+
+    channel._broadcast_to.assert_awaited_once()
+    frame, clients = channel._broadcast_to.await_args.args
+    assert frame == {"type": "event", "event": "extensions.v2.installed", "payload": payload}
+    assert len(clients) == 1 and next(iter(clients)) is socket

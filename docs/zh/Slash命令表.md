@@ -68,6 +68,7 @@
 
 安装只接受现有 `.zip` 文件的绝对路径，不接受目录。支持直接粘贴含空格的路径，也兼容外层引号。
 这是按路径读取文件，不会通过浏览器上传文件；远程部署时，需要先将 ZIP 放到运行服务能读取的位置。
+AgentServer 扩展包安装成功后，已打开会话中的 WebUI 槽位会自动重新就绪，显示插件界面无需手动刷新网页。
 安装成功后，按响应中的“安装目录”修改代码，再执行 `/extension reload demo.pkg`。
 安装位置由 `config.yaml` 的 `extensions.install_dir` 决定，默认是
 `~/.jiuwenswarm/extension_pkgs/<package_id>/<version>/`，以响应的实际路径为准。

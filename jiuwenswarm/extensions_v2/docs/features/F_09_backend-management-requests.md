@@ -47,7 +47,7 @@ sequenceDiagram
     G-->>W: 查询事实或逐包结果
 ```
 
-`PackageManagementAdapter.handle(request: AgentRequest) -> AgentResponse` 只做校验、调用和编码。
+`PackageManagementAdapter.handle(request: AgentRequest) -> AgentResponse` 负责校验、调用、编码及成功安装后的界面通知。
 查询返回 `state`；写操作返回 `reports` 数组，卸载和重载各一份。
 取得 Report 时响应 `ok=True`，操作是否成功由 Report 的 `status` 决定。
 门面不可用或参数错误返回 `ok=False`，不临时创建 Registry 或重跑初始化。
@@ -59,6 +59,9 @@ Gateway 在 `commands.list` 中登记 `/extension` 的说明、用法和示例�
 新建对话中的命令结果写入当前页面；请求不携带前端占位会话 `new`，沿用连接认证和后端路由。
 已有真实会话时继续携带该会话标识。命令清单和 Web 注册表都声明无需已有会话，避免菜单或提交入口提前拦截。
 具体语法见 [S_02 第 3 节](../specs/S_02_backend-package-management.md#3-web-命令)。
+
+2026-11-05 修复：AgentServer 安装成功后的槽位通知由公共适配器发送，网页与本机 CLI 共用；
+页面收到通知后重新发送 ready，无需手动刷新。失败边界归 S_02，验证记录见 [F_31 第 7 节](F_31_extension-cli.md#7-验证)。
 
 参数只作为数据传递。install 后的完整内容是一个 ZIP 路径，支持直接粘贴含空格的路径，
 也兼容外层引号；Windows 反斜杠保留，不按 shell 转义或执行。

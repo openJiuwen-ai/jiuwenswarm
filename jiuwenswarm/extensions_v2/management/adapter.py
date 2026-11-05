@@ -72,6 +72,8 @@ class PackageManagementAdapter(GatewayAdapter):
         except Exception:  # noqa: BLE001 - a received Report is not an unknown operation result
             logger.exception("[ExtensionsV2] could not encode management result")
             return _error_response(request, "Could not encode V2 package management result")
+        if install_reports is not None:
+            payload["ui_notified"] = await _notify_installed_packages(install_reports)
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -80,6 +82,21 @@ class PackageManagementAdapter(GatewayAdapter):
             metadata=request.metadata,
             agent_ref=request.agent_ref,
         )
+
+
+async def _notify_installed_packages(reports: Sequence[ActivationReport]) -> bool:
+    """Refresh mounted WebUI slots after a confirmed install from any entry point."""
+    succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
+    if not succeeded:
+        return False
+    from jiuwenswarm.extensions_v2.assembly import get_webui_runtime
+
+    try:
+        runtime = get_webui_runtime()
+        return await runtime.notify_packages_installed(succeeded) if runtime is not None else False
+    except Exception:  # noqa: BLE001 - notification failure does not undo a successful install
+        logger.warning("[ExtensionsV2] installation UI notification failed", exc_info=True)
+        return False
 
 
 def _installed_packages(

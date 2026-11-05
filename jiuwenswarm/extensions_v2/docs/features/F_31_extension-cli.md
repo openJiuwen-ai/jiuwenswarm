@@ -95,7 +95,8 @@ AgentServer 复用 `PackageManagementAdapter`；Gateway 调用自己的包管理
 
 ## 5. 页面通知与资源清理
 
-安装成功后，AgentServer 通知曾经上报 `ui.ready` 的浏览器连接；Gateway 向已连接页面发送安装通知。
+安装成功后，AgentServer 的公共 `PackageManagementAdapter` 通知曾经上报 `ui.ready` 的浏览器连接；
+网页 `/extension install` 和本机 CLI 共用该通知，CLI 不再另外发送。Gateway 的本机入口向已连接页面发送安装通知。
 通知只包含成功安装的包 ID。前端按仍挂载的槽位重新发送 `ui.ready`，同一目标合并处理。
 
 - **槽位设置：** `notifyReady=false` 的槽位继续由原调用方决定何时就绪。
@@ -121,6 +122,24 @@ AgentServer 复用 `PackageManagementAdapter`；Gateway 调用自己的包管理
 
 ## 7. 验证
 
+2026-11-05 网页安装修复：安装通知原先只接在本机 CLI，页面已经挂载槽位时，网页安装成功不会重新 ready。
+本次将 AgentServer 通知收敛到公共安装适配器，复用既有前端处理；不调整插件组件契约或计数器示例。
+补充真实 ZIP 经 Web/Gateway/AgentServer 路由安装、原连接收到通知后 ready 并渲染的回归，
+以及部分失败、通知失败和 CLI 单次通知覆盖。
+Windows、Python 3.12 下，管理适配器与 CLI 回归 63 项通过，前端 runtime 19 项、transport 9 项通过。
+后端使用真实 ZIP 与管理器、模拟连接和推送验证链路；未执行真实浏览器操作，不将模拟推送解释为浏览器实测。
+
+同日追加修复：上述模拟推送绕过了 `WebChannel.send()` 的实际下行路径，未发现安装事件的
+`package_ids` 被聊天消息字段提取丢弃。Gateway 现将 `extensions.v2.installed` 列为完整透传事件，
+保留成功包 ID、会话归属及物理连接路由；前端协议和插件源码不变。
+回归先在修复前复现三项失败，再验证修复后通过，覆盖空会话和聊天会话通知，并将真实 ZIP 安装用例接入
+`MessageHandler._chunk_to_message()` → `WebChannel.send()` → 前端可消费的帧后再 ready。
+本轮 Windows、Python 3.12 定向后端回归 80 项通过，前端 runtime 19 项、transport 9 项通过。
+另以无头 Chrome、隔离数据目录和现有 `dist/state_counter.zip` 执行输入命令安装 → 卸载 → 再次安装，
+两次安装均立即显示计数器，卸载立即清除，三次管理报告成功，页面未刷新，浏览器无未捕获异常。
+该浏览器验证使用隔离 WebSocket 测试宿主，经过生产前端命令处理、实际包管理器、Gateway 代理及实际下行序列化；
+未启动完整生产服务，也未执行发行包安装验收。
+
 | 场景 | 验证内容 | 结果 |
 | --- | --- | --- |
 | 命令入口 | 普通 CLI 子进程、冻结入口分发、退出码、中文与空格路径 | 定向测试通过 |
@@ -135,3 +154,6 @@ AgentServer 复用 `PackageManagementAdapter`；Gateway 调用自己的包管理
 本功能测试位于 `tests/unit_tests/extensions_v2/management/test_local_cli.py`、
 `tests/unit_tests/gateway/extensions_v2/test_gateway_package_management.py`，
 前端验证使用 `test:webui-runtime`、`test:webui-transport` 和 `test:webui-client`。
+下行补充回归位于 `tests/unit_tests/channel/test_web_channel_webui_payload.py` 与
+`tests/unit_tests/extensions_v2/management/test_management_adapter.py`；连接路由回归为
+`tests/unit_tests/gateway/test_web_channel_orphan_routing.py`。

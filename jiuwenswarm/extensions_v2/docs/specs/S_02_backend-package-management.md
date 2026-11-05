@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-04 |
+| 最近修订 | 2026-11-05 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md) |
 
@@ -49,6 +49,14 @@ Report 字段沿用 Core，`error` 编码为 `{code, message, params}`，不发�
 只收录本次成功 Report 对应的生效记录，包 ID 和 generation 均须匹配。
 `install_path` 是目标 AgentServer 上的实际安装绝对路径，来自记录的 `root`；不是最初的来源路径。
 未取得匹配记录时不伪造目录，原始 Report 仍保留。失败 Report 不产生安装成功提示。
+
+AgentServer 的公共安装适配器在取得报告后，将本次 `SUCCESS` 包 ID 通知曾上报 `ui.ready` 的连接。
+网页 `/extension install`、本机 CLI 和其它调用该适配器的入口共用这一步，CLI 不重复通知。
+前端收到 `extensions.v2.installed` 后，为仍挂载且允许 ready 的槽位重新发送 `ui.ready`，无需手动刷新页面。
+Gateway 下发该事件时保留完整结构，包括 `package_ids` 和 `session_id`（应用级通知为空字符串），
+不得按聊天消息只提取 `content`；通知继续按 `metadata.ws_id` 定向发送。
+安装响应的 `ui_notified` 表示通知是否送达；未连接或通知失败时为 false，不改变安装报告和 `ok`，不回滚已成功的安装。
+失败包不加入通知；全部失败时不发送通知。通知送达不等于插件自身渲染或业务验收通过。
 
 查询的 `state` 另含 `installed_packages`，各项为 `{package_id, version, install_path}`。
 它从安装目录的固定布局取得 ID、版本和实际路径，不执行包代码；因此未生效的副本也可以展示 ID。

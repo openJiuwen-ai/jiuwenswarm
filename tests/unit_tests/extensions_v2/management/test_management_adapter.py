@@ -201,6 +201,9 @@ async def test_install_paths_only_describe_successful_reports_from_this_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = await _manager(tmp_path, monkeypatch)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+                        lambda: SimpleNamespace(notify_packages_installed=notify))
     await manager.install([write_package(tmp_path / "old", package_id="existing.pkg")])
     good = write_package(tmp_path / "good", package_id="new.pkg")
     bad = write_package(tmp_path / "bad", package_id="broken.pkg", module_source='raise RuntimeError("broken")')
@@ -214,6 +217,128 @@ async def test_install_paths_only_describe_successful_reports_from_this_request(
         "new.pkg": "SUCCESS", "broken.pkg": "FAILED",
     }
     assert [item["package_id"] for item in response.payload["installed_packages"]] == ["new.pkg"]
+    assert response.payload["ui_notified"] is True
+    notify.assert_awaited_once_with(["new.pkg"])
+
+
+@pytest.mark.parametrize("notification", [None, False, OSError("connection closed")])
+async def test_install_notification_failure_preserves_successful_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, notification: object,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    notify = AsyncMock(return_value=False, side_effect=notification if isinstance(notification, OSError) else None)
+    runtime = None if notification is None else SimpleNamespace(notify_packages_installed=notify)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime", lambda: runtime)
+    source = archive_package(write_package(tmp_path / "source"))
+
+    response = await PackageManagementAdapter().handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
+
+    assert response.ok and response.payload["reports"][0]["status"] == "SUCCESS"
+    assert response.payload["ui_notified"] is False
+    assert (await manager.query("test.pkg")).active[0].package_id == "test.pkg"
+
+
+async def test_failed_install_does_not_notify_ready_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+                        lambda: SimpleNamespace(notify_packages_installed=notify))
+    source = archive_package(write_package(tmp_path / "source", module_source='raise RuntimeError("broken")'))
+
+    response = await PackageManagementAdapter().handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
+
+    assert response.ok and response.payload["reports"][0]["status"] == "FAILED"
+    assert response.payload["ui_notified"] is False
+    notify.assert_not_awaited()
+
+
+async def test_web_install_notifies_mounted_slot_and_renders_on_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
+    from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
+    from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
+    from jiuwenswarm.extensions_v2.webui.transport import RenderTransport
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+
+    source = write_package(tmp_path / "source", module_source='''\
+from jiuwenswarm.extensions_v2.webui.models import RenderNode, RenderTarget, UiRenderInput
+
+class Extension:
+    def register(self, registrar):
+        registrar.register_event_handler("ui.ready", self.ready, {"target.slot_id": "conversation.input.below"})
+
+    async def ready(self, event, ops, next_handler):
+        receipt = await next_handler(event)
+        target = RenderTarget(ops.session_context.session_id, "conversation.input.below", "test.pkg", "panel")
+        await ops.ui.render(UiRenderInput(target, root=RenderNode("Text", {"value": "Installed without a page reload"})))
+        return receipt
+
+def create_extension():
+    return Extension()
+''')
+    manifest = source / "manifest.yaml"
+    with manifest.open("a", encoding="utf-8") as stream:
+        stream.write("\nui:\n  apiVersion: 1\n  items:\n"
+                     "  - type: web.slot.contribution\n    id: panel\n    slot: conversation.input.below\n"
+                     "    renderer:\n      kind: webui-tree\n")
+    manager = ExtensionManager(tmp_path / "installed", store_dir=tmp_path / "data", state_dir=tmp_path / "state")
+    bus = make_bus()
+    push = SimpleNamespace(send_push=AsyncMock(return_value=True))
+    runtime = WebUIRuntime(bus=bus, transport=RenderTransport(push=push), catalog=WebUICatalogService(manager.active_packages))
+    await manager.init(bus, host_event_types=runtime.register_event_types, host_handlers=runtime.register_handlers)
+    monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime", lambda: runtime)
+    ready = AgentRequest(
+        request_id="ready-before-install", channel_id="web", session_id="session-1", req_method=ReqMethod.WEBUI_DISPATCH,
+        metadata={"ws_id": "ws-1"}, params={"event": "ui.ready", "payload": {},
+            "target": {"slot_id": "conversation.input.below", "package_id": "", "instance_key": ""}},
+    )
+    try:
+        assert (await WebUIDispatchAdapter().handle(ready)).payload["code"] == "NO_CONTRIBUTION"
+        push.send_push.assert_not_awaited()
+        handlers: dict[str, Any] = {}
+        async def send_request(envelope: E2AEnvelope) -> AgentResponse:
+            return await PackageManagementAdapter().handle(e2a_to_agent_request(envelope))
+        channel = SimpleNamespace(channel_id="web", send_response=AsyncMock(),
+                                  register_method=lambda method, handler: handlers.setdefault(method, handler))
+        proxy_module.register_extension_package_handlers(channel, lambda: SimpleNamespace(send_request=send_request))
+
+        await handlers[ReqMethod.EXTENSIONS_V2_INSTALL.value](
+            "socket", "web-install", {"paths": [str(archive_package(source))]}, "session-1", user_id="web-user",
+        )
+
+        assert channel.send_response.await_args.kwargs["payload"]["ui_notified"] is True
+        push.send_push.assert_awaited_once()
+        notification = push.send_push.await_args.args[0]
+        assert notification["metadata"] == {"ws_id": "ws-1"}
+        assert notification["payload"] == {"event_type": "extensions.v2.installed",
+                                           "package_ids": ["test.pkg"], "session_id": "session-1"}
+        web_channel = object.__new__(WebChannel)
+        web_channel._session_busy = {}
+        web_channel._clients_by_key = {}
+        web_channel._ws_by_id = {"ws-1": object()}
+        web_channel._a4p_rebound_ws = {}
+        web_channel._broadcast_to = AsyncMock()
+        chunk = SimpleNamespace(request_id=notification["request_id"], channel_id="web",
+                                payload=notification["payload"], metadata=notification["metadata"])
+        message = MessageHandler._chunk_to_message(chunk, session_id="session-1")
+        await web_channel.send(message)
+        web_channel._broadcast_to.assert_awaited_once()
+        wire_frame = web_channel._broadcast_to.await_args.args[0]
+        assert wire_frame["event"] == "extensions.v2.installed"
+        assert wire_frame["payload"]["package_ids"] == ["test.pkg"]
+        # The mounted frontend slot responds to the notification on the same connection.
+        ready.params["target"]["package_id"] = wire_frame["payload"]["package_ids"][0]
+        assert (await WebUIDispatchAdapter().handle(ready)).payload["accepted"] is True
+        frame = push.send_push.await_args.args[0]["payload"]
+        assert frame["event_type"] == "webui.render"
+        assert frame["root"]["props"]["value"] == "Installed without a page reload"
+    finally:
+        await manager.shutdown()
 
 
 async def test_install_does_not_guess_a_path_for_a_different_generation(

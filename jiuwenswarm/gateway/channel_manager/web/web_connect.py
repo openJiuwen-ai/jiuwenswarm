@@ -99,6 +99,7 @@ _TRAJECTORY_HINT_COALESCE_SECONDS = 0.016
 _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
     {
         "connection.ack",
+        "extensions.v2.installed",
         "todo.updated",
         "chat.tool_call",
         "chat.tool_update",
