@@ -19,6 +19,9 @@ from agent_gateway.channel_manager.web.media.normalizer import (
 import openai
 import pytest
 import websockets
+from agent_gateway.channel_manager.web.media.normalizer import (
+    normalize_chat_media_attachments,
+)
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
@@ -1420,6 +1423,8 @@ async def test_request_joyai_frame_uses_stateful_chat_completion(monkeypatch) ->
     )
     assert result["timing"] == {"vllm_inference_ms": 321.0}
     assert "memory" not in result
+
+
 
 
 @pytest.mark.asyncio
@@ -3415,6 +3420,8 @@ def test_core_answer_and_receipt_use_tool_language(monkeypatch, app_language, ex
     assert video_search.full_answer_language_rule().startswith(
         "The complete answer" if app_language == "en" else "标记之前的完整答案"
     )
+
+
 
 
 @pytest.mark.parametrize(

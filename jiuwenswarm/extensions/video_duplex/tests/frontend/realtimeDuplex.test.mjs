@@ -183,7 +183,8 @@ test('pending approval cards can be answered by voice under explicit-consent rul
   assert.match(text, /打开微信 is a new task.*Never use a new request as an answer to a card/);
   assert.match(text, /Cards left by typed chat also appear in jiuwen_task_query/);
   assert.match(text, /已批准 only after the answer receipt or a later query confirms the task resumed/);
-  assert.doesNotMatch(text, /click|Voice cannot/);
+  assert.match(text, /execution confirmation cards.*only voice approval cards/i);
+  assert.match(text, /Permission requests .*manual click/i);
 });
 
 test('an open approval card stays in the session instructions until it closes', () => {
@@ -197,7 +198,7 @@ test('an open approval card stays in the session instructions until it closes', 
   assert.equal(updates().length, 1);
   assert.match(updates()[0].session.instructions, /\[Pending approval cards\].*操作确认: cua_agent/);
   assert.match(updates()[0].session.instructions, /answered by voice with jiuwen_task_answer/);
-  assert.doesNotMatch(updates()[0].session.instructions, /click|Voice cannot/);
+  assert.match(updates()[0].session.instructions, /manual click/);
 
   session.enqueueQuestion('cua', card); // A repeated progress event must not resend.
   assert.equal(updates().length, 1);
@@ -234,7 +235,7 @@ test('while a card is open the client answers speech after the card status, with
   assert.match(status, /allow_answer.*reject_answer/);
   assert.match(status, /unclear.*do not submit/);
   assert.match(status, /打开微信.*never use it as a card answer/);
-  assert.doesNotMatch(status, /click|voice cannot/i);
+  assert.doesNotMatch(status, /permission_interrupt/);
 
   // The notice's own item does not trigger another reply, and nothing is ever cancelled.
   session.handleEvent({ type: 'conversation.item.created', item: { id: 'n1', role: 'user', content: [{ type: 'input_text' }] } });
@@ -276,6 +277,42 @@ test('a short spoken answer to the only card is submitted directly, and its rece
   assert.equal(functionCalls.length, 1);
   assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
   assert.match(sent[0].item.content[0].text, /The user just said: "打开计算器。"/);
+});
+
+test('closing a typed-chat card retains other chat and managed cards in Qwen instructions and notices', () => {
+  const { session, sent } = createSession();
+  const card = id => ({ id, request_id: `request-${id}`, state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: id, options: [{ label: '执行' }, { label: '拒绝' }] }] });
+  // Hold outgoing notices so closing one card also exercises the queued questions.
+  session.handleEvent({ type: 'response.created', response: { id: 'busy' } });
+  session.enqueueQuestion('task', card('managed'));
+  session.enqueueQuestion('task:child', card('other-managed'));
+  session.enqueueQuestion('', card('chat-a'));
+  session.enqueueQuestion('', card('chat-b'));
+  session.enqueueQuestion('', { ...card('chat-a'), state: 'answered' });
+  session.enqueueQuestion('', { request_id: '', state: 'answered' });
+  const instructions = sent.filter(e => e.type === 'session.update').at(-1).session.instructions;
+  assert.doesNotMatch(instructions, /chat-a/);
+  for (const id of ['managed', 'other-managed', 'chat-b']) assert.match(instructions, new RegExp(id));
+  assert.deepEqual(session.pendingQuestions.map(item => item.interaction.id), ['managed', 'other-managed', 'chat-b']);
+  session.cancelToolTask('task', 'cancel-task');
+  const remaining = sent.filter(e => e.type === 'session.update').at(-1).session.instructions;
+  assert.match(remaining, /other-managed/);
+  assert.match(remaining, /chat-b/);
+  assert.equal(session.pendingApprovals.size, 2);
+});
+
+test('a typed-chat permission card only replaces its own voice confirmation', () => {
+  const { session, sent } = createSession();
+  const card = id => ({ id, request_id: id, state: 'pending', source: 'confirm_interrupt', questions: [] });
+  session.enqueueQuestion('task', card('managed'));
+  session.enqueueQuestion('', card('chat-a'));
+  session.enqueueQuestion('', card('chat-b'));
+  session.enqueueQuestion('', { ...card('chat-a'), source: 'permission_interrupt' });
+  const instructions = sent.filter(e => e.type === 'session.update').at(-1).session.instructions;
+  assert.doesNotMatch(instructions, /chat-a/);
+  assert.match(instructions, /chat-b/);
+  assert.match(instructions, /managed/);
 });
 
 test('closing the last card lets the provider answer speech by itself again', () => {
@@ -819,7 +856,9 @@ test('Qwen error diagnostics preserve the original websocket event', () => {
 
   session.handleEvent(JSON.parse(rawEvent), rawEvent);
 
-  assert.equal(errors.at(-1), 'input is too long');
+  assert.match(errors.at(-1), /input is too long/);
+  assert.match(errors.at(-1), /code=context_length_exceeded/);
+  assert.match(errors.at(-1), /type=invalid_request_error/);
   assert.deepEqual(
     {
       event: diagnostics.at(-1).event,
@@ -890,7 +929,7 @@ test('rejected Qwen image frame stays diagnostic and does not report voice failu
   session.sendAudio(new Int16Array([5]), true);
   assert.equal(sent.filter((event) => event.type === 'input_image_buffer.append').length, 2);
   session.handleEvent({ type: 'error', error: { message: 'A different provider failure' } });
-  assert.deepEqual(errors, ['A different provider failure']);
+  assert.deepEqual(errors, ['A different provider failure [stage=error]']);
 });
 
 test('user speech cancels an active response and discards unclassified text', () => {
@@ -1590,7 +1629,7 @@ test('quota error survives gateway closure and a subsequent generic socket close
   socket.onmessage({ data: JSON.stringify({ type: 'error', error: { message: 'quota exhausted' } }) });
   socket.onmessage({ data: JSON.stringify({ type: 'error', error: { code: 'qwen_gateway_upstream_closed', message: 'closed' } }) });
   socket.onclose({ code: 1000, reason: '' });
-  assert.equal(errors.at(-1), 'quota exhausted');
+  assert.equal(errors.at(-1), 'quota exhausted [stage=error]');
 });
 
 test('session.closed after startup displays the provider reason and releases the session', async () => {
@@ -1608,7 +1647,7 @@ test('failed response and socket error after startup are visible', async () => {
     status: 'failed', status_details: { error: { message: 'insufficient_quota' } },
   } }) });
   socket.onclose({ code: 1000, reason: '' });
-  assert.equal(errors.at(-1), 'insufficient_quota');
+  assert.equal(errors.at(-1), 'insufficient_quota [stage=response.done]');
   assert.equal(session.socket, null);
 });
 
@@ -1621,6 +1660,28 @@ test('remote close without a reason has a fallback, while manual stop stays sile
   local.session.stop();
   local.socket.onclose({ code: 1000, reason: '' });
   assert.deepEqual(local.errors, []);
+});
+
+test('failed response diagnostics preserve code and response id without closing the session', async () => {
+  const { session, socket, errors } = await createConnectedSocketSession();
+  socket.onmessage({ data: JSON.stringify({ type: 'response.done', response: {
+    id: 'resp-failed-42', status: 'failed', status_details: {
+      error: { message: 'Invalid input', code: 'invalid_parameter', type: 'invalid_request_error' },
+    },
+  } }) });
+  assert.match(errors.at(-1), /Invalid input/);
+  assert.match(errors.at(-1), /code=invalid_parameter/);
+  assert.match(errors.at(-1), /response_id=resp-failed-42/);
+  assert.equal(session.socket, socket);
+});
+
+test('invalid realtime event reports processing stage and native exception without ending the session', async () => {
+  const { session, socket, errors } = await createConnectedSocketSession();
+  socket.onmessage({ data: 'not-json-audio-payload' });
+  assert.match(errors.at(-1), /stage=event_parse_or_handle/);
+  assert.match(errors.at(-1), /type=SyntaxError/);
+  assert.match(errors.at(-1), /event_chars=22/);
+  assert.equal(session.socket, socket);
 });
 
 function contextSocket() {
@@ -1706,6 +1767,64 @@ test('completed cancellation receipt permits Core follow-up for the user request
   });
   assert.equal(functionCalls.length, 1);
   assert.equal(functionCalls[0].name, 'jiuwen_queue_manage');
+});
+
+
+test('converted completed cancellation is announced as a pending Core followup', () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('cancel', {
+    state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
+  });
+  assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
+  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(continuation, /backend already submitted the original user action to Core/);
+  assert.match(continuation, /do not issue another cancellation/);
+  assert.match(continuation, /followup means a linked revision/);
+});
+
+
+test('permission cards stay manual and never submit spoken consent', () => {
+  const { session, sent, functionCalls, diagnostics } = createSession();
+  session.enqueueQuestion('permission-job', {
+    id: 'permission-card', request_id: 'core-permission', state: 'pending', source: 'permission_interrupt',
+    questions: [{ question: '允许运行命令？', options: [{ label: '本次允许' }, { label: '拒绝' }] }],
+  });
+  assert.equal(session.pendingApprovals.size, 0);
+  assert.match(JSON.stringify(sent), /click the on-screen permission card manually/);
+  assert.equal(sent.some(event => event.type === "session.update"), false);
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'consent' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'consent' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'consent', transcript: '同意' });
+  assert.equal(functionCalls.length, 0);
+  assert.equal(diagnostics.some(event => event.event === 'qwen_card_spoken_answer'), false);
+});
+
+
+test('execution confirmations accept explicit execute speech using the actual card option', () => {
+  const { session, functionCalls } = createSession();
+  session.enqueueQuestion('execute-job', {
+    id: 'execute-card', request_id: 'execute-request', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '执行此计划？', options: [{ label: '执行' }, { label: '跳过' }] }],
+  });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'execute-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'execute-input', transcript: '按计划执行' });
+  assert.equal(functionCalls.length, 1);
+  assert.deepEqual(JSON.parse(functionCalls[0].arguments), {
+    job_id: 'execute-job', interaction_id: 'execute-card', answers: ['执行'],
+  });
+});
+
+test('a permission card replaces a stale execution confirmation without carrying over consent', () => {
+  const { session, functionCalls } = createSession();
+  openCard(session);
+  session.enqueueQuestion('cua', {
+    id: 'permission-card', request_id: 'permission-request', state: 'pending', source: 'permission_interrupt',
+    questions: [{ question: '允许访问文件？', options: [{ label: '本次允许' }, { label: '拒绝' }] }],
+  });
+  assert.equal(session.pendingApprovals.size, 0);
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'permission-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'permission-input', transcript: '同意' });
+  assert.equal(functionCalls.length, 0);
 });
 
 

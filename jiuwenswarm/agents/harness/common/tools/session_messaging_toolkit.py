@@ -491,6 +491,7 @@ class SessionMessagingToolkit:
                                 "input_mode": {
                                     "type": "string",
                                     "enum": ["steer", "follow_up"],
+                                    "default": "steer",
                                     "description": (
                                         "默认 steer 在目标当前轮处理，空闲时启动新轮；"
                                         "follow_up 等待后独立执行。"

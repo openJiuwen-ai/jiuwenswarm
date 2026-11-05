@@ -34,7 +34,7 @@ import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame
 import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
-import { describeDuplexError } from '../duplexErrorMessage';
+import { describeDuplexError, duplexErrorDetail, screenCaptureFailure } from '../duplexErrorMessage';
 import { reportedRuntimeState } from './runtimeState';
 import {
   mergeSearchProgressJob,
@@ -825,6 +825,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
 
     setError('');
     const pickerStartedAt = Date.now();
+    const captureStartedAt = performance.now();
+    const captureId = `screen-${Date.now()}`;
+    let captureStage = 'getDisplayMedia';
+    const captureContext = JSON.stringify({
+      capture_id: captureId,
+      user_agent: navigator.userAgent,
+      secure_context: window.isSecureContext,
+      document_focused: document.hasFocus(),
+      user_activation: navigator.userActivation?.isActive,
+      existing_screens: screens.length,
+    });
+    reportRealtimeEvent('realtime_screen_capture_requested', { raw_event: captureContext });
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -836,12 +848,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         },
         audio: false,
       });
+      captureStage = 'videoTrack';
       const track = stream.getVideoTracks()[0];
       if (!track) {
         stream.getTracks().forEach((item) => item.stop());
         throw new Error('没有获得屏幕画面。');
       }
 
+      captureStage = 'attachStream';
       // Only a camera or file source is replaced. With nothing shared, a reset
       // would also stop the running voice transport and its conversation.
       if (source && source !== 'screen') {
@@ -865,6 +879,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
+      const { errorType, nativeMessage, reasonKey } = screenCaptureFailure(screenError);
+      const elapsedMs = Math.round(performance.now() - captureStartedAt);
+      const message = t('videoLive.screenCapture.failed', {
+        reason: t(`videoLive.screenCapture.${reasonKey}`),
+        errorType, nativeMessage, stage: captureStage, elapsedMs, captureId,
+      });
+      reportRealtimeEvent('realtime_screen_capture_failed', {
+        error_type: errorType, message, latency_ms: elapsedMs, raw_event: captureContext,
+      });
       if (isScreenCaptureDeniedBySystem(screenError)) {
         if (allowUnsupported) {
           screenFallbackNoticeRef.current = SCREEN_SHARE_NO_PERMISSION_NOTICE;
@@ -878,7 +901,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
         return 'unsupported';
       } else {
-        setError(screenError instanceof Error ? screenError.message : '无法读取屏幕。');
+        setError(message);
       }
       return false;
     }
@@ -924,6 +947,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       setError('');
       setRealtimeStatus('正在读取视频模型配置…');
       reportRealtimeEvent('realtime_config_requested');
+      let startupStage = 'video.realtime.config';
       try {
         searchSessionRef.current = conversationSearchSessionRef.current || searchSessionRef.current || crypto.randomUUID();
         const config = await webRequest<VideoSessionConfig>('video.realtime.config', {
@@ -944,6 +968,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           throw new Error(t('videoLive.qwenOnly'));
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
+        startupStage = 'realtime_session_create';
         const session = createRealtimeDuplexSession(
           {
             url: config.url || '',
@@ -1123,7 +1148,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   reportRealtimeEvent('qwen_tool_call_receipt', {
                     name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  setError(describeDuplexError(message, 'task'));
+                  setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
                   session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
@@ -1137,6 +1162,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           },
           () => reportRealtimeEvent('realtime_start_unsupported_browser'),
         );
+        startupStage = 'realtime_session_start';
         duplexRef.current = session;
         session.setMicrophoneMuted(microphoneMutedRef.current);
         session.setSpeakerMuted(speakerMutedRef.current);
@@ -1153,7 +1179,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setIsRealtimeStarting(false);
         searchSessionRef.current = '';
         searchJobsRef.current.clear();
-        setError(realtimeError instanceof Error ? realtimeError.message : t('videoLive.errors.startFailed'));
+        const message = duplexErrorDetail(realtimeError, { stage: startupStage });
+        reportRealtimeEvent('realtime_start_failed', { message, error_type: realtimeError instanceof Error ? realtimeError.name : 'UnknownError' });
+        setError(`全双工启动失败：${message}`);
       }
     })();
     startingRealtimeRef.current = start;
@@ -1326,7 +1354,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       const accepted = await duplexRef.current?.sendTextTurn(text);
       if (!accepted) throw new Error(t('videoLive.errors.qwenTextNotAccepted'));
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : t('videoLive.errors.textSendFailed'));
+      setError(`全双工文字输入发送失败：${duplexErrorDetail(sendError, { stage: 'text_turn_submit' })}`);
     }
   };
 

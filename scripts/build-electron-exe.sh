@@ -410,6 +410,9 @@ if [ -f "$PLIST" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUILD_BUNDLE_IDENTIFIER" "$PLIST" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUILD_VERSION" "$PLIST" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$PLIST" 2>/dev/null || true
+    MICROPHONE_USAGE_DESCRIPTION="$BUILD_DISPLAY_NAME needs microphone access for real-time voice conversations."
+    /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription $MICROPHONE_USAGE_DESCRIPTION" "$PLIST" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string $MICROPHONE_USAGE_DESCRIPTION" "$PLIST"
     echo "  Updated Info.plist"
 fi
 

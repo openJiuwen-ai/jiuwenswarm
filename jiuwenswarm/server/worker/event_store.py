@@ -91,7 +91,9 @@ class WorkerEventStore:
         key = (*scope[:4], str(request.request_id or ""))
         if key in self._active:
             raise ValueError("duplicate active request_id")
-        if len(self._active) >= 256:
+        # Returned handlers can still own pending interactions and keep their
+        # duplicate guard, but they no longer need a dispatch slot.
+        if sum(record.active for record in self.records.values()) >= 256:
             raise ValueError("worker dispatch limit reached")
         if len(self.records) >= 2048:
             raise ValueError("worker retained interaction limit reached")

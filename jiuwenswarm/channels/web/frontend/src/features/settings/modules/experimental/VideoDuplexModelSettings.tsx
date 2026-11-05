@@ -348,7 +348,7 @@ export function VideoDuplexModelSettings({
           ) : undefined
         }
       >
-        {configured ? (
+        {configured || enabled ? (
           <Switch
             checked={enabled}
             aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}

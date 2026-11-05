@@ -1,4 +1,5 @@
 import { normalizeReplyLanguage, speakLanguageInstruction } from './replyLanguage.js';
+import { FRAME_MAX_BASE64_BYTES } from './frameEncoding.js';
 import {
   createQwenOmniBriefOutputEvent,
   createQwenOmniResponseEvent,
@@ -12,7 +13,7 @@ import type { QwenOmniToolResultContext } from './qwenOmniTools.js';
 export type { QwenOmniFunctionCall } from './qwenOmniTools.js';
 export { parseQwenOmniFunctionCall };
 
-const QWEN_MAX_BASE64_IMAGE_BYTES = 256 * 1024;
+const QWEN_MAX_BASE64_IMAGE_BYTES = FRAME_MAX_BASE64_BYTES;
 const QWEN_SESSION_INSTRUCTIONS = [
   'Streaming Omni Conversation.',
   '你是九问实时视觉助手。',

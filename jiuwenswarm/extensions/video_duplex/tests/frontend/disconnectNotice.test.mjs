@@ -14,8 +14,33 @@ const compiled = await build({
   bundle: true, platform: 'node', format: 'esm', write: false,
   alias: { react: require.resolve('react') },
 });
-const { describeDuplexError, setTaskFullDuplexRuntimeError, setTaskFullDuplexRuntimeState, toastStore } =
+const { describeDuplexError, duplexErrorDetail, screenCaptureFailure, setTaskFullDuplexRuntimeError, setTaskFullDuplexRuntimeState, toastStore } =
   await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+
+test('screen capture diagnostics preserve native errors without assuming user cancellation', () => {
+  const denied = screenCaptureFailure({ name: 'NotAllowedError', message: 'Permission denied by system' });
+  assert.equal(denied.reasonKey, 'permissionOrCancel');
+  assert.equal(denied.nativeMessage, 'Permission denied by system');
+  assert.equal(denied.errorType, 'NotAllowedError');
+  assert.equal(screenCaptureFailure(new DOMException('Capture aborted', 'AbortError')).reasonKey, 'aborted');
+  assert.equal(screenCaptureFailure({ name: 'NotReadableError', message: 'Could not start video source' }).reasonKey, 'unreadable');
+  assert.equal(screenCaptureFailure({ name: 'InvalidStateError', message: 'No user gesture' }).reasonKey, 'invalidState');
+  assert.equal(screenCaptureFailure('capture failed').nativeMessage, 'capture failed');
+  assert.equal(screenCaptureFailure(null).errorType, 'UnknownError');
+});
+
+test('duplex diagnostics retain protocol identifiers and describe partial failures', () => {
+  const detail = duplexErrorDetail({ message: 'Invalid voice', code: 'invalid_parameter', type: 'invalid_request_error' },
+    { stage: 'response.done', response_id: 'resp-42' });
+  assert.match(detail, /Invalid voice.*code=invalid_parameter/);
+  assert.match(detail, /type=invalid_request_error/);
+  assert.match(detail, /response_id=resp-42/);
+  assert.match(duplexErrorDetail(new TypeError('Invalid audio')), /Invalid audio.*type=TypeError/);
+  assert.match(describeDuplexError('TTS 请求失败 (HTTP 400); voice=anna'), /本次语音播报未完成/);
+  assert.doesNotMatch(describeDuplexError('TTS timeout'), /连接已中断/);
+  assert.match(describeDuplexError('ASR ReadTimeout'), /本次语音识别未完成/);
+  assert.match(describeDuplexError('工具调用失败：timeout', 'task'), /部分操作可能已经执行/);
+});
 
 test('duplex error uses the native persistent notice, survives idle and deduplicates repeats', () => {
   setTaskFullDuplexRuntimeError('quota exhausted');
