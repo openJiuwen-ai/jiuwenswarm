@@ -16,8 +16,6 @@ USER_INSTANCE = "user-menu"
 USER_SELECT_ACTION = "workbench.user.select"
 TURN_SELECT_ACTION = "workbench.turn.select"
 USER_LOGIN_ACTION = "workbench.user.login"
-WEATHER_HIDE_ACTION = "workbench.weather.hide"
-WEATHER_SHOW_ACTION = "workbench.weather.show"
 TURN_SLOTS = frozenset({"conversation.session.content.after", "conversation.turn.footer.actions"})
 QUICK_LAUNCH_ACTION = "workbench.quick.launch"
 QUICK_TASKS = (
@@ -31,7 +29,7 @@ IFRAME_PAGE_SLOTS = frozenset({"application.menu.main", "task.function.main"})
 SLOTS = (
     "application.entry", "application.sidebar.footer",
     "application.menu", "application.menu.main", "task.function", "task.function.main",
-    "application.settings", "conversation.input.above", "conversation.input.below",
+    "conversation.input.below",
     "conversation.panel.right", "conversation.session.content.after", "conversation.turn.footer.actions",
     "conversation.header.title.after", "conversation.header.actions",
 )
@@ -65,13 +63,6 @@ def column(*children: RenderNode) -> RenderNode:
 
 def row(*children: RenderNode) -> RenderNode:
     return RenderNode("Box", {"direction": "row", "gap": "sm", "wrap": True, "align": "center"}, children=children)
-
-
-def switch(label: str, checked: bool, field: str) -> RenderNode:
-    return RenderNode(
-        "Switch", {"checked": checked, "ariaLabel": label},
-        events={"ui.change": {"id": "workbench.option", "args": {"field": field}}},
-    )
 
 
 def workspace_files(state: SessionState) -> RenderNode:
@@ -111,7 +102,6 @@ def task_function_view(slot: str) -> RenderNode:
         return iframe_page({"zh": "任务检查页面", "en": "Task inspection page"},
                            "https://example.com/?page=task.function.main")
     raise ValueError(f"unknown task slot: {slot}")
-
 
 
 def welcome_page() -> RenderNode:
@@ -170,25 +160,6 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         return task_function_view(slot)
     if slot == "application.menu.main":
         return iframe_page("工作台页面 / Workbench page", "https://example.com/?page=application.menu.main")
-    if slot == "application.settings":
-        return RenderNode("Box", {"direction": "row", "justify": "between", "gap": "md", "wrap": True}, children=(
-            column(text("天气详情 / Weather details"), text("在输入框上方显示 Token 天气演示。 / Show the Token Weather demo above the input.", secondary=True)),
-            switch("天气详情 / Weather details", state.weather_visible, "weather_visible"),
-        ))
-    if slot == "conversation.input.above":
-        details = (
-            text("Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06"),
-            text("上下文充裕", secondary=True),
-        ) if state.weather_visible else (text("Token 天气", secondary=True),)
-        return RenderNode("Box", {
-            "direction": "row", "gap": "sm", "align": "center", "justify": "between",
-        }, children=(
-            RenderNode("Box", {
-                "direction": "row", "gap": "sm", "align": "center", "wrap": True, "flex": 1,
-            }, children=details),
-            button("隐藏" if state.weather_visible else "显示",
-                   WEATHER_HIDE_ACTION if state.weather_visible else WEATHER_SHOW_ACTION),
-        ))
     if slot == "conversation.input.below":
         return RenderNode("Box", {
             "direction": "row", "gap": "sm", "wrap": True, "align": "center", "justify": "center",

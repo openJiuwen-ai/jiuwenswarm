@@ -59,7 +59,7 @@ A plugin-rendered `Button(value="👍", type="text")` appears on its left in a h
 Opening the menu sends no business event. Selecting an item sends `ui.select` with action `workbench.turn.select` and data.key `refresh` or `details`.
 Standalone Button nodes also support icon-only mode (`icon="ellipsis", type="text"` without `value`; `aria-label` provides the accessible name and hover hint).
 
-The above-input view displays fixed demo values: `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06`, followed by secondary text `上下文充裕`. These values do not represent live usage. This view belongs to Workbench and does not require the separate `token_weather` plugin. Hiding details keeps the `Token 天气` label and a show button. Visibility is scoped to the conversation, survives subsequent ready events, and resets when the plugin is activated again. The plugin uses `Box`, `Text`, and `Button` without a `Card`; the host slot supplies the background, border radius, and padding.
+Workbench no longer provides the above-input Token Weather demo or its Weather details setting. The independent [Token Weather plugin](../token_weather_glass/README_EN.md) provides the real usage bar and client display preference.
 
 ## Sidebar user entry
 

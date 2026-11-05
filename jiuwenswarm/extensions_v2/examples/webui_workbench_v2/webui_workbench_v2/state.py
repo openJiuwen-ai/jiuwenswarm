@@ -86,7 +86,6 @@ class SessionState:
     category: str | None = None
     project: str | None = None
     threshold: int = 60
-    weather_visible: bool = True
     destroy_hidden: bool = False
     image_failure: bool = False
     active_tab: str = "form"
@@ -130,7 +129,6 @@ class SessionState:
         self.category = initial.category
         self.project = initial.project
         self.threshold = initial.threshold
-        self.weather_visible = initial.weather_visible
         self.destroy_hidden = initial.destroy_hidden
         self.image_failure = initial.image_failure
         self.active_tab = initial.active_tab

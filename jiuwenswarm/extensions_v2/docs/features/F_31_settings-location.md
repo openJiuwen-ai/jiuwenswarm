@@ -41,7 +41,7 @@ flowchart LR
 
 ## 兼容与迁移
 
-统一入口迁移为现有工作台补 location={menu:general,section:display} 和 instanceKey=workbench，保留 session 默认值及原有控件。全客户端配置项显式使用 application 范围；通用的 session 配置项能力保留。其他旧的无 location 声明需补齐位置；非法父级不会被放入其他分类。
+统一入口迁移时，现有工作台曾只修改 manifest，补 location={menu:general,section:display} 和 instanceKey=workbench，保留 session 默认值。之后用户要求删除工作台的天气演示及对应设置，现已移除这两项贡献及其业务实现。Token Weather 独立插件继续使用相同设置槽位，显式 application 范围；通用的 session 配置项能力保留。其他旧的无 location 声明需补齐位置；非法父级不会被放入其他分类。
 
 本次早期实现曾新增独立声明类型 web.settings.contribution 和承载槽位 application.settings.content。用户明确要求改造原入口，现已移除这两项公开能力，不保留别名、分流或页底独立挂载。webui.settings.catalog 只是读取同一槽位声明的目录，不构成另一套设置入口。
 
@@ -71,7 +71,7 @@ application.settings 的 session/application 支持继续保留，应用范围�
   tests/unit_tests/extensions_v2/webui/test_webui_adapter.py \
   tests/unit_tests/extensions_v2/webui/test_webui_events.py \
   tests/unit_tests/extensions_v2/webui/test_webui_runtime.py \
-  tests/unit_tests/extensions_v2/webui/test_settings_location.py \
+  tests/unit_tests/extensions_v2/webui/test_token_weather_glass.py \
   --no-cov -q -o log_cli=false
 ```
 

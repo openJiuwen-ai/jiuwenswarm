@@ -14,9 +14,6 @@ from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.settings import SETTINGS_SLOT, parse_settings
 
-SOURCE = Path(__file__).resolve().parents[4] / "jiuwenswarm/extensions_v2/examples/webui_workbench_v2"
-PACKAGE_ID = "webui.workbench-v2"
-
 
 def test_removed_settings_entry_is_not_a_registered_slot() -> None:
     from jiuwenswarm.extensions_v2.webui.constants import slot_spec
@@ -53,17 +50,37 @@ def test_settings_declarations_reject_ambiguous_or_invalid_metadata(change) -> N
 
 
 @pytest.mark.asyncio
-async def test_catalog_request_uses_the_bound_web_connection_without_a_conversation(monkeypatch) -> None:
+async def test_catalog_request_uses_the_bound_web_connection_without_a_conversation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from jiuwenswarm.extensions_v2 import assembly
 
-    catalog = WebUICatalogService(lambda: (SimpleNamespace(root=SOURCE, package_id=PACKAGE_ID, version="1", generation=1),))
+    package_id = "test.settings-catalog"
+    manifest = {
+        "schemaVersion": 1,
+        "package": {"id": package_id, "version": "1.0.0"},
+        "ui": {"apiVersion": 1, "items": [{
+            "type": "web.slot.contribution",
+            "id": "test-settings",
+            "slot": SETTINGS_SLOT,
+            "scope": "application",
+            "location": {"menu": "general", "section": "display"},
+            "title": {"zh": "测试设置", "en": "Test settings"},
+            "renderer": {"kind": "webui-tree"},
+        }]},
+    }
+    (tmp_path / "manifest.yaml").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    record = SimpleNamespace(root=tmp_path, package_id=package_id, version="1.0.0", generation=1)
+    catalog = WebUICatalogService(lambda: (record,))
     monkeypatch.setattr(assembly, "get_webui_runtime", lambda: SimpleNamespace(catalog=lambda: catalog))
     adapter = WebUIDispatchAdapter()
     request = AgentRequest("catalog-1", channel_id="web", req_method=ReqMethod.WEBUI_SETTINGS_CATALOG,
                            metadata={"ws_id": "tab-1"})
     output = await adapter.handle(request)
     assert output.ok
-    assert output.payload["items"][0]["package_id"] == PACKAGE_ID
+    assert output.payload["errors"] == {}
+    assert [item["package_id"] for item in output.payload["items"]] == [package_id]
     assert "install_path" not in json.dumps(output.payload)
     assert not (await adapter.handle(replace(request, params={"path": "/arbitrary"}))).ok
     assert not (await adapter.handle(replace(request, metadata={}))).ok

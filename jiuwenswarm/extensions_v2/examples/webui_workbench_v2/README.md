@@ -54,7 +54,7 @@
 打开菜单不发送业务事件；选中菜单项发送 `ui.select`，动作 `workbench.turn.select`，data.key 为 `refresh` 或 `details`。
 独立 Button 也支持纯图标模式（省略 `value` 并设置 `icon="ellipsis", type="text"`，`aria-label` 作为可访问名称及悬停提示）。
 
-输入框上方固定展示 `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06` 和灰色的“上下文充裕”，这些是演示数据，不代表实时用量。该视图属于本工作台插件，无需安装独立的 `token_weather` 插件。点击右侧“隐藏”后保留“Token 天气”和“显示”按钮；显隐状态按会话隔离，后续 ready 恢复当前状态，重新激活插件后重置。插件只使用 `Box`、`Text`、`Button`，不包裹 `Card`；背景、圆角和内边距由宿主 slot 提供。
+工作台不再提供输入框上方的 Token 天气演示或“天气详情”设置。真实用量状态条与客户端显示开关由独立的 [Token Weather 插件](../token_weather_glass/README.md) 提供。
 
 ## 侧栏用户入口
 

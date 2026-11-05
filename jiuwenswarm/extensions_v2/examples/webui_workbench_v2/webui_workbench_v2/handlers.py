@@ -40,8 +40,6 @@ from .views import (
     USER_INSTANCE,
     USER_LOGIN_ACTION,
     USER_SELECT_ACTION,
-    WEATHER_HIDE_ACTION,
-    WEATHER_SHOW_ACTION,
     build_view,
     signed_out_view,
     task_function_view,
@@ -159,20 +157,6 @@ class WorkbenchHandlers:
             if target.slot_id == "conversation.panel.right" and target.instance_key != INSTANCE:
                 return UiActionOutput(accepted=False, status="invalid_instance")
             action = request.payload.get("action_id")
-            if action in (WEATHER_HIDE_ACTION, WEATHER_SHOW_ACTION):
-                if (target.slot_id != "conversation.input.above" or target.instance_key != INSTANCE
-                        or request.event_type != "ui.click"):
-                    return UiActionOutput(accepted=False, status="invalid")
-                state.weather_visible = action == WEATHER_SHOW_ACTION
-                targets = {("conversation.input.above", INSTANCE)}
-                if ("application.settings", INSTANCE) in state.mounted:
-                    targets.add(("application.settings", INSTANCE))
-                failed_status = None
-                for slot, instance in sorted(targets):
-                    output = await self._render(ops, target.session_id, slot, instance, state)
-                    if output is None or output.status != "delivered":
-                        failed_status = output.status if output else "unavailable"
-                return UiActionOutput(accepted=failed_status is None, status=failed_status or "rendered")
             if isinstance(action, str) and action.startswith("workbench.files."):
                 data = request.payload.get("data", {})
                 if (target.slot_id != "conversation.panel.right" or target.instance_key != INSTANCE
@@ -354,9 +338,7 @@ class WorkbenchHandlers:
                 return "invalid"
             turn.result_visible = True
             return "updated"
-        if action == "workbench.option" and args.get("field") == "weather_visible" and type(data.get("checked")) is bool:
-            state.weather_visible = data["checked"]
-        elif action not in ("workbench.open", "workbench.refresh", QUICK_LAUNCH_ACTION):
+        if action not in ("workbench.open", "workbench.refresh", QUICK_LAUNCH_ACTION):
             return "invalid"
         state.last_result = f"已更新 / Updated · {state.operations + 1} · {state.summary()}"
         return "updated"

@@ -46,6 +46,6 @@ webui.settings.catalog 为 Web 连接的只读请求，参数为空，无需 ses
 
 ## 5. 迁移与验证
 
-保留既有会话范围配置项时，manifest 需补 location，并可用 instanceKey 对应已有处理器实例。工作台声明 location={menu:general,section:display} 和 instanceKey=workbench，保留会话范围。全客户端配置项显式声明 application 范围。新声明不接受旧的独立设置类型或承载槽位；无 location 的旧设置声明需补齐位置。
+保留既有会话范围配置项时，manifest 需补 location，并可用 instanceKey 对应已有处理器实例。工作台在统一入口迁移后已按用户要求移除天气演示及其设置项；独立 Token Weather 继续声明 application.settings、显式 application 范围。新声明不接受旧的独立设置类型或承载槽位；无 location 的旧设置声明需补齐位置。
 
-验证入口：前端 tests/pluginSettings.test.mjs、tests/webuiComponentsReact.test.mjs，以及后端 tests/unit_tests/extensions_v2/webui/test_settings_location.py。执行结果及限制统一维护在 F_31，不将组件重放预览认定为真实模型端到端验证。
+验证入口：前端 tests/pluginSettings.test.mjs、tests/webuiComponentsReact.test.mjs，以及后端 tests/unit_tests/extensions_v2/webui/test_token_weather_glass.py。执行结果及限制统一维护在 F_31，不将组件重放预览认定为真实模型端到端验证。

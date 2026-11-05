@@ -347,6 +347,13 @@ def test_context_delta_is_not_labelled_as_consumption_and_missing_values_do_not_
     assert "Last context change" not in _text(weather_view(usage, history.readings))
 
 
+def test_workbench_no_longer_contributes_demo_weather_or_its_setting() -> None:
+    root = ROOT / "jiuwenswarm/extensions_v2/examples/webui_workbench_v2"
+    declarations = load_package_ui(SimpleNamespace(root=root, package_id="webui.workbench-v2"))
+    assert declarations
+    assert not any(row.slot in (SETTINGS_SLOT, SLOT) for row in declarations)
+
+
 def test_removed_settings_entry_is_not_a_registered_slot() -> None:
     from jiuwenswarm.extensions_v2.webui.constants import slot_spec
     assert slot_spec("application.settings.content") is None
@@ -484,6 +491,8 @@ async def test_installed_plugin_reads_public_query_and_renders_settings_without_
 
     await manager.init(bus, host_event_types=event_types, host_handlers=handlers)
     try:
+        workbench = ROOT / "jiuwenswarm/extensions_v2/examples/webui_workbench_v2"
+        assert (await manager.install([workbench]))[0].status == "SUCCESS"
         assert (await manager.install([SOURCE]))[0].status == "SUCCESS"
         payload = catalog.current().settings_payload()
         assert len(payload["revision"]) == 64
@@ -496,6 +505,9 @@ async def test_installed_plugin_reads_public_query_and_renders_settings_without_
         assert (await runtime.dispatch(UiActionInput("ui.ready", setting), connection_id="tab-1")).accepted
         assert transport.send_frame.call_args.args[0].root.props["preference"]["default"] is True
         assert transport.send_frame.call_args.args[0].visible_when is None
+        workbench_header = RenderTarget("s1", "conversation.header.title.after", "webui.workbench-v2", "workbench")
+        assert (await runtime.dispatch(UiActionInput("ui.ready", workbench_header), connection_id="tab-1")).accepted
+        assert transport.send_frame.call_args.args[0].target.resolved_scope == "session"
         snapshot = {
             "schema_version": "session-usage.v1", "session_id": "s1", "source": "host", "turn": None,
             "context": {"context_window": {"input_tokens": 120, "limit_tokens": 1000},
@@ -540,13 +552,23 @@ async def test_installed_plugin_reads_public_query_and_renders_settings_without_
         monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)
         transport.send_frame.reset_mock()
         response = await WebUIDispatchAdapter().handle(AgentRequest(
-            request_id="weather-plugin", channel_id="web", session_id="s1", req_method=ReqMethod.WEBUI_DISPATCH,
+            request_id="both-plugins", channel_id="web", session_id="s1", req_method=ReqMethod.WEBUI_DISPATCH,
             metadata={"ws_id": "tab-1"}, params={"event": "ui.ready", "target": {"slot_id": SLOT}},
         ))
         assert response.ok and response.payload["accepted"]
         assert {call.args[0].target.package_id for call in transport.send_frame.call_args_list} == {PACKAGE_ID}
         assert transport.send_error.await_count == 0
         transport.send_frame.reset_mock()
+        for slot in (SETTINGS_SLOT, SLOT):
+            denied = await WebUIDispatchAdapter().handle(AgentRequest(
+                request_id=f"removed-workbench-{slot}", channel_id="web", session_id="s1",
+                req_method=ReqMethod.WEBUI_DISPATCH, metadata={"ws_id": "tab-1"},
+                params={"event": "ui.ready", "target": {
+                    "slot_id": slot, "package_id": "webui.workbench-v2", "instance_key": "workbench",
+                }},
+            ))
+            assert not denied.payload["accepted"] and denied.payload["code"] == "NO_CONTRIBUTION"
+        transport.send_frame.assert_not_awaited()
         denied = await WebUIDispatchAdapter().handle(AgentRequest(
             request_id="scope-mismatch", channel_id="web", session_id="s1", req_method=ReqMethod.WEBUI_DISPATCH,
             metadata={"ws_id": "tab-1"}, params={"event": "ui.ready", "target": {
@@ -557,6 +579,7 @@ async def test_installed_plugin_reads_public_query_and_renders_settings_without_
         bound_setting = replace(setting, connection_id="tab-1")
         assert runtime.registry.get(bound_setting) is not None
         await runtime.drop_session("s1")
+        assert runtime.registry.get(workbench_header) is None
         assert runtime.registry.get(bound_setting) is not None
         await runtime.drop_connection("tab-1")
         assert runtime.registry.get(bound_setting) is None
