@@ -1617,3 +1617,31 @@ test('WeLink mail reports load and disconnect errors without hiding the connecte
     assert.equal(connected.find('welink-mail-disconnect').disabled, false);
   } finally { await connected.close(); }
 });
+
+
+test('clicking the selected reply mode does not save it again', async () => {
+  const edits = [];
+  const view = await mountProfile({ initialSection: 'channels', onSaveSettings: async (edit) => edits.push(edit) });
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-group-reply-option"][data-variant="adaptive"]').click());
+    assert.deepEqual(edits, []);
+  } finally { await view.close(); }
+});
+
+test('reply mode errors roll back the selection and automatically clear', async () => {
+  const view = await mountProfile({ initialSection: 'channels', onSaveSettings: async () => { throw new Error('Temporary connection failure'); } });
+  const timeout = window.setTimeout;
+  let dismiss;
+  window.setTimeout = (callback, delay, ...args) => {
+    if (delay === 5000) { dismiss = callback; return 5000; }
+    return timeout(callback, delay, ...args);
+  };
+  try {
+    await act(async () => view.container.querySelector('[data-testid="jiuwenmate-profile-group-reply-option"][data-variant="passive"]').click());
+    assert.match(view.find('settings-error').textContent, /Temporary connection failure/);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-group-reply-option"][data-variant="adaptive"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(typeof dismiss, 'function');
+    await act(async () => dismiss());
+    assert.equal(view.find('settings-error'), null);
+  } finally { window.setTimeout = timeout; await view.close(); }
+});

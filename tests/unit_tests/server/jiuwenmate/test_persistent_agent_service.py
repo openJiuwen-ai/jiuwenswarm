@@ -211,6 +211,57 @@ def test_model_pending_handles_first_publication_and_legacy_views(tmp_path):
     assert ColleagueView.from_definition(legacy).has_unpublished_model_changes is False
 
 
+
+@pytest.mark.parametrize("state", ["published", "draft", "model-draft", "unconfigured"])
+def test_group_reply_mode_save_does_not_require_a_model_or_publish_other_edits(tmp_path, state):
+    from dataclasses import replace
+
+    models = FakeModels()
+    service = make_service(tmp_path, models)
+    colleague = service.create_colleague(NS, settings())
+    original = service.current_snapshot(NS, colleague.agent_id)
+    if state == "draft":
+        service.update_settings(NS, colleague.agent_id, settings(persona="Pending persona"))
+    elif state == "model-draft":
+        service.update_settings(NS, colleague.agent_id, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    elif state == "unconfigured":
+        models = FakeModels(selections=(), default=None)
+        service = make_service(tmp_path / "unconfigured", models)
+        colleague = service.ensure_default_colleague(NS)
+    models.selections.clear()
+
+    for mode in ("passive", "adaptive"):
+        current = service.read_settings(NS, colleague.agent_id)
+        saved = service.update_settings(NS, colleague.agent_id, replace(current, group_reply_mode=mode))
+        assert service.read_settings(NS, colleague.agent_id).group_reply_mode == mode
+        assert saved.capabilities.model == current.capabilities.model
+        assert saved.has_unpublished_changes is (state != "published")
+        if state != "unconfigured":
+            snapshot = service.current_snapshot(NS, colleague.agent_id)
+            assert snapshot.config_version == original.config_version
+            assert snapshot.fingerprint == original.fingerprint
+            published = service._repository.get(NS, colleague.agent_id).published_settings
+            assert published.group_reply_mode == mode
+            assert published.persona != "Pending persona"
+            assert published.capabilities.model == "deepseek#0"
+        else:
+            assert saved.current_version is None
+
+
+def test_group_reply_mode_change_still_rejects_an_invalid_new_model(tmp_path):
+    from dataclasses import replace
+
+    service = make_service(tmp_path)
+    colleague = service.create_colleague(NS, settings())
+    current = service.read_settings(NS, colleague.agent_id)
+    with pytest.raises(PersistentAgentError) as caught:
+        service.update_settings(NS, colleague.agent_id, replace(
+            current, group_reply_mode="passive", capabilities=CapabilitySelection(model="missing#9"),
+        ))
+    assert caught.value.code == "MODEL_NOT_FOUND"
+    assert service.read_settings(NS, colleague.agent_id).group_reply_mode == "adaptive"
+
+
 def test_model_refresh_reports_a_missing_model_without_losing_other_updates(tmp_path):
     models = FakeModels(window=1048576)
     service = make_service(tmp_path, models)

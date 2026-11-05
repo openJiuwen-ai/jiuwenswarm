@@ -285,6 +285,7 @@ class PersistentAgentRepository(SQLiteStore):
         *,
         expected_revision: int,
         updated_at: datetime,
+        publish_reply_mode: bool = False,
     ) -> ColleagueDefinition:
         """Store new settings only if nobody changed the colleague since ``expected_revision``."""
         with self._transaction() as conn:
@@ -301,6 +302,21 @@ class PersistentAgentRepository(SQLiteStore):
             ).rowcount
             if not changed:
                 raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+            if publish_reply_mode:
+                row = conn.execute(
+                    "SELECT published_settings_json FROM colleagues WHERE namespace_id = ? AND agent_id = ?",
+                    (namespace_id, agent_id),
+                ).fetchone()
+                published = json.loads(row["published_settings_json"]) if row["published_settings_json"] else None
+                if published is not None:
+                    published["group_reply_mode"] = settings.group_reply_mode
+                # Apply only this live setting; keep unrelated drafts and frozen Specs intact.
+                conn.execute(
+                    "UPDATE colleagues SET published_settings_json = ?, published_revision ="
+                    " CASE WHEN published_revision = revision - 1 THEN revision ELSE published_revision END"
+                    " WHERE namespace_id = ? AND agent_id = ?",
+                    (None if published is None else json.dumps(published, ensure_ascii=False), namespace_id, agent_id),
+                )
             row = conn.execute(
                 "SELECT * FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
             ).fetchone()

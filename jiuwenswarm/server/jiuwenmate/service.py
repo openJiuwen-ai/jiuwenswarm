@@ -634,11 +634,17 @@ class PersistentAgentService:
         return None
 
     def update_settings(self, namespace_id: str, agent_id: str, settings: ColleagueSettings) -> ColleagueView:
-        """Save settings and the Template; nothing changes for Requests until ``publish``."""
+        """Save settings and the Template; reply mode is live, other edits require ``publish``."""
         definition = self._require_config(namespace_id, agent_id)
+        current_persona = self._templates.read_persona(agent_id)
         if not settings.persona:
-            settings = settings.with_persona(self._templates.read_persona(agent_id))
-        self._check_model(settings, agent_id)
+            settings = settings.with_persona(current_persona)
+        reply_mode_only = replace(settings, group_reply_mode=definition.settings.group_reply_mode) == (
+            definition.settings.with_persona(current_persona)
+        )
+        # Reply mode is read live by IM ingress; it does not rebuild the model Spec.
+        if not reply_mode_only:
+            self._check_model(settings, agent_id)
         with self._templates.replace(agent_id, settings, definition.source_template_id):
             updated = self._repository.update_settings(
                 namespace_id,
@@ -646,6 +652,7 @@ class PersistentAgentService:
                 settings.with_persona(""),
                 expected_revision=definition.revision,
                 updated_at=self._clock(),
+                publish_reply_mode=reply_mode_only,
             )
         return self._view(updated)
 
