@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.gateway.channel_manager.web import app_web_handlers as web_handlers
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeStore, AgentMailScope
 from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
@@ -744,6 +745,220 @@ async def colleague_gateway(tmp_path, monkeypatch):
         yield gateway
     finally:
         await host.adapter.aclose()
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_channel_id_cannot_move_to_another_colleague_without_unbinding(colleague_gateway, platform):
+    gateway = colleague_gateway
+    first = await gateway.bind(platform, gateway.config_id, "exclusive-app")
+    assert first["ok"]
+    assert (await gateway.bind(platform, gateway.other_id, "other-app"))["ok"]
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    original = gateway.path.read_bytes()
+
+    conflict = await gateway.bind(platform, gateway.other_id, "exclusive-app")
+
+    assert not conflict["ok"]
+    assert conflict["code"] == "CHANNEL_ALREADY_BOUND"
+    assert gateway.path.read_bytes() == original
+    key = "app_id" if platform == "feishu" else "client_id"
+    assert (await gateway.call(f"channel.{platform}.unbind_agent", {key: "exclusive-app"}))["ok"]
+    assert (await gateway.bind(platform, gateway.other_id, "exclusive-app"))["ok"]
+    app = next(item for item in gateway.apps(platform) if item[key] == "exclusive-app")
+    assert app["persistent_agent_id"] == gateway.other_id
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_channel_id_concurrent_binding_has_only_one_owner(colleague_gateway, platform):
+    gateway = colleague_gateway
+    responses = await asyncio.gather(
+        gateway.bind(platform, gateway.config_id, "exclusive-app"),
+        gateway.bind(platform, gateway.other_id, "exclusive-app"),
+    )
+    assert sum(response["ok"] for response in responses) == 1
+    assert next(response for response in responses if not response["ok"])["code"] == "CHANNEL_ALREADY_BOUND"
+    key = "app_id" if platform == "feishu" else "client_id"
+    apps = [item for item in gateway.apps(platform) if item[key] == "exclusive-app"]
+    assert len(apps) == 1
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_disabled_channel_id_still_requires_explicit_unbinding(colleague_gateway, platform):
+    gateway = colleague_gateway
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    key = "app_id" if platform == "feishu" else "client_id"
+    data = gateway.config_module.load_yaml_round_trip(gateway.path)
+    app = next(item for item in data["channels"][platform]["apps"] if item[key] == "exclusive-app")
+    app["enabled"] = False
+    gateway.config_module.dump_yaml_round_trip(gateway.path, data)
+    original = gateway.path.read_bytes()
+    response = await gateway.bind(platform, gateway.other_id, "exclusive-app")
+    assert not response["ok"]
+    assert response["code"] == "CHANNEL_ALREADY_BOUND"
+    assert gateway.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_channel_id_ownership_uses_persisted_config_even_when_preflight_is_stale(
+    colleague_gateway, monkeypatch, platform,
+):
+    gateway = colleague_gateway
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    original = gateway.path.read_bytes()
+    monkeypatch.setattr(web_handlers, "get_config_raw", lambda: {"channels": {}})
+    conflict = await gateway.bind(platform, gateway.other_id, "exclusive-app")
+    assert not conflict["ok"]
+    assert conflict["code"] == "CHANNEL_ALREADY_BOUND"
+    assert gateway.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_channel_id_legacy_owner_can_rebind_to_its_canonical_colleague(colleague_gateway, platform):
+    gateway = colleague_gateway
+    service = gateway.host._service()
+    legacy_id = seed_legacy_connection(service, "local", gateway.config_id, platform, "exclusive-app")
+    key = "app_id" if platform == "feishu" else "client_id"
+    secret = "app_secret" if platform == "feishu" else "client_secret"
+    data = gateway.config_module.load_yaml_round_trip(gateway.path)
+    data["channels"][platform]["apps"].append({key: "exclusive-app", secret: "fake",
+        "persistent_agent_id": legacy_id, "allow_from": []})
+    gateway.config_module.dump_yaml_round_trip(gateway.path, data)
+    gateway.manager.configs[platform] = data["channels"][platform]
+
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    app = next(item for item in gateway.apps(platform) if item[key] == "exclusive-app")
+    assert app["persistent_agent_id"] == gateway.config_id
+
+
+@pytest.mark.asyncio
+async def test_same_channel_id_on_different_platforms_has_independent_owners(colleague_gateway):
+    gateway = colleague_gateway
+    assert (await gateway.bind("feishu", gateway.config_id, "same-text-id"))["ok"]
+    assert (await gateway.bind("dingtalk", gateway.other_id, "same-text-id"))["ok"]
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_channel_id_environment_references_preserve_ownership_and_runtime_credentials(
+    colleague_gateway, monkeypatch, platform,
+):
+    gateway = colleague_gateway
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    monkeypatch.setenv("SWARM_TEST_SHARED_ID", "exclusive-app")
+    monkeypatch.setenv("SWARM_TEST_OWNER_ID", gateway.config_id)
+    monkeypatch.setenv("SWARM_TEST_OTHER_SECRET", "resolved-other-secret")
+    key = "app_id" if platform == "feishu" else "client_id"
+    secret = "app_secret" if platform == "feishu" else "client_secret"
+    data = gateway.config_module.load_yaml_round_trip(gateway.path)
+    for app in data["channels"][platform]["apps"]:
+        if app[key] == "exclusive-app":
+            app[key] = "${SWARM_TEST_SHARED_ID}"
+            app["persistent_agent_id"] = "${SWARM_TEST_OWNER_ID}"
+        else:
+            app[secret] = "${SWARM_TEST_OTHER_SECRET}"
+    gateway.config_module.dump_yaml_round_trip(gateway.path, data)
+    original = gateway.path.read_bytes()
+    response = await gateway.bind(platform, gateway.other_id, "exclusive-app")
+    assert not response["ok"]
+    assert response["code"] == "CHANNEL_ALREADY_BOUND"
+    assert gateway.path.read_bytes() == original
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    runtime_apps = gateway.manager.configs[platform]["apps"]
+    assert len([app for app in runtime_apps if app[key] == "exclusive-app"]) == 1
+    other = next(app for app in runtime_apps if app[key] == f"ordinary-{platform}")
+    assert other[secret] == "resolved-other-secret"
+    stored_other = next(app for app in gateway.apps(platform) if app[key] == f"ordinary-{platform}")
+    assert stored_other[secret] == "${SWARM_TEST_OTHER_SECRET}"
+    assert (await gateway.call(f"channel.{platform}.unbind_agent", {key: "exclusive-app"}))["ok"]
+    assert (await gateway.bind(platform, gateway.other_id, "exclusive-app"))["ok"]
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.parametrize("empty_channels", [False, True])
+@pytest.mark.asyncio
+async def test_channel_id_first_binding_accepts_an_empty_config_section(colleague_gateway, platform, empty_channels):
+    gateway = colleague_gateway
+    data = {"channels": None if empty_channels else {platform: None}}
+    gateway.config_module.dump_yaml_round_trip(gateway.path, data)
+    gateway.manager.configs[platform] = {}
+    result = await gateway.bind(platform, gateway.config_id, "first-app")
+    assert result["ok"]
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_submitted_channel_id_alias_cannot_take_another_colleagues_binding(
+    colleague_gateway, monkeypatch, platform,
+):
+    gateway = colleague_gateway
+    monkeypatch.setenv("SWARM_TEST_SUBMITTED_APP_ID", "exclusive-app")
+    assert (await gateway.bind(platform, gateway.config_id, "exclusive-app"))["ok"]
+    original = gateway.path.read_bytes()
+
+    conflict = await gateway.bind(platform, gateway.other_id, "${SWARM_TEST_SUBMITTED_APP_ID}")
+
+    assert not conflict["ok"]
+    assert conflict["code"] == "CHANNEL_ALREADY_BOUND"
+    assert gateway.path.read_bytes() == original
+    saved = await gateway.bind(platform, gateway.config_id, "${SWARM_TEST_SUBMITTED_APP_ID}")
+    assert saved["ok"]
+    key = "app_id" if platform == "feishu" else "client_id"
+    assert saved["payload"]["binding"][key] == "exclusive-app"
+    assert len([app for app in gateway.apps(platform) if app.get("persistent_agent_id")]) == 1
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.asyncio
+async def test_submitted_channel_id_with_an_unset_variable_does_not_save(
+    colleague_gateway, monkeypatch, platform,
+):
+    gateway = colleague_gateway
+    monkeypatch.delenv("SWARM_TEST_UNSET_APP_ID", raising=False)
+    original = gateway.path.read_bytes()
+    response = await gateway.bind(platform, gateway.config_id, "${SWARM_TEST_UNSET_APP_ID}")
+    assert not response["ok"]
+    assert response["code"] == "BAD_REQUEST"
+    assert gateway.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+@pytest.mark.parametrize("operation", ["disconnect", "unbind", "purge"])
+@pytest.mark.asyncio
+async def test_colleague_binding_cleanup_uses_disk_after_channel_reload_failure(
+    colleague_gateway, platform, operation,
+):
+    from copy import deepcopy
+    from unittest.mock import MagicMock
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+
+    initial = colleague_gateway
+    attempts = 0
+
+    async def reload(config):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("injected channel reload failure")
+
+    before = deepcopy(initial.manager.configs)
+    manager = ChannelManager(MagicMock(), config=before, on_config_updated=reload)
+    gateway = _ColleagueGateway(initial.host, initial.channel, manager, initial.path, initial.config_module)
+    assert not (await gateway.bind(platform, initial.config_id, "exclusive-app"))["ok"]
+    assert manager.get_conf(platform) == before[platform]
+    key = "app_id" if platform == "feishu" else "client_id"
+    if operation == "disconnect":
+        released = await gateway.call(f"channel.{platform}.unbind_agent", {key: "exclusive-app"})
+    else:
+        released = await gateway.delete(initial.config_id, operation)
+    assert released["ok"]
+    assert not any(app.get("persistent_agent_id") == initial.config_id for app in gateway.apps(platform))
+    assert any(app[key] == f"ordinary-{platform}" for app in gateway.apps(platform))
+    assert (await gateway.bind(platform, initial.other_id, "exclusive-app"))["ok"]
 
 
 @pytest.mark.parametrize("platform", ["feishu", "dingtalk"])

@@ -20,6 +20,7 @@ import time
 import base64
 import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
 from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
+    resolve_env_vars,
     update_health_check_in_config,
     update_channel_in_config,
     replace_channel_subsection_with_cleanup,
@@ -617,6 +619,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.models.list",
     "jiuwenmate.chat.send",
     "jiuwenmate.chat.history",
+    "jiuwenmate.artifact.list",
     "jiuwenmate.request.get",
     "jiuwenmate.request.abort",
     "jiuwenmate.permission.decide",
@@ -670,6 +673,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.models.list",
     "jiuwenmate.chat.send",
     "jiuwenmate.chat.history",
+    "jiuwenmate.artifact.list",
     "jiuwenmate.request.get",
     "jiuwenmate.request.abort",
     "jiuwenmate.permission.decide",
@@ -4474,7 +4478,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         return serialized
 
-    async def _connection_request(req_method, params):
+    async def _connection_request(req_method, params, *, timeout: float = 120):
         """Ask AgentServer about colleague connections; return ``(payload, None)`` or ``(None, (code, error))``.
 
         Bindings change only after AgentServer has answered, so an unknown answer changes nothing.
@@ -4490,7 +4494,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
         try:
             # Adding a connection may publish a new agent; removing one waits for its work to end.
-            response = await asyncio.wait_for(client.send_request(envelope), timeout=120)
+            response = await asyncio.wait_for(client.send_request(envelope), timeout=timeout)
         except Exception:  # noqa: BLE001
             return None, ("SERVICE_UNAVAILABLE", "the colleague service did not answer; try again")
         payload = getattr(response, "payload", None)
@@ -4499,35 +4503,113 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return None, (str(payload.get("code") or "SERVICE_UNAVAILABLE"), str(payload.get("error") or "failed"))
         return payload, None
 
+    def _binding_identity(app: Mapping[str, Any], key: str) -> str:
+        """Compare effective identities while keeping unrelated YAML references intact."""
+        return str(resolve_env_vars(app.get(key) or "")).strip()
+
+    async def _binding_owner_ids(
+        config_id: str, platform: str, app_id: str,
+    ) -> tuple[set[str], tuple[str, str] | None]:
+        """Allow a colleague's legacy runtime ID, without treating another owner as a transfer."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+
+        raw = get_config_raw() or {}
+        channels = raw.get("channels")
+        section = channels.get(platform) if isinstance(channels, dict) else None
+        apps = _normalize_feishu_conf(section)["apps"] if platform == "feishu" else dingtalk_apps(section)
+        identity_key = "app_id" if platform == "feishu" else "client_id"
+        owners = {_binding_identity(app, "persistent_agent_id") for app in apps
+                  if _binding_identity(app, identity_key) == app_id and app.get("persistent_agent_id")}
+        allowed = {config_id}
+        if owners - allowed:
+            payload, failure = await _connection_request(
+                ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id},
+            )
+            if failure is not None:
+                return set(), failure
+            allowed.update(item["agent_id"] for item in payload.get("connections", [])
+                           if item.get("channel") == platform and item.get("connection_key") == app_id)
+        return allowed, None
+
+    def _check_binding_owner(
+        apps: list[dict[str, Any]], identity_key: str, app_id: str, allowed: set[str],
+    ) -> None:
+        """Check inside the config write transaction, including when preflight data was stale."""
+        from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+        for app in apps:
+            owner = _binding_identity(app, "persistent_agent_id")
+            if _binding_identity(app, identity_key) == app_id and owner and owner not in allowed:
+                raise PersistentAgentError(
+                    "This channel is already bound to another colleague; unbind it first.",
+                    code="CHANNEL_ALREADY_BOUND",
+                )
+
     async def _remove_feishu_apps(cm, removed, method):
-        """Delete the Feishu apps ``removed`` selects and restart Feishu; nothing is written if none match."""
-        current = cm.get_conf("feishu")
-        previous_apps = _normalize_feishu_conf(current).get("apps", [])
-        apps = [dict(app) for app in previous_apps if not removed(app)]
-        if len(apps) == len(previous_apps):
+        """Remove persisted colleague bindings even after a failed runtime reload."""
+        from jiuwenswarm.common.config import update_config
+
+        runtime_apps = _normalize_feishu_conf(cm.get_conf("feishu"))["apps"]
+        runtime_changed = any(removed(app) for app in resolve_env_vars(runtime_apps))
+        previous_apps = []
+        new_conf = None
+
+        def remove(data: dict[str, Any]) -> dict[str, Any] | None:
+            nonlocal previous_apps, new_conf
+            channels = data.get("channels") or {}
+            current = channels.get("feishu") or {}
+            previous_apps = _normalize_feishu_conf(current)["apps"]
+            apps = [dict(app) for app in previous_apps if not removed(resolve_env_vars(app))]
+            changed = len(apps) != len(previous_apps)
+            if not changed and not runtime_changed:
+                return None
+            new_conf = {"apps": _normalize_feishu_conf({"apps": apps})["apps"]}
+            if "send_file_allowed" in current:
+                new_conf["send_file_allowed"] = current["send_file_allowed"]
+            if not changed:
+                return None
+            channels["feishu"] = new_conf
+            return data
+
+        update_config(remove)
+        if new_conf is None:
             return
-        merged_apps = _normalize_feishu_conf({"apps": apps})["apps"]
-        new_conf = {"apps": merged_apps}
-        if isinstance(current, dict) and "send_file_allowed" in current:
-            new_conf["send_file_allowed"] = current["send_file_allowed"]
-        replace_channel_subsection_with_cleanup("feishu", "apps", merged_apps, {"apps", "send_file_allowed"})
-        await cm.set_conf("feishu", new_conf)
+        await cm.set_conf("feishu", resolve_env_vars(new_conf))
         _schedule_clear_agent_config_cache(method)
-        await _notify_feishu_cli_changes(previous_apps, merged_apps)
+        removed_apps = [app for app in resolve_env_vars(previous_apps + runtime_apps) if removed(app)]
+        await _notify_feishu_cli_changes(removed_apps, [])
 
     def _remove_dingtalk_apps(cm, removed):
         """Delete the DingTalk apps ``removed`` selects; return the saved section, or ``None`` if none matched."""
+        from jiuwenswarm.common.config import update_config
         from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import (
             dingtalk_apps,
-            update_dingtalk_section,
+            merge_dingtalk_config,
         )
 
-        if not any(removed(app) for app in dingtalk_apps(cm.get_conf("dingtalk"))):
-            return None
-        # Remaining apps are named only, so they keep every saved field.
-        return update_dingtalk_section(lambda current: {"apps": [
-            {"client_id": app["client_id"]} for app in dingtalk_apps(current) if app["client_id"] and not removed(app)
-        ]})
+        runtime_changed = any(removed(app) for app in resolve_env_vars(dingtalk_apps(cm.get_conf("dingtalk"))))
+        section = None
+
+        def remove(data: dict[str, Any]) -> dict[str, Any] | None:
+            nonlocal section
+            channels = data.get("channels") or {}
+            current = channels.get("dingtalk") or {}
+            apps = dingtalk_apps(current)
+            kept = [app for app in apps if not removed(resolve_env_vars(app))]
+            if len(kept) == len(apps):
+                if runtime_changed:
+                    section = dict(current)
+                return None
+            # Remaining apps are named only, so they keep every saved field.
+            section = merge_dingtalk_config(current, {"apps": [
+                {"client_id": app["client_id"]} for app in kept if app["client_id"]
+            ]})
+            channels["dingtalk"] = section
+            return data
+
+        update_config(remove)
+        return section
 
     async def _apply_dingtalk(ws, req_id, cm, section, method):
         """Restart the DingTalk channels from a section that is already saved."""
@@ -4561,7 +4643,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
-        app_id = str(params.get("app_id") or "").strip()
+        app_id = _binding_identity(params, "app_id")
         app_secret = str(params.get("app_secret") or "").strip()
         config_id = str(params.get("config_id") or "").strip()
         if not app_id or not app_secret or not config_id:
@@ -4584,55 +4666,65 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         persistent_agent_id = connected["agent_id"]
 
+        from jiuwenswarm.common.config import update_config
+        from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
         try:
-            current = cm.get_conf("feishu")
-            previous_apps = _normalize_feishu_conf(current).get("apps", [])
-            apps = [dict(app) for app in previous_apps]
-            # The agent serves this app only, so no other entry may name it.
-            apps = [
-                app for app in apps
-                if app.get("persistent_agent_id") != persistent_agent_id or app.get("app_id") == app_id
-            ]
-            matched = next((app for app in apps if app.get("app_id") == app_id), None)
-            if matched is None:
-                matched = {
-                    **_FEISHU_APP_DEFAULTS,
-                    "is_default": not any(app.get("is_default") for app in apps),
-                    "app_id": app_id,
-                    "app_secret": app_secret,
-                    "persistent_agent_id": persistent_agent_id,
-                }
-                apps.append(matched)
-            else:
-                matched.update(
-                    app_id=app_id,
-                    app_secret=app_secret,
-                    persistent_agent_id=persistent_agent_id,
-                    enabled=True,
-                )
-                # This field was previously used as the JM binding key. Keep a single source of truth.
-                matched.pop("agent_id", None)
+            allowed, failure = await _binding_owner_ids(persistent_agent_id, "feishu", app_id)
+            if failure is not None:
+                await channel.send_response(ws, req_id, ok=False, error=failure[1], code=failure[0])
+                return
+            previous_apps = []
+            new_conf = {}
 
-            merged_apps = _normalize_feishu_conf({"apps": apps})["apps"]
-            new_conf = {"apps": merged_apps}
-            if isinstance(current, dict) and "send_file_allowed" in current:
-                new_conf["send_file_allowed"] = current["send_file_allowed"]
+            def save_binding(data: dict[str, Any]) -> dict[str, Any]:
+                nonlocal previous_apps, new_conf
+                channels = data.get("channels")
+                if not isinstance(channels, dict):
+                    channels = {}
+                    data["channels"] = channels
+                current = channels.get("feishu")
+                if not isinstance(current, dict):
+                    current = {}
+                previous_apps = _normalize_feishu_conf(current).get("apps", [])
+                _check_binding_owner(previous_apps, "app_id", app_id, allowed)
+                # The agent serves this app only, so no other entry may name it.
+                apps = [dict(app) for app in previous_apps
+                        if _binding_identity(app, "persistent_agent_id") != persistent_agent_id
+                        or _binding_identity(app, "app_id") == app_id]
+                matched = next((app for app in apps if _binding_identity(app, "app_id") == app_id), None)
+                if matched is None:
+                    apps.append({
+                        **_FEISHU_APP_DEFAULTS,
+                        "is_default": not any(app.get("is_default") for app in apps),
+                        "app_id": app_id,
+                        "app_secret": app_secret,
+                        "persistent_agent_id": persistent_agent_id,
+                    })
+                else:
+                    matched.update(app_secret=app_secret, persistent_agent_id=persistent_agent_id, enabled=True)
+                    matched.pop("agent_id", None)
+                new_conf = {"apps": _normalize_feishu_conf({"apps": apps})["apps"]}
+                if "send_file_allowed" in current:
+                    new_conf["send_file_allowed"] = current["send_file_allowed"]
+                channels["feishu"] = new_conf
+                return data
 
-            # Save first: confirmation must never claim a binding that disappears on restart.
-            replace_channel_subsection_with_cleanup(
-                "feishu", "apps", merged_apps, {"apps", "send_file_allowed"}
-            )
-            await cm.set_conf("feishu", new_conf)
+            update_config(save_binding)
+            runtime_conf = resolve_env_vars(new_conf)
+            await cm.set_conf("feishu", runtime_conf)
             _schedule_clear_agent_config_cache("channel.feishu.bind_agent")
             # Only enqueue setup; the AgentServer rereads the saved trusted binding.
             # A disconnected server does not undo a successfully persisted binding.
-            await _notify_feishu_cli_changes(previous_apps, merged_apps)
+            await _notify_feishu_cli_changes(resolve_env_vars(previous_apps), runtime_conf["apps"])
             await channel.send_response(
                 ws,
                 req_id,
                 ok=True,
                 payload={"binding": {"app_id": app_id, "persistent_agent_id": persistent_agent_id}},
             )
+        except PersistentAgentError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.feishu.bind_agent] 保存绑定失败, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
@@ -4908,7 +5000,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _channel_feishu_unbind_agent(ws, req_id, params, session_id):
         """Delete one colleague's Feishu app binding while keeping the shared Agent data."""
         cm = _resolve(channel_manager)
-        app_id = str(params.get("app_id") or "").strip() if isinstance(params, dict) else ""
+        app_id = _binding_identity(params, "app_id") if isinstance(params, dict) else ""
         if cm is None or not app_id:
             await channel.send_response(
                 ws, req_id, ok=False, error="app_id is required" if cm is not None else "channel manager not available",
@@ -4927,9 +5019,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await channel.send_response(ws, req_id, ok=True, payload={"unbound": True})
 
     async def _channel_dingtalk_unbind_agent(ws, req_id, params, session_id):
-        """Delete one colleague's DingTalk app; its agent keeps its data and returns if the app is bound again."""
+        """Clear employee user authorization before removing its DingTalk app binding."""
         cm = _resolve(channel_manager)
-        client_id = str(params.get("client_id") or "").strip() if isinstance(params, dict) else ""
+        client_id = _binding_identity(params, "client_id") if isinstance(params, dict) else ""
         if cm is None or not client_id:
             await channel.send_response(
                 ws, req_id, ok=False,
@@ -4937,13 +5029,43 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST" if cm is not None else "SERVICE_UNAVAILABLE",
             )
             return
+        from filelock import Timeout
+        from jiuwenswarm.common.im_binding_lock import im_binding_lock
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+
         try:
-            section = _remove_dingtalk_apps(
-                cm, lambda app: app["client_id"] == client_id and bool(app["persistent_agent_id"]),
-            )
+            async with im_binding_lock("dingtalk", client_id):
+                current = (get_config_raw() or {}).get("channels") or {}
+                owners = {
+                    _binding_identity(app, "persistent_agent_id")
+                    for app in dingtalk_apps(current.get("dingtalk"))
+                    if _binding_identity(app, "client_id") == client_id and app["persistent_agent_id"]
+                }
+                for agent_id in owners:
+                    cleared, failure = await _connection_request(
+                        ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT,
+                        {"agent_id": agent_id, "connection_key": client_id}, timeout=30,
+                    )
+                    if failure is not None:
+                        await channel.send_response(ws, req_id, ok=False, error=failure[1], code=failure[0])
+                        return
+                    if (cleared.get("dingtalk_auth") or {}).get("status") != "not_connected":
+                        await channel.send_response(
+                            ws, req_id, ok=False, error="DingTalk user authorization was not cleared; try again",
+                            code="DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+                        )
+                        return
+                section = _remove_dingtalk_apps(
+                    cm, lambda app: app["client_id"] == client_id and bool(app["persistent_agent_id"]),
+                )
+            # Stopping Stream workers must not hold the application acceptance lock.
             method = "channel.dingtalk.unbind_agent"
-            if section is not None and not await _apply_dingtalk(ws, req_id, cm, section, method):
+            if section is not None and not await _apply_dingtalk(ws, req_id, cm, resolve_env_vars(section), method):
                 return
+        except Timeout:
+            await channel.send_response(ws, req_id, ok=False, error="application binding is busy", code="CONFLICT")
+            return
         except Exception:  # noqa: BLE001
             logger.exception("[channel.dingtalk.unbind_agent] binding removal failed")
             await channel.send_response(ws, req_id, ok=False, error="binding removal failed", code="INTERNAL_ERROR")
@@ -5016,7 +5138,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     await cm.set_conf("welink", dict((stored.get("channels") or {}).get("welink") or {}))
             section = _remove_dingtalk_apps(cm, lambda app: app["persistent_agent_id"] in agents)
             method = "jiuwenmate.colleague.delete"
-            if section is not None and not await _apply_dingtalk(ws, req_id, cm, section, method):
+            if section is not None and not await _apply_dingtalk(ws, req_id, cm, resolve_env_vars(section), method):
                 return
         except Exception:  # noqa: BLE001
             logger.exception("[jiuwenmate.colleague.delete] binding removal failed")
@@ -5032,6 +5154,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _save_dingtalk_binding(ws, req_id, params, session_id):
         """Validate and save a binding while the caller holds its application lock."""
+        from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
         cm = _resolve(channel_manager)
         if cm is None:
             await channel.send_response(
@@ -5041,7 +5165,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        client_id = str(params.get("client_id") or "").strip()
+        client_id = _binding_identity(params, "client_id")
         secret = str(params.get("client_secret") or "").strip()
         config_id = str(params.get("config_id") or "").strip()
         if not client_id or not secret or not config_id:
@@ -5067,12 +5191,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         def bind(current):
+            _check_binding_owner(dingtalk_apps(current), "client_id", client_id, allowed)
             # Other apps are named only, so they keep every saved field, including a malformed allowlist.
             apps = [
                 {"client_id": app["client_id"]} for app in dingtalk_apps(current)
-                if app["client_id"] and (app["persistent_agent_id"] != agent_id or app["client_id"] == client_id)
+                if app["client_id"] and (_binding_identity(app, "persistent_agent_id") != agent_id
+                                        or _binding_identity(app, "client_id") == client_id)
             ]
-            matched = next((app for app in apps if app["client_id"] == client_id), None)
+            matched = next((app for app in apps if _binding_identity(app, "client_id") == client_id), None)
             if matched is None:
                 # A newly added robot starts without an allowlist, as before.
                 matched = {"client_id": client_id, "allow_from": []}
@@ -5083,7 +5209,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return {"apps": apps}
 
         try:
+            allowed, failure = await _binding_owner_ids(agent_id, "dingtalk", client_id)
+            if failure is not None:
+                await channel.send_response(ws, req_id, ok=False, error=failure[1], code=failure[0])
+                return
             section = update_dingtalk_section(bind)
+        except PersistentAgentError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+            return
         except ValueError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
             return
@@ -5097,7 +5230,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from filelock import Timeout
         from jiuwenswarm.common.im_binding_lock import im_binding_lock
 
-        client_id = str(params.get("client_id") or "").strip() if isinstance(params, dict) else ""
+        client_id = _binding_identity(params, "client_id") if isinstance(params, dict) else ""
         if not client_id:
             await _save_dingtalk_binding(ws, req_id, params, session_id)
             return
@@ -5112,7 +5245,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         section, agent_id, cm = saved
         # Do not hold the app lock while stopping a Stream worker with in-flight callbacks.
         try:
-            if not await _apply_dingtalk(ws, req_id, cm, section, "channel.dingtalk.bind_agent"):
+            if not await _apply_dingtalk(ws, req_id, cm, resolve_env_vars(section), "channel.dingtalk.bind_agent"):
                 return
         except Exception:
             logger.exception("[channel.dingtalk.bind_agent] binding apply failed")
