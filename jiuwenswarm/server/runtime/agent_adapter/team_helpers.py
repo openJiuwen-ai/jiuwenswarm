@@ -1027,9 +1027,11 @@ def _normalize_recovered_runs(
     changed = False
     for run in runs.values():
         if not run.is_terminal:
-            if run.status != "paused":
-                run.status = "paused"
-                changed = True
+            # Park the whole run through pause semantics, not the run-level
+            # status alone: the run's running phases and agents follow it to
+            # paused, so a parked run card never carries a phase still
+            # spinning as running under it.
+            changed = run.pause_if_running() or changed
             if not run.recovered:
                 run.recovered = True
                 changed = True
@@ -1201,9 +1203,15 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
+    # Synchronous, single-field merge. The queued whole-file write this used to
+    # be raced the runtime worker's round-end snapshot: another process could
+    # land a whole-file replace between our pre-read and the queue flush, and
+    # whichever wrote last erased the other's key. Merging only the owned key
+    # under the cross-process write locks keeps both sides' fields alive.
     _enqueue_write(
         session_id,
         metadata,
+        sync_write=True,
         merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
     )
 
@@ -1251,9 +1259,13 @@ def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) ->
         )
         return
     metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
+    # Same sync single-field merge as persist_session_team_dispatch_mode: the
+    # queued whole-file write raced concurrent writers and could erase (or be
+    # erased by) their keys.
     _enqueue_write(
         session_id,
         metadata,
+        sync_write=True,
         merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
     )
 
@@ -1401,6 +1413,14 @@ def _inject_swarmflow_context(
     through the launch plane (``resume_id + script_path``). Returns ``turn``
     unchanged when there is nothing to inject or the text is not a plain
     string (A2UI / InteractiveInput keep their own payload).
+
+    Handling rules gate every resume through an ask_user popup (skipped only
+    when the user's message already names the action) and branch by
+    attribution: a run whose executor (the member that last hosted it) is an
+    online member is handed back to that member via send_message so the member
+    resumes it itself — narration and completion land on whoever executes the
+    resume, so the executor stays the executor instead of the leader relaying
+    results for it.
     """
     eligible = [
         r for r in runs.values()
@@ -1414,7 +1434,13 @@ def _inject_swarmflow_context(
     ]
     for r in eligible:
         script = r.script_path or r.script or ""
-        lines.append(f"- run_id: {r.id}  脚本: {script}")
+        # The run says who last hosted it so the leader knows whose work it is
+        # about to resume; runs without team context stay unannotated,
+        # mirroring the frontend badge contract (no badge without executor).
+        head = f"- run_id: {r.id}  脚本: {script}"
+        if r.executor:
+            head += f"  最近执行者: {r.executor}"
+        lines.append(head)
         # Two resume planes, keyed on the ticket — not on the request shape:
         # a team pause pops the handler so the next chat.send looks like a
         # cold start, yet the controller still holds the ticket in-process and
@@ -1432,16 +1458,27 @@ def _inject_swarmflow_context(
         # stop works on both planes: the tool announces stopped itself when the
         # controller no longer holds the ticket (cold start), no journal seal.
         lines.append(f'  停止调用: swarmflow(resume_id="{r.id}", action="stop")')
-    # The tree-view buttons are greyed while the team sleeps,
-    # so the leader is the only control path: act on an explicit request,
-    # otherwise ask — coarse first, per-run only on demand, so N runs never
-    # overflow ask_user's 2-4 options per question.
+    # The tree-view buttons are greyed while the team sleeps, so the leader is
+    # the only control path: popup first (only a request that already names
+    # the action skips it — a bare「继续」does not), then the run's executor
+    # decides who executes the resume. The member that resumes gets the
+    # narration and the completion, so handing the resume back to an online
+    # executor keeps the run's results with that member instead of the
+    # leader collecting and relaying them.
     lines.extend([
         "处理规则：",
-        "- 若用户本条消息已明确要求恢复或停止某个（或全部）工作流，直接执行对应调用，不要询问。",
-        "- 否则先调用 ask_user 单题：「已暂停的工作流如何处理？」选项「全部恢复 / 全部停止 / "
-        "逐个选择 / 暂不处理」。选「逐个选择」再按每个工作流各出一题（恢复 / 停止 / 暂不处理）。"
-        "「暂不处理」保持暂停，不要自行恢复。",
+        "1. 用户本条消息已明确要求恢复或停止某个（或全部）工作流时，直接执行对应调用，不要询问；"
+        "「继续」这类泛泛表述不算明确要求，走第 2 步。",
+        "2. 未明确时，先调用 ask_user 单题：「已暂停的工作流如何处理？」"
+        "选项「全部恢复 / 全部停止 / 暂不处理」。「暂不处理」保持暂停，不要自行恢复。",
+        "3. 恢复时逐个 run 按最近执行者决定谁来执行：",
+        "   - 最近执行者是当前在线的团队成员：你不要自己调用 swarmflow——用 send_message 把该 run 的"
+        " run_id 和恢复调用发给该成员（如：你执行的工作流已暂停，请你自己调用"
+        ' swarmflow(resume_id="...") 恢复），由它自己恢复。过程叙述与完成结果会注入实际执行恢复的一方，'
+        "转交后由该成员自己收到结果并汇报。",
+        "   - 最近执行者是你自己，或该成员已不在团队：直接执行该 run 的恢复调用；"
+        "完成后结果注入你的对话，由你向用户汇报。",
+        "4. 停止时，直接执行对应 run 的停止调用。",
     ])
     lines.append(_ADVISORY_MARK[1])
     return turn.with_text("\n".join(lines) + "\n\n" + turn.text)
@@ -5582,6 +5619,10 @@ def _detect_human_waiting_prompts(
                         "correlation_id": correlation_id,
                         "agent_id": agent_id,
                         "agent_name": agent_name,
+                        # Run attribution for the popup: executor member name
+                        # (None = no team context) + the run's META name.
+                        "executor": wf.get("executor"),
+                        "workflow_name": wf.get("name"),
                     },
                 })
             elif agent_status != "waiting_for_human" and member_key in seen_human_waiting:
@@ -5611,7 +5652,10 @@ async def _consume_workflow_events(
         spawned_members=workflow_handler.spawned_members,
         seen_activity=workflow_handler.seen_activity,
     )
-    seen_human_waiting: set[str] = set()
+    # Handler-scoped like the four above: a pause cancels this loop and the
+    # resume relaunch re-broadcasts the waiting state — a per-loop table would
+    # re-pop the same ask_user_question.
+    seen_human_waiting = workflow_handler.seen_human_waiting
     try:
         logger.info(
             "[TeamHelpers] workflow event loop started: channel_id=%s session_id=%s is_tui=%s",
@@ -5696,7 +5740,15 @@ async def _consume_workflow_events(
                 await _broadcast_event(channel_id, session_id, team_ev)
 
             # ── 非 TUI: 检测 waiting_for_human → chat.ask_user_question ──
-            for human_ev in _detect_human_waiting_prompts(wf, session_id, seen_human_waiting):
+            # Attribution rides only the top-level (started/paused) deltas by
+            # convention; the human-waiting agent change arrives as a phase
+            # delta without it, so enrich from the run state for the popup.
+            run_state = run_states.get(str(wf.get("id") or ""))
+            human_wf = (
+                {**wf, "executor": run_state.executor}
+                if run_state is not None else wf
+            )
+            for human_ev in _detect_human_waiting_prompts(human_wf, session_id, seen_human_waiting):
                 await _broadcast_event(channel_id, session_id, human_ev)
 
             # ── 终态处理 ──

@@ -66,3 +66,60 @@ async def test_handle_swarmflow_reply_rejects_missing_fields():
     assert resp.ok is False
     assert resp.payload == {"ok": False, "error": "missing session_id/correlation_id/answer"}
     assert tm.calls == []
+
+
+@pytest.mark.anyio
+async def test_handle_swarmflow_reply_skip_maps_to_sentinel_without_answer():
+    """skip=true carries no answer yet still delivers: the message body is the
+    backend's explicit-skip marker, so the human turn skips immediately
+    instead of hanging until the human timeout."""
+    try:
+        from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+    except ImportError:
+        # Only runs where the installed core has the sentinel; the pinned-core
+        # behavior is covered by the fail-fast test below.
+        pytest.skip("installed agent-core predates HUMAN_REPLY_SKIP")
+
+    handler = _make_handler()
+    tm = _FakeTeamManager()
+    with patch(
+        "jiuwenswarm.agents.harness.team.get_team_manager", return_value=tm
+    ):
+        resp = await handler.handle_swarmflow_reply(_req(
+            session_id="sess-1",
+            run_id="run-1",
+            correlation_id="review:host:0",
+            skip=True,
+        ))
+    assert resp.ok is True
+    assert len(tm.calls) == 1
+    _session, msg = tm.calls[0]
+    assert msg.body == HUMAN_REPLY_SKIP
+
+
+@pytest.mark.anyio
+async def test_handle_swarmflow_reply_skip_fails_when_core_lacks_sentinel(monkeypatch):
+    """skip=true on a core without HUMAN_REPLY_SKIP fails fast instead of
+    delivering a literal the old core would render as the person's words."""
+    backend = pytest.importorskip(
+        "openjiuwen.agent_teams.workflow.backends.avatar_session_backend"
+    )
+    if hasattr(backend, "HUMAN_REPLY_SKIP"):
+        # Modern core: hide the sentinel to emulate the pinned one. A pinned
+        # core already lacks it and fails the import naturally.
+        monkeypatch.delattr(backend, "HUMAN_REPLY_SKIP")
+
+    handler = _make_handler()
+    tm = _FakeTeamManager()
+    with patch(
+        "jiuwenswarm.agents.harness.team.get_team_manager", return_value=tm
+    ):
+        resp = await handler.handle_swarmflow_reply(_req(
+            session_id="sess-1",
+            run_id="run-1",
+            correlation_id="review:host:0",
+            skip=True,
+        ))
+    assert resp.ok is False
+    assert resp.payload == {"ok": False, "error": "agent-core pin predates HUMAN_REPLY_SKIP"}
+    assert tm.calls == []

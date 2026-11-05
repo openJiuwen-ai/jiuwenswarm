@@ -25,7 +25,7 @@ export function resolveApiUrl(path: string): string {
 export function getApiBase(): string {
   const desktopApiBase = typeof window !== 'undefined' ? window.jiuwenDesktop?.apiBase : undefined;
   if (desktopApiBase) return normalizeBase(desktopApiBase);
-  const raw = import.meta.env.VITE_API_BASE as string | undefined;
+  const raw = import.meta.env?.VITE_API_BASE as string | undefined;
   if (!raw) return "";
   return normalizeBase(raw);
 }
@@ -33,7 +33,7 @@ export function getApiBase(): string {
 export function getWsBase(): string {
   const desktopWsBase = typeof window !== 'undefined' ? window.jiuwenDesktop?.wsBase : undefined;
   if (desktopWsBase) return normalizeBase(desktopWsBase);
-  const raw = import.meta.env.VITE_WS_BASE as string | undefined;
+  const raw = import.meta.env?.VITE_WS_BASE as string | undefined;
   if (raw) return normalizeBase(raw);
   const apiBase = getApiBase();
   if (apiBase) return apiBase.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
@@ -73,7 +73,7 @@ export function getWebTransport(): WebTransport {
     return injected;
   }
   const fromEnv = parseWebTransportToken(
-    String(import.meta.env.VITE_WEB_TRANSPORT ?? import.meta.env.VITE_TRANSPORT ?? ""),
+    String(import.meta.env?.VITE_WEB_TRANSPORT ?? import.meta.env?.VITE_TRANSPORT ?? ""),
   );
   if (fromEnv) {
     return fromEnv;
@@ -88,7 +88,7 @@ export function getWebTransport(): WebTransport {
  * 桌面端或显式绝对地址时，根是该地址下的 `/api`。
  */
 export function getGatewayApiRoot(): string {
-  const raw = import.meta.env.VITE_GATEWAY_HTTP_BASE ?? import.meta.env.VITE_WEB_HTTP_BASE;
+  const raw = import.meta.env?.VITE_GATEWAY_HTTP_BASE ?? import.meta.env?.VITE_WEB_HTTP_BASE;
   if (raw) {
     const normalized = normalizeBase(raw);
     if (normalized.endsWith("/api/v1") || normalized.endsWith("/v1")) {

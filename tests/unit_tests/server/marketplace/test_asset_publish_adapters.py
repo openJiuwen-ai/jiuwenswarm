@@ -58,6 +58,13 @@ def test_skill_preserves_body_roles_and_returns_compatible_wrapper(tmp_path):
     assert result["wrapper"]["metadata"] == {"author": "unknown", "tags": ["one"]}
 
 
+@pytest.mark.parametrize("tags,expected", [(None, ["teamskills"]), ([], []), (["office"], ["office"])])
+def test_ordinary_skill_keeps_existing_default_tags(tmp_path, tags, expected):
+    (tmp_path / "SKILL.md").write_text("---\nname: demo\ndescription: Ordinary\n---\nDo work.")
+    result = run(tmp_path, "skill", {} if tags is None else {"tags": tags})
+    assert result["wrapper"]["metadata"]["tags"] == expected
+
+
 @pytest.mark.parametrize(
     "header", ["name: x", "name: x\ndescription: d\nkind: team-skill\nroles: [{id: a}]"]
 )

@@ -75,6 +75,24 @@ function errorToMessage(error: unknown): string {
 }
 
 type MySkillsSubTab = 'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user' | 'local';
+// 「我的技能」类型胶囊：与技能广场的口径一致（技能 / 团队技能 / 多模态 / 技能包）。
+// 不选中任何胶囊 = 全部。
+type MySkillsKindTab = 'skill' | 'team' | 'multimodal' | 'packs';
+
+const MY_SKILLS_KIND_LABEL_KEYS: Record<MySkillsKindTab, string> = {
+  skill: 'skills.mySkillsKindTabs.skill',
+  team: 'skills.mySkillsKindTabs.team',
+  multimodal: 'skills.mySkillsKindTabs.multimodal',
+  packs: 'skills.mySkillsKindTabs.packs',
+};
+
+// 选中的类型胶囊下整组为空时的空态文案（分组标题本身不渲染）。
+const MY_SKILLS_KIND_EMPTY_KEY: Record<MySkillsKindTab, string> = {
+  skill: 'skills.mySkillsKindEmpty.skill',
+  team: 'skills.mySkillsKindEmpty.team',
+  multimodal: 'skills.mySkillsKindEmpty.multimodal',
+  packs: 'skills.mySkillsKindEmpty.packs',
+};
 
 const MY_SKILLS_EMPTY_KEY: Record<MySkillsSubTab, string> = {
   all: 'skills.noMatches',
@@ -178,6 +196,7 @@ export function SkillPanel({
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
   const [mySkillsSubTab, setMySkillsSubTab] = useState<MySkillsSubTab>('all');
+  const [mySkillsKindFilter, setMySkillsKindFilter] = useState<MySkillsKindTab | null>(null);
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
   /** 企业版技能广场：按已接入技能源动态生成页签 */
@@ -993,30 +1012,6 @@ export function SkillPanel({
     return filtered;
   }, [visibleSkills, mySkillsSubTab, installedSkillNames, enterpriseEdition]);
 
-  // 分组展示：技能包 / 本地 / 用户自装(或已添加) / 预置 / 内置。
-  const skillPackSkills = useMemo(
-    () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
-    [mySkillsFiltered],
-  );
-  // 预置独立分组仅企业版；单机版仍把这类技能留在「已添加」里，避免行为变化。
-  const prebuiltSkills = useMemo(
-    () =>
-      enterpriseEdition
-        ? mySkillsFiltered.filter((s) => isPrebuiltSkill(s) && s.skill_type !== 'skillpack')
-        : [],
-    [enterpriseEdition, mySkillsFiltered],
-  );
-  const builtinSkills = useMemo(
-    () => mySkillsFiltered.filter((s) => isBuiltinSkill(s) && s.skill_type !== 'skillpack'),
-    [mySkillsFiltered],
-  );
-  const localSkills = useMemo(
-    () =>
-      enterpriseEdition
-        ? mySkillsFiltered.filter((s) => isLocalSkill(s) && s.skill_type !== 'skillpack')
-        : [],
-    [enterpriseEdition, mySkillsFiltered],
-  );
   /**
    * 企业技能源面板安装态对照：只传带 origin 的已装技能 + 需名称回退的 builtin/prebuilt。
    * 不能传 skills 全量，否则同名广场自装/本地技能会把未装企业源条目误判为已安装。
@@ -1037,15 +1032,48 @@ export function SkillPanel({
         })),
     [skills],
   );
-  const otherSkills = useMemo(
-    () =>
-      mySkillsFiltered.filter((s) => {
-        if (s.skill_type === 'skillpack' || isBuiltinSkill(s)) return false;
-        if (enterpriseEdition && isPrebuiltSkill(s)) return false;
-        if (enterpriseEdition && isLocalSkill(s)) return false;
-        return true;
-      }),
-    [enterpriseEdition, mySkillsFiltered],
+
+  // 类型页签切分（口径与技能广场一致）：团队技能 = swarm_skill，多模态技能 =
+  // multimodal_skill，技能包 = skillpack；「技能」页签只留普通技能。
+  // 每个页签下的卡片都按「已添加技能 / 内置技能」两组呈现。
+  const teamMySkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.skill_type === 'swarm_skill'),
+    [mySkillsFiltered],
+  );
+  const multimodalMySkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.skill_type === 'multimodal_skill'),
+    [mySkillsFiltered],
+  );
+  const packMySkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
+    [mySkillsFiltered],
+  );
+  const kindSkills = useMemo(() => {
+    switch (mySkillsKindFilter) {
+      case 'skill':
+        return mySkillsFiltered.filter(
+          (s) =>
+            s.skill_type !== 'skillpack' &&
+            s.skill_type !== 'swarm_skill' &&
+            s.skill_type !== 'multimodal_skill',
+        );
+      case 'team':
+        return teamMySkills;
+      case 'multimodal':
+        return multimodalMySkills;
+      case 'packs':
+        return packMySkills;
+      default:
+        return mySkillsFiltered;
+    }
+  }, [mySkillsKindFilter, mySkillsFiltered, teamMySkills, multimodalMySkills, packMySkills]);
+  const kindAddedSkills = useMemo(
+    () => kindSkills.filter((s) => !isBuiltinSkill(s)),
+    [kindSkills],
+  );
+  const kindBuiltinSkills = useMemo(
+    () => kindSkills.filter((s) => isBuiltinSkill(s)),
+    [kindSkills],
   );
 
   /** 判断技能是否为技能包（接口标记 skillpack，或技能名与所属插件名一致） */
@@ -1697,11 +1725,39 @@ export function SkillPanel({
         />
       ) : (
         <>
-          {listState === 'success' && mySkillsFiltered.length === 0 ? (
+          {/* 类型胶囊固定在列表区上方，不随内容滚动；不选中任何胶囊 = 全部 */}
+          <div className="page-shell flex flex-wrap items-center gap-2">
+            {(Object.keys(MY_SKILLS_KIND_LABEL_KEYS) as MySkillsKindTab[]).map((kind) => {
+              const selected = mySkillsKindFilter === kind;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  aria-pressed={selected}
+                  data-testid="skill-panel-my-kind-pill"
+                  data-variant={kind}
+                  onClick={() => setMySkillsKindFilter(selected ? null : kind)}
+                  className={`h-8 rounded-[8px] inline-flex items-center px-3 text-sm transition-colors cursor-pointer ${
+                    selected
+                      ? 'bg-accent/10 font-medium text-accent'
+                      : 'bg-secondary text-text-muted hover:text-text'
+                  }`}
+                >
+                  {t(MY_SKILLS_KIND_LABEL_KEYS[kind])}
+                </button>
+              );
+            })}
+          </div>
+          {listState === 'success' && mySkillsKindFilter !== null && kindSkills.length === 0 ? (
+            <EmptyState
+              id="skill-panel-my-kind-empty"
+              className="page-shell mt-4"
+              text={t(MY_SKILLS_KIND_EMPTY_KEY[mySkillsKindFilter])}
+            />
+          ) : listState === 'success' && mySkillsFiltered.length === 0 ? (
             <EmptyState id="skill-panel-my-list-empty" className="page-shell mt-4" text={t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])} />
-          ) : null}
-          {listState !== 'success' || mySkillsFiltered.length > 0 ? (
-            <div className="page-scroll mt-0 flex-1 min-h-0 overflow-y-auto">
+          ) : (
+            <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
               {listState === 'loading' && (
                 <div
                   className="flex h-full items-center justify-center"
@@ -1719,58 +1775,23 @@ export function SkillPanel({
               )}
               {listState === 'success' && (
                 <>
-                  {/* 企业版「全部」：本地 → 用户自装 → 预置 → 内置；技能包仍单独成组置后。个人版保持技能包置顶。 */}
-                  {!enterpriseEdition && skillPackSkills.length > 0 && (
+                  {/* 分组只在有技能时展示：已添加技能 / 内置技能 */}
+                  {kindAddedSkills.length > 0 && (
                     <>
-                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.skillPack')} />
-                      <div className="card-grid-auto mb-6">{skillPackSkills.map(renderMySkillCard)}</div>
+                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.added')} />
+                      <div className="card-grid-auto mb-6">{kindAddedSkills.map(renderMySkillCard)}</div>
                     </>
                   )}
-                  {enterpriseEdition && localSkills.length > 0 && (
-                    <>
-                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.local')} />
-                      <div className="card-grid-auto mb-6">{localSkills.map(renderMySkillCard)}</div>
-                    </>
-                  )}
-                  {otherSkills.length > 0 && (
-                    <>
-                      {(prebuiltSkills.length > 0 ||
-                        builtinSkills.length > 0 ||
-                        skillPackSkills.length > 0 ||
-                        localSkills.length > 0) && (
-                        <MySkillsGroupHeader
-                          label={t(
-                            enterpriseEdition
-                              ? 'skills.mySkillsTabs.user'
-                              : 'skills.mySkillsGroups.added',
-                          )}
-                        />
-                      )}
-                      <div className="card-grid-auto mb-6">{otherSkills.map(renderMySkillCard)}</div>
-                    </>
-                  )}
-                  {enterpriseEdition && prebuiltSkills.length > 0 && (
-                    <>
-                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.prebuilt')} />
-                      <div className="card-grid-auto mb-6">{prebuiltSkills.map(renderMySkillCard)}</div>
-                    </>
-                  )}
-                  {builtinSkills.length > 0 && (
+                  {kindBuiltinSkills.length > 0 && (
                     <>
                       <MySkillsGroupHeader label={t('skills.mySkillsGroups.builtin')} />
-                      <div className="card-grid-auto mb-6">{builtinSkills.map(renderMySkillCard)}</div>
-                    </>
-                  )}
-                  {enterpriseEdition && skillPackSkills.length > 0 && (
-                    <>
-                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.skillPack')} />
-                      <div className="card-grid-auto">{skillPackSkills.map(renderMySkillCard)}</div>
+                      <div className="card-grid-auto">{kindBuiltinSkills.map(renderMySkillCard)}</div>
                     </>
                   )}
                 </>
               )}
             </div>
-          ) : null}
+          )}
         </>
       )}
     </>

@@ -160,16 +160,34 @@ def test_recommendation_accepts_any_one_free_engine(flag, value):
 
 
 @pytest.mark.parametrize("env", [{}, {REMOVED_FLAG: "true"}])
-def test_recommendation_stays_unconfigured_without_free_engine(env):
+def test_recommendation_reports_missing_engines_without_blocking_service(env):
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import background_configuration_status
-    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
-        OpenJiuwenNativeSearchContractError, selected_topic_search_provider_id,
-    )
-    with pytest.raises(OpenJiuwenNativeSearchContractError, match="requires_free_engines"):
-        selected_topic_search_provider_id(environ=env)
+    from jiuwenswarm.agents.harness.common.recommendation.topic_search import selected_topic_search_provider_id
+
+    assert selected_topic_search_provider_id(environ=env) == "openjiuwen-native-free-search"
     status = background_configuration_status(None, environ=env)
     assert status["native_search_missing"]
     assert "360" not in status["native_search"]
+
+
+@pytest.mark.asyncio
+async def test_recommendation_search_fails_without_dispatch_when_engines_disabled(search_settings, monkeypatch):
+    from openjiuwen.harness.tools.web import _http
+    from openjiuwen.harness.tools.web._quality import WebContentError
+    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+        OpenJiuwenNativeSearchProviderError,
+        _default_search_runner,
+        build_openjiuwen_native_search,
+    )
+
+    runner = AsyncMock(side_effect=AssertionError("disabled source dispatched"))
+    monkeypatch.setattr(_http, "request", runner)
+    with pytest.raises(WebContentError, match="all free search engines are disabled"):
+        await _default_search_runner("Python", 3, 10)
+    search = build_openjiuwen_native_search(environ={flag: "false" for flag in FLAGS})
+    with pytest.raises(OpenJiuwenNativeSearchProviderError):
+        await search("Python", 3, 10)
+    runner.assert_not_awaited()
 
 
 @pytest.mark.parametrize("engine", ["duckduckgo", "duckduckgo-jina", "bing"])

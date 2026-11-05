@@ -1563,6 +1563,8 @@
       "running": "Compressing context",
       "completed": "Context compression completed {{count}} time(s)",
       "failed": "Context compression failed",
+      "cancelled": "Context compression cancelled",
+      "paused": "Context compression paused",
       "close": "Close context compression notice"
     },
     "elapsed": {
@@ -1845,7 +1847,7 @@
       "nextStep": "Help me turn an idea into a practical next step."
     },
     "topicStarter": {
-      "statusMissingConfiguration": "The topic model configuration is incomplete. Check General settings.",
+      "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
       "recommendedForYou": "Recommended for you",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
@@ -1857,17 +1859,16 @@
       "hotListListedAt": "Listed {{time}}",
       "viewHotListEntry": "See this trending item: {{source}}",
       "hotListEntry": "Trending",
-      "openNewsSearch": "Open related news",
-      "searchRelatedNews": "See related news",
-      "statusPreparing": "Getting a few topics ready. You can start chatting now.",
-      "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
-      "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
-      "statusNeedsSettings": "For topics that understand you better, turn on recommendations in Settings - General.",
-      "statusNoCards": "Nothing to show right now. You can just start typing.",
-      "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
+      "openNewsSearch": "Open the hot-search topic",
+      "searchRelatedNews": "Open hot search",
+      "statusPreparing": "Getting topics ready. You can start chatting now.",
+      "statusPreparingWithCards": "Getting topics ready. You can start chatting now.",
+      "statusUpdateIncomplete": "Getting topics ready. You can start chatting now.",
+      "statusNeedsSettings": "Topic recommendations are unavailable. Check Settings.",
+      "statusNoCards": "Getting topics ready. You can start chatting now.",
+      "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
       "openSettings": "Check settings",
-      "disabledHint": "For topics that understand you better, turn on recommendations in Settings - General.",
-      "retryPreparation": "Try again"
+      "disabledHintWithCards": "These are preset topics. Turn on topic recommendations in Settings to gradually replace them with personalized ones."
     },
     "promptSuggestionBox": {
       "label": "Next: ",
@@ -2041,6 +2042,8 @@
       "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
       "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
     },
+    "contextCompressionCancelled": "Context compression cancelled; it will be re-evaluated on the next request",
+    "contextCompressionPaused": "Context compression paused; it will be re-evaluated when the task resumes",
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",
@@ -3288,6 +3291,18 @@
       "builtin": "Built-in Skills",
       "local": "Local Skills",
       "skillPack": "Skill Packs"
+    },
+    "mySkillsKindTabs": {
+      "skill": "Skills",
+      "team": "Team Skills",
+      "multimodal": "Multimodal",
+      "packs": "Skill Packs"
+    },
+    "mySkillsKindEmpty": {
+      "skill": "No skills yet",
+      "team": "No team skills yet",
+      "multimodal": "No multimodal skills yet",
+      "packs": "No skill packs yet"
     },
     "noPrebuiltSkills": "No prebuilt skills",
     "noUserSkills": "No user-installed skills",
@@ -5652,7 +5667,10 @@
     "sectionError": "Error",
     "charUnit": "chars",
     "clickToViewDetail": "Click to view details",
-    "runIdTooltip": "Run ID: {{id}}"
+    "runIdTooltip": "Run ID: {{id}}",
+    "executorTooltip": "currently hosted by {{name}}",
+    "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
+    "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",

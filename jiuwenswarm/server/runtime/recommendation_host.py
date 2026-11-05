@@ -18,6 +18,11 @@ from typing import Any, Awaitable, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
+# Lane identity used while no search provider is usable. Preset pools written under
+# it are incompatible with a later configured lane, so they are rebuilt once search
+# is set up.
+UNCONFIGURED_SEARCH_PROVIDER_ID = "search-unconfigured"
+
 _ACTIVE_HOST: "RecommendationHost | None" = None
 
 
@@ -105,23 +110,22 @@ def _build_topic_starter_services(
             TopicStarterStoreOutcomeSink(topic_starter_store)
         )
 
+    topic_pipeline = TopicPipeline(
+        topic_starter_store,
+        records_loader=permitted_records,
+        active_request_ids_loader=active_request_ids_loader,
+    )
     try:
-        topic_pipeline = TopicPipeline(
-            topic_starter_store,
-            records_loader=permitted_records,
-            active_request_ids_loader=active_request_ids_loader,
-        )
         search_provider_id = topic_pipeline.search_provider_id
     except OpenJiuwenNativeSearchContractError as exc:
+        # The packaged preset corpus needs neither the model nor the search lane.
+        # Keep the product lane so the homepage can still serve it; a configured
+        # search lane writes a different compatibility key and rebuilds the pool.
         logger.warning(
-            "[Topic] disabled at startup: %s",
+            "[Topic] search lane unavailable; serving preset cards only: %s",
             exc,
         )
-        return (
-            topic_prepare_service,
-            None,
-            topic_outcome_queue,
-        )
+        search_provider_id = UNCONFIGURED_SEARCH_PROVIDER_ID
 
     # Bounds the cross-thread wait for one RID pair, so a stalled loop cannot wedge collection.
     summary_pair_match_timeout_seconds = 60.0
