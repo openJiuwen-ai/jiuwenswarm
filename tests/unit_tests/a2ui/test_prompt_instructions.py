@@ -357,9 +357,11 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
     assert "TextField 与 Slider 的内联 label" not in web_zh
     assert '禁止添加"重置"、"清空"' not in web_zh
 
-    # 公共规则（selections path / maxAllowed / Id-uniqueness / Repeat-data）对所有 channel 都在
+    # 公共规则（输入绑定 / Button child / selections / Id-uniqueness / Repeat-data）对所有 channel 都在
     for ch in (None, "web", "officeclaw"):
         en = build_a2ui_autonomy_instruction("en", channel=ch)
+        assert "bind its value/selections to a data model path" in en
+        assert 'Button MUST use "child" to reference a component id' in en
         assert "single-select, set maxAllowedSelections to 1" in en
         assert "single-parent" in en
         assert "Do not nest templates" in en
