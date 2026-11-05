@@ -1079,7 +1079,9 @@ _CAST_PLURAL_PERSON_RE = re.compile(
     r"(?i)\b(?:adults|men|women|children|kids|people|folks|residents|citizens"
     r"|commuters|shoppers|students|runners|joggers|players|guests|fans|tourists"
     r"|passers-by|pedestrians|workers|villagers|monks|soldiers|dancers|musicians"
-    r"|singers|pilgrims|worshippers|vendors|teens|teenagers|colleagues)\b"
+    r"|singers|pilgrims|worshippers|vendors|teens|teenagers|colleagues"
+    r"|elders|seniors|athletes|exercisers|swimmers|cyclists|volunteers"
+    r"|performers|members)\b"
 )
 
 # Collectives that are groups by definition, in either authoring language.
@@ -1094,6 +1096,7 @@ _CAST_GROUP_NOUN_RE = re.compile(
     r"|市民|居民|观众|听众|路人|行人|游客|旅客|乘客|顾客"
     r"|队伍|小队|大队|车队|球队|乐队|舞队|合唱团|仪仗队|方阵|列队"
     r"|上班族|学生|学生们|年轻人|老人们|老年人|居民们|顾客们|朋友们"
+    r"|晨练者|运动员|志愿者|表演者|晨练市民"
     r"|一族|一伙|一帮|一班|一批|成群)"
 )
 
@@ -1138,7 +1141,9 @@ def detect_cast_form(name: Any, description: Any = "", role: Any = "") -> tuple[
     if _CAST_SINGLE_RE.search(text):
         return "single", ""
     size = _cast_group_size(text)
-    if size or _CAST_GROUP_NOUN_RE.search(text):
+    # A plural person noun already means more than one person, so it is a group
+    # even without a count or a collective noun ("seniors in the park").
+    if size or _CAST_GROUP_NOUN_RE.search(text) or _CAST_PLURAL_PERSON_RE.search(text):
         return "group", size
     return "single", ""
 
