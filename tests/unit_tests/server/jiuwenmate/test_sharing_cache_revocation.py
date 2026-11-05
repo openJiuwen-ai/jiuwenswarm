@@ -322,3 +322,104 @@ async def test_nonempty_bound_generation_survives_later_once_and_restart_but_not
     assert not reopened.request_window_is_current('local', 'request-2')
     with pytest.raises(PersistentAgentError, match='authorization changed'):
         reopened.bind_request_window('local', 'agent-1', 'session-1', 'request-2')
+
+
+@pytest.mark.asyncio
+async def test_retired_request_cannot_read_once_import_after_target_rejoins(artifact_host):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+
+    execution = await imported(artifact_host)
+    guard = SessionArtifactSharing(artifact_host.gate, artifact_host.delegate)
+    args = {'file_path': 'imports/art_original_report.txt'}
+    with pytest.raises(core.GroupContentApprovalRequired):
+        await guard.prepare(execution, 'read_file', args)
+    row, = artifact_host.repo.pending_for_request('local', 'request-2')
+    artifact_host.repo.bind_native('local', 'request-2', 'native-2')
+    artifact_host.repo.decide(row['approval_id'], namespace_id='local', config_id='config-1',
+                             owner_principal='local', decision='once', now=NOW)
+    assert await guard.prepare(execution, 'read_file', args) is None
+    target = row['scope']['target']
+    groups = GroupChatRepository(artifact_host.repo.db_path)
+    group = groups.resolve('local', target['channel'], target['id'], now=NOW)
+    groups.observe_access('local', execution.agent_id, group.group_chat_id, target['app_id'],
+                          observed_at=NOW, source_ref='message:first')
+    groups.update_membership('local', execution.agent_id, group.group_chat_id, target['app_id'],
+                             status='left', observed_at=NOW + timedelta(seconds=2), source_ref='event:left')
+    groups.observe_access('local', execution.agent_id, group.group_chat_id, target['app_id'],
+                          observed_at=NOW + timedelta(seconds=3), message_time=NOW + timedelta(seconds=3),
+                          source_ref='message:rejoin')
+    output = await guard.prepare(execution, 'read_file', args)
+    assert output is not None and not output.success
+
+
+@pytest.mark.asyncio
+async def test_retired_once_request_cannot_release_more_message_results(sharing):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+
+    await approve(sharing, 'once')
+    groups = GroupChatRepository(sharing.repo.db_path, id_factory=lambda: 'source-group')
+    group = groups.resolve('local', 'feishu', 'source-chat', now=NOW)
+    groups.observe_access('local', sharing.execution.agent_id, group.group_chat_id, 'app',
+                          observed_at=NOW, source_ref='message:first')
+    groups.update_membership('local', sharing.execution.agent_id, group.group_chat_id, 'app',
+                             status='left', observed_at=NOW + timedelta(seconds=2), source_ref='event:left')
+    result = await sharing.port.search_messages(sharing.execution, sharing.query)
+    assert not result.hits and result.status == 'unavailable'
+
+
+def retire_target_before(host, monkeypatch, operation, event):
+    """Deliver a real lifecycle event after preflight, before the repository transaction."""
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+
+    groups = GroupChatRepository(host.repo.db_path, id_factory=lambda: 'target-group')
+    target = groups.resolve('local', 'feishu', 'chat-target', now=NOW)
+    groups.observe_access('local', 'agent-1', target.group_chat_id, 'app-1',
+                          observed_at=NOW, source_ref='message:first')
+    original = getattr(host.repo, operation)
+
+    def retire_then_call(*args, **kwargs):
+        if event == 'dissolved':
+            groups.mark_dissolved('local', target.group_chat_id,
+                                  observed_at=NOW + timedelta(seconds=1), source_ref='event:disband')
+        else:
+            groups.update_membership('local', 'agent-1', target.group_chat_id, 'app-1',
+                                     status='left', observed_at=NOW + timedelta(seconds=1), source_ref='event:left')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(host.repo, operation, retire_then_call)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('event', ['left', 'dissolved'])
+async def test_search_returns_unavailable_when_group_retires_during_grant_authorization(sharing, monkeypatch, event):
+    retire_target_before(sharing, monkeypatch, 'authorize_from_grants', event)
+
+    result = await sharing.port.search_messages(sharing.execution, sharing.query)
+
+    assert result.status == 'unavailable'
+    assert not result.hits and not result.artifacts
+    assert not sharing.repo.request_window_is_current('local', 'request-1')
+    assert not sharing.repo.list_for_owner('local', 'config-1', owner_principal='local')['grants']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('event', ['left', 'dissolved'])
+@pytest.mark.parametrize('operation', ['create_or_get_batch', 'authorize_from_grants'])
+async def test_cached_import_is_blocked_when_group_retires_during_reauthorization(
+    artifact_host, monkeypatch, event, operation,
+):
+    execution = await imported(artifact_host)
+    guard = SessionArtifactSharing(artifact_host.gate, artifact_host.delegate)
+    args = {'file_path': 'imports/art_original_report.txt'}
+    with pytest.raises(core.GroupContentApprovalRequired):
+        await guard.prepare(execution, 'read_file', args)
+    retire_target_before(artifact_host, monkeypatch, operation, event)
+
+    output = await guard.prepare(execution, 'read_file', args)
+
+    assert output is not None and not output.success
+    assert output.data['status'] == 'forbidden'
+    assert 'private file' not in str(output.data)
+    assert not artifact_host.repo.request_window_is_current('local', 'request-2')
+    grants = artifact_host.repo.list_for_owner('local', 'config-1', owner_principal='local')['grants']
+    assert all(grant['status'] == 'revoked' for grant in grants)

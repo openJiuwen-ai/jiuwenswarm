@@ -978,6 +978,7 @@ class FeishuChannel(BaseChannel):
                     .register_p2_im_message_recalled_v1(lambda data: self._on_persistent_change_sync(data, "recalled"))
                     .register_p2_im_chat_member_bot_added_v1(lambda data: self._on_persistent_change_sync(data, "joined"))
                     .register_p2_im_chat_member_bot_deleted_v1(lambda data: self._on_persistent_change_sync(data, "left"))
+                    .register_p2_im_chat_disbanded_v1(lambda data: self._on_persistent_change_sync(data, "dissolved"))
                     .register_p2_im_chat_updated_v1(lambda data: self._on_persistent_change_sync(data, "group_updated")))
             event_handler = builder.build()
 
@@ -3388,25 +3389,49 @@ class FeishuChannel(BaseChannel):
         )
 
     def _on_persistent_change_sync(self, data: Any, kind: str) -> None:
-        if self._main_loop and self._main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._on_persistent_change(data, kind), self._main_loop)
+        if not self._main_loop or not self._main_loop.is_running():
+            logger.warning("[FeishuChannel] Lifecycle route unavailable: app_id=%s kind=%s", self.config.app_id, kind)
+            raise RuntimeError("Feishu lifecycle route unavailable")
+        operation = self._on_persistent_change(data, kind)
+        try:
+            future = asyncio.run_coroutine_threadsafe(operation, self._main_loop)
+        except Exception:
+            operation.close()
+            raise RuntimeError("Feishu lifecycle scheduling failed") from None
+        try:
+            # The SDK invokes this on its own WebSocket thread and ACKs on return.
+            future.result(timeout=3)
+        except Exception as exc:
+            future.cancel()
+            logger.warning("[FeishuChannel] Lifecycle not confirmed: app_id=%s kind=%s error_type=%s",
+                           self.config.app_id, kind, type(exc).__name__)
+            raise RuntimeError("Feishu lifecycle delivery not confirmed") from None
 
     async def _on_persistent_change(self, data: Any, kind: str) -> None:
         callback = getattr(self, "_persistent_group_fanout_callback", None)
-        if callback is None or not getattr(self.config, "agent_id", None):
+        if not getattr(self.config, "agent_id", None):
             return
+        if callback is None:
+            raise RuntimeError("Feishu lifecycle callback unavailable")
         value = self._persistent_event_value
         event, header = value(data, "event"), value(data, "header")
+        logger.info("[FeishuChannel] Lifecycle received: app_id=%s kind=%s event_id=%s chat_id=%s",
+                    self.config.app_id, kind, value(header, "event_id"), value(event, "chat_id"))
         changed_at = self._persistent_received_at(value(header, "create_time"))
         if changed_at is None:
-            return
+            raise RuntimeError("Invalid Feishu lifecycle event time")
         name = value(value(event, "after_change"), "name") or value(event, "name")
-        await callback(FeishuInboundEvent(
+        disposition = await callback(FeishuInboundEvent(
             receiving_app_id=self.config.app_id, expected_agent_id=self.config.agent_id,
             message_id=value(event, "message_id"), chat_id=value(event, "chat_id"), chat_type="group",
             sender_type=None, sender_id=None, sender_name=None, sender_app_id=None, received_at=changed_at,
             text=None, event_kind=kind, event_id=value(header, "event_id"), changed_at=changed_at, group_name=name,
         ))
+        status = getattr(disposition, "value", disposition)
+        logger.info("[FeishuChannel] Lifecycle handled: app_id=%s kind=%s event_id=%s disposition=%s",
+                    self.config.app_id, kind, value(header, "event_id"), status)
+        if status != InboundDisposition.HANDLED.value:
+            raise RuntimeError("Feishu lifecycle event not accepted")
 
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """

@@ -461,7 +461,12 @@ class PersistentGroupFanout:
                 await asyncio.to_thread(
                     self._groups.observe_access, binding.namespace_id, binding.agent_id, group.group_chat_id,
                     binding.app_id, observed_at=received_at, source_ref=f"feishu:message:{event.message_id}",
+                    message_time=received_at,
                 )
+                if binding.app_id not in await asyncio.to_thread(
+                    self._groups.active_apps, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                ):
+                    return InboundDisposition.HANDLED
                 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
                 presented_text = request_input.text
@@ -617,13 +622,20 @@ class PersistentGroupFanout:
 
     async def _handle_group_change(self, binding: FeishuBinding, event: FeishuInboundEvent) -> InboundDisposition:
         """Lifecycle and recall facts change host records, never create business Requests."""
-        if (event.event_kind not in {"recalled", "joined", "left", "group_updated"}
+        if (event.event_kind not in {"recalled", "joined", "left", "group_updated", "dissolved"}
                 or event.chat_type != "group" or not _present(event.chat_id)
                 or not _present(event.event_id) or not _valid_received_at(event.changed_at)):
             return InboundDisposition.REJECTED
         try:
-            group = await asyncio.to_thread(self._groups.resolve, binding.namespace_id, "feishu", event.chat_id,
-                                             now=self._clock())
+            if event.event_kind == "joined":
+                return InboundDisposition.HANDLED
+            if event.event_kind == "group_updated":
+                group = await asyncio.to_thread(self._groups.find, binding.namespace_id, "feishu", event.chat_id)
+                if group is None:
+                    return InboundDisposition.HANDLED
+            else:
+                group = await asyncio.to_thread(self._groups.resolve, binding.namespace_id, "feishu", event.chat_id,
+                                                 now=self._clock())
             source = f"feishu:event:{event.event_id}"
             if event.event_kind == "recalled":
                 if not _present(event.message_id):
@@ -631,13 +643,17 @@ class PersistentGroupFanout:
                 await asyncio.to_thread(self._agent_manager.group_archive.recall, binding.namespace_id,
                                          group.group_chat_id, event.message_id, source_ref=source,
                                          changed_at=event.changed_at)
-            elif event.event_kind in {"joined", "left"}:
+            elif event.event_kind == "dissolved":
+                await asyncio.to_thread(self._groups.mark_dissolved, binding.namespace_id, group.group_chat_id,
+                                        observed_at=event.changed_at, source_ref=source)
+            elif event.event_kind == "left":
                 await asyncio.to_thread(self._groups.update_membership, binding.namespace_id, binding.agent_id,
                                          group.group_chat_id, binding.app_id,
-                                         status="active" if event.event_kind == "joined" else "left",
+                                         status="left",
                                          observed_at=event.changed_at, source_ref=source)
             if event.group_name:
-                await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
+                await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id,
+                                        event.group_name, observed_at=event.changed_at)
         except Exception:
             return InboundDisposition.REJECTED
         return InboundDisposition.HANDLED

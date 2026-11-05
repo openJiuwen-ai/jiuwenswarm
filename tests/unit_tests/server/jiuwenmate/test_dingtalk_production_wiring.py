@@ -209,6 +209,19 @@ def _group_requests(host, conversation_id="conversation-test"):
     return host.repository.session_requests("local", session.session_id) if session else []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skew_ms", [258, -258])
+async def test_first_group_message_remains_readable_with_platform_clock_skew(host, skew_ms):
+    event = _event(conversation_type="2", platform_created_at=NOW + timedelta(milliseconds=skew_ms))
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+    group = host.manager.group_chats.find("local", "dingtalk", event.conversation_id)
+    access = host.manager.group_chats.access_for("local", "agent-dingtalk", group.group_chat_id)
+    message, = host.manager.group_archive.current_messages("local", group.group_chat_id, (event.message_id,))
+    assert message.received_at >= access.visible_from
+    await settle(lambda: _group_delivered(host))
+    assert len(host.contexts) == 1
+
+
 def _group_delivered(host):
     rows = _group_requests(host)
     deliveries = host.repository.result_deliveries("local", rows[0].record.request_id) if rows else []
