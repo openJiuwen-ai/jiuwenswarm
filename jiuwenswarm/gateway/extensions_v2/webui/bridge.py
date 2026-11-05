@@ -28,7 +28,7 @@ from jiuwenswarm.gateway.extensions_v2.webui.models import (
 from jiuwenswarm.gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS
 from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_event_data
 
-SLOTS = frozenset({"application.entry", "application.sidebar.footer"})
+SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background"})
 ASSET_PREFIX = "/extension-assets/"
 #: Marks a generation segment that addresses the package data ``public/`` directory.
 DATA_GENERATION_SUFFIX = ".data"

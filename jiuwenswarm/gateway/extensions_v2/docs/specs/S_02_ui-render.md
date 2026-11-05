@@ -46,8 +46,9 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | --- | --- | --- | --- |
 | `application.entry` | `application` | `single` | 首屏整页宿主槽位，前端常驻挂载 |
 | `application.sidebar.footer` | `application` | `list` | 侧边栏底部列表槽位，可同时容纳多个包的内容 |
+| `application.background` | `application` | `single` | 全窗口底层背景，只接受 `MediaSurface` 根；宿主策略与消息协议见 [S_07](S_07_media-surface.md) |
 
-槽位是通用能力：任何 Gateway 包都可以渲染这两个槽位，平台不规定其内容。未知槽位返回 `SCHEMA_ERROR`。会话槽位由 AgentServer 渲染，Gateway 侧一律拒绝。
+槽位是通用能力：任何 Gateway 包都可以渲染这些槽位，平台不规定其内容。未知槽位返回 `SCHEMA_ERROR`。会话槽位由 AgentServer 渲染，Gateway 侧一律拒绝。
 
 ## 4. 目标与实例键
 

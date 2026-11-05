@@ -9,10 +9,10 @@
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon。字段、默认值、必填与事件数据统一遵循
+Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon、MediaSurface。字段、默认值、必填与事件数据统一遵循
 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`；
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`task.function` 与 `task.function.main`；
 其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
 
 ## 表单、菜单与应用插槽
@@ -38,6 +38,7 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   右上方示例为 placement=topLeft、align.points=[bl,tr]、align.offset=[0,0]，将菜单左下角对齐头像触发器右上角。上述字段直接传给 AntD，不增加位置别名或自定义定位算法。
 - application.entry 始终保留消费者，首次欢迎 ui.ready 仍只按首访触发。有效 render 可随时显示，clear 关闭当前视图后可重入，渲染失败保持全屏错误；原生 modal dialog 和 inert 阻止底层交互。内容区铺满视口，宽度、背景和留白由插件的 Box 控制。
 - application.sidebar.footer 是应用级单实例显示槽位，不依赖聊天 session，沿用已合入的槽位目录；宿主为底部保留 12px 间距。
+- application.background 是 Gateway 应用级单实例槽位，只接受 MediaSurface 根（槽位规则 strictRoot）。WebUIBackgroundHost 在应用根部全窗口底层挂载该槽位，不接收输入与焦点；宿主策略与消息协议见 [Gateway S_07](../../../../../../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)。
 
 ### English contract summary
 
@@ -178,8 +179,8 @@ Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍�
 事件 data 中的文本按单字段 UTF-8 字节数校验，默认上限为 16 KiB；
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
-隐藏内容也计入 8 层、512 节点预算，Panel/Iframe 不能嵌套为普通子节点。
-`application.entry`、`application.sidebar.footer` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
+隐藏内容也计入 8 层、512 节点预算，Panel/Iframe/MediaSurface 不能嵌套为普通子节点。
+`application.entry`、`application.sidebar.footer` 与 `application.background` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
 `application.settings` 默认 session，允许按声明显式使用 application；两种范围的实例和挂载所有权隔离，
 清理会话不清理应用范围设置。其他槽位使用 session 范围。设置菜单、分类、位置及实例准入见
 [设置 location 规约](../../../../../../../../extensions_v2/docs/specs/S_18_settings-location.md)。

@@ -76,6 +76,8 @@ flowchart LR
 | `application.entry` | `single` | 首屏整页宿主，适合登录页、全屏设置等 |
 | `application.sidebar.footer` | `list` | 侧边栏底部列表，多个包可并存 |
 
+2026-11-05 修订：新增 `application.background`（single，只接受 `MediaSurface` 根），方案见 [F_10](F_10_media-surface-and-background.md)；本节其余内容为 GW-03 时的历史记录。
+
 `package_id` 由可信调用包归属注入，包不得指定其他包；`instance_key` 由包决定，同一 `(slot_id, package_id, instance_key)` 只对应一个实例，重复渲染只增加 revision。
 
 组件目录在本批次补齐前端已登记的 `Form`、`Form.Item`、`Dropdown`，并给 `Button` 增加 `form`：

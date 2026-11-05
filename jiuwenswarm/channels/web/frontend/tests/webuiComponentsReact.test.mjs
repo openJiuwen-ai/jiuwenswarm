@@ -63,6 +63,7 @@ const {
   useWebUIPanels,
   WebUINavigationHost,
   WebUIPageHost,
+  WebUIBackgroundHost,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -2318,6 +2319,198 @@ test('application footer mounts without a session and follows the published sing
     assert.equal(app.transport.dispatches[0].target.scope, 'application');
     assert.equal(app.transport.dispatches[0].target.sessionId, '');
   } finally { await app.close(); }
+});
+
+const backgroundScope = {
+  scope: 'application', slot_id: 'application.background', package_id: 'pkg.theme', instance_key: 'main',
+};
+const surfaceAsset = (name) => `/extension-assets/pkg.theme/g1/${name}`;
+const surface = (props) => ({ component: 'MediaSurface', props: { title: 'Theme', ...props } });
+const surfaceToken = (iframe) => /#webui-surface-token=([0-9a-f]{32})$/.exec(iframe.getAttribute('src'))?.[1];
+async function postSurface(source, data) {
+  await act(async () => window.dispatchEvent(new window.MessageEvent('message', { data, source })));
+}
+const surfaceMessage = (token, event) => ({ type: 'webui.surface', version: 1, token, event });
+
+test('MediaSurface renders image, video and sandboxed pages with the host media policy', async () => {
+  const app = await setup(surface({ kind: 'image', src: surfaceAsset('bg.png') }), backgroundScope);
+  try {
+    const root = app.container.querySelector('[data-testid="webui-media-surface"]');
+    assert.equal(root.dataset.variant, 'image');
+    assert.equal(root.getAttribute('aria-hidden'), 'true');
+    assert.equal(root.style.opacity, '1');
+    const image = root.querySelector('[data-testid="webui-media-surface-image"]');
+    assert.equal(image.getAttribute('src'), surfaceAsset('bg.png'));
+    assert.equal(image.style.objectFit, 'cover');
+    assert.equal(image.style.objectPosition, 'center');
+    assert.equal(root.querySelector('[data-testid="webui-media-surface-dim"]'), null);
+
+    await app.replace(surface({ kind: 'video', src: surfaceAsset('loop.mp4'), poster: surfaceAsset('poster.jpg'),
+      fit: 'contain', position: 'top', loop: false, muted: false, dim: 0.4, blur: 10, opacity: 0.5 }), 2);
+    const video = app.container.querySelector('[data-testid="webui-media-surface-video"]');
+    assert.equal(video.muted, true, 'the background ignores muted=false');
+    assert.equal(video.loop, false);
+    assert.equal(video.autoplay, true);
+    assert.equal(video.hasAttribute('playsinline'), true);
+    assert.equal(video.hasAttribute('controls'), false);
+    assert.equal(video.getAttribute('poster'), surfaceAsset('poster.jpg'));
+    assert.equal(video.style.objectFit, 'contain');
+    assert.equal(video.style.objectPosition, 'top');
+    const layer = video.parentElement;
+    assert.equal(layer.style.filter, 'blur(10px)');
+    assert.equal(layer.style.inset, '-20px');
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-dim"]').style.opacity, '0.4');
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface"]').style.opacity, '0.5');
+
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('scene/index.html#scene=1'),
+      poster: surfaceAsset('poster.jpg') }), 3);
+    const iframe = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.equal(iframe.getAttribute('sandbox'), 'allow-scripts');
+    assert.equal(iframe.getAttribute('allow'), 'autoplay');
+    assert.equal(iframe.getAttribute('referrerpolicy'), 'no-referrer');
+    assert.equal(iframe.getAttribute('tabindex'), '-1');
+    assert.equal(iframe.getAttribute('title'), 'Theme');
+    assert.match(iframe.getAttribute('src'), /^\/extension-assets\/pkg\.theme\/g1\/scene\/index\.html#scene=1&webui-surface-token=[0-9a-f]{32}$/);
+    assert.equal(iframe.dataset.variant, 'loading');
+    assert.equal(iframe.style.opacity, '0', 'the page keeps rendering while transparent');
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+  } finally { await app.close(); }
+});
+
+test('MediaSurface accepts only messages from its frame that carry the current token', async (context) => {
+  const app = await setup(surface({ kind: 'html', src: surfaceAsset('scene.html'), poster: surfaceAsset('poster.jpg') }),
+    backgroundScope);
+  try {
+    const iframe = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
+    const frameWindow = iframe.contentWindow;
+    const token = surfaceToken(iframe);
+    assert.ok(frameWindow && token);
+    const posted = [];
+    context.mock.method(frameWindow, 'postMessage', (message, targetOrigin) => posted.push({ message, targetOrigin }));
+    for (const [source, data] of [
+      [frameWindow, surfaceMessage('0'.repeat(32), 'ready')],
+      [window, surfaceMessage(token, 'ready')],
+      [null, surfaceMessage(token, 'ready')],
+      [frameWindow, { ...surfaceMessage(token, 'ready'), version: 2 }],
+      [frameWindow, { ...surfaceMessage(token, 'ready'), type: 'webui.other' }],
+      [frameWindow, surfaceMessage(token, 'play')],
+      [frameWindow, surfaceMessage(token, 'heartbeat')],
+      [frameWindow, surfaceMessage(token, 'complete')],
+      [frameWindow, 'ready'],
+    ]) await postSurface(source, data);
+    assert.equal(iframe.dataset.variant, 'loading');
+    assert.equal(posted.length, 0);
+
+    await postSurface(frameWindow, surfaceMessage(token, 'ready'));
+    assert.equal(iframe.dataset.variant, 'ready');
+    assert.equal(iframe.style.opacity, '1');
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-poster"]'), null);
+    assert.deepEqual(posted.at(-1), { targetOrigin: '*', message: { type: 'webui.surface', version: 1, event: 'start',
+      context: { role: 'background', visible: true, reducedMotion: false, locale: i18n.language } } });
+
+    await postSurface(frameWindow, surfaceMessage(token, 'error'));
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-frame"]'), null);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('next.html') }), 2);
+    const next = app.container.querySelector('[data-testid="webui-media-surface-frame"]');
+    assert.notEqual(surfaceToken(next), token, 'each iframe receives a fresh token');
+    await postSurface(next.contentWindow, surfaceMessage(token, 'ready'));
+    assert.equal(next.dataset.variant, 'loading');
+    await postSurface(next.contentWindow, surfaceMessage(surfaceToken(next), 'ready'));
+    assert.equal(next.dataset.variant, 'ready');
+  } finally { await app.close(); }
+});
+
+test('MediaSurface falls back to the poster after the ready timeout and keeps videos paused while hidden', async (context) => {
+  const timers = [];
+  const originalSetTimeout = window.setTimeout.bind(window);
+  context.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
+    if (delay !== 15000) return originalSetTimeout(callback, delay, ...args);
+    timers.push(callback);
+    return -timers.length;
+  });
+  const app = await setup(surface({ kind: 'html', src: surfaceAsset('slow.html'), poster: surfaceAsset('poster.jpg') }),
+    backgroundScope);
+  const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+  try {
+    assert.equal(timers.length, 1);
+    await act(async () => timers[0]());
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-frame"]'), null);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+
+    await app.replace(surface({ kind: 'video', src: surfaceAsset('loop.mp4') }), 2);
+    const video = app.container.querySelector('[data-testid="webui-media-surface-video"]');
+    const paused = context.mock.method(video, 'pause', () => undefined);
+    const played = context.mock.method(video, 'play', () => Promise.resolve());
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    await act(async () => document.dispatchEvent(new window.Event('visibilitychange')));
+    assert.equal(paused.mock.callCount(), 1);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    await act(async () => document.dispatchEvent(new window.Event('visibilitychange')));
+    assert.equal(played.mock.callCount(), 1);
+  } finally {
+    if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+    else delete document.visibilityState;
+    await app.close();
+  }
+});
+
+test('MediaSurface shows only the poster under reduced motion when one is provided', async () => {
+  const matchMedia = window.matchMedia;
+  window.matchMedia = (query) => ({ ...matchMedia(query), matches: query === '(prefers-reduced-motion: reduce)' });
+  const app = await setup(surface({ kind: 'video', src: surfaceAsset('loop.mp4'), poster: surfaceAsset('poster.jpg') }),
+    backgroundScope);
+  try {
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-video"]'), null);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-poster"]'));
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('scene.html'), poster: surfaceAsset('poster.jpg') }), 2);
+    assert.equal(app.container.querySelector('[data-testid="webui-media-surface-frame"]'), null);
+    await app.replace(surface({ kind: 'video', src: surfaceAsset('loop.mp4') }), 3);
+    const video = app.container.querySelector('[data-testid="webui-media-surface-video"]');
+    assert.equal(video.autoplay, false, 'without a poster the video stays on its first frame');
+    await app.replace(surface({ kind: 'html', src: surfaceAsset('scene.html') }), 4);
+    assert.ok(app.container.querySelector('[data-testid="webui-media-surface-frame"]'));
+  } finally {
+    window.matchMedia = matchMedia;
+    await app.close();
+  }
+});
+
+test('WebUIBackgroundHost mounts application.background below the UI and marks the document while shown', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const marker = () => document.documentElement.getAttribute('data-webui-background');
+  try {
+    await act(async () => root.render(createElement(WebUIBackgroundHost, { runtime, registry: componentRendererRegistry })));
+    const host = container.querySelector('[data-testid="webui-background-host"]');
+    assert.equal(host.hasAttribute('inert'), true);
+    assert.equal(host.getAttribute('aria-hidden'), 'true');
+    assert.equal(marker(), null);
+    const ready = transport.dispatches.find((request) => request.event === 'ui.ready');
+    assert.equal(ready.target.slotId, 'application.background');
+    assert.equal(ready.target.scope, 'application');
+
+    await act(async () => transport.injectRenderFrame(frame(surface({ kind: 'image', src: surfaceAsset('bg.png') }), 1,
+      backgroundScope)));
+    assert.ok(host.querySelector('[data-testid="webui-media-surface"]'));
+    assert.equal(marker(), 'active');
+
+    await act(async () => transport.injectRenderFrame(frame({ component: 'Box', props: {} }, 2, backgroundScope)));
+    assert.ok(host.querySelector('[data-testid="webui-media-surface"]'), 'an invalid root keeps the last valid frame');
+
+    await act(async () => transport.injectClearFrame({ target: backgroundScope, revision: 3 }));
+    assert.equal(host.querySelector('[data-testid="webui-media-surface"]'), null);
+    assert.equal(marker(), null);
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    assert.equal(marker(), null);
+  }
 });
 
 test('a new request context can replace the blocking entry without exposing the old view', async () => {

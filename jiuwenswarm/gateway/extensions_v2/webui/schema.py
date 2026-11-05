@@ -40,8 +40,11 @@ _SLOT_ROOT_COMPONENTS: Mapping[str, tuple[str, ...]] = {
     "conversation.panel.right": ("Panel", "Iframe"),
     "application.menu.main": ("Iframe",),
     "task.function.main": ("Iframe",),
+    "application.background": ("MediaSurface",),
 }
-_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe"})
+_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe", "MediaSurface"})
+# Slots whose root must be one of their dedicated root components.
+_STRICT_ROOT_SLOTS: frozenset[str] = frozenset({"conversation.panel.right", "application.background"})
 
 
 def _fail(message: str, code: str = CODE_SCHEMA_ERROR) -> ValidationReport:
@@ -156,9 +159,9 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
     if not report.ok:
         return report
     slot_roots = _SLOT_ROOT_COMPONENTS.get(request.target.slot_id, ())
-    if request.target.slot_id == "conversation.panel.right":
+    if request.target.slot_id in _STRICT_ROOT_SLOTS:
         if request.root.component not in slot_roots:
-            return _fail(f"right panel requires one of: {', '.join(slot_roots)}")
+            return _fail(f"{request.target.slot_id} requires one of: {', '.join(slot_roots)}")
     elif request.root.component in _ROOT_ONLY_COMPONENTS and request.root.component not in slot_roots:
         return _fail(f"{request.root.component} is only allowed in slots that accept it as the render root")
     return _OK
@@ -261,7 +264,7 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
     if not report.ok:
         return report
 
-    if node.component in {"Panel", "Iframe"} and depth > 1:
+    if node.component in _ROOT_ONLY_COMPONENTS and depth > 1:
         return _fail(f"{node.component} is only allowed at the tree root")
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")

@@ -1,0 +1,211 @@
+/**
+ * 媒体容器：按 kind 显示图片、视频或沙箱页面，失败、超时或减少动态时回退到封面。
+ * 静音、就绪超时与角色来自宿主策略；素材地址是平台路由，直接使用以保留分段读取和页面内相对引用。
+ */
+
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { WebUIAdapterProps } from '../../types.ts';
+import { useMediaSurfacePolicy } from './hostPolicy.ts';
+import {
+  createSurfaceToken,
+  readSurfaceMessage,
+  surfaceHostMessage,
+  withSurfaceToken,
+  type SurfaceContext,
+  type SurfaceHostEvent,
+} from './surfaceProtocol.ts';
+import './MediaSurface.css';
+
+interface MediaSurfaceProps {
+  kind: 'image' | 'video' | 'html';
+  src: string;
+  title: string;
+  poster?: string;
+  fit: 'cover' | 'contain';
+  position: 'center' | 'top' | 'bottom' | 'left' | 'right';
+  loop: boolean;
+  muted: boolean;
+  dim: number;
+  blur: number;
+  opacity: number;
+}
+
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+function subscribeReducedMotion(listener: () => void): () => void {
+  const query = window.matchMedia?.(REDUCED_MOTION_QUERY);
+  query?.addEventListener?.('change', listener);
+  return () => query?.removeEventListener?.('change', listener);
+}
+const getReducedMotion = (): boolean => window.matchMedia?.(REDUCED_MOTION_QUERY).matches ?? false;
+function subscribeVisibility(listener: () => void): () => void {
+  document.addEventListener('visibilitychange', listener);
+  return () => document.removeEventListener('visibilitychange', listener);
+}
+const getVisible = (): boolean => document.visibilityState !== 'hidden';
+const serverFalse = (): boolean => false;
+const serverTrue = (): boolean => true;
+
+function Poster({ src, style }: { src?: string; style: CSSProperties }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return null;
+  return <img className="webui-media-surface__media" data-testid="webui-media-surface-poster" src={src} alt=""
+    draggable={false} style={style} onError={() => setFailed(true)} />;
+}
+
+function SurfaceImage({ src, poster, style }: { src: string; poster?: string; style: CSSProperties }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <Poster src={poster} style={style} />;
+  return <img className="webui-media-surface__media" data-testid="webui-media-surface-image" src={src} alt=""
+    draggable={false} style={style} onError={() => setFailed(true)} />;
+}
+
+interface SurfaceVideoProps {
+  src: string;
+  poster?: string;
+  style: CSSProperties;
+  loop: boolean;
+  muted: boolean;
+  autoPlay: boolean;
+  visible: boolean;
+}
+
+function SurfaceVideo({ src, poster, style, loop, muted, autoPlay, visible }: SurfaceVideoProps) {
+  const video = useRef<HTMLVideoElement>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    // React does not reflect `muted` reliably; autoplay policies read the property.
+    if (video.current) video.current.muted = muted;
+  }, [muted, failed]);
+
+  useEffect(() => {
+    const element = video.current;
+    if (!element || !autoPlay) return;
+    if (!visible) {
+      element.pause();
+      return;
+    }
+    try {
+      void element.play()?.catch(() => undefined);
+    } catch {
+      // A rejected or unsupported play() leaves the poster frame in place.
+    }
+  }, [autoPlay, visible, failed]);
+
+  if (failed) return <Poster src={poster} style={style} />;
+  return <video ref={video} className="webui-media-surface__media" data-testid="webui-media-surface-video"
+    src={src} poster={poster} style={style} loop={loop} muted={muted} autoPlay={autoPlay && visible} playsInline
+    preload="auto" controls={false} disablePictureInPicture disableRemotePlayback tabIndex={-1}
+    onError={() => setFailed(true)} />;
+}
+
+interface SurfaceFrameProps {
+  src: string;
+  title: string;
+  poster?: string;
+  posterStyle: CSSProperties;
+  context: SurfaceContext;
+  readyTimeoutMs: number;
+}
+
+function SurfaceFrame({ src, title, poster, posterStyle, context, readyTimeoutMs }: SurfaceFrameProps) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const token = useMemo(() => createSurfaceToken(), [src]);
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const latest = useRef(context);
+  latest.current = context;
+  const contextChanged = useRef(false);
+
+  const post = (event: SurfaceHostEvent) => {
+    frame.current?.contentWindow?.postMessage(surfaceHostMessage(event, latest.current), '*');
+  };
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frameWindow = frame.current?.contentWindow;
+      if (!frameWindow || event.source !== frameWindow) return;
+      const surfaceEvent = readSurfaceMessage(event.data, token);
+      if (surfaceEvent === 'ready') {
+        setPhase((current) => (current === 'failed' ? current : 'ready'));
+        post('start');
+      } else if (surfaceEvent === 'error') {
+        setPhase('failed');
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [token]);
+
+  useEffect(() => {
+    if (phase !== 'loading') return undefined;
+    const timer = window.setTimeout(() => setPhase('failed'), readyTimeoutMs);
+    return () => window.clearTimeout(timer);
+  }, [phase, readyTimeoutMs]);
+
+  useEffect(() => {
+    // The first context goes out with start; later changes are sent on their own.
+    if (!contextChanged.current) {
+      contextChanged.current = true;
+      return;
+    }
+    post('context');
+  }, [context.visible, context.reducedMotion, context.locale]);
+
+  if (phase === 'failed') return <Poster src={poster} style={posterStyle} />;
+  // Transparent rather than hidden before ready: browsers may stop rendering hidden cross-origin
+  // frames, and a page that waits for its first animation frame would then never report ready.
+  return (
+    <>
+      <iframe ref={frame} className="webui-media-surface__media" data-testid="webui-media-surface-frame"
+        data-variant={phase} src={withSurfaceToken(src, token)} title={title} sandbox="allow-scripts"
+        allow="autoplay" referrerPolicy="no-referrer" tabIndex={-1}
+        style={{ opacity: phase === 'ready' ? 1 : 0 }} onLoad={() => post('start')} />
+      {phase === 'loading' ? <Poster src={poster} style={posterStyle} /> : null}
+    </>
+  );
+}
+
+export function WebUIMediaSurface({ node }: WebUIAdapterProps) {
+  const p = node.props as unknown as MediaSurfaceProps;
+  const policy = useMediaSurfacePolicy();
+  const { i18n } = useTranslation();
+  const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, serverFalse);
+  const visible = useSyncExternalStore(subscribeVisibility, getVisible, serverTrue);
+  const { onPresence } = policy;
+
+  useEffect(() => {
+    onPresence?.(true);
+    return () => onPresence?.(false);
+  }, [onPresence]);
+
+  const mediaStyle: CSSProperties = { objectFit: p.fit, objectPosition: p.position };
+  // Extend blurred media past the edges so the blur does not show a transparent rim.
+  const layerStyle: CSSProperties | undefined = p.blur > 0
+    ? { inset: `${-2 * p.blur}px`, filter: `blur(${p.blur}px)` } : undefined;
+  const posterOnly = p.kind !== 'image' && reducedMotion && !!p.poster;
+
+  let content;
+  if (p.kind === 'image') {
+    content = <SurfaceImage key={p.src} src={p.src} poster={p.poster} style={mediaStyle} />;
+  } else if (posterOnly) {
+    content = <Poster key={p.poster} src={p.poster} style={mediaStyle} />;
+  } else if (p.kind === 'video') {
+    content = <SurfaceVideo key={p.src} src={p.src} poster={p.poster} style={mediaStyle} loop={p.loop}
+      muted={policy.forceMuted || p.muted} autoPlay={!reducedMotion} visible={visible} />;
+  } else {
+    content = <SurfaceFrame key={p.src} src={p.src} title={p.title} poster={p.poster} posterStyle={mediaStyle}
+      readyTimeoutMs={policy.readyTimeoutMs}
+      context={{ role: policy.role, visible, reducedMotion, locale: i18n.language }} />;
+  }
+
+  return (
+    <div className="webui-media-surface" data-testid="webui-media-surface" data-variant={p.kind} aria-hidden="true"
+      style={{ opacity: p.opacity }}>
+      <div className="webui-media-surface__layer" style={layerStyle}>{content}</div>
+      {p.dim > 0 ? <div className="webui-media-surface__dim" data-testid="webui-media-surface-dim"
+        style={{ opacity: p.dim }} /> : null}
+    </div>
+  );
+}

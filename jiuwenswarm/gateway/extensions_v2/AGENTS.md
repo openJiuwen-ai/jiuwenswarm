@@ -40,6 +40,7 @@
 - [应用级界面能力设计概览](docs/designs/application-surfaces-overview.md)：应用背景、启动开场、受控外观、应用级设置页、素材与数据的整体设计（EXTV2-GW-07～12）。
 - [应用级 UI 包与素材交付](docs/features/F_08_application-packages-and-assets.md)：应用级 UI 包的参与条件、素材路由与打包版转发。
 - [包存储与数据目录](docs/features/F_09_package-store-and-data.md)：Gateway 包的持久化存储、`ops.data.root()`、数据素材与卸载清理。
+- [媒体容器与应用背景](docs/features/F_10_media-surface-and-background.md)与[媒体容器规约](docs/specs/S_07_media-surface.md)：`MediaSurface`、`application.background`、宿主策略与沙箱消息协议。
 - 待建立：ui.store 的浏览器订阅特性与规约；当前示例不依赖该能力。
 - [HTTP 能力](docs/features/F_06_http-fetch.md)：`ops.http.fetch` 的白名单、预算与重定向策略。
 - [HTTP 规约](docs/specs/S_05_http-fetch.md)：`ops.http.fetch`、配置键与错误码。

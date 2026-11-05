@@ -23,6 +23,8 @@ export { createWebUIAppRuntime } from '../../src/features/webui/assembly/index.t
 export { createMockTransport } from '../../src/features/webui/transport/index.ts';
 export { WebUIHost } from '../../src/features/webui/react/WebUIHost.tsx';
 export { WebUIEntryHost } from '../../src/features/webui/react/WebUIEntryHost.tsx';
+export { WebUIBackgroundHost } from '../../src/features/webui/react/WebUIBackgroundHost.tsx';
+export { MediaSurfacePolicyContext } from '../../src/features/webui/renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
 export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';
 export { WebUINavigationHost, WebUIPageHost } from '../../src/features/webui/react/WebUINavigation.tsx';

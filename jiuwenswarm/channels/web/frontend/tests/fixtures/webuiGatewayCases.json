@@ -1046,5 +1046,526 @@
       ]
     },
     "valid": false
+  },
+  {
+    "name": "MediaSurface image background",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "MediaSurface video with every prop",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "video",
+        "src": "/extension-assets/pkg.theme/g1/loop.mp4",
+        "title": "Background",
+        "poster": "/extension-assets/pkg.theme/g1/poster.jpg",
+        "fit": "contain",
+        "position": "top",
+        "loop": false,
+        "muted": false,
+        "dim": 0.9,
+        "blur": 40,
+        "opacity": 0.1
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "MediaSurface html data asset with fragment",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "html",
+        "src": "/extension-assets/pkg.theme/g1.data/themes/a/index.html#scene=1",
+        "title": "Background"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "MediaSurface html with query",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "html",
+        "src": "/extension-assets/pkg.theme/g1/scene/index.html?quality=high",
+        "title": "Background"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "MediaSurface percent-encoded file name",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/%E8%83%8C%E6%99%AF.png",
+        "title": "Background"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "MediaSurface unknown kind",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "audio",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface external source",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "https://example.com/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface protocol-relative source",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "//example.com/extension-assets/a/b/c.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface host path outside assets",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/api/extension/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface missing generation segment",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface empty segment",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme//bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface dot segment",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/../secret.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface encoded dot segment",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/%2e%2e/secret.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface encoded slash",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a%2Fb.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface encoded backslash",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a%5Cb.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface encoded control character",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a%00.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface malformed escape",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a%zz.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface invalid UTF-8 escape",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a%C0%AF.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface backslash",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a\\b.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface space",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/a b.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface non-ASCII character",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/背景.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface javascript source",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "javascript:alert(1)",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface external poster",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "video",
+        "src": "/extension-assets/pkg.theme/g1/loop.mp4",
+        "title": "Background",
+        "poster": "https://example.com/p.jpg"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface missing title",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface blank title",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "   "
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface title over 200 bytes",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface missing source",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface dim above 0.9",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background",
+        "dim": 0.95
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface blur above 40",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background",
+        "blur": 41
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface opacity below 0.1",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background",
+        "opacity": 0.05
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface unknown fit",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background",
+        "fit": "fill"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface non-boolean loop",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background",
+        "loop": "yes"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface unknown prop",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background",
+        "autoplay": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface with children",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background"
+      },
+      "children": [
+        {
+          "component": "Text",
+          "props": {
+            "value": "x"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface with events",
+    "slot": "application.background",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background"
+      },
+      "events": {
+        "ui.click": {
+          "id": "open"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface outside the background slot",
+    "slot": "application.entry",
+    "root": {
+      "component": "MediaSurface",
+      "props": {
+        "kind": "image",
+        "src": "/extension-assets/pkg.theme/g1/bg.png",
+        "title": "Background"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "application.background rejects other roots",
+    "slot": "application.background",
+    "root": {
+      "component": "Box",
+      "props": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "MediaSurface cannot be nested",
+    "slot": "application.background",
+    "root": {
+      "component": "Box",
+      "children": [
+        {
+          "component": "MediaSurface",
+          "props": {
+            "kind": "image",
+            "src": "/extension-assets/pkg.theme/g1/bg.png",
+            "title": "Background"
+          }
+        }
+      ]
+    },
+    "valid": false
   }
 ]

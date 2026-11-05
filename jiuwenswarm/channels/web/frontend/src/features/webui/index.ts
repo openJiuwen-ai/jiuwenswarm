@@ -12,6 +12,8 @@ export { WebUIAppRoot } from './react/WebUIAppRoot.tsx';
 export type { WebUIAppRootProps } from './react/WebUIAppRoot.tsx';
 export { WebUIEntryHost } from './react/WebUIEntryHost.tsx';
 export type { WebUIEntryHostProps } from './react/WebUIEntryHost.tsx';
+export { WebUIBackgroundHost } from './react/WebUIBackgroundHost.tsx';
+export type { WebUIBackgroundHostProps } from './react/WebUIBackgroundHost.tsx';
 export { WebUIHost } from './react/WebUIHost.tsx';
 export type { WebUIHostProps } from './react/WebUIHost.tsx';
 export { WebUISlotProvider } from './react/WebUISlotProvider.tsx';

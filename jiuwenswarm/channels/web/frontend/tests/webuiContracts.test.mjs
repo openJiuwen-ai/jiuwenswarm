@@ -26,7 +26,7 @@ function checkProps(name, input = {}) {
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
     'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FilePreview', 'FileTree', 'Form', 'Form.Item', 'Icon',
-    'Iframe', 'Image', 'Input', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
+    'Iframe', 'Image', 'Input', 'MediaSurface', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {
     id: 'application.entry',
@@ -38,7 +38,15 @@ test('catalog contains the supported components', () => {
     display: 'single',
     scope: 'application',
   });
+  assert.deepEqual(componentCatalog.getSlot('application.background'), {
+    id: 'application.background',
+    display: 'single',
+    scope: 'application',
+    rootComponents: ['MediaSurface'],
+    strictRoot: true,
+  });
   assert.deepEqual(componentCatalog.getSlot('conversation.panel.right').rootComponents, ['Panel', 'Iframe']);
+  assert.equal(componentCatalog.getSlot('conversation.panel.right').strictRoot, true);
   assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
 });
