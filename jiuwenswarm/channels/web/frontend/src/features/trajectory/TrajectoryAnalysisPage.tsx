@@ -252,6 +252,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
               ? t('trajectory.analysis.summary', {
                 agents: summary.agents,
                 spans: summary.spans,
+                nodes: summary.nodes,
               })
               : t('trajectory.analysis.teamSummary', {
                 members: summary.team.members,
@@ -259,6 +260,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
                 tasks: summary.team.tasks,
                 reviews: summary.team.reviewRuns,
                 spans: summary.spans,
+                nodes: summary.nodes,
               })}
           </span>
         )}

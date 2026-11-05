@@ -87,7 +87,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(panelSource, /active=\{active && selected\}/);
   assert.match(panelSource, /deferredPublishRef\.current = true/);
   assert.match(panelSource, /setPublishedWindow\(\{/);
-  assert.match(panelSource, /headerItems\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
+  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
   assert.match(panelSource, /role="progressbar"/);
   assert.match(panelSource, /initialLoadProgress\.loaded \/ initialLoadProgress\.total/);
   assert.match(panelSource, /error\.code === 'UNSUPPORTED_SESSION_MODE'/);
@@ -715,6 +715,12 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   );
   assert.match(panelSource, /const laneLayout = teamMode \|\| sharedTimeAxis/);
   assert.match(panelSource, /useSharedTimeAxis\(sharedTimeAxis, sessionId, subjectSnapshots\)/);
+  assert.match(panelSource, /collectUserInteractionWallRanges\(turns\)/);
+  assert.match(panelSource, /turnMarkers=\{sharedAxisTurnMarkers\}/);
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /TURN_LANE_GAP_PX = 12/,
+  );
   assert.match(panelSource, /const teamContent = laneLayout &&/);
   // Without the selection prop the lanes stay read-only; with it they pick per agent.
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);

@@ -232,11 +232,11 @@ export function shouldShowIncludeToggle(
 }
 
 /**
- * How many OTel spans the pick contains.
+ * How many timed swimlane nodes the pick contains.
  *
- * A span counts only when the pick covers it whole on the swimlane — both
+ * A node counts only when the pick covers it whole on the swimlane — both
  * start and end (see `selectionCoversInterval`). The whole trajectory
- * contains every span.
+ * contains every node. Intervals come from `rawOtelSpanIntervals`.
  */
 export function selectedNodeCount(
   state: DiagnosisSelectionState,
