@@ -9,6 +9,8 @@ lifecycle: persistent
 sample: true
 expose_in_catalog: true
 teammate_mode: build_mode
+# Lock the expert roster: Leader keeps analyst/writer only (no spawn_*).
+team_mode: predefined
 spawn_mode: inprocess
 enable_swarmflow: false
 max_debate_rounds: 3
