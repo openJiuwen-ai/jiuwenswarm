@@ -251,72 +251,13 @@ def _clip_text(value: str, max_chars: int) -> str:
     return f"{value[:max_chars]}\n...[truncated]"
 
 
-def _protected_runtime_pids() -> set[str]:
-    pids = {str(os.getpid())}
-    try:
-        ppid = os.getppid()
-    except OSError:
-        return pids
-    if ppid > 1:
-        pids.add(str(ppid))
-    return pids
-
-
-def _host_guard_engine(*, project_root: Path | None) -> Any:
-    """The one host guard. ``enabled`` runs every strict check.
-
-    Kill checks pass no project root, so worktree stays idle. The worktree
-    check passes the project root. ``protected_pids`` adds this process and
-    its direct parent; discovered runtime processes stay protected too.
-    """
-
-    from agent_shield.tool_permission import PermissionEngine
-
-    runtime: dict[str, Any] = {
-        "protected_pids": sorted(_protected_runtime_pids()),
-    }
-    if project_root is not None:
-        runtime["project_root"] = str(project_root)
-    return PermissionEngine({
-        "host_guard": {"enabled": True},
-        "runtime": runtime,
-        "package_builtin_rules": False,
-        "shell_allowlist": None,
-    })
-
-
-def _host_component_block(engine: Any, command: str) -> str | None:
-    result = engine.evaluate_component("host_guard", "bash", {"command": command})
-    if result is None or result.permission is None:
-        return None
-    if str(result.permission.value) != "deny":
-        return None
-    return result.reason
-
-
-def _check_host_runtime(command: str) -> str | None:
-    """Kill checks. No project root is passed, so worktree stays idle."""
-
-    engine = _host_guard_engine(project_root=None)
-    return _host_component_block(engine, command)
-
-
 def _check_command_safety(command: str) -> str | None:
+    """Local hard blocks only (rm -rf 等). HostGuard 走权限 rail / Manager 配置。"""
+
     for pattern, message in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.search(command):
             return message
-    return _check_host_runtime(command)
-
-
-def _check_worktree_path_safety(command: str) -> str | None:
-    """Block `git worktree add` whose target lands outside the project dir."""
-
-    try:
-        project_root = _context_project_root()
-    except Exception:
-        return None
-    engine = _host_guard_engine(project_root=project_root)
-    return _host_component_block(engine, command)
+    return None
 
 
 def _context_cwd() -> Path:
