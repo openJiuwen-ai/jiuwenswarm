@@ -277,6 +277,7 @@ cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_downloads.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_download_bubble.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/share_image_export.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/display_media_picker.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/macos_update.cjs" "$APP_DIR/"
@@ -356,7 +357,8 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs browser_panels.cjs share_image_export.cjs target_mcp_wrapper.cjs
+REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs browser_panels.cjs
+    share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
     browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html
     node_modules/@playwright/mcp/package.json node_modules/@playwright/mcp/cli.js)
@@ -408,6 +410,9 @@ if [ -f "$PLIST" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUILD_BUNDLE_IDENTIFIER" "$PLIST" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUILD_VERSION" "$PLIST" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$PLIST" 2>/dev/null || true
+    MICROPHONE_USAGE_DESCRIPTION="$BUILD_DISPLAY_NAME needs microphone access for real-time voice conversations."
+    /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription $MICROPHONE_USAGE_DESCRIPTION" "$PLIST" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string $MICROPHONE_USAGE_DESCRIPTION" "$PLIST"
     echo "  Updated Info.plist"
 fi
 
