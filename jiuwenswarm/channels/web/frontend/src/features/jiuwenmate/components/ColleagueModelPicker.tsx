@@ -24,8 +24,8 @@ export function ColleagueModelPicker({
   const [open, setOpen] = useState(false);
   const disabled = !onChange || saving;
   const selected = findModel(catalog, modelId);
-  const label = selected?.label || modelId || catalog.defaultModelLabel || t('settingsPanel.models.empty');
-  const hasPendingModel = pending && modelId.trim().length > 0;
+  const label = selected?.label || t(catalog.models.length ? 'jiuwenmate.chat.modelUnavailable' : 'settingsPanel.models.empty');
+  const hasPendingModel = pending && selected !== null && modelId.trim().length > 0;
   return (
     <DropdownMenu open={open && !disabled} onOpenChange={setOpen}>
       <div className={`chat-mode-select${open && !disabled ? ' chat-mode-select--open' : ''}`}>

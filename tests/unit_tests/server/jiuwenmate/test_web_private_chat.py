@@ -931,3 +931,49 @@ def test_existing_conversation_database_migrates_pin_state(tmp_path):
     assert len(listed) == 1 and listed[0].pinned is False
     pinned = conversations.set_pinned(WEB_NAMESPACE, "agent-1", "conv-1", True)
     assert pinned.pinned is True
+
+
+@pytest.mark.parametrize("pending_model", [False, True])
+async def test_deleting_a_published_model_rejects_new_messages_but_keeps_accepted_work(host, pending_model):
+    from dataclasses import replace
+    from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection
+    from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider
+
+    placeholder = {"model_client_config": {"model_name": "your-model-name", "client_provider": "OpenAI",
+        "api_base": "https://example.com/compatible-mode/v1", "api_key": "sk-xxxxxxxxx"}}
+    configured = {"model_client_config": {"model_name": "deepseek", "client_provider": "OpenAI",
+        "api_base": "https://example.invalid/v1", "api_key": SECRET}, "model_config_obj": {}, "is_default": True}
+    other = {"model_client_config": {"model_name": "kimi", "client_provider": "OpenAI",
+        "api_base": "https://example.invalid/v1", "api_key": SECRET}, "model_config_obj": {}}
+    entries = [placeholder, configured, other] if pending_model else [placeholder, configured]
+    service = host.adapter._colleagues()
+    service._models = ConfiguredModelProvider(lambda: entries)
+    agent_id = await host.colleague()
+    accepted = await host.send(agent_id, "already accepted", message_id="accepted-before-delete")
+    assert accepted.ok
+    request_id = accepted.payload["request"]["request_id"]
+    if pending_model:
+        current = service.read_settings(WEB_NAMESPACE, agent_id)
+        service.update_settings(WEB_NAMESPACE, agent_id, replace(current, capabilities=CapabilitySelection(model="kimi#2")))
+        entries[1] = None
+    else:
+        entries[:] = [placeholder]
+
+    refused = await host.send(agent_id, "after model deletion", message_id="new-after-delete")
+    assert not refused.ok
+    assert refused.payload["code"] == "MODEL_NOT_FOUND"
+    assert "after model deletion" not in host.core.started
+    host.core.release("already accepted")
+    done = await host.settled(request_id)
+    assert done["outcome"] == "completed"
+    history = await host.history(agent_id)
+    assert history.ok
+    assert [item["text"] for item in history.payload["requests"]] == ["already accepted"]
+    if pending_model:
+        entries[1] = configured
+    else:
+        entries.append(configured)
+    host.core.release("after model restore")
+    restored = await host.send(agent_id, "after model restore", message_id="new-after-restore")
+    assert restored.ok
+    assert (await host.settled(restored.payload["request"]["request_id"]))["outcome"] == "completed"

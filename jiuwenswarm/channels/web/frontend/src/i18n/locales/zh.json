@@ -165,6 +165,8 @@
       "failed": "消息处理失败：{{reason}}",
       "modelNotConfigured": "请先在「设置 → 模型」中配置可用模型，配置完成后即可与该员工对话。",
       "modelPending": "待生效",
+      "modelUnavailable": "请选择模型",
+      "modelUnavailableHint": "原模型已删除或不可用，请为该员工重新选择并保存可用模型后再发送消息。",
       "notPublished": "请先在员工管理中保存并发布配置，再与该员工对话。",
       "noReply": "员工没有回复消息",
       "file": {
@@ -402,6 +404,7 @@
       "savingResources": "正在保存",
       "saveSettingsFailed": "配置保存或发布失败，请重试。",
       "modelEmptyHint": "请先在「设置 → 模型」中添加模型。",
+      "modelUnavailableHint": "原配置的模型已删除或不可用，请重新选择模型并保存。",
       "catalogLoading": "正在读取已安装资源",
       "catalogFailed": "已安装资源加载失败，仍可移除当前选择",
       "catalogEmptySkills": "没有可装载的已安装技能",

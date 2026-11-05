@@ -804,6 +804,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         conversation = ConversationRef.web(conversation_id)
         if method == ReqMethod.JIUWENMATE_CHAT_SEND.value:
             text = _text_param(params, "text")
+            await asyncio.to_thread(self._colleagues().validate_request_model, WEB_NAMESPACE, agent_id)
             view = await manager.submit_direct_message(
                 WEB_NAMESPACE,
                 agent_id,

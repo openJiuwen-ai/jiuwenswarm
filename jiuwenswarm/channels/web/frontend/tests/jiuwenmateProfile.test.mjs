@@ -1645,3 +1645,31 @@ test('reply mode errors roll back the selection and automatically clear', async 
     assert.equal(view.find('settings-error'), null);
   } finally { window.setTimeout = timeout; await view.close(); }
 });
+
+
+test('removing an employee model drops the stale option and requires a valid replacement', async () => {
+  const available = { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' };
+  const view = await mountProfile({ initialSection: 'model', modelCatalog: {
+    models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' }, available],
+    defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek',
+  } });
+  try {
+    assert.ok(view.container.querySelector('input[value="deepseek#0"]:checked'));
+    await view.rerender({ modelCatalog: { models: [available], defaultModelId: 'kimi#1', defaultModelLabel: 'Kimi' } });
+    assert.ok(!view.container.querySelector('input[value="deepseek#0"]'));
+    assert.doesNotMatch(view.container.textContent, /deepseek#0/);
+    assert.ok(view.find('model-unavailable'));
+    assert.equal(view.container.querySelector('input:checked'), null);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, true);
+    const notice = view.find('model-unavailable');
+    await act(async () => view.container.querySelector('input[value="kimi#1"]').click());
+    assert.ok(view.find('model-unavailable') === notice, 'Keep the notice and its layout space until the selection is saved');
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, false);
+    await view.rerender({ colleague: { ...colleague, capabilities: { ...colleague.capabilities, model: 'kimi#1' } } });
+    assert.ok(!view.find('model-unavailable'));
+    await view.rerender({ modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' } });
+    assert.ok(view.find('model-empty'));
+    assert.equal(view.container.querySelector('input[name="jiuwenmate-profile-model"]'), null);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), null);
+  } finally { await view.close(); }
+});
