@@ -1845,7 +1845,7 @@
       "nextStep": "Help me turn an idea into a practical next step."
     },
     "topicStarter": {
-      "statusMissingConfiguration": "The topic model configuration is incomplete. Check General settings.",
+      "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
       "recommendedForYou": "Recommended for you",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
@@ -1857,17 +1857,16 @@
       "hotListListedAt": "Listed {{time}}",
       "viewHotListEntry": "See this trending item: {{source}}",
       "hotListEntry": "Trending",
-      "openNewsSearch": "Open related news",
-      "searchRelatedNews": "See related news",
-      "statusPreparing": "Getting a few topics ready. You can start chatting now.",
-      "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
-      "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
-      "statusNeedsSettings": "For topics that understand you better, turn on recommendations in Settings - General.",
-      "statusNoCards": "Nothing to show right now. You can just start typing.",
-      "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
+      "openNewsSearch": "Open the hot-search topic",
+      "searchRelatedNews": "Open hot search",
+      "statusPreparing": "Getting topics ready. You can start chatting now.",
+      "statusPreparingWithCards": "Getting topics ready. You can start chatting now.",
+      "statusUpdateIncomplete": "Getting topics ready. You can start chatting now.",
+      "statusNeedsSettings": "Topic recommendations are unavailable. Check Settings.",
+      "statusNoCards": "Getting topics ready. You can start chatting now.",
+      "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
       "openSettings": "Check settings",
-      "disabledHint": "For topics that understand you better, turn on recommendations in Settings - General.",
-      "retryPreparation": "Try again"
+      "disabledHintWithCards": "These are preset topics. Turn on topic recommendations in Settings to gradually replace them with personalized ones."
     },
     "promptSuggestionBox": {
       "label": "Next: ",

@@ -39,6 +39,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     SESSION_SUMMARY_SCHEMA_VERSION,
     SessionSummaryArtifact,
+    is_user_revisit_eligible,
 )
 
 STARTER_OUTCOME_SCHEMA_VERSION = "topic-starter-v6-starter-outcome-v3"
@@ -175,10 +176,13 @@ def build_revisit_pair(
         reason = "later_summary_not_later"
     elif not earlier.natural_revisit_eligible:
         reason = "earlier_summary_ineligible"
-    elif later.input_origin != "manual_free_text":
-        reason = "ineligible_input_origin"
-    elif later.assistance_origin != "none":
-        reason = "assisted_input_excluded"
+    elif not is_user_revisit_eligible(later.input_origin, later.assistance_origin):
+        reason = (
+            "ineligible_input_origin"
+            if later.input_origin
+            not in {"manual_free_text", "prompt_suggestion"}
+            else "assisted_input_excluded"
+        )
     else:
         reason = None
     return RevisitPair(
@@ -1587,10 +1591,12 @@ def _natural_exclusion_reason(
     started_session_id: str,
     later_session_id: str,
 ) -> str | None:
-    if input_origin != "manual_free_text":
-        return "ineligible_input_origin"
-    if assistance_origin != "none":
-        return "assisted_input_excluded"
+    if not is_user_revisit_eligible(input_origin, assistance_origin):
+        return (
+            "ineligible_input_origin"
+            if input_origin not in {"manual_free_text", "prompt_suggestion"}
+            else "assisted_input_excluded"
+        )
     if later_session_id == started_session_id:
         return "same_session_not_revisit"
     return None
