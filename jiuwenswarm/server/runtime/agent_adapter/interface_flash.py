@@ -79,7 +79,7 @@ import hashlib
 import logging
 import os
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Callable
 
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.harness.rails import SkillUseRail
@@ -474,12 +474,23 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             )
         return rail
 
-    def _update_permission_rail(self, config_base, *, session_id=None):
-        super()._update_permission_rail(config_base, session_id=session_id)
+    def _update_permission_rail(
+        self,
+        config_base: dict[str, Any] | None,
+        *,
+        session_id: str | None = None,
+        acquire_session: bool = False,
+    ) -> Callable[[], None] | None:
+        release = super()._update_permission_rail(
+            config_base,
+            session_id=session_id,
+            acquire_session=acquire_session,
+        )
         if self._permission_rail is None and self._resolve_permission_config_for_agent(
             session_id=session_id
         ).get("enabled", False):
             raise RuntimeError("Flash permission rail could not be enabled during reload")
+        return release
 
     async def _get_tool_cards(self, agent_id: str):
         """Build flash tool cards.

@@ -119,18 +119,16 @@ async def check_avatar_permission(
     del channel_id, session_id  # channel comes from ContextVar; session unused
     from openjiuwen.harness.security.permission_checks import check_tool_permission
     from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
-    from openjiuwen.harness.security.permission_key import DEFAULT_KEY
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
     if perm_ctx is None or not perm_ctx.principal_user_id:
         logger.info("[check_avatar_permission] perm_ctx is None or no principal_user_id")
         return "deny"
 
-    key = (
-        permission_key.strip()
-        if isinstance(permission_key, str) and permission_key.strip()
-        else DEFAULT_KEY
-    )
+    if not (isinstance(permission_key, str) and permission_key.strip()):
+        logger.warning("[check_avatar_permission] missing permission_key fail_closed=deny")
+        return "deny"
+    key = permission_key.strip()
     try:
         result = await check_tool_permission(tool_name, tool_args, key)
     except Exception:
