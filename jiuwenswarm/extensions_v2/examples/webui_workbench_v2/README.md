@@ -74,7 +74,7 @@
 文件树右侧分界线支持拖拽，也可聚焦后用左右方向键调整宽度。目录展开或预览更新后保留滚动位置和宽度；清空实例或断连后重置，不写入持久存储。
 
 网页实例使用 `Iframe` 根，只能作为允许该根组件的槽位（`conversation.panel.right`、`application.menu.main`、`task.function.main`）的渲染树根，不能嵌套在 `Panel`、`Box` 或其他组件内，也不接受 children、events 或 srcdoc。宿主固定设置 `sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`。
-右侧“网页预览”加载 `https://httpbin.org/forms/post`，用于手工检查网页加载、输入、选项和表单提交。该页面响应未声明 `X-Frame-Options` 或限制性的 `frame-ancestors`，适合作为 iframe 联调页；网络可用性仍取决于目标站点。
+右侧“网页预览”加载 `https://www.weather.com.cn/`，插件通过 `Iframe.minWidth: 1280` 声明桌面网页的最小宽度。面板不足 1280px 时由宿主外层提供横向滚动，拖动面板只调整布局，不重载网页。页面名称按宿主语言显示中文或英文；网络可用性与嵌入限制仍取决于目标站点。
 普通点击、输入和 iframe 内导航不需要同源权限；加载提示不拦截鼠标。相对路径页面也使用不透明 origin，依赖存储或同源请求的页面可能不兼容，不能通过添加 `allow-same-origin` 解决。安全取舍见 [F_08](../../docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互)。
 
 ## 重置、修改与卸载
@@ -97,7 +97,7 @@ reload 读取安装副本，不重新读取原 ZIP；修改仓库源码后，需
 
 manifest `schemaVersion: 1`、`ui.apiVersion: 1` 与渲染帧 `schema_version: 1` 含义不同。本包使用 `events['ui.click']` 等组件事件；业务参数位于声明动作的 `args`，控件值位于规范事件的 `data`。dispatch 响应仅是回执，不能作为新树。通用版本策略与校验规则见 [F_08](../../docs/features/F_08_frontend-render.md)。
 
-`application.entry` 与 `application.sidebar.footer` 使用当前 Web 连接的应用身份，不带 `session_id`；其余槽位需要真实会话。新建空对话不挂载 `application.menu`、`task.function` 和 `application.settings`。右侧贡献使用两个稳定实例，事件和更新按实例隔离；其余 single 位置按最近更新选择实例。`message.assistant.meta` 不属于本包目标。
+`application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main` 使用当前 Web 连接的应用身份，不带 `session_id`；其余槽位需要真实会话。任务入口与页面在新建空对话中也可挂载，切换会话保持实例，任务入口点击不读写会话状态。新建空对话不挂载 `application.menu` 及其主页面。右侧贡献使用两个稳定实例，事件和更新按实例隔离；其余 single 位置按最近更新选择实例。`message.assistant.meta` 不属于本包目标。
 
 ## 修改源码后重新打包
 

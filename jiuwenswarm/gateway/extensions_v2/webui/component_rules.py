@@ -37,6 +37,7 @@ def obj(fields: Mapping[str, Any], *required: str) -> dict[str, Any]:
 
 
 TEXT = {"kind": "string"}
+LOCALIZED_TEXT = union(TEXT, obj({"zh": TEXT, "en": TEXT}, "zh", "en"))
 BOOL = {"kind": "boolean"}
 NUMBER = {"kind": "number"}
 NIL = {"kind": "null"}
@@ -88,18 +89,19 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "visibleFrom": token("sm", "md", "lg"),
     }, "children": True},
     "Text": {"props": {
-        "value": TEXT, "type": token("secondary", "success", "warning", "danger"),
+        "value": LOCALIZED_TEXT, "type": token("secondary", "success", "warning", "danger"),
         "size": SIZE, "strong": BOOL, "italic": BOOL, "underline": BOOL, "delete": BOOL,
         "code": BOOL, "mark": BOOL, "keyboard": BOOL, "disabled": BOOL, "ellipsis": BOOL,
     }},
     "Button": {"props": {
-        "value": TEXT, "type": token("default", "primary", "dashed", "link", "text"),
+        "openPanel": {"kind": "string", "maxBytes": 128},
+        "value": LOCALIZED_TEXT, "type": token("default", "primary", "dashed", "link", "text"),
         "color": token("default", "primary", "danger", *PRESET_COLORS),
         "variant": token("outlined", "dashed", "solid", "filled", "text", "link"),
         "shape": token("default", "circle", "round", "square"),
         "size": SIZE, "danger": BOOL, "ghost": BOOL, "disabled": BOOL, "block": BOOL,
         "loading": union(BOOL, obj({"delay": NUMBER})), "href": TEXT, "target": token("_self", "_blank"),
-        "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": TEXT, "form": FIELD_NAME,
+        "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": LOCALIZED_TEXT, "form": FIELD_NAME,
     }, "events": {"ui.click": {"kind": "record", "value": TEXT}}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
@@ -111,7 +113,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }},
     "Switch": {"props": {
         "checked": BOOL, "defaultChecked": BOOL, "loading": BOOL, "disabled": BOOL,
-        "ariaLabel": TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
+        "ariaLabel": LOCALIZED_TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
         **INPUT_PROPS, "options": array(obj({"value": OPTION_VALUE, "label": TEXT, "disabled": BOOL}, "value", "label")),
@@ -217,7 +219,10 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "required": ("file",),
     },
     "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
-    "Iframe": {"props": {"src": TEXT, "title": {"kind": "string", "maxBytes": 200}}, "required": ("src", "title")},
+    "Iframe": {"props": {
+        "src": TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
+        "minWidth": {"kind": "number", "min": 0, "max": 4096},
+    }, "required": ("title",)},
 }
 
 
@@ -408,7 +413,11 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     if component == "Button" and "form" in props and not props["form"].strip():
         return "form reference is required"
     if component == "Button":
-        if props.get("icon") and not props.get("value", "").strip() and not props.get("aria-label", "").strip():
+        label = props.get("value", "")
+        labels = label.values() if isinstance(label, Mapping) else (label,)
+        accessible = props.get("aria-label", "")
+        accessible_labels = accessible.values() if isinstance(accessible, Mapping) else (accessible,)
+        if props.get("icon") and not all(text.strip() for text in labels) and not all(text.strip() for text in accessible_labels):
             return "icon-only buttons require a non-empty aria-label"
         if "target" in props and "href" not in props:
             return "button target requires href"
@@ -458,6 +467,10 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         expanded = props.get("treeDefaultExpandedKeys", [])
         if not _unique(expanded) or any(key not in keys for key in expanded) or (expanded and props.get("treeDefaultExpandAll")):
             return "invalid tree expansion"
+    if component == "Button" and "openPanel" in props and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", props["openPanel"],
+    ) is None:
+        return "invalid panel instance key"
     if component == "Slider":
         minimum, maximum, step = props.get("min", 0), props.get("max", 100), props.get("step", 1)
         if maximum <= minimum or step <= 0 or not finite_number((maximum - minimum) / step):
@@ -500,8 +513,20 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "preview content or URL is required"
         if file is not None and "downloadUrl" in file and not valid_url(file["downloadUrl"]):
             return "invalid preview URL"
-    if component in ("Panel", "Iframe") and not props["title"].strip():
+    if component == "Panel" and not props["title"].strip():
         return "title is required"
+    if component == "Iframe":
+        title = props["title"]
+        titles = [title] if isinstance(title, str) else list(title.values())
+        if any(not value.strip() or len(value.encode("utf-8")) > 200 for value in titles):
+            return "invalid iframe title"
+        if ("src" in props) == ("srcDoc" in props):
+            return "Iframe requires exactly one document source"
+        document = props.get("srcDoc")
+        if document is not None:
+            documents = [document] if isinstance(document, str) else list(document.values())
+            if any(not value.strip() for value in documents):
+                return "iframe document is required"
     if component == "Avatar":
         style = props.get("style", {})
         if any(key in style and re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", style[key]) is None

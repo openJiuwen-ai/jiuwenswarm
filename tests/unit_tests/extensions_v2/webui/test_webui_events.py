@@ -125,7 +125,7 @@ async def test_event_for_static_node_is_rejected_without_raising():
 
 @pytest.mark.parametrize("root", [
     RenderNode("Input", {"value": 1}), RenderNode("Input", {"maxLength": 1, "value": "😀"}),
-    RenderNode("Input", {"maxLength": True}), RenderNode("Box", {"padding": "sm"}),
+    RenderNode("Input", {"maxLength": True}), RenderNode("Box", {"padding": "xl"}),
     RenderNode("Text", {"value": None}), RenderNode("Switch", {"checked": None}),
     RenderNode("Select", {"options": [{"value": "x", "label": "A"}, {"value": 1, "label": "B"}]}),
     RenderNode("Slider", {"step": 3}), RenderNode("Slider", {"value": float("nan")}),

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
@@ -78,7 +79,10 @@ class WebUIDispatchAdapter(GatewayAdapter):
         if spec is None:
             return build_error_response(request, f"slot not allowed: {slot_id}", code=CODE_SCHEMA_ERROR)
         declared_scope = raw_target.get("scope", "").strip()
-        if spec.scope is SlotScope.APPLICATION:
+        if declared_scope and not spec.accepts_scope(declared_scope):
+            return build_error_response(request, "target.scope does not match the slot", code=CODE_SCHEMA_ERROR)
+        resolved_scope = declared_scope or spec.scope.value
+        if resolved_scope == SlotScope.APPLICATION.value:
             channel_id = str(request.channel_id or "").strip()
             if channel_id and channel_id != DEFAULT_CHANNEL_ID:
                 return build_error_response(
@@ -117,7 +121,8 @@ class WebUIDispatchAdapter(GatewayAdapter):
 
         if event_name == "ui.ready":
             runtime.remember_ready_client(trusted_connection, target.session_id)
-        if not runtime.catalog().current().allows_target(target.slot_id, target.package_id):
+        catalog = runtime.catalog().current()
+        if not catalog.allows_target(target.slot_id, target.package_id):
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -136,13 +141,44 @@ class WebUIDispatchAdapter(GatewayAdapter):
             target=target,
             payload=payload,
         )
+        dispatch_kwargs: dict[str, Any] = {
+            "user_id": request.user_id,
+            "channel_id": request.channel_id or "",
+        }
+        if trusted_connection:
+            dispatch_kwargs["connection_id"] = trusted_connection
+        if event_name == "ui.ready" and not target.package_id and spec.capacity == "list":
+            contributions = sorted(
+                (item for item in catalog.items if item.type == "web.slot.contribution" and item.slot == target.slot_id),
+                key=lambda item: (item.order, item.package_id, item.id),
+            )
+            package_ids = dict.fromkeys(item.package_id for item in contributions)
+            logger.debug("[WebUI] list ready: slot=%s packages=%s", target.slot_id, tuple(package_ids))
+            if len(package_ids) == 1:
+                action = replace(action, target=replace(target, package_id=next(iter(package_ids))))
+            elif package_ids:
+                results: list[dict[str, Any]] = []
+                for package_id in package_ids:
+                    scoped = replace(action, target=replace(target, package_id=package_id))
+                    try:
+                        output = await runtime.dispatch(scoped, **dispatch_kwargs)
+                        receipt = {"package_id": package_id, "accepted": bool(output and output.accepted),
+                                   "status": output.status if output else "no_handler"}
+                        if output is not None and output.code:
+                            receipt["code"] = output.code
+                    except Exception:  # noqa: BLE001 - isolate each declared package's initialization
+                        logger.exception("[WebUI] list ready failed: target=%s", scoped.target.key)
+                        receipt = {"package_id": package_id, "accepted": False,
+                                   "status": "error", "code": "INTERNAL_ERROR"}
+                    results.append(receipt)
+                accepted = all(result["accepted"] for result in results)
+                status = "ready" if accepted else "partial" if any(result["accepted"] for result in results) else "rejected"
+                return AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                    payload={"event": event_name, "accepted": accepted, "status": status, "results": results},
+                    metadata=request.metadata,
+                )
         try:
-            dispatch_kwargs: dict[str, Any] = {
-                "user_id": request.user_id,
-                "channel_id": request.channel_id or "",
-            }
-            if trusted_connection:
-                dispatch_kwargs["connection_id"] = trusted_connection
             output = await runtime.dispatch(action, **dispatch_kwargs)
         except Exception as exc:  # noqa: BLE001 - map event-chain failures to a response
             logger.exception("[WebUI] upstream event failed: event=%s target=%s", event_name, target.key)

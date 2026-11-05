@@ -44,6 +44,7 @@ from .views import (
     WEATHER_SHOW_ACTION,
     build_view,
     signed_out_view,
+    task_function_view,
     user_menu_view,
     welcome_page,
 )
@@ -129,6 +130,8 @@ class WorkbenchHandlers:
             return await self._on_application_entry(request, ops, next_handler, event)
         if target.slot_id == "application.sidebar.footer":
             return await self._on_sidebar_footer(request, ops, next_handler, event)
+        if target.slot_id in ("task.function", "task.function.main"):
+            return await self._on_task_function(request, ops, next_handler, event)
         if target.package_id not in ("", PACKAGE_ID) or not target.session_id:
             return await next_handler(event)
         if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
@@ -205,6 +208,39 @@ class WorkbenchHandlers:
             if failed_status:
                 return UiActionOutput(accepted=False, status=failed_status)
             return UiActionOutput(accepted=True, status="rendered")
+
+    async def _on_task_function(
+        self,
+        request: UiActionInput,
+        ops: EventHandlerOps | None,
+        next_handler: EventNext,
+        event: Event,
+    ) -> UiActionOutput:
+        """Render connection-scoped task navigation without creating session state."""
+        target = request.target
+        if target.package_id not in ("", PACKAGE_ID) or target.session_id:
+            return await next_handler(event)
+        if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
+            return await next_handler(event)
+        if ops is None:
+            return UiActionOutput(accepted=False, status="unavailable")
+        if request.event_type == "ui.ready":
+            if not self._instances(target):
+                return UiActionOutput(accepted=False, status="invalid_instance")
+            output = await ops.ui.render(UiRenderInput(
+                target=replace(target, package_id=PACKAGE_ID, instance_key=TASK_INSTANCE),
+                root=task_function_view(target.slot_id),
+            ))
+            delivered = output is not None and output.status == "delivered"
+            status = "rendered" if delivered else (output.status if output is not None else "unavailable")
+            return UiActionOutput(accepted=delivered, status=status)
+        if target.instance_key != TASK_INSTANCE:
+            return UiActionOutput(accepted=False, status="invalid_instance")
+        if (request.event_type == "ui.click" and target.slot_id == "task.function"
+                and request.payload.get("action_id") == "workbench.open"):
+            return UiActionOutput(accepted=True, status="selected")
+        return UiActionOutput(accepted=False, status="invalid")
+
 
     async def _on_application_entry(
         self,

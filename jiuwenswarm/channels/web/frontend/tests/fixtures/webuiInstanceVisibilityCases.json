@@ -1,0 +1,111 @@
+[
+  {
+    "name": "default visibility",
+    "valid": true
+  },
+  {
+    "name": "visible binding",
+    "visible_when": {
+      "key": "visible",
+      "default": true
+    },
+    "valid": true
+  },
+  {
+    "name": "hidden binding",
+    "visible_when": {
+      "key": "visible",
+      "default": false
+    },
+    "valid": true
+  },
+  {
+    "name": "Unicode key at byte limit",
+    "visible_when": {
+      "key": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "default": true
+    },
+    "valid": true
+  },
+  {
+    "name": "blank key",
+    "visible_when": {
+      "key": " ",
+      "default": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing default",
+    "visible_when": {
+      "key": "visible"
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid default",
+    "visible_when": {
+      "key": "visible",
+      "default": "false"
+    },
+    "valid": false
+  },
+  {
+    "name": "foreign namespace",
+    "visible_when": {
+      "key": "visible",
+      "default": true,
+      "package_id": "foreign"
+    },
+    "valid": false
+  },
+  {
+    "name": "Unicode key over byte limit",
+    "visible_when": {
+      "key": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "default": true
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid Unicode key",
+    "visible_when": {
+      "key": "\ud800",
+      "default": true
+    },
+    "valid": false
+  },
+  {
+    "name": "array binding",
+    "visible_when": [],
+    "valid": false
+  },
+  {
+    "name": "empty binding",
+    "visible_when": {},
+    "valid": false
+  },
+  {
+    "name": "binding without package identity",
+    "visible_when": {
+      "key": "visible",
+      "default": true
+    },
+    "package_id": "",
+    "valid": false
+  },
+  {
+    "name": "clear without binding",
+    "mode": "clear",
+    "valid": true
+  },
+  {
+    "name": "clear with binding",
+    "mode": "clear",
+    "visible_when": {
+      "key": "visible",
+      "default": true
+    },
+    "valid": false
+  }
+]

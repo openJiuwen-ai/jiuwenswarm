@@ -47,7 +47,7 @@ def text(value: str, *, secondary: bool = False, size: str = "md", strong: bool 
 
 
 def button(
-    label: str, action: str, *, args: dict | None = None, disabled: bool = False,
+    label: str | dict[str, str], action: str, *, args: dict | None = None, disabled: bool = False,
     type: str = "default", size: str = "md", icon: str | None = None,
 ) -> RenderNode:
     props: dict = {"value": label, "size": size, "type": type, "disabled": disabled}
@@ -98,9 +98,20 @@ def workspace_files(state: SessionState) -> RenderNode:
     ))
 
 
-def iframe_page(title: str, src: str) -> RenderNode:
+def iframe_page(title: str | dict[str, str], src: str) -> RenderNode:
     """Iframe root for a menu or task main page; it owns the whole page content area."""
     return RenderNode("Iframe", {"title": title, "src": src})
+
+
+def task_function_view(slot: str) -> RenderNode:
+    """Build task navigation without depending on any chat state."""
+    if slot == "task.function":
+        return button({"zh": "任务检查", "en": "Inspect tasks"}, "workbench.open")
+    if slot == "task.function.main":
+        return iframe_page({"zh": "任务检查页面", "en": "Task inspection page"},
+                           "https://example.com/?page=task.function.main")
+    raise ValueError(f"unknown task slot: {slot}")
+
 
 
 def welcome_page() -> RenderNode:
@@ -155,12 +166,10 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         return user_menu_view()
     if slot == "application.menu":
         return button("交互工作台 / Workbench", "workbench.open")
-    if slot == "task.function":
-        return button("任务检查 / Inspect tasks", "workbench.open")
+    if slot in ("task.function", "task.function.main"):
+        return task_function_view(slot)
     if slot == "application.menu.main":
         return iframe_page("工作台页面 / Workbench page", "https://example.com/?page=application.menu.main")
-    if slot == "task.function.main":
-        return iframe_page("任务检查页面 / Task inspection page", "https://example.com/?page=task.function.main")
     if slot == "application.settings":
         return RenderNode("Box", {"direction": "row", "justify": "between", "gap": "md", "wrap": True}, children=(
             column(text("天气详情 / Weather details"), text("在输入框上方显示 Token 天气演示。 / Show the Token Weather demo above the input.", secondary=True)),
@@ -192,8 +201,9 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
             return workspace_files(state)
         if instance_key == IFRAME_INSTANCE:
             return RenderNode("Iframe", {
-                "title": "网页预览",
+                "title": {"zh": "网页预览", "en": "Web preview"},
                 "src": "https://www.weather.com.cn/",
+                "minWidth": 1280,
             })
         raise ValueError(f"undeclared right-panel instance: {instance_key}")
     if slot == "conversation.header.title.after":

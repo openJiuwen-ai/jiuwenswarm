@@ -202,10 +202,14 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 范围及目标字段见 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)，上行参数见
 [F_07 第 4.3 节](F_07_ui-contributions.md#43-请求与回执)。
 
-当前应用范围有 `application.entry` 与 `application.sidebar.footer`。前者由 `WebUIEntryHost` 在首次访问时挂载并发送
+当前应用范围有 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`。首次访问入口由 `WebUIEntryHost` 在首次访问时挂载并发送
 `{"reason": "first_visit"}`，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
-后者由 `WebUIHost` 在左侧图标栏底部挂载，ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
-其余 13 个槽位仍需要真实会话，`application.menu`、`task.function` 和 `application.settings` 在新建空对话中不挂载。
+侧栏底部由 `WebUIHost` 挂载，ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
+任务入口由 `WebUINavigationHost` 挂载，对应页面由 `WebUIPageHost` 挂载，均不要求 session；
+切换会话时保持已有实例和页面。示例任务入口只处理导航，不读写会话工作台状态。
+`App` 在查看聊天期间保留当前应用范围页面的挂载，仅隐藏容器；返回同一任务入口继续使用原 iframe。
+隐藏期间不额外挂载任务侧栏，打开其他插件页面时释放原页面，不维护多页面缓存。
+其余 11 个槽位默认使用会话范围，`application.menu` 及其主页面在新建空对话中不挂载；设置槽位也允许显式应用范围。
 
 | 行为 | 会话槽位 | 全局槽位 |
 | --- | --- | --- |

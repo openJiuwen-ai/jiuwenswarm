@@ -16,7 +16,7 @@ export interface PanelTabItem {
   label: string;
   icon?: ReactNode;
   count?: string | number;
-  /** Render a close button for the desktop browser tab. */
+  /** Allow the host to dismiss this page. */
   closable?: boolean;
 }
 
@@ -110,6 +110,7 @@ export function ExpandedPanelTabs({
         {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
           const countSuffix = tab.count !== undefined ? ` (${tab.count})` : '';
+          const closeLabel = tab.key === 'browser' ? t('browser.pane.closeTab') : `${t('common.close')} ${tab.label}`;
           return (
             <div
               key={tab.key}
@@ -143,8 +144,8 @@ export function ExpandedPanelTabs({
                   <CloseButton
                     size={16}
                     testId={`${testIdPrefix}-tab-close`}
-                    ariaLabel={t('browser.pane.closeTab')}
-                    title={t('browser.pane.closeTab')}
+                    ariaLabel={closeLabel}
+                    title={closeLabel}
                     onClick={() => onTabClose(tab.key)}
                   />
                 </span>

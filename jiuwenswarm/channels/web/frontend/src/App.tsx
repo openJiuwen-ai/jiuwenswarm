@@ -406,7 +406,10 @@ function ErrorFallback({ error }: { error: Error | null }) {
         <p className="text-text-muted mb-4" data-testid="app-error-fallback-message">
           {error?.message || t('app.unknownError')}
         </p>
-        <pre className="bg-secondary p-4 rounded-lg text-sm overflow-auto max-h-64 font-mono" data-testid="app-error-fallback-stack">
+        <pre
+          className="bg-secondary p-4 rounded-lg text-sm overflow-auto max-h-64 font-mono"
+          data-testid="app-error-fallback-stack"
+        >
           {error?.stack}
         </pre>
         <button
@@ -4447,17 +4450,21 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   }, [clearChatPanelResize, showWorkspaceDivider]);
 
   useEffect(() => {
-    if (webUIPage && webUIPage.sessionId !== sessionId) {
+    if (webUIPage && webUIPage.scope !== 'application' && webUIPage.sessionId !== sessionId) {
       setWebUIPage(null);
       if (activeNav === 'webui') setActiveNav('chat');
     }
   }, [activeNav, sessionId, webUIPage]);
 
-  const webUIPageSection = activeNav === 'webui' && webUIPage && webUIPage.sessionId === sessionId ? (
-    <div className="app-section flex min-h-0 min-w-0 flex-col overflow-y-auto" data-testid="app-webui-page">
-      <WebUIPageHost target={webUIPage} />
-    </div>
-  ) : null;
+  const webUIPageSection =
+    webUIPage && (webUIPage.scope === 'application' || (activeNav === 'webui' && webUIPage.sessionId === sessionId)) ? (
+      <div
+        className={`app-section flex min-h-0 min-w-0 flex-col overflow-y-auto${activeNav === 'webui' ? '' : ' is-hidden'}`}
+        data-testid="app-webui-page"
+      >
+        <WebUIPageHost target={webUIPage} />
+      </div>
+    ) : null;
 
   return (
     <WebUISlotProvider
@@ -4504,7 +4511,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main
+        className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}
+      >
         {configError && (
           <div className="card mb-4" data-testid="app-config-error">
             <div className="text-sm text-text-muted">
@@ -4512,7 +4521,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <span className="mono"> python -m tests.web_gateway_jiuwenclaw_integration </span>
               {t('app.configErrorDefault')}
               <span className="mono"> jiuwenswarm/channels/web/frontend/.env.local </span>
-              {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')} <span className="mono">VITE_WS_BASE</span>.
+              {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')}{' '}
+              <span className="mono">VITE_WS_BASE</span>.
             </div>
           </div>
         )}
@@ -4590,10 +4600,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
                 {showConversationNotFound && (
-                  <div className="flex-1 flex flex-col items-center justify-center gap-4" data-testid="app-conversation-not-found">
+                  <div
+                    className="flex-1 flex flex-col items-center justify-center gap-4"
+                    data-testid="app-conversation-not-found"
+                  >
                     <h1 className="text-lg font-semibold text-text" data-testid="app-conversation-not-found-title">{t('multiSession.notFound.title')}</h1>
                     <div className="flex gap-2">
-                      <button className="btn primary" onClick={() => enterNewConversation()} data-testid="app-conversation-not-found-new-button">
+                      <button
+                        className="btn primary"
+                        onClick={() => enterNewConversation()}
+                        data-testid="app-conversation-not-found-new-button"
+                      >
                         {t('multiSession.notFound.newConversation')}
                       </button>
                     </div>
@@ -4888,20 +4905,26 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         )}
         {/* 任务功能区的右侧页面：会话列表保留在左，插件页面进入工作区；菜单主页面仍为独立整页 */}
         {webUIPageSection && webUIPage?.slotId === 'task.function.main' ? (
-          <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
-            <ConversationSidebar
-              activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
-              onNew={(options) => requestSessionNavigation('new', options)}
-              onSelect={requestSessionNavigation}
-              onSelectDesignSession={handleSelectDesignSession}
-              activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
-              onProjectRemoved={handleProjectRemoved}
-              onOpenCron={() => handleNavigate('cron')}
-              isCronActive={false}
-              collapsed={conversationSidebarCollapsed}
-              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
-              hideCollapseButton={workspaceWorkMode === 'design' && route.kind === 'design-project'}
-            />
+          <div
+            className="chat-layout flex-1 flex min-h-0 overflow-hidden"
+            style={{ display: activeNav === 'webui' ? undefined : 'none' }}
+            data-testid="app-webui-task-page"
+          >
+            {activeNav === 'webui' && (
+              <ConversationSidebar
+                activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                onNew={(options) => requestSessionNavigation('new', options)}
+                onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                onProjectRemoved={handleProjectRemoved}
+                onOpenCron={() => handleNavigate('cron')}
+                isCronActive={false}
+                collapsed={conversationSidebarCollapsed}
+                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+                hideCollapseButton={workspaceWorkMode === 'design' && route.kind === 'design-project'}
+              />
+            )}
             <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
               {webUIPageSection}
             </div>
@@ -5039,9 +5062,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-restart-modal__panel" data-testid="app-restart-modal-panel">
             <div className="flex flex-col items-center text-center" data-testid="app-restart-modal-body">
               {!restartSuccess ? (
-                <div className="w-12 h-12 rounded-full border-4 border-border border-t-accent animate-spin mb-4" data-testid="app-restart-modal-status-icon" data-variant="loading" />
+                <div
+                  className="w-12 h-12 rounded-full border-4 border-border border-t-accent animate-spin mb-4"
+                  data-testid="app-restart-modal-status-icon"
+                  data-variant="loading"
+                />
               ) : (
-                <div className="w-12 h-12 rounded-full bg-ok/15 text-ok flex items-center justify-center mb-4" data-testid="app-restart-modal-status-icon" data-variant="success">
+                <div
+                  className="w-12 h-12 rounded-full bg-ok/15 text-ok flex items-center justify-center mb-4"
+                  data-testid="app-restart-modal-status-icon"
+                  data-variant="success"
+                >
                   <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                   </svg>

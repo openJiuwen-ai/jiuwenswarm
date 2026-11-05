@@ -4,6 +4,11 @@
  */
 
 import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import {
+  preferenceVersion,
+  readInstanceVisibility,
+  subscribePreferences,
+} from '../client/preferences.ts';
 import type { WebUIRendererRegistry, WebUIStyleOverrides } from '../renderer/types.ts';
 import type { WebUIMountHandle, WebUIMountOptions, WebUIRuntime } from '../runtime/types.ts';
 import type { WebUINormalizedTarget } from '../contracts/normalized.ts';
@@ -17,6 +22,7 @@ const noopVersion = (): number => 0;
 export interface WebUIHostProps {
   slotId: string;
   sessionId?: string | null;
+  scope?: 'session' | 'application';
   /** 消息级槽位使用：只消费该 instanceKey 的实例，并以其身份上报 ready。 */
   instanceKey?: string;
   packageId?: string;
@@ -42,6 +48,7 @@ interface WebUIHostScopeStore {
 export function WebUIHost({
   slotId,
   sessionId: sessionOverride,
+  scope: scopeOverride,
   instanceKey,
   packageId,
   mountOptions,
@@ -59,10 +66,13 @@ export function WebUIHost({
   const viewContext = useWebUISlotContext();
   const runtime = runtimeOverride ?? context?.runtime;
   const registry = registryOverride ?? context?.registry;
-  const isApplicationSlot = runtime?.getCatalog().getSlot(slotId)?.scope === 'application';
+  const resolvedScope =
+    scopeOverride ?? mountOptions?.scope ?? runtime?.getCatalog().getSlot(slotId)?.scope ?? 'session';
+  const isApplicationSlot = resolvedScope === 'application';
   const sessionId = sessionOverride === undefined ? (isApplicationSlot ? '' : viewContext.sessionId) : sessionOverride;
   const hasTarget = isApplicationSlot ? sessionId === '' : !!sessionId;
   const [mountHandle, setMountHandle] = useState<WebUIMountHandle | null>(null);
+  useSyncExternalStore(subscribePreferences, preferenceVersion, preferenceVersion);
 
   const scopeStore = useMemo<WebUIHostScopeStore | null>(() => {
     if (!runtime || !hasTarget || sessionId === null) {
@@ -84,11 +94,16 @@ export function WebUIHost({
     if (!runtime || !hasTarget || sessionId === null) {
       return undefined;
     }
-    const handle = runtime.mountSlot(sessionId, slotId, { ...mountOptions, instanceKey, packageId });
+    const handle = runtime.mountSlot(sessionId, slotId, {
+      ...mountOptions,
+      instanceKey,
+      packageId,
+      scope: resolvedScope,
+    });
     setMountHandle(handle);
     void handle.notifyReady();
     return () => handle.release();
-  }, [runtime, sessionId, slotId, instanceKey, packageId, hasTarget, mountOptions]);
+  }, [runtime, sessionId, slotId, instanceKey, packageId, hasTarget, mountOptions, resolvedScope]);
 
   const scope = useMemo(
     () => (runtime && hasTarget && sessionId !== null ? runtime.getScopeSnapshot(sessionId, slotId) : null),
@@ -100,7 +115,15 @@ export function WebUIHost({
   }
 
   let instanceKeys = scope.instanceKeys.filter((key) => {
-    const target = runtime.getInstance(key)?.target;
+    const instance = runtime.getInstance(key);
+    const target = instance?.target;
+    if (instance?.frame) {
+      try {
+        if (!readInstanceVisibility(instance.frame)) return false;
+      } catch {
+        /* Let the instance error boundary present a storage read failure. */
+      }
+    }
     return target && (instanceKey === undefined || target.instanceKey === instanceKey)
       && (packageId === undefined || target.packageId === packageId);
   });

@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-07 界面项声明、挂载与上行交互 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{contributions,adapter}.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[F_06 渲染服务](F_06_render-service.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-04 |
 | 方案状态 | 已实现 |
 
 ## 1. 问题与目标
@@ -100,13 +100,17 @@ ui:
 | `application.settings` | `list` | 设置页内容区 |
 | `application.menu` | `list` | 左侧导航栏，点击进入 `application.menu.main` |
 | `application.menu.main` | `single` | 应用菜单主页面 |
-| `task.function` | `list` | 会话侧栏任务功能区，点击进入 `task.function.main` |
-| `task.function.main` | `single` | 任务功能区页面，保留会话侧栏 |
+| `task.function` | `list` | 应用范围的侧栏任务功能区，点击进入 `task.function.main` |
+| `task.function.main` | `single` | 应用范围的任务功能区页面，保留会话侧栏 |
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
 `application.entry` 为应用范围的 single 入口，由 `WebUIEntryHost` 在浏览器首次访问时挂载；ready 被接受后写入访问标记，后续刷新跳过挂载，clear 或失败关闭入口。
 `application.sidebar.footer` 同为应用范围的 single 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；没有实例时不渲染容器。
-`application.menu`、`task.function`、`application.settings` 仍为会话范围，新建空对话中不挂载。
+`task.function` 与 `task.function.main` 同为应用范围，复用当前 Web 连接的实例身份，不要求聊天会话；
+入口与页面共享包和实例标识。切换会话不重新挂载入口，也不因 session 变化关闭任务页面。
+离开任务页面查看聊天时，宿主保留已打开的应用范围页面及其 iframe，仅隐藏页面容器；
+返回同一任务入口复用原页面。会话范围菜单页面仍随导航卸载，选择其他插件页面时释放原页面。
+`application.menu`、`application.menu.main` 仍为会话范围，新建空对话中不挂载；设置槽位也允许显式应用范围。
 平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。新增槽位还需要接入前端，不能只改后端表项；
 前端挂载方式见 [F_08 第 4.5 节](F_08_frontend-render.md#45-会话与全局槽位的挂载)。
@@ -151,6 +155,8 @@ sequenceDiagram
 ```
 
 `ui.ready` 通常只接受空 payload；`application.entry` 接受 `{"reason": "first_visit"}`。会话级槽位的目标只带会话和槽位，包与实例标识为空；实例由插件在 Handler 中创建，因此 CORE Handler 对 `ui.ready` 不检查实例是否存在。消息级槽位在本地缺少实例时，会携带 `instance_key=requestId` 上报，插件可据此恢复该轮已缓存的视图。
+
+`list` 槽位的未指定包 ui.ready，由上行适配器按活动 web.slot.contribution 对包去重，按 order、package_id、id 稳定排序后分别定向派发，保留原 instance_key、payload 与连接/会话上下文。每个包负责创建自己的实例；一个包提前返回或初始化异常不阻止其他包。单包保留原回执，多包返回逐包 results（package_id、accepted、status、可选 code），全部接受时顶层 accepted=true/status=ready，部分接受时 accepted=false/status=partial，全部拒绝时 status=rejected。已有定向交互与 single 槽位派发保持原语义。
 
 全局槽位挂载时不要求聊天会话。Gateway 从实际 WebSocket 取得连接 ID，并通过 E2A 的 `metadata.ws_id`
 交给 AgentServer；浏览器提交的目标不能指定投递连接。前端的全局宿主可以在没有当前聊天会话时挂载并上报 `ui.ready`。
@@ -242,8 +248,9 @@ Gateway 通过现有断连钩子发送内部 E2A 方法 `webui.connection.closed
 | --- | --- |
 | `event` | 原样返回事件名 |
 | `accepted` | 是否被接受 |
-| `status` | `ready`、`handled`、`inactive`、`stale`、`invalid_action`、`no_contribution`、`no_handler`，或插件自定义状态 |
+| `status` | `ready`、`partial`、`rejected`、`handled`、`inactive`、`stale`、`invalid_action`、`no_contribution`、`no_handler`，或插件自定义状态 |
 | `code` | 拒绝时的稳定错误码 |
+| `results` | 多包 list ready 的逐包回执；单包与其他交互省略 |
 
 错误码：`WEBUI_UNAVAILABLE`（运行时未装配）、`SCHEMA_ERROR`（事件或目标非法）、`SESSION_MISMATCH`（请求会话与目标不一致）、`NO_CONTRIBUTION`（槽位没有生效的界面项）、`TARGET_INACTIVE`（实例不存在）、`INTERNAL_ERROR`（事件链异常）。
 
@@ -319,7 +326,7 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 - **整包拒绝**：一项非法导致整包界面项不发布，避免半套界面进入前端。
 - **单入口上行**：所有 `ui.*` 共用一个 `webui.dispatch`，便于统一鉴权、错误码和审计。
 - **`ui.ready` 不做实例检查**：挂载时实例尚不存在，由插件在事件链内创建，避免额外握手。
-- **槽位模式由前端决定**：服务端只声明槽位白名单，`list` / `single` 是展示策略。
+- **槽位模式**：list/single 的展示与可见数量由前端执行；服务端按已有槽位目录对 list 的广播 ready 逐包初始化，避免一个包的提前返回阻止其他贡献。
 - **按下发快照校验交互**：registry 保存独立只读树，插件修改原字典不会改变当前 revision 的动作和参数。
 
 ## 7. 实施影响
@@ -357,10 +364,35 @@ render → Handler → replace；前端测试使用 jsdom 验证页面点击产�
 2026-10-30 的后端定向复核见 [F_06 第 8 节](F_06_render-service.md#8-验证)，前端宿主与交互验证见
 [F_08 第 8 节](F_08_frontend-render.md#8-验证)。
 
+### 2026-11-04 任务槽位应用范围验证
+
+- 后端：`.venv/bin/python -m pytest tests/unit_tests/extensions_v2/webui/test_application_slots.py tests/unit_tests/extensions_v2/webui/test_workbench_turn_actions.py --no-cov -q -o log_cli=false`，53 项通过。
+  覆盖任务入口和页面的目标校验、缺少连接与错误作用域的拒绝、示例插件不创建会话状态、投递失败回执，
+  以及安装示例后通过真实适配器在空对话与两个聊天中保持连接实例身份、两个连接的 revision 隔离和断连清理。
+- 前端目录：`node scripts/build-webui-components.mjs` 后执行
+  `node --test tests/webuiComponents.test.mjs tests/webuiComponentsReact.test.mjs`，215 项通过。
+  新增 JSDOM 回归覆盖无会话挂载、点击打开同包同实例任务页面、切换聊天不重建入口和 Iframe、标题中英文切换。
+- `npx vite build`、`git diff --check` 与 `git diff --cached --check` 通过。
+  按仓库约束未运行格式化、lint 或类型检查；该轮尚未执行真实浏览器与跨进程服务联调。
+
+### 2026-11-04 真实浏览器复验与页面挂载修复
+
+- 使用 Chrome 访问本地真实 WebClient、Gateway 和 Runtime Worker，更新已安装的工作台示例副本，
+  重启本地后端及独立存活的 Runtime Worker，使其加载新的应用范围定义与处理器。
+- 首次复验确认 `/chat/new` 空对话可以打开任务检查，但点击已有会话会因 `activeNav` 切到聊天而卸载页面。
+  修复 `App`：当前应用范围页面在查看聊天期间只隐藏，不释放宿主；返回入口复用页面。
+  会话范围菜单仍按原导航生命周期处理，选择其他插件页面释放原页面。
+- 在应用入口增加临时被动 DOM 观测，使用 `WeakMap` 记录 iframe 对象身份，并记录创建、移除和 load 事件。
+  实际点击完成“空对话打开 → 会话 A → 返回任务页 → 会话 B → 返回任务页 → 新建空对话 → 再开任务页”。
+  所有阶段始终使用 iframe 1，累计创建 1 次、load 1 次、移除 0 次；聊天显示时任务页面不可见，返回后可见。
+- 此验证经过真实插件渲染与页面导航，不调用模型。临时观测入口与测试服务在验证后清理。
+  截图和分步记录保存在当前任务的 `task-slot-browser` 交付目录。
+- 修复后任务导航定向组件测试与 `npx vite build` 通过，差异空白检查通过；未运行格式化、lint 或类型检查。
+
 ## 9. 风险与遗留
 
 - 目标包与槽位贡献校验不等于用户授权或业务权限校验。
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 当前槽位为 15 个位置：13 个会话语境位置（含单轮与助手消息 meta 位置）和应用范围的 `application.entry`、`application.sidebar.footer`；新增槽位时，前后端登记的名称、范围和展示模式必须一致，未知槽位或范围不一致的目标会被拒绝。
+- 当前槽位为 15 个位置：应用范围包含 `application.entry`、`application.sidebar.footer`、`task.function` 和 `task.function.main`；其余 11 个位置默认使用会话范围，设置槽位还允许显式应用范围。新增槽位时，前后端登记的名称、范围和展示模式必须一致，未知槽位或范围不一致的目标会被拒绝。

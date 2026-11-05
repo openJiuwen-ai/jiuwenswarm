@@ -48,7 +48,7 @@ after(() => {
   dom.window.close();
 });
 
-const { act, createElement } = await import('react');
+const { act, createElement, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { theme } = await import('antd');
@@ -56,6 +56,11 @@ const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer, FileTree, createComponentState,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
   WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n, buttonIcon, browserClientCapabilities, GatewayImage,
+  panelNavigation,
+  requestPanelOpen,
+  useWebUIPanels,
+  WebUINavigationHost,
+  WebUIPageHost,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -482,6 +487,144 @@ async function setup(tree, scope = target, transportOptions = {}) {
     async close() { await act(async () => root.unmount()); runtime.dispose(); container.remove(); },
   };
 }
+
+test('Button opens only its own live panel after an accepted receipt; renders never navigate', async () => {
+  const app = await setup(
+    {
+      component: 'Button',
+      props: { value: 'Details', openPanel: 'details' },
+      events: { 'ui.click': { id: 'details', args: {} } },
+    },
+    target,
+    { autoAccept: false },
+  );
+  const owner = app.runtime.mountSlot(target.session_id, 'conversation.panel.right', { notifyReady: false });
+  const destination = { ...target, slot_id: 'conversation.panel.right', instance_key: 'details' };
+  const tree = { component: 'Iframe', props: { title: 'Details', srcDoc: '<p>Usage</p>' } };
+  const navigation = panelNavigation(app.runtime);
+  try {
+    await act(async () => app.transport.resolveNextDispatch({ accepted: true, status: 'ready' }));
+    await act(async () => app.transport.injectRenderFrame(frame(tree, 1, destination)));
+    assert.equal(navigation.getSnapshot(), null);
+    await click(app.container.querySelector('button'));
+    assert.equal(navigation.getSnapshot(), null, 'no navigation while the action is unresolved');
+    await act(async () => app.transport.resolveNextDispatch({ accepted: false, status: 'rejected' }));
+    assert.equal(navigation.getSnapshot(), null);
+    await click(app.container.querySelector('button'));
+    await act(async () => app.transport.resolveNextDispatch({ accepted: true, status: 'delivered' }));
+    const request = navigation.getSnapshot();
+    assert.equal(request.sessionId, target.session_id);
+    assert.equal(request.key, 'sess-1|conversation.panel.right|pkg.demo|details');
+    navigation.consume(request.id);
+    await act(async () => app.transport.injectRenderFrame(frame(tree, 2, destination)));
+    assert.equal(navigation.getSnapshot(), null, 'data refreshes do not reopen or select panels');
+    const source = {
+      sessionId: target.session_id,
+      slotId: target.slot_id,
+      packageId: target.package_id,
+      instanceKey: target.instance_key,
+    };
+    await act(async () =>
+      app.transport.injectRenderFrame(frame(tree, 1, { ...destination, package_id: 'other', instance_key: 'foreign' })),
+    );
+    assert.equal(requestPanelOpen(app.runtime, source, 'foreign'), false);
+    assert.equal(requestPanelOpen(app.runtime, { ...source, sessionId: 'another-session' }, 'details'), false);
+    assert.equal(navigation.getSnapshot(), null);
+  } finally {
+    owner.release();
+    await app.close();
+  }
+});
+
+test('Iframe selects complete localized documents and keeps the fixed sandbox without a URL source', async () => {
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('en'));
+  const documents = { zh: '<!doctype html><p>用量</p>', en: '<!doctype html><p>Usage</p>' };
+  const app = await setup(
+    {
+      component: 'Iframe',
+      props: {
+        title: { zh: '用量详情', en: 'Usage details' },
+        srcDoc: documents,
+      },
+    },
+    { ...target, slot_id: 'conversation.panel.right' },
+  );
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.title, 'Usage details');
+    assert.equal(first.getAttribute('srcdoc'), documents.en);
+    assert.equal(first.hasAttribute('src'), false);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-open-source"]'), null);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, 'Plugin page');
+    assert.equal(first.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+    await act(async () => i18n.changeLanguage('zh'));
+    const translated = app.container.querySelector('iframe');
+    assert.equal(translated.title, '用量详情');
+    assert.equal(translated.getAttribute('srcdoc'), documents.zh);
+    assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, '插件页面');
+    assert.notEqual(first, translated);
+    await app.activity(false);
+    assert.equal(app.container.querySelector('iframe'), null);
+    await app.activity(true);
+    assert.equal(app.container.querySelector('iframe').getAttribute('srcdoc'), documents.zh);
+  } finally {
+    await app.close();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
+
+test('plugin text follows the interface language without remounting or resetting the switch', async () => {
+  const previousLanguage = i18n.language;
+  await act(async () => i18n.changeLanguage('zh'));
+  const app = await setup({
+    component: 'Box',
+    children: [
+      { component: 'Text', props: { value: { zh: '上下文上限 262.1k Token', en: 'Context limit 262.1k tokens' } } },
+      {
+        component: 'Button',
+        props: { value: { zh: '换个风格', en: 'Shuffle' } },
+        events: { 'ui.click': { id: 'shuffle', args: {} } },
+      },
+      {
+        component: 'Switch',
+        props: { defaultChecked: true, ariaLabel: { zh: '显示用量', en: 'Show usage' } },
+        events: { 'ui.change': { id: 'visibility', args: {} } },
+      },
+      { component: 'Text', props: { value: 'Literal / 原样' } },
+    ],
+  });
+  const control = () => app.container.querySelector('[data-testid="webui-switch"]');
+  const label = () => app.container.querySelector('[data-testid="webui-button"]');
+  try {
+    assert.match(app.container.textContent, /上下文上限 262.1k Token/);
+    assert.doesNotMatch(app.container.textContent, /Context limit|Shuffle/);
+    assert.equal(label().textContent, '换个风格');
+    assert.equal(control().getAttribute('aria-label'), '显示用量');
+    await click(control());
+    const off = control();
+    const dispatchCount = app.business().length;
+    await act(async () => i18n.changeLanguage('en'));
+    assert.equal(control(), off);
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(control().getAttribute('aria-label'), 'Show usage');
+    assert.equal(label().textContent, 'Shuffle');
+    assert.match(app.container.textContent, /Context limit 262.1k tokens/);
+    assert.doesNotMatch(app.container.textContent, /上下文上限|换个风格/);
+    assert.match(app.container.textContent, /Literal \/ 原样/);
+    assert.equal(app.business().length, dispatchCount);
+    await click(label());
+    assert.equal(app.business().at(-1).payload.action_id, 'shuffle');
+    await act(async () => i18n.changeLanguage('zh-CN'));
+    assert.equal(label().textContent, '换个风格');
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+  } finally {
+    await app.close();
+    await act(async () => i18n.changeLanguage(previousLanguage));
+  }
+});
 
 test('Avatar uses native children, styles and image priority without deriving account presentation', async () => {
   const tree = (props) => ({ component: 'Avatar', props });
@@ -1561,44 +1704,66 @@ test('Iframe releases inactive documents and resets loading on source changes an
   } finally { await app.close(); }
 });
 
-test('Iframe desktop width exposes an outer scroll container without reloading the page', async () => {
-  const app = await setup({ component: 'Iframe', props: { src: 'https://example.com/wide', title: 'Wide page' } },
-    { ...target, slot_id: 'conversation.panel.right' });
-  try {
-    const frame = app.container.querySelector('iframe');
-    const viewport = app.container.querySelector('[data-testid="webui-iframe-viewport"]');
-    const fit = app.container.querySelector('[data-testid="webui-iframe-fit"]');
-    const desktop = app.container.querySelector('[data-testid="webui-iframe-desktop"]');
-    assert.equal(viewport.dataset.variant, 'fit');
-    assert.equal(getComputedStyle(viewport).overflow, 'auto');
-    assert.equal(getComputedStyle(frame).minWidth, '0');
-    await act(async () => desktop.click());
-    assert.equal(viewport.dataset.variant, 'desktop');
-    assert.equal(desktop.getAttribute('aria-pressed'), 'true');
-    assert.equal(fit.getAttribute('aria-pressed'), 'false');
-    assert.equal(getComputedStyle(frame).minWidth, '1280px');
-    assert.equal(app.container.querySelector('iframe'), frame, 'resizing must preserve the browsing context');
-    await act(async () => fit.click());
-    assert.equal(viewport.dataset.variant, 'fit');
-    assert.equal(getComputedStyle(frame).minWidth, '0');
-    assert.equal(app.container.querySelector('iframe'), frame);
-    assert.equal(app.business().length, 0, 'display controls are local host operations');
-  } finally { await app.close(); }
-});
+for (const source of [{ src: 'https://example.com/wide' }, { srcDoc: '<p>Wide page</p>' }]) {
+  test(`Iframe applies plugin minimum width to the ${Object.keys(source)[0]} document without width mode controls`, async () => {
+    const tree = (minWidth) => ({
+      component: 'Iframe',
+      props: {
+        ...source,
+        title: 'Wide page',
+        ...(minWidth === undefined ? {} : { minWidth }),
+      },
+    });
+    const app = await setup(tree(undefined), { ...target, slot_id: 'conversation.panel.right' });
+    try {
+      let frame = app.container.querySelector('iframe');
+      const viewport = app.container.querySelector('[data-testid="webui-iframe-viewport"]');
+      assert.equal(getComputedStyle(viewport).overflow, 'auto');
+      assert.equal(Number.parseFloat(getComputedStyle(frame).minWidth), 0);
+      assert.equal(app.container.querySelector('[data-testid="webui-iframe-modes"]'), null);
+      await app.replace(tree(720));
+      frame = app.container.querySelector('iframe');
+      assert.equal(getComputedStyle(frame).minWidth, '720px');
+      app.container.style.width = '320px';
+      assert.equal(
+        app.container.querySelector('iframe'),
+        frame,
+        'resizing the container preserves the browsing context',
+      );
+      await app.replace(tree(0), 3);
+      frame = app.container.querySelector('iframe');
+      assert.equal(Number.parseFloat(getComputedStyle(frame).minWidth), 0);
+      assert.equal(app.business().length, 0);
+    } finally {
+      await app.close();
+    }
+  });
+}
 
-test('Iframe reload retries the same URL and retains desktop width and sandbox permissions', async () => {
-  const app = await setup({ component: 'Iframe', props: { src: 'https://example.com/retry', title: 'Retry page' } },
-    { ...target, slot_id: 'conversation.panel.right' });
+test('Iframe reload retries the same URL and retains plugin minimum width and sandbox permissions', async () => {
+  const app = await setup(
+    {
+      component: 'Iframe',
+      props: {
+        src: 'https://example.com/retry',
+        title: 'Retry page',
+        minWidth: 720,
+      },
+    },
+    { ...target, slot_id: 'conversation.panel.right' },
+  );
   try {
     const first = app.container.querySelector('iframe');
     await act(async () => first.dispatchEvent(new window.Event('load')));
-    await act(async () => app.container.querySelector('[data-testid="webui-iframe-desktop"]').click());
+    const source = app.container.querySelector('[data-testid="webui-iframe-source"]');
+    assert.equal(source.textContent, 'https://example.com/retry');
+    assert.equal(source.title, 'https://example.com/retry');
     await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
     const reloaded = app.container.querySelector('iframe');
     assert.notEqual(reloaded, first);
     assert.equal(reloaded.src, first.src);
     assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
-    assert.equal(app.container.querySelector('[data-testid="webui-iframe-viewport"]').dataset.variant, 'desktop');
+    assert.equal(getComputedStyle(reloaded).minWidth, '720px');
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'loading');
     await act(async () => reloaded.dispatchEvent(new window.Event('error')));
     assert.equal(app.container.querySelector('iframe'), null);
@@ -1615,7 +1780,9 @@ test('Iframe reload retries the same URL and retains desktop width and sandbox p
     assert.equal(open.target, '_blank');
     assert.equal(open.rel, 'noopener noreferrer');
     assert.equal(app.business().length, 0);
-  } finally { await app.close(); }
+  } finally {
+    await app.close();
+  }
 });
 
 test('Iframe slow loading stays interactive and cancels pending notices on completion and teardown', async (context) => {
@@ -1682,6 +1849,103 @@ test('Iframe keeps relative and absolute host sources sandboxed without same-ori
       assert.equal(iframe.hasAttribute('srcdoc'), false);
     }
   } finally { await app.close(); }
+});
+
+test('task navigation and its page mount without a session and retain their instances across chats', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const language = i18n.language;
+  function Harness({ sessionId }) {
+    const [page, setPage] = useState(null);
+    return createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        WebUISlotProvider,
+        { sessionId, onOpenPage: setPage, activePage: page },
+        createElement(WebUINavigationHost, { slotId: 'task.function' }),
+        page ? createElement(WebUIPageHost, { target: page }) : null,
+      ),
+    );
+  }
+  const render = async (sessionId) => act(async () => root.render(createElement(Harness, { sessionId })));
+  const taskTarget = {
+    scope: 'application',
+    slot_id: 'task.function',
+    package_id: 'webui.workbench-v2',
+    instance_key: 'task-inspector',
+  };
+  try {
+    await act(async () => i18n.changeLanguage('en'));
+    await render(null);
+    const ready = transport.dispatches[0];
+    assert.equal(ready.event, 'ui.ready');
+    assert.equal(ready.target.scope, 'application');
+    assert.equal(ready.target.sessionId, '');
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Button',
+            props: { value: { zh: '任务检查', en: 'Inspect tasks' } },
+            events: { 'ui.click': { id: 'workbench.open' } },
+          },
+          1,
+          taskTarget,
+        ),
+      ),
+    );
+    const entry = container.querySelector('[data-testid="webui-button"]');
+    assert.equal(entry.textContent, 'Inspect tasks');
+    await click(entry);
+    const pageReady = transport.dispatches.find((request) => request.target.slotId === 'task.function.main');
+    assert.ok(pageReady);
+    assert.deepEqual(pageReady.target, {
+      scope: 'application',
+      sessionId: '',
+      slotId: 'task.function.main',
+      packageId: taskTarget.package_id,
+      instanceKey: taskTarget.instance_key,
+    });
+    const clickRequest = transport.dispatches.find((request) => request.event === 'ui.click');
+    assert.equal(clickRequest.target.scope, 'application');
+    assert.equal(clickRequest.target.sessionId, '');
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Iframe',
+            props: { src: '/task-inspection', title: { zh: '任务检查页面', en: 'Task inspection page' } },
+          },
+          1,
+          { ...taskTarget, slot_id: 'task.function.main' },
+        ),
+      ),
+    );
+    const page = container.querySelector('iframe');
+    assert.ok(page);
+    assert.equal(page.title, 'Task inspection page');
+    for (const sessionId of ['session-a', 'session-b', null]) {
+      await render(sessionId);
+      assert.equal(container.querySelector('[data-testid="webui-button"]'), entry);
+      assert.equal(container.querySelector('iframe'), page);
+      assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 2);
+    }
+    await act(async () => i18n.changeLanguage('zh'));
+    assert.equal(entry.textContent, '任务检查');
+    assert.equal(page.title, '任务检查页面');
+    assert.equal(runtime.getScopeSnapshot('', 'task.function').instanceKeys.length, 1);
+    assert.equal(runtime.getScopeSnapshot('', 'task.function.main').instanceKeys.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    runtime.dispose();
+    await act(async () => i18n.changeLanguage(language));
+  }
 });
 
 test('WebUIEntryHost renders application.entry with Avatar and closes on clear frame', async () => {
@@ -2127,5 +2391,164 @@ test('Form drafts survive retained Tabs and activity changes but reset on discon
       await act(async () => app.transport.setConnectionState('connected'));
       assert.equal(input().value, '');
     } finally { await app.close(); }
+  }
+});
+
+test('a plugin display preference hides bars and detail tabs across conversations without losing frames', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const packageId = 'settings-visibility-test';
+  const binding = { key: 'visible', default: true };
+  const widget = { component: 'Box', children: [{ component: 'Text', props: { value: 'Observed usage' } }] };
+  const setting = { component: 'Switch', props: { preference: binding, ariaLabel: 'Show usage' } };
+  const settingTarget = {
+    session_id: '',
+    scope: 'application',
+    slot_id: 'application.settings',
+    package_id: packageId,
+    instance_key: 'show',
+  };
+  const targetFor = (session) => ({ ...target, session_id: session, package_id: packageId });
+  const panelTarget = (session, owner = packageId) => ({
+    ...targetFor(session),
+    slot_id: 'conversation.panel.right',
+    package_id: owner,
+    instance_key: 'details',
+  });
+  const details = (value) => ({
+    component: 'Iframe',
+    props: {
+      title: 'Usage details',
+      srcDoc: `<p>${value}</p>`,
+    },
+  });
+  const visibleFrame = (tree, revision, owner) => ({ ...frame(tree, revision, owner), visible_when: binding });
+  function Panels({ sessionId }) {
+    const { panels, renderPanel } = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId });
+    return createElement(
+      'section',
+      null,
+      ...panels.map((panel) =>
+        createElement(
+          'div',
+          { key: panel.key },
+          createElement('button', { 'data-testid': 'webui-test-panel-tab' }, panel.title),
+          renderPanel(panel.key),
+        ),
+      ),
+    );
+  }
+  const tabs = () => container.querySelectorAll('[data-testid="webui-test-panel-tab"]');
+  const iframes = () => container.querySelectorAll('iframe');
+  const keysBefore = new Set(Object.keys(window.localStorage));
+  try {
+    await act(async () =>
+      root.render(
+        createElement(
+          WebUIProvider,
+          { runtime, registry: componentRendererRegistry },
+          createElement(WebUIHost, { slotId: target.slot_id, sessionId: 's1' }),
+          createElement(WebUIHost, { slotId: target.slot_id, sessionId: 's2' }),
+          createElement(Panels, { sessionId: 's1' }),
+          createElement(Panels, { sessionId: 's2' }),
+          createElement(WebUIHost, {
+            slotId: settingTarget.slot_id,
+            scope: 'application',
+            packageId,
+            instanceKey: 'show',
+          }),
+        ),
+      ),
+    );
+    await act(async () => {
+      transport.injectRenderFrame(visibleFrame(widget, 1, targetFor('s1')));
+      transport.injectRenderFrame(visibleFrame(widget, 1, targetFor('s2')));
+      transport.injectRenderFrame(visibleFrame(details('Observed history s1'), 1, panelTarget('s1')));
+      transport.injectRenderFrame(visibleFrame(details('Observed history s2'), 1, panelTarget('s2')));
+      transport.injectRenderFrame(visibleFrame(details('Another package'), 1, panelTarget('s1', 'unrelated-package')));
+      transport.injectRenderFrame(frame(setting, 1, settingTarget));
+    });
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
+    assert.equal(tabs().length, 3);
+    assert.equal(iframes().length, 3);
+    const originalDocument = iframes()[0];
+    const control = () => container.querySelector('[data-testid="webui-switch"]');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
+    assert.equal(tabs().length, 1, 'the unrelated package keeps its tab');
+    assert.equal(iframes().length, 1, 'hidden documents release their browsing contexts');
+    assert.equal(originalDocument.isConnected, false);
+    await act(async () => {
+      transport.injectRenderFrame(visibleFrame(widget, 2, targetFor('s1')));
+      transport.injectRenderFrame(visibleFrame(details('Updated history while hidden'), 2, panelTarget('s1')));
+      transport.injectRenderFrame(frame(setting, 2, settingTarget));
+    });
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
+    assert.equal(tabs().length, 1, 'background replacements cannot reveal a hidden tab');
+    assert.equal(
+      runtime.getScopeSnapshot('s1', 'conversation.panel.right').instanceKeys.length,
+      2,
+      'hidden instances retain their runtime state',
+    );
+    await click(control());
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
+    assert.equal(tabs().length, 3);
+    assert.equal(iframes().length, 3);
+    assert.ok([...iframes()].some((node) => node.getAttribute('srcdoc').includes('Updated history while hidden')));
+    assert.equal(panelNavigation(runtime).getSnapshot(), null, 'enabling does not request panel selection');
+    const storageKey = Object.keys(window.localStorage).find((key) => !keysBefore.has(key));
+    window.localStorage.setItem(storageKey, 'false');
+    await act(async () =>
+      window.dispatchEvent(
+        new window.StorageEvent('storage', {
+          key: storageKey,
+          newValue: 'false',
+          storageArea: window.localStorage,
+        }),
+      ),
+    );
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
+    assert.equal(tabs().length, 1, 'storage updates apply to detail tabs too');
+    const source = { sessionId: 's1', slotId: target.slot_id, packageId, instanceKey: target.instance_key };
+    assert.equal(requestPanelOpen(runtime, source, 'details'), false, 'hidden instances cannot request navigation');
+    await act(async () =>
+      transport.injectRenderFrame({
+        ...visibleFrame(widget, 3, targetFor('s1')),
+        visible_when: { key: 'another', default: true },
+      }),
+    );
+    assert.equal(
+      container.querySelectorAll('[data-variant="conversation.input.above"]').length,
+      1,
+      'changing only instance metadata invalidates the host scope',
+    );
+    assert.equal(requestPanelOpen(runtime, source, 'details'), false, 'a hidden target cannot be opened');
+    await act(async () => transport.injectRenderFrame(frame(widget, 4, targetFor('s1'))));
+    assert.equal(
+      container.querySelectorAll('[data-variant="conversation.input.above"]').length,
+      1,
+      'omitting the condition removes it instead of retaining the prior binding',
+    );
+    const nestedWidget = { component: 'Box', children: [widget] };
+    await act(async () => transport.injectRenderFrame(visibleFrame(nestedWidget, 5, targetFor('s1'))));
+    assert.equal(
+      container.querySelectorAll('[data-variant="conversation.input.above"]').length,
+      0,
+      'instance visibility hides the container regardless of the component tree layout',
+    );
+    await act(async () => transport.injectRenderFrame(frame(nestedWidget, 6, targetFor('s1'))));
+    assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+    for (const key of Object.keys(window.localStorage)) if (!keysBefore.has(key)) window.localStorage.removeItem(key);
   }
 });

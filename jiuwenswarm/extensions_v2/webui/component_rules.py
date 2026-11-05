@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from jiuwenswarm.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
+from jiuwenswarm.extensions_v2.webui.appearance import PREFERENCE
 from jiuwenswarm.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
@@ -31,6 +32,7 @@ def obj(fields: Mapping[str, Any], *required: str) -> dict[str, Any]:
 
 
 TEXT = {"kind": "string"}
+LOCALIZED_TEXT = union(TEXT, obj({"zh": TEXT, "en": TEXT}, "zh", "en"))
 BOOL = {"kind": "boolean"}
 NUMBER = {"kind": "number"}
 NIL = {"kind": "null"}
@@ -67,20 +69,22 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "align": token("stretch", "start", "center", "end", "baseline"),
         "justify": token("start", "center", "end", "between", "around", "evenly"),
         "wrap": BOOL, "flex": {"kind": "number", "min": 0, "max": 1000},
+        "padding": token("none", "sm", "md", "lg"),
     }, "children": True},
     "Text": {"props": {
-        "value": TEXT, "type": token("secondary", "success", "warning", "danger"),
+        "value": LOCALIZED_TEXT, "type": token("secondary", "success", "warning", "danger"),
         "size": SIZE, "strong": BOOL, "italic": BOOL, "underline": BOOL, "delete": BOOL,
         "code": BOOL, "mark": BOOL, "keyboard": BOOL, "disabled": BOOL, "ellipsis": BOOL,
     }},
     "Button": {"props": {
-        "value": TEXT, "type": token("default", "primary", "dashed", "link", "text"),
+        "openPanel": {"kind": "string", "maxBytes": 128},
+        "value": LOCALIZED_TEXT, "type": token("default", "primary", "dashed", "link", "text"),
         "color": token("default", "primary", "danger", *PRESET_COLORS),
         "variant": token("outlined", "dashed", "solid", "filled", "text", "link"),
         "shape": token("default", "circle", "round", "square"),
         "size": SIZE, "danger": BOOL, "ghost": BOOL, "disabled": BOOL, "block": BOOL,
         "loading": union(BOOL, obj({"delay": NUMBER})), "href": TEXT, "target": token("_self", "_blank"),
-        "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": TEXT,
+        "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": LOCALIZED_TEXT,
     }, "events": {"ui.click": NO_DATA}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
@@ -92,7 +96,8 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }},
     "Switch": {"props": {
         "checked": BOOL, "defaultChecked": BOOL, "loading": BOOL, "disabled": BOOL,
-        "ariaLabel": TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
+        "preference": PREFERENCE,
+        "ariaLabel": LOCALIZED_TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
         **INPUT_PROPS, "options": array(obj({"value": OPTION_VALUE, "label": TEXT, "disabled": BOOL}, "value", "label")),
@@ -179,7 +184,10 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "required": ("file",),
     },
     "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
-    "Iframe": {"props": {"src": TEXT, "title": {"kind": "string", "maxBytes": 200}}, "required": ("src", "title")},
+    "Iframe": {"props": {
+        "src": TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
+        "minWidth": {"kind": "number", "min": 0, "max": 4096},
+    }, "required": ("title",)},
     "Dropdown": {
         "props": {
             "items": array(obj({
@@ -348,9 +356,17 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     for key, value in props.items():
         if key not in rule["props"] or not check_value(rule["props"][key], value):
             return f"invalid {component}.{key}"
+    preference = props.get("preference") if component == "Switch" else None
+    if preference is not None and not preference["key"].strip():
+        return "preference key must not be empty"
+    if component == "Switch" and "preference" in props and any(key in props for key in ("checked", "defaultChecked")):
+        return "preference cannot be combined with checked or defaultChecked"
     if component == "Button":
         label = props.get("value", "")
-        if props.get("icon") and not label.strip() and not props.get("aria-label", "").strip():
+        labels = label.values() if isinstance(label, Mapping) else (label,)
+        accessible = props.get("aria-label", "")
+        accessible_labels = accessible.values() if isinstance(accessible, Mapping) else (accessible,)
+        if props.get("icon") and not all(text.strip() for text in labels) and not all(text.strip() for text in accessible_labels):
             return "icon-only buttons require a non-empty aria-label"
         if "target" in props and "href" not in props:
             return "button target requires href"
@@ -388,6 +404,10 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         expanded = props.get("treeDefaultExpandedKeys", [])
         if not _unique(expanded) or any(key not in keys for key in expanded) or (expanded and props.get("treeDefaultExpandAll")):
             return "invalid tree expansion"
+    if component == "Button" and "openPanel" in props and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", props["openPanel"],
+    ) is None:
+        return "invalid panel instance key"
     if component == "Slider":
         minimum, maximum, step = props.get("min", 0), props.get("max", 100), props.get("step", 1)
         if maximum <= minimum or step <= 0 or not finite_number((maximum - minimum) / step):
@@ -430,8 +450,20 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "preview content or URL is required"
         if file is not None and "downloadUrl" in file and not valid_url(file["downloadUrl"]):
             return "invalid preview URL"
-    if component in ("Panel", "Iframe") and not props["title"].strip():
+    if component == "Panel" and not props["title"].strip():
         return "title is required"
+    if component == "Iframe":
+        title = props["title"]
+        titles = [title] if isinstance(title, str) else list(title.values())
+        if any(not value.strip() or len(value.encode("utf-8")) > 200 for value in titles):
+            return "invalid iframe title"
+        if ("src" in props) == ("srcDoc" in props):
+            return "Iframe requires exactly one document source"
+        document = props.get("srcDoc")
+        if document is not None:
+            documents = [document] if isinstance(document, str) else list(document.values())
+            if any(not value.strip() for value in documents):
+                return "iframe document is required"
     if component == "Avatar":
         style = props.get("style", {})
         if any(key in style and re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", style[key]) is None

@@ -158,5 +158,5 @@ nodes only accept catalog components, and interactions are declared through `eve
 Handlers read event data from `payload["data"]`; action declarations are no longer supported.
 Downstream frames use schema_version=1.
 
-`application.entry` uses application scope and the current Web connection, without a session. It mounts on first visit and stores a browser visit marker after ready is accepted; later refreshes skip it. Clear or failure closes the entry. The other 13 slots require a real session; `application.menu`, `task.function` and `application.settings` do not mount in a new empty conversation.
+`application.entry` uses application scope and the current Web connection, without a session. It mounts on first visit and stores a browser visit marker after ready is accepted; later refreshes skip it. Clear or failure closes the entry. `application.sidebar.footer`, `task.function` and `task.function.main` also use application scope. Task navigation and its page work in an empty conversation and retain their instances across session changes. Other slots default to a real session; the settings slot also accepts explicit application scope.
 See [F_07](../docs/features/F_07_ui-contributions.md) for file components, request validation and acknowledgements.

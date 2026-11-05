@@ -27,6 +27,43 @@ class FakeServer:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "declined", "exception"])
+async def test_list_ready_initializes_each_declared_package_once(monkeypatch, failure):
+    slot = "conversation.input.above"
+    catalog = UiCatalog(items=(
+        UiContribution("pkg.b", "web.slot.contribution", "b", slot, order=2),
+        UiContribution("pkg.a", "web.slot.contribution", "one", slot, order=1),
+        UiContribution("pkg.a", "web.slot.contribution", "two", slot, order=3),
+        UiContribution("pkg.other", "web.slot.contribution", "other", "conversation.panel.right"),
+    ))
+
+    async def dispatch(action, **kwargs):
+        assert action.target.instance_key == "turn-1"
+        assert kwargs == {"user_id": "user", "channel_id": "web", "connection_id": "tab-1"}
+        if action.target.package_id == "pkg.a":
+            if failure == "exception":
+                raise RuntimeError("package initialization failed")
+            if failure == "declined":
+                return UiActionOutput(False, "unavailable", "NOT_READY")
+        return UiActionOutput(True, "rendered")
+
+    invoke = AsyncMock(side_effect=dispatch)
+    runtime = SimpleNamespace(catalog=lambda: SimpleNamespace(current=lambda: catalog), dispatch=invoke)
+    monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)
+    response = await WebUIDispatchAdapter().handle(AgentRequest(
+        request_id="list-ready", channel_id="web", session_id="s1", user_id="user",
+        req_method=ReqMethod.WEBUI_DISPATCH, metadata={"ws_id": "tab-1"}, params={
+            "event": "ui.ready", "target": {"slot_id": slot, "instance_key": "turn-1"},
+        },
+    ))
+    assert [call.args[0].target.package_id for call in invoke.call_args_list] == ["pkg.a", "pkg.b"]
+    assert response.ok
+    assert response.payload["accepted"] == (failure is None)
+    assert response.payload["status"] == ("ready" if failure is None else "partial")
+    assert response.payload["results"][1] == {"package_id": "pkg.b", "accepted": True, "status": "rendered"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changes,code", [
     ({"event": ["ui.click"]}, "SCHEMA_ERROR"),
     ({"payload": []}, "SCHEMA_ERROR"),

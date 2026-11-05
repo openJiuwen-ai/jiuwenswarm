@@ -75,7 +75,7 @@ When the file instance receives `ui.ready`, it calls `ops.session.files` to read
 Drag the file tree's right divider to resize it, or focus the divider and use the left/right arrow keys. Directory and preview updates retain the scroll position and width. Clearing the instance or disconnecting resets them; they are not persisted to storage.
 
 The webpage instance uses an `Iframe` root, which is only permitted at the root of slots that declare it (`conversation.panel.right`, `application.menu.main`, `task.function.main`). It cannot be nested inside `Panel`, `Box`, or other components, and accepts no children, events, or srcdoc. The host pins `sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`.
-The right-side Web preview loads `https://httpbin.org/forms/post` for manual checks of loading, text input, options and form submission. Its response declares neither `X-Frame-Options` nor a restrictive `frame-ancestors`, making it suitable for iframe integration checks; network availability still depends on the target site.
+The right-side Web preview loads `https://www.weather.com.cn/` and declares `Iframe.minWidth: 1280` for the desktop webpage. The host supplies horizontal scrolling in narrower panels; resizing the panel changes layout without reloading the page. Its title follows the host language. Network availability and embedding restrictions still depend on the target site.
 Ordinary clicks, input and navigation inside the iframe do not require same-origin access. The loading notice does not intercept pointer events. Relative pages also receive an opaque origin, so pages depending on storage or same-origin requests may be incompatible; do not add `allow-same-origin` as a workaround. See [F_08](../../docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互) for the security decision.
 
 ## Reload and uninstall
@@ -98,7 +98,7 @@ Reload reads the installed copy, not the original ZIP. After editing repository 
 
 Manifest `schemaVersion: 1`, `ui.apiVersion: 1`, and frame `schema_version: 1` describe separate formats. This package uses declared component events such as `events['ui.click']`. Business arguments come from the declared action's `args`; control values come from normalized event `data`. A dispatch response is a receipt, never a replacement tree. See [F_08](../../docs/features/F_08_frontend-render.md) for the shared version and validation strategy.
 
-`application.entry` and `application.sidebar.footer` use application identity from the current Web connection, without `session_id`; all other slots require a real session. `application.menu`, `task.function` and `application.settings` do not mount in a new empty conversation. The right panel uses two stable instances with isolated events and updates; other single slots select the latest update. `message.assistant.meta` is outside this package's targets.
+`application.entry`, `application.sidebar.footer`, `task.function` and `task.function.main` use application identity from the current Web connection, without `session_id`; all other slots require a real session. Task navigation and its page mount in an empty conversation and retain their instances across session changes; clicking the task entry does not read or write session state. `application.menu` and its main page do not mount in a new empty conversation. The right panel uses two stable instances with isolated events and updates; other single slots select the latest update. `message.assistant.meta` is outside this package's targets.
 
 ## Rebuild after editing sources
 

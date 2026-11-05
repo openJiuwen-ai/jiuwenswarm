@@ -5336,14 +5336,11 @@
     "waiting": "处理中..."
   },
   "webuiIframe": {
+    "pluginPage": "插件页面",
     "loading": "页面加载中...",
     "slow": "页面加载较慢，可重新加载或在新标签页打开",
     "error": "页面加载失败",
     "inactive": "页面已停止，恢复后将重新加载",
-    "displayMode": "页面显示模式",
-    "fit": "适应面板",
-    "desktop": "桌面宽度",
-    "desktopHint": "使用至少 1280px 的网页宽度，可横向滚动",
     "reload": "重新加载页面",
     "openSource": "在新标签页打开原始地址"
   },

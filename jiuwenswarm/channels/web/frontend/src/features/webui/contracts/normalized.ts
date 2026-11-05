@@ -3,6 +3,8 @@
  * 与 wire 的差异：目标字段改为驼峰；节点补齐默认值并生成路径 key；events 补齐动作参数。
  */
 
+import type { WebUIPreferenceBinding } from './wire.ts';
+
 export interface WebUINormalizedTarget {
   sessionId: string;
   slotId: string;
@@ -33,6 +35,7 @@ export interface WebUINormalizedRenderFrame {
   schemaVersion: number;
   tree: WebUINormalizedNode;
   nodeCount: number;
+  visibleWhen?: WebUIPreferenceBinding;
 }
 
 export interface WebUINormalizedClearFrame {

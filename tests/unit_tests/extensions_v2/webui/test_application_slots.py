@@ -118,12 +118,14 @@ def _allow_test_application_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(constants, "SLOT_SPECS", specs)
 
 
-def _request(channel_id: str, ws_id: str, slot_id: str = _TEST_SLOT) -> AgentRequest:
+def _request(
+    channel_id: str, ws_id: str, slot_id: str = _TEST_SLOT, *, session_id: str | None = "web_abc",
+) -> AgentRequest:
     metadata = {"ws_id": ws_id} if ws_id else None
     return AgentRequest(
         request_id="ready-1",
         channel_id=channel_id,
-        session_id="web_abc",
+        session_id=session_id,
         req_method=ReqMethod.WEBUI_DISPATCH,
         metadata=metadata,
         params={
@@ -143,6 +145,17 @@ def test_session_slot_still_requires_a_chat_id() -> None:
     report = validate_target(RenderTarget("", "conversation.panel.right"))
     assert report.ok is False
     assert report.code == CODE_SCHEMA_ERROR
+
+
+@pytest.mark.parametrize("slot_id", ["task.function", "task.function.main"])
+def test_task_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None:
+    target = RenderTarget("", slot_id, "webui.workbench-v2", "task-inspector", connection_id="socket-a")
+    assert target.resolved_scope == "application"
+    assert validate_target(target).ok
+    assert "session_id" not in target.to_payload()
+    assert validate_target(RenderTarget("", slot_id)).code == CODE_CONNECTION_REQUIRED
+    assert validate_target(RenderTarget("chat-a", slot_id, connection_id="socket-a")).code == CODE_SCHEMA_ERROR
+    assert validate_target(RenderTarget("chat-a", slot_id, scope="session")).code == CODE_SCHEMA_ERROR
 
 
 def test_application_slot_rejects_a_chat_id_and_a_missing_connection() -> None:
@@ -274,6 +287,43 @@ async def test_dispatch_renders_each_socket_and_refuses_other_channels(tmp_path:
         assert installed.webui.registry.get(
             RenderTarget("", "application.test", "demo.app-home", "home", connection_id="sock-2")
         ) is not None
+    finally:
+        await assembly.shutdown_extensions()
+
+
+@pytest.mark.asyncio
+async def test_workbench_task_slots_share_connection_identity_across_chats(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
+    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    server = _Push()
+    installed = await assembly.install_extensions(server)
+    assert installed is not None
+    try:
+        example = Path(assembly.__file__).resolve().parent / "examples" / "webui_workbench_v2"
+        assert (await installed.manager.install([example]))[0].status == "SUCCESS"
+        adapter = WebUIDispatchAdapter()
+        slots = ("task.function", "task.function.main")
+        for connection in ("socket-a", "socket-b"):
+            for revision, session in enumerate((None, "chat-a", "chat-b"), start=1):
+                for slot in slots:
+                    response = await adapter.handle(_request("web", connection, slot, session_id=session))
+                    assert response.ok and response.payload["accepted"]
+                    frame = server.messages[-1]
+                    assert frame["metadata"]["ws_id"] == connection
+                    assert "session_id" not in frame
+                    assert frame["payload"]["target"] == {
+                        "scope": "application", "slot_id": slot,
+                        "package_id": "webui.workbench-v2", "instance_key": "task-inspector",
+                    }
+                    assert frame["payload"]["revision"] == revision
+        await installed.webui.drop_connection("socket-a")
+        for slot in slots:
+            assert installed.webui.registry.get(RenderTarget(
+                "", slot, "webui.workbench-v2", "task-inspector", connection_id="socket-a",
+            )) is None
+            assert installed.webui.registry.get(RenderTarget(
+                "", slot, "webui.workbench-v2", "task-inspector", connection_id="socket-b",
+            )) is not None
     finally:
         await assembly.shutdown_extensions()
 

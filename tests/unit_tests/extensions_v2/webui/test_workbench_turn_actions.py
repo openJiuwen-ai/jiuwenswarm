@@ -78,6 +78,36 @@ async def test_workbench_user_menu_combines_profile_logout_and_login_per_connect
     next_handler.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot", ["task.function", "task.function.main"])
+async def test_workbench_task_navigation_has_no_session_state(slot: str) -> None:
+    handler = WorkbenchHandlers()
+    render = AsyncMock(return_value=UiRenderOutput(status="delivered"))
+    ops = SimpleNamespace(ui=SimpleNamespace(render=render))
+    next_handler = AsyncMock()
+    target = RenderTarget("", slot, connection_id="browser-a")
+    ready = UiActionInput("ui.ready", target)
+    assert (await handler.on_event(Event("ui.ready", ready), ops, next_handler)).accepted
+    tree = render.call_args.args[0]
+    assert tree.target == replace(target, package_id="webui.workbench-v2", instance_key="task-inspector")
+    assert validate_root(tree.root).ok
+    label = tree.root.props["value" if slot == "task.function" else "title"]
+    assert set(label) == {"zh", "en"}
+    render.reset_mock()
+    click = UiActionInput("ui.click", tree.target, {"action_id": "workbench.open"})
+    result = await handler.on_event(Event("ui.click", click), ops, next_handler)
+    assert result.accepted is (slot == "task.function")
+    render.assert_not_awaited()
+    invalid = UiActionInput("ui.ready", replace(target, instance_key="unknown"))
+    assert not (await handler.on_event(Event("ui.ready", invalid), ops, next_handler)).accepted
+    render.return_value = UiRenderOutput(status="delivery_failed")
+    assert not (await handler.on_event(Event("ui.ready", ready), ops, next_handler)).accepted
+    assert handler._sessions == {}
+    assert handler._locks == {}
+    next_handler.assert_not_awaited()
+
+
+
 def test_workbench_round_menu_places_a_symbol_button_before_the_icon_trigger() -> None:
     root = build_view("conversation.turn.footer.actions", SessionState(), "request-1")
     assert validate_root(root).ok

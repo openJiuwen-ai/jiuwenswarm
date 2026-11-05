@@ -174,5 +174,5 @@ RenderNode(
 Handler 从 `payload["data"]` 读取事件数据；单个节点不再支持 action 声明。
 下行帧的 schema_version 为 1。
 
-`application.entry` 为应用范围，以当前 Web 连接为身份，不要求会话。首次访问时挂载，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。其余 13 个槽位使用真实会话，`application.menu`、`task.function`、`application.settings` 在新建空对话中不挂载。文件组件与请求校验、回执见
+`application.entry` 为应用范围，以当前 Web 连接为身份，不要求会话。首次访问时挂载，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。`application.sidebar.footer`、`task.function` 与 `task.function.main` 同样使用应用范围；任务入口和页面在空对话中可用，切换会话保持实例。其余槽位默认使用真实会话，设置槽位也允许显式应用范围。文件组件与请求校验、回执见
 [F_07](../docs/features/F_07_ui-contributions.md)。
