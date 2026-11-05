@@ -68,11 +68,16 @@ def posted_errors(run):
     return [call.args[1] for call in run.backend.append_group_message.await_args_list]
 
 
+def task_tool(child):
+    spec = next(t for t in child.agents["leader"].tools if t.type == gc.BEGIN_TEAM_TASK)
+    return gc.BeginTeamTask(**spec.params)
+
+
 async def submit_private(child, *, task=False):
     key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
     execution_id = gc._private_runs[key]["execution_id"]
     if task:
-        started = await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})
+        started = await task_tool(child).invoke({"execution_id": execution_id})
         assert started.success
     output = await gc.CompleteTeamRun(key).invoke({"result": "Final", "execution_id": execution_id})
     assert output.success
@@ -662,23 +667,26 @@ async def test_private_work_gate_and_stale_start(private_run, monkeypatch):
     async def stream(child, inputs, *, session):
         key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
         execution_id = gc._private_runs[key]["execution_id"]
-        policy = gc.PrivateTaskPolicy(None, key)
+        tool = task_tool(child)
+        policy = gc.PrivateTaskPolicy(None, tool.execution_id, tool.group_id, tool.member_name)
         ctx = SimpleNamespace(
             inputs=SimpleNamespace(tool_name="build_team", tool_call=None), extra={},
         )
         await policy.before_tool_call(ctx)
-        assert ctx.extra["_skip_tool"]
-        stale = await gc.BeginTeamTask(key).invoke({"execution_id": "old"})
+        # The first work tool opens the public card instead of being blocked.
+        assert not ctx.extra
+        assert run.store.get(execution_id)["presentation"] == "card"
+        stale = await tool.invoke({"execution_id": "old"})
         assert not stale.success
-        started = await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})
+        started = await tool.invoke({"execution_id": execution_id})
         assert started.success
-        repeated = await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})
+        repeated = await tool.invoke({"execution_id": execution_id})
         assert repeated.success
         ctx.extra.clear()
         await policy.before_tool_call(ctx)
         assert not ctx.extra
         await submit_private(child)
-        late = await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})
+        late = await tool.invoke({"execution_id": execution_id})
         assert not late.success
         await asyncio.Event().wait()
         yield None

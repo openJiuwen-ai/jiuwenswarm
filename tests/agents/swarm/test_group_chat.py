@@ -42,16 +42,17 @@ async def test_completion_attaches_final_outputs_and_excludes_outside_links(tmp_
 
 
 @pytest.mark.asyncio
-async def test_private_policy_preserves_normal_team_collaboration(monkeypatch):
-    monkeypatch.setitem(gc._private_runs, "policy-test", {"execution_id": "execution-one"})
+async def test_private_policy_preserves_normal_team_collaboration():
     builder = Mock()
     ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
-    await gc.PrivateTaskPolicy(SimpleNamespace(), "policy-test").before_invoke(ctx)
+    await gc.PrivateTaskPolicy(
+        SimpleNamespace(), "execution-one", "group-one", "advisor",
+    ).before_invoke(ctx)
 
     section = builder.add_section.call_args.args[0]
     for content in section.content.values():
         assert "execution-one" in content
-        assert "start_group_task" in content
+        assert "public task card automatically" in content
         assert "complete_team_run" in content
         assert "normal team collaboration rules" in content
         assert "build_team is optional" not in content

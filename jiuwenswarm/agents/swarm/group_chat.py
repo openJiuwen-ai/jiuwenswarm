@@ -815,7 +815,17 @@ class RunTeam(_GroupTool):
                 BuiltinToolSpec(type=COMPLETE_RUN, params={"key": team_key}),
             ]
             if execution is not None:
-                child.agents["leader"].tools.append(BuiltinToolSpec(type=BEGIN_TEAM_TASK, params={"key": team_key}))
+                # The private record travels inside the serialized spec: the
+                # leader may execute in another worker process, where the
+                # module-level _private_runs dict is empty.
+                private_params = {
+                    "execution_id": execution["execution_id"],
+                    "group_id": self.context.session_id,
+                    "member_name": self.backend.member_name,
+                }
+                child.agents["leader"].tools.append(
+                    BuiltinToolSpec(type=BEGIN_TEAM_TASK, params=dict(private_params))
+                )
                 from jiuwenswarm.agents.swarm.group_execution import GROUP_ASK_USER
 
                 leader_agent = child.agents["leader"]
@@ -827,7 +837,7 @@ class RunTeam(_GroupTool):
                     "execution_id": execution["execution_id"],
                 }))
                 leader_agent.rails = [*(leader_agent.rails or []), RailSpec(
-                    type=PRIVATE_TASK_POLICY, params={"key": team_key},
+                    type=PRIVATE_TASK_POLICY, params=dict(private_params),
                 )]
             _private_runs[team_key] = {
                 "member_name": self.backend.member_name,
@@ -988,7 +998,7 @@ class RunTeam(_GroupTool):
 
 
 class BeginTeamTask(_GroupTool):
-    def __init__(self, key: str):
+    def __init__(self, execution_id: str, group_id: str, member_name: str):
         super().__init__(ToolCard(
             id="group.begin_private_task", name="start_group_task",
             description="Start substantive work for the current execution_id and create its public task card.",
@@ -997,20 +1007,18 @@ class BeginTeamTask(_GroupTool):
                 "properties": {"execution_id": {"type": "string"}}, "additionalProperties": False,
             },
         ))
-        self.key = key
+        self.execution_id = execution_id
+        self.group_id = group_id
+        self.member_name = member_name
 
     async def invoke(self, inputs, **kwargs):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 
-        current = _private_runs.get(self.key)
-        if current is None or inputs.get("execution_id") != current["execution_id"]:
+        if inputs.get("execution_id") != self.execution_id:
             return ToolOutput(success=False, error="execution_id must match the current private invocation")
-        future = _results.get(self.key)
-        if future is None or future.done():
-            return ToolOutput(success=False, error="result submission has begun")
         try:
-            record = await GroupExecutions(current["group_id"]).begin_task(
-                current["execution_id"], current["member_name"],
+            record = await GroupExecutions(self.group_id).begin_task(
+                self.execution_id, self.member_name,
             )
             return ToolOutput(success=True, data={"execution_id": record["execution_id"], "task_started": True})
         except (ValueError, OSError) as exc:
@@ -1020,21 +1028,20 @@ class BeginTeamTask(_GroupTool):
 class PrivateTaskPolicy(DeepAgentRail):
     """Keep direct answers separate from work that needs a public task card."""
 
-    def __init__(self, context, key: str):
+    def __init__(self, context, execution_id: str, group_id: str, member_name: str):
         super().__init__()
         self.context = context
-        self.key = key
+        self.execution_id = execution_id
+        self.group_id = group_id
+        self.member_name = member_name
 
     async def before_invoke(self, ctx):
         from openjiuwen.harness.prompts import PromptSection
 
-        current = _private_runs.get(self.key)
-        if current is None:
-            return
         content = (
-            "Current execution_id: " + current["execution_id"]
+            "Current execution_id: " + self.execution_id
             + ". If you can answer directly, call complete_team_run with this ID; do not start a task. "
-            "Before substantive work or using other tools, call start_group_task with this ID. "
+            "Substantive work opens its public task card automatically. "
             "Follow the normal team collaboration rules for planning, delegation and task execution. "
             "Submit the final result with complete_team_run. "
             "Ask the user with ask_user if important requirements are unclear, before substantive work. "
@@ -1047,22 +1054,25 @@ class PrivateTaskPolicy(DeepAgentRail):
         ))
 
     async def before_tool_call(self, ctx):
-        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
-        from openjiuwen.core.foundation.llm import ToolMessage
+        from jiuwenswarm.server.runtime.group_execution import TERMINAL, GroupExecutions
 
         if ctx.inputs.tool_name in {"start_group_task", "complete_team_run", "ask_user"}:
             return
-        current = _private_runs.get(self.key)
-        if current is None:
+        store = GroupExecutions(self.group_id)
+        try:
+            record = store.get(self.execution_id)
+        except (ValueError, OSError):
             return
-        record = GroupExecutions(current["group_id"]).get(current["execution_id"])
-        if record["presentation"] == "card":
+        if record.get("presentation", "card") == "card" or record.get("status") in TERMINAL:
             return
-        error = "Call start_group_task for the current execution_id before using work tools."
-        call = ctx.inputs.tool_call
-        ctx.extra["_skip_tool"] = True
-        ctx.inputs.tool_result = {"error": error}
-        ctx.inputs.tool_msg = ToolMessage(content=error, tool_call_id=call.id if call else "")
+        # The first work tool is the signal that substantive work started.
+        # Opening the card here keeps it independent of the model choosing
+        # start_group_task; a private team that never does would otherwise
+        # run to completion with no public card.
+        try:
+            await store.begin_task(self.execution_id, self.member_name)
+        except (ValueError, OSError) as exc:
+            logger.warning("private task card could not be opened: %s", exc)
 
 
 @harness_element(kind=ElementKind.TOOL, name=BEGIN_TEAM_TASK, description="Confirm private-team substantive work.")
@@ -1070,12 +1080,14 @@ def build_begin_team_task(params, context):
     backend = get_team_backend(context)
     if backend is None or not backend.is_leader:
         raise ValueError("only the private leader may start its task card")
-    return BeginTeamTask(params["key"])
+    return BeginTeamTask(params["execution_id"], params["group_id"], params["member_name"])
 
 
 @harness_element(kind=ElementKind.RAIL, name=PRIVATE_TASK_POLICY, description="Private response or task policy.")
 def build_private_task_policy(params, context):
-    return PrivateTaskPolicy(context, params["key"])
+    return PrivateTaskPolicy(
+        context, params["execution_id"], params["group_id"], params["member_name"],
+    )
 
 
 @harness_element(
