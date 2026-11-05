@@ -100,16 +100,6 @@ def collect_tree_python_modules(source_dir, package_roots):
     return sorted(set(modules))
 
 
-# One shared build step for Windows/macOS, pywebview and Electron installers.
-# Native compiler inputs stay on the build machine; the installed app never builds.
-computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
-computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
-computer_use_data = computer_use_build["bundle_data"](Path(project_root))
-computer_use_submodules = (
-    collect_tree_python_modules(computer_use_source, ("computer_use",))
-    + ["jiuwenswarm.cua_engine.runtime"]
-) if computer_use_data else []
-
 try:
     webview_datas = collect_data_files("webview")
 except Exception as exc:
@@ -153,20 +143,14 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-datas += computer_use_data
-# A controlled package embeds its immutable Runtime build identity. Computing
-# it belongs to the build, so frozen Front/Worker startup only reads this small
-# payload. Source execution still validates dirty code and dependency locks.
-_identity_helper = runpy.run_path(os.path.join(
-    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
-_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
-_build_recipe = hashlib.sha256()
-_build_recipe.update(_source_identity.encode())
-for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
-    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+datas += computer_use_datas
+if sys.platform in ("darwin", "win32"):
+    datas += collect_data_files("computer_use", includes=["*.pyi", "py.typed"])
+# Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
-_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
+_identity_helper = runpy.run_path(os.path.join(project_root, "jiuwenswarm", "common", "worker_build_identity.py"))
+_identity_helper["write_build_identity"](_identity_file, Path(project_root))
 datas.append((str(_identity_file), "jiuwenswarm"))
 _build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
 build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
@@ -335,6 +319,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
+hiddenimports += gateway_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -521,10 +506,10 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root, computer_use_source],
+    pathex=[project_root],
     binaries=_bundled_binaries,
     datas=datas,
-    hiddenimports=hiddenimports + computer_use_submodules,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

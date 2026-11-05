@@ -226,7 +226,11 @@ fi
 if [ "$FRONTEND_ONLY" = false ]; then
     echo ""
     echo "[4/6] Running PyInstaller (backend)..."
-    uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts/jiuwenswarm.spec --noconfirm
+    else
+        uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
+    fi
 
     BACKEND_DIST="$DIST_DIR/$BUILD_DIST_DIR_NAME"
     if [ ! -f "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" ]; then
@@ -274,6 +278,7 @@ mkdir -p "$APP_DIR"
 # Copy the mature Electron desktop shell (main.cjs, preload.cjs, target_mcp_wrapper.cjs)
 echo "  Copying Electron desktop shell..."
 cp "$DESKTOP_DIR/main.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/update_shutdown.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/cdp_port.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_downloads.cjs" "$APP_DIR/"
@@ -359,7 +364,8 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs cdp_port.cjs preload.cjs browser_panels.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
+REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs browser_panels.cjs
+    share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
     browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html
     node_modules/@playwright/mcp/package.json node_modules/@playwright/mcp/cli.js)

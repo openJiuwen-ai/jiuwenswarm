@@ -34,18 +34,8 @@ async def test_request_shutdown_sends_shutdown_and_returns_pid(monkeypatch) -> N
 
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     path = _socket_path()
-    server = IpcServer(path)
-    await server.start()
-
-    async def _serve() -> dict:
-        conn = await server.accept()
-        try:
-            await conn.send({"kind": KIND_HELLO, "protocol": 1, "pid": 4321, "generation": 1})
-            return await conn.recv()
-        finally:
-            await conn.close()
-
-    serve_task = asyncio.create_task(_serve())
+    worker = WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
+    connection = None
     try:
         await worker.spawn()
         connection = await connect_with_retry(path, timeout=15)

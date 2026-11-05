@@ -477,7 +477,7 @@ async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkey
 async def test_cancelled_invocation_captured_as_current_task_settles_inline(
     tasks, monkeypatch
 ):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-captured-request")
@@ -522,7 +522,7 @@ async def test_cancelled_invocation_captured_as_current_task_settles_inline(
 
 
 async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-stale-scheduler")
@@ -987,8 +987,9 @@ async def test_titles_persist_search_and_revision_without_replacing_instructions
     assert child["title"] == "用英文介绍香港天气"
     assert child["request"]["prior_result"]["answer"] == task["instruction"]
     assert service.store.read(task["id"])["title"] == "查询香港天气"
-    change = TaskModification(1, "改成英文", "用英文介绍香港天气")
-    assert service.modify("alice", "conversation", task["id"], "english", change) == receipt
+    assert service.modify(
+        "alice", "conversation", task["id"], "english", TaskModification(1, "改成英文", "用英文介绍香港天气")
+    ) == receipt
 
 
 async def test_queued_title_change_preserves_full_requirement_and_legacy_replay(tasks):
@@ -1019,8 +1020,8 @@ def _round_harness(round_task=None):
 async def test_5545_stopped_round_without_scheduler_handle_still_settles(
     tasks, monkeypatch, has_round_task
 ):
-    """Acknowledge a stopped round that finishes cleanup outside the scheduler map (#5545)."""
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    """A stopped round must settle even when cleanup runs outside the scheduler (#5545)."""
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "computer-use-stop")
@@ -1053,7 +1054,7 @@ async def test_5545_stopped_round_without_scheduler_handle_still_settles(
 
 
 async def test_5545_failed_stop_request_still_ends_cancelled_when_execution_ends(tasks):
-    """Settle a stopped task once execution ends even if its stop request failed (#5545)."""
+    """A failed stop must settle when execution actually ends (#5545)."""
     service, executor = tasks
     service.concurrency = 1
     task = independent(service, "first")
@@ -1107,7 +1108,7 @@ async def test_restored_open_card_refuses_a_new_task_before_binding(tasks, monke
 
 
 async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-scheduler-cleanup")
@@ -1151,8 +1152,9 @@ async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch
             async with module.bind_task_execution(request, adapter, {}):
                 await task_checkpoint(rail, ctx, "before_model")
                 module.capture_task_execution(
-                    rail, SimpleNamespace(session_id=request.session_id, params={
-                        "managed_task_request": request.request_id}), stale,
+                    rail,
+                    SimpleNamespace(session_id=request.session_id, params={"managed_task_request": request.request_id}),
+                    stale,
                 )
                 raise asyncio.CancelledError()
 
@@ -1183,8 +1185,9 @@ async def test_completed_voice_cancel_becomes_one_core_followup_with_exact_user_
     assert child["request"]["prior_result"] == original
     assert child["parent_id"] == task["id"]
     assert service.store.read(task["id"])["result"] == original
-    repeated = await service.cancel("alice", "conversation", task["id"], "voice-cancel", user_instruction=instruction)
-    assert repeated == receipt
+    assert await service.cancel(
+        "alice", "conversation", task["id"], "voice-cancel", user_instruction=instruction
+    ) == receipt
     assert len(service.list("alice", "conversation")[0]) == 2
     with pytest.raises(ValueError):
         await service.cancel("alice", "conversation", task["id"], "different-request", user_instruction=instruction)
@@ -1213,7 +1216,7 @@ async def test_queue_revision_persists_and_increases_when_order_returns_to_previ
 
 
 async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import capture_task_execution
+    from jiuwenswarm.server.runtime.video_task.execution import capture_task_execution
 
     service, executor = tasks
     task = submit(service, "resumed-cua-stop")
@@ -1260,6 +1263,50 @@ async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks
     finally:
         release.set()
         await asyncio.gather(native, return_exceptions=True)
+
+
+@pytest.mark.parametrize("native_handle", [False, True])
+async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, monkeypatch, native_handle):
+    from jiuwenswarm.server.runtime.video_task import execution as module
+
+    monkeypatch.setattr(module, "CANCEL_SETTLEMENT_TIMEOUT", 0.02)
+    service, executor = tasks
+    task = submit(service, "settlement-timeout")
+    await until(lambda: executor.calls)
+    harness = SimpleNamespace(
+        _react_agent=object(), active_round=SimpleNamespace(task_id="round"),
+        loop_controller=SimpleNamespace(task_scheduler=SimpleNamespace(_running_tasks={})),
+    )
+    rail = SimpleNamespace(managed_tasks={})
+    adapter = TaskAdapter(_instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True)
+    request = SimpleNamespace(
+        channel_id="video_tool", session_id=task["core_session_id"], request_id=task["request_id"],
+    )
+    install_bridge(monkeypatch, service.store, request)
+    request.params["managed_task_request"] = task["request_id"]
+    release = asyncio.Event()
+    native = asyncio.create_task(release.wait()) if native_handle else None
+    try:
+        async with bind_task_execution(request, adapter, {}):
+            if native is not None:
+                rail.managed_tasks[request.session_id].native_executions.add(native)
+        assert request.request_id in module._reporting_requests
+        await until(lambda: request.request_id not in module._reporting_requests)
+        assert not service.store.read(task["id"])["execution_settled"]
+        assert not module.managed_request_detached(rail, request)
+        if native is not None:
+            assert not native.cancelled() and not native.cancelling()
+            release.set()
+            await native
+        harness.active_round = None
+        assert module.managed_request_detached(rail, request)
+        assert request.request_id not in module._unsettled_requests
+    finally:
+        release.set()
+        harness.active_round = None
+        if native is not None:
+            await asyncio.gather(native, return_exceptions=True)
+        module.managed_request_detached(rail, request)
 
 
 

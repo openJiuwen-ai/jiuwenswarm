@@ -233,13 +233,8 @@ class TrafficRuntime:
         )
 
 
-def run() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
-    )
-    args, remaining = parser.parse_known_args()
-
+def configure(mode: str) -> None:
+    """Inject traffic faults while retaining the production Worker entrypoint."""
     async def load_runtime(host, port, signals, dispatcher, loaded):
         runtime = TrafficRuntime(mode)
         await dispatcher.bind_runtime(runtime)

@@ -770,6 +770,10 @@ async def test_5597_voice_query_sees_scheduled_jobs_created_in_another_conversat
         name="jiuwen_task_query", arguments={}))
     assert other["scheduled_jobs"]["total"] == 0
 
+    anonymous = await manager.operate("", "task-duplex:conversation-b", SimpleNamespace(
+        name="jiuwen_task_query", arguments={}))
+    assert anonymous["scheduled_jobs"]["total"] == 0
+
 
 async def test_5597_unreadable_scheduled_jobs_are_not_reported_as_none(tmp_path):
     from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
@@ -808,8 +812,13 @@ async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
 
     query = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
     jobs = {job["id"]: job for job in query["jobs"]}
-    assert jobs[task["id"]]["approval_cards"] == [
-        {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
+    if source == "permission_interrupt":
+        assert "approval_cards" not in jobs[task["id"]]
+        assert "interaction" not in jobs[task["id"]]
+        assert jobs[task["id"]]["interaction_requires_ui"] is True
+    else:
+        assert jobs[task["id"]]["approval_cards"] == [
+            {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
     assert "approval_cards" not in jobs[asking["id"]], "Information questions are not approval cards"
     message = query["message"]
     assert "answered by voice with jiuwen_task_answer" in message
@@ -822,7 +831,7 @@ async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
     assert "Never use a new request as an answer to a card" in message
     assert "Cards left by typed chat also appear in jiuwen_task_query" in message
     assert "已批准 only after the answer receipt or a later query confirms the task resumed" in message
-    assert "click" not in message and "requires_click" not in message
+    assert "permission_interrupt" in message and "manual click" in message
 
 
 @pytest.mark.parametrize("version_kind", ["quoted", "invalid", "omitted"])
@@ -859,3 +868,82 @@ async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execut
     assert q.executed == ["A", "C", "B"]
     q.gates["B"].set()
     await until(lambda: q.record(desktop)["status"] == "completed")
+
+
+def management_call():
+    return parse_qwen_omni_tool_call({
+        "name": "jiuwen_queue_manage", "call_id": "manage-1",
+        "arguments": {"instruction": "先打开飞书，再打开微信"},
+    })
+
+
+def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
+    names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
+    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer"}
+    for args in ({}, {"instruction": " "}, {"instruction": "move", "job_id": "invented"}):
+        with pytest.raises(ValueError):
+            parse_qwen_omni_tool_call({"name": "jiuwen_queue_manage", "call_id": "m", "arguments": args})
+
+
+@pytest.mark.asyncio
+async def test_reorder_queries_then_executes_and_returns_real_receipts(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "wechat", "revision": 1}, {"job_id": "feishu", "revision": 1}]},
+        {"operation": {"state": "reordered"}},
+    ]))
+    step = AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_reorder", "arguments": {
+            "job_id": "feishu", "action": "before", "before_job_id": "wechat"}}}),
+        json.dumps({"response": "已将飞书排在微信前面。"}),
+    ])
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "先飞书再微信")
+    calls = manager.operate.call_args_list
+    assert calls[0].args[2].name == "jiuwen_task_query"
+    assert calls[1].args[:2] == ("alice", "voice")
+    assert calls[1].args[2].arguments == {"job_id": "feishu", "action": "before", "before_job_id": "wechat"}
+    assert result["receipts"][1]["receipt"]["operation"]["state"] == "reordered"
+
+
+@pytest.mark.asyncio
+async def test_unknown_ids_and_new_delegations_cannot_execute(monkeypatch):
+    for tool in [
+        {"name": "jiuwen_task_cancel", "arguments": {"job_id": "guessed"}},
+        {"name": "jiuwen_delegate", "arguments": {"task": "new"}},
+    ]:
+        manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+        monkeypatch.setattr(queue_manager, "request_step", AsyncMock(return_value=json.dumps({"tool": tool})))
+        result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
+        assert result["state"] == "incomplete"
+        assert manager.operate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_joyai_manager_cannot_submit_information_answers(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": [{"job_id": "form", "revision": 1}]}))
+    step = AsyncMock(return_value=json.dumps({"tool": {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": "form", "interaction_id": "question", "answers": ["yes"]}}}))
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "回答问题", allow_answers=False, reply_language="en",
+    )
+    assert result["state"] == "incomplete"
+    assert manager.operate.await_count == 1
+    context = json.loads(step.call_args.args[0][1]["content"])
+    assert context["reply_language"] == "en"
+    assert "jiuwen_task_answer" not in [t["function"]["name"] for t in context["allowed_tools"]]
+
+
+@pytest.mark.asyncio
+async def test_failure_after_write_preserves_receipt_without_repeating(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "feishu", "revision": 1}]}, {"state": "cancelling"},
+    ]))
+    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "feishu"}}}),
+        TimeoutError(),
+    ]))
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消飞书任务")
+    assert result["state"] == "incomplete"
+    assert result["receipts"][-1]["receipt"]["state"] == "cancelling"
+    assert manager.operate.await_count == 2

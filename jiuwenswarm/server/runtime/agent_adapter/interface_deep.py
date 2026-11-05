@@ -170,6 +170,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_client_tool_answers, validate_manual_resume,
     discard_restored_permission_batch, unanswered_permission_batch,
+    has_live_pending_interrupt,
 )
 from jiuwenswarm.runtime.client_tools import client_tool_request_event
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
@@ -16883,7 +16884,8 @@ class JiuWenSwarmDeepAdapter:
                     channel_id=request.channel_id,
                     ok=True,
                     payload={"event_type": "chat.interrupt_result", "intent": intent,
-                             "success": True, "managed_task_settled": detached},
+                             "success": True, "managed_task_settled": detached,
+                             "managed_task_status": "unknown" if detached else "running"},
                     metadata=request.metadata,
                 )
             if detached:

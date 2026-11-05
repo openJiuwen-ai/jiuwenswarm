@@ -14,8 +14,8 @@ import tempfile
 from jiuwenswarm.agents.harness.common.cua_defaults import build_cua_agent_card
 from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
-from jiuwenswarm.cua_engine.hosting import engine_root, prepare_native
-from jiuwenswarm.cua_engine.runtime import ReplRuntime
+from computer_use.paths import native_driver
+from jiuwenswarm.agents.harness.common.tools.cua_runtime import ReplRuntime
 
 
 LOGGER = logging.getLogger(__name__)
@@ -43,11 +43,9 @@ async def verify_computer_use_bundle() -> None:
     spec = build_cua_agent_config(None, card=build_cua_agent_card())
     if not any(isinstance(rail, CuaExtensionRail) for rail in spec.rails or []):
         raise RuntimeError("The desktop installer did not enable its bundled CUA extension")
-    executable = prepare_native()
-    skill_name = "computer-use-macos" if sys.platform == "darwin" else "computer-use-windows"
-    skill = engine_root() / "skills" / skill_name / "SKILL.md"
-    if "## API surface" not in skill.read_text(encoding="utf-8"):
-        raise RuntimeError("The installed Computer Use Skill is missing its API surface")
+    executable = Path(native_driver()["command"])
+    if not executable.is_file():
+        raise RuntimeError("The installed Computer Use driver is missing")
     with tempfile.TemporaryDirectory(prefix="jiuwenswarm-cua-verify-") as temporary:
         env = dict(os.environ, PATH=temporary, PYTHONPATH="", JIUWENSWARM_DATA_DIR=temporary,
                    COMPUTER_USE_LOG_DIR=str(Path(temporary) / "logs"))

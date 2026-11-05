@@ -1150,6 +1150,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
     [
+      'cua_agent_enabled',
       'moa_jev_enabled',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',

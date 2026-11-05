@@ -484,8 +484,9 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
 
     executor.run = run
     service = TaskService(r.store, executor, concurrency=1)
+    service.started = True
     try:
-        service.start("alice", "voice")
+        service.kick()
         assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
         waiting = service.submit("alice", "voice", "next", "Next task")
         await service.cancel("alice", "voice", r.task["id"], "stop-starting")

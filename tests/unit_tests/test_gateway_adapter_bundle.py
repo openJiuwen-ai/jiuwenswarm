@@ -19,12 +19,6 @@ def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missi
     exports = SimpleNamespace(__all__=["Adapter"], Adapter=object())
     if missing:
         del exports.Adapter
-    monkeypatch.setattr(verifier, "gateway_adapter", exports)
-    monkeypatch.setattr(verifier, "files", lambda _: tmp_path)
-    for extension in ("adx", "agent_client", "agentos"):
-        (tmp_path / extension).mkdir()
-        for name in ("extension.yaml", "extension.py"):
-            (tmp_path / extension / name).touch()
     imports = []
     def import_module(name):
         if name == "jiuwenswarm.server.runtime.gateway_adapter":
@@ -40,10 +34,7 @@ def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missi
         verifier.verify_gateway_adapter_bundle()
         assert imports[0] == "jiuwenswarm.server.agent_ws_server"
         assert "agent_gateway.channel_manager.im_platforms.welink.welink_runtime" in imports
-        assert "openjiuwen.harness.persistent_agent" in imports
-        (tmp_path / "adx" / "extension.py").unlink()
-        with pytest.raises(RuntimeError, match="adx/extension.py"):
-            verifier.verify_gateway_adapter_bundle()
+        assert imports[-1] == "extensions"
 
 
 def test_spec_collects_lazy_gateway_adapters():

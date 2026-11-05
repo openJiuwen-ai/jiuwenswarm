@@ -234,11 +234,14 @@ class PipeConnection(IpcConnection):
             while not self._closed:
                 # Closing a stdlib pipe does not cancel every pending native
                 # read. Bound idle waits so shutdown can join this executor.
-                if not self._conn.poll(0.1):
-                    continue
-                if self._closed:
-                    return
-                frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
+                with self._read_native_lock:
+                    if self._closed:
+                        return
+                    if not self._conn.poll(0.1):
+                        continue
+                    if self._closed:
+                        return
+                    frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
                 self._last_rx = time.monotonic()
                 message = self._decode_pipe_frame(frame)
                 responder = self._heartbeat_responder
@@ -345,14 +348,18 @@ class PipeConnection(IpcConnection):
             self._receiving_since = 0.0
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        with self._receive_mutex:
-            self._pending.clear()
-            self._pending_bytes = 0
-        self._notify_reader()
-        close = getattr(self._conn, "close", None)
+        if self._close_task is None:
+            self._closed = True
+            with self._receive_mutex:
+                self._pending.clear()
+                self._pending_bytes = 0
+            self._notify_reader()
+            self._close_task = asyncio.create_task(self._close_native_pipe())
+        # A cancelled caller must not abandon the native handle. Retrying close
+        # waits for this same cleanup instead of reporting an unfinished close.
+        await asyncio.shield(self._close_task)
+
+    async def _close_native_pipe(self) -> None:
         try:
             # poll() owns a Windows Overlapped read even on an idle pipe.
             # Let its bounded wait collect completion before CloseHandle.

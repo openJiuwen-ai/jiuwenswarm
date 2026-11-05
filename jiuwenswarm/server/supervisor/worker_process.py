@@ -13,9 +13,7 @@ import time
 import uuid
 from pathlib import Path
 
-from jiuwenswarm.server.ipc.client import try_connect
 from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +43,10 @@ def default_socket_path() -> str:
     if override:
         return override
     from jiuwenswarm.common.utils import get_user_workspace_dir
-    from jiuwenswarm.server.supervisor.identity import data_scope
+    from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
-    scope = data_scope()[:16]
+    scope = deployment_scope()[:16]
     instance = _runtime_instance_token()
     sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
     path = get_user_workspace_dir() / "run" / sock_name
@@ -61,6 +59,31 @@ def default_socket_path() -> str:
         directory.chmod(0o700)
         path = directory / sock_name
     return str(path)
+
+
+def legacy_socket_paths() -> list[str]:
+    """Historical endpoints in this data scope; explicit overrides are isolated."""
+    if os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip():
+        return []
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    suffix = "pipe" if os.name == "nt" else "sock"
+    from jiuwenswarm.server.supervisor.identity import data_scope
+
+    root = get_user_workspace_dir() / "run"
+    instance = _runtime_instance_token()
+    scoped = f"runtime-{data_scope()[:16]}-{instance}.{suffix}" if instance else f"runtime-{data_scope()[:16]}.{suffix}"
+    paths = [
+        str(root / scoped),
+        str(root / f"runtime-{data_scope()[:16]}.{suffix}"),
+        str(root / f"runtime-worker.{suffix}"),
+    ]
+    if os.name != "nt":
+        import tempfile
+
+        fallback = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
+        paths.extend([str(fallback / scoped), str(fallback / f"runtime-{data_scope()[:16]}.sock")])
+    return list(dict.fromkeys(paths))
 
 
 def build_worker_command(
@@ -236,7 +259,8 @@ class WorkerProcess:
             return
         deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
+        grace = deadline - min(1.0, max(0.0, timeout) / 2)
+        code = await self.wait(timeout=max(0.0, grace - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()

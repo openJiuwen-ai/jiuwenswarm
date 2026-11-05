@@ -84,28 +84,6 @@ def _activate_managed_external_cli_paths() -> None:
         )
 
 
-def _activate_managed_external_cli_paths() -> None:
-    """Expose managed external CLI SDK paths before runtime modules load.
-
-    The frozen app installs the optional external CLI SDKs (``claude_agent_sdk``,
-    ``openai_codex``) outside the bundle, and every process importing them must
-    append their site-packages directories to ``sys.path`` first. Agent turns,
-    including team members backed by those SDKs, execute in this process. The
-    call never raises, so an optional SDK problem cannot block worker startup.
-    """
-    try:
-        from jiuwenswarm.common.external_cli_runtime import (
-            activate_external_cli_runtime_paths,
-        )
-
-        activate_external_cli_runtime_paths()
-    except Exception:  # noqa: BLE001 - optional capability must not block startup
-        logging.getLogger(__name__).warning(
-            "Managed external CLI runtime activation failed at worker startup",
-            exc_info=True,
-        )
-
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.common.background_logging import (
@@ -179,23 +157,19 @@ def main() -> None:
     _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    runner = asyncio.Runner()
+    loop = runner.get_loop()
     task = loop.create_task(serve_worker(args.socket or "", host=args.host, port=args.port,
                                        code_identity_value=code_identity_value,
                                        session_source=session_source))
-
-    def _stop() -> None:
-        task.cancel()
-
-    try:
-        loop.add_signal_handler(signal.SIGINT, _stop)
-        loop.add_signal_handler(signal.SIGTERM, _stop)
-    except (NotImplementedError, OSError):
-        pass
+    restore_handlers: Callable[[], None] | None = None
     exit_code = 1
     try:
-        loop.run_until_complete(task)
+        restore_handlers = _install_stop_handlers(loop, task)
+        runner.run(_wait_for_worker(task))
+        exit_code = 0
+    except asyncio.CancelledError:
+        # A signal may arrive before serve_worker enters its cancellation guard.
         exit_code = 0
     except WorkerForceExit as exc:
         logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
@@ -205,11 +179,19 @@ def main() -> None:
         # SystemExit waits for those threads and can exceed the shared deadline.
         exit_process(1)
     finally:
-        loop.close()
-        # logging.shutdown acquires every sink's lock at interpreter exit.
-        # A stuck disk must not make an otherwise drained Worker immortal.
-        if not stop_background_logging():
-            exit_process(exit_code)
+        try:
+            # Also drain SDK-owned tasks, async generators and the executor.
+            # Closing the loop directly abandons their asynchronous cleanup.
+            runner.close()
+        finally:
+            try:
+                # logging.shutdown acquires every sink's lock at interpreter exit.
+                # A stuck disk must not make an otherwise drained Worker immortal.
+                if not stop_background_logging():
+                    exit_process(exit_code)
+            finally:
+                if restore_handlers is not None:
+                    restore_handlers()
 
 
 if __name__ == "__main__":
