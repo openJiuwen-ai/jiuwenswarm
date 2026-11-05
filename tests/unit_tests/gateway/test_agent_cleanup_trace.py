@@ -63,16 +63,13 @@ async def test_delete_records_swallowed_failure_and_preserves_parent(monkeypatch
     runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
     parent = telemetry.start_gateway_trace("request", root=True)
     info = SimpleNamespace(user_id="user", agent_type="test", sandbox_id="sandbox", agent_id="agent", metadata={})
-    client = object.__new__(router_client.AgentOSRouterClient)
-    client._agent_manager = SimpleNamespace(get_agent=AsyncMock(return_value=SimpleNamespace(info=info)), delete_agent=AsyncMock())
-    client._yuanrong = SimpleNamespace(delete_sandbox=AsyncMock(side_effect=TimeoutError()))
-    client._registry = SimpleNamespace(unregister_agent=AsyncMock())
-    client._web_ready_sandboxes = set()
+    agent = SimpleNamespace(info=info, is_creating=lambda: False)
+    manager = SimpleNamespace(get_agent=AsyncMock(return_value=agent), pop_agent=AsyncMock(return_value=agent))
+    frontend = SimpleNamespace(delete_sandbox=AsyncMock(side_effect=TimeoutError()))
+    registry = SimpleNamespace(unregister_agent=AsyncMock())
+    client = AgentOSRouterClient(frontend, registry, manager)
     socket = SimpleNamespace(disconnect=AsyncMock())
     client._ws_clients = {"sandbox": socket}
-    client._ws_connecting = {}
-    client._ws_connect_traces = {}
-    client._ws_clients_lock = asyncio.Lock()
     try:
         with telemetry.bind_request_trace(parent):
             assert await client.delete_agent("user", "test") is True
@@ -88,9 +85,10 @@ async def test_delete_records_swallowed_failure_and_preserves_parent(monkeypatch
         assert deletion.attributes["cleanup.registry.unregister.outcome"] == "incomplete"
         assert deletion.attributes["cleanup.result"] == "partial"
         assert parent.outcome == "success"
-        client._agent_manager.delete_agent.assert_awaited_once()
+        client._agent_manager.pop_agent.assert_awaited_once()
         client._registry.unregister_agent.assert_awaited_once()
     finally:
+        await client._drain_background_tasks()
         parent.finish("success")
         await telemetry.shutdown_gateway_telemetry()
 
@@ -102,6 +100,7 @@ async def test_idle_guard_rejections_create_no_trace_and_preserve_parent(monkeyp
     runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
     parent = telemetry.start_gateway_trace("request", root=True)
     client = object.__new__(router_client.AgentOSRouterClient)
+    client._sandbox_lifecycles = {}
     client._sandbox_idle_timeout_seconds = 30
     client._agent_manager = SimpleNamespace(
         key_fields=["user_id", "agent_type"],
@@ -126,6 +125,7 @@ async def test_not_running_fallback_unregister_has_one_delete_span(monkeypatch):
     runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
     info = SimpleNamespace(user_id="user", agent_type="test", sandbox_id="sandbox", agent_id="agent", metadata={})
     client = object.__new__(router_client.AgentOSRouterClient)
+    client._sandbox_lifecycles = {}
     client._agent_manager = SimpleNamespace(key_fields=["user_id", "agent_type"], get_agent=AsyncMock(return_value=None))
     client._registry = SimpleNamespace(unregister_agent=AsyncMock())
     try:
@@ -426,8 +426,8 @@ async def test_idle_checks_only_trace_actual_reclaim(cleanup_setup, monkeypatch,
     parent = message_trace()
     original_pop = s.manager.pop_if_idle
 
-    async def pop(*args):
-        runtime = await original_pop(*args)
+    async def pop(*args, **kwargs):
+        runtime = await original_pop(*args, **kwargs)
         if runtime is not None:
             s.events.append(('manager', 'pop'))
         return runtime
@@ -573,14 +573,16 @@ async def test_inline_failure_cleanup_stays_in_message_trace(cleanup_setup, unav
     assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
 
 
-@pytest.mark.parametrize('status,outcome,reason', [(200, 'success', 'removed'), (404, 'skipped', 'not_found')])
+@pytest.mark.parametrize('status,outcome,reason', [(200, 'success', 'accepted'), (404, 'skipped', 'not_found')])
 async def test_frontend_delete_wire_and_cleanup(monkeypatch, status, outcome, reason):
     runtime, exporter, parent = _setup_trace(monkeypatch)
     seen = []
     class Response:
         def __enter__(self): return self
         def __exit__(self, *args): return False
-        def read(self): return b'{"code": 200}'
+        def read(self):
+            return (b'{"code": 404, "message": "instance not found or not running"}'
+                    if status == 404 else b'{"code": 200}')
     def urlopen(req, timeout):
         seen.append(dict(req.header_items()))
         response = Response()

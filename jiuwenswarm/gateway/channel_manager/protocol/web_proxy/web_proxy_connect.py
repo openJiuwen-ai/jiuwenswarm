@@ -401,13 +401,16 @@ async def _ensure_http_proxy_session(channel: Any) -> aiohttp.ClientSession:
     return await channel.ensure_web_proxy_http_session()
 
 
-async def _release_web_runtime(channel: Any, user_id: str, agent_type: str) -> None:
+async def _release_web_runtime(channel: Any, user_id: str, agent_type: str, hold: Any = None) -> None:
     """Drop the sandbox hold taken by a successful web_resolver call."""
-    releaser = getattr(channel, "web_runtime_release", None)
+    releaser = hold if hold is not None else getattr(channel, "web_runtime_release", None)
     if not callable(releaser):
         return
     try:
-        await releaser(user_id, agent_type)
+        if hold is not None:
+            await releaser()
+        else:
+            await releaser(user_id, agent_type)
     except Exception:
         logger.exception(
             "[WebProxy] release web runtime failed: user=%s agent=%s",
