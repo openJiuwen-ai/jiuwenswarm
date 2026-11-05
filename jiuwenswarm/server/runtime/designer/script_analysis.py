@@ -1094,7 +1094,7 @@ _CAST_GROUP_NOUN_RE = re.compile(
     r"|\baudience\b|\bcongregation\b|\bfamily\b|\bcouple\b|\bduo\b|\btrio\b|\btwins?\b"
     r"|\bcrew\b|\bextras\b|\btownsfolk\b|\bprocession\b"
     r"|团队|群体|人群|群众|群众演员|众人|大家|家族|家族成员|同事|工人们|孩子们"
-    r"|市民|居民|观众|听众|路人|行人|游客|旅客|乘客|顾客"
+    r"|市民|居民|观众|听众|路人|行人|游客|旅客|乘客|顾客|旁观者|围观者|看客"
     r"|队伍|小队|大队|车队|球队|乐队|舞队|合唱团|仪仗队|方阵|列队"
     r"|上班族|学生|学生们|年轻人|老人们|老年人|居民们|顾客们|朋友们"
     r"|晨练者|运动员|志愿者|表演者|晨练市民"
@@ -1133,18 +1133,27 @@ def detect_cast_form(name: Any, description: Any = "", role: Any = "") -> tuple[
     ``group`` when the entry is a shared-look crowd; the sheet then draws the
     whole group instead of one stand-in, which every shot asking for a seated
     team or a running pack would otherwise contradict. Cues are read from any
-    authoring language; with no cue the entry stays ``single`` so nothing about
-    a one-person character changes.
+    authoring language, and a collective name outranks a one-person plate; with
+    no cue the entry stays ``single`` so nothing about a one-person character
+    changes.
     """
     text = " ".join(str(v or "").strip() for v in (name, description, role)).strip()
     if not text:
         return "", ""
-    if _CAST_SINGLE_RE.search(text):
+    name_text = str(name or "").strip()
+    # A collective subject names the group, so a plate that describes one
+    # stand-in member does not shrink it: "路人" with "one adult passer-by"
+    # still draws a small shared-look group of passers-by.
+    named_group = bool(name_text) and bool(
+        _CAST_GROUP_NOUN_RE.search(name_text) or _CAST_PLURAL_PERSON_RE.search(name_text)
+    )
+    if not named_group and _CAST_SINGLE_RE.search(text):
         return "single", ""
     size = _cast_group_size(text)
     # A plural person noun already means more than one person, so it is a group
     # even without a count or a collective noun ("seniors in the park").
-    if size or _CAST_GROUP_NOUN_RE.search(text) or _CAST_PLURAL_PERSON_RE.search(text):
+    group_cue = named_group or _CAST_GROUP_NOUN_RE.search(text) or _CAST_PLURAL_PERSON_RE.search(text)
+    if size or group_cue:
         return "group", size
     return "single", ""
 
