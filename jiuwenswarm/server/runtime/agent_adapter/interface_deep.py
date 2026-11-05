@@ -1062,6 +1062,7 @@ class JiuWenSwarmDeepAdapter:
         # 场景). 单点 source-of-truth, 避免分布在多个方法里靠 isinstance
         # 或字符串嗅探 agent_name 反推。
         self._is_code_agent: bool = False
+        self._sandbox_active_workspace_root: str | None = None
         self._vision_tools_registered: bool = False
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
