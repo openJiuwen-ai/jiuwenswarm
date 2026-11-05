@@ -644,7 +644,9 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
     await react.act(settle);
     assert.equal(visibleSuggestionTitles().length, 4);
     assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
-    assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]').textContent.includes('preset'));
+    const disabledHint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
+    assert.ok(disabledHint.textContent.includes('Settings - General'));
+    assert.equal(disabledHint, document.querySelector('[data-testid="chat-panel-welcome-suggestions"]').lastElementChild);
     await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
       type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
     }) }));
