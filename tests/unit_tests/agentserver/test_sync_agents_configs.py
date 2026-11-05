@@ -11,6 +11,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 from jiuwenswarm.server.runtime.sync_agents_configs import (
+    SYNC_ENV_OPTIONAL_KEYS,
     SYNC_ENV_SCHEMA,
     build_agent_spec,
     compute_content_hash,
@@ -421,6 +422,29 @@ class TestSyncAgentsConfigsValidation:
                     ],
                 }
             )
+
+    @staticmethod
+    def test_model_modalities_optional_for_legacy_agents():
+        """Legacy agents omit MODEL_MODALITIES; config.yaml then defaults modalities to text."""
+        assert "MODEL_MODALITIES" in SYNC_ENV_SCHEMA
+        assert "MODEL_MODALITIES" in SYNC_ENV_OPTIONAL_KEYS
+        env = _full_env()
+        del env["MODEL_MODALITIES"]
+        payload = validate_sync_payload(
+            {
+                "revision": "r1",
+                "service_id": "default",
+                "agents": [
+                    {
+                        "agent_id": "agentteam",
+                        "config": {},
+                        "env": env,
+                        "runtime": {},
+                    }
+                ],
+            }
+        )
+        assert "MODEL_MODALITIES" not in payload["agents"][0]["env"]
 
     @staticmethod
     def test_ttse_enabled_required_like_evolution():
