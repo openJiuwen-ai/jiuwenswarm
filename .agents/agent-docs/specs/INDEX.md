@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: openjiuwen_ai
-author_email: openjiuwen_ai@163.com
+author: xinyang_bali
+author_email: 835397263@qq.com
 generated: true
 ---
 
