@@ -358,6 +358,25 @@ def build_member_rails(
         if rail is not None:
             rails_list.append(rail)
 
+        # Image summary rail: queue background summaries for images read this turn.
+        # Mirrors interface_deep._build_image_summary_rail. 摘要模型端点与主对话
+        # 同通道（按主模型 api_base 分流，np:// 走命名管道，无需 vision_config）；
+        # 是否生成摘要在 after_invoke 时按主模型多模态判定门控。
+        # set_image_summary_provider is process-wide but session_id-scoped
+        # (per-session image_index.json), so multi-member-in-one-process is safe.
+        ctx_cfg = react.get("context_engine_config", {})
+        ctx_cfg = ctx_cfg if isinstance(ctx_cfg, dict) else {}
+        window_cfg = ctx_cfg.get("image_window_offloader_config", {})
+        if not (isinstance(window_cfg, dict) and window_cfg.get("enabled") is False):
+            try:
+                from jiuwenswarm.agents.harness.common.rails.image_summary_rail import ImageSummaryRail
+
+                rail = ImageSummaryRail()
+                rails_list.append(rail)
+                logger.info("[TeamRuntime] ImageSummaryRail created")
+            except Exception as exc:
+                logger.warning("[TeamRuntime] ImageSummaryRail failed: %s", exc)
+
     logger.info("[TeamRuntime] Total rails built: %d", len(rails_list))
     return rails_list
 
@@ -605,6 +624,10 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
         if isinstance(config, dict):
             raw = config.get("context_engine_config", {})
             ctx_cfg = raw if isinstance(raw, dict) else {}
+
+        image_window_cfg = ctx_cfg.get("image_window_offloader_config", {})
+        if isinstance(image_window_cfg, dict) and image_window_cfg:
+            user_processors.append(("ImageWindowOffloader", image_window_cfg))
 
         offloader_cfg = ctx_cfg.get("message_summary_offloader_config", {})
         if isinstance(offloader_cfg, dict) and offloader_cfg:

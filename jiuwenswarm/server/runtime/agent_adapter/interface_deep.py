@@ -270,8 +270,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
     apply_video_model_config_from_yaml,
-    apply_vision_model_config_from_yaml,
-    dedicated_multimodal_model_configured,
+    build_vision_model_config,
     complete_multimodal_model_configured,
 )
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
@@ -1051,6 +1050,10 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
         raw_context_engine_cfg = config.get("context_engine_config", {})
         context_engine_cfg = raw_context_engine_cfg if isinstance(raw_context_engine_cfg, dict) else {}
         session_memory_cfg = _resolve_session_memory_config(context_engine_cfg)
+
+        image_window_cfg = context_engine_cfg.get("image_window_offloader_config", {})
+        if isinstance(image_window_cfg, dict) and image_window_cfg:
+            user_processors.append(("ImageWindowOffloader", image_window_cfg))
 
         offloader_cfg = context_engine_cfg.get("message_summary_offloader_config", {})
         if isinstance(offloader_cfg, dict) and offloader_cfg:
@@ -3033,25 +3036,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         config_base: dict[str, Any],
     ) -> VisionModelConfig | None:
         """Build DeepAgent vision config from service config/env mapping."""
-        if not dedicated_multimodal_model_configured(config_base, "vision"):
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] vision tools skipped: models.vision has no dedicated "
-                "api_key in config.yaml"
-            )
-            return None
-        apply_vision_model_config_from_yaml(config_base)
-        api_key = str(os.getenv("VISION_API_KEY", "")).strip()
-        base_url = str(os.getenv("VISION_BASE_URL") or os.getenv("VISION_API_BASE") or "").strip()
-        model_name = str(os.getenv("VISION_MODEL") or os.getenv("VISION_MODEL_NAME") or "").strip()
-        if not api_key or not base_url or not model_name:
-            logger.info("[JiuWenSwarmDeepAdapter] vision tools skipped: incomplete config")
-            return None
-        return VisionModelConfig(
-            api_key=api_key,
-            base_url=base_url,
-            model=model_name,
-            max_retries=parse_int(os.getenv("VISION_MAX_RETRIES"), 3),
-        )
+        return build_vision_model_config(config_base)
 
     @staticmethod
     def _build_audio_model_config(
@@ -5075,6 +5060,32 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             multimodal_image_rail = None
         return multimodal_image_rail
 
+    def _build_image_summary_rail(self, config_base: dict[str, Any]) -> Any | None:
+        """Build ImageSummaryRail when image folding is on.
+
+        摘要模型端点与主对话同通道：按主模型 api_base 分流（np:// 走命名管道，
+        与 llm_np_patch 语义一致），无需 vision_config；是否生成摘要在
+        after_invoke 时按「主模型 input 是否带 image」的多模态判定门控。
+        The rail always registers the provider so
+        ``ImageWindowOffloader`` can look up summaries.
+        """
+        ctx_cfg = self._config_cache.get("context_engine_config", {})
+        ctx_cfg = ctx_cfg if isinstance(ctx_cfg, dict) else {}
+        # 与团队路径（team_runtime_inheritance.build_member_rails）门控一致：
+        # 上下文引擎整体关闭时不挂载 ImageSummaryRail，避免白跑后台摘要却无人消费。
+        if not ctx_cfg.get("enabled", False):
+            return None
+        window_cfg = ctx_cfg.get("image_window_offloader_config", {})
+        if isinstance(window_cfg, dict) and window_cfg.get("enabled") is False:
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.image_summary_rail import ImageSummaryRail
+
+            return ImageSummaryRail()
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] ImageSummaryRail create failed: %s", exc)
+            return None
+
     @staticmethod
     def _build_task_planning_rail() -> TaskPlanningRail | None:
         """Build TaskPlanningRail.
@@ -5720,6 +5731,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 {
                     "enable_image_multimodal": self._resolve_enable_read_image_multimodal(config),
                 },
+            ),
+            _RailBuildInfo(
+                "_image_summary_rail",
+                self._build_image_summary_rail,
+                {"config_base": config_base},
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             *(

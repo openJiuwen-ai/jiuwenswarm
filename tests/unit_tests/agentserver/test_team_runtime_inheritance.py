@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from openjiuwen.core.context_engine.image_refs import set_image_summary_provider
 from openjiuwen.core.foundation.tool import ToolCard
 
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
@@ -21,6 +22,14 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
+
+
+@pytest.fixture(autouse=True)
+def _reset_image_summary_provider():
+    """ImageSummaryRail 构造时注册进程级 provider，前后复位避免污染其他测试。"""
+    set_image_summary_provider(None)
+    yield
+    set_image_summary_provider(None)
 
 
 class _FakeAbilityManager:
@@ -131,6 +140,68 @@ def test_build_member_rails_omits_task_planning_for_leader_only():
 
     assert all(type(rail).__name__ != "TaskPlanningRail" for rail in leader_rails)
     assert any(type(rail).__name__ == "TaskPlanningRail" for rail in teammate_rails)
+
+
+def test_build_member_rails_appends_image_summary_rail_when_folding_enabled():
+    """折叠开（enabled=true）时成员 rails 列表含 ImageSummaryRail。"""
+    rails = build_member_rails(
+        member_info=MemberInfo(role="teammate"),
+        runtime=RuntimeInfo(language="cn"),
+        team_workspace=TeamWorkspaceInfo(
+            config={
+                "react": {
+                    "context_engine_config": {
+                        "image_window_offloader_config": {"enabled": True},
+                    },
+                },
+            },
+        ),
+    )
+
+    assert any(type(rail).__name__ == "ImageSummaryRail" for rail in rails)
+
+
+def test_build_member_rails_appends_image_summary_rail_by_default():
+    """缺省（无 image_window_offloader_config 键）等同启用。"""
+    rails = build_member_rails(
+        member_info=MemberInfo(role="teammate"),
+        runtime=RuntimeInfo(language="cn"),
+        team_workspace=TeamWorkspaceInfo(config={}),
+    )
+
+    assert any(type(rail).__name__ == "ImageSummaryRail" for rail in rails)
+
+
+def test_build_member_rails_omits_image_summary_rail_when_folding_disabled():
+    """折叠关（enabled=false）时不含 ImageSummaryRail。"""
+    rails = build_member_rails(
+        member_info=MemberInfo(role="teammate"),
+        runtime=RuntimeInfo(language="cn"),
+        team_workspace=TeamWorkspaceInfo(
+            config={
+                "react": {
+                    "context_engine_config": {
+                        "image_window_offloader_config": {"enabled": False},
+                    },
+                },
+            },
+        ),
+    )
+
+    assert all(type(rail).__name__ != "ImageSummaryRail" for rail in rails)
+
+
+def test_build_member_rails_omits_image_summary_rail_when_context_engine_disabled():
+    """context_engine 整体关闭时不含 ImageSummaryRail。"""
+    rails = build_member_rails(
+        member_info=MemberInfo(role="teammate"),
+        runtime=RuntimeInfo(language="cn"),
+        team_workspace=TeamWorkspaceInfo(
+            config={"react": {"context_engine_config": {"enabled": False}}},
+        ),
+    )
+
+    assert all(type(rail).__name__ != "ImageSummaryRail" for rail in rails)
 
 
 # -- resolve_model_config tests --

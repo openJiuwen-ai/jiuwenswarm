@@ -576,6 +576,14 @@ react:
     # context_window_tokens: 131072
     enable_reload: true
     enabled: true
+    # read_file 读入的图片在上下文里的窗口：当前轮最多保留 keep_current_turn_max 张，
+    # 更早轮次只留最新 keep_history_k 张，保留图片的 base64 总字节不超过 max_total_base64_bytes；
+    # 其余折叠成带路径的文本占位（模型可再次 read_file）。enabled: false 关闭。
+    image_window_offloader_config:
+      enabled: true
+      keep_current_turn_max: 20
+      keep_history_k: 10
+      max_total_base64_bytes: 800000
     message_summary_offloader_config:
       add_message_threshold_ratio: 0.1
       ttl_seconds: 300
