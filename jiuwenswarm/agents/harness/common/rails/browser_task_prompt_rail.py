@@ -32,6 +32,7 @@ class BrowserTaskPromptRail(SubagentRail):
         # now does.
         self._cua_agent_enabled = cua_agent_enabled
         self._deep_agent: object | None = None
+        self._channel: str | None = None
         super().__init__(
             enable_async_subagent=enable_async_subagent,
             enable_subagent_runtime=enable_subagent_runtime,
@@ -47,10 +48,6 @@ class BrowserTaskPromptRail(SubagentRail):
         # the DeepAgent handed to ``init`` exposes ``deep_config.subagents``.
         self._deep_agent = agent
         super().init(agent)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._channel: str | None = None
 
     def set_channel(self, channel: str | None) -> None:
         """Store the active runtime channel for this prompt rail."""
