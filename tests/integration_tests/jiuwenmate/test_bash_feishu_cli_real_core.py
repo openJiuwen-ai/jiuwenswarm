@@ -25,7 +25,7 @@ async def test_published_agent_can_execute_bash_in_its_office(tmp_path, monkeypa
     monkeypatch.setattr(ModelSpec, "build", lambda _: model)
     server = Server(tmp_path)
     colleague = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))["colleague"]
-    office = Path(colleague["workspace_dir"])
+    office = server.session_workspace(colleague["agent_id"])
     # A controlled CLI process observes the durable intent before any side effect.
     (office / "fake-cli.py").write_text(
         "import json, sqlite3, os\nfrom pathlib import Path\n"
@@ -66,7 +66,7 @@ async def test_bash_intent_failure_prevents_process_start(tmp_path, monkeypatch)
     try:
         result = await server.ask(colleague["agent_id"], "write-marker")
         assert result["outcome"] == "failed"
-        assert not (Path(colleague["workspace_dir"]) / "marker").exists()
+        assert not (server.session_workspace(colleague["agent_id"]) / "marker").exists()
     finally:
         await server.adapter.aclose()
 

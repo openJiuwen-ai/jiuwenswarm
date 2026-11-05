@@ -18,6 +18,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
@@ -122,6 +123,12 @@ class Server:
         response = await self.adapter.handle(request)
         assert response.ok, response.payload
         return response.payload
+
+    def session_workspace(self, agent_id: str, conversation_id: str = "conv-1") -> Path:
+        session = ExecutionRepository(self.db).resolve_session(
+            "local", agent_id, ConversationRef.web(conversation_id), now=NOW,
+        )
+        return self.adapter._colleagues().workspaces.ensure_session("local", agent_id, session.session_id)
 
     async def send(self, agent_id: str, text: str) -> str:
         sent = await self.call(
@@ -262,22 +269,31 @@ class ReadingModel(LocalModel):
 
 @pytest.mark.parametrize(
     ("path", "found"),
-    [("资料/周报.md", True), ("../other/secret.md", False)],
+    [("资料/周报.md", True), ("sessions/other/secret.md", False), ("../other/secret.md", False)],
 )
 async def test_a_colleague_reads_only_its_office_directory(tmp_path, monkeypatch, path, found):
     reader = ReadingModel(path)
     monkeypatch.setattr(ModelSpec, "build", lambda self: reader)
     server = Server(tmp_path)
     colleague = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))["colleague"]
-    office = Path(colleague["workspace_dir"])
+    office = server.session_workspace(colleague["agent_id"])
+    if found:
+        reader.path = f"sessions/{office.name}/{path}"
     (office / "资料").mkdir()
     (office / "资料" / "周报.md").write_text("本周完成飞书接入。", encoding="utf-8")
+    other_colleague = Path(colleague["workspace_dir"]).parent / "other"
+    other_colleague.mkdir()
+    (other_colleague / "secret.md").write_text("别人的文件", encoding="utf-8")
     (office.parent / "other").mkdir()
     (office.parent / "other" / "secret.md").write_text("别人的文件", encoding="utf-8")
 
     answered = await server.ask(colleague["agent_id"], "看一下周报")
     await server.adapter.aclose()
 
+    if path.startswith("../"):
+        assert answered["outcome"] == "paused", answered
+        assert answered["replies"] == []
+        return
     reply = answered["replies"][-1]
     assert answered["outcome"] == "completed"
     assert ("本周完成飞书接入。" in reply) is found
@@ -375,7 +391,7 @@ def install_controlled_write_tool(
     )
     publish_spec = service_module.publish_spec
 
-    def publish_spec_with_test_tool(agent_id, config_version, spec_fields):
+    def publish_spec_with_test_tool(agent_id, config_version, spec_fields, **kwargs):
         fields = dict(spec_fields)
         fields["tools"] = [
             {
@@ -383,7 +399,7 @@ def install_controlled_write_tool(
                 "params": {"db_path": str(db_path), "output_path": str(output_path)},
             }
         ]
-        return publish_spec(agent_id, config_version, fields)
+        return publish_spec(agent_id, config_version, fields, **kwargs)
 
     monkeypatch.setattr(service_module, "publish_spec", publish_spec_with_test_tool)
 
@@ -482,9 +498,9 @@ class ScriptedToolModel(LocalModel):
 async def test_a_colleague_writes_and_edits_shared_files_but_not_other_sessions_drafts(tmp_path, monkeypatch):
     writer = ScriptedToolModel(
         [
-            ("write_file", {"file_path": "报告/总结.md", "content": "初稿"}),
-            ("read_file", {"file_path": "报告/总结.md"}),
-            ("edit_file", {"file_path": "报告/总结.md", "old_string": "初稿", "new_string": "定稿"}),
+            ("write_file", {"file_path": "resources/报告/总结.md", "content": "初稿"}),
+            ("read_file", {"file_path": "resources/报告/总结.md"}),
+            ("edit_file", {"file_path": "resources/报告/总结.md", "old_string": "初稿", "new_string": "定稿"}),
             ("write_file", {"file_path": "sessions/sess_other/草稿.md", "content": "越界"}),
         ]
     )
@@ -498,7 +514,7 @@ async def test_a_colleague_writes_and_edits_shared_files_but_not_other_sessions_
     await server.adapter.aclose()
 
     assert answered["outcome"] == "completed"
-    assert (office / "报告" / "总结.md").read_text(encoding="utf-8") == "定稿"
+    assert (office / "resources" / "报告" / "总结.md").read_text(encoding="utf-8") == "定稿"
     assert not (office / "sessions" / "sess_other").exists()
     assert answered["replies"][-1].splitlines()[-1] == "workspace path is not writable"
     assert str(tmp_path) not in answered["replies"][-1]
