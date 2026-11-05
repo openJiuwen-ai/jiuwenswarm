@@ -3532,7 +3532,7 @@ test('upload service starts from the current frame, sends each file and returns 
       async () => 204).upload(key, '0.0', files), { code: 'UPLOAD_TOO_LARGE' });
     await assert.rejects(failing(async () => ({ upload_id: id, url: '/elsewhere/' }), async () => 204)
       .upload(key, '0.0', files), { code: 'UPLOAD_FAILED' });
-    await assert.rejects(failing(ticket, async () => 403).upload(key, '0.0', files), { code: 'LOCAL_ONLY' });
+    await assert.rejects(failing(ticket, async () => 403).upload(key, '0.0', files), { code: 'UPLOAD_FAILED' });
     await assert.rejects(failing(ticket, async () => { throw new Error('offline'); }).upload(key, '0.0', files),
       { code: 'UPLOAD_FAILED' });
     await assert.rejects(service.upload('missing', '0.0', files), { code: 'TARGET_INACTIVE' });

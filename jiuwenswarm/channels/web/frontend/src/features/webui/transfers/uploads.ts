@@ -105,7 +105,7 @@ export function createUploadService(options: WebUIUploadServiceOptions): WebUIUp
         } catch {
           status = 0;
         }
-        if (status !== 204) throw new WebUIUploadError(status === 403 ? 'LOCAL_ONLY' : 'UPLOAD_FAILED');
+        if (status !== 204) throw new WebUIUploadError('UPLOAD_FAILED');
         sentBytes += file.size;
         onProgress?.({ sentBytes, totalBytes });
       }

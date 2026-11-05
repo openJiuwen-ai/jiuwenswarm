@@ -11,7 +11,6 @@ import argparse
 import errno
 import hmac
 import http.client
-import ipaddress
 import json
 import logging
 import mimetypes
@@ -560,15 +559,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         return urlparse(self.path).path.startswith("/extension-assets/")
 
     def _is_extension_transfer_route(self) -> bool:
-        # Gateway file import and export (S_10 sections 6 and 7); only local clients for now.
+        # Gateway file import and export (S_10 sections 6 and 7); the Gateway's tickets decide access.
         return urlparse(self.path).path.startswith(("/extension-uploads/", "/extension-downloads/"))
-
-    def _client_is_local(self) -> bool:
-        try:
-            address = ipaddress.ip_address(str(self.client_address[0]).split("%", 1)[0])
-        except (ValueError, IndexError, TypeError):
-            return False
-        return (getattr(address, "ipv4_mapped", None) or address).is_loopback
 
     def _is_ws_route(self) -> bool:
         return urlparse(self.path).path.startswith("/ws")
@@ -1057,10 +1049,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._proxy_http()
             return True
         if self._is_extension_transfer_route():
-            if not self._client_is_local():
-                self._write_json(403, {"code": "LOCAL_ONLY"})
-            else:
-                self._proxy_http(stream_body=True)
+            self._proxy_http(stream_body=True)
             return True
         if self._is_ws_route():
             if self._is_websocket_upgrade():

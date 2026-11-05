@@ -7,6 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_13 / application-settings-page` |
 | 建档日期 | 2026-11-05 |
+| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07） |
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
@@ -34,14 +35,15 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 | 停用或卸载正在播放的开场 | 宿主关闭该段并以 `disabled` / `removed` 通知插件，队列继续 |
 | 导入主题 | 用户选择 ZIP 或目录；内容写入插件数据目录，插件收到相对路径 |
 | 导出与备份 | 插件生成文件后，桌面端弹出保存对话框，浏览器中下载 |
+| 从另一台设备的浏览器打开 | 导入与导出同样可用，访问权来自一次性凭据 |
 
 ### 2.3 本次范围与非目标
 
 范围：`application.settings.page` 槽位与前端扩展设置模块；宿主方法；开场偏好的保存与生效；
 `disabled` / `removed`；`FileImport` 组件、导入凭据与上传路由；`ops.ui.download` 与下载路由；`app_web` 转发。
 
-非目标：远程浏览器的导入与导出（本期只服务本机连接）；插件标题的多语言（取 manifest `displayName`）；
-导入进度的断点续传；设置页搜索。
+非目标：插件标题的多语言（取 manifest `displayName`）；导入进度的断点续传；设置页搜索；
+`FileImport` 之外的通用远程上传（概览第 1.3 节仍推迟）。
 
 ## 3. 设计约束、假设与待决问题
 
@@ -49,8 +51,8 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
   因此设置相关的帧经请求策略即可，不需要平台帧。
 - `gateway.request` 链的总时限为 5 秒，导入完成事件的 Handler 不能做长时间解压；
   Handler 内把目录移走（改名）后再在后台处理。
-- 桌面版的前端与 Gateway 在同一台机器上；`app_web` 与 Gateway 都能取得对端地址判断是否为本机。
-- 待决问题：无。远程浏览器上传此前已确认推迟，本期导入与导出只服务本机连接；是否开放留待后续评估。
+- 远程浏览器经 `app_web` 或直接连接 Gateway；凭据出现在请求地址中，远程部署应使用 HTTPS。
+- 待决问题：无。远程浏览器上传此前在概览中列为推迟；2026-11-05 用户决定插件设置页的导入与导出同样对远程浏览器开放（D-07）。
 
 ## 4. 总体方案与设计取舍
 
@@ -100,10 +102,14 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 插件只能指定自己数据目录中的文件；地址只发给调用所在的连接、只用一次。桌面版复用已有的 `downloadFile`
 （保存对话框与“在文件夹中显示”），浏览器用下载链接。不复用素材路由，因为素材按页面内联显示并带沙箱脚本策略。
 
-#### D-07 本期只服务本机连接
+#### D-07 导入与导出不区分本机与远程浏览器
 
-导入与导出的 HTTP 路由在 Gateway 与 `app_web` 两处都只接受回环地址。远程浏览器上传此前已确认推迟；
-放开时只需调整这两处判断与本规约。
+访问权只来自一次性凭据：导入凭据由 USER 请求策略继续后的宿主方法签发，绑定连接、包、激活代次、实例与节点，
+完成时必须由同一连接提交；下载地址只发给调用所在的连接。Gateway 与 `app_web` 不判断对端地址。
+凭据出现在请求地址中，远程部署应使用 HTTPS；单次导入的总大小受 `uploads.max_bytes` 限制。
+
+历史：首版实现（同日）两处路由都只接受回环地址，因为概览把远程浏览器上传列为推迟，而这一点当时没有得到用户的明确答复。
+用户随后决定都放开，回环判断与相应的前端提示一并移除。
 
 ### 4.3 替代方案与排除理由
 
@@ -129,7 +135,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 | Gateway `webui/registry.py` | 单个实例的退役（清除帧并预留版本号） |
 | Gateway `runtime.py`、`bootstrap.py`、`config.py`、`loader.py`、`handler_ops/ui.py` | 宿主方法进入链路；注册处理器；`uploads.max_bytes`；`displayName`；`ops.ui.download` |
 | Gateway `management/registry.py` | 释放活动包前以 `removed` 关闭开场；卸载时清除偏好记录 |
-| `channels/web/app_web.py` | 转发 `/extension-uploads/`（流式请求体）与 `/extension-downloads/`；只服务本机客户端 |
+| `channels/web/app_web.py` | 转发 `/extension-uploads/`（流式请求体）与 `/extension-downloads/` |
 | 前端 `catalog/`、`renderer/adapters/webuiFileImport/` | `FileImport` 规则与适配器 |
 | 前端 `transfers/` | 导入服务（凭据、上传、完成）与下载处理 |
 | 前端 `splash/` | 读取 `customized` 合并顺序 |
@@ -161,9 +167,9 @@ S_02 槽位表、概览、计划与模块 `AGENTS.md`；新增中英文界面文
 | F_13-V-02 | 宿主方法与请求策略 | 要求登录的 USER 策略拒绝未认证的帧，认证后应答；无 USER Handler 时仍由 Gateway 应答 |
 | F_13-V-03 | 开场偏好 | 安装顺序、用户顺序、恢复默认、停用、非法参数；重启后保留；卸载后删除 |
 | F_13-V-04 | `disabled` / `removed` | 正在播放的实例被清除并通知一次；版本号不复用 |
-| F_13-V-05 | 导入 | 清单校验、大小上限、凭据绑定、非本机拒绝、超出与不足、完成后插件收到相对路径、目录删除、过期与断线清理 |
-| F_13-V-06 | 导出 | 路径越界与符号链接拒绝、帧内容、一次性、响应头、非本机拒绝 |
-| F_13-V-07 | `app_web` | 两条路由转发、请求体流式、非本机拒绝 |
+| F_13-V-05 | 导入 | 清单校验、大小上限、凭据绑定、远程浏览器可上传、超出与不足、完成后插件收到相对路径、目录删除、过期与断线清理 |
+| F_13-V-06 | 导出 | 路径越界与符号链接拒绝、帧内容、一次性（不论来源）、响应头、远程浏览器可下载 |
+| F_13-V-07 | `app_web` | 两条路由转发、请求体流式、远程客户端同样转发 |
 | F_13-V-08 | 前端 | 组件契约两端一致；导入服务、下载处理、开场排序、设置模块 |
 | F_13-V-09 | 回归与构建 | Gateway 扩展用例、Web 渠道用例、前端 WebUI 各套件通过；`npm run build` 成功 |
 | F_13-V-10 | 浏览器 | Chromium 中设置模块、开场排序、导入与导出的完整往返 |
@@ -176,10 +182,11 @@ Chrome for Testing `chrome-headless-shell` 157.0.8103.38。
 | 编号 | 用例或命令 | 结果 |
 | --- | --- | --- |
 | F_13-V-01～V-04 | `test_gateway_application_settings.py` 7 项（页面列表与标题、定向 `ui.ready`；无 USER Handler 时应答；要求登录的 USER 策略拒绝未认证的帧、认证后应答；安装顺序、用户顺序、停用、非法参数、重启保留与恢复默认；偏好文件损坏；停用正在播放的开场只通知一次且版本号预留；重载、升级与卸载以 `removed` 关闭并在卸载后删除偏好记录） | 通过 |
-| F_13-V-05、V-06 | `test_gateway_file_transfer.py` 37 项（ZIP 与目录导入往返、15 种清单拒绝、节点与版本、非本机与错误请求体、过期与连接数上限与断线清理、启动清理、一次性下载与响应头、7 种越界导出、包释放、7 种 `FileImport` 事件数据） | 通过 |
-| F_13-V-07 | `test_app_web_extension_transfers.py` 3 项（请求体在收齐前已开始转发、下载转发、远程客户端 403） | 通过 |
+| F_13-V-05、V-06 | `test_gateway_file_transfer.py` 37 项（ZIP 与目录导入往返、15 种清单拒绝、节点与版本、远程对端上传与错误请求体、过期与连接数上限与断线清理、启动清理、远程对端下载后一次性作废与响应头、7 种越界导出、包释放、7 种 `FileImport` 事件数据） | 通过 |
+| F_13-V-07 | `test_app_web_extension_transfers.py` 3 项（请求体在收齐前已开始转发、下载转发、远程客户端的上传与下载同样转发） | 通过 |
 | F_13-V-08 | `webuiGatewayCases.json` 新增 13 条（Gateway `test_gateway_ui_render.py` 与前端 `test:webui-components` 同一份）；`test:webui-components` 新增 9 项（应答解析与顺序计算、已保存顺序不前置外观提供者、导入服务、`FileImport` 选择上传与派发、无导入服务时禁用、下载处理、开场设置的排序停用与恢复、空态与断线、设置页签只挂载选中的包）；`test:webui-contracts` 新增 1 项并更新组件与槽位清单 | 通过 |
 | 改动前对照 | 暂存源码改动、只保留测试后运行 | Gateway 两份新用例收集失败（缺少 `host_settings`、`transfers`）；去掉新模块导入后 44 项中 38 项失败，其余 6 项是非法事件数据的反例（旧代码不认识该组件，同样拒绝）；`app_web` 3 项失败；共享用例 3 项、开场提供者 1 项失败；`webui-contracts` 2 项失败；`webui-components` 因缺少新模块无法打包 |
+| 修订对照（远程开放） | 先把用例改为期望远程可用，在只服务本机的实现上运行 | Gateway 2 项（远程上传、远程下载）、`app_web` 1 项、前端 1 项（403 不再提示“只能在本机导入”）失败；移除回环判断后全部通过 |
 | F_13-V-09 | `tests/unit_tests/gateway/extensions_v2/` 483 项；`tests/unit_tests/channels/web/` 与 `test_trajectory_http.py` 150 项（1 项既有跳过）；前端 contracts 151、protocol 14、components 264、renderer 17、runtime 21、client 22、events 93、transport 9；`test:i18n-locales` 4；`tsc` 与 `npm run build` | 全部通过；构建仅有既有的分包与体积提示 |
 
 F_13-V-10：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验证服务启动真实的 `GatewayRuntime` 与 Gateway 路由，
@@ -202,6 +209,9 @@ F_13-V-10：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验
 
 验证中发现并修正：开场行原先各自包在一层 `div` 里，分组样式选不到，每行显示成单独的卡片；改为行直接位于设置项下，测试标识移到行标题。
 
+远程开放的修订之后，以上场景在 Chromium 中重跑，结果一致。浏览器与验证服务都在本机，远程对端只在单元用例中以非回环地址模拟，
+两台机器之间尚未实测。
+
 ### 8.3 验证结论
 
 第 2.2 节场景在单元范围与 Chromium 中成立。浏览器验证中 Gateway 运行时与路由是真实的，WebChannel 以验证服务中的最小实现代替；
@@ -210,7 +220,7 @@ F_13-V-10：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验
 ## 9. 风险与已知遗留
 
 - 插件标题不支持多语言，取 manifest `displayName`。
-- 远程浏览器的导入与导出未开放。
+- 远程浏览器使用导入与导出时，凭据随请求地址经网络传输；部署方应使用 HTTPS。两台机器之间的导入与导出尚未实测。
 - 桌面打包版与真实 Gateway 的联调随壁纸插件进行。
 - 设置页在 560 px 宽时的既有横向溢出不属于本条目，未处理。
 - `FileImport` 的“完成”状态在插件重新渲染后不保留（节点随新版本重建）；插件应在页面中自行反映导入结果。

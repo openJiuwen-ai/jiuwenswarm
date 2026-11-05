@@ -94,16 +94,12 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
         runtime = runtime_provider()
         if runtime is None:
             return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
-        status = await runtime.browser.transfers.receive(
-            upload_id, path, request.stream(), request.client.host if request.client else None,
-        )
+        status = await runtime.browser.transfers.receive(upload_id, path, request.stream())
         return Response(status_code=status, headers={"Cache-Control": "no-store"})
 
     async def download_file(token: str, request: Request):
         runtime = runtime_provider()
-        offer = None if runtime is None else runtime.browser.transfers.download(
-            token, request.client.host if request.client else None, consume=request.method == "GET",
-        )
+        offer = None if runtime is None else runtime.browser.transfers.download(token, consume=request.method == "GET")
         if offer is None:
             return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
         headers = {**DOWNLOAD_HEADERS,

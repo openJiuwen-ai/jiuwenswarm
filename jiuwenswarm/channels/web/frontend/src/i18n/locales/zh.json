@@ -5370,7 +5370,6 @@
     "uploading": "正在上传 {{percent}}%",
     "failed": "导入失败，请重试",
     "tooLarge": "文件太大，无法导入",
-    "localOnly": "只能在本机导入",
     "inactive": "页面已更新，请重新选择文件"
   },
   "webuiSplash": {

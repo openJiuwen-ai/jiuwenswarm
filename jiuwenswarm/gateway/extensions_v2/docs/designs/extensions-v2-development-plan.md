@@ -31,7 +31,7 @@
 | EXTV2-GW-09 | 媒体容器与应用背景 | `MediaSurface` 根组件（图片、视频、沙箱页面）、令牌与来源校验的消息协议、`application.background` 槽位与前端背景宿主 | [F_10](../features/F_10_media-surface-and-background.md) | [S_07](../specs/S_07_media-surface.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_ui_render.py`、`test_gateway_application_assets.py`；前端 `test:webui-components`、`test:webui-protocol`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调随 GW-11） |
 | EXTV2-GW-10 | 受控外观 | `ops.appearance.apply`、宿主派生的强调色与半透明模式、按连接的提供者、包释放时撤销外观并清除实例、重载后重新通知 | [F_11](../features/F_11_controlled-appearance.md) | [S_08](../specs/S_08_appearance.md) | `test_gateway_appearance.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-transport` | Song Haoran | 已实现（单测与浏览器验证通过） |
 | EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、开场声明与提供者、显示型槽位的平台帧、定向 `ui.ready`、`application.splash`、时限与心跳、长按跳过、`ui.closed`、登录入口协调 | [F_12](../features/F_12_startup-gate-and-splash.md) | [S_09](../specs/S_09_startup-splash.md)、[S_07](../specs/S_07_media-surface.md) | `test_gateway_splash.py`、`test_app_web_splash_hint.py`；前端 `test:webui-components` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
-| EXTV2-GW-12 | 应用级设置页 | `application.settings.page` 与“扩展”设置模块；宿主方法；开场顺序与停用及其保存；`ui.closed` 的 `disabled` / `removed`；`FileImport` 与导入凭据、上传路由；`ops.ui.download` 与下载路由；`app_web` 转发（只服务本机） | [F_13](../features/F_13_application-settings-page.md) | [S_10](../specs/S_10_application-settings.md)、[S_09](../specs/S_09_startup-splash.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_application_settings.py`、`test_gateway_file_transfer.py`、`test_app_web_extension_transfers.py`；前端 `test:webui-components`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
+| EXTV2-GW-12 | 应用级设置页 | `application.settings.page` 与“扩展”设置模块；宿主方法；开场顺序与停用及其保存；`ui.closed` 的 `disabled` / `removed`；`FileImport` 与导入凭据、上传路由；`ops.ui.download` 与下载路由；`app_web` 转发（本机与远程浏览器均可用） | [F_13](../features/F_13_application-settings-page.md) | [S_10](../specs/S_10_application-settings.md)、[S_09](../specs/S_09_startup-splash.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_application_settings.py`、`test_gateway_file_transfer.py`、`test_app_web_extension_transfers.py`；前端 `test:webui-components`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
 
 ## 3. 依赖与开工条件
 
@@ -71,7 +71,7 @@ flowchart LR
 | GW-09 | 两端字段、根节点与槽位结论一致（共享用例）；图片、视频、页面渲染与宿主策略；消息的来源、令牌与事件校验；就绪超时、错误与减少动态回退；背景层不接收输入、根元素标记；声明背景槽位的包收到 `ui.ready`；真实浏览器显示 |
 | GW-10 | 外观对象两端结论一致；提供者切换、非提供者撤销、断开连接；卸载与重载时撤销外观并清除实例且版本号不复用；重载后广播；前端帧排序与重连核对；强调色对比度与半透明预设；Chromium 中派生变量与 antd 取色 |
 | GW-11 | 声明校验与提供者顺序；请求策略拒绝一切时平台帧仍到达包；`ui.closed` 一次性；候选提示；门控四种判定路径；准备、媒体就绪、心跳与上限时限；长按跳过；登录入口推迟；Chromium 中从首帧到开放的完整流程 |
-| GW-12 | 页面列表与定向 `ui.ready`；宿主方法在请求策略与认证门禁之后、无 USER Handler 时仍应答；开场顺序、停用、恢复默认与重启保留、卸载清除；`disabled` / `removed` 只通知一次；导入清单、大小、凭据绑定、非本机拒绝、过期与断线清理；导出路径边界、一次性与响应头；`app_web` 流式转发与本机限制；两端组件与槽位结论一致；Chromium 中设置模块、排序、导入与导出往返 |
+| GW-12 | 页面列表与定向 `ui.ready`；宿主方法在请求策略与认证门禁之后、无 USER Handler 时仍应答；开场顺序、停用、恢复默认与重启保留、卸载清除；`disabled` / `removed` 只通知一次；导入清单、大小、凭据绑定、远程浏览器可用、过期与断线清理；导出路径边界、一次性与响应头；`app_web` 流式转发；两端组件与槽位结论一致；Chromium 中设置模块、排序、导入与导出往返 |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -96,11 +96,12 @@ flowchart LR
 | 2026-11-05 | GW-10 | 受控外观实现：Gateway 扩展 413 项、前端 WebUI 各套件全部通过、构建成功；Chromium 157 中验证强调色派生、antd 取色、半透明预设与撤销；同时补正包释放时不通知浏览器的缺口，证据见 F_11 |
 | 2026-11-05 | GW-11 | 启动门控与开场队列实现：Gateway 扩展 426 项、Web 渠道 147 项、前端 WebUI 各套件全部通过、构建成功；Chromium 157 中验证首帧中性层、播放、登录入口推迟、刷新不重播与长按跳过；背景与开场的生命周期帧改为平台帧，证据见 F_12 |
 | 2026-11-05 | GW-12 | 应用级设置页实现：Gateway 扩展 483 项、Web 渠道 150 项、前端 WebUI 各套件全部通过、构建成功；Chromium 157 中验证“扩展”设置模块、开场排序与停用、ZIP 与目录导入、导出下载；导入与导出本期只服务本机连接，证据见 F_13 |
+| 2026-11-05 | GW-12 | 按用户决定，导入与导出对远程浏览器同样开放：移除 Gateway 与 `app_web` 的回环地址判断及前端“只能在本机导入”提示，访问权只来自一次性凭据；Gateway 扩展 483 项、Web 渠道 150 项、前端 WebUI 各套件通过，Chromium 中重跑一致；两台机器间未实测，证据见 F_13 |
 
 ## 6. 风险与待确认
 
 - Gateway 当前只接入 application.entry、application.sidebar.footer、application.background、application.splash 与 application.settings.page；其他槽位沿用所属宿主的链路。
-- 文件导入与导出只服务本机连接（S_10 不变量 6）；远程浏览器是否开放待评估。
+- 文件导入与导出对远程浏览器开放，访问权只来自一次性凭据，凭据出现在请求地址中；远程部署应使用 HTTPS（S_10 不变量 6）。两台机器之间尚未实测。
 - 鉴权由 USER 包负责，旧内置门禁已移除。平台数据路由不因示例账号变化而隔离。
 - Gateway 与 AgentServer 的同名事件语义不同（`ui.click` 在两侧各自注册）；一个包只能归属一侧（manifest `domain`），需要两侧能力时拆成两个包。
 - 前端协议桩浏览器验证与真实 Gateway/示例接入分别记录在前端 F_02 和本模块 F_07，不将 Mock 验证解释为真实身份服务验收。

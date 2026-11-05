@@ -1,4 +1,4 @@
-"""The Web UI server forwards Gateway file import and export for local clients (Gateway F_13)."""
+"""The Web UI server forwards Gateway file import and export, streaming upload bodies (Gateway F_13)."""
 
 from __future__ import annotations
 
@@ -108,14 +108,17 @@ def test_downloads_are_forwarded_with_their_headers(tmp_path):
     assert seen == [{"method": "GET", "path": DOWNLOAD_PATH}]
 
 
-def test_remote_clients_cannot_import_or_export(tmp_path):
+def test_remote_clients_can_import_and_export(tmp_path):
     seen: list[dict] = []
+    body = bytes(range(256)) * (2 * HALF // 256)
     with _serve(_upstream(seen, threading.Event())) as upstream, _proxy(upstream, tmp_path, remote=True) as port:
-        for method, path, body in (("PUT", UPLOAD_PATH, b"1234"), ("GET", DOWNLOAD_PATH, None)):
+        statuses = []
+        for method, path, payload in (("PUT", UPLOAD_PATH, body), ("GET", DOWNLOAD_PATH, None)):
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-            connection.request(method, path, body=body)
+            connection.request(method, path, body=payload)
             response = connection.getresponse()
             response.read()
             connection.close()
-            assert response.status == 403, method
-    assert seen == []
+            statuses.append(response.status)
+    assert statuses == [204, 200]
+    assert seen == [{"method": "PUT", "path": UPLOAD_PATH, "body": body}, {"method": "GET", "path": DOWNLOAD_PATH}]
