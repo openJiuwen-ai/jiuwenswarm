@@ -10,6 +10,7 @@ stalled loop from a dead pipe before it replaces the Worker.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -440,3 +441,27 @@ async def test_business_frame_proves_the_worker_loop_ran() -> None:
             }
         )
         await _until(lambda: supervisor._worker_last_beat > stalled + 5.0)
+
+
+@pytest.mark.parametrize("age,restarted", [(35.0, False), (181.0, True)])
+async def test_business_stall_logs_running_business_and_retains_thresholds(age, restarted, caplog):
+    supervisor = RuntimeSupervisor(Readiness())
+    async with _running(supervisor) as (conn, _pump):
+        message = _pong(age)
+        message["loop_stall"] = {"operation": "request", "request_id": "blocked-request",
+            "session_id": "blocked-session", "method": "designer.run.execute",
+            "stack": [{"file": "compose.py", "line": 74, "function": "_run_ffmpeg"}],
+            "params": {"api_key": "must-never-be-logged"}}
+        await conn.messages.put(message)
+        await _until(lambda: bool(supervisor._worker_stall_context))
+        assert await supervisor._classify_worker_stall(time.monotonic()) is restarted
+        assert conn.closed is restarted
+        records = [record.getMessage() for record in caplog.records if "business=" in record.getMessage()]
+        context = json.loads(records[-1].split("business=", 1)[1])
+        assert context["request_id"] == "blocked-request"
+        assert context["session_id"] == "blocked-session"
+        assert "_run_ffmpeg" in caplog.text
+        assert "must-never-be-logged" not in caplog.text
+        assert module._WORKER_STALL_WARN == 30 and module._WORKER_STALL_RESTART == 180
+        supervisor._note_worker_beat({"kind": KIND_WIRE})
+        assert supervisor._worker_stall_context == {}

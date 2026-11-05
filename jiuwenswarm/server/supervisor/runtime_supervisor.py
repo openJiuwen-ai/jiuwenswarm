@@ -73,6 +73,31 @@ _FORWARD_DRAIN_TIMEOUT = 1.0
 _WORKER_STALL_WARN = 30.0
 _WORKER_STALL_RESTART = 180.0
 
+
+def _bounded_stall_context(value: object) -> dict[str, Any]:
+    """Keep only diagnostic identity and frame locations, never business payloads."""
+    if not isinstance(value, dict):
+        return {}
+
+    def text(raw: object, limit: int = 128) -> str:
+        if not isinstance(raw, str):
+            return ""
+        return "".join(char if char.isprintable() else "?" for char in raw[:limit])
+
+    result: dict[str, Any] = {}
+    for key in ("operation", "task", "request_id", "session_id", "channel_id", "method", "dispatch_id"):
+        if isinstance(value.get(key), str):
+            result[key] = text(value[key])
+    stack = value.get("stack")
+    if isinstance(stack, list):
+        result["stack"] = [
+            {"file": text(frame.get("file"), 256), "function": text(frame.get("function")),
+             "line": frame["line"]}
+            for frame in stack[:16] if isinstance(frame, dict)
+            and type(frame.get("line")) is int and 0 <= frame["line"] <= 10_000_000
+        ]
+    return result
+
 _GatewayRoute = tuple[Any, asyncio.Lock]
 _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
 
@@ -150,6 +175,7 @@ class RuntimeSupervisor:
         self._peer_generation: int | None = None
         self._last_rx = 0.0
         self._worker_last_beat = 0.0
+        self._worker_stall_context: dict[str, Any] = {}
         self._stall_warned_at = 0.0
         self._forward_queue: _ForwardQueue | None = None
         self._forward_started = 0.0
@@ -687,6 +713,7 @@ class RuntimeSupervisor:
         self._last_rx = time.monotonic()
         # The hello itself was produced by the Worker's event loop.
         self._worker_last_beat = self._last_rx
+        self._worker_stall_context = {}
         self._stall_warned_at = 0.0
         pid = hello.get("pid")
         self._worker_pid = int(pid) if isinstance(pid, int) else None
@@ -818,6 +845,7 @@ class RuntimeSupervisor:
             "worker_loop_beat_age": now - self._worker_last_beat
             if self._worker_last_beat
             else None,
+            "worker_stall_context": self._worker_stall_context,
             "worker_stderr": str(stderr_path) if stderr_path is not None else None,
         }
         logger.warning("[Supervisor] runtime diagnostics: %s", json.dumps(snapshot))
@@ -1008,8 +1036,10 @@ class RuntimeSupervisor:
         age = message.get("loop_beat_age")
         if isinstance(age, (int, float)) and age >= 0:
             self._worker_last_beat = time.monotonic() - float(age)
+            self._worker_stall_context = _bounded_stall_context(message.get("loop_stall"))
         else:
             self._worker_last_beat = time.monotonic()
+            self._worker_stall_context = {}
 
     def _finish_request(self, message: dict[str, Any]) -> None:
         dispatch_id = str(message.get("dispatch_id") or message.get("request_id") or "")
@@ -1227,10 +1257,11 @@ class RuntimeSupervisor:
         if beat_age > _WORKER_STALL_RESTART:
             logger.warning(
                 "[Supervisor] runtime worker business loop stalled %.1fs "
-                "(transport alive); restarting generation=%s pid=%s",
+                "(transport alive); restarting generation=%s pid=%s business=%s",
                 beat_age,
                 self._generation,
                 self._worker_pid,
+                json.dumps(self._worker_stall_context or {"operation": "unknown"}, ensure_ascii=True),
             )
             self._log_diagnostics("worker business loop stalled")
             self._unhealthy_reason = "worker business loop stalled"
@@ -1242,10 +1273,11 @@ class RuntimeSupervisor:
             self._stall_warned_at = now
             logger.warning(
                 "[Supervisor] runtime worker loop unresponsive %.1fs "
-                "(transport alive, waiting up to %.0fs); pid=%s",
+                "(transport alive, waiting up to %.0fs); pid=%s business=%s",
                 beat_age,
                 _WORKER_STALL_RESTART,
                 self._worker_pid,
+                json.dumps(self._worker_stall_context or {"operation": "unknown"}, ensure_ascii=True),
             )
             self._log_diagnostics("worker loop unresponsive")
         return False

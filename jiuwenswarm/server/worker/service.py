@@ -51,6 +51,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
     signals = RuntimeSignalSink(holder, on_ready=dispatcher.mark_ready)
     server = session_source if session_source is not None else IpcServer(socket_path)
     await server.start()
+    beat.enable_tracking()
     signals.ipc_ready()
     logger.info("[Worker] ipc ready: %s", socket_path if session_source is None else "front_loopback")
     loaded: dict[str, Any] = {"runtime": None}
@@ -93,10 +94,11 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                     break
                 continue
             if runtime_task is None:
-                runtime_task = asyncio.create_task(
-                    _load_runtime(host, port, signals, dispatcher, loaded),
-                    name="runtime-load",
-                )
+                with beat.activity({"operation": "runtime_load"}):
+                    runtime_task = asyncio.create_task(
+                        _load_runtime(host, port, signals, dispatcher, loaded),
+                        name="runtime-load",
+                    )
             if holder.last_readiness is not None:
                 await conn.send(holder.last_readiness)
             try:
@@ -143,6 +145,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
             if shutdown_conn is not None and fatal is None:
                 await shutdown_conn.send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
         finally:
+            beat.close_tracking()
             if conn is not None:
                 await conn.close()
             await server.close()
@@ -169,7 +172,10 @@ def _install_heartbeat_fast_path(conn: IpcConnection, beat: LoopBeat) -> None:
     def respond(message: dict[str, Any]) -> None:
         age = beat.age
         arm_stall_dump(beat_age=age)
-        conn.send_direct(heartbeat_reply(age))
+        # Sample before the 30s warning: its watchdog tick can precede the
+        # concurrent pong, so the preceding 10/20s pongs must carry attribution.
+        context = beat.stall_context() if age >= 5.0 else None
+        conn.send_direct(heartbeat_reply(age, stall_context=context))
 
     set_responder(respond)
 
