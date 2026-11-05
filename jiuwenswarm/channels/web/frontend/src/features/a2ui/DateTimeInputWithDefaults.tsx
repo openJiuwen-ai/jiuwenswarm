@@ -2,7 +2,6 @@
 
 import { useCallback, useId } from 'react';
 import type { ChangeEvent } from 'react';
-import { useTranslation } from 'react-i18next';
 import {
   classMapToString,
   stylesToObject,
@@ -21,11 +20,9 @@ function dateInputKind(enableDate: boolean, enableTime: boolean): DateInputKind 
   return enableTime ? 'time' : 'date';
 }
 
-// 可见标题由提示词要求的上方 Text 组件提供；这里只给 input 一个无障碍名（不渲染可见 <label>，避免双标签）
-// 走 i18n，不硬编码单一语言
-function dateTimeAriaKey(enableDate: boolean, enableTime: boolean): string {
-  if (enableDate && enableTime) return 'a2ui.dateTimeAria.datetime';
-  return enableTime ? 'a2ui.dateTimeAria.time' : 'a2ui.dateTimeAria.date';
+function dateInputLabel(enableDate: boolean, enableTime: boolean): string {
+  if (enableDate && enableTime) return 'Date & Time';
+  return enableTime ? 'Time' : 'Date';
 }
 
 export function DateTimeInputWithDefaults({
@@ -33,7 +30,6 @@ export function DateTimeInputWithDefaults({
   surfaceId,
 }: A2UIComponentProps<DateTimeInputNodeLike>) {
   const { theme, resolveString, setValue, getValue } = useA2UIComponent(node, surfaceId);
-  const { t } = useTranslation();
   const props = node.properties;
   const id = useId();
   const enableDate = props.enableDate ?? true;
@@ -59,10 +55,15 @@ export function DateTimeInputWithDefaults({
   return (
     <div className="a2ui-datetime-input" style={hostWeightStyle(node.weight)}>
       <section className={classMapToString(theme.components.DateTimeInput.container)}>
+        <label
+          htmlFor={id}
+          className={classMapToString(theme.components.DateTimeInput.label)}
+        >
+          {dateInputLabel(enableDate, enableTime)}
+        </label>
         <input
           type={dateInputKind(enableDate, enableTime)}
           id={id}
-          aria-label={t(dateTimeAriaKey(enableDate, enableTime))}
           value={value}
           onChange={updateFromInput}
           className={classMapToString(theme.components.DateTimeInput.element)}
