@@ -479,6 +479,17 @@ def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
     )
 
 
+def _history_answer_text(request: AgentRequest, content: Any) -> Any:
+    """Drop the full-duplex spoken-receipt block before the answer is persisted."""
+    params = request.params if isinstance(request.params, dict) else {}
+    binding = params.get("managed_task_binding")
+    if request.channel_id != "video_tool" or not isinstance(binding, dict):
+        return content
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.prompts import strip_brief
+
+    return strip_brief(content, str(binding.get("task_id") or ""))
+
+
 def _should_record_user_history(params: Any) -> bool:
     # History visibility is not permission authority: retain Heartbeat turns.
     if not isinstance(params, dict):
@@ -4078,7 +4089,7 @@ class JiuWenSwarm:
             channel_id=cid,
             role="assistant",
             event_type=et,
-            content=payload.get("content") or payload.get("error") or "",
+            content=_history_answer_text(request, payload.get("content") or payload.get("error") or ""),
             timestamp=record_timestamp,
             extra=extra_fields if extra_fields else None,
             mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
@@ -4140,7 +4151,7 @@ class JiuWenSwarm:
             channel_id=cid,
             role="assistant",
             event_type="chat.final",
-            content=pending_text,
+            content=_history_answer_text(request, pending_text),
             timestamp=record_timestamp,
             extra=extra_fields if extra_fields else None,
             mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
@@ -4612,7 +4623,7 @@ class JiuWenSwarm:
                 channel_id=cid,
                 role="assistant",
                 event_type="chat.final",
-                content=pending_text,
+                content=_history_answer_text(request, pending_text),
                 timestamp=record_timestamp,
                 # 透传 proactive 标记到 history——刷新页面时前端靠 payload.source===
                 # 'proactive_recommendation' 渲染推荐卡片，不带则退化白色气泡。
@@ -4645,7 +4656,7 @@ class JiuWenSwarm:
                     channel_id=cid,
                     role="assistant",
                     event_type="chat.final",
-                    content=item.content,
+                    content=_history_answer_text(request, item.content),
                     timestamp=record_timestamp,
                     extra=extra_fields,
                     mode=request.params.get("mode", "unknown"),
@@ -4832,7 +4843,7 @@ class JiuWenSwarm:
                 channel_id=cid,
                 role="assistant",
                 event_type="chat.final",
-                content=content,
+                content=_history_answer_text(request, content),
                 timestamp=resolve_final_record_timestamp(
                     event_type="chat.final",
                     segment_started_at=None,
@@ -5333,7 +5344,9 @@ class JiuWenSwarm:
                                     channel_id=cid,
                                     role="assistant",
                                     event_type=et,
-                                    content=data.payload.get("content") or data.payload.get("error") or "",
+                                    content=_history_answer_text(
+                                        request, data.payload.get("content") or data.payload.get("error") or "",
+                                    ),
                                     timestamp=record_timestamp,
                                     extra=extra_fields if extra_fields else None,
                                     mode=request.params.get("mode", "unknown"),
@@ -5576,7 +5589,7 @@ class JiuWenSwarm:
                                 channel_id=cid,
                                 role="assistant",
                                 event_type=et,
-                                content=data.get("content") or data.get("error") or "",
+                                content=_history_answer_text(request, data.get("content") or data.get("error") or ""),
                                 timestamp=record_timestamp,
                                 extra=extra_fields if extra_fields else None,
                                 mode=request.params.get("mode", "unknown"),
@@ -5709,7 +5722,7 @@ class JiuWenSwarm:
                 channel_id=cid,
                 role="assistant",
                 event_type="chat.final",
-                content=finalized_assistant_message,
+                content=_history_answer_text(request, finalized_assistant_message),
                 timestamp=time.time(),
                 extra=_with_heartbeat_history_metadata(
                     _with_web_agent_template_metadata(

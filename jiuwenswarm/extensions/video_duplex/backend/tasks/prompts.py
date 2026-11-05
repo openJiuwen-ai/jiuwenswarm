@@ -1,6 +1,7 @@
 """Model-facing task instructions. User requirements and results are opaque data."""
 
 import json
+import re
 
 
 JOYAI_TASK_INSTRUCTIONS = (
@@ -90,6 +91,24 @@ def build_execution_prompt(
         "requested format and detail; otherwise be concise."
         f"{brief_protocol}"
     )
+
+
+def brief_markers(nonce):
+    return f"[[JIUWEN_BRIEF_BEGIN:{nonce}]]", f"[[JIUWEN_BRIEF_END:{nonce}]]"
+
+
+def brief_pattern(nonce):
+    begin, end = brief_markers(nonce)
+    return re.compile(
+        rf"(?:\r?\n)*{re.escape(begin)}\s*(.*?)\s*{re.escape(end)}(?:\r?\n)*", re.DOTALL,
+    )
+
+
+def strip_brief(text, nonce):
+    """Remove the spoken-receipt block; it is protocol data, not part of the answer."""
+    if not nonce or not isinstance(text, str) or "[[JIUWEN_BRIEF_" not in text:
+        return text
+    return brief_pattern(nonce).sub("\n", text, count=1).strip() or text.strip()
 
 
 def build_brief_prompt(begin, end, language_rule="Speak to the user in Simplified Chinese."):
