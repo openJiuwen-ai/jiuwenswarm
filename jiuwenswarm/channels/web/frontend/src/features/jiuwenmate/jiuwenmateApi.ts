@@ -1054,7 +1054,8 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       await request(JIUWENMATE_METHODS.settingsUpdate, {
         agent_id: agentId, settings,
       });
-      if (settings.capabilities.model) await request(JIUWENMATE_METHODS.publish, { agent_id: agentId });
+      const replyModeOnly = edit.groupReplyMode !== undefined && Object.keys(edit).every((key) => key === 'groupReplyMode');
+      if (settings.capabilities.model && !replyModeOnly) await request(JIUWENMATE_METHODS.publish, { agent_id: agentId });
       return colleague(JIUWENMATE_METHODS.get, { agent_id: agentId });
     },
     updateSettings: (agentId: string, settings: JiuwenMateWireSettings) =>

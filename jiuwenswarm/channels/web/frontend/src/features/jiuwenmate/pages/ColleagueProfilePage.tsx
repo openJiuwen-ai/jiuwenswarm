@@ -403,6 +403,11 @@ export function ColleagueProfilePage({
     setGroupReplyMode(colleague.groupReplyMode ?? 'adaptive');
   }, [colleague.groupReplyMode]);
   useEffect(() => {
+    if (settingsError?.section !== 'channels') return;
+    const timer = window.setTimeout(() => setSettingsError(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [settingsError]);
+  useEffect(() => {
     setPermissionProfile(colleague.permissionProfile ?? 'default');
   }, [colleague.permissionProfile]);
   useEffect(() => {
@@ -609,6 +614,7 @@ export function ColleagueProfilePage({
       });
   };
   const changeGroupReplyMode = (mode: 'passive' | 'adaptive') => {
+    if (mode === groupReplyMode || savingResources || !onSaveSettings) return;
     const previous = groupReplyMode;
     setGroupReplyMode(mode);
     void persistSettings({ groupReplyMode: mode }).then((saved) => { if (!saved) setGroupReplyMode(previous); });
