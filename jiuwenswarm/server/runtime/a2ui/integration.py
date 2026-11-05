@@ -166,6 +166,7 @@ async def finalize_assistant_response_if_a2ui(
         repair_call=repair_call if callable(repair_call) else None,
         a2ui_enabled=a2ui_config.enabled,
         retry_without_a2ui_call=retry_without_a2ui_call if callable(retry_without_a2ui_call) else None,
+        channel=channel,
     )
 
 

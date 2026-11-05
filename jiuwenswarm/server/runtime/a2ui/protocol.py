@@ -96,6 +96,7 @@ class A2UIProtocolSpec:
         language: str = "en",
         *,
         include_browser_workflows: bool = False,
+        channel: str | None = None,
     ) -> str:
         if language in {"zh", "cn"}:
             role = (
@@ -127,7 +128,7 @@ class A2UIProtocolSpec:
                 "version other than 0.8."
             )
 
-        workflow = f"{workflow}\n\n{build_a2ui_autonomy_instruction(language)}"
+        workflow = f"{workflow}\n\n{build_a2ui_autonomy_instruction(language, channel)}"
         if include_browser_workflows:
             workflow = f"{workflow}\n\n{build_a2ui_browser_workflow_instruction()}"
         prompt = self.schema_manager.generate_system_prompt(
@@ -190,13 +191,14 @@ class A2UIProtocolSpec:
         invalid_content: str,
         validation_error: str,
         user_query: str | None = None,
+        channel: str | None = None,
     ) -> str:
         query_section = (
             f"Original user request:\n{user_query}\n\n"
             if user_query
             else ""
         )
-        schema_prompt = self.build_prompt(language="en")
+        schema_prompt = self.build_prompt(language="en", channel=channel)
         return (
             "Your previous A2UI response was invalid. "
             f"Validation error: {validation_error}\n\n"
@@ -234,10 +236,12 @@ def build_a2ui_prompt_section(
     language: str = "en",
     *,
     include_browser_workflows: bool = False,
+    channel: str | None = None,
 ) -> str:
     return get_protocol_spec().build_prompt(
         language,
         include_browser_workflows=include_browser_workflows,
+        channel=channel,
     )
 
 
