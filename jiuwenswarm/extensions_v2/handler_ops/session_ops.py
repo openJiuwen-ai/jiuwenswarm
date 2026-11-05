@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 import asyncio
->
+from collections.abc import Mapping
+from functools import partial
+from pathlib import Path
+
 from openjiuwen.core.events import (
     OPS_BUILD_EVENT_TYPE,
     Event,
@@ -24,13 +27,18 @@ from jiuwenswarm.server.runtime.session.model_selection_store import (
     sanitize_model_info,
 )
 from jiuwenswarm.server.runtime.session.session_repo import read_session_repo
+from jiuwenswarm.server.runtime.session.session_history_ops import (
     SessionHistoryError,
     prepare_extension_append,
     read_session_messages,
+)
+
+from jiuwenswarm.server.runtime.session.session_statistics import (
     SESSION_USAGE_INFO_KEY,
     read_session_turns,
     read_session_usage,
     select_usage_breakdown,
+)
 
 
 def _require_session(ops: EventHandlerOps, capability: str) -> SessionContext:
@@ -109,6 +117,7 @@ async def session_repo(ops: EventHandlerOps) -> dict[str, object] | None:
     return await asyncio.to_thread(read_session_repo, cwd)
 
 
+async def session_messages(
     ops: EventHandlerOps,
     limit: int = 50,
     cursor: str | None = None,
@@ -149,6 +158,9 @@ async def session_append(
         fingerprint=fingerprint, update_metadata=False,
     )
     return result.to_dict()
+
+
+async def session_turns(ops: EventHandlerOps) -> int | None:
     """Read committed main user-input turns, or None for an unknown session."""
     context = _require_session(ops, "session.turns")
     return await asyncio.to_thread(read_session_turns, context.session_id)
@@ -168,6 +180,7 @@ async def session_usage(ops: EventHandlerOps, breakdown: bool = False) -> dict |
         return select_usage_breakdown(snapshot, breakdown)
     return await asyncio.to_thread(read_session_usage, context.session_id, breakdown)
 
+
 async def session_ops_build(
     event: Event,
     ops: EventHandlerOps | None,
@@ -185,8 +198,11 @@ async def session_ops_build(
     builder.add_method("session", "root", session_root)
     builder.add_method("session", "model", session_model)
     builder.add_method("session", "repo", session_repo)
+    builder.add_method("session", "messages", session_messages)
     builder.add_method("session", "append", partial(session_append, bus=bus))
+    builder.add_method("session", "turns", session_turns)
     builder.add_method("session", "usage", session_usage)
+    return builder
 
 
 def register_session_ops(bus: ExtensionEventBus) -> None:
