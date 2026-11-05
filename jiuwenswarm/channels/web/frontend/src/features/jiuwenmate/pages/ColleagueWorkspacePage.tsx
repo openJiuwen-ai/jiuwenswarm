@@ -58,6 +58,7 @@ import type {
 } from '../types';
 
 const CHANNEL_PLATFORM_ORDER = ['feishu', 'welink', 'dingtalk'];
+const CHANNEL_DIRECTORY_REFRESH_MS = 10_000;
 
 function channelGroups(channels: readonly JiuwenMateChannel[]): { platform: string; items: JiuwenMateChannel[] }[] {
   const buckets = new Map<string, JiuwenMateChannel[]>();
@@ -324,6 +325,10 @@ export function ColleagueWorkspacePage({
   reloadListRef.current = conversationList.reload;
   scheduleEditorRef.current = scheduleEditor;
   const [channels, setChannels] = useState<readonly JiuwenMateChannel[]>([]);
+  const channelCacheRef = useRef({ sourceKey: '', byAgent: new Map<string, readonly JiuwenMateChannel[]>() });
+  const channelsVisible = !board && !activeGroupId && (
+    state.recordTab === 'channels' || (rightPanel === 'management' && managementTab === 'channels')
+  );
   const selectedChannel = channels.find((item) => item.id === channelId) ?? null;
   const channelAgentId = selectedChannel?.ownerAgentId ?? agentId;
   const [channelMessages, setChannelMessages] = useState<readonly JiuwenMateChannelMessage[]>([]);
@@ -453,38 +458,62 @@ export function ColleagueWorkspacePage({
   useEffect(() => {
     if (!channelApi || !colleagueId) return undefined;
     let cancelled = false;
-    setChannelNotice('');
+    let inFlight = false;
     const sourceAgentIds = channelSourceAgentKey.split('\u0000').filter(Boolean);
-    Promise.allSettled(sourceAgentIds.map(async (sourceAgentId) => ({
-      sourceAgentId,
-      items: await channelApi.listChannels(sourceAgentId),
-    }))).then((results) => {
-      if (cancelled) return;
-      const fulfilled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-      if (fulfilled.length === 0) {
-        const failure = results.find((result) => result.status === 'rejected');
-        setChannels([]);
-        setChannelNotice(failure?.status === 'rejected' ? errorMessage(failure.reason) || 'failed' : 'failed');
-        return;
-      }
-      const unique = new Map<string, JiuwenMateChannel>();
-      for (const { sourceAgentId, items } of fulfilled) {
-        for (const item of items) {
-          const key = `${item.platform}:${item.id}`;
-          if (!unique.has(key)) unique.set(key, { ...item, ownerAgentId: sourceAgentId });
+    if (channelCacheRef.current.sourceKey !== channelSourceAgentKey) {
+      channelCacheRef.current = { sourceKey: channelSourceAgentKey, byAgent: new Map() };
+      setChannels([]);
+      setChannelNotice('');
+    }
+    const refresh = async () => {
+      if (cancelled || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      try {
+        const results = await Promise.allSettled(sourceAgentIds.map(async (sourceAgentId) => ({
+          sourceAgentId,
+          items: await channelApi.listChannels(sourceAgentId),
+        })));
+        if (cancelled) return;
+        const fulfilled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+        if (fulfilled.length === 0) {
+          const failure = results.find((result) => result.status === 'rejected');
+          setChannelNotice(failure?.status === 'rejected' ? errorMessage(failure.reason) || 'failed' : 'failed');
+          return;
         }
+        for (const { sourceAgentId, items } of fulfilled) channelCacheRef.current.byAgent.set(sourceAgentId, items);
+        const unique = new Map<string, JiuwenMateChannel>();
+        for (const sourceAgentId of sourceAgentIds) {
+          for (const item of channelCacheRef.current.byAgent.get(sourceAgentId) ?? []) {
+            const key = `${item.platform}:${item.id}`;
+            if (!unique.has(key)) unique.set(key, { ...item, ownerAgentId: sourceAgentId });
+          }
+        }
+        const items = [...unique.values()];
+        setChannelNotice('');
+        setChannels(items);
+        setState((current) => {
+          if (current.selectedChannelId && items.some((item) => item.id === current.selectedChannelId)) return current;
+          if (!items.length && current.selectedChannelId === null) return current;
+          return { ...current, selectedChannelId: items[0]?.id ?? null };
+        });
+      } finally {
+        inFlight = false;
       }
-      const items = [...unique.values()];
-      setChannels(items);
-      setState((current) => {
-        if (current.selectedChannelId && items.some((item) => item.id === current.selectedChannelId)) return current;
-        return items[0] ? { ...current, selectedChannelId: items[0].id } : { ...current, selectedChannelId: null };
-      });
-    });
+    };
+    const catchUp = () => { void refresh(); };
+    catchUp();
+    const timer = channelsVisible ? window.setInterval(catchUp, CHANNEL_DIRECTORY_REFRESH_MS) : null;
+    if (channelsVisible) {
+      window.addEventListener('focus', catchUp);
+      document.addEventListener('visibilitychange', catchUp);
+    }
     return () => {
       cancelled = true;
+      if (timer !== null) window.clearInterval(timer);
+      window.removeEventListener('focus', catchUp);
+      document.removeEventListener('visibilitychange', catchUp);
     };
-  }, [channelApi, colleagueId, channelSourceAgentKey]);
+  }, [channelApi, colleagueId, channelSourceAgentKey, connectionEpoch, channelsVisible]);
 
   useEffect(() => {
     if (!channelApi || !channelAgentId || !channelId) {

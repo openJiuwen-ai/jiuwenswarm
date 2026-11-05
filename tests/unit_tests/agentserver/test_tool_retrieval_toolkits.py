@@ -14,7 +14,7 @@ from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import (
     _TOOL_CATEGORIES,
     ToolRetrievalToolkit,
 )
-from openjiuwen.core.foundation.tool import ToolExposure, ToolInfo
+from openjiuwen.core.foundation.tool import McpToolCard, ToolExposure, ToolInfo
 
 
 def _deferred_tools() -> list[ToolInfo]:
@@ -670,6 +670,37 @@ def test_collect_deferred_tool_infos_is_explicit_only() -> None:
 
     assert [info.name for info in infos] == ["cron_create_job"]
     assert infos[0].parameters == {"type": "object", "properties": {}}
+
+
+def test_collect_deferred_tool_infos_skips_broken_mcp_projection() -> None:
+    """One invalid MCP card must not hide the rest of the deferred catalogue."""
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    class BrokenMcpToolCard(McpToolCard):
+        def tool_info(self):
+            raise RuntimeError("broken MCP projection")
+
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    cards = [
+        BrokenMcpToolCard(
+            id="broken-mcp",
+            name="mcp_broken_lookup",
+            description="Broken MCP tool",
+            server_name="broken",
+            exposure=ToolExposure.DEFERRED,
+        ),
+        SimpleNamespace(
+            name="cron_create_job",
+            description="Create a cron schedule task",
+            exposure=ToolExposure.DEFERRED,
+            input_params={"type": "object", "properties": {}},
+        ),
+    ]
+
+    infos = adapter._collect_deferred_tool_infos(cards)
+
+    assert [info.name for info in infos] == ["cron_create_job"]
 
 
 def test_mcp_connector_groups_by_prefix() -> None:

@@ -7,6 +7,9 @@ import type {
   TeamTaskStatus,
 } from '../stores/sessionStore';
 import { normalizeFinalContent } from '../utils/finalContent';
+import { ownerTeamId } from './teamOrganization/conversation';
+import { useTeamSelectorStore } from '../stores/teamSelectorStore';
+import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
 import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
@@ -58,6 +61,7 @@ export interface TeamHistoryPanelState {
   tasks: TeamTask[];
   taskEvents: TeamTaskEvent[];
   executionEvents: TeamMemberExecutionEvent[];
+  organizationExecutionEvents?: Record<string, TeamMemberExecutionEvent[]>;
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
   taskProgressBaseline: TaskProgressBaseline;
@@ -826,6 +830,38 @@ export function parseTeamHistoryPanelRecords(records: unknown[], sessionId: stri
   return collectTeamState(records.filter(isRecord), sessionId);
 }
 
+/** Keep the Owner roster and member execution records scoped to their Team after a refresh. */
+export function parseOrganizationHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
+  const state = parseTeamHistoryPanelRecords(records, sessionId);
+  if (!isTeamOrganizationUiEnabled()) return state;
+  const ownerRecords: Record<string, unknown>[] = [];
+  const teams = new Map<string, Record<string, unknown>[]>();
+  const ownerId = ownerTeamId(sessionId)
+    || useTeamSelectorStore.getState().runtimes[sessionId]?.teams.find(team => team.is_owner)?.team_id;
+  if (!ownerId) return state;
+  for (const record of records.filter(isRecord)) {
+    const payload = isRecord(record.event_payload) ? { ...record, ...record.event_payload } : record;
+    const teamId = String(payload.team_id || payload.team_name || '').trim();
+    if (!teamId || teamId === ownerId) {
+      ownerRecords.push(record);
+      continue;
+    }
+    const teamRecords = teams.get(teamId) ?? [];
+    teamRecords.push(record);
+    teams.set(teamId, teamRecords);
+  }
+  if (!teams.size) return state;
+  const ownerState = parseTeamHistoryPanelRecords(ownerRecords, sessionId);
+  return {
+    ...state,
+    members: ownerState.members,
+    executionEvents: ownerState.executionEvents,
+    organizationExecutionEvents: Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
+      teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId).executionEvents,
+    ])),
+  };
+}
+
 interface TeamSnapshotResponse {
   tasks?: unknown;
 }
@@ -949,7 +985,7 @@ export async function loadTeamHistoryPanelState(
     cursor = nextCursor;
   }
 
-  const state = parseTeamHistoryPanelRecords(records, sessionId);
+  const state = parseOrganizationHistoryPanelRecords(records, sessionId);
   // Prefer live DB snapshot as the authoritative board when the monitor is
   // still up — refreshes placeholder / wrong-id waiting cards to real
   // task_id + body. When the monitor is down (empty snapshot), keep the

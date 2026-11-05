@@ -46,16 +46,6 @@ class _TeamLifecycleManager(Protocol):
         """Pause runtime resources owned by the matching Session generation."""
         ...
 
-    async def broadcast_event(
-        self,
-        session_id: str,
-        event: dict[str, Any],
-        *,
-        channel_id: str | None = None,
-    ) -> bool:
-        """Deliver one Team event to the Session's waiters or server push."""
-        ...
-
     async def stop_session_runtime(
         self,
         session_id: str,
@@ -65,6 +55,16 @@ class _TeamLifecycleManager(Protocol):
         generation: int | None = None,
     ) -> bool:
         """Stop runtime resources owned by the matching Session generation."""
+        ...
+
+    async def broadcast_event(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> bool:
+        """Deliver a Session event through observers or the waiter-less fallback."""
         ...
 
     def is_generation_running(self, session_id: str, generation: int) -> bool:
@@ -136,39 +136,14 @@ class TeamSessionLifecycleAdapter:
         *,
         reason: str,
         channel_id: str | None = None,
-    ) -> None:
-        """Pause the matching Team generation."""
-        paused = await self._team_manager.pause_session_runtime(
+    ) -> bool:
+        """Return whether the matching Team generation was paused or drained."""
+        del channel_id
+        return await self._team_manager.pause_session_runtime(
             context.session_id,
             reason,
             generation=context.generation,
         )
-        if paused:
-            # This pause tears the runtime down first, so the later agent-level
-            # team interrupt finds nothing to pause and skips its terminal
-            # frame.  Emit it here, otherwise a round with no surviving
-            # foreground stream (e.g. an ask_user resume) never reports
-            # is_processing=false and the session keeps spinning.
-            # Delivery failure must not abort the caller's remaining
-            # interrupt and coordinator cleanup.
-            try:
-                await self._team_manager.broadcast_event(
-                    context.session_id,
-                    {
-                        "event_type": "chat.processing_status",
-                        "session_id": context.session_id,
-                        "is_processing": False,
-                        "is_complete": True,
-                    },
-                    channel_id=channel_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[TeamSessionLifecycle] pause terminal frame delivery failed: "
-                    "session_id=%s error=%s",
-                    context.session_id,
-                    exc,
-                )
 
     async def stop_session(
         self,
@@ -181,6 +156,34 @@ class TeamSessionLifecycleAdapter:
             context.session_id,
             reason,
             generation=context.generation,
+        )
+
+    async def publish_pause_completed(
+        self,
+        session_id: str,
+        *,
+        generation: int | None,
+        channel_id: str | None = None,
+    ) -> None:
+        """Park surviving observers and publish the authoritative pause terminal."""
+        if generation is not None:
+            self._coordinator.mark_session_waiting_for_input(session_id, generation)
+        logger.info(
+            "[TeamProcessingStatus] generated: source=pause_completed channel_id=%s "
+            "session_id=%s generation=%s is_processing=False is_complete=True",
+            channel_id,
+            session_id,
+            generation,
+        )
+        await self._team_manager.broadcast_event(
+            session_id,
+            {
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
+            channel_id=channel_id,
         )
 
     def is_running(self, context: SessionLifecycleContext) -> bool:

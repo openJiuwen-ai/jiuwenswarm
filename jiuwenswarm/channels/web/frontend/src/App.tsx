@@ -144,6 +144,7 @@ import {
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
 import { resolveNewConversationProjectDir } from './multi-session/state/newConversationProject';
+import { clearAttachmentDrafts } from './features/sessionAssets/attachmentDraftRegistry';
 import { toDisplaySessionTitle } from './utils/documentMessage';
 import {
   getHiddenNavItemsForPlatform,
@@ -205,6 +206,7 @@ import {
 import {
   shouldInsetTrajectoryForFloatingTasks,
   trajectoryComposerClearance,
+  type TrajectoryComposerPolicy,
 } from './features/trajectory/trajectoryLayout';
 import {
   normalizeTrajectoryDiagnosisEnabled,
@@ -212,8 +214,14 @@ import {
   useTrajectoryDiagnosisEnabled,
 } from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
+import { setComfyuiWorkflowEnabled } from './features/designer/comfyuiFeatureConfig';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
+import {
+  isOrganizationOwnerStopped,
+  organizationOwnerStateRevision,
+  setOrganizationOwnerStopped,
+} from './features/teamOrganization/processing';
 import {
   normalizeTeamDispatchMode,
   resolveNewSessionDispatchMode,
@@ -482,6 +490,7 @@ function AppContent({
   // watch-only, per session, alongside which view that session last showed.
   const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
+  const [diagnosisComposerPolicy, setDiagnosisComposerPolicy] = useState<TrajectoryComposerPolicy>('available');
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
@@ -892,14 +901,26 @@ function AppContent({
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
   }, [selectChatSurfaceView]);
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
+  }, [selectChatSurfaceView]);
   const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const composerHeldClosed = composerDocked && diagnosisComposerPolicy !== 'available';
   const toggleTrajectoryComposer = useCallback(() => {
+    if (composerHeldClosed) return;
     setTrajectoryComposerCollapsed((current) => ({
       ...current,
       [sessionId]: !(current[sessionId] ?? false),
     }));
-  }, [sessionId]);
+  }, [composerHeldClosed, sessionId]);
+  useEffect(() => {
+    if (diagnosisComposerPolicy === 'available') return;
+    setTrajectoryComposerCollapsed((current) => (
+      current[sessionId] === true ? current : { ...current, [sessionId]: true }
+    ));
+  }, [diagnosisComposerPolicy, sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
@@ -1593,6 +1614,9 @@ function AppContent({
     if (result.contextUsageSnapshot) {
       useSessionStore.getState().receiveContextUsage(result.contextUsageSnapshot);
     }
+    if (result.tokenUsageSnapshot) {
+      useSessionStore.getState().receiveSessionTokenUsage(result.tokenUsageSnapshot);
+    }
     for (const item of result.toolReplay) {
       if (item.kind === 'tool_call') {
         const n = normalizeToolCallPayload(item.payload);
@@ -1880,6 +1904,7 @@ function AppContent({
   }, []);
 
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
+    const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
       const response = await request<Session>('session.get_metadata', {
@@ -1914,6 +1939,18 @@ function AppContent({
         targetSessionId,
         canContinueQueuedMessages === true,
       );
+      // Metadata can report aggregate child activity after the Owner has stopped.
+      // Only restore a persisted stop if no newer organization action raced this query.
+      if (
+        session.organization_owner_stopped === true && !isOrganizationOwnerStopped(targetSessionId) &&
+        organizationOwnerStateRevision(targetSessionId) === ownerStateRevision
+      ) {
+        setOrganizationOwnerStopped(targetSessionId, true);
+      }
+      if (isOrganizationOwnerStopped(targetSessionId)) {
+        session.is_processing = false;
+        session.status = 'interrupted';
+      }
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
       // is_processing 由 Gateway 在 session.get_metadata 响应入队前读取当前
@@ -2041,6 +2078,7 @@ function AppContent({
         normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled),
       );
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
+      setComfyuiWorkflowEnabled(config.comfyui_workflow_enabled);
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
         config.multi_model_collaboration_enabled,
@@ -2209,6 +2247,21 @@ function AppContent({
       cli_path: cliPath || "",
       use_builtin: useBuiltin ? "true" : "false",
     });
+  }, [request]);
+
+  const validateExternalCliPaths = useCallback(async (paths: string[]) => {
+    const payload = await request<{ results: Record<string, boolean | null> }>('external_cli.validate_paths', {
+      paths,
+    });
+    return payload?.results ?? {};
+  }, [request]);
+
+  const pruneExternalCliPathHistories = useCallback(async (cliAgent: ExternalCliAgentKind, removePaths: string[]) => {
+    const payload = await request<{ histories: string[] }>('external_cli.prune_path_histories', {
+      cli_agent: cliAgent,
+      remove_paths: removePaths,
+    });
+    return payload?.histories ?? [];
   }, [request]);
 
   const selectExternalCliPath = useCallback(async (cliAgent: ExternalCliAgentKind, initialPath?: string) => {
@@ -2657,6 +2710,9 @@ function AppContent({
       onContextUsage: (payload) => {
         useSessionStore.getState().receiveContextUsage(payload);
       },
+      onSessionTokenUsage: (payload) => {
+        useSessionStore.getState().receiveSessionTokenUsage(payload);
+      },
       onEmpty: (cursorMeta) => {
         replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, []));
         setHistoryPagerMeta(sessionId, {
@@ -2982,6 +3038,15 @@ function AppContent({
       currentSessionId !== NEW_CONVERSATION_ID
       && pendingNewConversationRef.current
       && Boolean(pendingNewRuntime);
+    // 草稿会话（'new'）的未发送附件和它的输入框文字、专家选择一样只在内存里存着，
+    // 但没有跟着 resetNewConversationRuntime 走同一套"要不要带到这次新对话"的判断
+    // （附件草稿存在 InputArea.tsx 模块作用域里，resetNewConversationRuntime 够不着）。
+    // 不是回到刚才那个还没发出去的草稿时，上一次遗留的附件就清掉，不然用户随手上传、
+    // 没发送就切到别的会话，再点"新建对话"时那个文件会悄悄带进这个新对话，并在它第一次
+    // 真正发消息时被当成这个新会话自己的素材注册上去。
+    if (!shouldRestorePendingNewConversation) {
+      clearAttachmentDrafts(NEW_CONVERSATION_ID);
+    }
     newConversationPreviousSessionRef.current = resolvePendingPreviousSession({
       currentSessionId,
       currentMode: currentRuntime?.mode ?? mode,
@@ -3072,8 +3137,20 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+      };
+      // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
+      // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
+      enterNewConversation(
+        detail.mode,
+        detail.mode ? { forceMode: detail.mode } : {},
+      );
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
@@ -4650,7 +4727,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
                     '--trajectory-composer-clearance': `${trajectoryComposerClearance(
                       composerDocked,
-                      composerCollapsed,
+                      composerCollapsed || composerHeldClosed,
                       trajectoryComposerHeight,
                     )}px`,
                   } as CSSProperties}
@@ -4708,7 +4785,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
                         composerDocked={composerDocked}
-                        composerCollapsed={composerCollapsed}
+                        composerCollapsed={composerCollapsed || composerHeldClosed}
+                        composerToggleDisabled={composerHeldClosed}
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
@@ -4731,6 +4809,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           mode={mode}
                           sessionId={sessionId}
                           onBack={leaveDiagnosisView}
+                          onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}
@@ -4900,6 +4980,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               request={settingsRequest}
               onHasChangesChange={handleSettingsHasChangesChange}
               onDetectExternalCli={detectExternalCli}
+              onValidateExternalCliPaths={validateExternalCliPaths}
+              onPruneExternalCliPathHistories={pruneExternalCliPathHistories}
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}

@@ -163,11 +163,15 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
             <div className="rsi-selected-info__metrics">
               <div>
                 <span>{t('rsi.detail.score', { defaultValue: '分数' })}</span>
-                <strong>{formatArtifactScore(presentation.score, task?.artifact_type)}</strong>
+                <strong data-testid="rsi-selected-node-score">
+                  {formatArtifactScore(presentation.score, task.artifact_type, task.scenario)}
+                </strong>
               </div>
               <div>
                 <span>{t('rsi.detail.parentScore', { defaultValue: '父节点' })}</span>
-                <strong>{formatArtifactScore(presentation.parentScore, task?.artifact_type)}</strong>
+                <strong data-testid="rsi-selected-parent-score">
+                  {formatArtifactScore(presentation.parentScore, task.artifact_type, task.scenario)}
+                </strong>
               </div>
               <div>
                 <span>{t('rsi.detail.scoreDelta', { defaultValue: '差值' })}</span>

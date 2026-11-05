@@ -140,7 +140,7 @@
   cursor: pointer;
 }
 
-.chat-header-icon-btn:hover {
+.chat-header-icon-btn:hover:not(:disabled) {
   background: var(--color-tool-tab-active-bg);
   border-radius: 10.67px;
 }

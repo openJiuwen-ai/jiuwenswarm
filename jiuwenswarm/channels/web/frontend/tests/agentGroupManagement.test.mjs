@@ -239,7 +239,7 @@ test('group upload accepts zip, tar and tar.gz only', () => {
   assert.equal(isAgentGroupUploadFilename('team.json'), false);
 });
 
-test('mine group search matches bilingual display names only (#4473)', () => {
+test('mine group search matches only the visible localized name (#4473)', () => {
   const item = normalizeAgentGroupListItem({
     ...rawGroup, name: 'hidden-package-s-6',
     displayName: { zh: '旅游规划专家团', en: 'Travel Team' },
@@ -249,8 +249,8 @@ test('mine group search matches bilingual display names only (#4473)', () => {
   const search = query => buildGroupCatalogViewModel([item], {
     scope: 'mine', category: '', query, page: 1, pageSize: 12,
   }).items.length;
-  for (const query of ['生成', 'hidden', 's', '6']) assert.equal(search(query), 0, query);
-  for (const query of ['旅游', ' travel ', 'ＴＲＡＶＥＬ']) assert.equal(search(query), 1, query);
+  for (const query of ['生成', 'hidden', 's', '6', 'travel']) assert.equal(search(query), 0, query);
+  for (const query of ['旅游', ' 旅游 ']) assert.equal(search(query), 1, query);
 });
 
 test('catalog filtering keeps description matches while mine excludes them', () => {

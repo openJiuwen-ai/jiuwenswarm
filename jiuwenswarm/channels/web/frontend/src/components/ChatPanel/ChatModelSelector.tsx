@@ -19,6 +19,8 @@ import {
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
+import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 function openModelSettings(): void {
   requestSettingsModule('models');
@@ -50,6 +52,14 @@ export default function ChatModelSelector({
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const activeSessionId = useChatStore((state) => state.activeSessionId);
   const boundSessionId = sessionId || activeSessionId;
+  const organizationEnabled = useTeamOrganizationUiEnabled();
+  const selectedChildTeam = useTeamSelectorStore((state) => {
+    if (!organizationEnabled) return undefined;
+    const runtime = state.runtimes[boundSessionId ?? ''];
+    return runtime?.teams.find((team) =>
+      team.team_id === runtime.selectedTeamId && team.organization_id && !team.is_owner,
+    );
+  });
   const selectedModelName = useSessionStore(
     (state) => state.runtimes[boundSessionId ?? '']?.selectedModelName ?? null,
   );
@@ -78,6 +88,7 @@ export default function ChatModelSelector({
 
   // Deleted/disabled model groups must fall back and be written back (#5424).
   useEffect(() => {
+    if (selectedChildTeam) return;
     if (!boundSessionId || disabled || groupBlocked) return;
     if (!selectedModelSelection) return;
     // Empty catalog means models.list has not arrived yet — not that the selection
@@ -107,6 +118,7 @@ export default function ChatModelSelector({
     disabled,
     groupBlocked,
     selectedModelSelection,
+    selectedChildTeam,
     models,
     modelGroups,
     setSelectedModelSelection,
@@ -134,6 +146,7 @@ export default function ChatModelSelector({
   if (!selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
 
   const persistSelection = async (next: ModelSelection) => {
+    if (selectedChildTeam) return;
     if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
     setSelectionError('');
     setSelectedModelSelection(boundSessionId, next);
@@ -154,11 +167,12 @@ export default function ChatModelSelector({
     <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}>
       <ModelPicker
         testIdPrefix={testIdPrefix}
-        value={selected?.model_name ?? selectedModelName}
-        selection={pickerSelection}
+        value={selectedChildTeam?.execution_model_name ?? selected?.model_name ?? selectedModelName}
+        selection={selectedChildTeam?.execution_model_selection ?? pickerSelection}
         includeModelGroups={includeModelGroups}
         unavailableSelectionLabel={groupBlocked ? t('chat.modelSelector.selectOrdinaryModel') : undefined}
         onChange={(modelName) => {
+          if (selectedChildTeam) return;
           if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
           setSelectionError('');
           setSelectedModelName(boundSessionId, modelName);
@@ -166,7 +180,7 @@ export default function ChatModelSelector({
         onSelectionChange={(next) => {
           void persistSelection(next);
         }}
-        disabled={disabled}
+        disabled={disabled || Boolean(selectedChildTeam)}
         onAddModel={openModelSettings}
       />
       {selectionError ? (

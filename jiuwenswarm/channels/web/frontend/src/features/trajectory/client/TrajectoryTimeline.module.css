@@ -15,7 +15,7 @@
 .plot {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
-  height: 50px;
+  height: 80px;
   overflow: hidden;
   background: var(--dsw-alias-bg-layer-2);
 }
@@ -25,7 +25,7 @@
   border-right: 1px solid var(--dsw-alias-border-l1);
   color: var(--dsw-alias-label-caption);
   font: var(--dsw-font-xs-13);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -35,20 +35,20 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  height: 8px;
+  height: 12px;
   text-align: right;
 }
 
 .labels span:nth-child(1) {
-  top: 7px;
+  top: 12px;
 }
 
 .labels span:nth-child(2) {
-  top: 21px;
+  top: 34px;
 }
 
 .labels span:nth-child(3) {
-  top: 35px;
+  top: 56px;
 }
 
 .track {
@@ -83,8 +83,8 @@
 .lanes {
   position: absolute;
   z-index: 2;
-  top: 7px;
-  bottom: 7px;
+  top: 12px;
+  bottom: 12px;
   left: var(--trajectory-domain-left);
   width: var(--trajectory-domain-width);
 }
@@ -117,7 +117,7 @@
 
 .span {
   position: absolute;
-  top: calc(var(--trajectory-span-lane) * 14px);
+  top: calc(var(--trajectory-span-lane) * 22px);
   left: calc(var(--trajectory-span-left) + var(--trajectory-span-gap));
   width: max(
     2px,
@@ -127,7 +127,7 @@
       - var(--trajectory-span-gap)
     )
   );
-  height: 8px;
+  height: 12px;
   min-width: 2px;
   border-radius: 1px;
   background: var(--dsw-alias-label-secondary);

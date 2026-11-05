@@ -585,6 +585,36 @@ def test_conflicts_and_batch_validation(archive):
             lc.parse_ids(params)
 
 
+@pytest.mark.parametrize("work_mode", ["work", "code", "design"])
+def test_archived_page_filters_every_supported_work_mode(work_mode):
+    items = [
+        {"session_id": f"sess_{mode}", "work_mode": mode, "archived_at": 1}
+        for mode in ("work", "code", "design")
+    ]
+
+    result = lc.page(items, {"work_mode": work_mode}, "sessions", 200)
+
+    assert [item["session_id"] for item in result["sessions"]] == [f"sess_{work_mode}"]
+    assert result["total"] == 1
+
+
+def test_archived_page_design_filter_returns_empty_without_design_items():
+    items = [{"session_id": "sess_work", "work_mode": "work", "archived_at": 1}]
+
+    result = lc.page(items, {"work_mode": "design"}, "sessions", 200)
+
+    assert result["sessions"] == []
+    assert result["total"] == 0
+
+
+@pytest.mark.parametrize("work_mode", ["unknown", "", 1])
+def test_archived_page_rejects_unsupported_work_mode(work_mode):
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.page([], {"work_mode": work_mode}, "sessions", 200)
+
+    assert error.value.code == "BAD_REQUEST"
+
+
 @pytest.mark.asyncio
 async def test_delete_cron_sessions_accepts_running_child(archive):
     import shutil

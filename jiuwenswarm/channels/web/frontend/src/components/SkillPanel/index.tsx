@@ -1,4 +1,4 @@
-import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
+import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -265,7 +265,7 @@ export function SkillPanel({
     openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
-  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView, withSession });
+  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView });
 
   const {
     skillGraphPanelRef,
@@ -334,7 +334,7 @@ export function SkillPanel({
       // 两步（第二步挪到了下面 visibleSkills 里），computeMySkills 已经把两步合并，语义不变
       // （排除条件不依赖搜索关键字，跟下面的关键字过滤谁先谁后结果一样）。
       return computeMySkills(result, installedSkillNames).filter(skill =>
-        matchesAssetName(searchKeyword, assetSearchNames(skill.display_name, skill.name)),
+        matchesAssetName(searchKeyword, [skill.display_name || skill.name]),
       );
     }
     const keyword = searchKeyword.toLowerCase();
@@ -633,13 +633,15 @@ export function SkillPanel({
     [t],
   );
 
-  // 通过聊天创建：新建会话，选中 skill-creator（统一入口）并在 chip 后追加创建提示文字
+  // 通过聊天创建：新建会话，选中 skill-creator（统一入口）并在 chip 后追加创建提示文字。
+  // skill-creator 走单 Agent；显式 mode，避免仍停在集群模式或未发送的 team 草稿。
   const handleCreateViaChat = useCallback(() => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName: 'skill-creator',
           suffixText: t('skills.chatPrompts.createSkill'),
+          mode: 'agent' as const,
           metadata: { scene: 'create_skill' },
         },
       }),

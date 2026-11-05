@@ -176,7 +176,11 @@ class CachedGroupContent:
             if row['status'] == 'pending':
                 await asyncio.to_thread(self.sharing.notify_owner, row['scope'], row['approval_id'])
                 raise core.GroupContentApprovalRequired(approval_id=row['approval_id'])
-            if row['status'] not in {'approved_once', 'approved_permanent'}:
+            if row['status'] == 'owner_read' and not await asyncio.to_thread(
+                self.sharing.is_owner_direct, execution,
+            ):
+                return True, blocked()
+            if row['status'] not in {'approved_once', 'approved_permanent', 'owner_read'}:
                 return True, blocked('所有者已拒绝或审批已过期，本次请求不再读取或分享该来源文件，请直接告知提问者。')
             if row['status'] == 'approved_permanent' and not await asyncio.to_thread(
                 self.sharing.repository.has_grant, row['scope'], row['source_groups'][0]['group_id'],

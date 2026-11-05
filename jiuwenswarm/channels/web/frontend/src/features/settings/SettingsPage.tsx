@@ -21,6 +21,8 @@ export function SettingsPage({
   request,
   onHasChangesChange,
   onDetectExternalCli,
+  onValidateExternalCliPaths,
+  onPruneExternalCliPathHistories,
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
@@ -39,6 +41,8 @@ export function SettingsPage({
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
@@ -72,6 +76,8 @@ export function SettingsPage({
       request={request}
       onHasChangesChange={onHasChangesChange}
       onDetectExternalCli={onDetectExternalCli}
+      onValidateExternalCliPaths={onValidateExternalCliPaths}
+      onPruneExternalCliPathHistories={onPruneExternalCliPathHistories}
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}

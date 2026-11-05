@@ -42,6 +42,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     update_session_metadata,
 )
+from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
 
 logger = logging.getLogger(__name__)
 _BINDING_LOCK = threading.RLock()
@@ -753,7 +754,7 @@ def _project_external_user_input(chunk: OutputSchema) -> dict[str, Any] | None:
     }
 
 
-def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> dict[str, Any] | None:
+async def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> dict[str, Any] | None:
     projected = _project_external_user_input(chunk)
     if projected is not None:
         return projected
@@ -761,7 +762,8 @@ def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> 
         JiuWenSwarmDeepAdapter,
     )
 
-    return JiuWenSwarmDeepAdapter.parse_stream_chunk(
+    return await run_stream_parser(
+        JiuWenSwarmDeepAdapter.parse_stream_chunk,
         chunk,
         has_streamed_content=has_streamed_answer,
     )
@@ -895,7 +897,7 @@ async def process_external_harness_stream(
                     )
                 return
 
-            parsed = _parse_external_chunk(
+            parsed = await _parse_external_chunk(
                 chunk,
                 has_streamed_answer=has_streamed_answer,
             )
