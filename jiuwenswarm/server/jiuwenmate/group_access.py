@@ -83,7 +83,8 @@ def configure_group_access(manager, verify_membership=None) -> None:
             status = item.get("status")
             if status == "recalled":
                 await asyncio.to_thread(manager.group_archive.recall, access.namespace_id, access.group_id,
-                    message.message_id, source_ref=f"refresh:{message.message_id}", changed_at=datetime.now(timezone.utc))
+                    message.message_id, source_ref=f"refresh:{message.message_id}",
+                    changed_at=datetime.now(timezone.utc))
                 updated.append(message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()}))
             elif status in {"normal", "edited"}:
                 changed_at = datetime.fromisoformat(item["changed_at"])
@@ -110,7 +111,9 @@ def configure_group_access(manager, verify_membership=None) -> None:
                 # Feishu did not answer. The archived inbound text remains the trigger.
                 updated.append(message)
             else:
-                updated.append(message.model_copy(update={"status": "unavailable", "text": None, "attachment_refs": ()}))
+                updated.append(message.model_copy(
+                    update={"status": "unavailable", "text": None, "attachment_refs": ()},
+                ))
         return tuple(updated)
 
     manager.refresh_group_messages = refresh

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from openjiuwen.harness.persistent_agent import GroupMessageQuery
 
-from jiuwenswarm.server.jiuwenmate.group_chat_repository import utc_time
+from jiuwenswarm.server.jiuwenmate.group_chat_repository import SHARING_INVALIDATION_SCHEMA, utc_time
 from jiuwenswarm.server.jiuwenmate.group_share_content import content_fingerprints, unreviewed_content
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchResult
@@ -31,7 +31,7 @@ MAX_PREVIEW_TEXT_BYTES = 512 * 1024
 _MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _MAX_SCOPE_BYTES = 64 * 1024
 _DECISIONS = {"once": "approved_once", "permanent": "approved_permanent", "reject": "rejected"}
-_SCHEMA = """
+_SCHEMA = SHARING_INVALIDATION_SCHEMA + """
 CREATE TABLE IF NOT EXISTS group_share_approvals (
     approval_id TEXT PRIMARY KEY,
     namespace_id TEXT NOT NULL,
@@ -192,15 +192,25 @@ class GroupShareRepository(SQLiteStore):
                          request_id: str | None) -> list[str]:
         """Immutable receipt boundaries, including the initial window without any once approval."""
         receipts = self.approvals_for_session(namespace_id, agent_id, session_id)
-        return ['', *(row['decided_at'] + ':' + row['request_id'] for row in receipts
-                      if row['status'] == 'approved_once' and row['decision'] != 'reused_once'
-                      and row['request_id'] != request_id)]
+        boundaries = ['']
+        for row in receipts:
+            reusable = row['status'] == 'approved_once' and row['decision'] != 'reused_once'
+            if reusable and row['request_id'] != request_id:
+                boundaries.append(row['decided_at'] + ':' + row['request_id'])
+        return boundaries
 
     def window_revoked_at(self, namespace_id: str, agent_id: str, session_id: str) -> str | None:
         """Find the latest revocation affecting any private context in this Session."""
         receipts = self.approvals_for_session(namespace_id, agent_id, session_id)
         cutoffs = []
         with self._transaction(write=False) as conn:
+            boundary = conn.execute(
+                "SELECT MAX(invalidated_at) AS cutoff FROM group_share_invalidations "
+                "WHERE namespace_id=? AND agent_id=? AND session_id=?",
+                (namespace_id, agent_id, session_id),
+            ).fetchone()
+            if boundary["cutoff"] is not None:
+                cutoffs.append(boundary["cutoff"])
             for receipt in receipts:
                 if receipt['status'] != 'approved_permanent':
                     continue
@@ -234,6 +244,8 @@ class GroupShareRepository(SQLiteStore):
 
     def request_window_is_current(self, namespace_id: str, request_id: str) -> bool:
         with self._transaction(write=False) as conn:
+            if self._invalidated(conn, namespace_id, request_id):
+                return False
             row = conn.execute(
                 "SELECT * FROM group_share_request_windows WHERE namespace_id=? AND request_id=?",
                 (namespace_id, request_id),
@@ -264,6 +276,46 @@ class GroupShareRepository(SQLiteStore):
                 return datetime.fromisoformat(received.replace('Z', '+00:00')) > datetime.fromisoformat(cutoff)
         return True
 
+    @staticmethod
+    def _invalidated(conn, namespace_id, request_id):
+        return conn.execute(
+            "SELECT 1 FROM group_share_invalidations WHERE namespace_id=? AND request_id=?",
+            (namespace_id, request_id),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _check_source_memberships(conn, scope, sources):
+        """Close the read-to-freeze race using the same transaction as receipt creation."""
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='agent_group_access'").fetchone() is None:
+            return
+        for source in sources:
+            group_id = source["group_id"]
+            if conn.execute("SELECT 1 FROM group_chats WHERE namespace_id=? AND group_chat_id=?",
+                            (scope["namespace_id"], group_id)).fetchone() is None:
+                continue
+            active = conn.execute(
+                "SELECT app_id,visible_from FROM agent_group_access WHERE namespace_id=? AND agent_id=? "
+                "AND group_id=? AND status='active'", (scope["namespace_id"], scope["agent_id"], group_id),
+            ).fetchall()
+            saved = scope.get("source_authorizations", {}).get(group_id)
+            if len(active) != 1 or (saved is not None and saved != dict(active[0])):
+                raise PersistentAgentError("Source group access changed; submit a new request.", code="FORBIDDEN")
+        target = scope["target"]
+        if target["kind"] != "group":
+            return
+        group = conn.execute(
+            "SELECT group_chat_id FROM group_chats WHERE namespace_id=? AND platform=? AND platform_chat_id=?",
+            (scope["namespace_id"], target["channel"], target["id"]),
+        ).fetchone()
+        if group is None:
+            return
+        active = conn.execute(
+            "SELECT app_id FROM agent_group_access WHERE namespace_id=? AND agent_id=? AND group_id=? "
+            "AND status='active'", (scope["namespace_id"], scope["agent_id"], group["group_chat_id"]),
+        ).fetchall()
+        if len(active) != 1 or active[0]["app_id"] != target["app_id"]:
+            raise PersistentAgentError("Target group access changed; submit a new request.", code="FORBIDDEN")
+
     def saved_request_window(self, namespace_id: str, request_id: str) -> str:
         """Cleanup must settle the original confirmation, even after its generation was retired."""
         with self._transaction(write=False) as conn:
@@ -278,7 +330,10 @@ class GroupShareRepository(SQLiteStore):
         with self._transaction() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(group_share_approvals)")}
             if "reused_content_json" not in columns:
-                conn.execute("ALTER TABLE group_share_approvals ADD COLUMN reused_content_json TEXT NOT NULL DEFAULT '[]'")
+                conn.execute(
+                    "ALTER TABLE group_share_approvals "
+                    "ADD COLUMN reused_content_json TEXT NOT NULL DEFAULT '[]'"
+                )
             if "tool_call_ids_json" not in columns:
                 conn.execute(
                     "ALTER TABLE group_share_approvals ADD COLUMN tool_call_ids_json TEXT NOT NULL DEFAULT '[]'"
@@ -463,7 +518,10 @@ class GroupShareRepository(SQLiteStore):
 
         with self._transaction() as conn:
             existing_rows = []
-            for scope, query_digest, scope_json, *_ in prepared:
+            for scope, query_digest, scope_json, result_json, source_json in prepared:
+                if self._invalidated(conn, scope["namespace_id"], scope["request_id"]):
+                    raise PersistentAgentError("Group access changed; submit a new request.", code="FORBIDDEN")
+                self._check_source_memberships(conn, scope, json.loads(source_json))
                 existing = conn.execute(
                     "SELECT * FROM group_share_approvals WHERE namespace_id=? AND agent_id=? "
                     "AND request_id=? AND query_digest=?",
@@ -629,8 +687,10 @@ class GroupShareRepository(SQLiteStore):
                 "SELECT * FROM group_share_grants WHERE namespace_id=? AND config_id=? ORDER BY rowid",
                 (namespace_id, config_id),
             ).fetchall()
-        visible_approvals = [row for row in approvals if len(json.loads(row["source_groups_json"])) == 1
-                             and row['decision'] != 'reused_once']
+        visible_approvals = []
+        for row in approvals:
+            if len(json.loads(row["source_groups_json"])) == 1 and row['decision'] != 'reused_once':
+                visible_approvals.append(row)
         return {"approvals": [self._approval_view(row) for row in visible_approvals],
                 "grants": [self._grant_view(row) for row in grants]}
 
@@ -669,6 +729,8 @@ class GroupShareRepository(SQLiteStore):
         stamp = utc_time(now).isoformat()
         with self._transaction() as conn:
             row = self._required(conn, approval_id)
+            if self._invalidated(conn, row["namespace_id"], row["request_id"]):
+                raise PersistentAgentError("Group access changed; submit a new request.", code="FORBIDDEN")
             if row["status"] != "pending":
                 return self._record(row)
             if stamp >= row["expires_at"]:
@@ -730,6 +792,8 @@ class GroupShareRepository(SQLiteStore):
         with self._transaction() as conn:
             row = self._required(conn, approval_id)
             self._owned(row, namespace_id, config_id)
+            if self._invalidated(conn, namespace_id, row["request_id"]):
+                raise PersistentAgentError("Group access changed; submit a new request.", code="FORBIDDEN")
             if len(json.loads(row["source_groups_json"])) != 1:
                 raise PersistentAgentError(
                     "group sharing approval must contain exactly one source group", code="CONFLICT"

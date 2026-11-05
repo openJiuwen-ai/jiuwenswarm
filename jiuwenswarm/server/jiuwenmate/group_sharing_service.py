@@ -198,6 +198,10 @@ class GroupSharingService:
                     approval["requester_name"] = ""
 
     async def authorize(self, execution, query, result, source_groups):
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
         if result.status not in {"found", "empty", "incomplete"}:
             return result
         try:
@@ -314,7 +318,10 @@ class GroupSharingService:
                     execution, "Source group access changed; submit a new request.", status="unavailable"
                 )
             if row["status"] == "pending":
-                await asyncio.to_thread(self.repository.authorize_from_grants, row["approval_id"], now=self.now())
+                try:
+                    await asyncio.to_thread(self.repository.authorize_from_grants, row["approval_id"], now=self.now())
+                except PersistentAgentError:
+                    return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
                 row = await asyncio.to_thread(self.repository.get, row["approval_id"])
             if row["status"] == "pending":
                 pending_rows.append(row)
@@ -372,6 +379,10 @@ class GroupSharingService:
         except (OSError, PersistentAgentError):
             return _safe_result(execution, "An approved file is no longer available for this Session.",
                                 status="unavailable")
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
         if denied_source:
             if not (released_hits or released_artifacts):
                 return _safe_result(

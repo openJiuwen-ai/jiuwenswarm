@@ -103,7 +103,7 @@ function LiveReply({ text, animate, streaming }: { text: string; animate: boolea
     className="chat-text chat-markdown jiuwenmate-chat-markdown" />;
 }
 
-/** 任务模式同款时间文本；解析不了的值（空串/异常格式）不渲染。 */
+/** Match task timestamps and omit empty or invalid values. */
 function chatTimeText(value: string | null | undefined): string | null {
   if (!value) return null;
   const date = new Date(value);
