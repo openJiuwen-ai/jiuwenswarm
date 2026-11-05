@@ -17,6 +17,7 @@ import multiprocessing
 import multiprocessing.queues
 import multiprocessing.synchronize
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -359,9 +360,13 @@ class TestPortAvailability:
         try:
             # Precondition: without SO_REUSEADDR the port really is unbindable.
             # If this ever stops holding, the test below proves nothing.
-            with pytest.raises(OSError):
-                probe.bind(("127.0.0.1", port))
-                probe.listen(1)
+            # POSIX only: Windows has no such precondition to prove, because a
+            # plain bind() there succeeds while the only remnants of the service
+            # are half-closed connections, so there is nothing to assert.
+            if sys.platform != "win32":
+                with pytest.raises(OSError):
+                    probe.bind(("127.0.0.1", port))
+                    probe.listen(1)
         finally:
             probe.close()
 
