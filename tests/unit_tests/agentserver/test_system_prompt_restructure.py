@@ -1470,11 +1470,22 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "available AI/knowledge/weather answers with attribution" in task_section.content["en"]
     assert "A preference is not a requirement" in task_section.content["en"]
     assert "site, natural-result and detail-visit constraints" in task_section.content["en"]
+    assert "greater than (>) must not become at least (>=)" in task_section.content["en"]
+    assert "opening its details does not approve its business button" in task_section.content["en"]
+    assert "a sort ACK cannot substitute for comparing content" in task_section.content["en"]
+    assert "Consult retained source text/recall_handle first" in task_section.content["en"]
+    assert "resume within the original deadline only for missing work" in task_section.content["en"]
+    assert "without replaying ACKed actions" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
     assert "派发描述保留原始目标、预算、时间和对象约束" in build_browser_task_prompt("cn")
     assert "用户明确限定站点、自然结果或要求进入详情时仍须遵守" in build_browser_task_prompt("cn")
+    assert "高于（>）不能改成至少（>=）" in build_browser_task_prompt("cn")
+    assert "候选详情页不代表已批准执行该页业务按钮" in build_browser_task_prompt("cn")
+    assert "不用翻页成功或排序点击替代内容比较" in build_browser_task_prompt("cn")
+    assert "先用已有原文/recall_handle" in build_browser_task_prompt("cn")
+    assert "确有缺失才在原 deadline 内续跑，不重新执行已 ACK 的动作" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -1490,7 +1501,9 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
 
 
 @pytest.mark.asyncio
-async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
+@pytest.mark.parametrize("language", ["cn", "en"])
+@pytest.mark.parametrize("inner_context", [False, True])
+async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime(language, inner_context):
     browser_agent = SubAgentConfig(
         agent_card=AgentCard(name="browser_agent", description="browser"),
         system_prompt="browser",
@@ -1499,7 +1512,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
         agent_card=AgentCard(name="research_agent", description="research"),
         system_prompt="research",
     )
-    builder = SystemPromptBuilder(language="en")
+    builder = SystemPromptBuilder(language=language)
     agent = SimpleNamespace(
         card=AgentCard(name="main", description="main"),
         deep_config=SimpleNamespace(subagents=[browser_agent, research_agent]),
@@ -1511,7 +1524,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     rail.init(agent)
     await rail.before_model_call(
         AgentCallbackContext(
-            agent=agent,
+            agent=SimpleNamespace() if inner_context else agent,
             inputs=None,
             session=_FakeSession(),
             extra={},
@@ -1531,9 +1544,9 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     runtime_section = builder.get_section("subagent_tools")
     assert task_section is not None
     assert runtime_section is not None
-    assert "Browser Capability Routing Rules" in task_section.content["en"]
-    assert "Adding to a cart is reversible" in task_section.content["en"]
-    assert "Browser Capability Routing Rules" not in runtime_section.content["en"]
+    browser_prompt = build_browser_task_prompt(language)
+    assert task_section.content[language].count(browser_prompt) == 1
+    assert browser_prompt not in runtime_section.content[language]
 
 
 def test_task_planning_tools_remain_enabled_without_todo_prompt_section():
