@@ -441,7 +441,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway"]
+        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -772,6 +772,21 @@ class _WindowApi:
         }:
             return False
         return bool(webbrowser.open(url))
+
+    @staticmethod
+    def open_app_link(url: str) -> bool:
+        """Open an MCP App's ``ui/open-link`` URL in the system browser.
+
+        Only plain http(s) URLs without embedded credentials are accepted.
+        """
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(str(url))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        return bool(webbrowser.open(parsed.geturl()))
 
     @staticmethod
     def capture_oauth_token(options: dict) -> dict | None:
@@ -1240,7 +1255,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from jiuwenswarm.instance_manager.lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)
@@ -1973,7 +1988,12 @@ class DesktopRuntime:
             if isinstance(url, str) and url.startswith("data:"):
                 temp_path.write_bytes(self._bytes_from_download_data_url(url))
             else:
-                urllib.request.urlretrieve(url, temp_path)
+                # urllib 的 HTTP 请求行只接受 ASCII：中文文件名/空格等非 ASCII 字符
+                # 必须先百分号编码，否则抛 UnicodeEncodeError，表现为桌面端下载失败。
+                # safe 保留 URL 结构字符与已有的 %xx 转义，避免二次编码。
+                urllib.request.urlretrieve(
+                    quote(url, safe=":/?#[]@!$&'()*+,;=%"), temp_path
+                )
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)
@@ -2244,7 +2264,9 @@ class DesktopRuntime:
             logger.error("[desktop] local file picker unavailable")
             return []
 
-        from jiuwenswarm.channels.web.file_picker import (
+        # M0-b：file_picker 已迁 gateway 仓侧；desktop 仅需"记住上次目录"两个
+        # 纯函数——本地副本（与 gateway 侧状态文件同路径，行为等价）。
+        from jiuwenswarm.channels.desktop.picker_dir_state import (
             remember_file_picker_dir,
             resolve_file_picker_initial_dir,
         )
@@ -2334,7 +2356,7 @@ class DesktopRuntime:
             logger.warning("[desktop] failed to stat selected file %s: %s", path, exc)
             return None
 
-        from jiuwenswarm.channels.web.file_picker import attachment_mime_type
+        from jiuwenswarm.channels.desktop.picker_dir_state import attachment_mime_type
 
         mime_type = attachment_mime_type(filename)
         absolute = str(path)

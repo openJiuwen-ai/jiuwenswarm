@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
 from jiuwenswarm.runtime.service import AgentRuntime
+from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
 from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
 from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
@@ -55,9 +55,11 @@ async def test_required_preparation_failure_prevents_runtime_consumers(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(monkeypatch):
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(
+    monkeypatch, worker_callback_framework,
+):
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.worker import service
 
@@ -105,10 +107,10 @@ async def _raise(error):
 
 @pytest.mark.asyncio
 async def test_execution_code_overlaps_construction_and_failure_retains_owner(
-    monkeypatch,
+    monkeypatch, worker_callback_framework,
 ):
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     barrier = threading.Barrier(2, timeout=2)
@@ -141,9 +143,11 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
 
 
 @pytest.mark.asyncio
-async def test_extensions_observe_execution_patches_after_parallel_server_construction(monkeypatch):
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+async def test_extensions_observe_execution_patches_after_parallel_server_construction(
+    monkeypatch, worker_callback_framework,
+):
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     overlap = threading.Barrier(2, timeout=2)

@@ -251,6 +251,18 @@ Audit logs use structured JSON format:
 - Ensure system encoding is set correctly (UTF-8 recommended)
 - Use text editors that support UTF-8 encoding to view logs
 
+### 8.4 Worker Heartbeat Timeouts and Slow File Reads
+
+For `runtime worker closed`, align Supervisor diagnostics with the same PID's Worker dump. Distinguish the IPC receive age from business-loop stall age. A single thread dump identifies the current stack; it does not measure a 30-second `stat`, import, or YAML call.
+
+Proactive session scans and recommendation-state reads run on an isolated background thread. A tick skips recommendations after waiting 5 seconds. An unfinished read retains the sole work slot, so repeated ticks cannot create more threads. History compression runs only for the 10 most active candidates; directory traversal and history reads check a 4-second budget between operations.
+
+In the Worker, the first Team tool-description scan reads into an isolated snapshot, with an initial wait of at most 50 milliseconds. Slow reads use existing cached values or bundled descriptions until a complete snapshot is ready. Invalidated snapshots cannot overwrite a new run's cache. At most two Team document reads run concurrently, and failed reads retry after 30 seconds. Look for `[SituationReport]` and `[TeamWorkspace]` degradation warnings.
+
+If a background thread cannot start, the optional read degrades as it does when capacity is full and can retry later. Team guard installation and bundled-description preloading fail independently with warnings, allowing the remaining Worker startup patches to continue. An incompatible SDK cache skips custom document reads until invalidation and preserves existing values or bundled descriptions.
+
+On Windows, continuous named-pipe heartbeat reading and queued SDK log sinks remain independent of the business loop. The 30-second transport timeout and 180-second sustained business-stall restart remain active so the Supervisor can recover a permanently stuck Worker.
+
 ## 9. Best Practices
 
 1. **Development Environment**: Use DEBUG level to obtain detailed debugging information

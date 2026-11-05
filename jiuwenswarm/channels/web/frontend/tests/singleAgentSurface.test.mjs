@@ -87,7 +87,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(panelSource, /active=\{active && selected\}/);
   assert.match(panelSource, /deferredPublishRef\.current = true/);
   assert.match(panelSource, /setPublishedWindow\(\{/);
-  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
+  assert.match(panelSource, /headerItems\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
   assert.match(panelSource, /role="progressbar"/);
   assert.match(panelSource, /initialLoadProgress\.loaded \/ initialLoadProgress\.total/);
   assert.match(panelSource, /error\.code === 'UNSUPPORTED_SESSION_MODE'/);
@@ -114,6 +114,15 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(teamWorkspaceStyles, /border-radius: 0\.5rem/);
   assert.match(teamWorkspaceStyles, /\.lanes[\s\S]*?overflow-y: auto/);
   assert.match(teamWorkspaceStyles, /\.laneRowExpanded[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceSource,
+    /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
+  );
+  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceStyles,
+    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+  );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(
@@ -620,16 +629,25 @@ test('diagnosis view works without the trajectory view and the two switches stay
   container.remove();
 });
 
-test('diagnosis availability and its settings switch do not depend on the trajectory UI switch', () => {
+test('diagnosis is the sole experimental switch and the chat trajectory tab is gone', () => {
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const settingsSource = readFileSync(
     new URL('../src/features/settings/modules/experimental/ExperimentalSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const definitionSource = readFileSync(
+    new URL('../src/features/settings/modules/experimental/definition.ts', import.meta.url),
     'utf8',
   );
   const entry = appSource.match(/const diagnosisEntryAvailable = ([\s\S]*?);\r?\n/);
   assert.ok(entry);
   assert.doesNotMatch(entry[1], /trajectoryUiEnabled/);
   assert.match(entry[1], /trajectoryDiagnosisEnabled/);
+  assert.match(appSource, /trajectoryEnabled=\{false\}/);
+  assert.match(appSource, /requestedChatSurfaceView === 'trajectory'/);
+  assert.doesNotMatch(appSource, /useTrajectoryUiEnabled|setTrajectoryUiEnabled/);
+  assert.doesNotMatch(settingsSource, /export function TrajectoryUiSetting|setTrajectoryUiEnabled/);
+  assert.doesNotMatch(definitionSource, /TrajectoryUiSetting|trajectory-ui-enabled/);
   const diagnosisSetting = settingsSource.match(
     /export function TrajectoryDiagnosisSetting[\s\S]*?\r?\n\}\r?\n/,
   );
@@ -676,7 +694,10 @@ test('trajectory analysis page hosts the raw trajectory and diagnosis as sub-pag
   assert.match(pageSource, /highlightStepKeys: focused\.keys/);
   // The header button enters selection mode instead of starting a run by itself.
   assert.match(pageSource, /onClick=\{enterSelection\}/);
-  assert.match(pageSource, /\{\.\.\.\(selecting \? \{ selection: \{ state: selectionState, onChange: setSelectionState \} \} : \{\}\)\}/);
+  assert.match(
+    pageSource,
+    /\{\.\.\.\(selecting\s*\?\s*\{\s*selection: \{ state: selectionState, onChange: setSelectionState \},\s*fullScopeSelection: fullScope,\s*onFullScopeChange: setFullScope,\s*\}\s*:\s*\{\}\)\}/,
+  );
   assert.match(pageSource, /<DiagnosisSelectionBar/);
   // Sub-pages stay put while a pick is open, and Esc, hiding the page or a new session end it.
   assert.match(pageSource, /disabled=\{selecting\}/);
@@ -698,7 +719,23 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   // Without the selection prop the lanes stay read-only; with it they pick per agent.
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
   assert.match(panelSource, /spanSelectsRange: selecting/);
+  // Browse/zoom uses grab-to-pan; diagnosis selection locks the viewport for brush drag.
+  assert.match(panelSource, /lockTimelineViewport: selecting/);
   assert.match(panelSource, /agentSelection: \{/);
+  // Include checkbox only while a shared brush / full-scope pick is active.
+  assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
+  // Full-trajectory pick keeps lane "select all" inactive; a click narrows to that lane.
+  assert.match(panelSource, /if \(fullScopeSelection\) return false;/);
+  assert.match(
+    panelSource,
+    /toggleSelectAllOnLane\(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals\)/,
+  );
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /showIncludeToggle === true && onToggleIncluded !== undefined/);
+  assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
 });
 
 test('diagnosis sub-page folds finished stages and offers record management', () => {

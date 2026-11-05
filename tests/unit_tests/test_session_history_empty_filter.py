@@ -185,6 +185,77 @@ def test_has_persistable_assistant_payload_subagent_activity():
     ) is True
 
 
+def test_has_persistable_assistant_payload_subtask_update():
+    # Parent-stream roster frames use description/subagent_id without content;
+    # dropping them prevents refresh from rediscovering the subagent panel (#4887).
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={
+            "subagent_id": "web_session_sub_general-purpose_1",
+            "parent_session_id": "web_session",
+            "description": "Agent A",
+            "status": "completed",
+        },
+    ) is True
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={"description": "Agent A"},
+    ) is True
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={},
+    ) is False
+
+
+def test_list_session_subagent_ids_discovers_on_disk_buckets(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    parent = "web_parent_session"
+    sub_a = "web_parent_session_sub_general-purpose_1"
+    sub_b = "web_parent_session_sub_general-purpose_2"
+
+    session_history.append_history_record(
+        session_id=parent,
+        subagent_id=sub_a,
+        request_id="roster-a",
+        channel_id="subagent",
+        role="assistant",
+        event_type="chat.subtask_update",
+        content="Agent A",
+        timestamp=1.0,
+        extra={
+            "subagent_id": sub_a,
+            "parent_session_id": parent,
+            "description": "Agent A",
+            "status": "completed",
+        },
+        mode="subagent",
+    )
+    session_history.append_history_record(
+        session_id=parent,
+        subagent_id=sub_b,
+        request_id="roster-b",
+        channel_id="subagent",
+        role="assistant",
+        event_type="chat.subtask_update",
+        content="Agent B",
+        timestamp=2.0,
+        extra={
+            "subagent_id": sub_b,
+            "parent_session_id": parent,
+            "description": "Agent B",
+            "status": "completed",
+        },
+        mode="subagent",
+    )
+    session_history.flush_history_writes()
+
+    assert session_history.list_session_subagent_ids(parent) == [sub_a, sub_b]
+    assert session_history.list_session_subagent_ids("missing-session") == []
+
+
 def test_has_persistable_assistant_payload_ask_user_question():
     # 问题澄清对话框载荷在 questions[] 里（无 content），必须落盘才能在刷新后恢复。
     assert session_history._has_persistable_assistant_payload(

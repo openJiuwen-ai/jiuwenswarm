@@ -61,10 +61,46 @@ Update todo items for the current session.
 
 ## Actions
 
-- update: change status or fields — mark completed as soon as a milestone is done
-- append: add follow-up milestones when scope genuinely expands (use sparingly; prefer 4–6 total items)
-- cancel / delete: remove items that are no longer needed
-- insert_after / insert_before: only for mid-plan scope changes, not file-by-file progress
+update: change status or fields of an existing milestone. Mark it completed as soon as the phase is done. Send `todos`; each item needs `id` plus only the fields that changed (usually `status`).
+    {
+        "action": "update",
+        "todos": [
+            {"id": "backend", "status": "completed"},
+            {"id": "verify", "status": "in_progress"}
+        ]
+    }
+
+append: add a follow-up milestone when scope genuinely expands (use sparingly; prefer 4–6 total items). Send `todos`; each new item needs id, content, activeForm, description, and status.
+    {
+        "action": "append",
+        "todos": [
+            {"id": "verify", "content": "Verify end-to-end", "activeForm": "Verifying end-to-end", "description": "Run the app and confirm the phase outcome", "status": "pending"}
+        ]
+    }
+
+cancel: mark milestones as cancelled. Send `ids`.
+    {
+        "action": "cancel",
+        "ids": ["verify"]
+    }
+
+delete: remove milestones that are no longer needed. Send `ids`.
+    {
+        "action": "delete",
+        "ids": ["verify"]
+    }
+
+insert_after: insert after a milestone that is in_progress or pending. Only for a real mid-plan scope change, not file-by-file progress. Send `todo_data`.
+    {
+        "action": "insert_after",
+        "todo_data": {"target_id": "backend", "items": [{"id": "verify", "content": "Verify end-to-end", "activeForm": "Verifying end-to-end", "description": "Run the app and confirm the phase outcome", "status": "pending"}]}
+    }
+
+insert_before: insert before a milestone that is pending. Same scope rule as insert_after. Send `todo_data`.
+    {
+        "action": "insert_before",
+        "todo_data": {"target_id": "verify", "items": [{"id": "backend", "content": "Implement the API", "activeForm": "Implementing the API", "description": "Phase outcome, not one file", "status": "pending"}]}
+    }
 
 To replace the entire plan, call todo_create instead of many inserts.
 
@@ -144,11 +180,28 @@ def get_code_todo_modify_input_params() -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "properties": _CODE_TODO_ITEM_PROPERTIES_EN,
+                    "required": ["id"],
                 },
             },
             "todo_data": {
                 "type": "object",
-                "description": "Target and items for insert_after / insert_before.",
+                "description": "Object for insert_after or insert_before.",
+                "properties": {
+                    "target_id": {
+                        "type": "string",
+                        "description": "Id of the existing milestone to insert beside.",
+                    },
+                    "items": {
+                        "type": "array",
+                        "description": "Milestones to insert.",
+                        "items": {
+                            "type": "object",
+                            "properties": _CODE_TODO_ITEM_PROPERTIES_EN,
+                            "required": ["id"],
+                        },
+                    },
+                },
+                "required": ["target_id", "items"],
             },
         },
         "required": ["action"],

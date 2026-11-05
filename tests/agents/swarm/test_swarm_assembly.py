@@ -31,7 +31,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.harness.schema import deep_agent_spec as das
 from openjiuwen.agent_teams.harness.manifest import get_catalog, resolve_factory
@@ -62,6 +61,8 @@ from openjiuwen.harness.tools.worktree import WorktreeConfig
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 from openjiuwen.harness.rails import SkillUseRail
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HEARTBEAT_TOOL_NAMES,
@@ -81,15 +82,12 @@ from jiuwenswarm.agents.swarm import (
     preflight_team_mcps,
     register_swarm_providers,
 )
-from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -272,7 +270,6 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         # Skill retrieval is a separate self-gated tool provider.
         registry.SKILL_RETRIEVAL,
         registry.SYMPHONY_TOOLKIT,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,
@@ -664,6 +661,14 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
         expected.add(registry.SESSION_MESSAGING_TOOLS)
     assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.code"])
+def test_team_members_do_not_register_user_todos(mode: str, role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, mode, role)
+
+    assert registry.USER_TODOS not in {spec.type for spec in tool_specs}
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -1532,7 +1537,7 @@ def test_build_enabled_mcp_server_configs_resolves_credentials(
         lambda: [entry],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {"GITHUB_TOKEN": "ghp_real_123"} if name == "github_http" else {},
     )
 
@@ -1792,6 +1797,14 @@ def test_send_file_gating_defaults_by_channel() -> None:
     # Explicit config switch overrides the default.
     disabled = {"channels": {"web": {"send_file_allowed": False}}}
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
+
+
+def test_xiaoyi_send_file_is_disabled_even_when_config_enabled() -> None:
+    """Xiaoyi's missing delivery path is enforced regardless of stale config."""
+    enabled = {"channels": {"xiaoyi": {"send_file_allowed": True}}}
+
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi")
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi:app")
 
 
 def test_team_send_file_does_not_enable_auto_authorization(
@@ -2542,7 +2555,6 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.AUDIO,
         # SKILL_TOOLKIT moved to the MEMBER_SKILL_TOOLKIT rail (see common set).
         registry.SKILL_RETRIEVAL,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,

@@ -20,6 +20,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     AssetRef,
     DesignerExecutionGraph,
     DesignerGraphNode,
+    clip_order_problems,
     data_predecessors,
     is_compose_sink_node,
     node_agent_template,
@@ -27,6 +28,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_role,
 )
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_prompt,
@@ -383,10 +385,19 @@ class DesignerNodeSpawner(Protocol):
 
 def _graph_patch_summary(graph: DesignerExecutionGraph) -> dict[str, Any]:
     """Shape returned to the leader after a canvas patch is saved."""
-    return {
+    summary: dict[str, Any] = {
         "graph_id": graph.get("graph_id"),
         "nodes": [node.get("id") for node in graph.get("nodes") or []],
     }
+    problems = clip_order_problems(graph)
+    if problems:
+        summary["clip_order_warning"] = (
+            "Each clip films the storyboard row at its config.clip_index and the final "
+            "film follows that order, so patch the clip nodes again: number them 1..N "
+            "in shot order (keep their ids) and wire each clip after the previous one. "
+            "Problems: " + "; ".join(problems)
+        )
+    return summary
 
 
 def designer_agent_group_dir() -> Path:
@@ -419,10 +430,7 @@ def parse_agent_template_ref(ref: str) -> tuple[str | None, str]:
 
 
 def flatten_template_prompt(template: Any, *, language: str = "cn") -> str:
-    from jiuwenswarm.agents.swarm.assembly import (
-        _render_prompt_text,
-        _select_prompt_content,
-    )
+    from openjiuwen.harness.resources import render_prompt_content
 
     sections = list(getattr(template, "prompt_sections", None) or [])
     rendered: list[str] = []
@@ -436,10 +444,7 @@ def flatten_template_prompt(template: Any, *, language: str = "cn") -> str:
             "workspace": workspace,
             **dict(getattr(section, "render_params", None) or {}),
         }
-        text = _render_prompt_text(
-            _select_prompt_content(content, language),
-            params,
-        ).strip()
+        text = render_prompt_content(content, language=language, params=params).strip()
         if text:
             rendered.append(text)
     return "\n\n".join(rendered)
@@ -481,7 +486,7 @@ def load_node_agent_template(node: DesignerGraphNode) -> Any | None:
     if group_name is None and member_id in _DESIGNER_MEMBERS:
         group_name = DESIGNER_AGENT_GROUP_NAME
     if group_name:
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+        from openjiuwen.agent_teams.experts import load_agent_group_package
 
         package_dir = _resolve_group_package_dir(group_name)
         if package_dir is None:
@@ -540,6 +545,16 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "language_lock": cfg.get("language_lock"),
         "speech_line": cfg.get("speech_line"),
         "speech_by_character": cfg.get("speech_by_character"),
+        "bgm_lock": cfg.get("bgm_lock"),
+        "include_speech": cfg.get("include_speech"),
+        "include_music": cfg.get("include_music"),
+        "clip_embedded_audio": cfg.get("clip_embedded_audio"),
+        "continuity_lock": cfg.get("continuity_lock"),
+        "style_lock": cfg.get("style_lock"),
+        "time_of_day_lock": cfg.get("time_of_day_lock"),
+        "crowd_lock": cfg.get("crowd_lock"),
+        "axis_clause": cfg.get("axis_clause"),
+        "director_lock_notes": cfg.get("director_lock_notes"),
         "first_of_setting": cfg.get("first_of_setting"),
         "prompt_char_limit": cfg.get("prompt_char_limit"),
         "media_prompt_limits": cfg.get("media_prompt_limits"),
@@ -648,6 +663,13 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "director_prompt_reviewed": locks["director_prompt_reviewed"],
     }
     snapshot.update(extra)
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        POSITIVE_VISUAL_RULE,
+        authoring_language_rule,
+        current_content_language,
+    )
+
+    content_language = current_content_language()
     prior_lead = str(extra.get("previous_clip_story_state") or "").strip()
     prior_section = ""
     if prior_lead:
@@ -689,7 +711,8 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "storyboards). Your own node prompt is the task instruction, not a content "
         "source — when the embedded upstream text describes a character or scene, "
         "generate THAT content (e.g. the embedded 人物设定 defines the person to "
-        "draw), never an older or inferred variant of it.\n\n"
+        "draw), never an older or inferred variant of it.\n"
+        f"{authoring_language_rule(content_language)}{POSITIVE_VISUAL_RULE}\n\n"
         f"{prior_section}"
         f"```json\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}\n```"
     )
@@ -875,11 +898,17 @@ class DesignerGraphToolkit:
             model_text_or_raise,
         )
 
+        from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+            authoring_language_rule,
+            current_content_language,
+        )
+
         node = _node_from_ctx(self.ctx)
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        base_system = str(system or cfg.get("director_task") or "You are a Designer node agent.")
         result = await call_model_tool(
             prompt=str(prompt or graph_prompt(self.ctx.graph, node) or ""),
-            system=str(system or cfg.get("director_task") or "You are a Designer node agent."),
+            system=base_system + " " + authoring_language_rule(current_content_language()),
             max_tokens=16384,
         )
         return model_text_or_raise(result)
@@ -1000,6 +1029,15 @@ class DesignerGraphToolkit:
         except Exception:  # noqa: BLE001
             pass
         cfg["prompt"] = text
+        # Per-node check before the model call, so a Settings gap names this node
+        # on the canvas for a first run and a regenerate alike (#5266).
+        from jiuwenswarm.server.runtime.designer.handlers.common import (
+            note_media_settings_gap,
+        )
+
+        note_media_settings_gap(
+            self.ctx, "image", f"designer_image_{self.ctx.run_id}_{self.ctx.node_id}"
+        )
         beat = asyncio.create_task(
             _heartbeat_while(self.ctx, "call_image_model", "image model running")
         )
@@ -1066,12 +1104,13 @@ class DesignerGraphToolkit:
             edge_video_inputs,
             first_connected_video_file,
             generate_clip_video,
+            note_video_duration,
             video_duration_seconds,
         )
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             extract_last_frame,
-            resolve_gated_last_frame_chain,
+            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
             stamp_last_frame_onto_next_clips,
             stamp_scene_last_frame_chain,
@@ -1099,7 +1138,7 @@ class DesignerGraphToolkit:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=self.ctx)
+        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, self.ctx)
         if scene_chain:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg
@@ -1250,6 +1289,7 @@ class DesignerGraphToolkit:
             except Exception:  # noqa: BLE001
                 logger.debug("call_video_model early prompt handoff failed", exc_info=True)
         dur = video_duration_seconds(self.ctx, node)
+        note_video_duration(self.ctx, node, dur)
         from jiuwenswarm.server.runtime.designer.audio_locks import video_gen_family_label
 
         beat = asyncio.create_task(
@@ -1298,6 +1338,7 @@ class DesignerGraphToolkit:
                 force_reference_mode=overrides["force_reference_mode"],
                 aspect_ratio=video.aspect_ratio,
                 resolution=video.resolution,
+                node_label=f"designer_video_{self.ctx.run_id}_{self.ctx.node_id}",
             )
         except Exception as exc:  # noqa: BLE001
             self.fail_media(exc)
@@ -1346,7 +1387,7 @@ class DesignerGraphToolkit:
             logger.debug("call_video_model wan-prompt stamp failed", exc_info=True)
         try:
             frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-            extracted = extract_last_frame(path, dest=frame_out)
+            extracted = await run_off_loop(extract_last_frame, path, frame_out)
             if extracted is not None:
                 stamp_last_frame_onto_next_clips(
                     graph,
@@ -1378,11 +1419,12 @@ class DesignerGraphToolkit:
                 compose_required_predecessor_ids,
             )
             from jiuwenswarm.server.runtime.designer.handlers.compose import (
-                compose_predecessor_media_ready,
+                compose_predecessors_missing_media,
             )
 
             states = (self.ctx.run or {}).get("node_states") or {}
             waiting: list[str] = []
+            completed: list[str] = []
             required = compose_required_predecessor_ids(
                 self.ctx.graph if isinstance(self.ctx.graph, dict) else {}
             )
@@ -1398,12 +1440,14 @@ class DesignerGraphToolkit:
                 if status not in {"completed", "complete", "done", "success"}:
                     waiting.append(f"{nid}:{status or 'pending'}")
                     continue
-                if not compose_predecessor_media_ready(
-                    self.ctx.graph if isinstance(self.ctx.graph, dict) else {},
-                    self.ctx.run if isinstance(self.ctx.run, dict) else {},
-                    nid,
-                ):
-                    waiting.append(f"{nid}:media_missing")
+                completed.append(nid)
+            missing = await run_off_loop(
+                compose_predecessors_missing_media,
+                deepcopy(self.ctx.graph if isinstance(self.ctx.graph, dict) else {}),
+                deepcopy(self.ctx.run if isinstance(self.ctx.run, dict) else {}),
+                completed,
+            )
+            waiting.extend(f"{nid}:media_missing" for nid in missing)
             if waiting:
                 return (
                     "ffmpeg_compose blocked: waiting for clips/audio "
@@ -1880,11 +1924,21 @@ def _json_object(value: Any) -> dict[str, Any] | None:
 
 
 def _is_agent_error(payload: dict[str, Any]) -> bool:
-    return str(payload.get("result_type") or "").strip().lower() == "error"
+    if str(payload.get("result_type") or "").strip().lower() == "error":
+        return True
+    # A failed task-loop round (TASK_FAILED, e.g. an LLM stream ReadError)
+    # resolves as a bare ``{"error": ...}`` dict without ``result_type`` or
+    # ``output``. Treat it as an error so the original cause is kept instead
+    # of being masked as "node agent returned empty output".
+    error = payload.get("error")
+    if error is None or not str(error).strip():
+        return False
+    return not str(payload.get("output") or payload.get("content") or "").strip()
 
 
 def _agent_failure_message(result: Any) -> str | None:
-    """Failure text when a DeepAgent invoke ended as ``result_type=error``.
+    """Failure text when a DeepAgent invoke ended as ``result_type=error``
+    or as a bare ``{"error": ...}`` from a failed task-loop round.
 
     A task-loop timeout is a normal return value, not an exception. Its
     ``output`` is the timeout sentence. Treating that sentence as creative
@@ -1917,7 +1971,9 @@ def _node_execute_timeout_sec(node: DesignerGraphNode) -> float:
         return max(1800.0, video_tool_timeout_seconds())
     if pipeline == NODE_ROLE_COMPOSE:
         return 1800.0
-    return 1200.0
+    from jiuwenswarm.server.runtime.designer.media_generation import image_tool_timeout_seconds
+
+    return image_tool_timeout_seconds()
 
 
 class NodeAgentHost:

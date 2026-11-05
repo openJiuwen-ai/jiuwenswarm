@@ -17,6 +17,18 @@ TEAM_EXECUTION_CONTEXT_METADATA_KEY = "_team_execution_context"
 from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM  # noqa: F401,E402  re-export
 
 
+class NoControlTargetError(RuntimeError):
+    """No execution of the Session can take an answer.
+
+    None waits on the interactions it names, or the same answer is already
+    being delivered.
+    """
+
+
+class AnswerInFlightError(NoControlTargetError):
+    """The same answer is already being delivered; that delivery settles what it answers."""
+
+
 class SessionExecutionEndedError(RuntimeError):
     """Control input completed after the execution that asked for it was gone.
 
@@ -144,6 +156,8 @@ class TeamExecutionDetails:
     background_trigger: str | None = None
     session_message_id: str | None = None
     waiter_kind: TeamWaiterKind = TeamWaiterKind.NONE
+    # A pure subscription survives business pause and observes later rounds.
+    observation_only: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -165,7 +179,9 @@ class SessionExecutionHandle:
     parent_execution_id: str | None = None
     root_work_kind: SessionWorkKind | None = None
     root_request_id: str | None = None
-    waiting_control_id: str | None = None
+    # The interactions (questions, approvals, ...) this execution's pause emitted;
+    # an answer to any of them resumes it.
+    waiting_control_ids: frozenset[str] = frozenset()
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
@@ -173,6 +189,7 @@ class SessionExecutionHandle:
     error: str | None = None
     cancellation_requested: bool = False
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    agent: Any = field(default=None, repr=False)
     terminal_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     retain_owner_task: bool = field(default=False, repr=False)
 
@@ -188,7 +205,7 @@ class SessionExecutionHandle:
             parent_execution_id=self.parent_execution_id,
             root_work_kind=self.root_work_kind,
             root_request_id=self.root_request_id,
-            waiting_control_id=self.waiting_control_id,
+            waiting_control_ids=self.waiting_control_ids,
             state=self.state,
             created_at=self.created_at,
             started_at=self.started_at,
@@ -210,7 +227,7 @@ class SessionExecutionSnapshot:
     parent_execution_id: str | None
     root_work_kind: SessionWorkKind | None
     root_request_id: str | None
-    waiting_control_id: str | None
+    waiting_control_ids: frozenset[str]
     state: SessionExecutionState
     created_at: float
     started_at: float | None

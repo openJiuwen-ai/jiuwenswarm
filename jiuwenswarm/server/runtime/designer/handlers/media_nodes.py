@@ -94,6 +94,7 @@ class VideoNodeHandler:
             edge_text_inputs,
             edge_video_inputs,
             first_connected_video_file,
+            note_video_duration,
             video_duration_seconds,
         )
 
@@ -105,15 +106,18 @@ class VideoNodeHandler:
             prompt = f"{prompt.rstrip()}\n\n{payload}".strip()
         refs = [str(path) for path in _upstream_images(ctx, node)]
         video = video_settings(ctx.graph)
+        duration = video_duration_seconds(ctx, node)
+        note_video_duration(ctx, node, duration)
         generated = await generate_clip_video(
             prompt,
             save_dir=str(graph_workspace_dir(ctx.graph)),
             reference_images=refs or None,
             reference_file=first_connected_video_file(videos),
             force_reference_mode=bool(refs or videos),
-            duration=video_duration_seconds(ctx, node),
+            duration=duration,
             aspect_ratio=video.aspect_ratio,
             resolution=video.resolution,
+            node_label=f"designer_video_{ctx.run_id}_{ctx.node_id}",
         )
         path = Path(str(generated.get("video_path") or ""))
         if not path.is_file():

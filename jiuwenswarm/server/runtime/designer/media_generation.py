@@ -46,6 +46,8 @@ _VIDEO_TIMEOUT_SECONDS = 1800.0
 _VIDEO_TOOL_TIMEOUT_SECONDS = 1500.0
 # A 50-step MiniMax-H3 render on a self-deployed server can take far longer.
 _VLLM_OMNI_VIDEO_TIMEOUT_SECONDS = 7200.0
+# Design image generate wait (handlers.common wraps generate_image with this).
+_IMAGE_TOOL_TIMEOUT_SECONDS = 1200.0
 _SAVED_TO = re.compile(r"^Saved to: (.+)$", re.MULTILINE)
 _PENDING_JOB = re.compile(r"^Video job (\S+) (?:submitted and still|is still) ")
 
@@ -97,6 +99,15 @@ def video_tool_timeout_seconds() -> float:
     return _VIDEO_TOOL_TIMEOUT_SECONDS
 
 
+def image_tool_timeout_seconds() -> float:
+    """How long one design image generate call may run.
+
+    Matches the ``asyncio.wait_for`` around ``generate_image`` in
+    ``handlers.common``.
+    """
+    return _IMAGE_TOOL_TIMEOUT_SECONDS
+
+
 def generation_enabled(kind: Kind) -> bool:
     return visual_gen_enabled() if kind == "image" else video_gen_enabled()
 
@@ -109,6 +120,21 @@ def generation_problem(kind: Kind) -> str | None:
     if not slot_settings(kind).complete:
         return f"{label} is not configured: set the API URL, API key and model in Settings > Agent."
     return None
+
+
+def note_generation_problem(kind: Kind, where: str) -> str | None:
+    """Log the Settings gap against the node it blocks, then report it.
+
+    Every media node (first run and regenerate alike) calls this before it
+    starts generating, so the operator log names the exact node instead of
+    only the final, sanitized node error (#5266). The text is the same one
+    ``generation_problem`` returns, so callers can put it straight into the
+    node error.
+    """
+    problem = generation_problem(kind)
+    if problem:
+        logger.warning("Designer %s generation blocked at %s: %s", kind, where, problem)
+    return problem
 
 
 def _local_path(value: str) -> Path | None:

@@ -20,7 +20,6 @@ export type DesignerZoomRequest = {
 type DesignerUiStore = {
   selectedMaterialId: string;
   viewerOpen: boolean;
-  chooserNodeId: string;
   editRequestKey: number;
   canvasTool: DesignerCanvasTool;
   dockPanel: DesignerDockPanel;
@@ -52,8 +51,6 @@ type DesignerUiStore = {
   startEdit: (materialId: string) => void;
   openViewer: (id: string) => void;
   closeViewer: () => void;
-  openRevision: (nodeId: string) => void;
-  closeRevision: () => void;
   setSelectedMaterialId: (id: string) => void;
   reset: () => void;
 };
@@ -61,7 +58,6 @@ type DesignerUiStore = {
 const initialState = {
   selectedMaterialId: '',
   viewerOpen: false,
-  chooserNodeId: '',
   editRequestKey: 0,
   canvasTool: 'select' as DesignerCanvasTool,
   dockPanel: null as DesignerDockPanel,
@@ -96,10 +92,6 @@ export const useDesignerUiStore = create<DesignerUiStore>((set) => ({
   openViewer: (id) => set({ selectedMaterialId: id, viewerOpen: true }),
 
   closeViewer: () => set({ viewerOpen: false }),
-
-  openRevision: (nodeId) => set({ chooserNodeId: nodeId }),
-
-  closeRevision: () => set({ chooserNodeId: '' }),
 
   setSelectedMaterialId: (id) => set({ selectedMaterialId: id }),
 

@@ -1,5 +1,5 @@
-import { ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ChevronUp } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { designerGraphClient } from '../../designerGraphClient';
 import { DESIGNER_ASPECT_RATIO_ICONS } from '../../designerIcons';
@@ -62,6 +62,12 @@ function ChoiceGroup({ label, options, value, disabled, testId, onSelect, showAs
   );
 }
 
+function clampDuration(raw: string, min: number, max: number): number | null {
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 /**
  * Composer-row controls: a summary button that opens the canvas-wide ratio / resolution
  * (plus this video node's own length), and the read-only model name.
@@ -83,6 +89,7 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  const [durationDraft, setDurationDraft] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -158,6 +165,32 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
     : error || t('designer.mediaSettings.loading');
   const modelLabel = caps ? generationModelLabel(isVideo ? caps.video : caps.image) : '';
 
+  useEffect(() => {
+    if (seconds === null) {
+      setDurationDraft('');
+      return;
+    }
+    setDurationDraft(String(seconds));
+  }, [seconds]);
+
+  const commitDuration = (raw: string) => {
+    if (!caps || editingLocked || seconds === null) return;
+    const next = clampDuration(raw, caps.video.min_sec, caps.video.max_sec);
+    if (next === null) {
+      setDurationDraft(String(seconds));
+      return;
+    }
+    setDurationDraft(String(next));
+    if (next !== seconds) {
+      updateNodeConfig(nodeId, (config) => ({ ...config, duration_sec: next }));
+    }
+  };
+
+  const sliderPct =
+    seconds !== null && caps
+      ? ((seconds - caps.video.min_sec) / Math.max(1, caps.video.max_sec - caps.video.min_sec)) * 100
+      : 0;
+
   return (
     <>
       <div
@@ -179,7 +212,7 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
           }}
         >
           <span className="designer-media-settings__summary">{summary}</span>
-          <ChevronDown size={14} aria-hidden />
+          <ChevronUp size={14} aria-hidden />
         </button>
         {open && caps && video && image ? (
           <div
@@ -210,28 +243,50 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
               }
             />
             {seconds !== null ? (
-              <label className="designer-media-settings__field" data-testid="designer-media-settings-video-duration">
-                <span className="designer-media-settings__label">
-                  {t('designer.toolbar.duration')}
-                  <span className="designer-media-settings__value">
-                    {t('designer.mediaSettings.durationValue', { seconds })}
-                  </span>
-                </span>
-                <input
-                  type="range"
-                  className="designer-media-settings__slider"
-                  min={caps.video.min_sec}
-                  max={caps.video.max_sec}
-                  step={1}
-                  value={seconds}
-                  disabled={editingLocked}
-                  onChange={(event) => {
-                    if (editingLocked) return;
-                    const next = Number(event.target.value);
-                    updateNodeConfig(nodeId, (config) => ({ ...config, duration_sec: next }));
-                  }}
-                />
-              </label>
+              <div className="designer-media-settings__field" data-testid="designer-media-settings-video-duration">
+                <span className="designer-media-settings__label">{t('designer.toolbar.duration')}</span>
+                <div className="designer-media-settings__duration-row">
+                  <input
+                    type="range"
+                    className="designer-media-settings__slider"
+                    style={{ '--designer-slider-pct': `${sliderPct}%` } as CSSProperties}
+                    min={caps.video.min_sec}
+                    max={caps.video.max_sec}
+                    step={1}
+                    value={seconds}
+                    disabled={editingLocked}
+                    aria-label={t('designer.toolbar.duration')}
+                    onChange={(event) => {
+                      if (editingLocked) return;
+                      const next = Number(event.target.value);
+                      updateNodeConfig(nodeId, (config) => ({ ...config, duration_sec: next }));
+                    }}
+                  />
+                  <label className="designer-media-settings__duration-value">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="designer-media-settings__duration-input"
+                      value={durationDraft}
+                      disabled={editingLocked}
+                      data-testid="designer-media-settings-video-duration-input"
+                      aria-label={t('designer.toolbar.duration')}
+                      onChange={(event) => setDurationDraft(event.target.value)}
+                      onBlur={() => commitDuration(durationDraft)}
+                      onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          commitDuration(durationDraft);
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                    <span className="designer-media-settings__duration-unit">
+                      {t('designer.mediaSettings.durationUnit')}
+                    </span>
+                  </label>
+                </div>
+              </div>
             ) : null}
             {error ? (
               <p className="designer-media-settings__error" data-testid="designer-media-settings-error">

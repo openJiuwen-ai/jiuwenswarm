@@ -29,6 +29,7 @@ ENV_UDS_MODE = "JIUWENBOX_UDS_MODE"
 # the launcher independent of the FastAPI app module (``main`` runs before
 # anything imports ``jiuwenbox.server.app`` lazily inside ``uvicorn.run``).
 ENV_SAVE_LOGS_DIR = "JIUWENBOX_SAVE_LOGS_DIR"
+ENV_PERF_LOG = "JIUWENBOX_PERF_LOG"
 _ENV_API_TOKEN_NAME = "JIUWENBOX_API_TOKEN"
 DEFAULT_LISTEN = "http://0.0.0.0:8321"
 # Parent supervisor waits on the server child and deletes leftover veths when
@@ -196,6 +197,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--perf",
+        metavar="PERF_LOG",
+        default=None,
+        help=(
+            "Append per-step sandbox create timings to PERF_LOG. "
+            "Each line is 'start_ms<TAB>elapsed_ms<TAB>sandbox_id<TAB>step'. "
+            f"Falls back to ${ENV_PERF_LOG}; unset means no timings are "
+            "sampled or written."
+        ),
+    )
+    parser.add_argument(
         "--cleanup-orphans",
         action="store_true",
         help=(
@@ -237,6 +249,14 @@ def _resolve_save_logs_dir(cli_value: str | None) -> str | None:
     if not raw:
         return None
     return str(Path(raw).expanduser().resolve())
+
+
+def _resolve_perf_log(cli_value: str | None) -> str | None:
+    """Pick ``--perf`` over ``JIUWENBOX_PERF_LOG``; unset means no collection."""
+    raw = cli_value if cli_value else os.environ.get(ENV_PERF_LOG)
+    if not raw or not raw.strip():
+        return None
+    return str(Path(raw.strip()).expanduser().resolve())
 
 
 def _cleanup_orphans_best_effort(reason: str) -> None:
@@ -393,6 +413,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("[launcher] sandbox logs will be saved under %s", save_logs_dir)
     else:
         os.environ.pop(ENV_SAVE_LOGS_DIR, None)
+
+    perf_log = _resolve_perf_log(args.perf)
+    if perf_log:
+        os.environ[ENV_PERF_LOG] = perf_log
+        logger.info("[launcher] per-step create timings will be appended to %s", perf_log)
+    else:
+        os.environ.pop(ENV_PERF_LOG, None)
 
     api_token = _resolve_api_token(args.api_token)
     if api_token:

@@ -20,7 +20,7 @@ import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLi
 import { webClient } from '../../services/webClient';
 import type { AgentGroupCatalogItem, AgentGroupIdentity } from '../../features/agentManagement/types';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
-import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 const MENU_GAP = 10;
@@ -49,10 +49,7 @@ function stateTone(state: string): 'running' | 'idle' | 'unknown' {
 /** 下拉显示专家团目录中的名称；未绑定模板的 Team 保留运行时名称。 */
 function teamLabel(team: RuntimeTeamInfo, identity: AgentGroupIdentity | null, language: string, fallback: string): string {
   if (identity) return resolveTeamGroupDisplayName(identity, language);
-  const agentGroupName = team.agent_group_name?.trim();
-  if (agentGroupName) return agentGroupName;
-  const id = (team.team_id || team.team_name || '').trim();
-  return id || team.display_name?.trim() || fallback;
+  return resolveOrganizationTeamLabel(team, [], fallback);
 }
 
 export interface TeamSelectorProps {
@@ -181,13 +178,14 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
   }, [runtime?.teams, runtime?.selectedTeamId, runtime?.defaultTeamId]);
 
   const openMenu = useCallback(() => {
+    if (sessionId) void fetchTeams(sessionId);
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       setDirection(resolveMenuDirection(rect.bottom, MENU_MAX_HEIGHT));
       setAnchor(rect);
     }
     setOpen((prev) => !prev);
-  }, []);
+  }, [sessionId, fetchTeams]);
 
   useEffect(() => {
     if (!open) return;
@@ -248,6 +246,11 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
             />
           )}
           <span className="chat-mode-select__label">{label}</span>
+          {selected?.available === false && (
+            <span className="text-danger" data-testid="chat-panel-team-select-unavailable">
+              {t('chat.teamSelect.unavailable')}
+            </span>
+          )}
         </span>
         <svg
           className="chat-mode-select__chevron"
@@ -334,6 +337,11 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
                     >
                       {teamLabel(team, teamIdentity, i18n.language, team.team_id)}
                     </span>
+                    {team.available === false && (
+                      <span className="text-danger" data-testid="chat-panel-team-select-option-unavailable" data-variant={team.team_id}>
+                        {t('chat.teamSelect.unavailable')}
+                      </span>
+                    )}
                   </span>
                   {isActive && (
                     <svg

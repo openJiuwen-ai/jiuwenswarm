@@ -120,7 +120,7 @@ Use the following commands during a channel conversation:
 > - 10 legacy canonicals (`DEPRECATION_MAP` keys): `agent`, `agent.plan`, `agent.fast`, `code`, `code.normal`, `code.plan`, `code.team`, `team`, `team.plan.normal`, `team.plan.code`
 > - 2 formal aliases (`MODE_ALIASES` keys): `team.plan` (→ `team.work.plan`), `team.code` (→ `team.code.normal`)
 >
-> Any string outside this set is rejected as an illegal command by the gateway pre-check (`_VALID_MODE_INPUTS` in `jiuwenswarm/gateway/message_handler/message_handler.py`). Legacy strings are silently mapped to the new canonical via `deprecate_mode()`.
+> Any string outside this set is rejected as an illegal command by the gateway pre-check (`_VALID_MODE_INPUTS` in `gateway/message_handler/message_handler.py`). Legacy strings are silently mapped to the new canonical via `deprecate_mode()`.
 
 You can also use `/switch` to change sub-modes within the same category:
 

@@ -5,6 +5,7 @@ import type { SettingValue, SettingsSource } from '../registry/types';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
+import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
 export type SettingsSourceController = {
   values: Readonly<Record<string, unknown>>;
@@ -106,6 +107,7 @@ type BrowserSettingsState = {
   decision_mode: BrowserDecisionMode;
   decision_provider: BrowserDecisionProvider;
   decision_model: string;
+  decision_display_name: string;
   decision_api_base: string;
   // Read-only: path.get reports whether the provider's key is set, never the key.
   jev_key_configured: boolean;
@@ -126,6 +128,7 @@ function normalizeBrowserState(value: Record<string, unknown> | undefined): Brow
       : 'typesafe',
     jev_key_configured: value?.jev_key_configured === true,
     decision_model: typeof value?.decision_model === 'string' ? value.decision_model : '',
+    decision_display_name: typeof value?.decision_display_name === 'string' ? value.decision_display_name : '',
     decision_api_base: typeof value?.decision_api_base === 'string' ? value.decision_api_base : '',
   };
 }
@@ -145,11 +148,15 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
       return undefined;
     }
     const id = ++requestId.current;
+    const displayRevision = browserDisplayRevision();
     setLoading(true);
     setError('');
     void request<Record<string, unknown>>('path.get')
       .then((payload) => {
-        if (id === requestId.current) setValues(normalizeBrowserState(payload));
+        if (id === requestId.current) {
+          setValues(normalizeBrowserState(payload));
+          void applyBrowserDisplaySettings(payload, displayRevision);
+        }
       })
       .catch((loadError) => {
         if (id === requestId.current)
@@ -177,10 +184,12 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
             ...next,
             // Only the Jev dialog edits these fields; unrelated saves must not reset them.
             decision_model: updates.decision_model,
+            decision_display_name: updates.decision_display_name,
             decision_api_base: updates.decision_api_base,
           }, { timeoutMs: 600_000 }),
         );
         setValues((current) => normalizeBrowserState({ ...current, ...result }));
+        await applyBrowserDisplaySettings(result);
         return result;
       } catch (saveError) {
         setValues((current) =>

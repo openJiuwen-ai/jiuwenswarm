@@ -27,6 +27,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from jiuwenswarm.common.runtime_platform import is_harmony_runtime as _is_harmony_runtime
 from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
 from jiuwenswarm.server.runtime.mcp.package_manifest import resolve_mcp_package
 
@@ -128,23 +129,6 @@ class CommandResult:
 
 _SHELL_FORBIDDEN_FIRST = {"bash", "cmd", "/bin/sh", "sh"}
 _SHELL_FORBIDDEN_SECOND = "-c"
-
-
-def _is_harmony_runtime() -> bool:
-    """Return whether this Python process runs in the HarmonyOS HNP sandbox.
-
-    HarmonyOS Python may report linux as sys.platform. The facade exposes HNP
-    executables through PATH, so the HNP path is a reliable fallback when no
-    explicit runtime marker is available.
-    """
-    if os.environ.get("JIUWEN_HARMONY_RUNTIME") == "1":
-        return True
-    if sys.platform == "ohos":
-        return True
-    return any(
-        "/data/app/" in entry and "/hnp/" in entry
-        for entry in os.environ.get("PATH", "").split(os.pathsep)
-    )
 
 
 def _is_binary_not_found(exc: BaseException) -> bool:
@@ -423,6 +407,9 @@ class InstallResult:
     # Mirrors CommandResult.error_kind; set when a command's binary was missing
     # so _connect_cli raises MCP_RUNTIME_MISSING instead of a raw WinError string.
     error_kind: str = ""
+    # True when the CLI's own versionCheck binary is missing (CLI not installed,
+    # as opposed to npm/node missing); maps to MCP_CLI_INCOMPLETE + install_cmd.
+    cli_binary_missing: bool = False
     # cli.json runtime.type (e.g. "node"/"python"), surfaced so the frontend
     # hint can name the missing dependency. Empty when the manifest has no runtime.
     runtime: str = ""
@@ -550,6 +537,7 @@ class CliDriver:
         version: str | None = None
         version_ok = True
         kind = ""
+        cli_binary_missing = False
         # Pin the install command to the manifest's exact version: the CLI's
         # subcommand output (auth/status) is tied to that version, so installing
         # the latest would make statusMatch unreliable. `{version}` is filled
@@ -571,6 +559,8 @@ class CliDriver:
                 err = f"could not parse version from: {res.combined_output}"
             if res.error_kind == ERR_BINARY_NOT_FOUND:
                 kind = ERR_BINARY_NOT_FOUND
+                # The CLI itself is missing, not its package manager.
+                cli_binary_missing = True
         if version_ok and version:
             # CLI already present at the pinned version — skip init.
             logger.info("[cli_driver] %s skip init (version %s ok)", self.name, version)
@@ -602,6 +592,7 @@ class CliDriver:
             name=self.name, installed=True,
             version=version, min_version=m.min_version,
             version_ok=version_ok, error=err, error_kind=kind,
+            cli_binary_missing=cli_binary_missing,
             runtime=m.runtime_type, install_cmd=init_cmd,
         )
 

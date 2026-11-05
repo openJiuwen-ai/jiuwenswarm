@@ -20,6 +20,7 @@ from jiuwenswarm.server.runtime.designer.handlers.common import (
 )
 from jiuwenswarm.server.runtime.designer.user_references import (
     graph_user_references,
+    identity_reference_images_for_node,
     prompt_slot_roster,
     wired_user_reference_images,
 )
@@ -122,6 +123,11 @@ async def _require_image(
     except Exception:  # noqa: BLE001
         pass
 
+    # Per-node check, before the call: a Settings gap is logged against this
+    # node whether it is a first run or a regenerate. The generator still runs
+    # so its own error (which carries the same text) reaches the canvas.
+    handler_io.note_media_settings_gap(ctx, "image", stem)
+
     save_dir = None
     if ctx is not None:
         save_dir = str(handler_io.canvas_output_dir(ctx.graph if isinstance(ctx.graph, dict) else None))
@@ -153,9 +159,13 @@ async def _require_image(
             message="image generated",
         )
     error = str((generated or {}).get("error") or "").strip()
-    raise RuntimeError(
-        f"image_gen required but failed for {stem}: {error or 'no image_path'}"
-    )
+    # A monkeypatched / future generator can still hand back nothing useful; fall
+    # back to the Settings reason so the failure never reads as "no image_path"
+    # while image generation is simply switched off or unconfigured (#5266).
+    from jiuwenswarm.server.runtime.designer.media_generation import generation_problem
+
+    reason = error or (generation_problem("image") or "") or "no image_path"
+    raise RuntimeError(f"image_gen required but failed for {stem}: {reason}")
 
 
 def _aligned_source(ctx: NodeExecutionContext, node: DesignerGraphNode) -> str:
@@ -185,6 +195,51 @@ def _references_for_paths(graph: object, paths: list[str]) -> list[dict]:
     return kept
 
 
+def _still_user_references(ctx: NodeExecutionContext, node: DesignerGraphNode) -> list[str]:
+    """Upload files for this still: edge-wired first, then the un-wired identity upload.
+
+    An upload added on the canvas never gets an edge until the supervisor labels
+    it. Without this the still silently degraded to text-to-image.
+    """
+    wired = [str(path) for path in wired_user_reference_images(ctx, node)]
+    if wired:
+        return wired
+    fallback = [str(path) for path in identity_reference_images_for_node(ctx, node)]
+    if fallback:
+        logger.info(
+            "still %s uses %d upload(s) that arrived on no edge",
+            getattr(ctx, "node_id", ""),
+            len(fallback),
+        )
+    return fallback
+
+
+def _note_unused_references(
+    ctx: NodeExecutionContext | None,
+    node: DesignerGraphNode,
+    used: list[str],
+) -> None:
+    """Tell the user when their upload cannot reach this still, instead of dropping it."""
+    if used or ctx is None:
+        return
+    graph = ctx.graph if isinstance(ctx.graph, dict) else {}
+    if not graph_user_references(graph):
+        return
+    label = str(node.get("label") or ctx.node_id or "still").strip()
+    text = (
+        f"{label}: the uploaded reference image is not wired to this node, "
+        "so this still is generated from text only"
+    )
+    logger.warning(text)
+    emit = getattr(ctx, "emit_activity", None)
+    if not callable(emit):
+        return
+    try:
+        emit("stage", text, "reference_image")
+    except Exception:  # noqa: BLE001
+        logger.debug("reference notice failed", exc_info=True)
+
+
 class CharacterDesignNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
@@ -194,7 +249,8 @@ class CharacterDesignNodeHandler:
         size = image_settings(ctx.graph).size
         combined = bool(cfg.get("combined_cast"))
         max_tries = max(2, int(cfg.get("max_image_calls") or 1))
-        user_images = [str(path) for path in wired_user_reference_images(ctx, node)]
+        user_images = _still_user_references(ctx, node)
+        _note_unused_references(ctx, node, user_images)
         task = str(cfg.get("reference_image_task") or "").strip()
         if task in {"character_specs", "medium_change"}:
             from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
@@ -270,7 +326,8 @@ class SceneNodeHandler:
                     if arch:
                         source = f"{source}\n{arch}"
         else:
-            refs = [str(path) for path in wired_user_reference_images(ctx, node)]
+            refs = _still_user_references(ctx, node)
+            _note_unused_references(ctx, node, refs)
             identity_refs = cfg.get("identity_refs") if isinstance(cfg.get("identity_refs"), dict) else {}
             char_nids_raw = cfg.get("character_node_ids") or identity_refs.get("character_node_ids") or []
             char_nids = [str(x) for x in char_nids_raw if str(x).strip()]

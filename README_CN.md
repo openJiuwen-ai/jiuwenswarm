@@ -29,7 +29,7 @@
   <a href="https://gitcode.com/openJiuwen/jiuwenswarm/releases">
     <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
-  <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python 3.11, 3.12, 3.13, 3.14" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="OS Support" />
   <img src="https://img.shields.io/badge/agent-coordination--engineering-purple.svg" alt="Coordination Engineering" />
   <img src="https://img.shields.io/badge/skill-self--evolution-teal.svg" alt="Skill Self-Evolution" />
@@ -72,11 +72,13 @@
 | 系统 | 下载链接 | 说明 |
 | --- | --- | --- |
 | Windows | [下载 Windows 版本](https://openjiuwen.com/jiuwenswarm) | 适用于 Windows 10 / 11 |
-| macOS | [下载 macOS 版本](https://openjiuwen.com/jiuwenswarm) | 适用于 Intel / Apple Silicon |
+| macOS | [下载 macOS 版本](https://openjiuwen.com/jiuwenswarm) | 仅支持 Apple Silicon（ARM64），不支持 Intel |
 
 下载后按照提示安装使用。
 
 ### 命令行版
+
+环境要求：Python `>=3.11,<3.15`。
 
 ```bash
 # 安装 JiuwenSwarm

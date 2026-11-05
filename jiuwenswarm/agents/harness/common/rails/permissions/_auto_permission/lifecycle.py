@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -22,9 +23,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
     SessionTrustedSearchUrls,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
-    SessionDenyStore,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.sandbox_profile import (
     SandboxDescriptor,
 )
@@ -40,14 +38,15 @@ class AutoPermissionLifecycleMixin:
         platform_trusted_root: Path | str | None = None,
         sandbox: SandboxDescriptor | None = None,
         sys_operation: Any | None = None,
-        session_deny_store: SessionDenyStore | None = None,
         policy_evaluator: OpenJiuwenPolicyEvaluator | None = None,
         auto_reviewer: AutoReviewer | None = None,
         trusted_search_urls: SessionTrustedSearchUrls | None = None,
         persistent_audit_writer: Any | None = None,
         browser_runtime_security_profile: Any | None = None,
+        written_permissions: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.base_rail = base_rail
+        self._written_permissions = written_permissions
         self._owner_agent = None
         self.priority = int(getattr(base_rail, "priority", 90))
         self.permission_config = deepcopy(permission_config)
@@ -63,7 +62,6 @@ class AutoPermissionLifecycleMixin:
         )
         self.sandbox = sandbox
         self.sys_operation = sys_operation
-        self.session_deny_store = session_deny_store or SessionDenyStore()
         self.policy_evaluator = policy_evaluator or OpenJiuwenPolicyEvaluator(
             base_rail,
             workspace_root=self.workspace_root,
@@ -133,7 +131,6 @@ class AutoPermissionLifecycleMixin:
         permission_config = deepcopy(config)
         auto_options = normalize_auto_permission_options(permission_config.get("auto"))
         timeout_ms = int(auto_options.get("reviewer_timeout_ms", 60000))
-        min_confidence = float(auto_options.get("reviewer_min_confidence", 0.7))
 
         persistent_audit_writer = None
         if auto_options.get("persistent_audit_enabled") is True:
@@ -154,7 +151,7 @@ class AutoPermissionLifecycleMixin:
         if self.auto_reviewer is not None:
             self.auto_reviewer.update_runtime_options(
                 timeout_ms=timeout_ms,
-                min_confidence=min_confidence,
+                reviewer_output_format=auto_options["reviewer_output_format"],
             )
         self.permission_config = permission_config
         self.auto_options = auto_options

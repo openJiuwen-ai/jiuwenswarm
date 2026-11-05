@@ -14,6 +14,7 @@ class RunContext:
     max_budget_usd: float | None = None
     tool_permissions: tuple[tuple[str, str], ...] | None = None
     credential_context: Any = field(default=None, repr=False, compare=False)
+    supports_permission_approval: bool = True
 
 
 CURRENT_RUN_CONTEXT: ContextVar[RunContext | None] = ContextVar("jiuwenswarm_run_context", default=None)

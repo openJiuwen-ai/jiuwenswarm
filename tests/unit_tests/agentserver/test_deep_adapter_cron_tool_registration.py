@@ -333,3 +333,73 @@ async def test_update_session_tools_drops_heartbeat_tools_for_xiaoyi(
         card.name for card in adapter._instance.ability_manager.cards
     ] == ["unrelated_tool"]
     assert adapter._heartbeat_rail is None
+
+
+@pytest.mark.asyncio
+async def test_update_session_tools_drops_cron_tools_for_xiaoyi(
+    session_metadata,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Xiaoyi gets no cron tools even if an earlier build registered them."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_send_file_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    adapter = _make_heartbeat_adapter("xiaoyi_1a13511901d_32eb921d481b")
+    adapter._instance = _FakeInstance()
+    adapter._ensure_cron_tools_registered = lambda session_id: pytest.fail(
+        "xiaoyi cron tools must not be registered"
+    )
+    adapter._ensure_session_messaging_tools_registered = (
+        lambda session_id, channel_id: None
+    )
+    adapter._tool_cards = None
+    adapter._cron_tools_registered_language = "cn"
+    adapter._cron_tools_registered_allow_create = True
+    adapter._cron_tools_registered_allow_update = True
+    for name in ("cron", "cron_create_job", "cron_run_now", "unrelated_tool"):
+        adapter._instance.ability_manager.add(_FakeCard(name))
+
+    await adapter._update_session_tools(
+        "xiaoyi_1a13511901d_32eb921d481b", "req-1", channel_id="xiaoyi"
+    )
+
+    assert [
+        card.name for card in adapter._instance.ability_manager.cards
+    ] == ["unrelated_tool"]
+    assert adapter._cron_tools_registered_language is None
+
+
+@pytest.mark.asyncio
+async def test_update_session_tools_drops_cron_tools_for_xiaoyi_session_prefix(
+    session_metadata,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Xiaoyi session prefix guards requests missing channel_id."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_send_file_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    adapter = _make_heartbeat_adapter("xiaoyi_1a13511901d_32eb921d481b")
+    adapter._instance = _FakeInstance()
+    adapter._resolve_prompt_channel = lambda *_args, **_kwargs: "web"
+    adapter._ensure_cron_tools_registered = lambda session_id: pytest.fail(
+        "xiaoyi cron tools must not be registered"
+    )
+    adapter._ensure_session_messaging_tools_registered = (
+        lambda session_id, channel_id: None
+    )
+    adapter._tool_cards = None
+    adapter._cron_tools_registered_language = "cn"
+    adapter._cron_tools_registered_allow_create = True
+    adapter._cron_tools_registered_allow_update = True
+    for name in ("cron", "cron_create_job", "unrelated_tool"):
+        adapter._instance.ability_manager.add(_FakeCard(name))
+
+    await adapter._update_session_tools(
+        "xiaoyi_1a13511901d_32eb921d481b", "req-1"
+    )
+
+    assert [
+        card.name for card in adapter._instance.ability_manager.cards
+    ] == ["unrelated_tool"]

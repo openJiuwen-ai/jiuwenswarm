@@ -30,7 +30,7 @@
   <a href="https://github.com/openJiuwen-ai/jiuwenswarm/releases">
     <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
-  <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python 3.11, 3.12, 3.13, 3.14" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20HarmonyOS-lightgrey.svg" alt="OS Support" />
 </p>
 
@@ -60,7 +60,7 @@ One-click install, no environment setup — the quickest way to try JiuwenSwarm.
 | Platform  | Download                                                          | Notes                                         |
 | --------- | ----------------------------------------------------------------- | --------------------------------------------- |
 | Windows   | [Download Windows Version](https://openjiuwen.com/en/jiuwenswarm) | For Windows 10 / 11                           |
-| macOS     | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm)   | For Intel / Apple Silicon                     |
+| macOS     | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm)   | Apple Silicon (ARM64) only; Intel not supported                     |
 | HarmonyOS | [Try now](https://openjiuwen.com/en/jiuwenswarm)                  | HarmonyOS PC, installed via the official site |
 
 Download and follow the installer prompts to get started.
@@ -68,6 +68,8 @@ Download and follow the installer prompts to get started.
 On Linux, install via [Command Line](#pip) or [from source](#from-source) below. 
 
 ### Command Line
+
+Requires Python `>=3.11,<3.15`.
 
 ```bash
 # Install JiuwenSwarm
@@ -213,3 +215,4 @@ Thanks to all developers who have contributed to JiuwenSwarm: [View Contributor 
 This project is licensed under [Apache License 2.0](LICENSE).
 
 This product serves solely as a workflow orchestration tool and does not embed any AI model capabilities. When users integrate AI models for specific business scenarios, they shall bear full responsibility for compliance obligations under the EU AI Act and other relevant regulatory frameworks.
+

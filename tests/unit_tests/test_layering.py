@@ -6,9 +6,12 @@
 常量），断言无白名单外的新增违规：
 
   R1 common 禁止 import server/agents/channels/gateway/extensions/symphony
-  R2 server  禁止 import gateway
+  R2 server  禁止 import agent_gateway
   R3 gateway 禁止 import server/agents/channels
-  R4 gateway/embedded/ 禁止 import server/agents
+
+例外：``gateway.common`` 为无状态纯组件的唯一真源、扩展治理层
+``gateway.extensions.{registry,manager,loader}`` 为扩展发现与注册表的唯一实现，
+母仓反向引用不计违规；``gateway.extensions.sdk`` 为扩展 SPI/基类真源，同样允许。
 
 上游同步、本仓提交引入新的跨层依赖时本测试失败；白名单内的存量
 （燃尽清单）随解耦 PR 逐步缩减——存量消除后白名单未同步缩减同样失败
@@ -30,6 +33,8 @@ def test_no_new_layering_violations() -> None:
         [sys.executable, str(CHECK_SCRIPT)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=REPO_ROOT,
         timeout=300,
     )

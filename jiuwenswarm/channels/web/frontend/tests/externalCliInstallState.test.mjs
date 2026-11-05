@@ -3,6 +3,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { JSDOM } from 'jsdom';
 
 import {
   applyExternalCliPendingChoices,
@@ -176,11 +179,11 @@ test('the persisted choice triggers a debounced auto-detection for both agents',
   // Every listed agent (built-in or uploaded) is detected after its own path
   // changes, in the CLI mode (built-in vs external) it is configured for.
   assert.match(sectionSource, /for \(const \[cliAgent, cliPath\] of currentPaths\)/);
-  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin\] of currentPaths\)/);
+  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin, enabled\] of currentPaths\)/);
   // Automatic detection stays silent; the manual detect button wraps it in
   // detectAndNotify, which toasts the outcome like the models settings'
   // connection test.
-  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin\)/);
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, enabled \? useBuiltin : true\)/);
   assert.match(sectionSource, /void detectAndNotify\(cliAgent, cliPath, useBuiltin\)/);
   assert.match(sectionSource, /void detectAndNotify\(cliAgent, draftValues\[cliPathKey\] \|\| ''\)/);
   assert.match(sectionSource, /result\?\.status === 'ok' \|\| result\?\.status === 'warning'/);
@@ -222,7 +225,7 @@ test('a failed path validation keeps the edit form open instead of saving', () =
   assert.match(sectionSource, /clearDetectResult\(cliAgent\)/);
 });
 
-test('toggling off keeps the agent choice and toggling on falls back to the built-in CLI without a path', () => {
+test('toggling off keeps the agent choice and toggling on resolves an empty choice', () => {
   const sectionSource = readFileSync(
     new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
     'utf8',
@@ -230,8 +233,9 @@ test('toggling off keeps the agent choice and toggling on falls back to the buil
 
   // Disabling must not wipe the mode/path: re-enabling restores the choice.
   assert.match(sectionSource, /await commit\(cliAgent, \{ enabled: false, useBuiltin, cliPath: requestedPath \}\)/);
-  // With no custom path configured the switch still re-enables via the built-in CLI.
+  // Empty choices go through PATH resolution before the built-in fallback.
   assert.match(sectionSource, /if \(useBuiltin \|\| !requestedPath\.trim\(\)\) \{/);
+  assert.match(sectionSource, /await resolveEnabledChoice\(cliAgent, useBuiltin, requestedPath\)/);
 });
 
 test('re-detecting keeps the card layout stable instead of unmounting the path block', () => {
@@ -273,16 +277,102 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // A force install on an already-installed agent finishes silently backend-side,
   // so installNow must always toast the outcome to stay responsive.
   assert.match(sectionSource, /showHint\(t\('config\.externalCli\.installSucceeded'\)\)/);
-  assert.match(sectionSource, /!installed && enabled && \(!result \|\| !detectingNow\)/);
+  assert.match(sectionSource, /!installed && \(!result \|\| !detectingNow\)/);
   assert.doesNotMatch(sectionSource, /manualDetectAgents/);
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
   assert.match(sectionSource, /useBuiltin && detectedPath \? \(/);
-  // MRU history entries carry a per-option remove button; the active path and
-  // the detected PATH lookup must stay non-removable.
-  assert.match(sectionSource, /for \(const path of \[cliPath, detectedPath\]\) pushPathOption\(path, false\);/);
-  assert.match(sectionSource, /for \(const path of pathHistories\[cliAgent\] \?\? \[\]\) pushPathOption\(path, true\);/);
-  assert.match(sectionSource, /const removePathHistory = useCallback/);
+  // The path dropdown merges the persisted backend history between the saved
+  // path and the PATH-detected candidate, so switching addresses never loses
+  // the previous ones; explicit actions prune stale entries via
+  // external_cli.validate_paths (backend history, not localStorage).
+  assert.match(
+    sectionSource,
+    /for \(const path of \[cliPath, \.\.\.historyPaths, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\)/,
+  );
+  assert.match(
+    sectionSource,
+    /parseExternalCliPathHistories\(draftValues\[externalCliKey\(cliAgent, 'path_histories'\)\]\)/,
+  );
+  assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
+  assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
+});
+
+test('an explicit detect or save prunes stale path-history entries through the backend', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const providerSource = readFileSync(
+    new URL('../src/features/settings/services/SettingsServicesProvider.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // Cleanup only runs when the caller marks the detect as an explicit user
+  // action: automatic probes (debounce, post-install, toggle) never touch it.
+  assert.match(
+    sectionSource,
+    /\(result\.status === 'ok' \|\| result\.status === 'warning'\) && options\?\.cleanupHistory/,
+  );
+  assert.match(sectionSource, /onCleanupPathHistories\?\.\(cliAgent, result\.path \|\| ''\)/);
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin, \{ cleanupHistory: true \}\)/);
+  assert.match(sectionSource, /detect\(cliAgent, requestedPath, false, \{ cleanupHistory: true \}\)/);
+  // The settings module owns the cleanup: it validates history entries on
+  // disk and hands only the confirmed misses to the backend prune, which
+  // drops them from the on-disk history (never the whole key).
+  assert.match(settingsSource, /const cleanupPersistedPathHistories = useCallback/);
+  assert.match(settingsSource, /onValidateExternalCliPaths\(\[\.\.\.new Set\(\[\.\.\.histories, \.\.\.knownGood\]\)\]\)/);
+  // Only a confirmed miss evicts an entry; unreadable (null) stays put.
+  assert.match(settingsSource, /const removePaths = histories\.filter\(\(path\) => !knownGood\.includes\(path\) && results\[path\] === false\);/);
+  assert.match(settingsSource, /await onPruneExternalCliPathHistories\(cliAgent, removePaths\);/);
+  assert.match(settingsSource, /onCleanupPathHistories=\{cleanupPersistedPathHistories\}/);
+  // The service contract exposes the backend batch validator (three-valued)
+  // and the server-side prune used by the cleanup.
+  assert.match(
+    providerSource,
+    /onValidateExternalCliPaths\?: \(paths: string\[\]\) => Promise<Record<string, boolean \| null>>;/,
+  );
+  assert.match(
+    providerSource,
+    /onPruneExternalCliPathHistories\?: \(agent: ExternalCliAgentKind, removePaths: string\[\]\) => Promise<string\[\]>;/,
+  );
+});
+
+test('a saved cli_path change appends the previous path to the local history', () => {
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // persistUpdates mirrors the backend append so the dropdown offers the
+  // replaced path immediately, without waiting for a config reload.
+  assert.match(settingsSource, /const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;/);
+  assert.match(settingsSource, /if \(!oldPath \|\| oldPath === newPath\) continue;/);
+  assert.match(settingsSource, /historyPatch\[historyKey\] = JSON\.stringify\(/);
+  assert.match(settingsSource, /\[\.\.\.history, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
+  // The mirrored history reaches savedValues, draftValues, and the config store.
+  assert.match(settingsSource, /for \(const \[key, value\] of Object\.entries\(historyPatch\)\) \{\s*next\[key\] = value;\s*\}/);
+});
+
+test('the replay save hands its pre-save path to the server-side prune cleanup', () => {
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // The replay flow hands the pre-save path to the cleanup so the just
+  // appended old path is treated as known-good, never pruned away.
+  assert.match(settingsSource, /options\?: \{ effectivePath\?: string \}/);
+  assert.match(settingsSource, /effectivePath: pending\.cliPath,/);
+  // Cleanup must not overwrite the whole history key from a React snapshot:
+  // the backend prune is the only writer, so entries appended by a
+  // concurrent save between the snapshot and the prune survive.
+  assert.doesNotMatch(settingsSource, /replacedPath/);
+  assert.doesNotMatch(settingsSource, /const cleanupPersistedPathHistories = useCallback\((?:[^{}]|\{[^{}]*\})*?onSave\(updates\)/);
 });
 
 test('install-now bypasses the no-change short circuit so a deleted built-in CLI can be repaired', () => {
@@ -298,7 +388,7 @@ test('install-now bypasses the no-change short circuit so a deleted built-in CLI
   // The install click must carry force so the commit always sends a payload.
   assert.match(
     sectionSource,
-    /await commit\(cliAgent, \{ enabled: true, useBuiltin: true, cliPath: '', force: true \}\)/,
+    /await commit\(cliAgent, \{ \.\.\.choice, force: true \}\)/,
   );
   // The settings commit short-circuits identical choices EXCEPT for forced
   // ones: without this the backend never sees the agent's keys and its
@@ -309,6 +399,200 @@ test('install-now bypasses the no-change short circuit so a deleted built-in CLI
     settingsSource,
     /updates\[externalCliKey\(cliAgent, 'enabled'\)\] = choice\.enabled \? 'true' : 'false';/,
   );
+});
+
+test('Codex installation falls back to built-in only when PATH has no usable executable', async () => {
+  const initial = {
+    external_cli_agent_codex_enabled: 'true',
+    external_cli_agent_codex_use_builtin: 'false',
+    external_cli_agent_codex_cli_path: '',
+  };
+  let available = true;
+  const env = await mountCliSection(initial, async (agent) => ({
+    cli_agent: agent,
+    status: available ? 'warning' : 'missing',
+    path: available ? '/local/codex' : '',
+  }));
+  try {
+    const install = '[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="codex"]';
+    await env.click(install);
+    assert.deepEqual(env.commits.at(-1), ['codex', {
+      enabled: true, useBuiltin: false, cliPath: '/local/codex', force: true,
+    }]);
+    available = false;
+    await env.click(install);
+    assert.deepEqual(env.commits.at(-1), ['codex', {
+      enabled: true, useBuiltin: true, cliPath: '', force: true,
+    }]);
+  } finally {
+    env.cleanup();
+  }
+});
+
+async function mountCliSection(draftValues, onDetect, sectionProps = {}) {
+  const { ExternalCliAgentsSection } = await import(
+    '../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs'
+  );
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  const previous = new Map();
+  for (const [key, value] of Object.entries({
+    window: dom.window,
+    document: dom.window.document,
+    localStorage: dom.window.localStorage,
+    HTMLElement: dom.window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  })) {
+    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const root = createRoot(document.getElementById('root'));
+  const commits = [];
+  const props = {
+    draftValues,
+    onDetect,
+    onChange: () => {},
+    onCommitAgent: async (agent, choice) => { commits.push([agent, choice]); },
+    initialResults: { claude: { cli_agent: 'claude', status: 'ok', path: '/bundled/claude' } },
+    t: (key) => key,
+    ...sectionProps,
+  };
+  const render = async (values) => {
+    props.draftValues = values;
+    await act(async () => { root.render(createElement(ExternalCliAgentsSection, props)); });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  };
+  await render(draftValues);
+  return {
+    commits,
+    render,
+    click: async (selector) => {
+      const element = document.querySelector(selector);
+      assert.ok(element, selector);
+      assert.equal(element.disabled, false, selector);
+      await act(async () => { element.click(); });
+    },
+    cleanup: () => {
+      act(() => root.unmount());
+      dom.window.close();
+      for (const [key, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else delete globalThis[key];
+      }
+    },
+  };
+}
+
+function assertCliStatus(agent, expected) {
+  const status = document.querySelector(
+    `[data-testid="settings-panel-external-cli-agent-status"][data-variant="${agent}"]`,
+  );
+  assert.ok(status, `${agent} status badge`);
+  assert.equal(status.textContent, `config.externalCli.${expected}`, agent);
+}
+
+for (const [name, enabled, detectionStatus, expected] of [
+  ['undetected and disabled', false, null, 'notInstalled'],
+  ['missing and disabled', false, 'missing', 'notInstalled'],
+  ['installed and disabled', false, 'ok', 'disabled'],
+  ['installed with a warning and disabled', false, 'warning', 'disabled'],
+  ['installed and enabled', true, 'ok', 'installed'],
+]) {
+  test(`external CLI status labels: ${name}`, async () => {
+    const agents = ['claude', 'codex'];
+    const draft = Object.fromEntries(agents.map((agent) => [
+      `external_cli_agent_${agent}_enabled`, String(enabled),
+    ]));
+    const initialResults = detectionStatus === null ? {} : Object.fromEntries(agents.map((agent) => [
+      agent, { cli_agent: agent, status: detectionStatus },
+    ]));
+    const env = await mountCliSection(draft, undefined, { initialResults });
+    try {
+      for (const agent of agents) assertCliStatus(agent, expected);
+    } finally {
+      env.cleanup();
+    }
+  });
+}
+
+test('external CLI status labels prioritize detection and installation over disabled or missing', async () => {
+  const pending = [];
+  const onDetect = (agent) => new Promise((resolve) => {
+    pending.push(() => resolve({ cli_agent: agent, status: 'missing' }));
+  });
+  const env = await mountCliSection({
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_codex_enabled: 'false',
+  }, onDetect, {
+    initialResults: {},
+    installStatuses: { claude: { status: 'running' }, codex: { status: 'running' } },
+  });
+  try {
+    assertCliStatus('claude', 'detecting');
+    assertCliStatus('codex', 'detecting');
+    await act(async () => { for (const resolve of pending) resolve(); });
+    assertCliStatus('claude', 'installPhase.running');
+    assertCliStatus('codex', 'installPhase.running');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('PATH remains selectable with a saved built-in choice and after changing executables', async () => {
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'true',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const onDetect = async (agent, path, builtin) => ({
+    cli_agent: agent, status: 'ok', path: path || (builtin ? '/bundled/claude' : '/local/claude'),
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const select = '[data-testid="settings-panel-external-cli-agent-cli-path-select"][data-variant="claude"]';
+    await env.click(select);
+    const localOption = [...document.querySelectorAll('[role="option"]')].find(
+      (item) => item.textContent.includes('/local/claude'),
+    );
+    assert.ok(localOption);
+    await act(async () => { localOption.click(); });
+    assert.deepEqual(env.commits.at(-1), ['claude', {
+      enabled: true, useBuiltin: false, cliPath: '/local/claude',
+    }]);
+    await env.render({ ...initial, external_cli_agent_claude_use_builtin: 'false', external_cli_agent_claude_cli_path: '/other/claude' });
+    await env.click(select);
+    assert.ok([...document.querySelectorAll('[role="option"]')].some(
+      (item) => item.textContent.includes('/local/claude'),
+    ));
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('enabling and installing prefer PATH while explicit executable choices survive repair', async () => {
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const env = await mountCliSection(initial, async (agent, path) => ({
+    cli_agent: agent, status: 'ok', path: path || '/local/claude',
+  }));
+  try {
+    await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: true, useBuiltin: false, cliPath: '/local/claude' }]);
+    const install = '[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]';
+    await env.render({ ...initial, external_cli_agent_claude_enabled: 'true' });
+    await env.click(install);
+    assert.deepEqual(env.commits.at(-1)[1], { enabled: true, useBuiltin: false, cliPath: '/local/claude', force: true });
+    await env.render({ ...initial, external_cli_agent_claude_enabled: 'true', external_cli_agent_claude_cli_path: '/custom/claude' });
+    await env.click(install);
+    assert.equal(env.commits.at(-1)[1].cliPath, '/custom/claude');
+    await env.render({ ...initial, external_cli_agent_claude_enabled: 'true', external_cli_agent_claude_use_builtin: 'true' });
+    await env.click(install);
+    assert.deepEqual(env.commits.at(-1)[1], { enabled: true, useBuiltin: true, cliPath: '', force: true });
+  } finally {
+    env.cleanup();
+  }
 });
 
 test('an existing directory is reported as an invalid CLI executable path', () => {
@@ -343,10 +627,11 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
   assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  // The enable switch must stay clickable even when the CLI is reported
-  // missing (e.g. right after a page reload, before the auto-detect runs),
-  // otherwise the user gets locked out of re-enabling a disabled agent.
-  assert.match(section, /disabled=\{disabled \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  // The enable switch is disabled only when the CLI is not installed AND the
+  // agent is already disabled — so a page reload (installed=false until the
+  // auto-detect runs) does not lock the user out of an enabled agent, and a
+  // disabled agent cannot be turned on before installing the CLI.
+  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

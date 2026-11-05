@@ -7,7 +7,7 @@
 | 依赖项 | 版本要求 | 说明 |
 |--------|----------|------|
 | 操作系统 | Windows 10/11, macOS 10.15+, Linux | 支持主流操作系统 |
-| Python | ≥3.11, <3.14 | 推荐 Python 3.11 |
+| Python | ≥3.11 | 推荐 Python 3.11 |
 | Git | 最新版本 | 用于克隆源码 |
 | Node.js | ≥18.x | 用于前端界面 |
 | Bun | 最新版本 | 用于编译 TUI 前端包 |
@@ -35,7 +35,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ### 创建虚拟环境
 
-使用 `uv` 新建虚拟环境（支持 3.11、3.12、3.13 任一版本）：
+使用 `uv` 新建虚拟环境（支持 3.11–3.14 任一版本）：
 
 ```bash
 uv venv --python=3.11

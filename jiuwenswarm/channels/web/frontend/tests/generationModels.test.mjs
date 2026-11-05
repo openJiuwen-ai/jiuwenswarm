@@ -7,8 +7,19 @@ import {
   generationApiBase,
   generationVendor,
   isEditableBaseVendor,
+  isArkGenerationApiBase,
   isGenerationSlotConfigured,
 } from '../node_modules/.cache/generation-models/generationModels.mjs';
+
+test('Ark generation accepts official regional addresses and rejects Coding Plan and proxy addresses', () => {
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/api/v3/'), true);
+  assert.equal(isArkGenerationApiBase('https://ark.ap-southeast.bytepluses.com'), true);
+  assert.equal(isArkGenerationApiBase('HTTPS://ARK.CN-BEIJING.VOLCES.COM/api/v3'), true);
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/API/V3'), false);
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/api/coding/v3'), false);
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com.evil.example/api/v3'), false);
+  assert.equal(isArkGenerationApiBase('http://ark.cn-beijing.volces.com/api/v3'), false);
+});
 
 test('DashScope lists wan 3.0 video and qwen-image 3.0 image models', () => {
   assert.deepEqual(

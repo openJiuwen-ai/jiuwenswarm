@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
+
+from agent_gateway.common.work_mode import is_default_project_id
 
 from jiuwenswarm.common.schema.designer_graph import (
     EDGE_KIND_DATA,
@@ -27,7 +30,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,  # re-exported; image/compose handlers call it on this module
     get_default_project_session_workspace_dir,
 )
-from jiuwenswarm.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 from jiuwenswarm.server.runtime.designer.user_references import user_reference_image_paths
 from jiuwenswarm.server.runtime.session import project_store
@@ -65,6 +67,7 @@ def graph_prompt(graph: DesignerExecutionGraph, node: DesignerGraphNode | None =
                     "STAGING LOCK",
                     "SAME-SCENE CONSISTENCY GATE",
                     "Film shot",
+                    "仅拍第",
                     "CLOTHING LOCK",
                     "LANGUAGE LOCK",
                 )
@@ -97,17 +100,7 @@ def graph_prompt(graph: DesignerExecutionGraph, node: DesignerGraphNode | None =
                     duration_sec=dur,
                     on_screen=list(config.get("on_screen") or config.get("cast_names") or []),
                 )
-                lock_bits: list[str] = [assignment]
-                for key, label in (
-                    ("costume_lock", "CLOTHING LOCK"),
-                    ("positioning_lock", "STAGING LOCK"),
-                    ("language_lock", "LANGUAGE LOCK"),
-                    ("speech_line", "SPEECH"),
-                ):
-                    val = str(config.get(key) or "").strip()
-                    if val:
-                        lock_bits.append(f"{label}: {val[:400]}")
-                return "\n".join(lock_bits)
+                return assignment
             return str(config.get("clip_action") or "")[:500] or "this storyboard shot only"
         if node_prompt:
             return node_prompt
@@ -274,34 +267,36 @@ def uploaded_material_image_paths(node: dict | None) -> list[Path]:
     return paths
 
 
-def user_replaced_output_image(graph: dict | None, node_id: str) -> list[Path]:
-    """The file the user uploaded in place of this node's generated image."""
-    if not isinstance(graph, dict) or not node_id:
-        return []
-    for node in graph.get("nodes") or []:
-        if not isinstance(node, dict) or str(node.get("id") or "") != node_id:
-            continue
-        config = node.get("config") if isinstance(node.get("config"), dict) else {}
-        if not config.get("user_replaced_output"):
-            return []
-        upload = config.get("upload") if isinstance(config.get("upload"), dict) else {}
-        upload_path = path_from_uri(str(upload.get("uri") or ""))
-        if (
-            upload_path is not None
-            and upload_path.is_file()
-            and _is_image_file(upload_path, upload)
-        ):
-            return [upload_path.resolve()]
-        ref = node.get("output_ref") if isinstance(node.get("output_ref"), dict) else {}
-        path = path_from_uri(str(ref.get("uri") or ""))
-        if path is None or not path.is_file() or not _is_image_file(path, ref):
-            return []
-        return [path.resolve()]
-    return []
+def user_replaced_output_ref(graph: dict | None, node_id: str) -> AssetRef | None:
+    """The file (image, video, audio or text) the user uploaded in place of this node's output."""
+    locked = _locked_replacement_refs(graph, node_id)
+    if not locked:
+        return None
+    path = path_from_uri(str(locked[0].get("uri") or ""))
+    if path is None:
+        return None
+    kind = _file_kind(path, locked[0])
+    if not kind:
+        return None
+    resolved = path.resolve()
+    node = next(
+        (
+            item
+            for item in (graph or {}).get("nodes") or []
+            if isinstance(item, dict) and str(item.get("id") or "") == node_id
+        ),
+        {},
+    )
+    stored = node.get("output_ref") if isinstance(node.get("output_ref"), dict) else {}
+    stored_path = path_from_uri(str(stored.get("uri") or ""))
+    if stored_path is not None and stored_path.is_file() and stored_path.resolve() == resolved:
+        return {**stored, "kind": str(stored.get("kind") or kind)}
+    mime = str(locked[0].get("mime_type") or "") or mimetypes.guess_type(resolved.name)[0] or ""
+    return {"kind": kind, "uri": resolved.as_uri(), "mime_type": mime}
 
 
 def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
-    """Copy a user-uploaded image into the run so a rerun does not restore the old file."""
+    """Copy a user-uploaded file into the run so a rerun does not restore the old file."""
     from jiuwenswarm.common.schema.designer_graph import NODE_STATUS_COMPLETED
 
     if not isinstance(run, dict) or not isinstance(graph, dict):
@@ -314,28 +309,10 @@ def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
         if not isinstance(node, dict):
             continue
         node_id = str(node.get("id") or "")
-        replaced = user_replaced_output_image(graph, node_id)
-        if not replaced:
+        replaced = user_replaced_output_ref(graph, node_id)
+        if replaced is None:
             continue
-        stored = node.get("output_ref") if isinstance(node.get("output_ref"), dict) else {}
-        ref = dict(stored) if isinstance(stored, dict) else {}
-        replaced_uri = replaced[0].resolve().as_uri()
-        stored_path = path_from_uri(str(ref.get("uri") or ""))
-        same_file = (
-            stored_path is not None
-            and stored_path.is_file()
-            and stored_path.resolve() == replaced[0].resolve()
-        )
-        if not same_file:
-            upload = {}
-            config = node.get("config") if isinstance(node.get("config"), dict) else {}
-            if isinstance(config.get("upload"), dict):
-                upload = config["upload"]
-            ref = {
-                "kind": "image",
-                "uri": replaced_uri,
-                "mime_type": str(upload.get("mime_type") or ref.get("mime_type") or "image/png"),
-            }
+        ref = dict(replaced)
         state = dict(states.get(node_id) or {})
         current = state.get("output_ref") if isinstance(state.get("output_ref"), dict) else {}
         if str(current.get("uri") or "") == str(ref.get("uri") or ""):
@@ -343,8 +320,6 @@ def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
         state["status"] = NODE_STATUS_COMPLETED
         state["output_ref"] = dict(ref)
         state["output_refs"] = [dict(ref)]
-        state["candidate_output_ref"] = None
-        state["candidate_output_refs"] = []
         state["error"] = None
         states[node_id] = state
         changed = True
@@ -502,6 +477,25 @@ def node_output_video_paths(ctx: NodeExecutionContext, node_id: str) -> list[Pat
     for ref in _output_refs_for_node(ctx, node_id):
         path = path_from_uri(str(ref.get("uri") or ""))
         if path is None or not path.is_file() or _file_kind(path, ref) != "video":
+            continue
+        resolved = path.resolve()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(resolved)
+    return paths
+
+
+def node_output_audio_paths(ctx: NodeExecutionContext, node_id: str) -> list[Path]:
+    """Audio files for one node. A user replacement wins over this run and the saved graph."""
+    if ctx is None or not node_id:
+        return []
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for ref in _output_refs_for_node(ctx, node_id):
+        path = path_from_uri(str(ref.get("uri") or ""))
+        if path is None or not path.is_file() or _file_kind(path, ref) != "audio":
             continue
         resolved = path.resolve()
         key = str(resolved)
@@ -858,12 +852,38 @@ def _image_gen_semaphore():
 _RATE_LIMIT_TOKENS = ("ratequota", "rate limit", "throttling", "too many requests", "429")
 
 
+def note_media_settings_gap(ctx: object, kind: str, where: str) -> str | None:
+    """Per-node Settings-gap check: log it, show it on the canvas, report it.
+
+    Runs before every media node generates, so a first run and a regenerate
+    both name the blocked node and the Settings > Agent fix instead of a bare
+    "no image_path" / "no file" (#5266).
+
+    Settings > Agent writes only to ``.env``, so reload it first; otherwise a
+    slot the user just fixed is reported from stale ``os.environ`` values.
+    """
+    from jiuwenswarm.common.utils import get_env_file
+    from jiuwenswarm.dotenv_early import load_dotenv_runtime
+    from jiuwenswarm.server.runtime.designer import media_generation
+
+    try:
+        load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+    except Exception:
+        logger.debug("Failed to reload media generation env before Settings check", exc_info=True)
+
+    problem = media_generation.note_generation_problem(kind, where)  # type: ignore[arg-type]
+    emit = getattr(ctx, "emit_activity", None) if ctx is not None else None
+    if problem and callable(emit):
+        try:
+            emit("stage", problem, f"{kind}_gen")
+        except TypeError:
+            emit("stage", problem)
+    return problem
+
+
 def _is_rate_limit_error(text: str) -> bool:
     low = (text or "").lower()
     return any(token in low for token in _RATE_LIMIT_TOKENS)
-
-
-_IMAGE_GEN_TIMEOUT_SECONDS = 1200
 
 
 async def generate_designer_image(
@@ -872,8 +892,13 @@ async def generate_designer_image(
     reference_images: list[str] | None = None,
     max_tries: int = 2,
     save_dir: str | None = None,
-) -> dict[str, str] | None:
+) -> dict[str, str]:
     """Call the Settings > Agent image model when enabled. Tests monkeypatch this function.
+
+    Returns ``{"image_path": ...}`` or ``{"error": ...}``. The error always
+    names the reason — including a Settings gap (switched off / not configured
+    / unsupported endpoint) — so node handlers do not report a bare
+    "no image_path" for a Settings problem (#5266).
 
     Retries transient RateQuota/429 with backoff under a global concurrency cap.
     """
@@ -888,9 +913,17 @@ async def generate_designer_image(
     except Exception:
         logger.debug("Failed to reload image generation env before generation", exc_info=True)
 
+    # Keep the original gate (enabled flag only) so an enabled-but-incomplete
+    # slot still reaches the generator, which reports its own reason. Only the
+    # payload changes: carry the reason instead of returning None, because a
+    # bare None degrades to "no image_path" in node handlers (#5266).
     if not media_generation.generation_enabled("image"):
-        logger.info("Designer image generation skipped: VISUAL_GEN_ENABLED is off")
-        return None
+        problem = media_generation.generation_problem("image") or ""
+        logger.info(
+            "Designer image generation skipped: %s",
+            problem or "VISUAL_GEN_ENABLED is off",
+        )
+        return {"error": problem or "Image generation is switched off in Settings > Agent."}
     refs = [str(item).strip() for item in (reference_images or []) if str(item).strip()]
     if refs:
         logger.info(
@@ -919,6 +952,7 @@ async def generate_designer_image(
                     phase="tool",
                     detail={"attempt": attempt, "input": tool_input},
                 ):
+                    image_timeout = media_generation.image_tool_timeout_seconds()
                     result = await asyncio.wait_for(
                         media_generation.generate_image(
                             prompt,
@@ -926,10 +960,13 @@ async def generate_designer_image(
                             reference_images=refs or None,
                             save_dir=save_dir,
                         ),
-                        timeout=_IMAGE_GEN_TIMEOUT_SECONDS,
+                        timeout=image_timeout,
                     )
             except asyncio.TimeoutError:
-                last_error = f"image generation timed out after {_IMAGE_GEN_TIMEOUT_SECONDS}s"
+                last_error = (
+                    "image generation timed out after "
+                    f"{int(media_generation.image_tool_timeout_seconds())}s"
+                )
                 logger.info("Designer image generation timed out (attempt %s/%s)", attempt, attempts)
                 result = {"error": last_error}
             except Exception as exc:  # noqa: BLE001

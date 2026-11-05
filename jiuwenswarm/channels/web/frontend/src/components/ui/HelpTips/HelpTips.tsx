@@ -7,7 +7,7 @@ import './HelpTips.css';
  * `title` attribute so tips stay visible near modal dialog edges / scroll areas
  * (see GitCode #5248).
  */
-export function HelpTips({ content }: { content: string }) {
+export function HelpTips({ content, size = 'default' }: { content: string; size?: 'default' | 'large' }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   // 表单可能位于 showModal 打开的 <dialog>（top layer）内，提示必须挂进 dialog 自身，
   // portal 到 body 会被弹窗整体盖住；非弹窗场景回退 document.body，与 hook 默认行为一致。
@@ -27,10 +27,11 @@ export function HelpTips({ content }: { content: string }) {
     <button
       ref={buttonRef}
       type="button"
-      className="ui-help-tips"
+      className={`ui-help-tips${size === 'large' ? ' ui-help-tips--large' : ''}`}
       data-tooltip={content}
       aria-label={content}
       data-testid="ui-help-tips-trigger"
+      data-variant={size}
       {...handlers}
     >
       ?

@@ -1,6 +1,5 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { JevKeySettings } from './JevKeySettings';
 
 export const browserModule: SettingsModuleDefinition = {
   id: 'browser',
@@ -31,7 +30,6 @@ export const browserModule: SettingsModuleDefinition = {
             { value: 'hybrid', labelKey: 'settingsPanel.browser.decisionHybrid' },
           ],
         },
-        { id: 'browser-jev-key', component: 'custom', render: JevKeySettings },
       ],
     },
   ],

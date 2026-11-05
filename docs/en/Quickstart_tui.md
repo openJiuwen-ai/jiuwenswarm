@@ -11,7 +11,7 @@ JiuwenSwarm provides two installation methods: `pip install` or `install from so
   git clone https://gitcode.com/openjiuwen/jiuwenswarm.git
   ```
 - Environment dependencies:
-  - Python: >=3.11, <3.14
+  - Python: >=3.11
   - Node.js: >=18.0.0 (only needed for building frontend from source or for browser-use functionality; 20 LTS recommended)
 
 **Note: Users can choose any of the following installation methods based on their needs.**
@@ -109,7 +109,7 @@ Suitable for users who perform custom development or adaptation based on JiuwenS
 
 - Create a virtual environment with `uv`
   ```bash
-  # Create a virtual environment with uv (supports any of 3.11, 3.12, 3.13)
+  # Create a virtual environment with uv (supports any of 3.11, 3.12, 3.13, 3.14)
   uv venv --python=3.11
   # or: uv venv --python=3.12
   # or: uv venv --python=3.13
@@ -177,7 +177,7 @@ Suitable for users who perform custom development or adaptation based on JiuwenS
 
 - Create a virtual environment with `conda`
   ```bash
-  # Create a virtual environment with Anaconda (supports any of 3.11, 3.12, 3.13)
+  # Create a virtual environment with Anaconda (supports any of 3.11, 3.12, 3.13, 3.14)
   conda create -n JiuwenSwarm python=3.11
   # or: conda create -n JiuwenSwarm python=3.12
   # or: conda create -n JiuwenSwarm python=3.13

@@ -4,6 +4,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 // Reserved DOM origin only. HTTP is rejected; WebSocket is an in-memory transport, never a network client.
 const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://permission-answer.invalid', pretendToBeVisual: true });
@@ -41,7 +42,7 @@ for (const [key, value] of Object.entries({
 after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
-const { AuthorizationPrompt } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
+const { AuthorizationPrompt, AuthorizationQuestionDetails } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
 const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
 const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
@@ -49,6 +50,33 @@ const { default: i18n } = await import('../node_modules/.cache/permission-answer
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
 const { evaluatePlanToggle } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
 const sessionId = 'permission-transport';
+
+test('only enterprise cards display literal matched rules in both languages', async () => {
+  const originalEdition = window.__JIUWENSWARM_EDITION__;
+  const originalLanguage = i18n.language;
+  const base = { header: 'Permission', question: 'Approve?', options: [] };
+  const render = (item) => renderToStaticMarkup(createElement(I18nextProvider, { i18n },
+    createElement(AuthorizationQuestionDetails, { questions: [item], requestId: 'rule-display' })));
+  try {
+    for (const language of ['zh', 'en']) {
+      await i18n.changeLanguage(language);
+      const rule = 'rules[write]: <script>example</script> `literal`';
+      window.__JIUWENSWARM_EDITION__ = 'enterprise';
+      const html = render({ ...base, matched_rule: rule });
+      assert.match(html, /interaction-slot-matched-rule/);
+      assert.ok(html.includes(language === 'zh' ? '匹配规则' : 'Matched rule'));
+      assert.match(html, /&lt;script&gt;example&lt;\/script&gt;/);
+      assert.doesNotMatch(html, /<script>/);
+      assert.doesNotMatch(render(base), /interaction-slot-matched-rule/);
+      window.__JIUWENSWARM_EDITION__ = 'personal';
+      assert.equal(render({ ...base, matched_rule: rule }), render(base));
+    }
+  } finally {
+    if (originalEdition === undefined) delete window.__JIUWENSWARM_EDITION__;
+    else window.__JIUWENSWARM_EDITION__ = originalEdition;
+    await i18n.changeLanguage(originalLanguage);
+  }
+});
 const question = (extra = {}) => ({
   header: 'Read permission', question: 'Read protected file?', tool_payload: { file_path: '/protected.txt' },
   options: [{ value: 'allow_once', label: 'Allow once' }, { value: 'reject', label: 'Reject' }], ...extra,
@@ -89,6 +117,24 @@ const prompt = () => document.querySelector('[data-testid="interaction-slot-auth
 const deliver = async (socket, value) => act(async () => socket.receive({ type: 'event', event: 'chat.ask_user_question', payload: value }));
 const respond = async (socket, request, ok = true) => act(async () => socket.receive({ type: 'res', id: request.id, ok, payload: { accepted: ok } }));
 const runtimeAck = async (socket, id) => act(async () => socket.receive({ type: 'event', event: 'runtime.accepted', payload: { request_id: id, accepted: true } }));
+
+for (const callId of ['call_A', 'c'.repeat(129), 'c'.repeat(512)]) {
+  test(`equal call identity (${callId.length}) preserves submission and exact ACK matching`, async () => mounted(async ({ socket, observed }) => {
+    await deliver(socket, { ...payload([question({ card_id: callId })]), request_id: callId });
+    assert.ok(prompt());
+    await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+    const outbound = socket.requests.at(-1);
+    assert.equal(outbound.params.request_id, callId);
+    assert.equal(outbound.params.answers[0].card_id, callId);
+    await respond(socket, outbound);
+    assert.deepEqual(observed.results, []);
+    await runtimeAck(socket, 'foreign-rpc');
+    assert.deepEqual(observed.results, []);
+    await runtimeAck(socket, outbound.id);
+    assert.deepEqual(observed.results, [true]);
+    assert.equal(prompt(), null);
+  }));
+}
 const assertPlanToggleAllowed = (allowed) => {
   for (const next of [false, true]) assert.equal(evaluatePlanToggle(sessionId, next).ok, allowed);
 };
@@ -179,7 +225,7 @@ test('legacy caller cards are stripped, and blind or foreign permission answers 
 
 test('invalid or mixed Smart frames never display a legacy prompt', async () => mounted(async ({ socket }) => {
   for (const questions of [[question({ card_id: null })], [question({ card_id: '' })], [question({ card_id: 1 })],
-    [question({ card_id: 'x'.repeat(129) })], [question(), question({ card_id: 'smart' })],
+    [question({ card_id: 'x'.repeat(513) })], [question(), question({ card_id: 'smart' })],
     [question({ card_id: 'a' }), question({ card_id: 'b' })], []]) {
     await deliver(socket, payload(questions));
     assert.equal(prompt(), null);
@@ -289,3 +335,46 @@ test('permission answers preserve a collaboration group after the experimental s
   await act(async () => socket.receive({ type: 'res', id: request.id, ok: true, payload: { accepted: true } }));
   assert.equal(await result, true);
 }));
+
+test('a permission answer echoes the event interrupt_id beside the unchanged request_id', async () => mounted(async ({ socket, observed }) => {
+  await deliver(socket, { ...payload(), interrupt_id: 'intr_1', kind: 'permission' });
+  const pending = useChatStore.getState().getRuntime(sessionId).pendingQuestions[0];
+  assert.equal(pending.interruptId, 'intr_1');
+  await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.send');
+  assert.equal(request.params.interrupt_id, 'intr_1');
+  assert.equal(request.params.request_id, 'sdk-request');
+  await respond(socket, request);
+  assert.deepEqual(observed.results, [true]);
+}));
+
+for (const [label, extra] of [['no', {}], ['an empty', { interrupt_id: '' }]]) {
+  test(`an event with ${label} interrupt_id answers without the key`, async () => mounted(async ({ socket }) => {
+    await deliver(socket, { ...payload(), ...extra });
+    await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+    const request = socket.requests.at(-1);
+    assert.equal(request.method, 'chat.send');
+    assert.equal('interrupt_id' in request.params, false);
+    await respond(socket, request);
+  }));
+}
+
+test('a chat.user_answer echoes the event interrupt_id', async () => mounted(async ({ socket, observed }) => {
+  await deliver(socket, {
+    session_id: sessionId, request_id: 'other-request', interrupt_id: 'intr_2', kind: 'ask_user',
+    source: 'skill_evolution_approval',
+    questions: [{ header: 'Q', question: 'Continue?', options: [{ label: 'Yes' }] }],
+  });
+  let result;
+  await act(async () => { result = observed.api.sendUserAnswer(sessionId, 'other-request', [
+    { question: 'Continue?', selected_options: ['Yes'] },
+  ]); });
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.user_answer');
+  assert.equal(request.params.interrupt_id, 'intr_2');
+  assert.equal(request.params.request_id, 'other-request');
+  await respond(socket, request);
+  assert.equal(await result, true);
+  assert.deepEqual(useChatStore.getState().getRuntime(sessionId).pendingQuestions, []);
+}, createElement('div')));

@@ -206,6 +206,7 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "subagent_resume",
     # 只读文件与检索
     "read_file",
+    "pcs_search",
     "grep",
     "list_files",
     "glob",

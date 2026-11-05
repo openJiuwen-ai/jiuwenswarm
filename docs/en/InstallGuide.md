@@ -55,6 +55,8 @@ curl -L --fail -o JiuwenSwarm-<version>.dmg \
 
 On first launch the app creates `~/.jiuwenswarm/`. Then follow [Post-start verification](#3-post-start-verification) to finish model configuration.
 
+> ⚠️ **Desktop-installer users should not run `jiuwenswarm-init` / `jiuwenswarm-start`:** those CLI entry points belong to [Option 2: pip install](#option-2-pip-install). After installing the `.exe` / `.dmg`, start the app from the desktop shortcut or Start menu (the Windows installer already initializes the workspace). Running those commands in a terminal will fail with “not recognized as an internal or external command”.
+
 > Match the version to the actual download link on the Release page. For desktop auto-update behavior (Windows and macOS), see [Desktop auto-update design](WindowsAutoUpdateDesign.md).
 
 ---
@@ -69,7 +71,7 @@ The desktop installers already include the Python runtime and front-end static a
 
 | Dependency | Version | Applies to | Notes |
 |------------|---------|------------|-------|
-| Python | ≥3.11, <3.14 | pip and source installs | Python 3.11 recommended |
+| Python | ≥3.11 (3.11/3.12 recommended; 3.13, 3.14 also supported) | pip and source installs | Python 3.11 recommended |
 | Node.js | 18.x or newer | Source install only | Builds the Web front end; the pip package already includes the static assets |
 | Node.js | 20.x or newer | Browser runtime in pip/wheel and source installs | Runs the bundled Playwright MCP CLI; normal application use does not need Node |
 | Git | Latest | Source install only | Clones and updates the source tree |
@@ -79,7 +81,7 @@ Run the checks that apply to your installation method:
 ```bash
 # pip and source installs: check Python
 python --version
-# Expect: Python 3.11.x, 3.12.x, or 3.13.x
+# Expect: Python 3.11.x, 3.12.x, 3.13.x, or 3.14.x
 
 # Source install only: check Node.js
 node --version
@@ -131,6 +133,8 @@ pip install workswarm==0.2.5.beta1
 > 📦 **Package rename**: the PyPI package is now `workswarm` (renamed from `jiuwenswarm`). Install with `pip install workswarm` and upgrade with `pip install --upgrade workswarm`. The old `jiuwenswarm` package stays at 0.2.3 and is no longer released from this repository; CLI entry points (`jiuwenswarm-init`, `jiuwenswarm-start`, …) and the `~/.jiuwenswarm` config directory are unchanged.
 
 #### 2. First launch
+
+> Applies to **pip / source installs only**. If you installed via the desktop `.exe` / `.dmg`, go back to [Option 1](#option-1-desktop-installer-dmg--exe) and launch from the GUI.
 
 ```bash
 # Initialize JiuwenSwarm (first run)
@@ -508,9 +512,7 @@ jiuwenswarm-start
 
 ### Q: On start I see "Python version not supported"
 
-JiuwenSwarm requires Python **3.11, 3.12, or 3.13** (i.e. ≥3.11 and <3.14). 3.10 and earlier, as well as 3.14 and newer, are not supported. 3.11 and 3.12 have the best compatibility. See [Environment check](#environment-check) for details.
-
-> ℹ️ If a page renders something like `Python >=3.11 ❤️ 3.14` or `Python 3.11 3.14`, that is the `<=` angle brackets being parsed as an HTML tag or triggering an emoji substitution. The full intent is `≥3.11, <3.14`.
+JiuwenSwarm requires Python **≥3.11**, supporting 3.11, 3.12, 3.13, and 3.14. 3.10 and earlier are not supported. 3.11 and 3.12 have the best compatibility. See [Environment check](#environment-check) for details.
 
 ### Q: Windows prompts "Do you want to allow this app to make changes to your device?"
 

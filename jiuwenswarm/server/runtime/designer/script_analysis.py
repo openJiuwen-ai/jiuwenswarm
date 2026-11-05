@@ -924,28 +924,40 @@ def heuristic_analysis(prompt: str) -> dict[str, Any]:
     return ensure_audio_locks_on_analysis(payload, prompt)
 
 
+_THINK_CLOSE_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """Parse the first JSON object from model output.
 
-    Tolerates markdown fences, leading prose, and trailing chatter so slight
-    messiness does not force a heuristic fallback.
+    Tolerates reasoning blocks, markdown fences, leading prose, trailing chatter,
+    and raw newlines inside strings so slight messiness does not force a
+    heuristic fallback.
     """
-    raw = (text or "").strip()
+    raw = _THINK_CLOSE_RE.split(text or "")[-1].strip()
     if not raw:
         return None
 
+    unfenced = raw
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE)
     if fence:
-        raw = fence.group(1).strip()
+        unfenced = fence.group(1).strip()
     elif raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-        raw = re.sub(r"\s*```\s*$", "", raw).strip()
+        unfenced = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        unfenced = re.sub(r"\s*```\s*$", "", unfenced).strip()
+    parsed = _parse_json_object(unfenced)
+    if parsed is None and unfenced != raw:
+        # A fence inside a JSON string value cuts the fence match short.
+        parsed = _parse_json_object(raw)
+    return parsed
 
+
+def _parse_json_object(raw: str) -> dict[str, Any] | None:
     def _as_dict(value: Any) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
 
     try:
-        return _as_dict(json.loads(raw))
+        return _as_dict(json.loads(raw, strict=False))
     except json.JSONDecodeError:
         pass
 
@@ -954,7 +966,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return None
 
     try:
-        data, _end = json.JSONDecoder().raw_decode(raw[start:])
+        data, _end = json.JSONDecoder(strict=False).raw_decode(raw[start:])
         return _as_dict(data)
     except json.JSONDecodeError:
         pass
@@ -982,7 +994,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
             if depth == 0:
                 chunk = raw[start:i + 1]
                 try:
-                    return _as_dict(json.loads(chunk))
+                    return _as_dict(json.loads(chunk, strict=False))
                 except json.JSONDecodeError:
                     return None
     return None
@@ -1223,8 +1235,8 @@ def _normalize_llm_analysis(
     )
     user_prompt = str(base.get("user_prompt") or base.get("summary") or "")
     from jiuwenswarm.server.runtime.designer.media_model_playbook import (
-        STYLE_LOCK_DEFAULT,
         default_style_lock,
+        is_default_style_look,
     )
 
     # Explicit user language is authoritative. Otherwise accept the Director's
@@ -1237,7 +1249,7 @@ def _normalize_llm_analysis(
         or (raw_style if isinstance(raw_style, str) else "")
         or ""
     ).strip()
-    if user_style.get("look") != STYLE_LOCK_DEFAULT.get("look"):
+    if not is_default_style_look(user_style.get("look")):
         style_lock = user_style
     elif isinstance(raw_style, dict) and any(str(v or "").strip() for v in raw_style.values()):
         style_lock = {
@@ -1247,7 +1259,7 @@ def _normalize_llm_analysis(
         }
     elif visual_style:
         style_lock = default_style_lock(visual_style)
-        if style_lock.get("look") == STYLE_LOCK_DEFAULT.get("look"):
+        if is_default_style_look(style_lock.get("look")):
             style_lock["look"] = visual_style[:280]
             style_lock["medium"] = "brief_specified"
     else:
@@ -1359,6 +1371,14 @@ async def analyze_creative_brief(
         call_model_tool,
         model_text_or_raise,
     )
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import CLOTHING_PARTS_RULE
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        POSITIVE_VISUAL_RULE,
+        authoring_language_rule,
+        current_content_language,
+    )
+
+    language_rules = authoring_language_rule(current_content_language()) + POSITIVE_VISUAL_RULE
 
     # Minimal merge context — never invent cast/shots via heuristic_analysis.
     base = {
@@ -1415,10 +1435,8 @@ async def analyze_creative_brief(
             "with a locked face, age, hair, and costume. Put that id in on_screen on every shot "
             "where they are visible so later shots keep the same people. Do not leave them only "
             "in the action prose. "
-            "Each character description MUST lock wardrobe garments: shirt/top style+color, "
-            "trousers/skirt/bottom style+color, footwear, outerwear/accessories if any "
-            "(example: 'light blue short-sleeve shirt; dark charcoal trousers; black sneakers'). "
-            "Per shot also lock staging: cast_actions (posture/doing), blocking positions "
+            + CLOTHING_PARTS_RULE
+            + "Per shot also lock staging: cast_actions (posture/doing), blocking positions "
             "(zone/facing), who looks_at whom, who talks_to whom, adjacency (next_to). "
             "Shots grouped by setting_id (different places = different setting_id). "
             "Infer one film-wide visual style from the user's exact wording. Preserve "
@@ -1441,7 +1459,9 @@ async def analyze_creative_brief(
             + " Output ONLY one JSON object (no markdown). "
             '{"story_name":"short film title any language",'
             '"style_lock":{"look":"...","medium":"..."},'
-            '"characters":[{"id":"char_1","name":"...","description":"..."}],'
+            '"characters":[{"id":"char_1","name":"...","description":"...",'
+                '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
+                '"accessories":"","outfit":""}}],'
             '"clips":[{"clip_index":1,"title":"2-4 word beat name NEVER Shot N",'
             '"action":"...","camera":"...","on_screen":["char_1"],'
             '"offscreen":[],"cast_actions":{"char_1":"..."},"featured_cast_ids":["char_1"],'
@@ -1473,13 +1493,16 @@ async def analyze_creative_brief(
                     + "The shots must be distinct, sequential content shots that fill the "
                     "requested duration without repetition. "
                     '{"style_lock":{"look":"...","medium":"..."},'
-                    '"characters":[{"id":"char_1","name":"...","description":"..."}],'
+                    '"characters":[{"id":"char_1","name":"...","description":"...",'
+                    '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
+                    '"accessories":"","outfit":""}}],'
                     '"clips":[{"clip_index":1,"action":"...","camera":"...",'
                     '"character_ids":["char_1"],"ensemble_cast_ids":["char_1"],'
                     '"featured_cast_ids":["char_1"],"setting_id":"set_1",'
                     '"clip_prompt":"...","timeline":"0-5s"}]}'
                 )
                 payload["retry"] = True
+            sys_msg = sys_msg + language_rules
             result = await call_model_tool(
                 prompt=json.dumps(payload, ensure_ascii=False),
                 system=sys_msg,

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
@@ -87,6 +88,15 @@ def _input(**overrides: Any) -> SessionCreateInput:
     }
     values.update(overrides)
     return SessionCreateInput(**values)
+
+
+@pytest.fixture(autouse=True)
+def _reset_created_session_metadata_cache() -> Iterator[None]:
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    session_metadata.remove_session_metadata_cache("created-session")
+    yield
+    session_metadata.remove_session_metadata_cache("created-session")
 
 
 def _install_product_hooks(
@@ -452,7 +462,7 @@ async def test_non_explicit_tui_with_project_id_skips_project_creation(
         "get_project_by_id",
         # lifecycle.guard 在会话创建准入时读取 hidden（项目归档屏障）。
         lambda _project_id, cache_bust=True: SimpleNamespace(
-            work_mode="code", hidden=False
+            work_mode="code", hidden=False, project_dir=str(tmp_path),
         ),
     )
 

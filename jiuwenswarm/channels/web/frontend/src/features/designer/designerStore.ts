@@ -16,6 +16,7 @@ import {
   connectNodeToGraph,
   removeNodesFromGraph,
 } from './designerCanvasNodes';
+import { isDesignerConnectionAllowed } from './designerConnectionRules';
 import { useDesignerUiStore } from './designerUiStore';
 import type {
   AssetRef,
@@ -37,6 +38,8 @@ const SAVE_DEBOUNCE_MS = 500;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveSeq = 0;
+// The server applies concurrent saves in any order, so an older snapshot could overwrite a newer one.
+let pendingSave: Promise<void> | null = null;
 let loadSeq = 0;
 const deletedNodeIds = new Set<string>();
 
@@ -107,6 +110,10 @@ type DesignerStore = {
   flushSave: () => Promise<void>;
   /** Server-validated canvas video / image settings; rejects with the server message. */
   patchMediaSettings: (patch: DesignerMediaSettingsPatch) => Promise<void>;
+  /** Stamp the chat model the design pipeline (leader + director chain) must
+   * use. The canvas model switcher writes here so a mid-session change takes
+   * effect on the next leader round (#5394). */
+  setChatModel: (modelName: string) => void;
   reset: () => void;
 };
 
@@ -430,9 +437,13 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     if (!graph) return;
     const source = String(connection.source ?? '').trim();
     const target = String(connection.target ?? '').trim();
-    if (!source || !target) return;
+    if (!source || !target || source === target) return;
     const nodeIds = new Set(graph.nodes.map((node) => node.id));
     if (!nodeIds.has(source) || !nodeIds.has(target)) return;
+    // Unsupported node-type pairs never reach the graph, whatever created the
+    // edge (free dragging, port menus, programmatic callers) — issue #5382.
+    const typeById = new Map(graph.nodes.map((node) => [String(node.id), String(node.type ?? '')]));
+    if (!isDesignerConnectionAllowed(typeById.get(source), typeById.get(target))) return;
     const duplicate = graph.edges.some(
       (edge) => edge.source === source && edge.target === target,
     );
@@ -532,9 +543,6 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     ) {
       ui.closeViewer();
     }
-    if (removed.has(ui.chooserNodeId)) {
-      ui.closeRevision();
-    }
     void get().flushSave();
   },
 
@@ -633,22 +641,54 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     }, SAVE_DEBOUNCE_MS);
   },
 
+  setChatModel: (modelName) => {
+    const graph = get().domainGraph;
+    const name = String(modelName || '').trim();
+    if (!graph || !name || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
+    if (String((graph.metadata ?? {}).model_name || '').trim() === name) return;
+    // A full-graph save already in flight carries the previous model name and
+    // its response would clobber this pick. Drop that response and save again
+    // once the new name is live, so the server does not keep the stale
+    // snapshot either (same guard as `patchMediaSettings`).
+    const saveInFlight = get().saveStatus === 'saving';
+    saveSeq += 1;
+    set({
+      domainGraph: {
+        ...graph,
+        updated_at: Date.now(),
+        metadata: { ...(graph.metadata ?? {}), model_name: name },
+      },
+    });
+    if (saveInFlight) {
+      void get().flushSave();
+    } else {
+      get().scheduleSave();
+    }
+  },
+
   flushSave: async () => {
     clearSaveTimer();
+    while (pendingSave) await pendingSave;
     const graph = get().domainGraph;
     if (!graph || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
     const seq = ++saveSeq;
-    const sentCount = graph.nodes.length;
     const savedGraphId = graph.graph_id;
     set({ saveStatus: 'saving' });
+    const request = designerGraphClient.save(graph);
+    const tracked = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingSave = tracked;
     try {
-      const { graph: saved } = await designerGraphClient.save(graph);
+      const { graph: saved } = await request;
       if (seq !== saveSeq) return;
       const live = get().domainGraph;
       if (!live || live.graph_id !== savedGraphId) {
         return;
       }
-      if (live.nodes.length > sentCount) {
+      // Edits made while this save was in flight are not in the response; keep them for the next save.
+      if (live !== graph) {
         set({ saveStatus: 'saved' });
         return;
       }
@@ -661,6 +701,8 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     } catch {
       if (seq !== saveSeq) return;
       set({ saveStatus: 'error' });
+    } finally {
+      if (pendingSave === tracked) pendingSave = null;
     }
   },
 

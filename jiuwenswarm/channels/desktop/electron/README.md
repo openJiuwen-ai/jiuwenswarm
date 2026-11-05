@@ -79,8 +79,7 @@ backend skills. Electron DMGs are named
 name used by the Python desktop package. Test artifacts retain the distinct
 `electron-test` or `electron-frontend-test` names.
 
-Official macOS releases contain one ARM64 Electron DMG; x86_64 artifacts are
-for local validation only and must not be uploaded to that release. The existing
+Current macOS packages are ARM64 Electron DMGs only; Intel (x86_64) Mac packages and Universal binaries are not supported. Build and validate packages in a native arm64 environment on an Apple Silicon Mac. The existing
 backend installer selection is unchanged, so it does not block pywebview clients
 from selecting the first Electron release. The Electron macOS install helper
 verifies the native architecture and stages a signed, Gatekeeper-approved app before
@@ -103,11 +102,66 @@ its panel's `WebContentsView` and returns its exact DevTools TargetID.
 BrowserAgent runs in `remote` mode against the persistent Electron session
 used by the visible panes.
 
+Packaged builds allocate a non-zero CDP port before Chromium starts. A short
+Node worker selects an available loopback port without relaunching Electron.
+`--remote-debugging-port=0` enables Chromium's automation marker in human-operated
+OAuth windows as well as browser-agent pages, and can interfere with sign-in.
+`JIUWENSWARM_ELECTRON_CDP_PORT` still accepts an explicit non-zero port. If automatic
+allocation fails, the embedded agent browser is disabled; the app does not fall
+back to port zero. OAuth continues to use the existing embedded login window.
+The temporary reservation is released before Chromium binds, as in the development
+launcher; another process can still claim that port in the intervening window.
+A configured port is not treated as ready: after creating the main window, the
+shell waits up to five seconds for its own DevTools TargetID to appear at that
+endpoint. HTTP requests have absolute timeouts, including unresponsive listeners.
+Only then does it enable the Agent browser, start the target resolver and publish
+or pass the endpoint to backend processes. A missing or foreign endpoint disables
+the Agent browser for this launch without falling back to port zero or restarting
+the app. This check applies to automatically allocated and manually selected ports.
+
+打包版会在 Chromium 启动前自动选择非零的本机 CDP 端口，使用短生命周期的 Node
+工作线程完成端口分配，避免再次启动 Electron。端口 `0` 会使人工 OAuth 登录窗口
+也带上 Chromium 自动化标记，可能干扰登录。仍支持通过
+`JIUWENSWARM_ELECTRON_CDP_PORT` 指定非零端口；分配失败时禁用内置 Agent 浏览器，
+不回退到端口 `0`。OAuth 继续使用现有内置登录窗口。临时预留会在 Chromium 绑定前
+释放，与开发启动器相同，因此仍存在被其他进程抢占端口的短暂窗口。选定端口并不
+代表 CDP 已就绪：创建主窗口后，应用最多等待 5 秒，确认该端点包含本窗口的
+DevTools TargetID；HTTP 请求具有绝对超时，防止占用端口的服务不响应。确认后才
+启用 Agent 浏览器、启动 target resolver、发布发现文件并向后端传递端点。端点
+不可用或属于其他实例时，本次启动禁用 Agent 浏览器，不回退端口 0，也不自动重启
+应用。自动分配和手动指定的端口均执行该检查。
+
+Regression check / 回归验证（repository root / 仓库根目录）:
+`node --test tests/electron/cdp_port.test.cjs`.
+
+With the development Electron runtime installed, validate the real Chromium
+endpoint and window signals using an isolated profile / 安装开发版 Electron
+运行时后，可使用独立目录验证实际 Chromium 端口及窗口标识：
+
+```bash
+SWARM_TEST_CDP_PROFILE="$(mktemp -d)" \
+SWARM_TEST_CDP_RESULT=/tmp/workswarm-cdp-result.json \
+jiuwenswarm/channels/desktop/electron/node_modules/.bin/electron \
+  tests/electron/cdp_port.integration.cjs
+```
+
 The target-aware Playwright MCP adapter routes normal page operations to one
 TargetID. Every conversation/member pair gets an independent page and MCP
 registration, including single-agent conversations. The browser pane has member
 tabs; switching or hiding a tab does not stop background automation. Popups are
 still redirected into their owning page; this is not a full Chrome tab manager.
+
+Browser settings' `browser.headless` also controls embedded page presentation.
+Headed mode keeps the normal browser tab and automatic single-agent expansion;
+headless mode hides the browser tab and all native views, while MCP operations
+continue on the same pages. Switching display modes does not itself close or
+navigate those views, change their TargetIDs, or clear their login state. Electron
+implements this as background WebContentsViews, not a separate headless Chrome
+process. The default is headless, including while the saved setting is loading.
+After a successful settings save the presentation updates without restarting
+Electron. Failed saves leave the effective mode unchanged. HTML/Markdown file
+links use the normal artifact preview in headless mode rather than navigating a
+background task's page.
 
 All browser panels use `persist:jiuwenswarm-browser`, separate from the trusted
 UI's session. Cookies and origin-scoped local storage are shared across members

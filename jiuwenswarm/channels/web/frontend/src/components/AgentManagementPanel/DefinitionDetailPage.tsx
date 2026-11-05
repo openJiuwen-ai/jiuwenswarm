@@ -28,6 +28,7 @@ type DefinitionDetailPageProps = {
   fileStatus: RequestStatus;
   fileError: string | null;
   actionNotice: string | null;
+  actionNoticeError?: boolean;
   busy: boolean;
   onBack: () => void;
   onRetry: () => void;
@@ -56,6 +57,7 @@ export function DefinitionDetailPage({
   fileStatus,
   fileError,
   actionNotice,
+  actionNoticeError,
   busy,
   onBack,
   onRetry,
@@ -244,7 +246,7 @@ export function DefinitionDetailPage({
 
         {actionNotice ? (
           <div
-            className="agent-management-inline-notice"
+            className={`agent-management-inline-notice${actionNoticeError ? ' agent-management-inline-notice--error' : ''}`}
             role="status"
             data-testid="agent-management-detail-action-notice"
           >

@@ -13,6 +13,7 @@ from jiuwenswarm.common.utils import get_workspace_dir
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
     install_hub_asset_package,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
     HubPackageDownloader,
 )
@@ -223,6 +224,23 @@ async def list_mcps_with_hub(
     return sorted_cards
 
 
+async def _resolve_hub_asset_id_by_package_name(
+    port: HubAssetPort, package_name: str
+) -> str:
+    """Resolve a Hub asset id from an exact package name ("" when absent).
+
+    ``mcp.show``/``mcp.connect`` use the runtime package name while Hub
+    addresses assets by opaque id; only an exact name match resolves.
+    """
+    result = await port.search_assets(
+        HubSearchRequest(kind="mcp", query=package_name, page=1, page_size=100)
+    )
+    for item in result.items:
+        if item.kind == "mcp" and item.package_name == package_name:
+            return item.asset_id
+    return ""
+
+
 async def show_mcp_with_hub(
     identifier: str,
     *,
@@ -256,8 +274,20 @@ async def show_mcp_with_hub(
                 "version": record.version,
             }
     port = hub_port or create_default_hub_asset_port()
-    detail = await port.query_asset(HubAssetQuery(kind="mcp", asset_id=target))
-    if detail.kind != "mcp" or detail.asset_id != target:
+    resolved_by_name = False
+    try:
+        detail = await port.query_asset(HubAssetQuery(kind="mcp", asset_id=target))
+    except HubNotFoundError:
+        # ``target`` may be a runtime package name (amap), not the asset id.
+        asset_id = await _resolve_hub_asset_id_by_package_name(port, target)
+        if not asset_id:
+            raise
+        resolved_by_name = True
+        detail = await port.query_asset(HubAssetQuery(kind="mcp", asset_id=asset_id))
+    if detail.kind != "mcp" or (
+        detail.asset_id != target
+        and not (resolved_by_name and detail.package_name == target)
+    ):
         raise ValueError("Hub MCP asset identity mismatch")
     return {
         "id": detail.asset_id,
@@ -327,19 +357,41 @@ async def install_hub_mcp(
     return {"id": asset, "name": result.package_id, "installed": True}
 
 
-def uninstall_hub_mcp(identifier: str) -> dict[str, Any]:
-    target = str(identifier or "").strip()
-    record = _state().get(target) or _state().get_by_package_id(target)
-    if record is None or record.kind != "mcp":
-        raise KeyError(f"Hub MCP not installed: {target}")
+def _hub_mcp_record(identifier: str) -> HubInstallRecord | None:
+    state = _state()
+    record = state.get(identifier)
+    if record is not None and record.kind == "mcp":
+        return record
+    record = state.get_by_package_id(identifier)
+    if record is not None and record.kind == "mcp":
+        return record
+    return None
+
+
+def _remove_hub_mcp_package(package_id: str) -> None:
     try:
-        registry.disconnect_mcp(record.package_id)
+        registry.disconnect_mcp(package_id)
     except (KeyError, ValueError):
         pass
-    shutil.rmtree(_mcp_root() / "skills" / record.package_id, ignore_errors=True)
-    (_mcp_root() / "credentials" / f"{record.package_id}.json").unlink(
-        missing_ok=True
-    )
-    shutil.rmtree(_hub_root() / record.package_id, ignore_errors=True)
-    _state().remove(record.asset_id)
-    return {"id": record.asset_id, "name": record.package_id, "removed": True}
+    shutil.rmtree(_mcp_root() / "skills" / package_id, ignore_errors=True)
+    (_mcp_root() / "credentials" / f"{package_id}.json").unlink(missing_ok=True)
+    shutil.rmtree(_hub_root() / package_id, ignore_errors=True)
+
+
+def uninstall_hub_mcp(identifier: str) -> dict[str, Any]:
+    target = str(identifier or "").strip()
+    if not target:
+        raise ValueError("Hub MCP asset id is required")
+    record = _hub_mcp_record(target)
+    if record is not None:
+        _remove_hub_mcp_package(record.package_id)
+        _state().remove(record.asset_id)
+        return {"id": record.asset_id, "name": record.package_id, "removed": True}
+    try:
+        package_id = _validate_hub_package_name(target)
+    except ValueError:
+        package_id = ""
+    if package_id and (_hub_root() / package_id).is_dir():
+        _remove_hub_mcp_package(package_id)
+        return {"id": package_id, "name": package_id, "removed": True}
+    return {"id": target, "name": target, "removed": False, "already_removed": True}

@@ -6,37 +6,64 @@
 A task's files - uploads from the composer and media the agent generated - can be
 given short names so they can be referenced with ``@name`` in the chat box. The
 registry is independent of any other feature: it lives next to the session's own
-data as ``<sessions>/<session_id>/session_assets.json`` and is served by three
+data as ``<sessions>/<session_id>/session_assets.json`` and is served by four
 stateless RPC methods:
 
 - ``session.assets.list``: the session's assets.
-- ``session.assets.register``: add files (idempotent per file path; the default
-  name is the file name without extension, made unique).
+- ``session.assets.register``: add files, one new asset per item (not deduped by
+  path -- the same path attached again deliberately gets its own asset, the way
+  re-attaching an image always does); the default name is the file name without
+  extension, made unique. Callers are responsible for not re-registering a file
+  they already registered themselves (see InputArea.tsx's per-draft tracking),
+  but that is a best-effort optimization, not the source of correctness: this
+  RPC is a generic WS method any caller can invoke, and the same logical
+  request CAN legitimately execute twice server-side (a response lost to a
+  disconnect before the client sees it, a reconnect-triggered retry, a second
+  browser tab). For ``upload`` items, pass a caller-chosen ``client_id`` that
+  stays the SAME across retries of the one draft but is NEW for every
+  deliberate re-attach (InputArea.tsx uses the draft's own id, which is exactly
+  that) -- a second call reusing a ``client_id`` already on an asset in this
+  session returns that asset instead of creating another one. ``generated``
+  items have no such per-attempt identity (there is no "intentional repeat" for
+  an agent-produced file the way there is for a user re-attaching one), so
+  those are deduped by path instead, same as before this per-draft-id scheme
+  existed for uploads.
 - ``session.assets.rename``: change an asset's name.
+- ``session.assets.remove``: drop one asset by id (idempotent; does not touch the
+  underlying file, only the registry entry).
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import secrets
 import time
 from pathlib import Path
 from typing import Any
 
+from openjiuwen_protocol.session_assets import (
+    ASSET_ID_PREFIX,
+    ASSET_KIND_AUDIO,
+    ASSET_KIND_DOCUMENT,
+    ASSET_KIND_IMAGE,
+    ASSET_KIND_VIDEO,
+    ASSET_NAME_MAX_LENGTH,
+    ASSET_SOURCES,
+    ASSET_SOURCE_UPLOAD,
+)
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 logger = logging.getLogger(__name__)
 
 _STATE_FILE = "session_assets.json"
-_NAME_MAX = 60
+_NAME_MAX = ASSET_NAME_MAX_LENGTH
 _FORBIDDEN_NAME_CHARS = re.compile(r"[@\r\n\t]")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _KINDS = {
-    "image": {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"},
-    "video": {".mp4", ".mov", ".webm", ".mkv", ".avi"},
-    "audio": {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"},
+    ASSET_KIND_IMAGE: {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"},
+    ASSET_KIND_VIDEO: {".mp4", ".mov", ".webm", ".mkv", ".avi"},
+    ASSET_KIND_AUDIO: {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"},
 }
 
 
@@ -54,11 +81,7 @@ def _kind_of(path: str) -> str:
     for kind, suffixes in _KINDS.items():
         if suffix in suffixes:
             return kind
-    return "document"
-
-
-def _path_key(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    return ASSET_KIND_DOCUMENT
 
 
 def validate_asset_name(name: str) -> str:
@@ -108,9 +131,14 @@ class SessionAssetManager:
 
     @staticmethod
     def _unique_name(base: str, taken: set[str]) -> str:
-        candidate, index = base, 2
+        # Same "-N" convention as atomic_write_unique/unique_upload_path
+        # (upload_storage.py), so a duplicate name reads the same way
+        # whether the collision was resolved on disk (browser upload) or
+        # only here (desktop local-path attachment, which never renames the
+        # file itself).
+        candidate, index = base, 1
         while candidate.casefold() in taken:
-            suffix = f" {index}"
+            suffix = f"-{index}"
             candidate = base[: _NAME_MAX - len(suffix)] + suffix
             index += 1
         return candidate
@@ -125,14 +153,56 @@ class SessionAssetManager:
         if not isinstance(items, list):
             raise SessionAssetError("INVALID_PARAMS", "缺少 items")
         assets = self._load(session_id)
-        known_paths = {_path_key(str(a.get("path") or "")) for a in assets}
+        # A default name must stay unique against every name this session ever handed
+        # out, not just the ones currently in use: renaming "1" to "2" (see
+        # handle_session_assets_rename) must not free up "1" for the next unrelated
+        # file that happens to share that stem, or the two would look like the same
+        # file split across two names.
         taken = {str(a.get("name") or "").casefold() for a in assets}
+        for asset in assets:
+            taken.update(str(old).casefold() for old in asset.get("name_history") or ())
         added = False
+        # Idempotency indexes, built from what's already on disk. An item that
+        # matches one of these is a repeat of a request already fulfilled (lost
+        # response + retry, reconnect replay, a second tab) -- it returns the
+        # existing asset instead of appending a new one. Both indexes are also
+        # updated as this call creates assets, so two items in the SAME batch
+        # that share a client_id or (for generated) a path also collapse to one.
+        by_client_id = {str(a["client_id"]): a for a in assets if a.get("client_id")}
+        by_generated_path = {a["path"]: a for a in assets if a.get("source") == "generated"}
+        # Parallel to ``items``: the asset each input item became, or None when
+        # skipped (missing path/file). One element per input, in order, so a
+        # caller that registers several items in one call (InputArea.tsx) can
+        # tell exactly which of its own drafts became which asset_id -- it
+        # cannot infer that from ``assets`` alone once the same path is allowed
+        # to back more than one asset (see below).
+        created: list[dict[str, Any] | None] = []
         for item in items:
             if not isinstance(item, dict):
+                created.append(None)
                 continue
             path = str(item.get("path") or "").strip()
-            if not path or _path_key(path) in known_paths or not Path(path).is_file():
+            # No path-based dedup here: a document re-attached from the same
+            # local file (desktop path, never rewritten to a fresh file --
+            # unlike an image, which is always re-encoded to a fresh unique
+            # path on every attach, see media_attachments._store_image_item)
+            # must still get its own new, distinctly-named asset each time it
+            # is deliberately attached again, the same as an image would. The
+            # caller (InputArea.tsx) is what guarantees a single draft is
+            # never registered twice; every item that reaches here is meant to
+            # be a deliberate, distinct attach action -- client_id (below) is
+            # what protects against it reaching here more than once by accident.
+            if not path or not Path(path).is_file():
+                created.append(None)
+                continue
+            source = str(item.get("source") or ASSET_SOURCE_UPLOAD)
+            source = source if source in ASSET_SOURCES else ASSET_SOURCE_UPLOAD
+            client_id = str(item.get("client_id") or "").strip()[:_NAME_MAX] or None
+            if source == "upload" and client_id and client_id in by_client_id:
+                created.append(by_client_id[client_id])
+                continue
+            if source == "generated" and path in by_generated_path:
+                created.append(by_generated_path[path])
                 continue
             wanted = str(item.get("name") or "").strip() or Path(path).stem
             try:
@@ -142,22 +212,25 @@ class SessionAssetManager:
                 base = validate_asset_name(cleaned_stem[:_NAME_MAX] or "asset")
             name = self._unique_name(base, taken)
             taken.add(name.casefold())
-            known_paths.add(_path_key(path))
-            source = str(item.get("source") or "upload")
-            assets.append(
-                {
-                    "asset_id": f"asset_{secrets.token_hex(4)}",
-                    "name": name,
-                    "kind": _kind_of(path),
-                    "path": path,
-                    "source": source if source in ("upload", "generated") else "upload",
-                    "created_at": time.time(),
-                }
-            )
+            asset = {
+                "asset_id": f"{ASSET_ID_PREFIX}{secrets.token_hex(4)}",
+                "name": name,
+                "kind": _kind_of(path),
+                "path": path,
+                "source": source,
+                "created_at": time.time(),
+                **({"client_id": client_id} if client_id else {}),
+            }
+            assets.append(asset)
+            created.append(asset)
             added = True
+            if client_id:
+                by_client_id[client_id] = asset
+            if source == "generated":
+                by_generated_path[path] = asset
         if added:
             self._save(session_id, assets)
-        return {"assets": assets}
+        return {"assets": assets, "created": created}
 
     async def handle_session_assets_rename(self, params: dict) -> dict:
         session_id = str(params.get("session_id") or "")
@@ -169,9 +242,21 @@ class SessionAssetManager:
             raise SessionAssetError("ASSET_NOT_FOUND", f"未找到素材: {asset_id}")
         if any(a is not target and str(a.get("name") or "").casefold() == name.casefold() for a in assets):
             raise SessionAssetError("NAME_CONFLICT", f"名称已被使用: {name}")
+        old_name = str(target.get("name") or "")
+        if old_name and old_name.casefold() != name.casefold():
+            target.setdefault("name_history", []).append(old_name)
         target["name"] = name
         self._save(session_id, assets)
         return {"assets": assets}
+
+    async def handle_session_assets_remove(self, params: dict) -> dict:
+        session_id = str(params.get("session_id") or "")
+        asset_id = str(params.get("asset_id") or "").strip()
+        assets = self._load(session_id)
+        remaining = [a for a in assets if a["asset_id"] != asset_id]
+        if len(remaining) != len(assets):
+            self._save(session_id, remaining)
+        return {"assets": remaining}
 
 
 _MANAGER: SessionAssetManager | None = None

@@ -40,12 +40,11 @@ _NON_SECRET_PLACEHOLDERS = frozenset(
 
 
 def _get_memory_forbidden_config() -> Dict[str, Any]:
-    """从 config.yaml 读取 memory.forbidden_memory_definition 配置."""
+    """从生效 memory 段读取 forbidden_memory_definition 配置."""
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.agents.harness.common.memory.config import get_memory_section
 
-        config = get_config()
-        memory_config = config.get("memory", {})
+        memory_config = get_memory_section()
         forbidden_config = memory_config.get("forbidden_memory_definition", {})
         return {
             "enabled": forbidden_config.get("enabled", False),

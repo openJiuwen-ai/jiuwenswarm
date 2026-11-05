@@ -3,38 +3,72 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import Future
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers import session as session_handlers
+from jiuwenswarm.server.transports import ws_sink
+
+
+async def _append(request: AgentRequest) -> None:
+    await session_handlers.handle_history_append_record(
+        build_ws_request_context(SimpleNamespace(), _FakeWebSocket(), request, asyncio.Lock())
+    )
 
 
 class _FakeWebSocket:
     pass
 
 
+def test_cron_failure_writer_deduplicates_by_request_without_modifying_new_turn(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    history = tmp_path / "history.jsonl"
+    original = [
+        {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "original error"},
+        {"request_id": "next", "role": "user", "content": "followup"},
+    ]
+    history.write_text("".join(json.dumps(record) + "\n" for record in original), encoding="utf-8")
+    monkeypatch.setattr(session_history, "use_legacy_history_json", lambda: False)
+    monkeypatch.setattr(session_history, "_ensure_jsonl_bootstrap", lambda session_id: history)
+    fallback = {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "fallback", "cron_failure_record": True}
+    session_history._write_item("session", fallback)
+    assert [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()] == original
+    fallback = {**fallback, "request_id": "another-run"}
+    session_history._write_item("session", fallback)
+    session_history._write_item("session", fallback)
+    session_history._write_item("session", {
+        "request_id": "another-run", "role": "assistant", "event_type": "chat.error", "content": "late primary",
+    })
+    assert [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()] == [*original, fallback]
+
+
 @pytest.mark.asyncio
-async def test_history_append_record_persists_and_waits_for_completion(monkeypatch) -> None:
+@pytest.mark.parametrize("cron_failure", [False, True])
+async def test_history_append_record_persists_and_waits_for_completion(monkeypatch, cron_failure) -> None:
     appended: dict = {}
     sent: list[dict] = []
     receipt: Future[None] = Future()
     receipt.set_result(None)
 
     monkeypatch.setattr(
-        agent_ws_server_module,
+        session_handlers,
         "append_history_record",
         lambda **kwargs: appended.update(kwargs),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        session_handlers,
         "enqueue_history_request_completion",
         lambda *_args, **_kwargs: receipt,
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        ws_sink,
         "encode_agent_response_for_wire",
         lambda response, *, response_id: {
             "response_id": response_id,
@@ -46,10 +80,7 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
     async def _capture_send(_ws, wire):
         sent.append(wire)
 
-    monkeypatch.setattr(agent_ws_server_module, "send_wire_payload", _capture_send)
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
+    monkeypatch.setattr(ws_sink, "send_wire_payload", _capture_send)
     request = AgentRequest(
         request_id="rpc-1",
         channel_id="__cron__",
@@ -60,13 +91,14 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
             "request_id": "cron-request-1",
             "channel_id": "web",
             "role": "assistant",
-            "event_type": "chat.final",
+            "event_type": "chat.error" if cron_failure else "chat.final",
+            "cron_failure_record": cron_failure,
             "mode": "deep",
             "content": "[cron] task failed",
         },
     )
 
-    await server._handle_history_append_record(_FakeWebSocket(), request, asyncio.Lock())
+    await _append(request)
 
     assert appended == {
         "session_id": "cron-session",
@@ -75,8 +107,9 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
         "role": "assistant",
         "content": "[cron] task failed",
         "timestamp": 123.5,
-        "event_type": "chat.final",
+        "event_type": "chat.error" if cron_failure else "chat.final",
         "mode": "deep",
+        "extra": {"cron_failure_record": True, "error": "[cron] task failed"} if cron_failure else None,
     }
     assert sent == [
         {
@@ -93,15 +126,15 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
     receipt: Future[None] = Future()
     receipt.set_result(None)
     monkeypatch.setattr(
-        agent_ws_server_module, "append_history_record", lambda **kwargs: None
+        session_handlers, "append_history_record", lambda **kwargs: None
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        session_handlers,
         "enqueue_history_request_completion",
         lambda *_args, **_kwargs: receipt,
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        ws_sink,
         "encode_agent_response_for_wire",
         lambda response, *, response_id: {
             "response_id": response_id,
@@ -113,21 +146,18 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
     async def _capture_send(_ws, wire):
         pass
 
-    monkeypatch.setattr(agent_ws_server_module, "send_wire_payload", _capture_send)
-    # get_session_metadata 走 agent_ws_server 模块级绑定；
-    # update_session_metadata 是 handler 内局部导入，需 patch 源模块属性
+    monkeypatch.setattr(ws_sink, "send_wire_payload", _capture_send)
+    # get_session_metadata 走会话处理模块的绑定；
+    # update_session_metadata 是函数里临时导入的，要改原来那个模块。
     from jiuwenswarm.server.runtime.session import session_metadata
 
     stored = {"title": ""}
     updates: list[dict] = []
     monkeypatch.setattr(
-        agent_ws_server_module, "get_session_metadata", lambda _sid, **_kw: dict(stored)
+        session_handlers, "get_session_metadata", lambda _sid, **_kw: dict(stored)
     )
     monkeypatch.setattr(
         session_metadata, "update_session_metadata", lambda **kw: updates.append(kw)
-    )
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
     )
 
     def _request(req_id: str) -> AgentRequest:
@@ -146,9 +176,7 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
             },
         )
 
-    await server._handle_history_append_record(
-        _FakeWebSocket(), _request("rpc-title"), asyncio.Lock()
-    )
+    await _append(_request("rpc-title"))
     assert updates == [
         {
             "session_id": "cron-session",
@@ -158,9 +186,7 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
     ]
 
     stored["title"] = "已有标题"
-    await server._handle_history_append_record(
-        _FakeWebSocket(), _request("rpc-title-keep"), asyncio.Lock()
-    )
+    await _append(_request("rpc-title-keep"))
     assert len(updates) == 1
 
 
@@ -168,7 +194,7 @@ async def test_history_append_record_backfills_empty_title(monkeypatch) -> None:
 async def test_history_append_record_rejects_missing_session_or_content(monkeypatch) -> None:
     sent: list[dict] = []
     monkeypatch.setattr(
-        agent_ws_server_module,
+        ws_sink,
         "encode_agent_response_for_wire",
         lambda response, *, response_id: {
             "response_id": response_id,
@@ -180,17 +206,14 @@ async def test_history_append_record_rejects_missing_session_or_content(monkeypa
     async def _capture_send(_ws, wire):
         sent.append(wire)
 
-    monkeypatch.setattr(agent_ws_server_module, "send_wire_payload", _capture_send)
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
+    monkeypatch.setattr(ws_sink, "send_wire_payload", _capture_send)
     request = AgentRequest(
         request_id="rpc-missing",
         req_method=ReqMethod.HISTORY_APPEND_RECORD,
         params={},
     )
 
-    await server._handle_history_append_record(_FakeWebSocket(), request, asyncio.Lock())
+    await _append(request)
 
     assert sent == [
         {
@@ -208,7 +231,7 @@ async def test_history_append_record_rejects_missing_session_or_content(monkeypa
 async def test_history_append_record_rejects_invalid_session_id(monkeypatch) -> None:
     sent: list[dict] = []
     monkeypatch.setattr(
-        agent_ws_server_module,
+        ws_sink,
         "encode_agent_response_for_wire",
         lambda response, *, response_id: {
             "response_id": response_id,
@@ -220,17 +243,14 @@ async def test_history_append_record_rejects_invalid_session_id(monkeypatch) -> 
     async def _capture_send(_ws, wire):
         sent.append(wire)
 
-    monkeypatch.setattr(agent_ws_server_module, "send_wire_payload", _capture_send)
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
+    monkeypatch.setattr(ws_sink, "send_wire_payload", _capture_send)
     request = AgentRequest(
         request_id="rpc-invalid-session",
         req_method=ReqMethod.HISTORY_APPEND_RECORD,
         params={"session_id": "../outside", "content": "must not be written"},
     )
 
-    await server._handle_history_append_record(_FakeWebSocket(), request, asyncio.Lock())
+    await _append(request)
 
     assert sent == [
         {

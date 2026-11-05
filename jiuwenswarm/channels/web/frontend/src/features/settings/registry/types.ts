@@ -27,7 +27,10 @@ export type SettingsAccessBinding = {
 };
 type SettingItemBase = {
   id: string;
+  rowClassName?: string;
   replaceable?: boolean;
+  /** Override the module source when a settings group contains multiple persistence services. */
+  source?: SettingsSource;
 };
 export type SettingSelectOption = {
   value: SettingValue;
@@ -50,6 +53,7 @@ export type SettingItemDefinition =
       component: 'switch';
       key: string;
       subItems?: SettingSubItems;
+      configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })
   | (SettingItemBase & {
       component: 'select';

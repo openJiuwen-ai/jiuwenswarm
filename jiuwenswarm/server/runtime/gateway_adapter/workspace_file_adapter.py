@@ -117,12 +117,57 @@ class WorkspaceFileAdapter(GatewayAdapter):
             ReqMethod.FILE_IMPORT_URL.value,
             ReqMethod.FILE_UPLOAD_CHUNK.value,
             ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK.value,
+            ReqMethod.FILE_READ_UPLOAD_CHUNK.value,
             ReqMethod.IM_FILE_PERSIST.value,
+            ReqMethod.WORKSPACE_TREE.value,
+            ReqMethod.WORKSPACE_PREVIEW.value,
+            ReqMethod.WORKSPACE_USAGE.value,
+            ReqMethod.WORKSPACE_ENTRIES_DELETE.value,
         }
     )
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import bind_quota_identity, reset_quota_identity
+        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
+
+        group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
+        tokens = bind_quota_identity(group_id=group_id, bot_id=bot_id, user_id=user_id)
+        try:
+            return await self._handle(request)
+        finally:
+            reset_quota_identity(tokens)
+
+    async def _handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
+        if method is not None and method.value.startswith("workspace."):
+            return await self._handle_workspace(request)
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise() and method in {ReqMethod.MEDIA_PERSIST, ReqMethod.DOCUMENT_PERSIST}:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            root = TenantContext.current_tenant_root()
+            params = request.params or {}
+            for field in ("media_items", "documents"):
+                for item in params.get(field) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("path", "original_path"):
+                        raw_path = item.get(key)
+                        if not raw_path:
+                            continue
+                        outside = (
+                            root is None
+                            or not Path(raw_path).resolve().is_relative_to(
+                                root.resolve()
+                            )
+                        )
+                        if outside:
+                            return build_error_response(
+                                request,
+                                "attachment outside tenant workspace",
+                                code="FORBIDDEN",
+                            )
         if method == ReqMethod.MEDIA_PERSIST:
             return await self._handle_media_persist(request)
         if method == ReqMethod.MEDIA_DISCARD:
@@ -141,12 +186,55 @@ class WorkspaceFileAdapter(GatewayAdapter):
             return await self._handle_upload_chunk(request)
         if method == ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK:
             return await self._handle_verified_download_chunk(request)
+        if method == ReqMethod.FILE_READ_UPLOAD_CHUNK:
+            return await self._handle_read_upload_chunk(request)
         if method == ReqMethod.IM_FILE_PERSIST:
             return await self._handle_im_file_persist(request)
         return build_error_response(
             request,
             f"unsupported method: {method}",
             code="BAD_REQUEST",
+        )
+
+    async def _handle_workspace(self, request: AgentRequest) -> AgentResponse:
+        from jiuwenswarm.enterprise.capabilities.workspace.service import (
+            WorkspaceError,
+            WorkspaceService,
+        )
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import resolve_effective_quota, snapshot_to_dict
+        from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
+        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
+
+        params = request.params or {}
+        service = WorkspaceService(get_multi_tenant_user_workspace_dir())
+
+        def execute():
+            if request.req_method == ReqMethod.WORKSPACE_TREE:
+                return service.list_tree(params.get("relative_path"))
+            if request.req_method == ReqMethod.WORKSPACE_PREVIEW:
+                limit = min(int(params.get("max_bytes") or 512 * 1024), 1024 * 1024)
+                return service.preview_file(params.get("relative_path"), max_bytes=limit)
+            if request.req_method == ReqMethod.WORKSPACE_ENTRIES_DELETE:
+                paths = params.get("relative_paths")
+                if not isinstance(paths, list):
+                    raise ValueError("relative_paths must be a list")
+                return service.delete_entries(paths)
+            group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
+            snapshot = resolve_effective_quota(
+                tenant_root=service.tenant_root, user_id=user_id, group_id=group_id,
+                bot_id=bot_id, force_refresh=True,
+            )
+            return snapshot_to_dict(snapshot, user_id=user_id, group_id=group_id, bot_id=bot_id)
+
+        try:
+            payload = await asyncio.to_thread(execute)
+        except WorkspaceError as exc:
+            return build_error_response(request, exc.message, code=exc.code)
+        except (ValueError, TypeError):
+            return build_error_response(request, "invalid workspace request", code="BAD_REQUEST")
+        return AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id,
+            ok=True, payload=payload, metadata=request.metadata,
         )
 
     async def _handle_media_persist(self, request: AgentRequest) -> AgentResponse:
@@ -456,6 +544,30 @@ class WorkspaceFileAdapter(GatewayAdapter):
             metadata=request.metadata,
         )
 
+    async def _handle_read_upload_chunk(self, request: AgentRequest) -> AgentResponse:
+        from jiuwenswarm.server.runtime.attachments.upload_storage import (
+            UPLOAD_READ_CHUNK_BYTES, read_session_upload_chunk,
+        )
+
+        params = request.params or {}
+        try:
+            payload = await asyncio.to_thread(
+                read_session_upload_chunk, request.session_id or "", str(params.get("path") or ""),
+                int(params.get("offset", 0)), int(params.get("limit", UPLOAD_READ_CHUNK_BYTES)),
+            )
+        except PermissionError:
+            return build_error_response(request, "upload access denied", code="FORBIDDEN")
+        except FileNotFoundError:
+            return build_error_response(request, "upload not found", code="NOT_FOUND")
+        except (ValueError, TypeError):
+            return build_error_response(request, "invalid upload request", code="BAD_REQUEST")
+        except OSError:
+            return build_error_response(request, "upload is unavailable", code="FORBIDDEN")
+        return AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id,
+            ok=True, payload=payload, metadata=request.metadata,
+        )
+
     async def _handle_verified_download_chunk(
         self,
         request: AgentRequest,
@@ -493,6 +605,13 @@ class WorkspaceFileAdapter(GatewayAdapter):
                 "verified download token rejected",
                 code="FORBIDDEN",
             )
+
+        from jiuwenswarm.enterprise import is_enterprise
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+        tenant_key = TenantContext.current_tenant_key()
+        if is_enterprise() and (not tenant_key or payload.get("tenant_key") != tenant_key):
+            return build_error_response(request, "download context mismatch", code="FORBIDDEN")
 
         try:
             claimed_size = int(payload.get("size"))
@@ -562,6 +681,24 @@ class WorkspaceFileAdapter(GatewayAdapter):
         params = request.params if isinstance(request.params, dict) else {}
         raw_files = params.get("files")
         overwrite = bool(params.get("overwrite", False))
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.server.runtime.attachments.obs_attachments import import_obs_files
+            from jiuwenswarm.enterprise.capabilities.workspace.quota import WorkspaceQuotaExceeded
+
+            try:
+                imported = await asyncio.to_thread(import_obs_files, request)
+            except WorkspaceQuotaExceeded:
+                return build_error_response(request, "WORKSPACE_QUOTA_EXCEEDED", code="WORKSPACE_QUOTA_EXCEEDED")
+            except (ValueError, OSError):
+                return build_error_response(request, "invalid attachment import", code="BAD_REQUEST")
+            except Exception:
+                return build_error_response(request, "object store unavailable", code="SERVICE_UNAVAILABLE")
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload={"files": imported}, metadata=request.metadata,
+            )
         if not isinstance(raw_files, list):
             return build_error_response(
                 request, "files must be a list", code="BAD_REQUEST"

@@ -137,6 +137,21 @@ def _table_cell(value: Any) -> str:
     return " ".join(str(value or "").replace("|", "/").split())
 
 
+def _table_header() -> list[str]:
+    return [
+        "| " + " | ".join(header for _, header in STORYBOARD_COLUMNS) + " |",
+        "| " + " | ".join("---" for _ in STORYBOARD_COLUMNS) + " |",
+    ]
+
+
+def render_storyboard_shots(shots: list[StoryboardShot]) -> str:
+    """Render parsed storyboard rows back into the canonical table."""
+    lines = _table_header()
+    for shot in shots:
+        lines.append("| " + " | ".join(_table_cell(shot[field]) for field, _ in STORYBOARD_COLUMNS) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def _cast_names(ids: Any, id_to_name: dict[str, str]) -> list[str]:
     if not isinstance(ids, list):
         return []
@@ -146,17 +161,22 @@ def _cast_names(ids: Any, id_to_name: dict[str, str]) -> list[str]:
 def render_storyboard_table(
     shots: list[dict[str, Any]],
     characters: list[dict[str, Any]],
+    content_language: str = "",
 ) -> str:
-    """Render structured shots as the storyboard's only content: one Markdown table."""
+    """Render structured shots as the storyboard's only content: one Markdown table.
+
+    Column headers stay canonical English: the canvas parses them and localizes
+    the display itself. Cell text is the authored content language.
+    """
+    zh = content_language == "zh"
+    doing_label = "动作：" if zh else "Doing: "
+    pair_sep = "；" if zh else "; "
     id_to_name = {
         str(c.get("id")): str(c.get("name") or c.get("id"))
         for c in characters
         if isinstance(c, dict) and c.get("id")
     }
-    lines = [
-        "| " + " | ".join(header for _, header in STORYBOARD_COLUMNS) + " |",
-        "| " + " | ".join("---" for _ in STORYBOARD_COLUMNS) + " |",
-    ]
+    lines = _table_header()
     for position, shot in enumerate((s for s in shots if isinstance(s, dict)), start=1):
         on_screen = _cast_names(
             shot.get("on_screen") or shot.get("visible_cast_ids") or shot.get("character_ids"),
@@ -164,20 +184,21 @@ def render_storyboard_table(
         )
         action = str(shot.get("action") or shot.get("clip_prompt") or "").strip()
         cast_actions = shot.get("cast_actions") if isinstance(shot.get("cast_actions"), dict) else {}
-        doing = "; ".join(
-            f"{id_to_name.get(str(cid), str(cid))}: {act}"
+        name_sep = "：" if zh else ": "
+        doing = pair_sep.join(
+            f"{id_to_name.get(str(cid), str(cid))}{name_sep}{act}"
             for cid, act in cast_actions.items()
             if str(act).strip()
         )
         if doing:
-            action = f"{action} Doing: {doing}".strip()
+            action = f"{action} {doing_label}{doing}".strip()
         by_char = (
             shot.get("speech_by_character")
             if isinstance(shot.get("speech_by_character"), dict)
             else {}
         )
-        speech = "; ".join(
-            f"{id_to_name.get(str(cid), str(cid))}: {line}"
+        speech = pair_sep.join(
+            f"{id_to_name.get(str(cid), str(cid))}{name_sep}{line}"
             for cid, line in by_char.items()
             if str(line).strip()
         ) or str(shot.get("speech_line") or "").strip()
@@ -236,18 +257,16 @@ def sync_shot_nodes_from_storyboard_markdown(
         if narrative:
             gen = dict(cfg.get("generate") or {}) if isinstance(cfg.get("generate"), dict) else {}
             existing = str(gen.get("prompt") or "")
-            lead = (
-                f"Film shot {idx} only. Camera {cfg.get('camera') or 'medium / eye-level'}. "
-                f"Action: {narrative[:300]}."
-            )
-            if "Action:" not in existing or narrative[:80] not in existing:
-                if existing and any(
-                    m in existing.upper()
-                    for m in ("SCENE SPECS", "STAGING LOCK", "OCCUPANCY", "COSTUME")
-                ):
-                    gen["prompt"] = f"{lead}\n{existing}"[:2000]
-                else:
-                    gen["prompt"] = lead[:1200]
+            if narrative[:80] not in existing:
+                from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                    shot_brief_prompt,
+                )
+
+                gen["prompt"] = shot_brief_prompt(
+                    idx,
+                    camera=str(cfg.get("camera") or ""),
+                    action=narrative[:300],
+                )[:1200]
                 cfg["generate"] = gen
                 changed = True
         if changed:
@@ -321,6 +340,12 @@ class BriefNodeHandler:
         meta = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
         approved = str(meta.get("approved_brief") or "").strip()
         if approved:
+            edit = str(cfg.get("user_edit_prompt") or "").strip()
+            if edit:
+                from jiuwenswarm.server.runtime.designer.story_edit import apply_story_edit
+
+                await apply_story_edit(ctx.graph, edit, delegate=str(cfg.get("delegate") or ""))
+                approved = str(ctx.graph["metadata"].get("approved_brief") or "").strip()
             _sync_style_authority(approved, ctx)
             text = _stamp_bible_on_text(approved, ctx)
             path = write_workspace_text(f"designer_brief_{ctx.run_id}_{ctx.node_id}", text)
@@ -355,13 +380,27 @@ class StoryboardNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         meta = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
         text = str(meta.get("approved_storyboard") or "").strip()
+        cfg = node_config(node)
+        edit = str(cfg.get("user_edit_prompt") or "").strip()
+        if text and edit:
+            from jiuwenswarm.server.runtime.designer.story_edit import apply_storyboard_edit
+
+            await apply_storyboard_edit(ctx.graph, edit, delegate=str(cfg.get("delegate") or ""))
+            text = str(ctx.graph["metadata"].get("approved_storyboard") or "").strip()
         if not text:
             planned = node_config(node).get("planned_shots")
             if not isinstance(planned, list) or not planned:
-                raise RuntimeError("Storyboard has no planned shots to tabulate.")
+                raise RuntimeError(
+                    "Storyboard has no planned shots because this graph was not built "
+                    "by the Director chain; rebuild the graph."
+                )
             analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
             characters = [c for c in (analysis.get("characters") or []) if isinstance(c, dict)]
-            text = render_storyboard_table(planned, characters)
+            from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+                current_content_language,
+            )
+
+            text = render_storyboard_table(planned, characters, current_content_language())
         sync_shot_nodes_from_storyboard_markdown(ctx.graph, text)
         path = write_workspace_text(f"designer_storyboard_{ctx.run_id}_{ctx.node_id}", text)
         return NodeResult(

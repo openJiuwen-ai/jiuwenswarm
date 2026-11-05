@@ -2,7 +2,11 @@ import { Download, Replace, ScanSearch, Trash } from 'lucide-react';
 import { useCallback, useRef, useState, type ChangeEvent, type MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { downloadPreviewFile } from '../../../../components/ui/FilePreviewPanel/filePreviewShared';
-import { collectDesignerMaterials, previewMaterialForNode } from '../../designerMaterials';
+import {
+  collectDesignerMaterials,
+  designerMaterialFilename,
+  previewMaterialForNode,
+} from '../../designerMaterials';
 import {
   canReplaceUploadedNode,
   storeDesignerUpload,
@@ -56,25 +60,27 @@ export function DesignerNodeActionBar({ nodeId, nodeType }: DesignerNodeActionBa
     async (event: MouseEvent) => {
       event.stopPropagation();
       if (!material || !hasOutput) return;
-      const filename =
-        material.label?.trim() ||
-        material.uri.split('/').pop() ||
-        `designer-node-${nodeId}`;
+      const filename = designerMaterialFilename(material, `designer-node-${nodeId}`);
+      let saved = false;
       if (material.previewUrl) {
-        await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
-        return;
+        saved = await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
+      } else if (material.textUrl) {
+        try {
+          const response = await fetch(material.textUrl);
+          if (response.ok) {
+            saved = await downloadPreviewFile({ filename, content: await response.text() });
+          }
+        } catch {
+          saved = false;
+        }
       }
-      if (!material.textUrl) return;
-      try {
-        const response = await fetch(material.textUrl);
-        if (!response.ok) return;
-        const content = await response.text();
-        await downloadPreviewFile({ filename, content });
-      } catch {
-        // ignore fetch/download failures
+      if (!saved) {
+        useDesignerRunStore.setState({
+          runError: t('designer.nodeActions.downloadFailed', { name: filename }),
+        });
       }
     },
-    [hasOutput, material, nodeId],
+    [hasOutput, material, nodeId, t],
   );
 
   const onReplaceChange = useCallback(

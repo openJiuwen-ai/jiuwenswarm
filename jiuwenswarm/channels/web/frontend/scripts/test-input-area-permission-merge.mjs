@@ -10,8 +10,11 @@ await build({
     'src/stores/index.ts',
     'src/i18n/index.ts',
     'src/features/teamOrganization/featureConfig.ts',
+    'src/features/teamOrganization/processing.ts',
+    'src/features/teamOrganization/conversation.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',
     'src/services/webClient.ts',
+    'src/features/sessionAssets/sessionAssets.ts',
   ],
   outbase: 'src',
   outdir: 'node_modules/.cache/input-area-permission-merge',
@@ -58,7 +61,8 @@ await build({
     },
   ],
 });
-const result = spawnSync(process.execPath, ['--test', 'tests/inputAreaPermissionMerge.test.mjs'], {
+const testArgs = ['--test', ...process.argv.slice(2), 'tests/inputAreaPermissionMerge.test.mjs'];
+const result = spawnSync(process.execPath, testArgs, {
   cwd: root,
   stdio: 'inherit',
 });

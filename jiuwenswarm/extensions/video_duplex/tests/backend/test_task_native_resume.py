@@ -22,8 +22,8 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import VoiceAgentTaskRail
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import install_bridge
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useReactFlow } from '@xyflow/react';
 import SendPlaneIcon from '../../../../assets/send_plane.svg?react';
 import { isComfyuiNodeConfig } from '../../comfyuiWorkflow';
-import { hasPendingDesignerRevision } from '../../designerMaterials';
+import { designerToolbarRevealShift } from '../../designerToolbarVisibility';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
-import { useDesignerUiStore } from '../../designerUiStore';
 import {
   isMediaNodeType,
   isUploadedMediaNode,
@@ -35,9 +35,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const rerunNode = useDesignerRunStore((state) => state.rerunNode);
   const isRunning = useDesignerRunStore((state) => state.isRunning);
   const editingLocked = useDesignerGraphEditingLocked();
-  const nodeState = useDesignerRunStore((state) => state.nodeStates[nodeId]);
   const domainGraph = useDesignerStore((state) => state.domainGraph);
-  const openRevision = useDesignerUiStore((state) => state.openRevision);
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
@@ -55,7 +53,29 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     setPromptDraft(storePrompt);
   }, [nodeId, storePrompt]);
 
-  const pendingRevision = hasPendingDesignerRevision(nodeState);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { getViewport, setViewport } = useReactFlow();
+  // The toolbar sits below the node inside the clipped canvas: a node near the
+  // bottom edge would hide its prompt panel, so pan just enough to reveal it.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const root = rootRef.current;
+      const flow = root?.closest('.react-flow');
+      if (!root || !flow) return;
+      const rect = root.getBoundingClientRect();
+      const bounds = flow.getBoundingClientRect();
+      let bottom = bounds.bottom;
+      const dock = flow.parentElement?.querySelector('.designer-canvas-dock')?.getBoundingClientRect();
+      if (dock && dock.height > 0 && dock.left < rect.right && dock.right > rect.left) {
+        bottom = Math.min(bottom, dock.top);
+      }
+      const shift = designerToolbarRevealShift(rect, { top: bounds.top, bottom });
+      if (shift <= 0) return;
+      const viewport = getViewport();
+      void setViewport({ ...viewport, y: viewport.y - shift }, { duration: 200 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [getViewport, nodeId, setViewport]);
 
   const patchGenerate = useCallback(
     (patch: Parameters<typeof writeMediaGeneratePatch>[1]) => {
@@ -70,8 +90,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     void rerunNode(domainGraph, nodeId);
   }, [domainGraph, editingLocked, isRunning, nodeId, rerunNode]);
 
-  // Audio no longer has upload; only revision compare remains when needed.
-  if (isMedia && !canGenerate && !pendingRevision) {
+  if (isMedia && !canGenerate) {
     return null;
   }
 
@@ -81,6 +100,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
 
   return (
     <div
+      ref={rootRef}
       className="designer-node-toolbar nodrag nopan nowheel"
       data-testid="designer-node-toolbar"
       data-node-type={nodeType}
@@ -89,17 +109,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
       onMouseDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
-      {pendingRevision ? (
-        <button
-          type="button"
-          className="designer-node-toolbar__compare"
-          data-testid="designer-node-toolbar-tab-compare"
-          onClick={() => openRevision(nodeId)}
-        >
-          {t('designer.revision.compare')}
-        </button>
-      ) : null}
-
       {canGenerate ? (
         <div
           className="designer-node-toolbar__panel"

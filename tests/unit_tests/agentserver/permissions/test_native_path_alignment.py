@@ -15,7 +15,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent
-from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+from openjiuwen.core.single_agent.interrupt.state import RESUME_INTERRUPT_ANSWERS_KEY, InterruptAnswer
 from openjiuwen.core.sys_operation.config import LocalWorkConfig
 from openjiuwen.core.sys_operation.cwd import _cwd_state, init_cwd, set_cwd
 from openjiuwen.core.sys_operation.sys_operation import SysOperation, SysOperationCard
@@ -215,16 +215,18 @@ async def test_auto_answer_reenters_native_projection_after_cwd_changes(native, 
     monkeypatch.setattr(base, "_collect_file_guard_persist_accesses", collect)
     monkeypatch.setattr(base, "_exact_persist_callback", lambda *_args: persisted.append(True) or True)
     monkeypatch.setattr(base._host, "persist_session_allow_rule", lambda *_args, **_kwargs: True)
-    with pytest.raises(AbortError):
+    with pytest.raises(AbortError) as raised:
         await native.rail.before_tool_call(invocation.ctx)
     assert NATIVE_PATH_ACCESS.get() is None
     pending = inv._extract_invocation((invocation.ctx,), {})
     frozen_args = inv.normalize_invocation_tool_args(name, pending.tool_args)
     assert frozen_args["path"] == str(native.root.parent)
     set_cwd(str(native.root / "outputs"))
-    invocation.ctx.extra[RESUME_USER_INPUT_KEY] = {
-        "approved": True, "auto_confirm": True, "persist_allow": permanent,
-    }
+    request = raised.value.cause.request
+    invocation.ctx.extra[RESUME_INTERRUPT_ANSWERS_KEY] = {"native-call": {request.interrupt_owner: InterruptAnswer(
+        owner=request.interrupt_owner, kind=request.interrupt_kind, request=request,
+        value={"approved": True, "auto_confirm": True, "persist_allow": permanent},
+    )}}
     result = await native.rail.before_tool_call(invocation.ctx)
     assert result is None
     assert collected == [[(str(native.root.parent), "read")]]

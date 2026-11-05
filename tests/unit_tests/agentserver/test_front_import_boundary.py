@@ -21,6 +21,7 @@ import json
 import os
 import sys
 class Observer(importlib.abc.MetaPathFinder):
+    baseline = set()
     def find_spec(self, name, path=None, target=None):
         if name != "jiuwenswarm.server.front.router":
             return None
@@ -38,10 +39,13 @@ class Observer(importlib.abc.MetaPathFinder):
                         "jiuwenswarm.server.runtime.agent_adapter",
                         "jiuwenswarm.server.runtime.skill.skill_manager", "jiuwenswarm.runtime.project_lsp",
                         "jiuwenswarm.server.runtime.session.kv_cache")
-                    hits = [name for name in sys.modules if any(name == p or name.startswith(p + ".") for p in prefixes)]
+                    hits = {name for name in sys.modules if any(name == p or name.startswith(p + ".") for p in prefixes)}
+                    if not Observer.baseline:
+                        Observer.baseline.update(hits)
+                    delta = sorted(hits - Observer.baseline)
                     with open(os.environ["ISSUE4689_MODULE_OBSERVER"], "a", encoding="utf-8") as file:
                         file.write(json.dumps({"pid": os.getpid(), "method": request.req_method.value,
-                            "forbidden": hits, "loaded_modules": sorted(sys.modules)}) + "\\n")
+                            "forbidden": delta, "loaded_modules": sorted(sys.modules)}) + "\\n")
                 module.MethodRouter._dispatch_control = observed
         spec.loader = Loader()
         return spec
@@ -82,11 +86,21 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                 await ws.send(json.dumps({"request_id": method, "channel_id": "web", "req_method": method,
                                           "session_id": "acceptance-0", "params": params}))
                 await receive(ws, method)
-            for _ in range(100):
-                if observations.exists() and len(observations.read_text(encoding="utf-8").splitlines()) == 4:
-                    break
+            # The observer appends each ~7.7KB JSON line via a buffered write;
+            # splitlines() counts a torn (mid-flush) line as complete, so a
+            # count-based wait can race the writer and hand json.loads a
+            # truncated string. Retry until the whole file parses cleanly into
+            # the expected row count instead.
+            rows: list[dict] = []
+            for _ in range(400):
+                if observations.exists():
+                    try:
+                        rows = [json.loads(line) for line in observations.read_text(encoding="utf-8").splitlines()]
+                    except json.JSONDecodeError:
+                        rows = []
+                    if len(rows) == 4:
+                        break
                 await asyncio.sleep(.01)
-            rows = [json.loads(line) for line in observations.read_text(encoding="utf-8").splitlines()]
             assert len(rows) == 4
             assert len({row["pid"] for row in rows}) == 1
             assert all(row["forbidden"] == [] for row in rows)

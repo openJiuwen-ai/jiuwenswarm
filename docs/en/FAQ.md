@@ -8,7 +8,7 @@
 
 ### Q: On start I see "Python version not supported"
 
-Ensure Python version ≥3.11 and <3.14 (3.11 or 3.12 recommended).
+Ensure Python version ≥3.11 (3.11 or 3.12 recommended; 3.13 and 3.14 also supported).
 
 ```bash
 python --version

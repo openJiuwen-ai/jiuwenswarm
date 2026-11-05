@@ -119,6 +119,10 @@ class SessionRunAdmission:
         state = self._states.get(session_id)
         return bool(state and state.pending_interrupt_ids)
 
+    def pending_interaction_ids(self, session_id: str) -> frozenset[str]:
+        state = self._states.get(session_id)
+        return frozenset(state.pending_interrupt_ids) if state else frozenset()
+
     def set_session_message_blocker(
         self, blocker: Callable[[str], bool] | None
     ) -> None:
@@ -480,11 +484,17 @@ class SessionRunAdmission:
         False when no Heartbeat owns the Session.  A run that cannot be
         cancelled raises, so the caller keeps its busy fallback.
         """
-        async with self._condition:
-            state = self._states.get(session_id)
-            run_id = state.heartbeat_run_id if state is not None else None
+        # Select the run before the first await. A lifecycle caller has just
+        # checked its runtime generation; waiting for admission must not pick
+        # up a new run that replaced it while this lock was held elsewhere.
+        state = self._states.get(session_id)
+        run_id = state.heartbeat_run_id if state is not None else None
         if not run_id:
             return False
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None or state.heartbeat_run_id != run_id:
+                return False
         await self._preempt_heartbeat_for_user(session_id, run_id)
         return True
 

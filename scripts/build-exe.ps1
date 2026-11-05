@@ -442,6 +442,10 @@ if ($DoSign) {
     Write-Host "`n[3.7/4] Skipping PE signing (unsigned local build)." -ForegroundColor Yellow
 }
 
+if (Test-Truthy $BundleNode) {
+    Write-NodeRuntimeManifest -DistDir $FrozenDir
+}
+
 # 4. Build installer (Inno Setup)
 Write-Host "`n[4/4] Building installer (Inno Setup)..." -ForegroundColor Yellow
 $IsccPaths = @(

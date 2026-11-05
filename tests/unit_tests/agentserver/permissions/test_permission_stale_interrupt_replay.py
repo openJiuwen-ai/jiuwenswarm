@@ -64,7 +64,7 @@ async def _run_full_allow_flow(h, monkeypatch, *, mode):
         answer["answers"][0]["card_id"] = (
             h.adapter._root_permission_queue.snapshot_scope(
                 root_session_id=h.adapter._parent_session_id,
-            )[0].invocation_id
+            )[0].tool_call_id
         )
     result = await _request(h, **answer)
     assert result.ok, (result.payload, h.script.calls, h.executions)

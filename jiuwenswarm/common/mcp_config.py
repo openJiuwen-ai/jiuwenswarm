@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -106,11 +107,31 @@ def extract_enabled_mcp_server_entries(
     return result
 
 
+# stdio launchers Hub MCPs commonly declare (e.g. amap uses npx).
+_NODE_PACKAGE_RUNNERS = frozenset({"npx", "npm"})
+
+
+def resolve_node_package_runner(
+    command: str, args: list[str]
+) -> tuple[str, list[str]]:
+    """Run npx/npm via corepack when the launcher is missing from PATH.
+
+    Node-only images ship corepack without npm/npx; ``corepack npx ...`` still
+    resolves the bundled npm launcher.
+    """
+    if command not in _NODE_PACKAGE_RUNNERS or shutil.which(command):
+        return command, args
+    if not shutil.which("corepack"):
+        return command, args
+    return "corepack", [command, *args]
+
+
 def build_mcp_server_config(
     entry: dict[str, Any],
     *,
     server_id_scope: str | None = None,
     credential_resolver=None,
+    resolve_node_launcher: bool = False,
 ) -> McpServerConfig | None:
     """Build a ``McpServerConfig`` from one ``mcp.servers`` entry.
 
@@ -124,6 +145,8 @@ def build_mcp_server_config(
             config.yaml can store placeholders (no plaintext tokens) while the
             spawned stdio process / HTTP request gets real credentials.
             When None (default), placeholders stay literal (backward compat).
+        resolve_node_launcher: Route a missing ``npx``/``npm`` through
+            ``corepack``. Enable only for configs that are actually spawned.
     """
     name = str(entry.get("name", "")).strip()
     if not name:
@@ -141,23 +164,29 @@ def build_mcp_server_config(
         payload["server_id"] = explicit_server_id
 
     if transport == "stdio":
+        from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
         command = str(entry.get("command", "")).strip()
         if not command:
             return None
-        params: dict[str, Any] = {"command": command}
-        args = entry.get("args")
-        if isinstance(args, list):
+        command = resolve_preserved_cli_path(command) or command
+        args: list[str] = []
+        if isinstance(entry.get("args"), list):
             # resolve ${VAR} placeholders via credential_resolver (same as env
             # below): stdio MCPs like ssh-mcp-server pass --host ${SSH_HOST}
             # in args, and the spawned process gets argv literally (no shell
             # expansion), so placeholders must be substituted here.
-            params["args"] = [_resolve_string(str(item), credential_resolver) for item in args]
-        else:
-            # Default to [] so a bare command (no args) still spawns cleanly.
-            params["args"] = []
+            args = [
+                resolve_preserved_cli_path(_resolve_string(str(item), credential_resolver))
+                for item in entry["args"]
+            ]
+        # Default args to [] so a bare command (no args) still spawns cleanly.
+        if resolve_node_launcher:
+            command, args = resolve_node_package_runner(command, args)
+        params: dict[str, Any] = {"command": command, "args": args}
         cwd = entry.get("cwd")
         if isinstance(cwd, str) and cwd.strip():
-            params["cwd"] = cwd.strip()
+            params["cwd"] = resolve_preserved_cli_path(cwd.strip(), directory=True)
         env = entry.get("env")
         if isinstance(env, dict):
             # resolve ${VAR} placeholders via credential_resolver
@@ -218,7 +247,8 @@ def build_enabled_mcp_server_configs(
             else None
         )
         cfg = build_mcp_server_config(
-            entry, server_id_scope=server_id_scope, credential_resolver=resolver
+            entry, server_id_scope=server_id_scope, credential_resolver=resolver,
+            resolve_node_launcher=True,
         )
         if cfg is not None:
             configs.append(cfg)
@@ -226,7 +256,10 @@ def build_enabled_mcp_server_configs(
 
 
 async def preflight_mcp_server_reachable(
-    cfg: McpServerConfig, *, timeout: float | None = None
+    cfg: McpServerConfig,
+    *,
+    timeout: float | None = None,
+    dynamic_token_url: str | None = None,
 ) -> tuple[bool, str]:
     """Reachability + auth probe for HTTP-based MCP servers.
 
@@ -240,6 +273,13 @@ async def preflight_mcp_server_reachable(
     Non-HTTP transports report reachable (no cheap probe). Shared by the
     config-time ``_pre_check_mcp_http_auth`` and cold-start
     ``_register_mcp_server`` so both gates stay identical.
+
+    ``dynamic_token_url`` 非空时（条目携带动态 token 端点 + 实例凭据已下发），
+    先实时取一次凭证并入探活头；**取不到不判失败**——动态头置空照常探活，
+    由网关响应决定可达性（与运行时"取不到照样调用、头置空"语义一致）。
+    同条件下本轮请求级 ext 带 ``X-User-Token`` 时也用它覆盖静态
+    ``Authorization``（仅双 token 网关；普通 MCP 服务的静态凭据不覆盖）。
+    默认 None：请求级/未启用路径行为与原来完全一致。
     """
     transport = (getattr(cfg, "client_type", "") or "").strip().lower()
     if transport not in _HTTP_MCP_TRANSPORTS:
@@ -298,6 +338,44 @@ async def preflight_mcp_server_reachable(
             },
         }
     )
+
+    if dynamic_token_url:
+        # 动态 token（mcp_dynamic_token_patch）：先实时取一次凭证并入探活头。
+        # 取不到不阻断：动态头置空照常探活（与运行时语义一致），网关响应决定
+        # 可达性；token 服务自身的不可达不会让网关被误判为不可注册。
+        from jiuwenswarm.common.mcp_dynamic_token_patch import (
+            TOKEN_HEADER_NAME,
+            TOKEN_HEADER_PREFIX,
+            TOKEN_TIMEOUT_S,
+            fetch_dynamic_token,
+            read_instance_credentials,
+        )
+
+        creds = read_instance_credentials()
+        if creds is not None:
+            # 用户授权逐轮覆盖——**仅双 token 网关**（dynamic_token_url +
+            # 实例凭据已下发，即运行时走 DynamicTokenProvider 的同一批网关）。
+            # 会话内注册发生在本轮对话栈内，探活与真实调用同源；普通 MCP
+            # 服务的静态凭据绝不能被本进程残留的请求级 ext 覆盖（覆盖会
+            # 把服务原有鉴权换成 Keycloak 用户令牌 → 401）。读不到（冷启动
+            # / 后台 / 非企业）保持条目静态头。
+            from jiuwenswarm.common.mcp_dynamic_token_patch import (
+                _current_user_authorization,
+            )
+
+            user_authorization = _current_user_authorization()
+            if user_authorization:
+                headers["Authorization"] = user_authorization
+            try:
+                token = await fetch_dynamic_token(
+                    token_url=dynamic_token_url,
+                    creds=creds,
+                    timeout_s=min(TOKEN_TIMEOUT_S, read_t),
+                )
+            except Exception:  # noqa: BLE001 - 探活不因 token 服务失败而失败
+                headers[TOKEN_HEADER_NAME] = ""
+            else:
+                headers[TOKEN_HEADER_NAME] = TOKEN_HEADER_PREFIX + token
 
     try:
         async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as http:
@@ -381,7 +459,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
     except Exception as resolve_exc:  # noqa: BLE001
         logger.debug("[mcp-config] placeholder resolve failed: %s", resolve_exc)
 
-    cfg = build_mcp_server_config(entry)
+    cfg = build_mcp_server_config(entry, resolve_node_launcher=True)
     if cfg is None:
         logger.debug("[mcp-config] fetch skipped: invalid entry name=%r", name)
         return []
@@ -487,7 +565,6 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     Returns ``(ok, reason)``; never raises so callers can decide rollback /
     response without a try/except fence.
     """
-    import shutil
 
     n = str(name or "").strip()
     if not n:
@@ -511,7 +588,9 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("[mcp-config] probe resolver build for '%s' failed: %s", n, exc)
     cfg = build_mcp_server_config(
-        entry, server_id_scope="jiuwenswarm", credential_resolver=resolver)
+        entry, server_id_scope="jiuwenswarm", credential_resolver=resolver,
+        resolve_node_launcher=True,
+    )
     if cfg is None:
         return False, f"invalid mcp server entry for '{n}'"
     # stdio: command must be on PATH (npx/uvx/node), else SDK spawn raises
@@ -675,4 +754,5 @@ __all__ = [
     "extract_enabled_mcp_server_entries",
     "preflight_mcp_server_reachable",
     "prewarm_connected_mcps",
+    "resolve_node_package_runner",
 ]

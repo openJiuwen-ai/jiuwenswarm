@@ -86,3 +86,30 @@ def test_builtin_list_skips_invalid_package_without_hiding_valid_package(
     assert items[0]["source"] == "built_in"
     warning.assert_called_once()
     assert "broken" in str(warning.call_args)
+
+
+def test_oauth_credential_kind_is_supported(tmp_path: Path, monkeypatch) -> None:
+    package = tmp_path / "mcp" / "mcp_hub" / "canva"
+    _write_json(
+        package / "manifest.json",
+        {
+            "version": "1.0.0",
+            "package_type": "mcp",
+            "id": "canva",
+            "name": "Canva",
+            "description": "Canva MCP",
+            "display_name": {"zh": "Canva 可画", "en": "Canva"},
+            "display_description": {"zh": "Canva 中国 MCP", "en": "Canva China MCP"},
+            "integration": {"type": "remote-mcp", "file": "mcp.json"},
+            "credentials": {"type": "oauth"},
+            "skills": [],
+        },
+    )
+    _write_json(
+        package / "mcp.json",
+        {"mcpServers": {"canva": {"url": "https://mcp.canva.cn/mcp"}}},
+    )
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(credential, "get_workspace_dir", lambda: tmp_path)
+
+    assert credential.detect_credential_kind("canva") == credential.KIND_OAUTH

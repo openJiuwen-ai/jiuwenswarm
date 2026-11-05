@@ -21,6 +21,9 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
     _input_prompt,
     _output_prompt,
 )
+from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import (
+    is_send_file_enabled,
+)
 from jiuwenswarm.server.runtime.a2ui.prompt_instructions import (
     is_a2ui_browser_workflow_request,
 )
@@ -79,11 +82,25 @@ class ResponsePromptRail(DeepAgentRail):
             return
 
         language = self.system_prompt_builder.language or "cn"
+        channel = self._resolve_channel(ctx)
+        send_file_enabled = is_send_file_enabled(None, channel) if channel else True
+        if channel:
+            try:
+                from jiuwenswarm.common.config import get_config
+
+                send_file_enabled = is_send_file_enabled(get_config(), channel)
+            except Exception:
+                logger.exception(
+                    "Failed to resolve file delivery policy: channel=%s",
+                    channel,
+                )
         self.system_prompt_builder.remove_section("response")
         self.system_prompt_builder.add_section(_input_prompt(language))
-        self.system_prompt_builder.add_section(_output_prompt(language))
+        self.system_prompt_builder.add_section(
+            _output_prompt(language, send_file_enabled=send_file_enabled)
+        )
         self._sync_a2ui_prompt_section(
-            self._resolve_channel(ctx),
+            channel,
             skip_a2ui=self._should_skip_a2ui(ctx),
             include_browser_workflows=self._is_browser_workflow(ctx),
             identity=(

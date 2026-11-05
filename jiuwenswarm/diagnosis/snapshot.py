@@ -28,6 +28,8 @@ _RECORD_PAGE_SIZE = 200
 _MAX_RECORD_PAGES_PER_SUBJECT = 500
 _SEQUENCE_PREFIX = "@oj-seq:"
 _LIFECYCLE_RUNNING = "running"
+# Same lanes the analysis header counts in team mode.
+_TEAM_LANE_KINDS = frozenset({"team_leader", "team_member"})
 
 
 class SubjectReader(Protocol):
@@ -218,6 +220,46 @@ def _split_records(
     return records
 
 
+def _subjects_on_analysis_lanes(items: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Keep the subjects the analysis header counts.
+
+    Team mode shows only leader and member lanes. Session-root and monitor
+    spans stay on another subject and are not part of that total. A session
+    without team lanes keeps every subject.
+    """
+    kinds = {str(item.get("kind") or "") for item in items}
+    if not kinds & _TEAM_LANE_KINDS:
+        return list(items)
+    return [item for item in items if str(item.get("kind") or "") in _TEAM_LANE_KINDS]
+
+
+def _is_persistent_team_root(record: TrajectoryRecord) -> bool:
+    """Return whether ``record`` is the root span of a persistent team session.
+
+    Cluster mode keeps one ``team.<name>`` span for the life of the team. It
+    stays running while the session is idle, and a later close still leaves it
+    on the session subject rather than on a team lane. Either way it is the
+    session envelope, not a step to diagnose.
+    """
+    if record.parent_span_id:
+        return False
+    return _span_name(record).startswith("team.")
+
+
+def _span_name(record: TrajectoryRecord) -> str:
+    """Return the name of the single span stored on ``record``."""
+    for resource in record.otlp.get("resourceSpans") or []:
+        if not isinstance(resource, Mapping):
+            continue
+        for scope in resource.get("scopeSpans") or []:
+            if not isinstance(scope, Mapping):
+                continue
+            for span in scope.get("spans") or []:
+                if isinstance(span, Mapping):
+                    return str(span.get("name") or "")
+    return ""
+
+
 def _sequence_heads(records: list[Mapping[str, Any]]) -> list[str]:
     """Return the sorted, distinct chain heads referenced by the ``sequences`` of ``records``."""
     heads: set[str] = set()
@@ -236,6 +278,8 @@ async def load_trajectory_snapshot(
 
     Spans whose latest record is still running are not exported; they are
     returned separately so the host can tell the user they were set aside.
+    A session that has team lanes exports only those lanes, matching the
+    analysis header. The ``team.<name>`` session root is omitted either way.
 
     Args:
         reader: Read-only trajectory reader.
@@ -245,6 +289,7 @@ async def load_trajectory_snapshot(
         The snapshot of finished records and the references of running spans.
     """
     items, _epoch, _watermark = await reader.list_subjects(session_id, after_revision=0)
+    items = _subjects_on_analysis_lanes(items)
     snapshot = TrajectorySnapshot(captured_at_ns=time.time_ns())
     excluded_running: list[StepRef] = []
     chains: dict[str, list[str]] = {}
@@ -291,6 +336,8 @@ async def load_trajectory_snapshot(
             kind=str(item.get("kind") or ""),
         )
         for record, lifecycle in latest.values():
+            if _is_persistent_team_root(record):
+                continue
             if lifecycle == _LIFECYCLE_RUNNING:
                 excluded_running.append(
                     StepRef(
@@ -310,8 +357,9 @@ def resolve_ranges(snapshot: TrajectorySnapshot, scope: DiagnosisScope) -> list[
     """Derive the per-subject time ranges of a scope.
 
     A full scope yields one range per subject covering all of its finished
-    records. A selection keeps each requested range that contains the start of
-    at least one finished record; ranges without records are dropped.
+    records. A selection keeps each requested range that wholly covers at least
+    one finished record (start and end both inside); ranges without such
+    records are dropped.
 
     Args:
         snapshot: Snapshot of the finished records.
@@ -341,22 +389,37 @@ def resolve_ranges(snapshot: TrajectorySnapshot, scope: DiagnosisScope) -> list[
                 continue
             start = int(item.start_unix_nano)
             end = int(item.end_unix_nano)
-            if any(start <= record.start_nano <= end for record in subject.records):
+            # Same rule as the analysis swimlane: a span counts only when both
+            # its start and end lie inside the selected window.
+            if any(_span_fully_in_range(record, start, end) for record in subject.records):
                 ranges.append(SubjectRange(subject_id=item.subject_id, start_nano=start, end_nano=end))
     if not ranges:
         raise DiagnosisHostError("EMPTY_SCOPE", "no finished steps in the selected scope", 422)
     return ranges
 
 
+def _span_fully_in_range(record: TrajectoryRecord, start_nano: int, end_nano: int) -> bool:
+    """Return whether both the span start and end lie inside ``[start, end]``."""
+    return start_nano <= record.start_nano and record.end_nano <= end_nano
+
+
 def count_records_in_ranges(snapshot: TrajectorySnapshot, ranges: Sequence[SubjectRange]) -> int:
-    """Count finished records whose start lies inside their subject's range."""
+    """Count finished records wholly covered by their subject's range.
+
+    Matches the trajectory analysis pick: an OTel span counts only when both
+    its start and end lie inside the window (partial coverage does not count).
+    """
     window = {item.subject_id: item for item in ranges}
     total = 0
     for subject in snapshot.subjects:
         item = window.get(subject.subject_id)
         if item is None:
             continue
-        total += sum(1 for record in subject.records if item.start_nano <= record.start_nano <= item.end_nano)
+        total += sum(
+            1
+            for record in subject.records
+            if _span_fully_in_range(record, item.start_nano, item.end_nano)
+        )
     return total
 
 

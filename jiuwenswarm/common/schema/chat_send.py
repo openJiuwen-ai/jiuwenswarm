@@ -88,6 +88,12 @@ class ChatSendParams(TypedDict, total=False):
     attachments: NotRequired[list[dict]]
     """附件列表（@file 等）。结构待统一定义。"""
 
+    media_items: NotRequired[list[dict]]
+    """Media records. Steer accepts only image paths returned by media.persist
+    for this Session; the server validates them and sends text references to
+    the active agent's image-reading tools instead of SDK attachments.
+    """
+
     files: NotRequired[dict]
     """文件更新字典（传统字段）。逐步迁出到 attachments，当前兼容保留。"""
 
@@ -140,8 +146,11 @@ class ChatSendParams(TypedDict, total=False):
     request_id: NotRequired[str]
     """请求 ID（interrupt resume / 问答回复场景关联）。"""
 
+    interrupt_id: NotRequired[str]
+    """所答中断的 id，取自 ``chat.ask_user_question`` 事件的同名字段；升级前挂起的会话没有。"""
+
     source: NotRequired[str]
-    """来源标识（如 permission_interrupt / confirm_interrupt / ask_user_interrupt / evolution_interrupt）。"""
+    """来源标识；回答中断时取 ``gateway.common.interrupt_resume.INTERRUPT_RESUME_SOURCES`` 之一。"""
 
     is_supplement: NotRequired[bool]
     """是否为补充请求（Gateway 用于判断 supplement 流程）。"""
@@ -204,16 +213,6 @@ class ChatSendParams(TypedDict, total=False):
 
     Only meaningful when ``enable_swarmflow`` is True. Absent means use the
     server default budget.
-    """
-
-    swarmflow_worktree: NotRequired[bool]
-    """Session-level worktree isolation switch for swarmflow workers.
-
-    When True the team is armed with a worktree manager so
-    ``agent(options={"isolation": "worktree"})`` succeeds; when False the
-    manager is withheld and isolation calls fail fast. Absent keeps the
-    session's persisted value (first request falls back to the team config's
-    ``worktree`` section). Requires a project directory to be usable.
     """
 
     team_dispatch_mode: NotRequired[Literal["autonomous", "scheduled"]]

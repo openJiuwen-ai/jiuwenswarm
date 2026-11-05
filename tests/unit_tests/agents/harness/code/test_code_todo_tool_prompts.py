@@ -21,6 +21,11 @@ def test_todo_modify_prompt_avoids_todo_only_rounds():
     assert "Avoid todo-only rounds" in CODE_TODO_MODIFY_DESCRIPTION_EN
     assert "Batch multiple updates" in CODE_TODO_MODIFY_DESCRIPTION_EN
     assert "parallel" in CODE_TODO_MODIFY_DESCRIPTION_EN.lower()
+    assert "Do not create a new todo for each file" in CODE_TODO_MODIFY_DESCRIPTION_EN
+    assert '"action": "update"' in CODE_TODO_MODIFY_DESCRIPTION_EN
+    assert '"todos"' in CODE_TODO_MODIFY_DESCRIPTION_EN
+    assert '"action": "delete"' in CODE_TODO_MODIFY_DESCRIPTION_EN
+    assert '"ids"' in CODE_TODO_MODIFY_DESCRIPTION_EN
 
 
 def test_todo_create_schema_describes_outcome_milestones():

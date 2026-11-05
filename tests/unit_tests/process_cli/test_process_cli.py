@@ -9,6 +9,7 @@ import importlib
 import io
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -616,6 +617,9 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
     mode: str,
 ) -> None:
     monkeypatch.setattr(app, "InProcessRuntimeClient", PersistentTeamClient)
+    # The fake Runtime has no writes; persistence barriers have separate tests.
+    flush_writes = AsyncMock()
+    monkeypatch.setattr(app, "flush_session_writes", flush_writes)
     stdout = io.StringIO()
 
     result = await asyncio.wait_for(
@@ -644,6 +648,7 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
         "cleanup:process_cli:runtime-session",
         "close",
     ]
+    flush_writes.assert_awaited_once_with(timeout_seconds=app.SHUTDOWN_STEP_TIMEOUT_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -908,6 +913,30 @@ async def test_noninteractive_interaction_is_an_explicit_machine_failure(
     assert events[-1]["ok"] is False
     assert events[-1]["payload"]["event_type"] == "runtime.error"
     assert "interactive input is unavailable" in events[-1]["payload"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_command_rejects_interaction_without_reading_tty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def unexpected_input(*_args):
+        pytest.fail("A standalone prompt command must not ask for input")
+
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ConsecutiveInteractionClient)
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(app, "_interaction_answer", unexpected_input)
+    output = io.StringIO()
+
+    result = await app.run(
+        _args(tmp_path, output="human"),
+        stdout=output,
+        stderr=output,
+    )
+
+    assert result == 4
+    assert ConsecutiveInteractionClient.latest.answer_count == 0
+    assert "无法接收交互输入" in output.getvalue()
 
 
 @pytest.mark.asyncio
@@ -1676,17 +1705,42 @@ def test_interactive_worker_enables_runtime_interactions(tmp_path: Path) -> None
     )
 
     assert request.params["supports_user_interaction"] is True
+    assert request.params["supports_permission_approval"] is True
+
+
+def test_prompt_command_denies_permission_requests_even_with_a_tty(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    request = app._build_request(
+        _args(tmp_path, output="human"),
+        session_id="runtime-session", request_id="runtime-request",
+    )
+    assert request.params["supports_user_interaction"] is False
+    assert request.params["supports_permission_approval"] is False
+    interaction = RuntimeEvent(
+        request_id=request.request_id, channel_id="process_cli", session_id=request.session_id,
+        payload={"event_type": "chat.ask_user_question", "source": "ask_user_interrupt", "request_id": "question"},
+    )
+    answer, _ = app._answer_request(request, interaction, [{"answer": "continue"}])
+    assert answer.params["supports_user_interaction"] is False
+    assert answer.params["supports_permission_approval"] is False
 
 
 def test_process_cli_has_no_server_or_transport_dependencies() -> None:
     package = Path(app.__file__).resolve().parent
     forbidden = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server.agent_ws_server",
         "jiuwenswarm.channels.tui",
         "websockets",
         "http.server",
     )
+
+    def _forbidden(module: str) -> bool:
+        # gateway.common 是无状态纯组件的唯一真源，进程内 CLI 允许引用。
+        if module == "agent_gateway.common" or module.startswith("agent_gateway.common."):
+            return False
+        return module.startswith(forbidden)
+
     violations: list[str] = []
     for source in package.glob("*.py"):
         tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -1696,9 +1750,9 @@ def test_process_cli_has_no_server_or_transport_dependencies() -> None:
                 module = node.module or ""
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith(forbidden):
+                    if _forbidden(alias.name):
                         violations.append(f"{source.name}:{node.lineno}:{alias.name}")
-            if module.startswith(forbidden):
+            if _forbidden(module):
                 violations.append(f"{source.name}:{node.lineno}:{module}")
     assert violations == []
 
@@ -1736,3 +1790,22 @@ def test_historical_remote_cli_imports_alias_migrated_modules(module_name: str) 
     migrated = importlib.import_module(f"jiuwenswarm.channels.cli.{module_name}")
 
     assert historical is migrated
+
+
+@pytest.mark.parametrize("interrupt_id", ["intr-1", ""])
+def test_answer_request_echoes_the_interrupt_id_of_the_question(interrupt_id):
+    original = AgentRequest(
+        request_id="req-1", channel_id="process_cli", session_id="s-1",
+        req_method=ReqMethod.CHAT_SEND, params={"mode": "agent"},
+    )
+    payload = {"event_type": "chat.ask_user_question", "request_id": "call-1", "source": "ask_user_interrupt"}
+    if interrupt_id:
+        payload["interrupt_id"] = interrupt_id
+    interaction = RuntimeEvent(request_id="req-1", channel_id="process_cli", session_id="s-1", payload=payload)
+
+    request, resume = app._answer_request(original, interaction, [{"selected_options": ["A"]}])
+
+    assert resume and request.req_method is ReqMethod.CHAT_SEND
+    assert request.params["request_id"] == "call-1"
+    assert request.params.get("interrupt_id", "") == interrupt_id
+    assert ("interrupt_id" in request.params) is bool(interrupt_id)

@@ -20,6 +20,7 @@ const desktopApi = Object.freeze({
   getCloseAction: () => invoke('desktop:get-close-action'),
   setCloseAction: action => invoke('desktop:set-close-action', action),
   openExternalUrl: url => invoke('desktop:open-external-url', url),
+  openAppLink: url => invoke('desktop:open-app-link', url),
   captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
   exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
   onShareImageExportProgress: callback => {
@@ -63,6 +64,26 @@ const desktopApi = Object.freeze({
     stop: sessionId => invoke('browser:stop', sessionId),
     setBounds: (bounds, sessionId) => invoke('browser:set-bounds', bounds, sessionId),
     setVisible: (visible, sessionId, focus) => invoke('browser:set-visible', visible, sessionId, focus !== false),
+    listDownloads: () => invoke('browser:list-downloads'),
+    downloadAction: (downloadId, action) => invoke('browser:download-action', downloadId, action),
+    openDownload: downloadId => invoke('browser:open-download', downloadId),
+    showDownloadInFolder: downloadId => invoke('browser:show-download-in-folder', downloadId),
+    removeDownload: downloadId => invoke('browser:remove-download', downloadId),
+    openDownloadsFolder: () => invoke('browser:open-downloads-folder'),
+    onDownloadsChanged: callback => {
+      const listener = (_event, downloads) => callback(downloads);
+      ipcRenderer.on('browser:downloads-changed', listener);
+      return () => ipcRenderer.removeListener('browser:downloads-changed', listener);
+    },
+    // Chrome 式下载气泡：锚定在工具栏下载按钮下方，原生子视图悬浮于浏览器内容之上。
+    showDownloadBubble: anchorRect => invoke('browser:show-download-bubble', anchorRect),
+    hideDownloadBubble: () => invoke('browser:hide-download-bubble'),
+    onDownloadBubbleChanged: callback => {
+      const listener = (_event, visible) => callback(visible);
+      ipcRenderer.on('browser:download-bubble-changed', listener);
+      return () => ipcRenderer.removeListener('browser:download-bubble-changed', listener);
+    },
+    setHeadless: headless => invoke('browser:set-headless', headless),
     getState: sessionId => invoke('browser:get-state', sessionId),
     listPanels: sessionId => invoke('browser:list-panels', sessionId),
     onPanelsChanged: callback => {
@@ -90,6 +111,7 @@ contextBridge.exposeInMainWorld('pywebview', {
     get_close_action: desktopApi.getCloseAction,
     set_close_action: desktopApi.setCloseAction,
     open_external_url: desktopApi.openExternalUrl,
+    open_app_link: desktopApi.openAppLink,
     capture_oauth_token: desktopApi.captureOAuthToken,
     download_file: desktopApi.downloadFile,
     install_update: desktopApi.installUpdate,

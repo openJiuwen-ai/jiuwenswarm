@@ -497,11 +497,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   hideProjectLocally: (projectId) => {
     const ids = collectProjectSessionIds(get(), projectId);
-    const route = parseChatRoute(window.location.pathname);
-    if (route?.kind === 'chat-session' && ids.includes(route.sessionId)) {
-      window.history.replaceState(null, '', '/chat/new');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
     get().removeSessions(ids);
     set((state) => ({
       projects: state.projects.filter((project) => project.project_id !== projectId),
@@ -590,6 +585,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   removeSessions: (sessionIds) => {
     const ids = new Set(sessionIds);
+    // 项目菜单没有单会话菜单的当前路由回调，批量归档也必须退出已移除的会话。
+    const route = parseChatRoute(window.location.pathname);
+    if (route?.kind === 'chat-session' && ids.has(route.sessionId)) {
+      window.history.replaceState(null, '', '/chat/new');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
     for (const id of ids) useSessionStore.getState().removeSession(id);
     set((state) => ({
       projectSessions: Object.fromEntries(Object.entries(state.projectSessions).map(([id, sessions]) => [

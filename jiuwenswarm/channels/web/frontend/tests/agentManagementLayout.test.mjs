@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { after } from 'node:test';
+import { JSDOM } from 'jsdom';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
+const previousDocument = globalThis.document;
+const previousWindow = globalThis.window;
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' });
+globalThis.document = renderDom.window.document;
+globalThis.window = renderDom.window;
+after(() => {
+  globalThis.document = previousDocument;
+  globalThis.window = previousWindow;
+  renderDom.window.close();
+});
+
 const panelSource = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
+const installOutcomeSource = readFileSync(
+  new URL('../src/features/agentManagement/installOutcome.ts', import.meta.url),
+  'utf8',
+);
 const groupCatalogSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/GroupCatalogPage.tsx', import.meta.url),
   'utf8',
@@ -236,7 +252,107 @@ test('Expert Team loading keeps the back bar outside the centered content', asyn
   assert.equal(content.contains(back), false);
   assert.equal(content.getAttribute('role'), 'status');
   assert.equal(shell.querySelector('[data-testid="agent-management-detail-name"]').textContent, 'Slow Team');
-  assert.match(shell.textContent, /Summary remains visible while details load\./);
+  assert.equal(shell.querySelector('[data-testid="agent-management-detail-ability"]'), null);
+  assert.doesNotMatch(shell.textContent, /Summary remains visible while details load\./);
+});
+
+test('Expert and Expert Team details render independent capability and content in both languages', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { AgentGroupDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+  const { normalizeAgentTemplateDetail, normalizeAgentGroupDetail } =
+    await import('../node_modules/.cache/agent-management/adapter.js');
+  const { JSDOM } = await import('jsdom');
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+  try {
+    for (const [locale, resources] of [['zh', zhLocale], ['en', enLocale]]) {
+      await i18next.changeLanguage(locale);
+      for (const [Page, normalize, contentTestId, emptyContent] of [
+        [
+          DefinitionDetailPage,
+          normalizeAgentTemplateDetail,
+          'agent-management-detail-content',
+          resources.skills.noContent,
+        ],
+        [
+          AgentGroupDetailPage,
+          normalizeAgentGroupDetail,
+          'agent-group-detail-content',
+          resources.agentManagement.group.detail.noDetails,
+        ],
+      ]) {
+        for (const [description, details] of [['', 'Content only'], ['Capability only', ''], ['Capability', 'Content']]) {
+          const detail = normalize({
+            id: 'expert',
+            displayDescription: { [locale]: description },
+            details,
+          }, locale);
+          const document = new JSDOM(renderToStaticMarkup(React.createElement(Page, {
+            detail,
+            detailStatus: 'success',
+            detailTab: 'content',
+            onBack() {},
+          }))).window.document;
+          assert.equal(
+            document.querySelector('[data-testid="agent-management-detail-ability"] p').textContent,
+            description || resources.agentManagement.unknownDescription,
+          );
+          assert.equal(document.querySelector(`[data-testid="${contentTestId}"]`).textContent, details || emptyContent);
+        }
+      }
+    }
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
+});
+
+test('My Experts renders an empty capability without borrowing the marketplace description', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { normalizeAgentTemplateListItem } = await import('../node_modules/.cache/agent-management/adapter.js');
+  const { agentManagementReducer, createInitialAgentManagementState } =
+    await import('../node_modules/.cache/agent-management/state.js');
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+  try {
+    for (const [locale, resources] of [['zh', zhLocale], ['en', enLocale]]) {
+      await i18next.changeLanguage(locale);
+      const item = {
+        id: 'hub-expert',
+        displayName: { zh: '测试专家', en: 'Test Expert' },
+        source: 'hub',
+        installed: true,
+      };
+      const marketplaceDescription = 'Marketplace capability';
+      const state = agentManagementReducer(createInitialAgentManagementState(), {
+        type: 'catalog.loaded',
+        catalog: [normalizeAgentTemplateListItem({
+          ...item,
+          displayDescription: { [locale]: marketplaceDescription },
+        }, locale)],
+        mineCatalog: [normalizeAgentTemplateListItem(item, locale)],
+      });
+      for (const [scope, items, expected] of [
+        ['mine', state.mineCatalog, resources.agentManagement.unknownDescription],
+        ['catalog', state.catalog, marketplaceDescription],
+      ]) {
+        const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
+          scope,
+          items,
+          totalItems: items.length,
+          query: '',
+          category: '',
+          status: 'success',
+          error: null,
+          busyIds: new Set(),
+        }))).window.document;
+        assert.equal(document.querySelector('[data-testid="agent-card"] .page-card__body').textContent, expected);
+      }
+    }
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
 });
 
 test('publish actions require an installed runtime asset', () => {
@@ -457,7 +573,57 @@ test('group card actions keep uninstall in the detail page and install created g
   );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{ suppressInlineError: true \}\)/);
+});
+
+test('failed expert upload install rolls back the import and shows the error in the upload dialog', () => {
+  assert.match(panelSource, /onError: \(message\) => \{ installErrorMessage = message; \}/);
+  // Only a definite backend rejection rolls the import back; uncertain
+  // outcomes (timeout/disconnect) keep the package for a manual retry.
+  assert.match(panelSource, /installFailed = outcome === 'failed';/);
+  assert.match(panelSource, /installOutcomeUnknown = outcome === 'uncertain';/);
+  // Install failure keeps the dialog open and shows the error inside it
+  // instead of closing the dialog and showing a notice on the card page.
+  assert.match(
+    panelSource,
+    /if \(installFailed\) \{[\s\S]*client\.deleteDefinition\(result\.id\)[\s\S]*\}[\s\S]*if \(installFailed\) \{[\s\S]*setGroupUploadError\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\)\)[\s\S]*setUploadError\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\)\)/,
+  );
+  assert.match(
+    panelSource,
+    /\} else if \(installOutcomeUnknown\) \{\s*\n\s*if \(kind === 'group'\) setGroupUploadError\(t\('agentManagement\.states\.installOutcomeUnknown'\)\)/,
+  );
+  // The dialog must NOT be closed inside the installFailed branch —
+  // setUploadDialogOpen(false) only appears in the success branch.
+  assert.match(
+    panelSource,
+    /\} else \{\s*\n\s*setUploadDialogOpen\(false\);\s*\n\s*setUploadError\(null\);\s*\n\s*setGroupUploadDialogOpen\(false\);/,
+  );
+  // The canned "imported but install failed" notice is fully replaced by the
+  // raw backend error message.
+  assert.doesNotMatch(panelSource, /uploadImportedInstallFailed/);
+});
+
+test('uncertain install errors are classified as transport failures', () => {
+  // Inverted verdict rule: only in-flight transport deaths stay 'uncertain'
+  // (the backend may still complete the install, so the just-imported
+  // package is kept). Every backend verdict rolls the import back —
+  // including rejections that carry no code: webClient leaves `code`
+  // undefined only on backend responses (resolvePending /
+  // resolveRuntimeAcceptedPending), which rethrowAgentError maps onto the
+  // agent_management_request_failed fallback. Behavioral coverage for the
+  // classification itself lives in tests/agentManagement.test.mjs.
+  assert.match(installOutcomeSource, /const INSTALL_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set\(\[/);
+  for (const code of ['REQUEST_TIMEOUT', 'WS_NOT_READY', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+    assert.match(installOutcomeSource, new RegExp(`'${code}',`));
+  }
+  assert.match(installOutcomeSource, /return INSTALL_TRANSPORT_ERROR_CODES\.has\(code\);/);
+  // The fallback code must not be reintroduced as a blanket-uncertain rule:
+  // it also wraps codeless backend rejections, which are definite verdicts.
+  assert.doesNotMatch(installOutcomeSource, /agent_management_request_failed/);
+  assert.match(panelSource, /isUncertainInstallError,/);
+  assert.match(panelSource, /return isUncertainInstallError\(error\) \? 'uncertain' : 'failed';/);
+  assert.doesNotMatch(panelSource, /agent_management_request_failed'\) return true/);
+  assert.doesNotMatch(panelSource, /installFailed = !\(await handleInstall/);
 });
 
 test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {
@@ -484,7 +650,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
-  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /\(agentSelectionDisabled \|\| externalSwitchBlocked\) && 'is-locked'/);
   assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
   assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
   assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);

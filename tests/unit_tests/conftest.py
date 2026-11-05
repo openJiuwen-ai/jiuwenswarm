@@ -19,12 +19,21 @@ functions, hence this hook.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
 import jiuwenswarm.common.utils as _utils
+
+
+@pytest.fixture
+def ttse_plugin_source(tmp_path: Path) -> Path:
+    """Copy the versioned contract fixture without requiring local plugin assets."""
+    source = Path(__file__).resolve().parents[1] / "fixtures/ttse_plugin"
+    return Path(shutil.copytree(source, tmp_path / "ttse-source"))
+
 
 _REAL_GET_CONFIG_FILE = _utils.get_config_file
 _REAL_GET_AGENT_WORKSPACE_DIR = _utils.get_agent_workspace_dir
@@ -76,6 +85,19 @@ def allow_macos_pytest_temp_sources(monkeypatch):
         "_get_import_local_forbidden_roots",
         staticmethod(_get_test_forbidden_roots),
     )
+
+
+@pytest.fixture(autouse=True)
+def _offline_hot_lists(request, monkeypatch):
+    """Topic Starter generations in unit tests never reach Weibo or Baidu: both lists read as down."""
+    if not os.path.basename(str(request.node.path)).startswith("test_topic_"):
+        return
+    from jiuwenswarm.agents.harness.common.recommendation import topic_news as topic_hot_list
+
+    async def unreachable(_url, _timeout, _headers):
+        raise ConnectionError("hot lists are not reachable from unit tests")
+
+    monkeypatch.setattr(topic_hot_list, "fetch_feed_text", unreachable)
 
 
 def _stub_get_config_file() -> Path:

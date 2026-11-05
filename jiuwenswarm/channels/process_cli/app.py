@@ -14,6 +14,9 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
+from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from agent_gateway.common.mode_matrix import is_team_mode
+
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
 from jiuwenswarm.channels.process_cli.live_input import (
@@ -25,7 +28,6 @@ from jiuwenswarm.channels.process_cli.live_input import (
 )
 from jiuwenswarm.channels.process_cli.persistence import flush_session_writes
 from jiuwenswarm.channels.process_cli.render import EventRenderer
-from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
@@ -56,14 +58,6 @@ SESSION_OPERATIONS = frozenset(
         SESSION_SWITCH_OPERATION,
         SESSION_FORK_OPERATION,
         SESSION_DELETE_OPERATION,
-    }
-)
-INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "confirm_interrupt",
-        "permission_interrupt",
-        "ask_user_interrupt",
-        "evolution_interrupt",
     }
 )
 INTERACTION_EVENTS = frozenset({"chat.ask_user_question", "plan.approval_required"})
@@ -98,10 +92,8 @@ def _build_request(
         "cwd": cwd,
         "project_dir": project_dir,
         "trusted_dirs": trusted_dirs,
-        "supports_user_interaction": (
-            bool(getattr(args, "_interactive_worker", False))
-            or (args.output == "human" and sys.stdin.isatty())
-        ),
+        "supports_user_interaction": bool(getattr(args, "_interactive_worker", False)),
+        "supports_permission_approval": bool(getattr(args, "_interactive_worker", False)),
     }
     model_selection = str(getattr(args, "model_selection", "") or "").strip()
     if model_selection:
@@ -552,10 +544,12 @@ def _answer_request(
     payload = interaction.payload or {}
     source = str(payload.get("source") or "")
     interaction_request_id = str(payload.get("request_id") or "")
+    interrupt_id = str(payload.get("interrupt_id") or "")
     resume = source in INTERRUPT_RESUME_SOURCES and bool(interaction_request_id)
     params = {
         "session_id": original.session_id,
         "request_id": interaction_request_id,
+        **({"interrupt_id": interrupt_id} if interrupt_id else {}),
         "answers": answers,
         "source": source,
         "mode": original.params.get("mode"),
@@ -563,7 +557,8 @@ def _answer_request(
         "project_dir": original.params.get("project_dir"),
         "cwd": original.params.get("cwd"),
         "trusted_dirs": original.params.get("trusted_dirs", []),
-        "supports_user_interaction": True,
+        "supports_user_interaction": original.params.get("supports_user_interaction", True),
+        "supports_permission_approval": original.params.get("supports_permission_approval", True),
         "query": "" if resume else None,
     }
     return (
@@ -836,9 +831,7 @@ async def run(
             request_id=request_id,
         )
         renderer.working()
-        interactive = bool(getattr(args, "_interactive_worker", False)) or (
-            args.output == "human" and sys.stdin.isatty()
-        )
+        interactive = request.params["supports_user_interaction"]
         live_input = None
         if supports_live_session_input(
             args,

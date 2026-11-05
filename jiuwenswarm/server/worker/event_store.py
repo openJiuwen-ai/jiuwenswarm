@@ -16,12 +16,26 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from agent_gateway.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.server.ipc.protocol import request_scope
+
+
+_SESSION_INSPECTION_METHODS = frozenset({
+    ReqMethod.TEAM_LIST,
+    ReqMethod.ORG_SNAPSHOT,
+    ReqMethod.TEAM_SNAPSHOT,
+    ReqMethod.TEAM_MEMBERS_GET,
+    ReqMethod.TEAM_HISTORY_GET,
+    ReqMethod.SESSION_ASSETS_LIST,
+    ReqMethod.SESSION_PLAN_STATUS,
+    ReqMethod.COMMAND_WORKFLOWS,
+    ReqMethod.A4P_AUTHORIZATION_PENDING,
+})
 
 
 @dataclass
@@ -44,6 +58,18 @@ class DispatchRecord:
             self.request.req_method == ReqMethod.CHAT_SEND
             and self.request.params.get(TEAM_ATTACH_ONLY_PARAM) is True
         )
+
+    @property
+    def has_pending_execution(self) -> bool:
+        """Retain queued work without treating inspection RPC delivery as execution."""
+        if not self.active or self.is_passive_subscription:
+            return False
+        if self.request.req_method in _SESSION_INSPECTION_METHODS:
+            return False
+        if self.request.req_method == ReqMethod.COMMAND_GOAL:
+            action = str(self.request.params.get("action") or "get").strip().lower()
+            return action != "get"
+        return True
 
 
 class WorkerEventStore:
@@ -213,7 +239,8 @@ class WorkerEventStore:
             "cursor": self._sequence,
             "history_required": after < self._expired_sequence,
             "is_processing": any(
-                record.active or record.is_processing for record in records if not record.is_passive_subscription
+                record.has_pending_execution or record.is_processing
+                for record in records if not record.is_passive_subscription
             ),
             "dispatches": [{
                 "dispatch_id": record.dispatch_id,
@@ -229,7 +256,53 @@ class WorkerEventStore:
             } for record in records],
         }
 
+    def retire_session_interactions(self, request: AgentRequest) -> None:
+        """Mark a session's pending interactions retired after an interrupt.
+
+        chat.interrupt (pause/cancel) ends the current round; an ask_user the
+        round was holding can no longer be answered and the paused session must
+        not stay "processing". Without this the next metadata query sees
+        is_processing + a buffered ask_user frame and the forced after:0
+        replay re-opens the popup.
+
+        A cancel with params.target_request_id retires only that request's
+        record: the same scope also carries the owner turn and other rounds
+        whose pending interactions must stay answerable. An already-returned
+        record still counts — its suspended ask_user is as unanswerable as a
+        live one once its round is the cancel target. Retiring a non-active
+        record also releases its ``_active`` slot here: ``finish`` kept the
+        slot because the suspended interaction made the record look busy, and
+        without the release every retired round leaks one slot until the
+        dispatch limit rejects all later work.
+        """
+        scope = request_scope(request)
+        # Legacy clients pass the cancel target as request_id — same fallback
+        # as admission._dispatch_cancel and dispatcher._drop_queued_cancel.
+        params = request.params or {}
+        target = str(params.get("target_request_id") or params.get("request_id") or "")
+        retired: list[str] = []
+        for record in self.records.values():
+            if record.scope != scope:
+                continue
+            if record.is_passive_subscription:
+                continue
+            if target and str(record.request.request_id or "") != target:
+                continue
+            record.interactions.clear()
+            record.is_processing = False
+            if not record.active:
+                retired.append(record.dispatch_id)
+        # finish() may trim self.records, so it runs after the iteration;
+        # active records keep their slot for the cancel/complete path.
+        for dispatch_id in retired:
+            self.finish(dispatch_id)
+
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
+        # Admission is decided by the dispatcher's recoverable-control filter,
+        # which reads the live execution state. A dispatch record's pending
+        # interactions cannot tell a finished question from the continuation
+        # the same round is currently waiting on, so filtering here would drop
+        # the live one.
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
                 if owner == scope and frame["sequence"] > after]

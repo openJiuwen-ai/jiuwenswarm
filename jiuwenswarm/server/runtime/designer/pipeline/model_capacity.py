@@ -227,7 +227,7 @@ def snap_resolution(requested: str, capacity: VideoModelCapacity) -> str:
         if at_or_below:
             return max(at_or_below)[1]
         if ranked:
-            return max(ranked)[1]
+            return min(ranked)[1]
     return capacity.default_resolution
 
 

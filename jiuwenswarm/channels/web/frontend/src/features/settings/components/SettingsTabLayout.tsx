@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Tabs } from '../../../components/ui';
+import { HelpTips, Tabs } from '../../../components/ui';
 import type { I18nKey } from '../registry/types';
 
 export type SettingsTabDefinition<TabId extends string = string> = {
   id: TabId;
   labelKey: I18nKey;
+  helpKey?: I18nKey;
 };
 
 type SettingsTabLayoutProps<TabId extends string> = {
@@ -40,7 +41,11 @@ export function SettingsTabLayout<TabId extends string>({
         itemTestId={`${testIdPrefix}-tab`}
         value={activeTab}
         onChange={setActiveTab}
-        items={tabs.map((tab) => ({ value: tab.id, label: t(tab.labelKey) }))}
+        items={tabs.map((tab) => ({
+          value: tab.id,
+          label: t(tab.labelKey),
+          suffix: tab.helpKey ? <HelpTips content={t(tab.helpKey)} size="large" /> : undefined,
+        }))}
       />
       {renderPanel(activeTab)}
     </>

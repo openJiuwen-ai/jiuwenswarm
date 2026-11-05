@@ -2,7 +2,7 @@
 
 This page explains the Gateway-side **A2A Server** (`A2AChannel`): implementation location, configuration, mapping to internal `Message`/E2A, and local verification commands. For outbound A2A (agent calling external services), see section 7.
 
-> **Implementation**: `jiuwenswarm/gateway/channel_manager/protocol/a2a/a2a_connect.py` (`A2AChannel` + `a2a-sdk`). **Entrypoint process**: `python -m jiuwenswarm.gateway.app_gateway` (registered and started in `jiuwenswarm/gateway/app_gateway.py`). In case of mismatch, source code is the source of truth.
+> **Implementation**: `gateway/channel_manager/protocol/a2a/a2a_connect.py` (`A2AChannel` + `a2a-sdk`). **Entrypoint process**: `python -m gateway.app_gateway` (registered and started in `gateway/app_gateway.py`). In case of mismatch, source code is the source of truth.
 
 ---
 
@@ -11,10 +11,10 @@ This page explains the Gateway-side **A2A Server** (`A2AChannel`): implementatio
 | Location | Role |
 |------|------|
 | **docs/en/A2A.md** (this page) | Integration and dev debugging: modules, config, mapping, verification |
-| `jiuwenswarm/gateway/channel_manager/protocol/a2a/a2a_connect.py` | A2A HTTP service, `AgentCard`, request/response to `Message` conversion |
-| `jiuwenswarm/gateway/app_gateway.py` | Env loading, `A2AChannel` construction, `channel_manager.register_channel` |
-| `jiuwenswarm/gateway/message_handler/message_handler.py` | Gateway↔AgentServer E2A exchange and internal `Message` orchestration |
-| `jiuwenswarm/gateway/channel_manager/channel_manager.py` | Channel registration and `robot_messages` → `Channel.send` dispatch |
+| `gateway/channel_manager/protocol/a2a/a2a_connect.py` | A2A HTTP service, `AgentCard`, request/response to `Message` conversion |
+| `gateway/app_gateway.py` | Env loading, `A2AChannel` construction, `channel_manager.register_channel` |
+| `gateway/message_handler/message_handler.py` | Gateway↔AgentServer E2A exchange and internal `Message` orchestration |
+| `gateway/channel_manager/channel_manager.py` | Channel registration and `robot_messages` → `Channel.send` dispatch |
 | [E2A-protocol.md](E2A-protocol.md) | Inner protocol between Gateway and AgentServer |
 
 ---

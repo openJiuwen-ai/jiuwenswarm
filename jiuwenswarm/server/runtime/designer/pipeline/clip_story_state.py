@@ -11,6 +11,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+    current_content_language,
+    phrase,
+    strip_phrase,
+)
+
 _LOCK_MARKERS = (
     "PRIOR CLIP PROMPT",
     "PRIOR SHOT CONSISTENCY",
@@ -426,7 +432,6 @@ def apply_story_state_to_next_cfg(
         events=events,
         prior_cfg=src,
         prior_text=narrative or action,
-        prior_action=action,
     )
 
     exited = [
@@ -489,50 +494,33 @@ def apply_story_state_to_next_cfg(
     return cfg
 
 
-def _hold_from_beat_note(note: str) -> str:
-    """Turn a finished-beat note into a positive opening-hold sentence."""
-    raw = str(note or "").strip()
-    if not raw:
-        return ""
-    # "Name already finished: <clause> — …" → "Name is already past: <clause>."
-    m = re.match(
-        r"(?i)^(?:shot\s+\d+:\s*)?(?P<body>.+?)\s*(?:—|-)\s*open this shot",
-        raw,
-    )
-    body = (m.group("body") if m else raw).strip().rstrip(".")
-    body = re.sub(r"(?i)\balready finished:\s*", "already past: ", body)
-    body = re.sub(r"(?i)\bmotion onset already happened.*", "already mid-action", body)
-    if not body:
-        return ""
-    if _EXIT_RE.search(body) and "crowd" in body.lower():
-        return ""
-    if body.lower().startswith(("omit", "do not", "keep them")):
-        return ""
-    if "already" not in body.lower():
-        body = "Already past: " + body
-    return body.rstrip(".") + "."
+_STORY_STATE_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "onset_hold": "The motion is already under way and continues without restarting.",
+        "crowd_in_frame": "Extras remain visible in the background, same layout as before.",
+        "crowd_background_hold": "Extras stay distant in the background, unchanged.",
+        "crowd_off_camera": "Extras are off-camera elsewhere in the setting.",
+        "crowd_exited": "The area is clear of the earlier crowd — they already left.",
+        "crowd_empty": "The setting is empty of extras.",
+        "crowd_density": "{hold}, density {density}.",
+    },
+    "zh": {
+        "onset_hold": "动作已在进行中，接着往下演，不从头重来。",
+        "crowd_in_frame": "群众演员仍在背景中可见，站位与之前相同。",
+        "crowd_background_hold": "群众演员远远留在背景中，保持不变。",
+        "crowd_off_camera": "群众演员在场景中的别处，不在镜头内。",
+        "crowd_exited": "此前的人群已经离开，这片区域空了下来。",
+        "crowd_empty": "场景中没有群众演员。",
+        "crowd_density": "{hold}，密度：{density}。",
+    },
+}
 
 
-def pose_holds_from_events(
-    events: list[dict[str, str]] | None,
-    *,
-    prior_action: str = "",
-) -> list[str]:
-    """Positive opening holds so the next clip does not restage finished beats."""
-    holds: list[str] = []
-    prior = str(prior_action or "").strip().lower()
-    for item in events or []:
-        kind = str(item.get("type") or "").strip().lower()
-        if kind not in {"beat", "onset"}:
-            continue
-        hold = _hold_from_beat_note(str(item.get("already_done") or ""))
-        if not hold or hold in holds:
-            continue
-        low = hold.lower()
-        if "already past:" in low or (prior and prior in low):
-            continue
-        holds.append(hold)
-    return holds[:8]
+def pose_holds_from_events(events: list[dict[str, str]] | None) -> list[str]:
+    """Opening hold for the video body; finished-beat notes stay agent-facing on the node."""
+    if any(str(item.get("type") or "").strip().lower() == "onset" for item in events or []):
+        return [phrase(_STORY_STATE_PHRASES, current_content_language(), "onset_hold")]
+    return []
 
 
 def infer_crowd_state(
@@ -601,19 +589,12 @@ def infer_crowd_state(
     if present is None:
         present = disposition in {"in_frame", "background_hold", "off_camera"}
 
-    holds = {
-        "in_frame": "Extras remain visible in the background, same layout as before.",
-        "background_hold": "Extras stay distant in the background, unchanged.",
-        "off_camera": "Extras are off-camera elsewhere in the setting.",
-        "exited": "The area is clear of the earlier crowd — they already left.",
-        "empty": "The setting is empty of extras.",
-        "unspecified": "",
-    }
+    lang = current_content_language()
     hold = str(crowd.get("hold") or "").strip()
-    if not hold:
-        hold = holds.get(disposition, "")
+    if not hold and f"crowd_{disposition}" in _STORY_STATE_PHRASES[lang]:
+        hold = phrase(_STORY_STATE_PHRASES, lang, f"crowd_{disposition}")
     if density and disposition in {"in_frame", "background_hold"} and density.lower() not in hold.lower():
-        hold = (hold.rstrip(".") + f", density {density}.").strip()
+        hold = phrase(_STORY_STATE_PHRASES, lang, "crowd_density", hold=strip_phrase(hold), density=density)
 
     return {
         "disposition": disposition,
@@ -630,7 +611,6 @@ def stamp_continuity_story_fields(
     events: list[dict[str, str]] | None = None,
     prior_cfg: dict[str, Any] | None = None,
     prior_text: str = "",
-    prior_action: str = "",
 ) -> dict[str, Any]:
     """Stamp beat_done / pose_holds / crowd_state for story-form clip prompts."""
     cfg = dict(cfg or {})
@@ -647,7 +627,7 @@ def stamp_continuity_story_fields(
             beat_done.append(text)
     cfg["beat_done"] = beat_done[:16]
     cfg["previous_clip_finished_events"] = events[:12]
-    holds = pose_holds_from_events(events, prior_action=prior_action)
+    holds = pose_holds_from_events(events)
     prior_holds = [
         str(x).strip()
         for x in ((prior_cfg or {}).get("pose_holds") or [])

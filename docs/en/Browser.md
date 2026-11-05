@@ -188,7 +188,7 @@ The browser lifecycle is:
 | Module | File path | Description |
 |--------|-----------|-------------|
 | Frontend BrowserPanel | `jiuwenswarm/channels/web/frontend/src/components/BrowserPanel/index.tsx` | Reads and saves Chrome path and display mode |
-| Backend Web RPC handlers | `jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py` | Provides `path.get`, `path.set` endpoints |
+| Backend Web RPC handlers | `gateway/channel_manager/web/app_web_handlers.py` | Provides `path.get`, `path.set` endpoints |
 | Browser subagent integration | `openjiuwen.harness.subagents.browser_agent` | Browser subagent configuration and lifecycle integration |
 | Chrome launch and management | `openjiuwen.harness.tools.browser_move.drivers.managed_browser` | `ManagedBrowserDriver`: port allocation, Chrome process management, profile reuse |
 | Browser runtime orchestration | `openjiuwen.harness.tools.browser_move.playwright_runtime.runtime` | Runtime orchestration layer |

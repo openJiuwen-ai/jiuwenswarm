@@ -62,7 +62,19 @@ export class SessionManager {
     if (mode) params.mode = mode;
     const payload = await this.request('session.switch', params, sid);
     this.setSessionId(sid);
-    this._sessionTitle = (payload.title as string) || sid;
+    const serverTitle = (payload.title as string) || '';
+    this._sessionTitle = serverTitle || sid;
+    if (!serverTitle) {
+      // session.switch has no title; use the persisted title (e.g. a user rename)
+      // instead of falling back to the session id.
+      try {
+        const sessions = await this.listSessions();
+        const match = sessions.find((s) => s.session_id === sid && !!s.title);
+        if (match?.title) this._sessionTitle = match.title;
+      } catch {
+        // keep the sid fallback
+      }
+    }
   }
 
   /**
@@ -110,6 +122,7 @@ export class SessionManager {
     answers: unknown[],
     source: string,
     mode: string,
+    interruptId = '',
   ): boolean {
     const sid = this._sessionId;
     if (!sid) return false;
@@ -119,6 +132,7 @@ export class SessionManager {
       answers,
       source,
       mode,
+      ...(interruptId ? { interrupt_id: interruptId } : {}),
     }, this.channelId);
     msg.id = requestId;
     return this.ws.send(msg);
@@ -141,8 +155,8 @@ export class SessionManager {
   }
 
   /** Enable/disable a skill */
-  async toggleSkill(skillId: string, enabled: boolean): Promise<void> {
-    await this.request('skills.toggle', { skill_id: skillId, enabled });
+  async toggleSkill(name: string, enabled: boolean): Promise<Record<string, unknown>> {
+    return this.request('skills.toggle', { name, enabled });
   }
 
   /** Delete a session */

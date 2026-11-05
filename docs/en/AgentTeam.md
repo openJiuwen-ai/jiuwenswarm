@@ -294,6 +294,20 @@ When a session has running SwarmFlow workflows (visible in the tree view), their
 
 Paused workflows do **not** auto-resume: after you send a message, the Leader decides whether (and which) to resume; you can also **pause / resume / stop** an individual run in the tree view. After a restart or switching back, unfinished workflows are restored in the tree view as “paused, pending resume”, with their buttons greyed out until the Leader resumes them.
 
+### 2.7 Bringing installed experts into the team
+
+Experts installed on this machine — single experts (Agent Templates) and expert groups (Agent Groups) — can join a running team. Ask in plain words, e.g. "bring in a finance expert to analyse this fund", and the Leader will:
+
+1. browse what is installed with `view_experts` / `view_expert_groups` (a group's `get` shows its full member list);
+2. register the expert as a teammate with `spawn_expert`, naming a single expert, or a group member together with its group. The teammate runs with that expert's own persona, skills and tools; the Leader can only add a note about what this instance covers on top of the expert's description and persona.
+
+A few things to know:
+
+- Only installed experts can be used; nothing is downloaded during a conversation.
+- When the session is bound to an expert group, the Leader can spawn more instances of a group member (for example `clip-2` next to `clip`); they are identical to the member the team started with, even if the package is upgraded later.
+- An expert that runs on an external CLI (Claude Code / Codex) needs that CLI enabled for teams, just like other external CLI members.
+- A spawned expert keeps the version it was spawned with: upgrading or uninstalling the package later does not change members already in the team.
+
 ---
 
 ## Case study

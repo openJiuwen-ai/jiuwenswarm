@@ -40,6 +40,195 @@ class Connection:
         self.sent.set()
 
 
+_SESSION_INSPECTION_REQUESTS = [
+    (ReqMethod.TEAM_LIST, {}),
+    (ReqMethod.ORG_SNAPSHOT, {}),
+    (ReqMethod.TEAM_SNAPSHOT, {}),
+    (ReqMethod.TEAM_MEMBERS_GET, {}),
+    (ReqMethod.TEAM_HISTORY_GET, {}),
+    (ReqMethod.SESSION_ASSETS_LIST, {}),
+    (ReqMethod.SESSION_PLAN_STATUS, {}),
+    (ReqMethod.A4P_AUTHORIZATION_PENDING, {}),
+    (ReqMethod.COMMAND_WORKFLOWS, {}),
+    (ReqMethod.COMMAND_WORKFLOWS, {"action": "list"}),
+    (ReqMethod.COMMAND_WORKFLOWS, {"action": "get_workflow"}),
+    (ReqMethod.COMMAND_WORKFLOWS, {"action": "get_phase"}),
+    (ReqMethod.COMMAND_WORKFLOWS, {"action": "get_agent"}),
+    (ReqMethod.COMMAND_GOAL, {}),
+    (ReqMethod.COMMAND_GOAL, {"action": "get"}),
+    (ReqMethod.COMMAND_GOAL, {"action": " GET "}),
+]
+
+
+@pytest.mark.parametrize(("method", "params"), _SESSION_INSPECTION_REQUESTS)
+def test_pending_session_inspection_does_not_restart_a_completed_turn(method: ReqMethod, params: dict) -> None:
+    store = WorkerEventStore()
+    store.register(request(), "finished-turn")
+    store.append({"body": {"event_type": "chat.processing_status", "is_processing": False}}, "finished-turn")
+    store.finish("finished-turn")
+    query = replace(request("inspection", method=method), params=params)
+    record = store.register(query, "pending-query")
+    assert store.snapshot(query)["is_processing"] is False
+    assert record.active is True  # Delivery and duplicate guards still own the RPC.
+    assert store.snapshot(query)["dispatches"][-1]["request_id"] == "inspection"
+
+
+@pytest.mark.parametrize("action", ["set", "resume", "pause", "clear"])
+def test_pending_goal_control_is_still_busy(action: str) -> None:
+    store = WorkerEventStore()
+    control = replace(request(method=ReqMethod.COMMAND_GOAL), params={"action": action})
+    store.register(control, "goal-control")
+    assert store.snapshot(control)["is_processing"] is True
+
+
+def test_targeted_cancel_retires_only_the_target_dispatch() -> None:
+    """A targeted cancel must not retire other same-scope rounds' popups.
+
+    The owner turn and an expert round share the session scope; retiring the
+    whole scope on an expert-targeted cancel would drop ask_user popups that
+    are still answerable while their rounds keep running. A session-level
+    cancel (no target_request_id) still retires the whole scope.
+    """
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        return next(item["pending_interactions"] for item in store.snapshot(query)["dispatches"]
+                    if item["dispatch_id"] == dispatch_id)
+
+    targeted = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                       params={"target_request_id": "expert-turn"})
+    store.retire_session_interactions(targeted)
+    # is_processing is scope-wide: the owner round still holds work, so the
+    # session stays busy even though the expert round was retired.
+    assert store.snapshot(request("owner-turn"))["is_processing"] is True
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+    session_wide = replace(request("cancel-2", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(session_wide)
+    assert store.snapshot(request("owner-turn"))["is_processing"] is False
+    assert popup("owner", request("owner-turn")) == []
+
+
+def test_retire_releases_finished_dispatch_active_slot() -> None:
+    """Retiring a finished round's ask_user frees its _active slot.
+
+    finish() kept the slot because the suspended interaction made the record
+    look busy; without the release every retired round leaks one slot until
+    register raises the dispatch limit."""
+    store = WorkerEventStore()
+    store.register(request("turn-1"), "d-1")
+    store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                           "interaction_id": "ask-1"}}, "d-1")
+    store.finish("d-1")
+    interrupt = replace(request("cancel", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(interrupt)
+    # The slot is free again: re-registering the request_id succeeds instead
+    # of raising "duplicate active request_id".
+    store.register(request("turn-1"), "d-2")
+
+
+def test_cancel_with_legacy_request_id_param_retires_only_that_round() -> None:
+    """A cancel whose target arrives as params.request_id retires that round.
+
+    Legacy clients use request_id instead of target_request_id — same
+    fallback contract as admission._dispatch_cancel and
+    dispatcher._drop_queued_cancel."""
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    cancel = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                     params={"request_id": "expert-turn"})
+    store.retire_session_interactions(cancel)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        for item in store.snapshot(query)["dispatches"]:
+            if item["dispatch_id"] == dispatch_id:
+                return item["pending_interactions"]
+        return []
+
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "real_state", [None, "succeeded", "running", "waiting_for_input", "waiting_for_control", "queued"],
+)
+async def test_restored_session_queries_and_observers_do_not_create_work(real_state: str | None) -> None:
+    from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState, SessionWorkKind
+
+    holder = ConnHolder()
+    conn = Connection()
+    generation = holder.open_session(conn)
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    executions = []
+    for index in range(3):
+        observer = replace(request(f"observer-{index}"), params={"attach_only": True})
+        bridge.events.register(observer, f"observer-{index}")
+        executions.append(SessionExecutionHandle(
+            execution_id=f"observer-{index}", session_id="session-1", request_id=observer.request_id,
+            generation=1, work_kind=SessionWorkKind.TEAM_REQUEST, state=SessionExecutionState.WAITING_FOR_INPUT,
+        ).snapshot())
+    for index, (method, params) in enumerate(_SESSION_INSPECTION_REQUESTS):
+        bridge.events.register(replace(request(f"query-{index}", method=method), params=params), f"query-{index}")
+    if real_state is not None:
+        work = bridge.events.register(request("actual-work"), "actual-work")
+        if real_state != "queued":
+            executions.append(SessionExecutionHandle(
+                execution_id="actual-work", session_id="session-1", request_id="actual-work", generation=1,
+                work_kind=SessionWorkKind.TEAM_BACKGROUND, state=SessionExecutionState(real_state),
+            ).snapshot())
+            bridge.events.finish(work.dispatch_id)
+    dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=executions))
+    await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
+    snapshot = conn.frames[-1]["payload"]
+    expected_busy = real_state not in {None, "succeeded", "waiting_for_input"}
+    assert snapshot["is_processing"] is expected_busy
+    assert bridge.events.snapshot(request())["is_processing"] is expected_busy
+    assert len(snapshot["executions"]) == len(executions)
+    assert all(bridge.events.records[f"observer-{index}"].active for index in range(3))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("team_running", [True, False])
+async def test_inspection_transport_cannot_hide_registered_background_execution(team_running: bool) -> None:
+    """Team lifecycle, not a read RPC's context, owns actual background activity."""
+    from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState, SessionWorkKind
+
+    holder = ConnHolder()
+    conn = Connection()
+    generation = holder.open_session(conn)
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    query = request("query-with-background", method=ReqMethod.ORG_SNAPSHOT)
+    bridge.events.register(query, "query-with-background")
+    bridge.events.finish("query-with-background")
+    execution = SessionExecutionHandle(
+        execution_id="background", session_id="session-1", request_id="background", root_request_id=query.request_id,
+        generation=1, work_kind=SessionWorkKind.TEAM_BACKGROUND, state=SessionExecutionState.RUNNING,
+    ).snapshot()
+    lifecycle = SimpleNamespace(is_running=Mock(return_value=team_running))
+    dispatcher._runtime = SimpleNamespace(
+        get_session_snapshot=lambda _: SimpleNamespace(generation=1, executions=(execution,)),
+        _session_runtime_lifecycle=lifecycle,
+    )
+    await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
+    assert conn.frames[-1]["payload"]["is_processing"] is team_running
+    context = lifecycle.is_running.call_args.args[0]
+    assert context.session_id == query.session_id
+    assert context.generation == 1
+
+
 @pytest.mark.asyncio
 async def test_duplicate_is_scoped_and_late_cleanup_cannot_remove_replacement():
     registry = RequestRegistry()
@@ -134,7 +323,8 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     cancellations = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def on_gateway_disconnect(self, ws, remote):
@@ -179,7 +369,8 @@ async def test_warming_queue_survives_reconnection():
     invoked = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def dispatch_parsed_request(self, ws, req, lock):
@@ -216,10 +407,12 @@ async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
     dispatcher = WorkerDispatcher(bridge)
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
-        def get_session_snapshot(self, session_id):
+        @staticmethod
+        def get_session_snapshot(session_id):
             return SimpleNamespace(executions=())
 
     await dispatcher.bind_runtime(Runtime())
@@ -294,7 +487,7 @@ async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
     dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=executions))
     await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
     snapshot = conn.frames[-1]["payload"]
-    assert snapshot["is_processing"] is (real_state in {"running", "waiting_for_input", "queued"})
+    assert snapshot["is_processing"] is (real_state in {"running", "queued"})
     assert observer_record.active is True
     assert observer_record.is_processing is False
     assert any(item["request_id"] == "observer" for item in snapshot["executions"])

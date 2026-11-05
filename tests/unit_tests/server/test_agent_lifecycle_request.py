@@ -136,3 +136,52 @@ async def test_project_lifecycle_single_project_contract(tmp_path, monkeypatch):
     assert payload["hidden"] is False
     assert payload["operation"] is None
     assert payload["execution_blocked"] is False
+
+
+@pytest.mark.asyncio
+async def test_single_session_delete_keeps_accept_fields(tmp_path, monkeypatch):
+    """The single-id delete response must expose the background-cleanup state.
+
+    The frontend and the Gateway's lifecycle event both consume this payload;
+    dropping ``accepted``/``finalizing`` makes a successful accepted delete
+    indistinguishable from a synchronous completion.
+    """
+    _redirect_agent_root(monkeypatch, tmp_path)
+
+    class _Service:
+        async def session(self, session_id, action, channel_id):
+            return {
+                "session_id": session_id,
+                "ok": True,
+                "accepted": True,
+                "finalizing": True,
+                "stop_pending": True,
+                "project_id": "proj_1",
+            }
+
+    server = object.__new__(agent_ws_server.AgentWebSocketServer)
+    server._archive_service = _Service()
+    monkeypatch.setattr(
+        agent_ws_server,
+        "encode_agent_response_for_wire",
+        lambda resp, response_id: {
+            "response_id": response_id,
+            "payload": resp.payload,
+            "ok": resp.ok,
+        },
+    )
+    request = AgentRequest(
+        request_id="req-del",
+        channel_id="web",
+        req_method=ReqMethod.SESSION_DELETE,
+        params={"session_id": "s1"},
+    )
+    ws = _FakeWebSocket()
+    handled = await server._handle_lifecycle_request(ws, request, asyncio.Lock())
+    assert handled is True
+    payload = ws.sent[0]["payload"]
+    assert payload["session_id"] == "s1"
+    assert payload["project_id"] == "proj_1"
+    assert payload["accepted"] is True
+    assert payload["finalizing"] is True
+    assert payload["stop_pending"] is True

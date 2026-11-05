@@ -14,12 +14,14 @@ try {
     vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
     vite.ssrLoadModule('/src/features/workspace/projectRegistryClient.ts'),
     vite.ssrLoadModule('/src/stores/cronStore.ts'),
+    vite.ssrLoadModule('/src/stores/sessionStore.ts'),
   ]);
 } finally {
   await vite.close();
 }
-const [{ useWorkspaceStore }, { projectRegistryClient }, { useCronStore }] = modules;
+const [{ useWorkspaceStore }, { projectRegistryClient }, { useCronStore }, { useSessionStore }] = modules;
 const initialState = useWorkspaceStore.getState();
+const initialSessionState = useSessionStore.getState();
 const project = {
   project_id: 'new-project',
   name: 'New project',
@@ -36,6 +38,7 @@ function deferred() {
 
 beforeEach((t) => {
   useWorkspaceStore.setState({ ...initialState, workMode: 'code' }, true);
+  useSessionStore.setState(initialSessionState, true);
   t.mock.method(projectRegistryClient, 'pinnedSessions', async () => ({ sessions: [] }));
   t.mock.method(useCronStore.getState(), 'loadJobs', async () => {});
 });
@@ -99,6 +102,45 @@ test('the current request still reports failure and ends loading', async (t) => 
   assert.equal(useWorkspaceStore.getState().error, 'current request failed');
   assert.equal(useWorkspaceStore.getState().isLoadingProjects, false);
 });
+
+for (const removesCurrent of [true, false]) {
+  test(`removing sessions ${removesCurrent ? 'leaves an archived' : 'keeps an unrelated'} chat route`, (t) => {
+    const removed = { session_id: 'archived-session', project_id: project.project_id };
+    const kept = { session_id: 'kept-session', project_id: project.project_id };
+    const current = removesCurrent ? removed : kept;
+    const navigations = [];
+    const events = [];
+    const previousWindow = globalThis.window;
+    const previousPopStateEvent = globalThis.PopStateEvent;
+    globalThis.window = {
+      location: { pathname: `/chat/${current.session_id}` },
+      history: { replaceState: (_state, _title, path) => navigations.push(path) },
+      dispatchEvent: (event) => events.push(event.type),
+    };
+    globalThis.PopStateEvent = class extends Event {};
+    t.after(() => {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+      if (previousPopStateEvent === undefined) delete globalThis.PopStateEvent;
+      else globalThis.PopStateEvent = previousPopStateEvent;
+    });
+    useWorkspaceStore.setState({
+      projects: [project],
+      projectSessions: { [project.project_id]: [removed, kept] },
+      pinnedSessions: [removed],
+    });
+    useSessionStore.setState({ sessions: [removed, kept], currentSession: current });
+
+    useWorkspaceStore.getState().removeSessions([removed.session_id]);
+
+    assert.deepEqual(navigations, removesCurrent ? ['/chat/new'] : []);
+    assert.deepEqual(events, removesCurrent ? ['popstate'] : []);
+    assert.deepEqual(useWorkspaceStore.getState().projectSessions[project.project_id], [kept]);
+    assert.deepEqual(useWorkspaceStore.getState().pinnedSessions, []);
+    assert.deepEqual(useSessionStore.getState().sessions, [kept]);
+    assert.equal(useSessionStore.getState().currentSession, removesCurrent ? null : kept);
+  });
+}
 
 test('an authoritative list still clears selection for a removed project', async (t) => {
   useWorkspaceStore.setState({ projects: [project], selectedProject: project });

@@ -1,14 +1,18 @@
-import { FileText, Film, Image as ImageIcon, Music, PanelRight, X } from 'lucide-react';
+import { FileText, Film, Image as ImageIcon, LoaderCircle, Music, PanelRight, Square, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
-import { ModelProviderIcon } from '../../../components/ModelProviderIcon';
 import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
+import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
+import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
+import { requestSettingsModule } from '../../settings/settingsNavigation';
+import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
-import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { useSessionStore } from '../../../stores/sessionStore';
+import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
   DESIGNER_TEAM_MODE,
@@ -16,7 +20,9 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
+import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import { designerAssetPreviewUrl } from '../designerAssetUrl';
@@ -28,6 +34,7 @@ import {
   isPreviewableMention,
   mentionOptions,
 } from '../designerMentions';
+import DesignerModelBadge from './DesignerModelBadge';
 import {
   DESIGNER_REF_LIMITS,
   designerReferenceKindFromMime,
@@ -133,20 +140,64 @@ export function DesignerChatPanel() {
   const [sending, setSending] = useState(false);
   const [atMenu, setAtMenu] = useState<{ start: number; query: string; index: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const activeSessionId = useChatStore((state) => state.activeSessionId);
-  const chatAvailableModels = useSessionStore((state) => state.chatAvailableModels);
-  const selectedModelName = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.selectedModelName ?? null,
+  const stopRequestedRef = useRef(false);
+  // The canvas owns exactly one session: read and write the model against that
+  // session id. `activeSessionId` follows the app route and can point at
+  // another conversation while this panel stays mounted (#5394, #8995).
+  const selectedModelName = useSessionStore((state) =>
+    sessionId ? state.runtimes[sessionId]?.selectedModelName ?? null : null,
   );
-  const defaultModelName = useSessionStore((state) => state.defaultModelName);
-  const selectedModel = useMemo(
-    () => resolveChatModelSelection(chatAvailableModels, selectedModelName, defaultModelName),
-    [chatAvailableModels, defaultModelName, selectedModelName],
+  const selectedModelSelection = useSessionStore((state) =>
+    sessionId ? state.runtimes[sessionId]?.selectedModelSelection ?? null : null,
   );
-  const modelLabel = selectedModel?.alias || selectedModel?.model_name || '';
+  const setChatModel = useDesignerStore((state) => state.setChatModel);
+  const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
+  // The director chain resolves its preferred model from graph.metadata.model_name,
+  // and leader rounds run on the session selection: keep both in sync so a pick
+  // made here takes effect on the next round instead of only relabelling the UI.
+  useEffect(() => {
+    if (!sessionId || !selectedModelName) return;
+    setChatModel(selectedModelName);
+  }, [selectedModelName, sessionId, setChatModel]);
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
+  const ensureDuplexSession = useCallback(async () => {
+    if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
+    try {
+      await useDesignerStore.getState().flushSave();
+      bindDesignerChatSession(sessionId);
+      return sessionId;
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : t('designer.loadErrorFallback'));
+      return null;
+    }
+  }, [sessionId, domainGraph, t]);
+
+  // Design has no model switch: a missing chat model means no leader round can
+  // run at all, so warn here instead of failing only after the user sends
+  // (#5266). Re-checked when the model catalog size changes or a config change
+  // is pushed, since generation-slot switches never change the catalog.
+  const [blockedProblem, setBlockedProblem] = useState('');
+  const [configRevision, setConfigRevision] = useState(0);
+  useEffect(() => {
+    const onConfigChanged = () => setConfigRevision((value) => value + 1);
+    window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+    return () => window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+  }, []);
+  useEffect(() => {
+    if (!sessionId) {
+      setBlockedProblem('');
+      return;
+    }
+    let cancelled = false;
+    void findDesignModelsProblem().then((problem) => {
+      if (!cancelled) setBlockedProblem(problem ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, availableModelCount, configRevision]);
 
   // "@" offers the canvas nodes by label; mentioned nodes preview above the input.
   const allMentionOptions = useMemo(() => mentionOptions(domainGraph), [domainGraph]);
@@ -191,6 +242,12 @@ export function DesignerChatPanel() {
   useEffect(() => {
     if (sessionId) bindDesignerChatSession(sessionId);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (isProcessing || !stopRequestedRef.current) return;
+    stopRequestedRef.current = false;
+    useDesignerRunStore.getState().applyLeaderActivity(null);
+  }, [isProcessing]);
 
   const limitError = useCallback(
     (kind: DesignerReferenceKind) => {
@@ -246,6 +303,12 @@ export function DesignerChatPanel() {
   const handleSend = useCallback(() => {
     const content = draft.trim();
     if ((!content && attachments.length === 0) || chatBusy) return;
+    // Same gate as the landing page: a round needs the chat model and both
+    // generation slots, so refuse loudly instead of failing mid-run (#5266).
+    if (blockedProblem) {
+      toast.open({ content: blockedProblem, variant: 'error' });
+      return;
+    }
     setSending(true);
     const files = attachments.map((item) => item.file);
     void filesToBootstrapReferences(files)
@@ -290,20 +353,53 @@ export function DesignerChatPanel() {
       .finally(() => {
         setSending(false);
       });
-  }, [attachments, chatBusy, domainGraph, draft, sessionId, t]);
+  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, sessionId, t]);
+
+  const handleStop = useCallback(() => {
+    if (!sessionId) return;
+    setAttachError('');
+    stopRequestedRef.current = true;
+    const runStore = useDesignerRunStore.getState();
+    const leaderRunActive = runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
+    // Cancel through the engine first: pausing the leader kills its trigger
+    // task outright, skipping the abort that unwinds the run cleanly.
+    void (leaderRunActive ? runStore.cancel(domainGraph) : Promise.resolve())
+      .then(() =>
+        webClient.request('chat.interrupt', { session_id: sessionId, intent: 'pause', mode: DESIGNER_TEAM_MODE }),
+      )
+      .catch(() => {
+        stopRequestedRef.current = false;
+        setAttachError(t('designer.chat.stopError'));
+      });
+  }, [domainGraph, sessionId, t]);
 
   const handleUserAnswer = useCallback(
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
+      const interruptId =
+        pendingQuestion?.request_id === requestId ? pendingQuestion.interruptId : undefined;
       try {
+        if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
+          await webClient.request('video.search.answer', {
+            session_id: sessionId, job_id: pendingQuestion.duplexJobId, request_id: requestId, answers,
+          });
+          useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
+          return true;
+        }
         await webClient.request('chat.send', {
           session_id: sessionId,
           query: '',
           mode: DESIGNER_TEAM_MODE,
           request_id: requestId,
           answers,
+          ...buildConversationModelPayload({
+            mode: DESIGNER_TEAM_MODE,
+            selectedModelName,
+            selectedModelSelection,
+          }),
           ...(source ? { source } : {}),
+          ...(interruptId ? { interrupt_id: interruptId } : {}),
         });
         if (pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
@@ -313,7 +409,7 @@ export function DesignerChatPanel() {
         return false;
       }
     },
-    [sessionId],
+    [sessionId, selectedModelName, selectedModelSelection],
   );
 
   const onKeyDown = useCallback(
@@ -415,6 +511,25 @@ export function DesignerChatPanel() {
             event.target.value = '';
           }}
         />
+        {/* The leader cannot run without a chat model: warn before the user
+            types, and point straight at the Settings page (#5266). */}
+        {blockedProblem ? (
+          <div
+            className="designer-chat-panel__model-warning"
+            role="status"
+            data-testid="designer-chat-model-warning"
+          >
+            <span className="designer-chat-panel__model-warning-text">{blockedProblem}</span>
+            <button
+              type="button"
+              className="designer-chat-panel__model-warning-action"
+              onClick={() => requestSettingsModule('models')}
+              data-testid="designer-chat-model-warning-action"
+            >
+              {t('designer.models.openModelSettings')}
+            </button>
+          </div>
+        ) : null}
         {/* Canvas chat sidebar: hide attach control; landing prompt keeps its own attach UI. */}
         <div className="designer-chat-panel__composer-box">
           {atMenu && atCandidates.length > 0 ? (
@@ -450,37 +565,71 @@ export function DesignerChatPanel() {
             className="designer-chat-panel__input"
             placeholder={t('designer.chat.inputPlaceholder')}
             value={draft}
-            disabled={chatBusy}
+            disabled={sending}
             data-testid="designer-chat-panel-input"
             onChange={onDraftChange}
             onKeyDown={onKeyDown}
             onBlur={() => setAtMenu(null)}
           />
           <div className="designer-chat-panel__composer-actions">
-            {modelLabel ? (
-              <span
-                className="designer-chat-panel__model"
-                title={modelLabel}
-                data-testid="designer-chat-panel-model"
-              >
-                {selectedModel ? (
-                  <span className="designer-chat-panel__model-icon" aria-hidden>
-                    <ModelProviderIcon model={selectedModel} />
-                  </span>
-                ) : null}
-                <span className="designer-chat-panel__model-label">{modelLabel}</span>
-              </span>
+            {sessionId ? (
+              /* No model switch on the canvas: show the model Design runs on (#5266). */
+              <DesignerModelBadge sessionId={sessionId} />
             ) : null}
-            <button
-              type="button"
-              className="designer-chat-panel__send"
-              disabled={chatBusy || !canSend}
-              onClick={handleSend}
-              aria-label={t('designer.chat.send')}
-              data-testid="designer-chat-panel-send"
-            >
-              <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-            </button>
+            <ApplicationPluginTaskInputActions
+              eligible={
+                Boolean(sessionId && domainGraph?.graph_id && !isDesignerPreviewGraph(domainGraph)) &&
+                !chatBusy && attachments.length === 0
+              }
+              hasTextDraft={Boolean(draft.trim())}
+              sessionId={sessionId}
+              ensureSession={ensureDuplexSession}
+              labels={{
+                start: t('chat.taskFullDuplexStart'),
+                starting: t('chat.taskFullDuplexStarting'),
+                stop: t('chat.taskFullDuplexStop'),
+              }}
+              fallback={
+                <>
+            {isProcessing ? (
+              <button
+                type="button"
+                className="designer-chat-panel__send"
+                onClick={handleStop}
+                aria-label={t('designer.chat.stop')}
+                title={t('designer.chat.stop')}
+                data-testid="designer-chat-panel-stop"
+              >
+                <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="designer-chat-panel__send"
+                disabled={chatBusy || !canSend}
+                onClick={handleSend}
+                aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                aria-busy={chatBusy}
+                title={blockedProblem || (chatBusy ? t('designer.chat.running') : undefined)}
+                data-testid="designer-chat-panel-send"
+                data-variant={chatBusy ? 'running' : 'idle'}
+              >
+                {/* A leader round can run for minutes (graph autorun); the button
+                    must read as "working", never as the idle send plane (#5410). */}
+                {chatBusy ? (
+                  <LoaderCircle
+                    className="designer-chat-panel__send-spinner animate-spin"
+                    size={18}
+                    aria-hidden
+                  />
+                ) : (
+                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                )}
+              </button>
+            )}
+                </>
+              }
+            />
           </div>
         </div>
       </div>

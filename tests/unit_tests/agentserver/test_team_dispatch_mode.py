@@ -14,10 +14,17 @@ from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 from jiuwenswarm.server.runtime.session import session_metadata
 
 
-def _patch_metadata(monkeypatch: pytest.MonkeyPatch, metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    written: list[dict[str, Any]] = []
+def _patch_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: dict[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    written: list[tuple[dict[str, Any], dict[str, Any]]] = []
     monkeypatch.setattr(session_metadata, "_read_metadata", lambda _sid, cache_bust=True: dict(metadata))
-    monkeypatch.setattr(session_metadata, "_enqueue_write", lambda _sid, data: written.append(dict(data)))
+    monkeypatch.setattr(
+        session_metadata,
+        "_enqueue_write",
+        lambda _sid, data, **kwargs: written.append((dict(data), dict(kwargs))),
+    )
     return written
 
 
@@ -54,7 +61,35 @@ def test_persist_dispatch_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch) 
 
     team_helpers.persist_session_team_dispatch_mode("s1", "scheduled")
 
-    assert written == [{"session_id": "s1", "title": "t", "session_team_dispatch_mode": "scheduled"}]
+    assert written == [
+        (
+            {"session_id": "s1", "title": "t", "session_team_dispatch_mode": "scheduled"},
+            {
+                "sync_write": True,
+                "merge_fields": frozenset({"session_team_dispatch_mode"}),
+            },
+        )
+    ]
+
+
+def test_team_mode_writes_only_merge_their_owned_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[dict[str, Any], frozenset[str] | None]] = []
+    monkeypatch.setattr(
+        session_metadata,
+        "_read_metadata",
+        lambda _sid, cache_bust=True: {"session_id": "s1", "title": "t"},
+    )
+    monkeypatch.setattr(
+        session_metadata,
+        "_enqueue_write",
+        lambda _sid, data, **kwargs: calls.append((dict(data), kwargs.get("merge_fields"))),
+    )
+
+    team_helpers.persist_session_team_dispatch_mode("s1", "scheduled")
+    team_helpers.persist_session_team_bootstrap_mode("s1", "leader")
+
+    assert calls[0][1] == frozenset({"session_team_dispatch_mode"})
+    assert calls[1][1] == frozenset({"session_team_bootstrap_mode"})
 
 
 async def _build_spec(
@@ -69,6 +104,8 @@ async def _build_spec(
         dispatch_mode="scheduled",
         bootstrap_mode=config_bootstrap_mode,
         enable_task_verification=True,
+        enable_member_messaging=True,
+        max_subtask_depth=2,
     )
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
@@ -94,6 +131,8 @@ async def test_autonomous_session_overrides_spec_and_drops_verification(monkeypa
 
     assert spec.dispatch_mode == "autonomous"
     assert spec.enable_task_verification is False
+    assert spec.enable_member_messaging is False
+    assert spec.max_subtask_depth == 0
 
 
 @pytest.mark.asyncio
@@ -102,6 +141,8 @@ async def test_unspecified_dispatch_mode_keeps_team_config(monkeypatch: pytest.M
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.enable_task_verification is True
+    assert spec.enable_member_messaging is True
+    assert spec.max_subtask_depth == 2
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +183,15 @@ def test_persist_bootstrap_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch)
 
     team_helpers.persist_session_team_bootstrap_mode("s1", "framework")
 
-    assert written == [{"session_id": "s1", "title": "t", "session_team_bootstrap_mode": "framework"}]
+    assert written == [
+        (
+            {"session_id": "s1", "title": "t", "session_team_bootstrap_mode": "framework"},
+            {
+                "sync_write": True,
+                "merge_fields": frozenset({"session_team_bootstrap_mode"}),
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

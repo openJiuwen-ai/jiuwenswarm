@@ -10,7 +10,7 @@ export interface PageCardActionProps {
   tooltip?: string;
 }
 
-/** 右上角浮现的单个主操作按钮（.page-card__actions）。
+/** 悬停浮现的单个主操作按钮（.page-card__actions，占位在标题行右侧文档流内）。
  *  与 action / actionSlot 的取舍优先级：action > defaultButton > actionSlot，
  *  同时传多个时只渲染最高优先级的一个，其余静默忽略（不做告警）。 */
 export interface PageCardDefaultButton {

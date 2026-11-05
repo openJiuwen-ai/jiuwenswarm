@@ -10,6 +10,8 @@ transport. Three kinds exist:
                   ``${VAR}`` placeholders (tianyancha/gildata/gmail/jira...).
   * cli_oauth   — the CLI binary manages its own OAuth (feishu/dingtalk...);
                   delegated to ``CliDriver`` (form C).
+  * oauth       — the host implements OAuth Authorization Code + PKCE and
+                  stores the exchanged tokens (Canva).
 
 This module provides the shared primitives the ``token`` strategy builds on:
 placeholder detection, a persistent ``CredentialStore``, and
@@ -78,6 +80,10 @@ def _get_machine_id() -> str:
             r = subprocess.run(
                 ["/usr/sbin/ioreg", "-d2", "-c", "IOPlatformExpertDevice"],
                 capture_output=True, text=True, timeout=2,
+                # macOS tools emit UTF-8. Without an explicit codec a decode
+                # error happens in the reader thread, stdout comes back empty
+                # and the machine id silently falls back to a constant.
+                encoding="utf-8", errors="replace",
             )
             for line in r.stdout.splitlines():
                 if "IOPlatformUUID" in line:
@@ -190,6 +196,7 @@ def _load_mcp_cfg(name: str) -> dict[str, Any] | None:
 KIND_NONE = "none"
 KIND_TOKEN = "token"
 KIND_CLI_OAUTH = "cli_oauth"
+KIND_OAUTH = "oauth"
 
 
 def extract_placeholders(mcp_cfg: dict[str, Any] | None) -> set[str]:
@@ -311,6 +318,8 @@ def detect_credential_kind(name: str) -> str:
         return KIND_NONE
     if package.credentials_type == "cli-oauth":
         return KIND_CLI_OAUTH
+    if package.credentials_type == "oauth":
+        return KIND_OAUTH
     if package.credentials_type == "token":
         return KIND_TOKEN
     return KIND_NONE
@@ -341,7 +350,17 @@ class CredentialStore:
         self._needs_reencrypt: set[str] = set()
 
     def _path(self, name: str) -> Path:
-        return self._root / f"{str(name or '').strip()}.json"
+        connector_name = str(name or "").strip()
+        if (
+            not connector_name
+            or connector_name in {".", ".."}
+            or any(char in connector_name for char in "/\\:")
+        ):
+            raise ValueError("MCP credential name must be a single filename")
+        path = self._root / f"{connector_name}.json"
+        if path.is_symlink() or path.resolve().parent != self._root.resolve():
+            raise ValueError("MCP credential path must stay inside its storage directory")
+        return path
 
     def _load(self, name: str) -> dict[str, str]:
         p = self._path(name)
@@ -467,6 +486,7 @@ __all__ = [
     "KIND_NONE",
     "KIND_TOKEN",
     "KIND_CLI_OAUTH",
+    "KIND_OAUTH",
 ]
 
 
@@ -477,9 +497,11 @@ __all__ = [
 def _register_common_provider() -> None:
     import sys
 
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_MCP_CREDENTIAL
+
     from jiuwenswarm.common.external_providers import register
 
-    register("mcp_credential", sys.modules[__name__])
+    register(PROVIDER_DOMAIN_MCP_CREDENTIAL, sys.modules[__name__])
 
 
 _register_common_provider()

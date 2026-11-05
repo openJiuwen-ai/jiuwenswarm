@@ -34,6 +34,7 @@ from jiuwenswarm.server.runtime.agent_adapter import interface_code
 
 class _FakeCodeAdapter:
     def __init__(self) -> None:
+        self._instance = None
         self.calls: list[str] = []
         self.rail_names: list[str] = []
         self.subagent_config: dict = {}
@@ -59,9 +60,18 @@ class _FakeCodeAdapter:
     def _get_tool_build_func(self, tool_name, agent_id):
         raise AssertionError(f"unexpected tool build: {tool_name}/{agent_id}")
 
+    def _register_multimodal_tools(self, _agent_id, *, fail_on_error=False):
+        return []
+
     @staticmethod
     def _tool_owner_id():
         return "code-spec-test-agent"
+
+    @staticmethod
+    def _materialize_tool_retrieval_spec_tools(_agent_id, _tools, _config_base=None):
+        # The fake never arms the retrieval layer; the real adapter gates on
+        # the top-level switches inside this method.
+        return None
 
 
 def _model() -> Model:
@@ -126,7 +136,9 @@ def test_code_config_is_converted_to_spec_snapshot(tmp_path):
         CODE_SUBAGENT_BUNDLE
     ]
     assert spec.rails[0].params == {"configured_rails": ["SkillUseRail"]}
-    assert spec.tools[0].params == {"configured_tools": ["web_free_search"]}
+    assert spec.tools[0].params == {
+        "configured_tools": ["web_free_search"], "include_multimodal": True,
+    }
     assert spec.subagents[0].factory_kwargs == {
         "subagents": {"code_agent": {"enabled": True}},
         "max_iterations": 23,

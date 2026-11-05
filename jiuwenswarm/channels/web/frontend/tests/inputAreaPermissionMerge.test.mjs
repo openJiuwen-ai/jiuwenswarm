@@ -4,6 +4,7 @@ import { act, createElement, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
+import { loadCallback } from './loadProductionCallback.mjs';
 
 // Reserved, non-resolving DOM origin only; fetch rejects network access and the WebSocket fixture returns picker data.
 const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="root"></div></div>', {
@@ -11,12 +12,17 @@ const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="roo
   pretendToBeVisual: true,
 });
 const slashRequests = [];
+const assetRegisterRequests = [];
 let completeCompact;
-class MockWebSocket {
+// Single-shot: when set, the next session.assets.register call fails (rejects)
+// instead of succeeding, to exercise the registration-failure rollback path.
+let forceNextRegisterFailure = false;
+class MockWebSocket extends dom.window.EventTarget {
   static OPEN = 1;
   static CLOSED = 3;
 
   constructor(url) {
+    super();
     this.url = url;
     this.readyState = 0;
     queueMicrotask(() => {
@@ -29,7 +35,7 @@ class MockWebSocket {
     const request = JSON.parse(rawMessage);
     if (![
       'agent_groups.list', 'commands.list', 'skills.list', 'command.compact',
-      'session.assets.list', 'session.assets.register',
+      'session.assets.list', 'session.assets.register', 'session.assets.rename', 'session.assets.remove',
     ].includes(request.method)) {
       throw new Error(`Unexpected WebSocket request: ${request.method}`);
     }
@@ -57,14 +63,44 @@ class MockWebSocket {
       payload = {
         skills: [
           { name: 'test-skill', description: 'Test skill for compacting text', skill_type: 'skill', installed: true },
-          { name: 'team-skill', description: 'Team skill', skill_type: 'swarm_skill', installed: true },
+          {
+            name: 'team-skill',
+            display_name: '旅行规划',
+            description: 'Team skill',
+            skill_type: 'swarm_skill',
+            installed: true,
+          },
         ],
         plugins: [],
       };
     } else if (request.method === 'command.compact') {
       slashRequests.push(request);
       payload = { result: 'noop' };
-    } else if (request.method === 'session.assets.list' || request.method === 'session.assets.register') {
+    } else if (request.method === 'session.assets.register') {
+      assetRegisterRequests.push({ sessionId: request.params.session_id, items: request.params.items });
+      if (forceNextRegisterFailure) {
+        forceNextRegisterFailure = false;
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify({ type: 'res', id: request.id, ok: false, error: 'simulated register failure' }),
+          });
+        });
+        return;
+      }
+      const created = request.params.items.map((item, index) => ({
+        asset_id: `asset-${assetRegisterRequests.length}-${index}`,
+        name: item.name || item.path.split(/[\\/]/).pop(),
+        kind: 'document',
+        path: item.path,
+        source: item.source,
+        created_at: Date.now() / 1000,
+      }));
+      payload = { assets: created, created };
+    } else if (request.method === 'session.assets.rename') {
+      payload = { assets: [] };
+    } else if (request.method === 'session.assets.remove') {
+      payload = { assets: [] };
+    } else if (request.method === 'session.assets.list') {
       payload = { items: [] };
     }
     const respond = () => {
@@ -78,7 +114,9 @@ class MockWebSocket {
 
   close() {
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.({ code: 1000, reason: 'test', wasClean: true });
+    const event = new dom.window.CloseEvent('close', { code: 1000, reason: 'test', wasClean: true });
+    this.onclose?.(event);
+    this.dispatchEvent(event);
   }
 }
 
@@ -102,8 +140,13 @@ const globals = {
     unobserve() {}
     disconnect() {}
   },
-  fetch: () => {
-    throw new Error('InputArea permission interactions must not perform HTTP requests');
+  fetch: async (url) => {
+    // Login availability is probed by the model picker; this fixture has no
+    // auth service. A definite 404 avoids the production startup retry loop.
+    if (String(url).endsWith('/auth/status')) {
+      return new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error(`Unexpected InputArea HTTP request: ${url}`);
   },
   WebSocket: MockWebSocket,
 };
@@ -111,7 +154,8 @@ const descriptors = new Map(Object.keys(globals).map((key) => [key, Object.getOw
 for (const [key, value] of Object.entries(globals)) {
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 }
-after(() => {
+after(async () => {
+  await webClient.disconnect();
   dom.window.close();
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -128,6 +172,8 @@ const { setTeamOrganizationUiEnabled } = await import('../node_modules/.cache/in
 const { isMultiModelCollaborationEnabled, setMultiModelCollaborationEnabled } =
   await import('../node_modules/.cache/input-area-permission-merge/features/multiModelCollaboration/featureConfig.js');
 const { webClient } = await import('../node_modules/.cache/input-area-permission-merge/services/webClient.js');
+const { useSessionAssetsStore } =
+  await import('../node_modules/.cache/input-area-permission-merge/features/sessionAssets/sessionAssets.js');
 
 function byId(id, variant) {
   const selector = `[data-testid="${id}"]${variant === undefined ? '' : `[data-variant="${variant}"]`}`;
@@ -140,6 +186,57 @@ const typeInput = async (value) => act(async () => {
   const editor = byId('chat-panel-input');
   editor.textContent = value;
   editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+});
+
+test('enterprise composer keeps only upload, skills and plan, with single Agent locked', async () => {
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  try {
+    await mount({ sessionId: 'new', mode: 'team' }, async ({ props, render, switched }) => {
+      props.onSetGoal = () => {};
+      await render();
+      assert.deepEqual(switched, ['agent']);
+      const mode = byId('chat-panel-mode-select-trigger');
+      assert.ok(mode.closest('.chat-input-container--enterprise'));
+      assert.equal(mode.dataset.variant, 'agent');
+      assert.equal(mode.disabled, true);
+      assert.equal(mode.querySelector('.chat-mode-select__chevron'), null);
+      await click(mode);
+      assert.equal(document.querySelector('[data-testid="chat-panel-mode-select-menu"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-permission-selector-root"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-work-context-wrapper"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-work-select-trigger"]'), null);
+      await click(byId('chat-panel-input-attach-trigger'));
+      assert.deepEqual(
+        [...byId('chat-panel-input-attach-menu').querySelectorAll('[role="menuitem"]')].map((node) => node.dataset.testid),
+        ['chat-panel-input-attach-menu-file', 'chat-panel-input-attach-menu-skill', 'chat-panel-input-attach-menu-plan'],
+      );
+      await click(byId('chat-panel-input-attach-menu-plan'));
+      assert.equal(usePlanStore.getState().isActive('new'), true);
+    });
+  } finally {
+    delete window.__JIUWENSWARM_EDITION__;
+  }
+});
+
+test('personal composer retains mode, permissions and extra menu entries', async () => {
+  await mount({}, async ({ props, render }) => {
+    props.onSetGoal = () => {};
+    await render();
+    assert.equal(byId('chat-panel-mode-select-trigger').disabled, false);
+    assert.ok(byId('chat-panel-mode-select-trigger').querySelector('.chat-mode-select__chevron'));
+    assert.ok(byId('chat-panel-permission-selector-root'));
+    await click(byId('chat-panel-input-attach-trigger'));
+    for (const entry of ['agent', 'extension', 'goal']) {
+      assert.ok(byId(`chat-panel-input-attach-menu-${entry}`));
+    }
+  });
+});
+
+test('personal new conversation retains the project directory selector', async () => {
+  await mount({ sessionId: 'new' }, async () => {
+    assert.ok(byId('chat-panel-work-select-trigger'));
+    assert.equal(byId('chat-panel-input-container').classList.contains('chat-input-container--enterprise'), false);
+  });
 });
 
 for (const queuePaused of [false]) {
@@ -402,6 +499,253 @@ test('pasted image in a historical session restores after InputArea unmounts on 
   });
 });
 
+test('an already-registered attachment draft is not re-registered when InputArea unmounts and remounts on the same session', async () => {
+  // ChatPanel/index.tsx mounts InputArea at two separate JSX sites (the welcome
+  // composer and the normal composer), so this component genuinely unmounts and
+  // remounts while staying on the same session -- unmountInputArea()/render() here
+  // simulate exactly that. The attachment draft (attachmentDraftsBySession) and the
+  // session-asset registration bookkeeping must both be module-scoped so a restored
+  // draft is not registered a second time on every remount (the backend is
+  // deliberately not idempotent per path, see session_assets.py).
+  await mount({}, async ({ props, inputAreaRef, sessionId, render, unmountInputArea }) => {
+    // Unlike the welcome page (no server-side session yet), a real session always
+    // round-trips a local-path document through onPersistDocuments before it reaches
+    // 'ready' (InputArea.tsx's uploadAttachment) -- echo the local path back so the
+    // draft actually becomes registrable, matching the real desktop bridge.
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        { kind: 'document', filename: '1.json', mime_type: 'application/json', size: 16, path: 'C:\\Users\\Administrator\\Desktop\\1.json' },
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const registeredForSession = () => assetRegisterRequests.filter((r) => r.sessionId === sessionId);
+    assert.equal(registeredForSession().length, 1, 'attaching should register the material exactly once');
+
+    await unmountInputArea();
+    await render();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+
+    assert.notEqual(
+      document.querySelector('[data-testid="chat-panel-input-attachment-card"]'),
+      null,
+      'the restored draft should still show its attachment chip',
+    );
+    assert.equal(
+      registeredForSession().length,
+      1,
+      'remounting must not register the still-attached draft a second time',
+    );
+  });
+});
+
+test('a failed session-asset registration rolls back its dispatched mark so the send-time fallback is not skipped', async () => {
+  // The live registration effect marks a draft's path "dispatched" (sessionAssets.ts)
+  // synchronously, before the register() request resolves -- if the request then
+  // fails (network blip, RPC error) and that mark is never rolled back, the draft
+  // looks "already handled" forever: useWebSocket.ts's send-time registerUploads
+  // fallback (which exists specifically to catch a live-effect miss) sees the path
+  // already marked and silently skips it too, so no material is ever created for it.
+  // This is the exact failure chain from the review: reproduce it WITHOUT unmounting
+  // InputArea, so it cannot be confused with the separate remount/module-scope fix.
+  await mount({}, async ({ props, inputAreaRef, sessionId, render }) => {
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    const path = 'C:\\Users\\Administrator\\Desktop\\1.json';
+    forceNextRegisterFailure = true;
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        { kind: 'document', filename: '1.json', mime_type: 'application/json', size: 16, path },
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const registeredForSession = () => assetRegisterRequests.filter((r) => r.sessionId === sessionId);
+    assert.equal(registeredForSession().length, 1, 'the failed attempt still counts as one request sent');
+
+    // Simulate the message actually being sent: useWebSocket.ts calls registerUploads
+    // with the outgoing media item for this exact path right after send.
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [{ path }]);
+    });
+
+    assert.equal(
+      registeredForSession().length,
+      2,
+      'the send-time fallback must retry a path whose live registration failed, not skip it as already dispatched',
+    );
+  });
+});
+
+test('canceling a registered draft clears its dispatched-path mark, but not while another live draft still shares the path', async () => {
+  // sessionAssets.ts's dispatchedUploadPaths is what keeps useWebSocket.ts's
+  // send-time registerUploads fallback from re-registering a draft the live effect
+  // already handled. If that mark outlives the draft (canceled + its asset removed),
+  // a fresh re-attach of the same path sent before the live effect gets to it would
+  // be silently skipped by registerUploads too -- the file would just never become a
+  // session asset. But the mark must NOT be cleared while another still-attached,
+  // already-registered draft relies on it (same path, deliberate re-attach), or that
+  // one would get registered a second time instead.
+  await mount({}, async ({ props, inputAreaRef, sessionId, render }) => {
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    const path = 'C:\\Users\\Administrator\\Desktop\\shared.json';
+    const pick = { kind: 'document', filename: 'shared.json', mime_type: 'application/json', size: 16, path };
+
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([pick]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const registeredForSession = () => assetRegisterRequests.filter((r) => r.sessionId === sessionId);
+    assert.equal(registeredForSession().length, 1, 'first attach registers once');
+
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([pick]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    assert.equal(registeredForSession().length, 2, 'a deliberate second attach of the same path gets its own asset');
+
+    // Cancel only the FIRST draft. The second (same path) is still attached and
+    // already registered, so the dispatched mark for this path must survive.
+    await act(async () => {
+      document.querySelector('[data-testid="chat-panel-input-attachment-remove"]').click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [{ path }]);
+    });
+    assert.equal(
+      registeredForSession().length,
+      2,
+      'the still-attached second draft must keep the path marked dispatched -- registerUploads must not register it again',
+    );
+
+    // Cancel the remaining draft too. Now nothing shares this path anymore, so the
+    // mark must finally be cleared, letting a fresh attach's send-time fallback work.
+    await act(async () => {
+      document.querySelector('[data-testid="chat-panel-input-attachment-remove"]').click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [{ path }]);
+    });
+    assert.equal(
+      registeredForSession().length,
+      3,
+      'once no draft shares the path anymore, registerUploads must be able to register it again',
+    );
+  });
+});
+
+test('registerUploads names the asset from the attachment\'s displayName even when no pendingNames entry exists for its path', async () => {
+  // commitAttachmentRename (InputArea.tsx) only calls setPendingName when the
+  // attachment already has a persisted path -- on the welcome page (no session yet)
+  // or for a browser-mode image/document still mid-upload, a rename typed before
+  // that path exists is never written into pendingNames at all. The rename itself is
+  // never lost though: attachmentToMediaItem always sets displayName on the
+  // MediaItem regardless of path, and useWebSocket.ts now carries that displayName
+  // through persistence into the item it hands to registerUploads. registerUploads
+  // must prefer that per-item displayName over any (here: absent) pendingNames
+  // lookup, or the user's chosen name is silently replaced by the filename stem.
+  await mount({}, async ({ sessionId }) => {
+    const path = 'C:\\Users\\Administrator\\Desktop\\welcome-page-attach.json';
+    assert.equal(
+      useSessionAssetsStore.getState().pendingNames[path],
+      undefined,
+      'sanity: no pendingNames entry exists for this path',
+    );
+
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [
+        { path, filename: 'welcome-page-attach.json', displayName: 'My Renamed Material' },
+      ]);
+    });
+
+    const registered = assetRegisterRequests.filter((r) => r.sessionId === sessionId).at(-1);
+    assert.ok(registered, 'registerUploads should have sent a registration request');
+    assert.equal(registered.items.length, 1);
+    assert.equal(
+      registered.items[0].name,
+      'My Renamed Material',
+      'the user-chosen name must survive even without a pendingNames entry for the path',
+    );
+  });
+});
+
+test('the live registration effect sends the draft\'s own id as client_id', async () => {
+  // session.assets.register treats client_id as an idempotency key (see
+  // session_assets.py): the SAME logical request can legitimately execute twice
+  // server-side (a response lost before the client saw it, a reconnect retry, a
+  // second tab), and a repeat with the same client_id must return the existing
+  // asset instead of creating another one. That only works if the client actually
+  // sends a stable, per-draft id -- confirm the live effect does.
+  await mount({}, async ({ props, inputAreaRef, sessionId, render }) => {
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        { kind: 'document', filename: '1.json', mime_type: 'application/json', size: 16, path: 'C:\\Users\\Administrator\\Desktop\\1.json' },
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const card = document.querySelector('[data-testid="chat-panel-input-attachment-card"]');
+    assert.notEqual(card, null);
+    const draftId = card.getAttribute('data-variant');
+    assert.ok(draftId);
+
+    const registered = assetRegisterRequests.filter((r) => r.sessionId === sessionId).at(-1);
+    assert.ok(registered, 'the live effect should have registered the draft');
+    assert.equal(registered.items.length, 1);
+    assert.equal(
+      registered.items[0].client_id,
+      draftId,
+      'the registration request must carry the draft\'s own id as client_id',
+    );
+  });
+});
+
+test('desktop local-path document attachment shows its filename on the composer card', async () => {
+  // appendLocalFilePicks is exactly what the real desktop pywebview/Electron
+  // bridge feeds into (see InputArea's acceptExternalLocalFilePicks /
+  // openAttachmentPicker -> selectLocalFiles -> appendLocalFilePicks), with a
+  // real local path attached -- the shape describe_local_file /
+  // main.cjs#describeLocalFile hand back for a non-image document.
+  await mount({}, async ({ inputAreaRef }) => {
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        {
+          kind: 'document',
+          filename: '1.json',
+          mime_type: 'application/json',
+          size: 16,
+          path: 'C:\\Users\\Administrator\\Desktop\\1.json',
+        },
+      ]);
+    });
+    const card = document.querySelector('[data-testid="chat-panel-input-attachment-card"]');
+    assert.notEqual(card, null);
+    const nameBlock = card.querySelector('[data-testid="chat-panel-input-attachment-name"]');
+    assert.notEqual(nameBlock, null);
+    assert.equal(nameBlock.querySelector('.chat-input-attachment-name-text').textContent, '1.json');
+  });
+});
+
 async function typeSlash(value) {
   await act(async () => {
     const editor = byId('chat-panel-input');
@@ -417,15 +761,78 @@ async function typeSlash(value) {
   await flushMicrotasks();
 }
 
-const pressKey = async (key) =>
+const pressKey = async (key, options = {}) =>
   act(async () => {
-    byId('chat-panel-input').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+    byId('chat-panel-input').dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+      key, bubbles: true, cancelable: true, ...options,
+    }));
   });
 const suggestionIds = () =>
   Array.from(
     document.querySelectorAll('[data-testid="chat-panel-composer-suggestion-item"]'),
     (item) => item.dataset.variant,
   );
+
+for (const edition of ['enterprise', 'personal']) {
+  for (const sessionId of ['new', `path-enter-${edition}`]) {
+    test(`${edition}: Enter sends prose ending in an unmatched path in ${sessionId}`, async () => {
+      window.__JIUWENSWARM_EDITION__ = edition;
+      try {
+        await mount({ sessionId }, async ({ props, render }) => {
+          const sent = [];
+          props.onSubmit = (text) => sent.push(text);
+          await render();
+          for (const path of ['/tmp3', '/tmp']) {
+            const text = `调用bash工具，执行命令ls ${path}`;
+            await typeSlash(text);
+            assert.deepEqual(suggestionIds(), []);
+            assert.ok(byId('chat-panel-composer-suggestion-empty'));
+            await pressKey('Enter');
+            assert.equal(sent.at(-1), text);
+            assert.equal(byId('chat-panel-input').textContent, '');
+            assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          }
+          assert.equal(sent.length, 2);
+        });
+      } finally {
+        delete window.__JIUWENSWARM_EDITION__;
+      }
+    });
+  }
+
+  test(`${edition}: unmatched paths preserve IME, newline, Tab and valid slash completion`, async () => {
+    window.__JIUWENSWARM_EDITION__ = edition;
+    try {
+      await mount({}, async ({ props, render }) => {
+        const sent = [];
+        props.onSubmit = (text) => sent.push(text);
+        await render();
+        const text = '调用bash工具，执行命令ls /tmp3';
+        await typeSlash(text);
+        for (const [key, options] of [
+          ['Enter', { isComposing: true }], ['Enter', { shiftKey: true }], ['Tab', {}],
+        ]) {
+          await pressKey(key, options);
+          assert.deepEqual(sent, []);
+          assert.equal(byId('chat-panel-input').textContent, text);
+        }
+        await typeSlash('/unknown-command');
+        await pressKey('Enter');
+        assert.deepEqual(sent, []);
+        assert.equal(byId('chat-panel-input').textContent, '/unknown-command');
+        for (const key of ['Enter', 'Tab']) {
+          await typeSlash('请使用 /test-skill');
+          assert.deepEqual(suggestionIds(), ['test-skill']);
+          await pressKey(key);
+          assert.deepEqual(sent, []);
+          assert.ok(byId('chat-panel-input').querySelector('[data-skill="test-skill"]'));
+        }
+      });
+    } finally {
+      delete window.__JIUWENSWARM_EDITION__;
+    }
+  });
+}
 
 test('welcome command menu updates on session and mode changes without hiding skills', async () => {
   await mount({ sessionId: 'new' }, async () => {
@@ -480,6 +887,132 @@ for (const language of ['zh', 'en']) {
   }
 }
 
+const evolutionCommands = ['evolve', 'evolve_list', 'evolve_simplify', 'evolve_rebuild', 'evolve_rollback'];
+for (const command of evolutionCommands) {
+  for (const mode of ['agent', 'team']) {
+    for (const method of ['click', 'Enter', 'Tab']) {
+      test(`${mode}: /${command} completes a skill through ${method} and sends plain command text`, async () => {
+        await mount({ mode }, async ({ props, render, sessionId }) => {
+          const sent = [];
+          props.onSubmit = (content) => sent.push(content);
+          await render();
+          const skill = mode === 'team' ? 'team-skill' : 'test-skill';
+          // A full command without a space must show skills, not search for the command name.
+          await typeSlash(`/${command}`);
+          assert.ok(suggestionIds().includes(skill));
+          await typeSlash(`/${command} `);
+          assert.ok(suggestionIds().includes(skill));
+          await typeSlash(`/${command} ${mode === 'team' ? 'Team' : 'compacting'}`);
+          assert.deepEqual(suggestionIds(), [skill]);
+          if (method === 'click') await click(byId('chat-panel-composer-suggestion-item', skill));
+          else await pressKey(method);
+          assert.equal(byId('chat-panel-input').textContent, `/${command} ${skill} `);
+          assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          assert.equal(byId('chat-panel-input').querySelector('[contenteditable="false"]'), null);
+          assert.equal(useChatStore.getState().getRuntime(sessionId).inputValue, `/${command} ${skill} `);
+          assert.deepEqual(sent, []);
+          await click(byId('chat-panel-input-send'));
+          assert.deepEqual(sent, [`/${command} ${skill}`]);
+        });
+      });
+    }
+  }
+}
+
+for (const command of evolutionCommands) {
+  for (const mode of ['agent', 'team']) {
+    test(`${mode}: evolution ${command} with no candidates releases Tab and sends on Enter`, async () => {
+      await mount({ mode }, async ({ props, render }) => {
+        const sent = [];
+        props.onSubmit = (content) => sent.push(content);
+        await render();
+        // Cover both an unknown skill and an installed skill excluded by the mode filter.
+        for (const name of ['missing', mode === 'team' ? 'test-skill' : 'team-skill']) {
+          const text = `/${command} ${name}`;
+          await typeSlash(text);
+          assert.deepEqual(suggestionIds(), []);
+          const beforeTab = sent.length;
+          const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+          await act(async () => byId('chat-panel-input').dispatchEvent(event));
+          assert.equal(event.defaultPrevented, false);
+          assert.equal(sent.length, beforeTab);
+          assert.equal(byId('chat-panel-input').textContent, text);
+          assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          await typeSlash(text);
+          await pressKey('Enter');
+          assert.equal(sent.length, beforeTab + 1);
+          assert.equal(sent.at(-1), text);
+          assert.equal(byId('chat-panel-input').textContent, '');
+        }
+      });
+    });
+  }
+}
+
+test('evolution empty candidates preserve IME confirmation and Shift+Enter', async () => {
+  await mount({ mode: 'team' }, async ({ props, render }) => {
+    props.onSubmit = () => assert.fail('composition or Shift+Enter must not send');
+    await render();
+    const text = '/evolve_list missing';
+    for (const options of [{ isComposing: true }, { keyCode: 229 }, { shiftKey: true }]) {
+      await typeSlash(text);
+      const event = new dom.window.KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true, ...options,
+      });
+      await act(async () => byId('chat-panel-input').dispatchEvent(event));
+      assert.equal(event.defaultPrevented, false);
+      assert.equal(byId('chat-panel-input').textContent, text);
+      assert.notEqual(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    }
+  });
+});
+
+test('evolution skill completion stops at later arguments and preserves them when editing the skill', async () => {
+  await mount({ mode: 'team' }, async () => {
+    for (const text of [
+      '/evolve_simplify team-skill merge duplicate entries',
+      '/evolve_rollback team-skill latest',
+      '/evolve_list team-skill ',
+    ]) {
+      await typeSlash(text);
+      assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    }
+    await typeSlash('/evolve_simplify tea-old merge duplicates');
+    await act(async () => {
+      const editor = byId('chat-panel-input');
+      const range = document.createRange();
+      range.setStart(editor.firstChild, '/evolve_simplify tea'.length);
+      range.collapse(true);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+    await pressKey('Tab');
+    assert.equal(byId('chat-panel-input').textContent, '/evolve_simplify team-skill merge duplicates');
+  });
+});
+
+test('evolution completion matches translated display names but inserts the directory name', async () => {
+  await mount({ mode: 'team', language: 'zh' }, async () => {
+    await typeSlash('/evolve_list 旅行');
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+    await click(byId('chat-panel-composer-suggestion-item', 'team-skill'));
+    assert.equal(byId('chat-panel-input').textContent, '/evolve_list team-skill ');
+    assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+  });
+});
+
+test('unknown evolution skill query shows the skill empty state; ordinary slash search still works', async () => {
+  await mount({ mode: 'team' }, async () => {
+    await typeSlash('/evolve_list missing');
+    assert.deepEqual(suggestionIds(), []);
+    assert.equal(byId('chat-panel-composer-suggestion-empty').textContent, i18n.t('chat.slashPicker.noMatchingSkills'));
+    await typeSlash('/Team');
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+  });
+});
+
 test('welcome Tab and unknown slash Enter do not send input; /plan still executes from the menu', async () => {
   await mount({ sessionId: 'new' }, async ({ props, render }) => {
     props.onSubmit = () => assert.fail('menu completion must not submit chat messages');
@@ -495,6 +1028,50 @@ test('welcome Tab and unknown slash Enter do not send input; /plan still execute
     await pressKey('Enter');
     assert.notEqual(document.querySelector('[data-testid="chat-panel-plan-tag"]'), null);
     assert.equal(useChatStore.getState().getRuntime('new').messages.length, 0);
+  });
+});
+
+test('persist session tag shows for real persist sessions; close hides it locally', async () => {
+  await mount({}, async ({ render, sessionId }) => {
+    await render();
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    await act(async () => useSessionStore.getState().setPersistSession(sessionId, true));
+    assert.notEqual(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    assert.equal(
+      document.querySelector('[data-testid="chat-panel-persist-tag-label"]').textContent,
+      i18n.t('persistSession.toolbarTag'),
+    );
+    await click(document.querySelector('[data-testid="chat-panel-persist-tag-close"]'));
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).persistSession, false);
+  });
+});
+
+test('persist session tag never renders on the welcome page even when armed', async () => {
+  await mount({ sessionId: 'new' }, async ({ render }) => {
+    await render();
+    await act(async () => useSessionStore.getState().setPersistSession('new', true));
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+  });
+});
+
+test('persist session tag drops its close button once the session has messages', async () => {
+  await mount({}, async ({ render, sessionId }) => {
+    await render();
+    await act(async () => useSessionStore.getState().setPersistSession(sessionId, true));
+    await act(async () =>
+      useChatStore.getState().addMessage(sessionId, {
+        id: 'persist-history-1',
+        role: 'user',
+        content: 'first task',
+        timestamp: '2026-10-26T10:00:00.000Z',
+      }),
+    );
+    const tag = document.querySelector('[data-testid="chat-panel-persist-tag"]');
+    assert.notEqual(tag, null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag-close"]'), null);
+    assert.equal(tag.className.includes('chat-agent-tag--static'), true);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).persistSession, true);
   });
 });
 
@@ -842,5 +1419,127 @@ test('work landing still offers stop and a follow-up queue while processing', as
     assert.equal(byId('chat-panel-input-send').dataset.variant, 'stop');
     assert.equal(editor.getAttribute('data-placeholder'), i18n.t('chat.placeholderProcessingQueue'));
     assert.equal(editor.getAttribute('contenteditable'), 'true');
+  });
+});
+
+
+test('paused Owner retains its pause state while organization work exposes stop independently', async () => {
+  const { startExpertRequest, finishExpertRequest } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const actions = [];
+    props.onCancel = () => actions.push('cancel');
+    props.onInterrupt = (text) => actions.push(text);
+    props.isProcessing = true;
+    try {
+      await act(async () => {
+        useChatStore.getState().setPaused(sessionId, true);
+        setTeamOrganizationUiEnabled(true);
+        startExpertRequest(`${sessionId}::expert`, 'background', 'org_expert_background');
+      });
+      await render();
+      assert.equal(useChatStore.getState().getRuntime(sessionId).isPaused, true);
+      assert.equal(byId('chat-panel-input-send').getAttribute('data-variant'), 'stop');
+      assert.equal(byId('chat-panel-input').getAttribute('data-placeholder'), i18n.t('chat.placeholderTeamMode'));
+      await click(byId('chat-panel-input-send'));
+      assert.deepEqual(actions, ['cancel']);
+      assert.equal(useChatStore.getState().getRuntime(sessionId).isPaused, true);
+      await act(async () => finishExpertRequest(`${sessionId}::expert`, 'background'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').getAttribute('data-variant'), 'send');
+    } finally {
+      await act(async () => {
+        finishExpertRequest(`${sessionId}::expert`, 'background');
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
+  });
+});
+
+
+test('actual Owner composer remains disabled after stop and metadata refresh while child runs', async () => {
+  const { startExpertRequest, clearOrganizationRequests, setOrganizationOwnerStopped,
+    isOrganizationOwnerStopped, organizationOwnerStateRevision } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  const { organizationOwnerStopTarget, selectedExpertTeamId } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/conversation.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const chat = useChatStore.getState();
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore,
+      request: async () => ({ session_id: sessionId, is_processing: true, status: 'processing' }),
+      sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata() {},
+      useWorkspaceStore,
+      setProcessing: (id, value) => { chat.setProcessing(id, value); props.isProcessing = value; },
+      setThinking: chat.setThinking,
+      isOrganizationOwnerStopped,
+      setOrganizationOwnerStopped,
+      organizationOwnerStateRevision,
+    });
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId, organizationOwnerStopTarget, useSessionStore, useChatStore,
+      setOrganizationOwnerStopped, isOrganizationOwnerStopped,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_id, mode) => mode,
+      closeActiveTeamLeaderMessages() {},
+      request: async (_method, params) => {
+        assert.equal(params.organization_owner_stop, true);
+        return { success: true };
+      },
+      onErrorRef: { current: error => assert.fail(error) },
+      t: key => key,
+    });
+    const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
+      interrupt, organizationOwnerStopTarget,
+      useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: () => assert.fail('child cancelled') }) },
+      onErrorRef: { current: error => assert.fail(error) }, t: key => key,
+    });
+    const handleCancel = loadCallback('App.tsx', 'handleCancel', {
+      sessionIdRef: { current: sessionId }, NEW_CONVERSATION_ID: 'new',
+      useGoalStore: { getState: () => ({ runtimes: {} }) },
+      mode: 'team', organizationOwnerStopTarget, cancel, pause: () => assert.fail('Owner paused'),
+    });
+    props.onCancel = () => {
+      handleCancel();
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+    };
+    try {
+      await act(async () => {
+        setTeamOrganizationUiEnabled(true);
+        chat.setProcessing(sessionId, true);
+        useTeamSelectorStore.setState(state => ({ runtimes: {
+          ...state.runtimes, [sessionId]: { selectedTeamId: 'owner', teams: [
+            { team_id: 'owner', is_owner: true, organization_id: 'org' },
+            { team_id: 'expert', is_owner: false, organization_id: 'org' },
+          ] },
+        } }));
+        startExpertRequest(`${sessionId}::expert`, 'child-running', 'org_expert_background');
+      });
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+      await render();
+      assert.equal(byId('chat-panel-input-send').dataset.variant, 'stop');
+      await click(byId('chat-panel-input-send'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').disabled, true);
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          assert.ok(await refresh(sessionId));
+          startExpertRequest(`${sessionId}::expert`, `late-child-${i}`, 'org_expert_background');
+        });
+        await render();
+        assert.equal(byId('chat-panel-input-send').dataset.variant, 'send');
+        assert.equal(byId('chat-panel-input-send').disabled, true);
+        assert.equal(chat.getRuntime(`${sessionId}::expert`).isProcessing, true);
+      }
+    } finally {
+      await act(async () => {
+        clearOrganizationRequests(sessionId);
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
   });
 });

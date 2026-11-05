@@ -23,6 +23,7 @@ import {
   trajectoryCheckpointHeads,
   type TrajectoryRetentionCheckpoints,
 } from './trajectoryCheckpoints';
+import { rawOtelSpanInterval } from './diagnosis/diagnosisTimeSelection';
 import {
   isTrajectorySessionUsageItem,
   type TrajectoryDetailRecord,
@@ -31,6 +32,10 @@ import {
   createSequenceCache,
   rebuildRecord,
 } from './trajectorySequences';
+import {
+  subjectAppearsOnTeamLanes,
+  trajectorySubjectOf,
+} from './trajectorySubjects';
 import {
   applyTrajectoryDetailRecords,
   type TrajectoryRecordVersion,
@@ -143,7 +148,8 @@ export interface TrajectoryArchiveReplay {
 export interface TrajectoryArchiveProgress {
   bytesRead: number;
   totalBytes: number;
-  records: number;
+  /** Timed OTel spans accepted so far (same rule as the analysis header). */
+  spans: number;
 }
 
 export type TrajectoryArchiveSource = Pick<Blob, 'size' | 'stream'>;
@@ -347,6 +353,8 @@ interface ArchiveLineReader {
   /** Take in one line of text, applying pending records once a batch is full. */
   accept: (text: string) => void;
   records: () => number;
+  /** Timed OTel spans among accepted records (header / selection count). */
+  timedSpans: () => number;
   finish: (container: 'zip' | 'jsonl') => TrajectoryArchiveReplay;
 }
 
@@ -444,6 +452,28 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
     if (parsed.record.otlp === null) rawDataByRecordId.set(identity, parsed.rawData);
   };
 
+  const countsTowardHeader = (record: TrajectoryDetailRecord): boolean => {
+    // Same filter as groupTrajectorySubjects in team mode: only leader/member
+    // lanes feed the analysis header once a Team archive is recognized.
+    if (!teamRecordSeen) return true;
+    return subjectAppearsOnTeamLanes(trajectorySubjectOf(record.otlp).kind);
+  };
+
+  const timedSpanCountOf = (): number => {
+    let count = 0;
+    for (const bucket of buckets.values()) {
+      for (const record of bucket.rawRecords.values()) {
+        if (!countsTowardHeader(record)) continue;
+        if (rawOtelSpanInterval(record) !== null) count += 1;
+      }
+    }
+    for (const { record } of pending) {
+      if (!countsTowardHeader(record)) continue;
+      if (rawOtelSpanInterval(record) !== null) count += 1;
+    }
+    return count;
+  };
+
   const acceptLine = (value: Record<string, unknown>, lineNumber: number): void => {
     switch (value.type) {
       case 'blob':
@@ -520,6 +550,7 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
       if (pending.length >= RECORD_APPLY_BATCH) flush();
     },
     records: () => recordCount,
+    timedSpans: timedSpanCountOf,
     finish: (container) => {
       if (header === null) throw new TrajectoryArchiveFormatError('Trajectory archive is empty');
       if (!ended) throw new TrajectoryArchiveFormatError('Trajectory archive is truncated: it has no end line');
@@ -722,7 +753,7 @@ export async function readTrajectoryArchive(
   const report = () => onProgress?.({
     bytesRead,
     totalBytes: source.size,
-    records: lines.records(),
+    spans: lines.timedSpans(),
   });
   const drain = async () => {
     for (let index = 0; index < queue.length; index += 1) {

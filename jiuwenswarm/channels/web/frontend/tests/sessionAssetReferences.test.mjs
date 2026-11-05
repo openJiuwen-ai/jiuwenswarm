@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  displayFileName,
   findReferencedAssets,
   resolveAssetDisplayNames,
   samePath,
@@ -45,6 +46,22 @@ test('validates asset names like the backend', () => {
 test('compares Windows paths ignoring case and slash direction', () => {
   assert.equal(samePath('C:\\A\\b.png', 'c:/a/B.PNG'), true);
   assert.equal(samePath('C:\\A\\b.png', 'C:\\A\\c.png'), false);
+});
+
+test('display name adds the extension back without an @ prefix', () => {
+  assert.equal(displayFileName(asset('Panda_Cub')), 'Panda_Cub.png');
+  assert.equal(displayFileName(asset('metadata', 'C:\\files\\metadata.json')), 'metadata.json');
+  assert.equal(displayFileName(asset('no_ext', 'C:\\files\\no_ext')), 'no_ext');
+  assert.equal(displayFileName(asset('fox', 'C:/a/fox.PNG')), 'fox.PNG');
+});
+
+test('display name does not double the extension when the asset was renamed to already include it', () => {
+  // Rename inputs don't strip extensions, so asset.name can legitimately already end in ".png".
+  assert.equal(displayFileName(asset('mybottle.png')), 'mybottle.png');
+  // Case-insensitive match (real extension vs. a differently-cased one the user typed).
+  assert.equal(displayFileName(asset('mybottle.PNG')), 'mybottle.PNG');
+  // A name that merely contains the extension mid-string, not as a suffix, still gets it appended.
+  assert.equal(displayFileName(asset('png_export_v2')), 'png_export_v2.png');
 });
 
 // 真实数据：会话 web_1a1102fc6e1_5e63432faddc 的 history.jsonl 与 session_assets.json。
@@ -96,6 +113,30 @@ test('never overrides a displayName that is already present', () => {
   const item = { ...SERUM_HISTORY_ITEM, displayName: 'kept' };
   const [resolved] = resolveAssetDisplayNames([item], [SERUM_ASSET]);
   assert.equal(resolved.displayName, 'kept');
+});
+
+test('two messages that attached the same path each keep their OWN asset name, matched by client_id', () => {
+  // Same path, two separate attach actions (each its own draft/client_id) -- the
+  // backend gives each its own distinctly-named asset (session_assets.py no longer
+  // dedupes uploads by path). Resolving purely by path would make BOTH messages
+  // show whichever asset is iterated last ("1-1" for both), silently renaming the
+  // first message's chip whenever a second attach of the same file happens later
+  // in the SAME live session (no reload needed to see it).
+  const path = 'C:\\Users\\Administrator\\Desktop\\1.json';
+  const firstMessageItem = { type: 'document', filename: '1.json', path, clientId: 'draft-A' };
+  const secondMessageItem = { type: 'document', filename: '1.json', path, clientId: 'draft-B' };
+  const assets = [
+    { asset_id: 'asset_1', name: '1', kind: 'document', path, source: 'upload', created_at: 0, client_id: 'draft-A' },
+    { asset_id: 'asset_2', name: '1-1', kind: 'document', path, source: 'upload', created_at: 1, client_id: 'draft-B' },
+  ];
+  const [firstResolved, secondResolved] = resolveAssetDisplayNames([firstMessageItem, secondMessageItem], assets);
+  assert.equal(firstResolved.displayName, '1', 'the first message must keep showing its OWN asset\'s name');
+  assert.equal(secondResolved.displayName, '1-1');
+});
+
+test('falls back to the path guess when an item has no client_id (older message, no idempotency key)', () => {
+  const [resolved] = resolveAssetDisplayNames([SERUM_HISTORY_ITEM], [SERUM_ASSET]);
+  assert.equal(resolved.displayName, 'serum');
 });
 
 test('resolves several attachments and leaves unmatched ones untouched', () => {

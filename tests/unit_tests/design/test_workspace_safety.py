@@ -135,6 +135,65 @@ def test_get_design_workspace_returns_only_the_requested_session(monkeypatch):
     assert [item["session_id"] for item in payload["sessions"]] == ["s1", "s2"]
 
 
+def test_get_design_workspace_retitles_a_canvas_still_named_after_its_prompt(monkeypatch):
+    prompt = "制作一个 5 秒的写实风格短片，16:9 画幅，只有一个镜头：女店员推开咖啡店的门"
+    project = Project(project_id="proj_design", name="Design", project_dir="D:/design", work_mode="design")
+    session = {
+        "session_id": "s1",
+        "project_id": "proj_design",
+        "work_mode": "design",
+        "created_at": 1,
+        "title": "Morning Shift Start",
+    }
+    graph = {
+        "graph_id": "g1",
+        "project_id": "proj_design",
+        "title": prompt[:80],
+        "description": prompt,
+        "updated_at": 10,
+        "nodes": [],
+        "metadata": {
+            "session_id": "s1",
+            "script_analysis": {"story_name": "Morning Shift Start"},
+        },
+    }
+    saved: list[dict] = []
+
+    def save_graph(item: dict) -> dict:
+        saved.append(item)
+        return item
+
+    monkeypatch.setattr(
+        designer_adapter.project_store,
+        "get_project_by_id",
+        lambda project_id, cache_bust=False: project if project_id == project.project_id else None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.collect_all_sessions_metadata",
+        lambda: [session],
+    )
+    monkeypatch.setattr(designer_adapter._store, "list_graphs_for_project", lambda project_id: [graph])
+    monkeypatch.setattr(designer_adapter._store, "get_latest_run_for_graph", lambda graph_id: None)
+    monkeypatch.setattr(designer_adapter._store, "save_graph", save_graph)
+    monkeypatch.setattr(designer_adapter, "_design_workspace_messages", lambda session_id: [])
+
+    payload, error, _ = designer_adapter._get_design_workspace(
+        {"project_id": "proj_design", "session_id": "s1"}
+    )
+
+    assert error is None
+    assert payload["graph"]["title"] == "Morning Shift Start"
+    assert [item["title"] for item in saved] == ["Morning Shift Start"]
+
+    graph["title"] = "我的咖啡短片"
+    payload, error, _ = designer_adapter._get_design_workspace(
+        {"project_id": "proj_design", "session_id": "s1"}
+    )
+    assert error is None
+    assert payload["graph"]["title"] == "我的咖啡短片"
+    assert len(saved) == 1
+
+
 def test_design_workspace_messages_keep_leader_finals(monkeypatch):
     records = [
         {"id": "r1:user", "role": "user", "content": "make a clip", "timestamp": 1.0},

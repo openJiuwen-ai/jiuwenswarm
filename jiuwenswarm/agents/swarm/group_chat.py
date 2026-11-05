@@ -61,10 +61,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
     from jiuwenswarm.agents.swarm.assembly import (
         _apply_agent_group,
         _merge_team_prompt,
-        _template_team_prompt,
-        _with_agent_template,
     )
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+    from openjiuwen.agent_teams.experts import compose_template_member, load_agent_group_package_bundle
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
         resolve_agent_template_dir,
@@ -114,8 +112,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
         else:
             raise ValueError("group member kind must be expert or expert_team")
         base = spec.agents["teammate"]
-        agent = _with_agent_template(base.model_copy(deep=True), template)
-        prompt = _template_team_prompt(template, base)
+        assembled = compose_template_member(base.model_copy(deep=True), template)
+        agent, prompt = assembled.spec, assembled.persona
         if child is not None:
             agent.tools = [
                 *(agent.tools or []),

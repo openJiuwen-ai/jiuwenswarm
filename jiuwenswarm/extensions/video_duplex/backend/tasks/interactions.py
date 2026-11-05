@@ -26,6 +26,7 @@ def information_question(payload):
             raise ValueError(error)
     return dict(
         request_id=payload["request_id"],
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=source,
         questions=deepcopy(questions),
         state="pending",
@@ -49,6 +50,7 @@ def native_approval_question(payload):
         raise ValueError("Invalid approval questions")
     return dict(
         request_id=request_id,
+        interrupt_id=str(payload.get("interrupt_id") or ""),
         source=payload["source"],
         questions=deepcopy(questions),
         approval_schema=payload.get("approval_schema"),
@@ -83,11 +85,13 @@ def validate_native_approval_answers(interaction, answers):
         item = dict(
             question=question["question"], answer=text, selected_options=options
         )
-        card_id = answer.get("card_id")
-        if isinstance(card_id, str):
-            card_id = card_id.strip()
-            if card_id and len(card_id) <= 128:
+        if "card_id" in answer:
+            raw_card_id = answer["card_id"]
+            card_id = raw_card_id.strip() if isinstance(raw_card_id, str) else ""
+            if card_id and len(card_id) <= 512:
                 item["card_id"] = card_id
+            elif interaction["source"] == "permission_interrupt" and "card_id" in question:
+                raise ValueError("Invalid approval card ID")
         result.append(item)
     return result
 

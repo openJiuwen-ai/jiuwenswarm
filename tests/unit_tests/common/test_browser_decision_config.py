@@ -13,7 +13,7 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.config import (
     RuntimeSettings,
 )
 
-from jiuwenswarm.agents.harness.common.browser_config import (
+from jiuwenswarm.common.browser_config import (
     apply_browser_decision_config,
     browser_decision_state,
     browser_decision_updates,
@@ -91,6 +91,64 @@ def test_custom_jev_uses_typesafe_wire_format_without_changing_browser_runtime(s
     assert browser_decision_state(config)["decision_provider"] == "custom"
 
 
+@requires_jev
+@pytest.mark.parametrize("provider", ["openrouter", "typesafe", "custom"])
+@pytest.mark.parametrize("mode", ["shadow", "hybrid"])
+def test_display_name_round_trip_does_not_enter_sdk_config(settings, monkeypatch, provider, mode):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-key")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-key")
+    monkeypatch.setenv("JEV_CUSTOM_API_KEY", "synthetic-key")
+    config = {"browser": {"decision": {"mode": "llm"}}}
+    updates, error = browser_decision_updates(
+        mode, provider, config,
+        api_base="https://jev.example.test/v1", display_name="  My decision model  ",
+    )
+    assert error is None
+    assert updates["display_name"] == "My decision model"
+    config["browser"]["decision"].update(updates)
+    assert browser_decision_state(config)["decision_display_name"] == "My decision model"
+    spec = SimpleNamespace(factory_kwargs={"settings": settings})
+    apply_browser_decision_config(spec, config)
+    decision = spec.factory_kwargs["settings"].decision
+    assert decision.mode == mode
+    assert not hasattr(decision, "display_name")
+
+
+@pytest.mark.parametrize("display_name", ["", "  ", 1, [], "x" * 101])
+def test_invalid_display_name_is_refused_without_updates(display_name):
+    updates, error = browser_decision_updates(
+        None, None, {"browser": {"decision": {"mode": "llm"}}}, display_name=display_name,
+    )
+    assert updates == {}
+    assert "decision_display_name" in error
+
+
+def test_missing_display_name_is_empty_without_mutating_configuration():
+    config = {"browser": {"decision": {"model": "jev-legacy"}}}
+    assert browser_decision_state(config)["decision_display_name"] == ""
+    assert config["browser"]["decision"] == {"model": "jev-legacy"}
+    assert browser_decision_updates(None, None, config) == ({}, None)
+
+
+@pytest.mark.parametrize("mode", ["llm", "shadow", "hybrid"])
+def test_display_name_can_be_cleared_while_disabling_browser_decisions(mode):
+    decision = {"mode": mode, "provider": "custom", "api_base": "", "display_name": "Old Jev"}
+    updates, error = browser_decision_updates("llm", "custom", {"browser": {"decision": decision}}, display_name="")
+    assert error is None
+    assert updates == ({"display_name": ""} if mode == "llm" else {"mode": "llm", "display_name": ""})
+    assert decision["display_name"] == "Old Jev"
+
+
+@pytest.mark.parametrize("model,api_base", [("jev-1.13.0", None), (None, "https://example.test/v1")])
+def test_connection_edits_still_require_a_nonempty_display_name(model, api_base):
+    updates, error = browser_decision_updates(
+        "llm", None, {"browser": {"decision": {"mode": "llm"}}},
+        display_name="", model=model, api_base=api_base,
+    )
+    assert updates == {}
+    assert "decision_display_name" in error
+
+
 def test_disabling_invalid_custom_endpoint_remains_possible():
     config = {"browser": {"decision": {"mode": "hybrid", "provider": "custom", "api_base": ""}}}
     assert browser_decision_updates("llm", None, config) == ({"mode": "llm"}, None)
@@ -99,7 +157,7 @@ def test_disabling_invalid_custom_endpoint_remains_possible():
 @pytest.mark.parametrize("mode", ["LLM", " llm ", "typo", "HYBRID", "", None, 1, ["hybrid"]])
 def test_unrecognized_mode_matches_llm_settings_view(settings, mode, monkeypatch):
     warning = Mock()
-    monkeypatch.setattr("jiuwenswarm.agents.harness.common.browser_config.logger.warning", warning)
+    monkeypatch.setattr("jiuwenswarm.common.browser_config.logger.warning", warning)
     config = {"browser": {"decision": {"mode": mode}}}
     spec = SimpleNamespace(factory_kwargs={"settings": settings})
     assert browser_decision_state(config)["decision_mode"] == "llm"

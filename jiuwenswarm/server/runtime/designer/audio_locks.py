@@ -127,6 +127,34 @@ def language_display_name(code: str) -> str:
     return names.get(c, c or "English")
 
 
+_BGM_GENRE_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("tense", ("horror", "thriller", "tense", "恐怖", "惊悚")),
+    ("romance", ("romance", "love", "valentine", "浪漫", "爱情")),
+    ("reverent", ("church", "faith", "sermon", "教堂", "信仰")),
+    ("action", ("action", "chase", "race", "追逐", "动作")),
+    ("urban_night", ("night", "city", "neon", "夜", "城市")),
+)
+# (mood, style) — user-visible on the node and rendered into the video body.
+_BGM_DEFAULTS: dict[str, dict[str, tuple[str, str]]] = {
+    "en": {
+        "default": ("cinematic warm", "soft orchestral / ambient underscore"),
+        "tense": ("tense / uneasy", "sparse strings + low pulse"),
+        "romance": ("tender romantic", "gentle piano + soft strings"),
+        "reverent": ("reverent hopeful", "soft choir pad + organ-like tones (non-vocal bed)"),
+        "action": ("driving energetic", "rhythmic percussion + light synth"),
+        "urban_night": ("nocturnal urban", "subtle electronic ambient"),
+    },
+    "zh": {
+        "default": ("温暖的电影感", "柔和的管弦 / 氛围配乐"),
+        "tense": ("紧张不安", "稀疏弦乐配低沉律动"),
+        "romance": ("温柔浪漫", "轻柔钢琴配柔和弦乐"),
+        "reverent": ("庄重而充满希望", "柔和合唱铺底配管风琴般的音色（无人声）"),
+        "action": ("强劲有力", "节奏感打击乐配轻电子合成器"),
+        "urban_night": ("都市夜色", "低调的电子氛围乐"),
+    },
+}
+
+
 def infer_bgm_lock(prompt: str, audio: dict[str, Any] | None = None) -> dict[str, Any]:
     """Film-wide BGM lock (mood/style). Empty instruments ok — model fills tastefully."""
     audio = audio if isinstance(audio, dict) else {}
@@ -145,19 +173,16 @@ def infer_bgm_lock(prompt: str, audio: dict[str, Any] | None = None) -> dict[str
             )[:280],
         }
         return out
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        current_content_language,
+    )
+
     text = (prompt or "").lower()
-    mood = "cinematic warm"
-    style = "soft orchestral / ambient underscore"
-    if any(w in text for w in ("horror", "thriller", "tense", "恐怖", "惊悚")):
-        mood, style = "tense / uneasy", "sparse strings + low pulse"
-    elif any(w in text for w in ("romance", "love", "valentine", "浪漫", "爱情")):
-        mood, style = "tender romantic", "gentle piano + soft strings"
-    elif any(w in text for w in ("church", "faith", "sermon", "教堂", "信仰")):
-        mood, style = "reverent hopeful", "soft choir pad + organ-like tones (non-vocal bed)"
-    elif any(w in text for w in ("action", "chase", "race", "追逐", "动作")):
-        mood, style = "driving energetic", "rhythmic percussion + light synth"
-    elif any(w in text for w in ("night", "city", "neon", "夜", "城市")):
-        mood, style = "nocturnal urban", "subtle electronic ambient"
+    genre = next(
+        (key for key, cues in _BGM_GENRE_CUES if any(w in text for w in cues)),
+        "default",
+    )
+    mood, style = _BGM_DEFAULTS[current_content_language()][genre]
     return {
         "mood": mood,
         "style": style,
@@ -651,22 +676,6 @@ def stamp_audio_fields_on_clip_config(
         cfg["video_audio"] = bool(
             include_speech and video_model_supports_native_audio()
         )
-    block = audio_lock_prompt_block(
-        language_lock=cfg["language_lock"],
-        speech_by_character=by_char,
-        speech_line=speech_line,
-        bgm_lock=bgm,
-        include_speech=include_speech,
-        include_music=include_music,
-        clip_embedded=bool(cfg.get("clip_embedded_audio")),
-    )
-    gen = dict(cfg.get("generate") or {})
-    prompt = str(gen.get("prompt") or "")
-    image_binding = "image 1 is" in prompt.lower() or "@image 1 is" in prompt.lower()
-    already_locked = "LANGUAGE LOCK" in prompt or "SPEECH LOCK" in prompt
-    if block and not image_binding and not already_locked:
-        gen["prompt"] = (prompt + "\n" + block).strip()
-        cfg["generate"] = gen
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             scrub_restated_speech,
@@ -675,34 +684,6 @@ def stamp_audio_fields_on_clip_config(
         cfg = scrub_restated_speech(cfg)
         if bool(cfg.get("speech_continuation_only")) and not str(cfg.get("speech_line") or "").strip():
             cfg["include_speech"] = False
-            # Drop SPEECH LOCK from generate.prompt if we scrubbed duplicate dialogue.
-            gen2 = dict(cfg.get("generate") or {})
-            p2 = str(gen2.get("prompt") or "")
-            if (
-                "SPEECH LOCK" in p2
-                and "image 1 is" not in p2.lower()
-                and not str(cfg.get("speech_line") or "").strip()
-            ):
-                # Rebuild without speech lock lines — keep language/BGM.
-                block2 = audio_lock_prompt_block(
-                    language_lock=str(cfg.get("language_lock") or ""),
-                    speech_by_character={},
-                    speech_line="",
-                    bgm_lock=cfg.get("bgm_lock") or {},
-                    include_speech=False,
-                    include_music=bool(cfg.get("include_music")),
-                    clip_embedded=bool(cfg.get("clip_embedded_audio")),
-                )
-                # Strip prior audio block markers then re-append.
-                for marker in ("LANGUAGE LOCK", "SPEECH LOCK", "BGM LOCK", "CLIP-EMBEDDED"):
-                    if marker in p2:
-                        p2 = p2.split(marker, 1)[0].rstrip()
-                        break
-                if block2:
-                    gen2["prompt"] = (p2 + "\n" + block2).strip()
-                else:
-                    gen2["prompt"] = p2
-                cfg["generate"] = gen2
     except Exception:  # noqa: BLE001
         pass
     return cfg

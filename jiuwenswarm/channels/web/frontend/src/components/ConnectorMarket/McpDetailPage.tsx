@@ -1,6 +1,6 @@
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Unlink2, Trash2, Wrench, Terminal, AlertCircle, Info, ExternalLink, Pencil } from 'lucide-react';
 // 2026-08-17：Trash2（原"卸载"按钮图标，按 source 分流 delete/disconnect）曾随彻底删除入口一起
@@ -115,6 +115,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const [authTarget, setAuthTarget] = useState<ConnectorConnectResponse | null>(null);
   const [confirmUnbind, setConfirmUnbind] = useState(false);
   const [busy, setBusy] = useState(false);
+  const confirmActionRef = useRef(false);
 
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
   const cardState = connector
@@ -198,11 +199,16 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   //   disconnected，下面 `installed && !linked` 那段断联 banner 会自动渲染出来，用户当场看到结果、
   //   直接重连、编辑，或者卸载（真删除，见 handleDelete）。
   async function handleUnbind() {
-    if (!linked || busy || installing || cardState === 'connecting') return;
+    if (confirmActionRef.current || !linked || busy || installing || cardState === 'connecting') return;
+    confirmActionRef.current = true;
     setBusy(true);
-    await disconnectAction(runtimeName);
-    setBusy(false);
-    setConfirmUnbind(false);
+    try {
+      await disconnectAction(runtimeName);
+    } finally {
+      confirmActionRef.current = false;
+      setBusy(false);
+      setConfirmUnbind(false);
+    }
     if (!isCustomize) {
       onBack();
     }
@@ -214,10 +220,17 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   // MCP 在 store 里已经被摘除（deleteConnector 内部处理），详情页不能再停留在一个不存在的实体
   // 上，必须 onBack。
   async function handleDelete() {
+    if (confirmActionRef.current) return;
+    confirmActionRef.current = true;
     setBusy(true);
-    const ok = isHub ? await uninstallPackage(connectorId) : await deleteConnectorAction(runtimeName);
-    setBusy(false);
-    setConfirmUnbind(false);
+    let ok = false;
+    try {
+      ok = isHub ? await uninstallPackage(connectorId) : await deleteConnectorAction(runtimeName);
+    } finally {
+      confirmActionRef.current = false;
+      setBusy(false);
+      setConfirmUnbind(false);
+    }
     if (ok) {
       onBack();
     }
@@ -384,6 +397,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
               isDeleteMode ? t('connectorMarket.confirmDeleteMcp.message') : t('connectorMarket.confirmUnbind.message')
             }
             confirmLabel={isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
+            busy={busy}
             onCancel={() => setConfirmUnbind(false)}
             onConfirm={isDeleteMode ? handleDelete : handleUnbind}
           />

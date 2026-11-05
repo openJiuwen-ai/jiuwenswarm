@@ -4,6 +4,7 @@ import { isDesignerPreviewGraph } from './designerBootstrapGraph';
 import { designerGraphClient } from './designerGraphClient';
 import { useDesignerStore } from './designerStore';
 import { derivePrimaryAction, type DesignerRunPrimaryAction } from './designerLayerRun';
+import { findDesignRunProblem } from './designModelsReadiness';
 import { isActiveDesignerRun, designerRunFailureMessage } from './designerRunView';
 import {
   DESIGNER_LEADER_NODE_ID,
@@ -38,7 +39,6 @@ type DesignerRunStore = {
   restart: (graph: DesignerExecutionGraph) => Promise<void>;
   cancel: (graph: DesignerExecutionGraph | null) => Promise<void>;
   patchNodeOutput: (nodeId: string, outputRef: AssetRef) => void;
-  chooseOutput: (nodeId: string, choice: 'original' | 'new') => Promise<void>;
   /** Local upload preview: mark node completed with the uploaded asset. */
   applyUploadedOutput: (nodeId: string, outputRef: AssetRef) => void;
   /** Clear upload-produced preview on a node. */
@@ -223,11 +223,23 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
-    await persistBeforeRun();
     const run = state.run?.graph_id === graph.graph_id ? state.run : null;
     const nodeStates = run ? state.nodeStates : {};
     const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
     const primary = primaryFrom(graph, nodeStates, currentLayerNodeIds, false);
+    // A generation slot the remaining nodes actually use being off or incomplete
+    // can only fail the round: report it on the canvas instead of dispatching
+    // (#5266). Continue / Retry skip completed nodes, so only the rest count.
+    const resumes = primary === 'continue' || primary === 'retry_failed';
+    const pending = resumes
+      ? graph.nodes.filter((node) => nodeStates[node.id]?.status !== DESIGNER_NODE_STATUS_COMPLETED)
+      : graph.nodes;
+    const problem = await findDesignRunProblem(pending, graph);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
+    await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
       let result;
@@ -261,6 +273,15 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   rerunNode: async (graph, nodeId) => {
     if (get().isRunning || !nodeId) return;
+    // No model, no run: regenerating an image / video node with its Settings
+    // slot off or incomplete can only fail, so report the same reason the
+    // landing page uses instead of dispatching a doomed job (#5266).
+    const node = graph.nodes.find((item) => item.id === nodeId);
+    const problem = await findDesignRunProblem([node], graph);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
@@ -282,6 +303,13 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   restart: async (graph) => {
     if (get().isRunning || graph.nodes.length === 0) return;
+    // Rerun workflow starts over from the first node, so it needs the same
+    // models a fresh run does (#5266).
+    const problem = await findDesignRunProblem(graph.nodes, graph);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
@@ -364,18 +392,6 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       run,
       nodeStates,
     });
-  },
-
-  chooseOutput: async (nodeId, choice) => {
-    const runId = get().run?.run_id;
-    if (!runId) return;
-    try {
-      const result = await designerGraphClient.chooseOutput({ runId, nodeId, choice });
-      get().applyRun(result.run);
-    } catch (error) {
-      set({ runError: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
   },
 }));
 

@@ -11,6 +11,28 @@ from os import _exit as exit_process
 import signal
 
 
+def _activate_managed_external_cli_paths() -> None:
+    """Expose managed external CLI SDK paths before runtime modules load.
+
+    The frozen app installs the optional external CLI SDKs (``claude_agent_sdk``,
+    ``openai_codex``) outside the bundle, and every process importing them must
+    append their site-packages directories to ``sys.path`` first. Agent turns,
+    including team members backed by those SDKs, execute in this process. The
+    call never raises, so an optional SDK problem cannot block worker startup.
+    """
+    try:
+        from jiuwenswarm.common.external_cli_runtime import (
+            activate_external_cli_runtime_paths,
+        )
+
+        activate_external_cli_runtime_paths()
+    except Exception:  # noqa: BLE001 - optional capability must not block startup
+        logging.getLogger(__name__).warning(
+            "Managed external CLI runtime activation failed at worker startup",
+            exc_info=True,
+        )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.common.background_logging import (
@@ -24,7 +46,7 @@ def main() -> None:
     enable_worker_diagnostics()
     parser = argparse.ArgumentParser(prog="jiuwenswarm-runtime-worker")
     parser.add_argument(
-        "--socket", required=True, help="Unix socket or named-pipe path."
+        "--socket", help="Unix socket or named-pipe path (resident mode)."
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18092)
@@ -35,11 +57,30 @@ def main() -> None:
     parser.add_argument("--stub-exit-on-request", action="store_true")
     parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    code_identity_value = None
-    if args.identity_from_parent:
-        from jiuwenswarm.server.supervisor.identity import read_launch_identity
+    from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 
-        code_identity_value = read_launch_identity()
+    mode = runtime_ipc_mode()
+    if mode == FRONT_LOOPBACK and not args.identity_from_parent:
+        parser.error("front_loopback requires a private parent launch payload")
+    if mode != FRONT_LOOPBACK and not args.socket:
+        parser.error("resident mode requires --socket")
+    code_identity_value = None
+    session_source = None
+    if args.identity_from_parent:
+        from jiuwenswarm.server.supervisor.identity import data_scope, read_launch_payload
+
+        payload = read_launch_payload()
+        code_identity_value = payload["code_identity"]
+        if mode == FRONT_LOOPBACK:
+            from jiuwenswarm.server.ipc.loopback import FrontConnectSessionSource, LoopbackParameters
+
+            session_source = FrontConnectSessionSource(
+                LoopbackParameters.from_payload(
+                    payload.pop("runtime_ipc", None), code_identity=code_identity_value, data_scope=data_scope(),
+                ),
+            )
+        elif payload.get("runtime_ipc") is not None:
+            parser.error("runtime IPC mode does not match the parent launch payload")
     if args.stub:
         from jiuwenswarm.server.worker.stub import StubExit, serve_stub
 
@@ -47,10 +88,11 @@ def main() -> None:
         try:
             asyncio.run(
                 serve_stub(
-                    args.socket,
+                    args.socket or "",
                     ready_delay=args.stub_ready_delay,
                     exit_on_request=args.stub_exit_on_request,
                     code_identity_value=code_identity_value,
+                    session_source=session_source,
                 )
             )
             exit_code = 0
@@ -61,12 +103,14 @@ def main() -> None:
                 exit_process(exit_code)
         return
 
+    _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port,
-                                       code_identity_value=code_identity_value))
+    task = loop.create_task(serve_worker(args.socket or "", host=args.host, port=args.port,
+                                       code_identity_value=code_identity_value,
+                                       session_source=session_source))
 
     def _stop() -> None:
         task.cancel()

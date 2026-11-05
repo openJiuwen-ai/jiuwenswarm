@@ -4,9 +4,47 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jiuwenswarm.runtime.cron.cron_expr import (
+    clamp_wake_offset_for_delay_seconds,
+    is_croniter_no_next_date,
+    iso_to_seven_field_cron,
     next_cron_datetime,
     validate_cron_expression,
 )
+
+
+@pytest.mark.parametrize(
+    ("at_iso", "timezone"),
+    [
+        ("2027-03-28T02:30:00", "Europe/Paris"),
+        ("2027-03-14T02:30:00", "America/New_York"),
+        ("2027-10-03T02:15:00", "Australia/Lord_Howe"),
+    ],
+)
+def test_one_shot_reminder_rejects_nonexistent_local_time(
+    at_iso: str,
+    timezone: str,
+) -> None:
+    with pytest.raises(ValueError, match="does not exist in timezone"):
+        iso_to_seven_field_cron(at_iso, timezone=timezone)
+
+
+@pytest.mark.parametrize(
+    ("at_iso", "timezone", "expected"),
+    [
+        ("2027-03-28T01:30:00", "Europe/Paris", "0 30 1 28 3 ? 2027"),
+        ("2027-03-28T03:30:00", "Europe/Paris", "0 30 3 28 3 ? 2027"),
+        ("2027-03-28T02:30:00", "Europe/Istanbul", "0 30 2 28 3 ? 2027"),
+        ("2027-03-28T01:30:00Z", "Europe/Paris", "0 30 3 28 3 ? 2027"),
+        ("2027-03-28T02:30:00+01:00", "Europe/Paris", "0 30 3 28 3 ? 2027"),
+        ("2027-10-31T02:30:00", "Europe/Paris", "0 30 2 31 10 ? 2027"),
+    ],
+)
+def test_one_shot_reminder_preserves_valid_time_conversion(
+    at_iso: str,
+    timezone: str,
+    expected: str,
+) -> None:
+    assert iso_to_seven_field_cron(at_iso, timezone=timezone) == expected
 
 
 @pytest.mark.parametrize(
@@ -30,6 +68,39 @@ def test_next_cron_datetime_preserves_seconds_for_seven_fields() -> None:
     assert next_cron_datetime("30 15 9 * * ? *", base) == datetime(
         2026, 9, 5, 9, 15, 30, tzinfo=timezone
     )
+
+
+@pytest.mark.parametrize(
+    ("wake", "delay", "expected"),
+    [
+        (300, 60, 60),
+        (300, 60.9, 60),
+        (300, 600, 300),
+        (10, 60, 10),
+        (0, 60, 0),
+        (None, 60, 0),
+        (None, 600, 0),
+        (-5, 60, 0),
+        (300, 1, 1),
+        (300, 0.5, 0),
+    ],
+)
+def test_clamp_wake_offset_for_delay_seconds(wake, delay, expected) -> None:
+    assert clamp_wake_offset_for_delay_seconds(wake, delay) == expected
+
+
+def test_clamp_wake_offset_invalid_wake_falls_back_to_default() -> None:
+    assert clamp_wake_offset_for_delay_seconds("bad", 60) == 0
+
+
+def test_clamp_wake_offset_non_positive_delay() -> None:
+    assert clamp_wake_offset_for_delay_seconds(300, 0) == 0
+    assert clamp_wake_offset_for_delay_seconds(300, -10) == 0
+
+
+def test_is_croniter_no_next_date_recognizes_exhausted_expression() -> None:
+    assert is_croniter_no_next_date(RuntimeError("failed to find next date"))
+    assert is_croniter_no_next_date(ValueError("other")) is False
 
 
 def test_next_cron_datetime_supports_far_future_fixed_year() -> None:
