@@ -108,10 +108,300 @@ _APPROVAL_REPLY_HINT = (
     "回复其他内容将视为拒绝，并把该内容作为反馈转达给智能体。"
 )
 
-_APPROVAL_REPLY_HINT = (
-    "请直接回复：同意（仅本次）/ 会话内允许 / 永久允许 / 拒绝。"
-    "回复其他内容将视为拒绝，并把该内容作为反馈转达给智能体。"
-)
+# ==================== AskUser 结构化选项卡（A2A artifact-update + data part） ====================
+# 出站：chat.ask_user_question → artifact-update 帧（final=false，任务等输入），
+# artifact.parts 挂 text part（人类可读正文）+ data part（commands/ToolExecute/
+# Invoke 指令：question_id/multi_select/options[].recommended/text_input，驱动端侧
+# 选项卡）。入站：端侧结构化应答 data part commands/ToolExecute/InvokeRsp
+# （question_id 对齐 + selected_options/custom_text + user_cancel），转成 interrupt
+# resume 的 snake_case answers；旧 askUserAnswer 形态（camelCase）保留兼容。
+_ASK_USER_COMMAND_NAMESPACE = "ToolExecute"
+_ASK_USER_COMMAND_NAME = "Invoke"
+_ASK_USER_ANSWER_COMMAND_NAME = "InvokeRsp"
+
+
+def _build_ask_user_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """chat.ask_user_question 事件载荷 → 出站 ToolExecute/Invoke 指令 payload。
+
+    出站契约：question_id 供端侧 InvokeRsp 原样带回对齐（answers 按
+    question_id 关联，不再依赖 question 文本）；multi_select/options[].label/
+    description/recommended 驱动选项卡渲染；text_input 显式声明自由文本输入
+    （替代旧"options 空数组 = 自由输入"约定）。label 原样下发，端侧回传时必须
+    原样返回（语义映射靠 interface.py 白名单精确命中）。options[].index 从 1
+    开始，保留给文本回退路径按序号匹配（用户直接回复"1"选中第一项）。
+    """
+    questions_out: list[dict[str, Any]] = []
+    questions = payload.get("questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    fallback_id = str(payload.get("request_id") or "").strip()
+    seen_ids: set[str] = set()
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        options_out: list[dict[str, Any]] = []
+        raw_options = q.get("options") or []
+        if not isinstance(raw_options, list):
+            raw_options = []
+        for idx, opt in enumerate(raw_options, start=1):
+            if not isinstance(opt, dict):
+                continue
+            label = str(opt.get("label") or "").strip()
+            if not label:
+                continue
+            # 序号 + label + recommended（推荐标记）：不带 description 小字说明
+            # （端侧渲染成选项下方小字，如 Other 的"Custom input"，用户不要）。
+            item: dict[str, Any] = {
+                "index": idx,
+                "label": label,
+            }
+            if opt.get("recommended"):
+                item["recommended"] = True
+            options_out.append(item)
+        question_out: dict[str, Any] = {
+            "question": str(q.get("question") or "").strip(),
+        }
+        # question_id：优先 tool_call_id（权限审批卡与工具调用关联），缺省用事件
+        # request_id；同 id 多问题（一次 ask_user 多问）加 #序号 消歧，保证
+        # InvokeRsp 回传对齐唯一。
+        question_id = (
+            str(q.get("tool_call_id") or "").strip()
+            or str(q.get("toolCallId") or "").strip()
+            or fallback_id
+        )
+        unique_id = question_id
+        dup = 1
+        while unique_id in seen_ids:
+            dup += 1
+            unique_id = f"{question_id}#{dup}"
+        seen_ids.add(unique_id)
+        question_out["question_id"] = unique_id
+        # 不下发 header（短标签）：端侧渲染成卡片副标题，PC 端卡片无此元素
+        # （只有问题文本 + 序号 + label + description），对齐 PC 端展示。
+        question_out["multi_select"] = bool(q.get("multi_select"))
+        if q.get("tool_call_id"):
+            question_out["tool_call_id"] = str(q.get("tool_call_id"))
+        if q.get("tool_name"):
+            question_out["tool_name"] = str(q.get("tool_name"))
+        if q.get("tool_args") is not None:
+            question_out["tool_args"] = q.get("tool_args")
+        question_out["options"] = options_out
+        # text_input：无选项 → 只能自由作答（required）；有选项 → 自由文本为
+        # 选填补充（agent-server 侧已追加 Other 选项，文本回退路径常驻；权限场景
+        # 自由文本只作拒绝理由，interface.py fail-closed，不会误授权）。
+        # placeholder 为端侧输入框占位文案。
+        question_out["text_input"] = {
+            "enabled": True,
+            "placeholder": "请输入内容" if not options_out else "也可输入其他内容",
+            "required": not options_out,
+        }
+        questions_out.append(question_out)
+
+    # payload 只发契约字段（source + questions）：不发 expiresAt 等契约外字段，
+    # 避免端侧严格 schema 校验失败；服务端待答表过期自管（_APPROVAL_EXPIRE_S）。
+    invoke_payload: dict[str, Any] = {
+        "ask_user_id": uuid.uuid4().hex[:16],
+        "source": str(payload.get("source") or "").strip() or "permission_interrupt",
+        "questions": questions_out,
+    }
+    return {
+        "header": {"namespace": _ASK_USER_COMMAND_NAMESPACE, "name": _ASK_USER_COMMAND_NAME},
+        "payload": invoke_payload,
+    }
+
+
+def _build_ask_user_prompt_text(source: str, questions: list) -> str:
+    """问题正文（text part）——只放模型要问的问题本身。
+
+    结构化选项卡（data part 的 ToolExecute/Invoke 指令）承载 header/选项
+    渲染与点选回传，text part 不再重复"想向您确认一个问题"标题、标签行、
+    可选项列表与回复约定话术（端侧弹卡后这些内容在气泡里重复且生硬）。
+    多问题逐行拼接。source 参数保留兼容既有调用点，正文不再区分来源。
+    """
+    del source
+    lines = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        question = str(q.get("question") or "").strip()
+        if question:
+            lines.append(question)
+    return "\n".join(lines)
+
+
+def _parse_ask_user_answer_part(data: dict[str, Any]) -> dict[str, Any] | None:
+    """入站 data part → 结构化应答；无 AskUser 应答返回 None。
+
+    三种形态：
+    ① ToolExecute/InvokeRsp 指令（端侧结构化应答契约）：commands[].payload
+       {user_cancel, responder_device_id, answers[{question_id, selected_options,
+       custom_text}]}。帧内不带 source（由待答复登记表回填），question_id 在
+       路由层经 XiaoyiChannel._attach_ask_user_answer_context 还原为 question
+       文本；responder_device_id 为抢答设备标识（多端同步场景），
+       透传进 resume 供审计/UI 展示"由指定设备完成选择"。
+    ② 旧 askUserAnswer 形态（camelCase，兼容已发端侧）：{source, answers[]}。
+    ③ E2A 风格 resume 载荷（对齐桌面端 chat.send 应答参数，snake_case）：
+       data 顶层 {request_id?, source?, answers[{question, selected_options,
+       custom_input}]}，question 文本对齐——端侧可直接复用桌面端报文结构，
+       放 A2A message/stream 的 data part 发给云端。
+
+    answers 出站给 interrupt resume 前还需经
+    XiaoyiChannel._build_answer_from_ask_user 白名单校验（权限类中断 fail-closed）。
+    """
+    if not isinstance(data, dict):
+        return None
+
+    commands = data.get("commands")
+    if isinstance(commands, list):
+        for command in commands:
+            if not isinstance(command, dict):
+                continue
+            header = command.get("header")
+            if not isinstance(header, dict):
+                continue
+            if (
+                str(header.get("namespace") or "").strip() != _ASK_USER_COMMAND_NAMESPACE
+                or str(header.get("name") or "").strip() != _ASK_USER_ANSWER_COMMAND_NAME
+            ):
+                continue
+            rsp = command.get("payload")
+            if not isinstance(rsp, dict):
+                return None
+            user_cancel = bool(rsp.get("user_cancel"))
+            responder_device_id = str(rsp.get("responder_device_id") or "").strip()
+            answers: list[dict[str, Any]] = []
+            for a in rsp.get("answers") or []:
+                if not isinstance(a, dict):
+                    continue
+                selected = a.get("selected_options")
+                if isinstance(selected, str):
+                    selected = [selected]
+                if not isinstance(selected, list):
+                    selected = []
+                cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
+                answers.append({
+                    "question_id": str(a.get("question_id") or "").strip(),
+                    "question": str(a.get("question") or "").strip(),
+                    "selected_options": cleaned,
+                    "custom_input": str(a.get("custom_text") or "").strip(),
+                })
+            if not answers and not user_cancel:
+                return None
+            # follow_frame_task：新契约 InvokeRsp 帧信封 params.id 即端侧带回的
+            # task_id，resume/回执跟随该任务链路（见 _route_approval_reply）。
+            return {
+                "source": "",
+                "user_cancel": user_cancel,
+                "responder_device_id": responder_device_id,
+                "answers": answers,
+                "follow_frame_task": True,
+            }
+
+    # ③ E2A 风格 resume 载荷：data 顶层 answers（snake_case）+ request_id/source
+    # 标识（对齐桌面端 chat.send 应答参数，question 文本对齐）。端侧可直接复用
+    # 桌面端报文结构放 A2A message/stream 的 data part 发给云端。variables 等
+    # 其他 data part 无顶层 answers 键，不会误判。
+    raw_answers = data.get("answers")
+    if isinstance(raw_answers, list) and (
+        str(data.get("request_id") or "").strip()
+        or str(data.get("source") or "").strip()
+    ):
+        answers: list[dict[str, Any]] = []
+        for a in raw_answers:
+            if not isinstance(a, dict):
+                continue
+            selected = a.get("selected_options")
+            if isinstance(selected, str):
+                selected = [selected]
+            if not isinstance(selected, list):
+                selected = []
+            cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
+            answers.append({
+                "question": str(a.get("question") or "").strip(),
+                "selected_options": cleaned,
+                "custom_input": str(a.get("custom_input") or "").strip(),
+            })
+        if answers:
+            return {
+                "source": str(data.get("source") or "").strip(),
+                "user_cancel": False,
+                "answers": answers,
+            }
+        return None
+
+    answer = data.get("askUserAnswer")
+    if not isinstance(answer, dict):
+        return None
+    source = str(answer.get("source") or "").strip()
+    raw_answers = answer.get("answers")
+    if not isinstance(raw_answers, list):
+        return None
+    answers = []
+    for a in raw_answers:
+        if not isinstance(a, dict):
+            continue
+        selected = a.get("selectedOptions")
+        if isinstance(selected, str):
+            selected = [selected]
+        if not isinstance(selected, list):
+            selected = []
+        cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
+        answers.append({
+            "question": str(a.get("question") or "").strip(),
+            "selected_options": cleaned,
+            "custom_input": str(a.get("customInput") or "").strip(),
+        })
+    if not source or not answers:
+        return None
+    return {"source": source, "user_cancel": False, "answers": answers}
+
+
+def _parse_invoke_rsp_agent_event(message: dict[str, Any]) -> dict[str, Any] | None:
+    """AgentEvent/InvokeRsp 事件（云端多端同步回传形态）→ 结构化应答。
+
+    云端把端侧 InvokeRsp 以 AgentEvent 通道回传（挂 content.events 等帧内
+    任意位置，与 PermissionReply 同通道），payload 与 InvokeRsp 指令同构：
+    {user_cancel, source?, answers[{question_id, selected_options, custom_text}]}。
+    question_id 对齐（不带 question 文本），路由层经待答表映射还原。
+    """
+    from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.self_evolution import (
+        find_agent_event,
+    )
+
+    event = find_agent_event(message, "InvokeRsp")
+    if not isinstance(event, dict):
+        return None
+    rsp = event.get("payload")
+    if not isinstance(rsp, dict):
+        return None
+    user_cancel = bool(rsp.get("user_cancel"))
+    source = str(rsp.get("source") or "").strip()
+    answers: list[dict[str, Any]] = []
+    for a in rsp.get("answers") or []:
+        if not isinstance(a, dict):
+            continue
+        selected = a.get("selected_options")
+        if isinstance(selected, str):
+            selected = [selected]
+        if not isinstance(selected, list):
+            selected = []
+        cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
+        answers.append({
+            "question_id": str(a.get("question_id") or "").strip(),
+            "question": str(a.get("question") or "").strip(),
+            "selected_options": cleaned,
+            "custom_input": str(a.get("custom_text") or "").strip(),
+        })
+    if not answers and not user_cancel:
+        return None
+    # 同形态新契约回传：帧带回的 task_id 优先（follow_frame_task 标记，
+    # 与 ToolExecute/InvokeRsp 指令形态一致；帧缺 params.id 时自然回退待答表）。
+    return {
+        "source": source,
+        "user_cancel": user_cancel,
+        "answers": answers,
+        "follow_frame_task": True,
+    }
 
 
 def _normalize_approval_text(text: str) -> str:
@@ -2751,6 +3041,7 @@ class XiaoyiChannel(BaseChannel):
         """处理 message/stream 消息，转换为 JiuwenSwarm Message."""
         # V2: 区分两层 sessionId —— 顶层 sessionId 是物理回发地址（临时），
         # conversationId / params.sessionId 是逻辑会话（跨请求稳定）。
+        logger.info("message/stream---->", message)
         top_session_id = message.get("sessionId", "") or ""
         conversation_id = (
                 message.get("conversationId")
@@ -3025,6 +3316,14 @@ class XiaoyiChannel(BaseChannel):
                     responder_device_id = str(
                         ask_user_answer.get("responder_device_id") or ""
                     ).strip()
+                    # 新契约 InvokeRsp（ToolExecute 指令 / 云端 AgentEvent 回传）
+                    # 帧信封 params.id 即端侧带回的 task_id：resume 跟随该任务
+                    # 链路；缺失或旧形态（无标记）回退待答表登记的原任务 id。
+                    reply_task_id = (
+                        str(task_id or "").strip()
+                        if ask_user_answer.get("follow_frame_task")
+                        else ""
+                    )
                     logger.info(
                         f"XiaoYi: askUserAnswer 结构化应答 session={logical_session} "
                         f"request_id={pending.get('request_id')} answer={answer} "
@@ -3042,6 +3341,7 @@ class XiaoyiChannel(BaseChannel):
                         push_id=push_id,
                         answers=resume_answers,
                         responder_device_id=responder_device_id,
+                        reply_task_id=reply_task_id,
                     )
                     return
                 logger.warning(
@@ -3350,13 +3650,42 @@ class XiaoyiChannel(BaseChannel):
         agent_id: str,
         device_id: str,
         push_id: str,
+        answers: list[dict[str, Any]] | None = None,
+        responder_device_id: str = "",
+        reply_task_id: str = "",
     ) -> None:
         """把审批回复转成 chat.send interrupt-resume 路由给 AgentServer（恢复挂起的运行）。
 
-        resume 的 xiaoyi_task_id 沿用原任务 id：续跑流式输出回到手机端同一任务气泡。
+        resume 的任务寻址：``reply_task_id``（应答帧带回的 task_id，新契约
+        InvokeRsp 形态）非空时优先——续跑流式输出与回执跟随应答帧返回的
+        任务链路；缺失或旧形态回退待答表登记的原任务 id（手机端同一任务气泡）。
+        ``answers`` 显式传入完整答案列表（多问题 ask_user 场景逐条透传），缺省
+        按单答案 ``[answer]`` 兼容既有调用点。``responder_device_id`` 为抢答设备
+        标识（多端抢答场景），随 params 透传供审计/UI 展示"由指定设备完成选择"。
         """
-        task_id = str(pending.get("task_id") or "")
-        params = {
+        pending_task_id = str(pending.get("task_id") or "")
+        task_id = str(reply_task_id or "").strip() or pending_task_id
+        if task_id != pending_task_id:
+            logger.info(
+                "XiaoYi: 应答帧带回 task_id=%s（待答表登记=%s），resume 跟随应答帧"
+                "任务链路 session=%s request_id=%s",
+                task_id,
+                pending_task_id,
+                logical_session,
+                pending.get("request_id"),
+            )
+        # resume 轮视为会话当前活跃任务。跟随应答帧 task_id 时该 id 未曾在用户
+        # 消息路径登记（正常路径见 _handle_message_stream 的
+        # _mark_session_active/_remember_active_platform_task，resume 在应答桥
+        # 提前 return 不经过那里），漏登记会让续跑流收尾的
+        # processing_status(is_processing=false) 被 _is_session_active 误判跳过，
+        # completed+final=true 终帧发不出去，手机端任务气泡永远等不到收尾
+        # （表现为"回答后卡住"，直到下一轮消息顶替取消或手动取消才关闭）。
+        if task_id:
+            self._mark_session_active(session_id, task_id)
+            self._remember_active_platform_task(session_id, task_id)
+            self._session_task_map[task_id] = session_id
+        params: dict[str, Any] = {
             "query": "",
             "task_id": task_id,
             "session_id": logical_session,  # 对齐 Web 端 resume 载荷（useWebSocket chat.send）

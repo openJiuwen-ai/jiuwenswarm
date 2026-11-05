@@ -983,6 +983,66 @@ async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
         ]
         # responder_device_id 透传进 resume（审计/UI"由指定设备完成选择"）
         assert m.params["responder_device_id"] == "dev_abc123"
+        # 新契约 InvokeRsp：帧信封带回 task_id（task-9）优先于待答表登记
+        # （task-2），resume/续跑流/回执跟随应答帧返回的任务链路
+        assert m.params["task_id"] == "task-9"
+        assert m.metadata["xiaoyi_task_id"] == "task-9"
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+        # resume 轮登记为会话活跃任务（跟随的 task_id 未曾在用户消息路径
+        # 登记过）：续跑流收尾的 processing_status(false) 才能通过
+        # _is_session_active 检查，completed+final=true 终帧正常下发
+        assert ("conv-1", "task-9") in ch._active_tasks
+        assert ch._latest_platform_tasks.get("conv-1") == "task-9"
+        assert ch._session_task_map.get("task-9") == "conv-1"
+
+        # 续跑流收尾：processing_status(is_processing=false) 须放行并下发
+        # completed+final=true 终帧（漏登记时被 _is_session_active 误跳过，
+        # 手机气泡永远等不到收尾，表现为"回答后卡住"）
+        proc = type("M", (), {})()
+        proc.event_type = EventType.CHAT_PROCESSING_STATUS
+        proc.payload = {"is_processing": False}
+        proc.metadata = {
+            "xiaoyi_session_id": "conv-1",
+            "xiaoyi_task_id": "task-9",
+            "xiaoyi_conversation_id": "conv-1",
+        }
+        proc.session_id = "conv-1"
+        proc.id = "task-9"
+        await ch._send_legacy(proc)
+        inner = json.loads(sent[-1]["msgDetail"])
+        assert inner["result"]["kind"] == "status-update"
+        assert inner["result"]["status"]["state"] == "completed"
+        assert inner["result"]["final"] is True
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_invoke_rsp_task_id_fallback_to_pending(cfg_file):
+    """InvokeRsp 帧未带回 task_id（params.id 空）→ 回退待答表登记 task_id。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-911",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["选一个方向？"],
+            "question_ids": {"call_def": "选一个方向？"},
+        }
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [{
+                "question_id": "call_def",
+                "selected_options": ["方向A"],
+                "custom_text": None,
+            }],
+        }, task=""))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-911"
+        assert m.params["task_id"] == "task-2"
+        assert m.metadata["xiaoyi_task_id"] == "task-2"
         assert "conv-1" not in ch._pending_approvals  # 已消费
     finally:
         _cleanup_tasks(ch)
@@ -1170,6 +1230,8 @@ async def test_ask_user_invoke_rsp_agent_event_routes_resume(cfg_file):
         m = captured[-1]
         assert m.params["request_id"] == "req-940"
         assert m.params["source"] == "ask_user_interrupt"
+        # 云端回传帧无 params.id（task_id 空）→ 回退待答表登记 task_id
+        assert m.params["task_id"] == "task-2"
         # question_id 经待答表映射还原为 question 文本，多问题逐条透传
         assert m.params["answers"] == [
             {
