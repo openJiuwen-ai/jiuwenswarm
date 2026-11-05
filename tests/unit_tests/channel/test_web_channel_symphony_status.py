@@ -199,6 +199,7 @@ async def test_web_channel_preserves_symphony_status_payload():
                     "content": "Symphony status",
                     "status": "in_progress",
                     "session_id": "sess-1",
+                    "request_id": "req-1",
                 },
             }
         ]

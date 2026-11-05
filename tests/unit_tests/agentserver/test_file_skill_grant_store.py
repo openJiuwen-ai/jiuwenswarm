@@ -78,7 +78,9 @@ def test_full_grant_active_state_and_adapter_eviction(stores, manifest):
     set_skill_grant_store(b)
     skill_active_state.clear_session_skill_state("session", local_only=True)
     assert skill_active_state.get_session_active_skill("session") == manifest.skill_name
-    assert set(vars(a)) == {"sessions_root", "data_root"}
+    # The weak listener registry is required by the SDK store contract and is
+    # not a grant/active-state cache.
+    assert set(vars(a)) == {"sessions_root", "data_root", "_permission_listeners"}
     assert not hasattr(skill_active_state, "_sessions")
 
 
@@ -358,7 +360,10 @@ def test_corruption_never_serves_old_authorization(
         replacement = tmp_path / "forged"
         replacement.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
         path.unlink()
-        path.symlink_to(replacement)
+        try:
+            path.symlink_to(replacement)
+        except OSError:
+            pytest.skip("symlink creation requires privilege on this platform")
     assert b.get_active("session", "main") is None
     assert b.get_active_skill_state("session") is None
 
@@ -438,7 +443,10 @@ def test_portable_path_based_atomic_io(tmp_path):
     _atomic_json(tmp_path, "state.json", {"value": "会话"})
     assert _read_json(tmp_path, "state.json")[0] == {"value": "会话"}
     linked = tmp_path / "link.json"
-    linked.symlink_to(tmp_path / "state.json")
+    try:
+        linked.symlink_to(tmp_path / "state.json")
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     with pytest.raises(ValueError):
         _read_json(tmp_path, "link.json")
 

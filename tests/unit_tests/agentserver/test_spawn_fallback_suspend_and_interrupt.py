@@ -120,7 +120,7 @@ def test_suspend_includes_flash_permission_rail() -> None:
     rail = FlashPermissionRail({"enabled": True, "tools": {"cron_flash": "ask"}})
     subagent = _FakeSubagent([rail])
 
-    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+    restore = _suspend_subagent_permission_rails(subagent)
 
     assert rail.engine_config["enabled"] is False
     assert rail.engine_config["tools"] == {"cron_flash": "ask"}

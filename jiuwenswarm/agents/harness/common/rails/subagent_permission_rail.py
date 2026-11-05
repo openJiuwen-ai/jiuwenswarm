@@ -326,7 +326,9 @@ class SubagentPermissionRail(ConfirmInterruptRail):
 
             bind_session_file_context(session_id, self._sessions_root)
         read_execution = getattr(
-            self._grant_store, "get_active_skill_execution_for_permission", self._grant_store.get_active_skill_execution,
+            self._grant_store,
+            "get_active_skill_execution_for_permission",
+            self._grant_store.get_active_skill_execution,
         )
         active_skill_name = read_execution(
             session_id,

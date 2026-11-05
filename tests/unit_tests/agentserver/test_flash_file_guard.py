@@ -30,7 +30,12 @@ async def test_mixed_batch_no_read_before_all_resources_approved(
     target = b
     if symlink:
         target = allowed / "link.txt"
-        target.symlink_to(b)
+        try:
+            target.symlink_to(b)
+        except OSError:
+            # Creating symlinks needs privilege on Windows; the rejection
+            # semantics are covered where symlinks are creatable.
+            pytest.skip("symlink creation requires privilege on this platform")
     config = (
         {"external_directory": {"*": "deny"}}
         if legacy

@@ -16,7 +16,7 @@ from dataclasses import asdict
 from functools import wraps
 from pathlib import Path
 from typing import Any
-from weakref import WeakValueDictionary
+from weakref import WeakSet, WeakValueDictionary
 
 import portalocker
 from openjiuwen.core.runner.callback.errors import AbortError
@@ -83,6 +83,9 @@ class _TransactionStore(SkillGrantStore):
             (sid, scope) for scope in doc.get("invalidated", [])
         }
         self._retired_sessions = set()
+        # Base ``notify_permission_listeners`` requires the weak registry even
+        # for this disposable snapshot; transaction listeners are local-only.
+        self._permission_listeners: WeakSet = WeakSet()
         self.generation = generation
         for scope, records in doc.get("grants", {}).items():
             if not isinstance(scope, str) or not isinstance(records, list):
@@ -298,6 +301,9 @@ class FileSkillGrantStore(SkillGrantStore):
         sessions_root: Callable[[], Path] | None = None,
         data_root: Callable[[], Path] | None = None,
     ) -> None:
+        # Files stay authoritative (no grant/execution caches), but the base
+        # class still owns the weak listener registry and its mutation hook.
+        self._permission_listeners: WeakSet = WeakSet()
         self.sessions_root = sessions_root or _session_files_root
         self.data_root = data_root or get_user_workspace_dir
 

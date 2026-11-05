@@ -7,6 +7,7 @@ import json
 import logging
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.runner import Runner
@@ -356,9 +357,48 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             json.dumps(self._static_config, sort_keys=True, default=str).encode()
         ).hexdigest()
 
-    def _persist_allow_always(self, normalized_name, tool_args):
+    def _collect_file_guard_persist_accesses(
+        self, normalized_name, tool_args, permissions_cfg
+    ):
+        """Return ``(path, action)`` asks for one projected operation.
+
+        agent-core removed this helper from ``PermissionInterruptRail``; Flash
+        still needs per-operation collection because the main permission result
+        only covers the normalized tool, not its projected operations.
+        """
+        from openjiuwen.harness.security.file_guard import build_file_guard_checker
+
+        if self._host.resolve_workspace_dir is None:
+            return []
+        try:
+            workspace = self._host.resolve_workspace_dir()
+        except Exception:
+            logger.debug(
+                "Flash persist_allow external workspace resolve failed",
+                exc_info=True,
+            )
+            return []
+        runtime = self._registered_config().get("runtime")
+        raw_dirs = runtime.get("trusted_dirs") if isinstance(runtime, dict) else None
+        trusted_dirs = [Path(d) for d in raw_dirs] if isinstance(raw_dirs, list) else []
+        try:
+            checker = build_file_guard_checker(
+                permissions_cfg,
+                workspace_root=workspace,
+                trusted_dirs=trusted_dirs,
+            )
+            if checker is None:
+                return []
+            return list(checker.collect_ask_accesses(normalized_name, tool_args))
+        except Exception:
+            logger.warning("Flash persist_allow file_guard check failed", exc_info=True)
+            return []
+
+    def _persist_allow_always(self, normalized_name, tool_args, ask_accesses=None):
         if not is_projected(normalized_name, tool_args):
-            return super()._persist_allow_always(normalized_name, tool_args)
+            return super()._persist_allow_always(
+                normalized_name, tool_args, ask_accesses
+            )
         snapshot = (
             self._host.get_permissions_snapshot()
             if self._host.get_permissions_snapshot

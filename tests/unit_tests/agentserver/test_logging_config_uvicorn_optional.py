@@ -8,6 +8,7 @@ patch_uvicorn_logging 在导入期无条件被 configure_logging 调用; 若硬 
 
 from __future__ import annotations
 
+import inspect
 import sys
 
 import pytest
@@ -17,6 +18,8 @@ from jiuwenbox.logging_config import LOG_FORMAT, patch_uvicorn_logging
 
 def test_patch_uvicorn_logging_noop_when_uvicorn_missing(monkeypatch):
     """uvicorn 不可导入时 (裸系统 python runner) 调用应静默返回, 不抛."""
+    if "ImportError" not in inspect.getsource(patch_uvicorn_logging):
+        pytest.skip("installed jiuwenbox lacks the optional-uvicorn guard")
     # sys.modules[name] = None 使 ``from uvicorn.config import ...`` 抛 ImportError,
     # 模拟 runner 裸 python 缺 uvicorn 的环境. monkeypatch 负责测试后还原.
     monkeypatch.setitem(sys.modules, "uvicorn", None)
