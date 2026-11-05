@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+import tomllib
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name

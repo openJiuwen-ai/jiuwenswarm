@@ -8,8 +8,8 @@ import runpy
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+import tomllib
 
 import pytest
 from packaging.requirements import Requirement
@@ -150,7 +150,18 @@ def test_sdk_overrides_and_lock_preserve_opt_in_extras_on_one_revision():
     swarm = next(package for package in lock["package"] if package["name"] == "workswarm")
     overrides = [Requirement(raw) for raw in config["tool"]["uv"]["override-dependencies"]]
     sdk_overrides = [requirement for requirement in overrides if requirement.name == "openjiuwen"]
-    assert len({requirement.url for requirement in sdk_overrides}) == 1
+    source = config["tool"]["uv"]["sources"]["openjiuwen"]
+    expected_url = f"git+{source['git']}@{source['rev']}"
+    assert {requirement.url for requirement in sdk_overrides} == {expected_url}
+    declarations = config["project"]["dependencies"] + config["project"]["optional-dependencies"]["harmony"]
+    for declaration in declarations:
+        requirement = Requirement(declaration)
+        if requirement.name == "openjiuwen":
+            assert requirement.url == expected_url
+    expected_lock_url = f"{source['git']}?rev={source['rev']}"
+    assert sdk["source"]["git"] == f"{expected_lock_url}#{source['rev']}"
+    lock_overrides = [item for item in lock["manifest"]["overrides"] if item["name"] == "openjiuwen"]
+    assert {item["git"] for item in lock_overrides} == {expected_lock_url}
     for extra, expected in {
         "claude": {"claude"}, "codex": {"codex"}, "cua": {"cua"}, "distribute": {"postgres", "zmq"},
     }.items():
