@@ -110,7 +110,7 @@ async function renderWorkspace(colleagueOverrides = {}, initialWebConversations 
       selectedColleagueId: colleague.id,
       chat,
       connectionEpoch,
-      modelCatalog: { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' },
+      modelCatalog: state.modelCatalog ?? { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' },
         { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' }], defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek' },
       onSaveModel: async (agentId, modelId) => {
         calls.push(['save-model', agentId, modelId]);
@@ -391,4 +391,52 @@ test('a newly created employee has a visible conversation before sending any mes
   } finally {
     await page.close();
   }
+});
+
+
+test('the employee chat model picker does not present a deleted model or default as its selection', async () => {
+  const page = await renderWorkspace({
+    capabilities: { ...colleague.capabilities, model: 'removed#9' },
+    hasUnpublishedModelChanges: true,
+  });
+  try {
+    const picker = page.container.querySelector('[data-testid="jiuwenmate-composer-model"]');
+    assert.doesNotMatch(picker.textContent, /removed#9|DeepSeek|Kimi/);
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-model-pending"]'), null);
+    await act(async () => picker.click());
+    assert.equal(window.document.querySelector('[data-testid="jiuwenmate-composer-model-option"][data-variant="removed#9"]'), null);
+    assert.equal(window.document.querySelector('[data-testid="jiuwenmate-composer-model-option"][aria-current="true"]'), null);
+  } finally { await page.close(); }
+});
+
+
+test('deleting the last real model disables sending, preserves the draft and recovers after configuration', async () => {
+  const page = await renderWorkspace();
+  try {
+    await page.send('删除模型前的消息');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 1);
+    page.state.modelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
+    await page.reconnect();
+    await page.send('删除模型后的草稿');
+    const input = page.container.querySelector('[data-testid="jiuwenmate-composer-input"]');
+    assert.equal(input.value, '删除模型后的草稿');
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-send"]').disabled, true);
+    await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 1);
+    assert.match(page.container.textContent, /请先在「设置 → 模型」中配置可用模型/);
+    page.state.modelCatalog = undefined;
+    await page.reconnect();
+    assert.equal(input.value, '删除模型后的草稿');
+    await page.send('删除模型后的草稿');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 2);
+  } finally { await page.close(); }
+});
+
+test('a deleted employee model cannot send through another models catalog', async () => {
+  const page = await renderWorkspace({ capabilities: { ...colleague.capabilities, model: 'removed#9' } });
+  try {
+    await page.send('保留草稿');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-input"]').value, '保留草稿');
+  } finally { await page.close(); }
 });
