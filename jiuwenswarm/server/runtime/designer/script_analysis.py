@@ -1078,10 +1078,11 @@ _CAST_SINGLE_RE = re.compile(
 _CAST_PLURAL_PERSON_RE = re.compile(
     r"(?i)\b(?:adults|men|women|children|kids|people|folks|residents|citizens"
     r"|commuters|shoppers|students|runners|joggers|players|guests|fans|tourists"
-    r"|passers-by|pedestrians|workers|villagers|monks|soldiers|dancers|musicians"
-    r"|singers|pilgrims|worshippers|vendors|teens|teenagers|colleagues"
-    r"|elders|seniors|athletes|exercisers|swimmers|cyclists|volunteers"
-    r"|performers|members)\b"
+    r"|passers-?by|bystanders|onlookers|spectators|pedestrians|workers"
+    r"|villagers|monks|soldiers|dancers|musicians|singers|pilgrims|worshippers"
+    r"|vendors|teens|teenagers|colleagues|visitors|travellers|travelers"
+    r"|neighbours|neighbors|strangers|relatives|elders|seniors|athletes"
+    r"|exercisers|swimmers|cyclists|volunteers|performers|members)\b"
 )
 
 # Collectives that are groups by definition, in either authoring language.
