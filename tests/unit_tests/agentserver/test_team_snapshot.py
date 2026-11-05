@@ -71,6 +71,7 @@ async def _invoke(
     db_snapshot: dict[str, Any] | None,
     active_team_name: str | None = "team-sess-1",
     metadata_team_name: str | None = None,
+    requested_team_name: str | None = None,
 ):
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.server import agent_ws_server
@@ -78,6 +79,8 @@ async def _invoke(
     ws = _FakeWS()
     lock = asyncio.Lock()
     request = _make_request()
+    if requested_team_name:
+        request.params["team_name"] = requested_team_name
     team_manager = _FakeTeamManager(monitor, active_team_name=active_team_name)
     db_calls: list[tuple[str, str]] = []
 
@@ -192,3 +195,93 @@ async def test_empty_live_keeps_live_when_db_also_empty() -> None:
     assert db_calls == [("sess-1", "team-sess-1")]
     assert resp.payload["members"][0]["member_id"] == "w1"
     assert resp.payload["tasks"] == []
+
+
+@pytest.mark.anyio
+async def test_db_running_rows_do_not_claim_live_execution() -> None:
+    """After worker replacement, persisted busy members are not live proof."""
+    db = {
+        "members": [{"member_id": "w1", "status": "busy", "execution_status": "running"}],
+        "tasks": [{"task_id": "t1", "status": "in_progress"}],
+        "team_id": "team-sess-1",
+    }
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    with mock.patch.object(GLOBAL_RUNNER, "get_agent_team_monitor", new=mock.AsyncMock(return_value=None)):
+        resp, _ = await _invoke(monitor=None, db_snapshot=db)
+    assert resp.payload["members_source"] == "db"
+    assert resp.payload["members_live"] is False
+    assert resp.payload["runtime_available"] is False
+    assert resp.payload["recovery_required"] is True
+    assert resp.payload["members"] == db["members"]
+
+
+@pytest.mark.anyio
+async def test_db_fallback_does_not_require_recovery_of_a_live_runtime() -> None:
+    live = {"members": [], "tasks": [], "team_id": "team-sess-1"}
+    db = {"members": [], "tasks": [{"task_id": "t1", "status": "pending"}], "team_id": "team-sess-1"}
+    resp, _ = await _invoke(monitor=_FakeMonitorHandler(live), db_snapshot=db)
+    assert resp.payload["members_source"] == "db"
+    assert resp.payload["runtime_available"] is True
+    assert resp.payload["members_live"] is False
+    assert resp.payload["recovery_required"] is False
+
+
+@pytest.mark.anyio
+async def test_runtime_probe_error_is_unknown_not_stopped() -> None:
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    with mock.patch.object(GLOBAL_RUNNER, "get_agent_team_monitor", new=mock.AsyncMock(side_effect=OSError("offline"))):
+        resp, _ = await _invoke(monitor=None, db_snapshot={
+            "members": [], "tasks": [{"task_id": "t1", "status": "pending"}], "team_id": "team-sess-1",
+        })
+    assert resp.payload["runtime_available"] is None
+    assert resp.payload["recovery_required"] is None
+
+
+@pytest.mark.anyio
+async def test_other_teams_live_monitor_cannot_prove_requested_runtime_alive() -> None:
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    live = {"members": [], "tasks": [], "team_id": "team-other"}
+    db = {
+        "members": [{"member_id": "old-worker", "status": "busy"}],
+        "tasks": [{"task_id": "unfinished", "status": "pending"}],
+        "team_id": "requested-team",
+    }
+    probe = mock.AsyncMock(return_value=None)
+    with mock.patch.object(GLOBAL_RUNNER, "get_agent_team_monitor", new=probe):
+        resp, calls = await _invoke(
+            monitor=_FakeMonitorHandler(live),
+            db_snapshot=db,
+            active_team_name="team-other",
+            requested_team_name="requested-team",
+        )
+    probe.assert_awaited_once_with(team_name="requested-team", session_id="sess-1")
+    assert calls == [("sess-1", "requested-team")]
+    assert resp.payload["team_id"] == "requested-team"
+    assert resp.payload["runtime_available"] is False
+    assert resp.payload["recovery_required"] is True
+
+
+@pytest.mark.anyio
+async def test_completed_historical_board_does_not_require_recovery() -> None:
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    with mock.patch.object(GLOBAL_RUNNER, "get_agent_team_monitor", new=mock.AsyncMock(return_value=None)):
+        resp, _ = await _invoke(monitor=None, db_snapshot={
+            "members": [], "tasks": [{"task_id": "done", "status": "completed"}], "team_id": "team-sess-1",
+        })
+    assert resp.payload["runtime_available"] is False
+    assert resp.payload["members_live"] is False
+    assert resp.payload["recovery_required"] is False
+
+
+@pytest.mark.anyio
+async def test_missing_database_board_does_not_claim_no_recovery_needed() -> None:
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    with mock.patch.object(GLOBAL_RUNNER, "get_agent_team_monitor", new=mock.AsyncMock(return_value=None)):
+        resp, _ = await _invoke(monitor=None, db_snapshot=None)
+    assert resp.payload["runtime_available"] is False
+    assert resp.payload["recovery_required"] is None

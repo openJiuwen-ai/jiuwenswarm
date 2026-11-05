@@ -413,6 +413,7 @@ class TraceSinkStats:
     evicted_provisional: int = 0
     dropped_final: int = 0
     stale_ignored: int = 0
+    dropped_frames: int = 0
 
 
 def _normalize_text(value: str | None, *, lowercase: bool = False) -> str | None:
