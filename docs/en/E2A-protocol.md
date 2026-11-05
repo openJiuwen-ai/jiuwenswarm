@@ -32,6 +32,20 @@ MoA configuration. A successful response contains `configured` and, when ready,
 AgentServer client is absent or not ready, the Gateway returns
 `SERVICE_UNAVAILABLE` instead of evaluating configuration in its own directory.
 
+### WebSocket recovery
+
+After an unexpected disconnect, the Gateway WebSocket client retains its target
+URI and authentication headers. `server_ready=false` describes the current
+transport; it does not prevent a subsequent request from reconnecting. The unary
+proxy, including `fetch_agent_unary`, allows a configured client to reconnect
+before sending. Concurrent requests wait for the same reconnect handshake.
+Connection failures and request timeouts return the existing errors, and later
+requests can retry. A request timeout during the handshake closes the partial
+connection. Explicit `disconnect()` clears the reconnect configuration.
+Business requests already sent are never replayed automatically, avoiding side
+effects such as duplicate session creation. This is Gateway transport behavior;
+it changes neither the E2A wire protocol nor Agent Runtime readiness semantics.
+
 ---
 
 ## 2. Pitfall: two meanings of `method` (required reading)

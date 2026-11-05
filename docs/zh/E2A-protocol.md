@@ -30,6 +30,16 @@
 `aggregator_model_name` 和 `aggregator_alias`，不包含凭据。AgentServer 客户端
 缺失或尚未就绪时，Gateway 返回 `SERVICE_UNAVAILABLE`，不在自身目录中回退执行配置检查。
 
+### WebSocket 断线恢复
+
+Gateway 的 WebSocket 客户端在异常断线后保留目标 URI 与鉴权头。
+`server_ready=false` 表示当前传输未就绪，不代表后续请求不能尝试重连：
+统一 unary 代理（包括 `fetch_agent_unary`）允许已配置的客户端在发送前按需重连。
+并发请求等待同一次重连握手；重连失败或请求超时后返回既有错误，下一次请求仍可重试。
+握手被请求超时取消时关闭未完成的连接。显式 `disconnect()` 清除重连配置。
+已经发出的业务请求不会自动重放，避免重复创建会话等副作用。
+这属于 Gateway 传输行为，不改变 E2A 线协议或 Agent Runtime 的就绪语义。
+
 ---
 
 ## 2. 易混点：`method` 的两种含义（必读）
