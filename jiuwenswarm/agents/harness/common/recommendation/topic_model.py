@@ -139,8 +139,9 @@ def background_configuration_status(
         in {"1", "true", "yes", "on", "enabled"}
         for name in ("ddg", "bing")
     }
-    # The search lane itself needs no setting: unset selects the native free-search lane. The
-    # toggles below are the user-facing search switches, on the settings page.
+    # Informational only: free-search toggles do not block topic recommendation.
+    # Unset still selects the native lane; missing engines just mean web-search
+    # grounding may fail at call time while hot-list and presets keep working.
     search_missing = [] if any(engines.values()) else [
         "FREE_SEARCH_DDG_ENABLED=true OR FREE_SEARCH_BING_ENABLED=true"
     ]
@@ -153,8 +154,7 @@ def background_configuration_status(
         "native_search": engines,
         "native_search_missing": search_missing,
         "status": ("missing_configuration" if missing else "invalid_configuration"
-                   if config is None else "native_search_unconfigured"
-                   if search_missing else "ready"),
+                   if config is None else "ready"),
         "last_failure": None,
     }
 

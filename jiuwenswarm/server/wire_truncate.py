@@ -128,6 +128,10 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     # Cold-start marker: the list row is what the tree renders first after a
     # session reopen, and the buttons key their greying on it.
     "recovered",
+    # Run attribution (None = no team context): the executor badge renders
+    # from the list row on a cold reopen — the same cold-start argument as
+    # "recovered"; the detail view shares these keep keys.
+    "executor",
 )
 
 

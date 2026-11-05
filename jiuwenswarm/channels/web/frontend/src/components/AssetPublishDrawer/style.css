@@ -11,6 +11,27 @@
   line-height: 20px;
 }
 
+.asset-publish-pack-members {
+  margin-block: 16px;
+  padding: 16px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+}
+
+.asset-publish-pack-members ul {
+  list-style: none;
+  padding: 0;
+}
+
+.asset-publish-pack-members li {
+  padding-block: 10px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.asset-publish-pack-members li:last-child {
+  border-bottom: 0;
+}
+
 .asset-publish-drawer button:not([data-testid='asset-publish-close']) {
   padding: 0 16px;
   min-height: 32px;

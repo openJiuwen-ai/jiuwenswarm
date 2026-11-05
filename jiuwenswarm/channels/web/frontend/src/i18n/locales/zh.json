@@ -1785,7 +1785,7 @@
       "nextStep": "帮我把一个想法变成可执行的下一步。"
     },
     "topicStarter": {
-      "statusMissingConfiguration": "话题推荐模型未配置完整，请前往常规设置检查。",
+      "statusMissingConfiguration": "话题推荐暂不可用，请前往设置检查。",
       "recommendedForYou": "为你推荐",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",
@@ -1797,17 +1797,16 @@
       "hotListListedAt": "上榜 {{time}}",
       "viewHotListEntry": "看看这条热搜：{{source}}",
       "hotListEntry": "热搜",
-      "openNewsSearch": "打开相关新闻",
-      "searchRelatedNews": "看看相关新闻",
+      "openNewsSearch": "打开热搜话题",
+      "searchRelatedNews": "打开热搜",
       "statusPreparing": "正在准备话题，你也可以直接开始聊。",
-      "statusPreparingWithCards": "正在换一批更贴你的话题，这些还可以先点。",
-      "statusUpdateIncomplete": "新话题还没就绪，先用这些也行。",
-      "statusNeedsSettings": "想让话题更懂你，可以去设置-常规里打开。",
-      "statusNoCards": "这会儿没有合适的话题，直接打字开始也行。",
-      "providerRefusal": "个性化这边暂时接不上，细节在设置里。",
+      "statusPreparingWithCards": "正在准备话题，你也可以直接开始聊。",
+      "statusUpdateIncomplete": "正在准备话题，你也可以直接开始聊。",
+      "statusNeedsSettings": "话题推荐暂不可用，请前往设置检查。",
+      "statusNoCards": "正在准备话题，你也可以直接开始聊。",
+      "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
-      "disabledHint": "想让话题更懂你，可以去设置-常规里打开。",
-      "retryPreparation": "再试试"
+      "disabledHintWithCards": "下面是预置话题。打开设置里的话题推荐后，会逐步换成更贴你的话题。"
     },
     "promptSuggestionBox": {
       "label": "下一步：",
@@ -3225,6 +3224,18 @@
       "builtin": "内置技能",
       "local": "本地",
       "skillPack": "技能包"
+    },
+    "mySkillsKindTabs": {
+      "skill": "技能",
+      "team": "团队技能",
+      "multimodal": "多模态",
+      "packs": "技能包"
+    },
+    "mySkillsKindEmpty": {
+      "skill": "暂无技能",
+      "team": "暂无团队技能",
+      "multimodal": "暂无多模态技能",
+      "packs": "暂无技能包"
     },
     "noPrebuiltSkills": "暂无预置技能",
     "noUserSkills": "暂无用户自装技能",
@@ -5589,7 +5600,10 @@
     "sectionError": "错误",
     "charUnit": "字符",
     "clickToViewDetail": "点击查看详情",
-    "runIdTooltip": "运行 ID：{{id}}"
+    "runIdTooltip": "运行 ID：{{id}}",
+    "executorTooltip": "当前由 {{name}} 执行",
+    "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
+    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
   },
   "a4pSettings": {
     "title": "A4P 预授权",

@@ -69,7 +69,9 @@ files:
   缺失或空值按 false 返回；读取 `.env` 的已保存值优先于前端服务的旧环境，启动默认值不得覆盖已有 true。
 - 两个免费开关的修改均走 search reload scope，沿用既有全局搜索重载通知。
   存量 MCP AbilityManager 根据任意免费来源启用状态添加或移除 `mcp_free_search`，付费工具继续按 API key 独立判断。
-- 推荐状态按 DDG/Bing 任意一种开启判断；支持 duckduckgo、duckduckgo-jina、bing 回执，不要求两个开关同时开启。
+- 推荐的搜索能力按 DDG/Bing 任意一种开启判断；支持 duckduckgo、duckduckgo-jina、bing 回执，不要求两个开关同时开启。
+  两者均关闭不阻止推荐服务创建、预置话题或热榜展示；`native_search_missing` 仅提示搜索配置缺失，
+  不覆盖模型配置状态。实际搜索仍遵循 SDK 开关，不能绕过禁用来源或记录成功回执。
 - 已移除 360 的配置读写、工具分支和推荐回执。旧 `.env` 的 `FREE_SEARCH_360_ENABLED` 不再生效，
   不会单独注册免费工具或开启推荐搜索；SDK 显式 `provider=360` 返回不支持，不偷偷切换引擎。
 - 原生推荐的直接搜索不隐式创建模型，保留 SDK 候选的 `unavailable` / `uncertain` 字段与原因；

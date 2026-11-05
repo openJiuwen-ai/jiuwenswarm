@@ -160,16 +160,38 @@ def test_recommendation_accepts_any_one_free_engine(flag, value):
 
 
 @pytest.mark.parametrize("env", [{}, {REMOVED_FLAG: "true"}])
-def test_recommendation_stays_unconfigured_without_free_engine(env):
-    from jiuwenswarm.agents.harness.common.recommendation.topic_model import background_configuration_status
-    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
-        OpenJiuwenNativeSearchContractError, selected_topic_search_provider_id,
+def test_recommendation_lane_stays_ready_without_free_engine(env):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig, background_configuration_status,
     )
-    with pytest.raises(OpenJiuwenNativeSearchContractError, match="requires_free_engines"):
-        selected_topic_search_provider_id(environ=env)
-    status = background_configuration_status(None, environ=env)
-    assert status["native_search_missing"]
+    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+        selected_topic_search_provider_id,
+    )
+    assert selected_topic_search_provider_id(environ=env) == "openjiuwen-native-free-search"
+    config = ArkBackgroundConfig(api_key="test", model="test", context_window_tokens=131072)
+    status = background_configuration_status(config, environ=env)
+    assert status["status"] == "ready"
+    assert status["native_search_missing"] == [
+        "FREE_SEARCH_DDG_ENABLED=true OR FREE_SEARCH_BING_ENABLED=true",
+    ]
+    assert not any(status["native_search"].values())
     assert "360" not in status["native_search"]
+
+
+@pytest.mark.asyncio
+async def test_recommendation_without_free_engine_does_not_send_search_requests(search_settings, monkeypatch):
+    from openjiuwen.harness.tools.web import _http
+    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+        OpenJiuwenNativeSearchProviderError, build_openjiuwen_native_search,
+    )
+
+    runner = AsyncMock(side_effect=AssertionError("disabled source dispatched"))
+    monkeypatch.setattr(_http, "request", runner)
+    search = build_openjiuwen_native_search()
+    with pytest.raises(OpenJiuwenNativeSearchProviderError):
+        await search("Python", 3, 10)
+    runner.assert_not_awaited()
+    assert search.invocation_receipts == []
 
 
 @pytest.mark.parametrize("engine", ["duckduckgo", "duckduckgo-jina", "bing"])

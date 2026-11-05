@@ -420,7 +420,7 @@ export function MediaModelConfigDialog({
     ),
   });
 
-  if (modality !== 'topic') formItems.push({
+  formItems.push({
     name: 'context_window_tokens',
     label: t('settingsPanel.models.contextWindow'),
     component: 'custom',

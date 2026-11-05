@@ -37,6 +37,7 @@ body:
         - channel-企业微信
         - channel-WharsApp
         - 自演进
+        - 安全
         - 未知
     validations:
       required: true

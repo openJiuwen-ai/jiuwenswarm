@@ -212,10 +212,13 @@ def _prepare_worker_configuration() -> None:
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         migrate_legacy_recommendation_switches,
         migrate_recommendation_consent_state,
+        repair_missing_consent_boundary,
     )
 
     migrate_legacy_recommendation_switches()
     migrate_recommendation_consent_state()
+    # Heal enabled-without-boundary left by an enable path that skipped the freeze hook.
+    repair_missing_consent_boundary()
     _log_preparation_stage("model_migrations", began)
 
 
