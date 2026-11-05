@@ -212,7 +212,6 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     };
   }, [state]);
 
-  const portalHost = triggerRef.current?.closest('dialog') ?? document.body;
   const tooltip = state
     ? createPortal(
         <div
@@ -232,7 +231,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         >
           {state.text}
         </div>,
-        containerRef?.current ?? portalHost,
+        containerRef?.current ?? triggerRef.current?.closest('dialog') ?? document.body,
       )
     : null;
 

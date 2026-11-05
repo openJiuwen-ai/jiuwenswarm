@@ -222,6 +222,8 @@ import {
   useTrajectoryDiagnosisEnabled,
 } from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
+import { parseConfigBoolean } from './features/settings/services/settingsContract';
+import { setTaskAsrEnabled } from './features/taskAsr/featureFlag';
 import { setComfyuiWorkflowEnabled } from './features/designer/comfyuiFeatureConfig';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
@@ -2196,6 +2198,7 @@ function AppContent({
       );
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setComfyuiWorkflowEnabled(config.comfyui_workflow_enabled);
+      setTaskAsrEnabled(parseConfigBoolean(config.task_asr_enabled));
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
         config.multi_model_collaboration_enabled,
