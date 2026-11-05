@@ -1331,6 +1331,10 @@ permissions:
   # 包内命令 builtin 规则开关；缺键时引擎默认开启。必须出现在模板里，
   # 用户 override 的 false 才会在 merge 后保留（模板无键会丢掉用户独有键）。
   package_builtin_rules: true
+  # 宿主守卫：拦杀运行时进程、严格 worktree 等。默认开；用户可改 enabled: false。
+  # 必须出现在模板里，否则用户 override 的 false 会在 merge 后被丢掉。
+  host_guard:
+    enabled: true
   # 结构底线应对；缺键时引擎五键均按 ask。必须出现在模板里，
   # 用户 override（如 compound_chain: allow）才会在 merge 后保留。
   guard_actions:

@@ -3,8 +3,9 @@
 """Apply jiuwenswarm shell safety rules to openjiuwen BashTool / PowerShellTool.
 
 The agent's primary shell tool is ``bash`` (openjiuwen ``BashTool``), not
-``mcp_exec_command``.  Safety checks in ``command_tools`` only affect the latter
-unless we hook the harness tools here.
+``mcp_exec_command``. Local checks here cover destructive patterns and TUI
+spawn budget. HostGuard (kill host / worktree) runs in the permission rail
+via ``permissions.host_guard``.
 """
 
 from __future__ import annotations
@@ -22,16 +23,12 @@ def _pre_execute_shell_command(command: str) -> str | None:
 
     from jiuwenswarm.agents.harness.common.tools.command_tools import (
         _check_command_safety,
-        _check_worktree_path_safety,
         _enforce_tui_spawn_budget,
     )
 
     blocked = _check_command_safety(command)
     if blocked:
         return f"[ERROR]: command rejected for safety ({blocked})."
-    worktree_block = _check_worktree_path_safety(command)
-    if worktree_block:
-        return f"[ERROR]: {worktree_block}"
     spawn_block = _enforce_tui_spawn_budget(command, resolve_shell_session_id() or "")
     if spawn_block:
         return f"[ERROR]: {spawn_block}"
