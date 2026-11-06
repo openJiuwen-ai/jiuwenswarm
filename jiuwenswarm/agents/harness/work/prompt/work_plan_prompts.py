@@ -214,6 +214,11 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "fetch_webpage",
     "web_fetch",
     "web_fetch_webpage",
+    # 经验检索（TTSE rail 的提示词要求动手前先 consult 取回经验再规划；
+    # 只读无业务副作用）。不放行会在 plan 态制造"提示词点名要求调用、
+    # 模型 schema 却看不见该工具"的矛盾——模型转而用 bash 探测命令并
+    # 循环检索，最终触发 RAS 无进展断路器中断轮次（issue 5223 复跑实证）。
+    "ttse_consult",
 )
 
 
