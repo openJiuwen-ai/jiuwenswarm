@@ -7,7 +7,7 @@
 flowchart TB
   subgraph install [1. 安装与落盘]
     Hub["SwarmSkills Hub / 本地导入"]
-    Disk["物理库 get_agent_skills_dir()"]
+    Disk["物理库 primary_team_skill_library_dir()"]
     Hub --> Disk
   end
 
@@ -44,7 +44,7 @@ flowchart TB
 
 | 角色 | 路径 |
 |------|------|
-| 物理库 | `get_agent_skills_dir()` |
+| 物理库 | `primary_team_skill_library_dir()`（Ace SHARED 取末项；纯 Web 仍为 workspace skills） |
 | 可见性 | `skills-visibility.json`；无团 Swarm：**空 allow**，不写 `allow=[swarm]` |
 | 选团 | `team.session.bind` **只认** `team_name`（无 dynamic entry） |
 | 解绑 | `team.runtime.dissolve`；先无技 auto-bind 后再选 Swarm 须先解绑 |

@@ -12,6 +12,7 @@ Swarm detection: frontmatter ``kind: swarm-skill`` or alias ``kind: team-skill``
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -41,11 +42,19 @@ _MULTIMEDIA_SUFFIXES = frozenset(
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _ARCHIVE_DIRNAME = ".archive"
 
-# Process-level caches keyed by (resolved skill_dir, SKILL.md mtime_ns).
-# Chat hot paths classify many ordinary skills per message; avoid re-reading
-# SKILL.md and re-walking large packages on every turn.
-_frontmatter_kind_cache: dict[tuple[str, int], str] = {}
-_multimedia_cache: dict[tuple[str, int], bool] = {}
+# Bounded LRU caches: chat hot paths classify many skills per message; avoid
+# unbounded growth across skill version churn in long-lived processes.
+_CACHE_MAX = 512
+_frontmatter_kind_cache: OrderedDict[tuple[str, int], str] = OrderedDict()
+# Key includes skill-dir mtime so adding media without editing SKILL.md invalidates.
+_multimedia_cache: OrderedDict[tuple[str, int, int], bool] = OrderedDict()
+
+
+def _cache_put(cache: OrderedDict, key: tuple, value: Any) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _CACHE_MAX:
+        cache.popitem(last=False)
 
 
 def is_swarm_kind(kind: Any) -> bool:
@@ -125,6 +134,7 @@ def read_frontmatter_kind(skill_dir: Path | None) -> str:
 
     cache_key = _skill_md_cache_key(skill_dir, skill_md)
     if cache_key is not None and cache_key in _frontmatter_kind_cache:
+        _frontmatter_kind_cache.move_to_end(cache_key)
         return _frontmatter_kind_cache[cache_key]
 
     try:
@@ -134,7 +144,7 @@ def read_frontmatter_kind(skill_dir: Path | None) -> str:
 
     kind = _parse_frontmatter_kind(text)
     if cache_key is not None:
-        _frontmatter_kind_cache[cache_key] = kind
+        _cache_put(_frontmatter_kind_cache, cache_key, kind)
     return kind
 
 
@@ -164,10 +174,6 @@ def _parse_frontmatter_kind(text: str) -> str:
     return ""
 
 
-def _frontmatter_kind_is_swarm(skill_dir: Path) -> bool:
-    return read_frontmatter_kind(skill_dir) in SWARM_KINDS
-
-
 def _has_multimedia_asset(skill_dir: Path) -> bool:
     skill_md = None
     for name in ("SKILL.md", "skill.md", "Skill.md"):
@@ -175,14 +181,9 @@ def _has_multimedia_asset(skill_dir: Path) -> bool:
         if candidate.is_file():
             skill_md = candidate
             break
-    cache_key = _skill_md_cache_key(skill_dir, skill_md) if skill_md is not None else None
-    # Fall back to directory mtime when SKILL.md is missing (rare).
-    if cache_key is None:
-        try:
-            cache_key = (str(skill_dir.resolve()), int(skill_dir.stat().st_mtime_ns))
-        except OSError:
-            cache_key = None
+    cache_key = _multimedia_cache_key(skill_dir, skill_md)
     if cache_key is not None and cache_key in _multimedia_cache:
+        _multimedia_cache.move_to_end(cache_key)
         return _multimedia_cache[cache_key]
 
     found = False
@@ -196,13 +197,26 @@ def _has_multimedia_asset(skill_dir: Path) -> bool:
             found = True
             break
     if cache_key is not None:
-        _multimedia_cache[cache_key] = found
+        _cache_put(_multimedia_cache, cache_key, found)
     return found
 
 
 def _skill_md_cache_key(skill_dir: Path, skill_md: Path) -> tuple[str, int] | None:
     try:
         return (str(skill_dir.resolve()), int(skill_md.stat().st_mtime_ns))
+    except OSError:
+        return None
+
+
+def _multimedia_cache_key(
+    skill_dir: Path, skill_md: Path | None
+) -> tuple[str, int, int] | None:
+    """Include directory mtime so media added without SKILL.md edits invalidate."""
+    try:
+        resolved = str(skill_dir.resolve())
+        dir_mtime = int(skill_dir.stat().st_mtime_ns)
+        md_mtime = int(skill_md.stat().st_mtime_ns) if skill_md is not None else 0
+        return (resolved, md_mtime, dir_mtime)
     except OSError:
         return None
 

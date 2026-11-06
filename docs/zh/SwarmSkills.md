@@ -906,7 +906,7 @@ A: 默认地址为 `https://swarmskills.openjiuwen.com`，可通过环境变量 
 
 | 项 | 现状 |
 |----|------|
-| 共享库 | Hub / 本地安装仍落 `get_agent_skills_dir()`；bootstrap 调用 `configure_global_skills_dir` 钉死扫描根（**复用路径，非 Hub 大改**） |
+| 共享库 | Hub / 本地安装与团队 pin 对齐 `primary_team_skill_library_dir()`；bootstrap 调用 `configure_global_skills_dir` 钉死扫描根（**复用路径，非 Hub 大改**） |
 | 同轨 | Leader / Teammate 均挂 `core.team.skill_use`（`TeamSkillUseRail`），折叠掉遗留 `SkillUseRail` |
 | 可见性 | 已含 `skills-visibility.json`；**空 allow = 全库可见**。无团 Swarm：`chat.send` → session_generated 建班并清空 `agents.*.skills`，**跳过** live 模板 reconcile，避免白名单写回 |
 | soft-link | `MemberSkillToolkit` 仍并存（路 1 允许双源；人工冒烟时留意列表/提示是否重复） |

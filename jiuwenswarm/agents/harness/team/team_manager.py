@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
-from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
@@ -78,7 +77,6 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     TeamWorkspaceInfo,
     build_member_rails,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     get_session_team_template_snapshot,
@@ -998,14 +996,23 @@ class TeamManager:
         # skills=[] — must not rehydrate whitelist from live preset.
         # runtime_config 已在上方解析（仅当 team_name 真值时定义）。
         if team_name and template_id and isinstance(template_snapshot, dict):
-            from jiuwenswarm.server.runtime.swarm_skill_session import (
-                should_skip_live_template_reconcile,
-            )
             from jiuwenswarm.server.runtime.team_snapshot_refresh import (
                 reconcile_session_team_snapshot,
             )
 
-            if should_skip_live_template_reconcile(metadata):
+            # Optional: session-web adds should_skip_live_template_reconcile.
+            # Soft-import so visibility-only builds never ModuleNotFoundError.
+            skip_reconcile = False
+            try:
+                from jiuwenswarm.server.runtime.swarm_skill_session import (
+                    should_skip_live_template_reconcile,
+                )
+            except ImportError:
+                should_skip_live_template_reconcile = None  # type: ignore[assignment]
+            if callable(should_skip_live_template_reconcile):
+                skip_reconcile = bool(should_skip_live_template_reconcile(metadata))
+
+            if skip_reconcile:
                 logger.debug(
                     "[TeamManager] skip live template reconcile for "
                     "session-generated team: session_id=%s team=%s",

@@ -9,7 +9,11 @@ only a ``skills-visibility.json`` document at their workspace root.
 
 from __future__ import annotations
 
-from openjiuwen.agent_teams.paths import SKILL_VISIBILITY_FILENAME
+try:
+    from openjiuwen.agent_teams.paths import SKILL_VISIBILITY_FILENAME
+except ImportError:  # older agent-core without visibility paths API
+    SKILL_VISIBILITY_FILENAME = "skills-visibility.json"
+
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail

@@ -4213,13 +4213,16 @@ def _read_skill_view_names(view_dir: Path) -> set[str]:
 
 
 def _remove_skill_view_entry(entry: Path, library: Path) -> bool:
-    """Remove one legacy view entry, never a real directory the user owns.
+    """Remove one legacy view entry, never content the user owns.
 
-    Only three shapes are removable: a POSIX symlink (``unlink``), a Windows
-    junction / reparse point (``os.rmdir`` removes the link, not its target), and
-    a sandbox fallback copy that still matches the library byte for byte. Any
-    other real directory is a Skill somebody put there by hand and is kept —
-    this judgement is the whole reason the legacy remover refused to ``rmtree``.
+    Removable shapes:
+    * POSIX symlink (``unlink``)
+    * Windows junction / reparse point (``os.rmdir`` removes the link)
+    * sandbox fallback copy that still matches the library byte for byte
+    * known scaffold marker files (``.workspace``) left by empty view dirs
+
+    Any other real directory or ordinary file is kept — user-authored notes
+    and packages must survive migration.
 
     Args:
         entry: Entry inside a legacy view directory.
@@ -4237,8 +4240,16 @@ def _remove_skill_view_entry(entry: Path, library: Path) -> bool:
             os.rmdir(entry)
             return True
         if entry.is_file():
-            entry.unlink()
-            return True
+            # Only delete known workspace scaffold markers, never arbitrary
+            # user files (README / notes / leftover schema dumps).
+            if entry.name in {".workspace"}:
+                entry.unlink()
+                return True
+            logger.warning(
+                "[SkillViewMigration] kept user-owned file in legacy view: %s",
+                entry,
+            )
+            return False
         if entry.is_dir() and _is_library_replica(entry, library):
             shutil.rmtree(entry)
             return True
@@ -4255,7 +4266,7 @@ def _seed_visibility_from_view(
     entity_id: str,
     view_names: set[str],
     library_names: set[str],
-) -> None:
+) -> bool:
     """Seed a workspace visibility document from its legacy view directory.
 
     The seed is written at ``AUTHORITY_MIGRATION``, which ranks above the
@@ -4279,17 +4290,43 @@ def _seed_visibility_from_view(
     that residual case so migration does not invent a deny-all contract the
     visibility schema does not yet express.
 
+    If the view still lists skills but the library name set is empty, the scan
+    failed or the wrong library root was used — skip seeding so we never confuse
+    "library unresolved" with "every historical grant was removed".
+
     Args:
         metadata_path: Target ``skills-visibility.json`` path.
         scope: ``member`` or ``team``.
         entity_id: Member name or team name.
         view_names: Skill names the legacy view exposed.
         library_names: Skill names currently in the shared library.
+
+    Returns:
+        True when a visibility document was written (or already present at a
+        higher authority); False when seeding was skipped.
     """
     from openjiuwen.agent_teams.skill.visibility import AUTHORITY_MIGRATION, bootstrap_skill_visibility
 
+    if view_names and not library_names:
+        logger.warning(
+            "[SkillViewMigration] skip seed for %s/%s: view has %d name(s) but "
+            "library name set is empty (unresolved library); leaving legacy view",
+            scope,
+            entity_id,
+            len(view_names),
+        )
+        return False
+
     granted = view_names & library_names
     allow: list[str] = sorted(granted) if granted else []
+    if view_names and not granted:
+        logger.info(
+            "[SkillViewMigration] %s/%s: view names %s intersect library empty; "
+            "seeding allow=[] (inherit whole library)",
+            scope,
+            entity_id,
+            sorted(view_names),
+        )
     try:
         bootstrap_skill_visibility(
             metadata_path,
@@ -4301,6 +4338,8 @@ def _seed_visibility_from_view(
         )
     except OSError as exc:
         logger.warning("[SkillViewMigration] failed to seed %s: %s", metadata_path, exc)
+        return False
+    return True
 
 
 def _remove_empty_skill_view(view_dir: Path, library: Path) -> None:
@@ -4371,7 +4410,12 @@ def _migrate_one_skill_view(
         _remove_empty_skill_view(view_dir, library)
         return 0
 
-    _seed_visibility_from_view(metadata_path, scope, entity_id, view_names, library_names)
+    if not _seed_visibility_from_view(
+        metadata_path, scope, entity_id, view_names, library_names
+    ):
+        # Do not delete the legacy view when seeding was skipped (e.g. empty
+        # library scan): retry on a later startup once the library is ready.
+        return 0
 
     kept = 0
     try:
@@ -4420,12 +4464,17 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
 
     Args:
         library_dir: The single Skill library. Defaults to
-            :func:`get_agent_skills_dir`.
+            :func:`primary_team_skill_library_dir` (same pin as
+            :func:`configure_skill_library`, including Ace SHARED tips).
 
     Returns:
         Number of workspaces that still carried a legacy view directory.
     """
-    library = Path(library_dir) if library_dir is not None else get_agent_skills_dir()
+    library = (
+        Path(library_dir)
+        if library_dir is not None
+        else primary_team_skill_library_dir()
+    )
     try:
         from openjiuwen.agent_teams.paths import (
             get_agent_teams_home,

@@ -1287,8 +1287,10 @@ class JiuWenSwarm:
                 ),
             )
         try:
-            configure_skill_library()
-            migrate_team_skill_views()
+            library = configure_skill_library()
+            # Pass the same pin configure_skill_library just set so Ace SHARED
+            # roots are not re-resolved via get_agent_skills_dir().
+            migrate_team_skill_views(library_dir=library)
         except Exception as exc:
             logger.warning("[JiuWenSwarm] skill library preparation failed: %s", exc)
         self._session_manager = SessionManager()
