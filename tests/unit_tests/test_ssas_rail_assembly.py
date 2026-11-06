@@ -395,5 +395,7 @@ async def test_double_checked_lock_race_loser_closed_in_background(
     with m._SSAS_INIT_TASKS_LOCK:
         assert len(m._SSAS_CLOSE_TASKS) == 0
         m._SSAS_BACKEND_CACHE.pop(key, None)
+    # 清理: 仅收尾测试注入缓存的 winner(production 从不关闭赢家);
+    # loser 已由 production 双检锁落败分支后台关闭, 上方已通过
+    # _SSAS_CLOSE_TASKS 收口断言锁定该契约, 不再重复 close
     await state["winner"].close()
-    await state["loser"].close()

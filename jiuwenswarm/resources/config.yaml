@@ -1065,7 +1065,14 @@ execution_guard:
 
 # AgentSSAS 安全态势感知系统配置
 ssas:
-  # 总开关. 关闭后不注册 AgentSSASSecurityRail
+  # 总开关. 关闭后不注册 AgentSSASSecurityRail. 基础模板面向单机默认部署
+  # (单进程常驻), 默认开启安全感知; 若同机多进程并发运行(如 web 与 CLI
+  # 同时常驻)且未隔离 ssas_home, 多进程将解析到同一 ssas_core.db 并发写入
+  # (留空时按 SSAS_HOME -> JIUWENSWARM_DATA_DIR -> JIUWENSWARM_HOME ->
+  # ~/.jiuwenswarm 顺序自动解析), 可能触发 SQLite 文件锁冲突、安全事件
+  # 混库——该场景请为各进程显式配置不同 ssas_home(或按进程设置 SSAS_HOME
+  # 环境变量)隔离数据目录, 或切换 mode=http 指向同一 AgentSSAS HTTP 服务
+  # 集中统一感知(分布式 leader/teammate 模板因该冲突默认关闭, 详见模板注释)
   enabled: true
   # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
   mode: inprocess
