@@ -8601,15 +8601,21 @@ class JiuWenSwarmDeepAdapter:
         if self._permission_rail is not None:
             current_key = getattr(self._permission_rail, "permission_key", None)
             if getattr(self._permission_rail, "routing_key", current_key) != wanted_key:
-                # Adapter identity is fixed for the rail lifetime; never silently
-                # drop the old rail (would leak the old manager key without uninit).
-                logger.error(
-                    "[JiuWenSwarmDeepAdapter] _permission_rail key mismatch "
-                    "current=%s wanted=%s; keep existing rail (no rebuild)",
+                # Pooled adapters can serve different routing identities over
+                # their lifetime. Rebuild instead of failing the whole request,
+                # releasing the old manager registration first so it is not
+                # leaked.
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] _permission_rail key changed "
+                    "current=%s wanted=%s; rebuilding",
                     current_key,
                     wanted_key,
                 )
-                raise ValueError("Permission rail routing identity changed")
+                release = getattr(self._permission_rail, "_release_registration", None)
+                if callable(release):
+                    release()
+                self._permission_rail = None
+        if self._permission_rail is not None:
             self._sync_permission_workspace(self._permission_rail)
             self._permission_rail.update_config(permission_config)
             logger.info(
