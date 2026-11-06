@@ -65,6 +65,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
+    _await_ssas_init_tasks,
     _deep_agent_context_engine_config_for_model,
     _deep_agent_kv_cache_affinity_config,
     parse_int,
@@ -1176,6 +1177,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._instance.deep_config.tool_owner_id = tool_owner_id
         self._instance.ability_manager.set_owner_id(tool_owner_id)
         self._code_spec_rails = list(self._instance.configured_rails())
+        # AgentSSAS backend 初始化 Task 收口: spec 构建期间派发的初始化 Task
+        # 在 rail 生效前统一等待完成(异常已由 done callback 告警, fail-open)
+        await _await_ssas_init_tasks()
         # Reloads never sync a caller-supplied Spec's tools, so the multimodal
         # config refresh must not track and rewrite them either.
         self._set_multimodal_runtime_state(
@@ -1896,6 +1900,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
+            _RailBuildInfo(
+                "_ssas_rail",
+                self._build_ssas_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo(
                 "_session_messaging_route_rail",
