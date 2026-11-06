@@ -38,20 +38,6 @@ gateway_check_jiuwenswarm_home() {
     return 0
 }
 
-gateway_resolve_host() {
-    local master_host="${DEPLOY_VARS["MASTER_NODE_IP"]:-}"
-    if [ -z "${master_host}" ]; then
-        if [ -n "${DEPLOY_VARS["CLUSTER_HOSTS"]:-}" ]; then
-            IFS=',' read -ra _gw_host_list <<< "${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-            master_host="${_gw_host_list[0]}"
-        else
-            master_host=$(get_local_ip)
-            info "MASTER_NODE_IP not set, defaulting to local: ${master_host}" >&2
-        fi
-    fi
-    echo "${master_host}"
-}
-
 gateway_compute_extension_dirs() {
     if [ -n "${DEPLOY_VARS["EXTENSION_DIRS"]:-}" ]; then
         info "EXTENSION_DIRS already set: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
@@ -59,7 +45,7 @@ gateway_compute_extension_dirs() {
     fi
 
     local master_host
-    master_host=$(gateway_resolve_host)
+    master_host=$(get_local_ip)   # gateway 在本机（ingress master）运行，EXTENSION_DIRS 取本机 jiuwenswarm 安装位置
     local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
 
     local jiuwenswarm_location
@@ -89,8 +75,15 @@ gateway_gen_config() {
 }
 
 gateway_deploy_process() {
+    # gateway 跟随 ingress_virtual_ip：仅在本机持有 VIP 时部署/启动 gateway，否则跳过。
+    # 不依赖 master_nodes / CLUSTER_HOSTS[0]（可能有多个 master_nodes，且其 IP 与 VIP 不同）。
+    if ! /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1; then
+        warning "Local host does not hold ingress vip, skip gateway deploy process."
+        return 0
+    fi
+
     local master_host
-    master_host=$(gateway_resolve_host)
+    master_host=$(get_local_ip)   # 本机即 ingress master，gateway 部署在本机
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
 
     info "Deploying gateway in process mode on ${master_host}..."
@@ -144,8 +137,14 @@ gateway_deploy_process() {
 }
 
 gateway_undeploy_process() {
+    # 与 up 对称：gateway 跟随 ingress_virtual_ip，仅在本机持有 VIP 时停止本机 gateway。
+    if ! /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1; then
+        warning "Local host does not hold ingress vip, skip stopping jiuwenswarm-gateway."
+        return 0
+    fi
+
     local master_host
-    master_host=$(gateway_resolve_host)
+    master_host=$(get_local_ip)
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
 
     info "Stopping gateway on ${master_host}..."

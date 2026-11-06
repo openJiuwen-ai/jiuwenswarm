@@ -50,6 +50,7 @@ def _rail(**overrides: int) -> CircuitBreakerRail:
             critical_threshold=overrides.get("critical_threshold", 4),
             global_breaker_threshold=overrides.get("global_breaker_threshold", 5),
             unknown_tool_threshold=overrides.get("unknown_tool_threshold", 3),
+            non_retryable_threshold=overrides.get("non_retryable_threshold", 3),
         )
     )
 
@@ -114,6 +115,112 @@ def test_unknown_tool_repeat_interrupts_error_streak() -> None:
     assert result.detector == "unknown_tool_repeat"
 
 
+def test_non_retryable_tool_streak_stops_on_threshold_failure() -> None:
+    rail = _rail(
+        warning_threshold=10,
+        critical_threshold=10,
+        global_breaker_threshold=10,
+        unknown_tool_threshold=10,
+    )
+    history = [
+        _record("invoke_pptx_translation", "a", "err", has_error=True),
+        _record("invoke_pptx_translation", "a", "err", has_error=True),
+        _record("invoke_pptx_translation", "a", "err", has_error=True),
+    ]
+    for record in history:
+        record.non_retryable = True
+    result = rail._detect(history, "invoke_pptx_translation", "a")
+    assert result.stuck is True
+    assert result.level == "critical"
+    assert result.detector == "non_retryable_tool"
+
+
+def test_non_retryable_streak_requires_same_args() -> None:
+    rail = _rail(
+        warning_threshold=10,
+        critical_threshold=10,
+        global_breaker_threshold=10,
+        unknown_tool_threshold=10,
+    )
+    history = [
+        _record("send_file_to_user", "missing-a", "err", has_error=True),
+        _record("send_file_to_user", "missing-b", "err", has_error=True),
+        _record("send_file_to_user", "missing-c", "err", has_error=True),
+    ]
+    for record in history:
+        record.non_retryable = True
+    result = rail._detect(history, "send_file_to_user", "missing-c")
+    assert result.detector != "non_retryable_tool"
+    assert result.stuck is False
+
+
+def test_non_retryable_result_marker_is_detected() -> None:
+    rail = _rail()
+    contract = '"contract": "jiuwenswarm.non_retryable.v1"'
+    assert rail._is_non_retryable_result(
+        f'{{{contract}, "success": false, "retryable": false, '
+        '"suggested_tool": "send_file_to_user"}'
+    )
+    assert rail._is_non_retryable_result(
+        {"contract": "jiuwenswarm.non_retryable.v1", "retryable": False}
+    )
+    assert rail._is_non_retryable_result(
+        {"content": f'{{{contract}, "retryable": false}}'}
+    )
+    assert not rail._is_non_retryable_result('{"success": true}')
+
+
+def test_contract_shaped_json_file_is_not_a_tool_failure() -> None:
+    rail = _rail()
+    assert not rail._is_non_retryable_result(
+        '{"success": false, "retryable": false, "suggested_tool": "read_file"}'
+    )
+
+
+def test_free_text_retryable_field_does_not_trigger() -> None:
+    rail = _rail(
+        warning_threshold=10,
+        critical_threshold=10,
+        global_breaker_threshold=10,
+        unknown_tool_threshold=10,
+    )
+    history = [
+        _record(
+            "read_file",
+            "a",
+            'config example: {"retryable": false, "note": "not a tool contract"}',
+        ),
+        _record(
+            "read_file",
+            "a",
+            'doc example: {"retryable": false, "note": "not a tool contract"}',
+        ),
+    ]
+    for record in history:
+        record.non_retryable = rail._is_non_retryable_result(record.result_hash)
+    result = rail._detect(history, "read_file", "a")
+    assert result.detector != "non_retryable_tool"
+    assert result.stuck is False
+
+
+def test_bare_retryable_false_without_contract_marker_is_ignored() -> None:
+    rail = _rail()
+    assert not rail._is_non_retryable_result({"retryable": False})
+    assert not rail._is_non_retryable_result('{"retryable": false}')
+
+
+def test_build_non_retryable_tool_result_roundtrips() -> None:
+    from jiuwenswarm.agents.harness.common.tools.tool_result_contract import (
+        build_non_retryable_tool_result,
+        is_non_retryable_tool_result,
+    )
+
+    payload = build_non_retryable_tool_result(
+        "PPT_TOOLS_NOT_ACTIVE", "send_file_to_user"
+    )
+    assert is_non_retryable_tool_result(payload)
+
+
 def test_ping_pong_critical_when_both_sides_stall() -> None:
     rail = _rail(critical_threshold=3, warning_threshold=2, global_breaker_threshold=20)
     history: list[ToolCallRecord] = []
@@ -160,6 +267,45 @@ async def test_after_tool_call_force_finishes_unknown_tool() -> None:
     assert ctx.has_force_finish_request is True
 
 
+async def test_real_non_retryable_tool_result_stops_on_threshold_call(tmp_path) -> None:
+    from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
+        SendFileToolkit,
+    )
+
+    rail = _rail(
+        warning_threshold=10,
+        critical_threshold=10,
+        global_breaker_threshold=10,
+        unknown_tool_threshold=10,
+    )
+    missing = tmp_path / "ai_chip_report.md"
+    result = await SendFileToolkit(
+        request_id="r-missing",
+        session_id="s1",
+        channel_id="web",
+    ).send_file(str(missing))
+
+    contexts = []
+    for _ in range(3):
+        ctx = AgentCallbackContext(
+            agent=object(),
+            inputs=ToolCallInputs(
+                tool_call=SimpleNamespace(
+                    name="send_file_to_user",
+                    arguments={"abs_file_path_list": [str(missing)]},
+                ),
+                tool_result=result,
+            ),
+            extra={"__jiuwenswarm_cb_session_id__": "s1"},
+        )
+        contexts.append(ctx)
+        await rail.after_tool_call(ctx)
+
+    assert contexts[0].has_force_finish_request is False
+    assert contexts[1].has_force_finish_request is False
+    assert contexts[2].has_force_finish_request is True
+
+
 def test_circuit_breaker_builder_stays_disabled_by_default(monkeypatch) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_mod
 
@@ -202,6 +348,7 @@ def test_circuit_breaker_builder_coerces_string_thresholds(monkeypatch) -> None:
                     "critical_threshold": "20",
                     "global_breaker_threshold": "30",
                     "unknown_tool_threshold": "10",
+                    "non_retryable_threshold": "3",
                 }
             }
         },
@@ -211,6 +358,7 @@ def test_circuit_breaker_builder_coerces_string_thresholds(monkeypatch) -> None:
     assert rail is not None
     assert rail._config.warning_threshold == 10
     assert rail._config.critical_threshold == 20
+    assert rail._config.non_retryable_threshold == 3
 
 
 def test_dest_agent_ras_passthrough_is_not_disabled() -> None:

@@ -10,12 +10,43 @@ from jiuwenswarm.common.mcp_config import (
     _is_blocked_host,
     _loopback_mcp_allowed,
     _normalize_mcp_client_type,
+    _normalize_stdio_command_kind,
     _optional_auth_dict,
     _pick_mcp_url,
     _validate_request_scoped_remote_mcp,
     build_mcp_server_config,
     create_mcp_tool,
 )
+
+
+class TestStdioCommandKind:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python",
+            "python3",
+            "python3.11",
+            "pythonw",
+            "python.exe",
+            "python3.11.exe",
+            "python.bat",
+            "python3.cmd",
+            "python3.13t",
+            "/usr/bin/python3",
+            "C:\\Python311\\python.exe",
+        ],
+    )
+    def test_python_interpreter_names_are_accepted(self, command):
+        assert _normalize_stdio_command_kind(command) == "python"
+
+    @pytest.mark.parametrize(
+        "command",
+        ["python_backdoor.exe", "python-custom", "pythonista", "C:/evil/python3evil.exe"],
+    )
+    def test_python_prefixed_names_are_rejected(self, command):
+        with pytest.raises(ValueError, match="不支持的 command 类型"):
+            _normalize_stdio_command_kind(command)
+
 
 class TestNormalizeMcpClientType:
     @pytest.mark.parametrize(
@@ -263,7 +294,7 @@ class TestCreateMcpToolStdio:
 
     def test_dangerous_eval_arg_blocked(self):
         cfg = json.dumps({"name": "bad", "command": "node", "args": ["-e", "1"]})
-        with pytest.raises(ValueError, match="危险"):
+        with pytest.raises(ValueError, match="配置校验未通过"):
             create_mcp_tool(cfg)
 
     def test_enterprise_rejects_stdio(self, monkeypatch):

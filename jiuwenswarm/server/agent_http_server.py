@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_STATUS_FAILED
 from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.enterprise_methods import ENTERPRISE_SKILL_ALLOWED_METHODS
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.transports.sink import STREAM_DONE, SSESink, UnaryHTTPSink
@@ -26,25 +27,6 @@ API_PREFIX = "/api/v1"
 PORT_SCAN_RANGE = 10
 PORT_SCAN_STEP = 1000
 
-#: 企业版北向允许的 Skill 方法白名单（必须与 Gateway ``invoke.py`` 的
-#: ``_ENTERPRISE_SKILL_ALLOWED`` 保持一致）。企业版经 SPI 开放只读列表/详情
-#: 与用户自装/卸载/更新写操作；技能卸载走 ``skills.enterprise.uninstall``。
-_ENTERPRISE_SKILL_ALLOWED = frozenset({
-    "skills.list",
-    "skills.get",
-    "skills.toggle",
-    "skills.source.providers",
-    "skills.source.search",
-    "skills.source.install",
-    "skills.updates.check",
-    "skills.update",
-    "skills.enterprise.list",
-    "skills.enterprise.install",
-    "skills.enterprise.uninstall",
-    "skills.enterprise.source.providers",
-    "skills.enterprise.source.search",
-})
-
 
 def _is_enterprise_skill_forbidden(method: str) -> bool:
     """AgentServer 侧防御性校验：企业版下拒绝白名单外的 ``skills.*`` 写操作。
@@ -54,7 +36,7 @@ def _is_enterprise_skill_forbidden(method: str) -> bool:
     """
     if not is_enterprise():
         return False
-    return method.startswith("skills.") and method not in _ENTERPRISE_SKILL_ALLOWED
+    return method.startswith("skills.") and method not in ENTERPRISE_SKILL_ALLOWED_METHODS
 
 #: HTTP 侧交给业务层的 ``RequestContext.connection_id``。
 #:

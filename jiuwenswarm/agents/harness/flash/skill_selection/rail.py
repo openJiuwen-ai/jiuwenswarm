@@ -448,10 +448,10 @@ class SkillSelectionRail(DeepAgentRail):
         if error:
             prompt = ('用户指定的技能不存在、不可用或名称不唯一，尚未加载。'
                       '请说明原因，不要自动换用其他技能。指定名称：' + names)
-        elif any(skill.name.casefold() == 'pptx-craft' for skill in selected):
-            prompt = ('用户明确指定以下技能，无需先检索。其中 pptx-craft 按下述 PPT 加速例外选择执行方式，'
-                      '符合加速条件时优先调用 skill_acceleration_exec，无需先通过 skill_tool 加载；'
-                      '其他指定技能仍通过原生 skill_tool 加载指令后执行对应任务。'
+        elif any(self._tool_name(tool) == 'skill_acceleration_exec' for tool in (ctx.inputs.tools or [])):
+            prompt = ('用户明确指定以下技能，无需先检索。仅当加速工具描述包含指定技能的准确名称且支持范围覆盖该任务，'
+                      '并且用户未要求禁用加速或使用标准流程时，优先调用 skill_acceleration_exec，无需先通过 skill_tool 加载；'
+                      '否则通过原生 skill_tool 加载指定技能，不得替换成其他技能。'
                       '本提示不代表指令已加载。指定名称：' + names + '\n\n' + SYSTEM_GUIDANCE)
         else:
             prompt = ('用户明确指定以下技能，无需先检索。请通过原生 skill_tool 加载指令后执行对应任务；'

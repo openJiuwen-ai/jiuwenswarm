@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -78,7 +79,7 @@ def get_merged_config_dict() -> dict[str, Any]:
 
     [PERF] 实测双 YAML 重读+合并 ~150ms,且经 RuntimePromptRail 的
     模型名兜底路径被**每次模型调用**触发(每次聊天多付 ~150ms)。按
-    (路径, mtime_ns) 缓存合并结果:文件未变直接复用;配置写入方走
+    (路径, mtime_ns, size) 缓存合并结果:文件未变直接复用;配置写入方走
     invalidate_merged_config_cache() 主动失效(写文件本身也会变 mtime,
     双保险)。注意:调用方不应修改返回的 dict(共享缓存对象)。
     """
@@ -86,12 +87,7 @@ def get_merged_config_dict() -> dict[str, Any]:
     tpl_path = resolve_shipped_template_config_path()
     usr_path = _current_config_yaml_path()
     try:
-        key = (
-            str(tpl_path),
-            tpl_path.stat().st_mtime_ns if tpl_path.exists() else None,
-            str(usr_path),
-            usr_path.stat().st_mtime_ns if usr_path.exists() else None,
-        )
+        key = (str(tpl_path), _merged_part_stamp(tpl_path), str(usr_path), _merged_part_stamp(usr_path))
     except OSError:
         key = None
     if key is not None and key == _MERGED_CONFIG_CACHE_KEY and _MERGED_CONFIG_CACHE is not None:
@@ -103,6 +99,16 @@ def get_merged_config_dict() -> dict[str, Any]:
         _MERGED_CONFIG_CACHE_KEY = key
         _MERGED_CONFIG_CACHE = merged
     return merged
+
+
+def _merged_part_stamp(path: Path) -> tuple[int, int] | None:
+    # 与 YAML 解析缓存同口径 (mtime_ns, size)；文件不存在返回 None（缺失也可缓存，
+    # load_yaml_dict 此时得 {}），其余 stat 失败抛 OSError，由调用方放弃缓存。
+    try:
+        stat_result = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return stat_result.st_mtime_ns, stat_result.st_size
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -164,19 +170,23 @@ def _normalize_flash_config(config: dict[str, Any]) -> None:
     flash = config.get("flash")
     if not isinstance(flash, dict):
         return
+    evolution = flash.get("evolution")
+    skill_sleep = evolution.get("skill_sleep") if isinstance(evolution, dict) else None
     switches = (
-        (flash, "JIUWENSWARM_FLASH_ENABLED"),
-        (flash.get("skill_selection"), "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED"),
+        (flash, "JIUWENSWARM_FLASH_ENABLED", False),
+        (flash.get("skill_selection"), "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", False),
+        (evolution, "JIUWENSWARM_FLASH_EVOLUTION_ENABLED", False),
+        (skill_sleep, "JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED", True),
     )
-    for section, env_name in switches:
+    for section, env_name, default_value in switches:
         if not isinstance(section, dict):
             continue
-        value = section.get("enabled", False)
+        value = section.get("enabled", default_value)
         if isinstance(value, bool):
             # 旧 YAML / provider 的布尔值仅作回退；复用与模板相同的占位符解析。
             default = str(value).lower()
             value = resolve_env_vars("${" + env_name + ":-" + default + "}")
-        section["enabled"] = coerce_config_bool(value, default=False)
+        section["enabled"] = coerce_config_bool(value, default=default_value)
 
 
 def resolve_config_env_vars(config: dict[str, Any]) -> dict[str, Any]:
@@ -440,7 +450,9 @@ def clear_config_cache(
         ]
         for key in keys_to_remove:
             _resolved_config_by_ns.pop(key, None)
-        invalidate_merged_config_cache()
+        # 合并配置只取决于两份 YAML（按路径 + mtime 校验），与 ns 的环境变量无关；
+        # 这里不再连带清掉它，否则每次 tip 写入（如每个会话 create_instance 加载 .env）
+        # 都要重新解析双 YAML。全量清理分支仍会清掉。
         if sid == "default" and aid == "default":
             _resolved_config_by_ns.pop(None, None)
             unbound_overlay_keys = [
@@ -630,6 +642,86 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
     """
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def shared_ttse_bank_path(workspace: Path | str) -> Path:
+    """One FACT/TIP bank for single-agent and expert-team on the same service.
+
+    Standard layout is ``<service_*>/agent_*/agent/jiuwenclaw_workspace``.
+    The bank is then ``<service_*>/.ttse/bank.json``, so every agent under that
+    service reads and writes the same file. Leader experience is a category in
+    that bank, not a second directory. Any other workspace keeps
+    ``<workspace>/.ttse/bank.json``.
+    """
+    ws = Path(workspace)
+    agent_dir = ws.parent
+    service = agent_dir.parent.parent
+    if agent_dir.name == "agent" and service.name.startswith("service_"):
+        return service / ".ttse" / "bank.json"
+    return ws / ".ttse" / "bank.json"
+
+
+_TTSE_BANK_SIDECARS = (
+    "chroma",
+    "bm25",
+    "dream",
+    "by_cat",
+    "CATALOG.md",
+    "index.json",
+    "dream-state.json",
+)
+
+
+def resolve_shared_ttse_bank(workspace: Path | str) -> Path:
+    """Bank path to open, moving a legacy workspace bank once.
+
+    The service layout reads ``<service_*>/.ttse/bank.json``. Older single-agent
+    runs wrote ``<workspace>/.ttse/bank.json``. When the new file is absent and
+    the old file exists, move the bank and its index siblings. A new file that
+    already exists is left in place. If the move fails, keep reading the old file.
+    """
+    new_bank = shared_ttse_bank_path(workspace)
+    old_bank = Path(workspace) / ".ttse" / "bank.json"
+    if os.path.normcase(str(new_bank)) == os.path.normcase(str(old_bank)):
+        return new_bank
+    if new_bank.is_file() or not old_bank.is_file():
+        return new_bank
+    try:
+        new_bank.parent.mkdir(parents=True, exist_ok=True)
+        _move_ttse_file(old_bank, new_bank)
+        for name in _TTSE_BANK_SIDECARS:
+            source = old_bank.parent / name
+            target = new_bank.parent / name
+            if source.exists() and not target.exists():
+                shutil.move(str(source), str(target))
+    except OSError as exc:
+        if new_bank.is_file():
+            return new_bank
+        logger.warning(
+            "[ttse] bank migration failed, still reading %s: %s",
+            old_bank,
+            exc,
+        )
+        return old_bank
+    logger.info("[ttse] migrated bank %s -> %s", old_bank, new_bank)
+    return new_bank
+
+
+def _move_ttse_file(source: Path, target: Path) -> None:
+    """Move ``source`` onto ``target`` without replacing an existing file."""
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        return
+    except OSError:
+        if target.exists():
+            return
+        shutil.move(str(source), str(target))
+        return
+    try:
+        source.unlink()
+    except OSError as exc:
+        logger.warning("[ttse] bank copied to %s but old file remains: %s", target, exc)
 
 
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:

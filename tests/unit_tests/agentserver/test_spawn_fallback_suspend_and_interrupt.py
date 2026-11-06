@@ -17,6 +17,7 @@ import pytest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import _suspend_subagent_permission_rails
 
 
 class _FakeHost:
@@ -60,7 +61,7 @@ def test_suspend_preserves_full_config_only_flips_enabled() -> None:
     )
     subagent = _FakeSubagent([rail])
 
-    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+    restore = _suspend_subagent_permission_rails(subagent)
 
     assert rail.engine_config["enabled"] is False
     assert rail.engine_config["tools"] == {
@@ -82,7 +83,7 @@ def test_suspend_snapshot_callback_carries_full_config() -> None:
     )
     subagent = _FakeSubagent([rail])
 
-    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+    restore = _suspend_subagent_permission_rails(subagent)
 
     snapshot = rail._host.get_permissions_snapshot()
     assert isinstance(snapshot, dict)
@@ -100,7 +101,7 @@ def test_suspend_restore_returns_original_config_and_snapshot() -> None:
     rail = PermissionInterruptRail(original)
     subagent = _FakeSubagent([rail])
 
-    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+    restore = _suspend_subagent_permission_rails(subagent)
     restore()
 
     assert rail.engine_config == original
@@ -116,7 +117,7 @@ def test_suspend_ignores_unrelated_rails() -> None:
     other = _OtherRail()
     subagent = _FakeSubagent([other])
 
-    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+    restore = _suspend_subagent_permission_rails(subagent)
     restore()  # 无权限 rail 时恢复为 no-op，不应报错
 
 

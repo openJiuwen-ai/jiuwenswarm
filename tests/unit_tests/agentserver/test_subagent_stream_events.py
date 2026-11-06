@@ -18,6 +18,7 @@ from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
 )
 from jiuwenswarm.server.runtime.session import session_history
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def setup_function() -> None:
@@ -93,7 +94,7 @@ def test_parse_stream_chunk_maps_activity_and_keeps_task_complete() -> None:
             "status": "completed",
         },
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(task_chunk)
+    parsed = _parse_stream_chunk(task_chunk)
     assert parsed is not None
     assert parsed["event_type"] == "task.complete"
     assert parsed["task_id"] == "todo:1"

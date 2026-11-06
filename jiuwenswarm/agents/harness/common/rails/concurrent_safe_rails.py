@@ -44,6 +44,9 @@ from openjiuwen.harness.tools.todo import (
 )
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.read_file_image_support import (
+    build_read_file_image_kwargs,
+)
 from jiuwenswarm.agents.harness.common.tools.todo_resume import is_persistent_todo
 
 logger = logging.getLogger(__name__)
@@ -62,17 +65,24 @@ class ConcurrentSafeSysOperationRail(SysOperationRail):
         lang = getattr(agent.system_prompt_builder, "language", None) or "cn"
         agent_id = getattr(getattr(agent, "card", None), "id", None)
         workspace_path = str(self.workspace.root_path) if self.workspace else None
-        enable_read_image_multimodal = self._enable_read_image_multimodal
-        if enable_read_image_multimodal is None:
-            deep_config = getattr(agent, "deep_config", None)
-            enable_read_image_multimodal = bool(
-                getattr(deep_config, "enable_read_image_multimodal", True)
-            )
+
+        def resolve_enable_read_image_multimodal() -> bool:
+            # ReadFileTool 在每次 read_file 调用时回调 resolver，跟随模型热切换；
+            # rail 构造时的 deep_config 值只是初始态，不是最终能力结论。
+            value = self._enable_read_image_multimodal
+            if value is None:
+                deep_config = getattr(agent, "deep_config", None)
+                value = getattr(deep_config, "enable_read_image_multimodal", False)
+            return bool(value)
+
         read_tool = ReadFileTool(
             self.sys_operation,
             lang,
             agent_id,
-            enable_image_multimodal=enable_read_image_multimodal,
+            **build_read_file_image_kwargs(
+                resolve_enable_read_image_multimodal,
+                enable_image_multimodal=resolve_enable_read_image_multimodal(),
+            ),
         )
         write_tool = WriteFileTool(self.sys_operation, lang, agent_id, workspace_path=workspace_path)
         edit_tool = EditFileTool(self.sys_operation, lang, agent_id, workspace_path=workspace_path)
@@ -131,6 +141,16 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
     - clear TaskPlan on interrupt so stale bridge cannot drive OuterLoop
     - never let ``_sync_todos_from_plan`` downgrade a completed todo
     """
+
+    # Never hand this rail instance to general-purpose subagents. A shared
+    # instance would be re-initialized by the subagent's _ensure_initialized
+    # (init_rail rebinds self.tools / _state_agent to the child), so the
+    # parent's TaskPlanningRail.before_invoke then resets the wrong tool
+    # instance's ``_created_in_invoke`` marker — the parent's executing
+    # todo_create stays "already rebuilt" for every later round, each new
+    # task list gets rejected (or appended via todo_modify instead), and
+    # stale task lists accumulate/display across rounds.
+    inherit_to_subagents = False
 
     def init(self, agent) -> None:
         from openjiuwen.harness.deep_agent import DeepAgent

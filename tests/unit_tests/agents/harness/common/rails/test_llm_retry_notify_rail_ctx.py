@@ -96,6 +96,54 @@ async def test_before_invoke_does_not_reset_sibling_ctx_budget():
     assert ctx_a.consume_retry_request() is None
 
 
+@pytest.mark.asyncio
+async def test_completed_model_call_restores_budget_for_its_own_ctx_only():
+    """Non-consecutive failures in a long invoke must not share one budget."""
+    rail = NotifyingLLMRetryRail(
+        max_retries=1,
+        backoff_seconds=[0.0],
+        notify_user_on_retry=False,
+        notify_user_on_exhausted=False,
+    )
+    ctx_a = _ctx()
+    ctx_b = _ctx()
+    await rail.before_invoke(ctx_a)
+    await rail.before_invoke(ctx_b)
+    ctx_b.exception = _repeat_exc()
+    await rail.on_model_exception(ctx_b)
+    assert ctx_b.consume_retry_request() is not None
+
+    for _ in range(3):
+        ctx_a.exception = _repeat_exc()
+        await rail.on_model_exception(ctx_a)
+        assert ctx_a.consume_retry_request() is not None
+        ctx_a.exception = None
+        await rail.after_model_call(ctx_a)
+
+    await rail.on_model_exception(ctx_b)
+    assert ctx_b.consume_retry_request() is None
+
+
+@pytest.mark.asyncio
+async def test_failed_attempt_does_not_restore_budget():
+    rail = NotifyingLLMRetryRail(
+        max_retries=1,
+        backoff_seconds=[0.0],
+        notify_user_on_retry=False,
+        notify_user_on_exhausted=False,
+    )
+    ctx = _ctx()
+    await rail.before_invoke(ctx)
+    ctx.exception = _repeat_exc()
+    await rail.on_model_exception(ctx)
+    assert ctx.consume_retry_request() is not None
+
+    await rail.after_model_call(ctx)
+
+    await rail.on_model_exception(ctx)
+    assert ctx.consume_retry_request() is None
+
+
 def test_generated_backoff_sequence_when_not_provided():
     rail = NotifyingLLMRetryRail(
         max_retries=2,

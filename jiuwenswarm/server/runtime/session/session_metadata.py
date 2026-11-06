@@ -919,31 +919,6 @@ def _merge_pin_fields(current: dict[str, Any], metadata: dict[str, Any]) -> dict
     return merged
 
 
-def _merge_pin_fields_from_disk(
-    session_id: str,
-    metadata: dict[str, Any],
-    *,
-    sessions_root: str | None = None,
-) -> dict[str, Any]:
-    """Preserve latest disk pin state for async writes that do not own pin fields."""
-    session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
-    if session_dir is None:
-        return metadata
-    fpath = session_dir / "metadata.json"
-    if not fpath.exists():
-        return metadata
-    try:
-        with _FILE_LOCK:
-            current = json.loads(fpath.read_text(encoding="utf-8") or "{}")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("读取 metadata.json 置顶字段失败: %s", exc)
-        return metadata
-    if not isinstance(current, dict):
-        return metadata
-
-    return _merge_pin_fields(current, metadata)
-
-
 def _ensure_worker_started() -> None:
     global _WORKER_STARTED
     if _WORKER_STARTED:
@@ -974,7 +949,16 @@ def _ensure_worker_started() -> None:
                             _evict_metadata_cache_locked()
                             _METADATA_CACHE[cache_key] = written.copy()
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("metadata 异步写入失败: %s", exc)
+                    logger.warning("metadata 异步写入失败 session_id=%s: %s", sid, exc)
+                    if preserve_pin_fields:
+                        # 入队时缓存的是未 merge 磁盘 pin 字段的 metadata;若不在此
+                        # 失效,落盘失败(磁盘满/文件锁超时/权限)会让该陈旧视图一直
+                        # 留在缓存里(直到该会话下次成功写入或 LRU 淘汰),表现为置顶
+                        # 排序长期错位。丢弃后下次读退化为一次磁盘读(跨进程真源)。
+                        with _CACHE_LOCK:
+                            _METADATA_CACHE.pop(
+                                _metadata_cache_key(sid, sessions_root), None
+                            )
                 finally:
                     _METADATA_QUEUE.task_done()
 
@@ -999,14 +983,18 @@ def _enqueue_write(
 
     注意: ``_write_metadata_sync`` 本身不更新缓存,缓存更新统一在此函数
     顶部完成,与异步路径行为一致,避免 ``init_session_metadata`` 污染缓存。
+
+    preserve_pin_fields 的磁盘 merge 不在调用方线程做:历史实现曾在函数
+    顶部读盘,导致每条普通消息都在 AgentServer 事件循环上同步读
+    metadata.json,慢盘场景停摆事件循环(OA.05000010, 2026-10-15)。落盘
+    正确性由 ``_write_metadata_sync`` 在 ``_FILE_LOCK`` 内 merge 保证;
+    落盘完成后(同步分支立即/worker 分支异步)将 merge 结果回写缓存,
+    pin 字段视图仅在落盘窗口内短暂陈旧;worker 落盘失败时主动失效该
+    session 的缓存条目,后续读退化为磁盘读,不会长期陈旧。
     """
     root_s = _coalesce_write_sessions_root(sessions_root)
     cache_key = _metadata_cache_key(session_id, root_s)
     # 立即更新缓存,确保后续读取能看到最新状态
-    if preserve_pin_fields:
-        metadata = _merge_pin_fields_from_disk(
-            session_id, metadata, sessions_root=root_s
-        )
     with _CACHE_LOCK:
         _evict_metadata_cache_locked()
         _METADATA_CACHE[cache_key] = metadata.copy()
@@ -1028,13 +1016,6 @@ def _enqueue_write(
             (session_id, metadata, root_s, preserve_pin_fields)
         )
     except queue.Full:
-        if preserve_pin_fields:
-            metadata = _merge_pin_fields_from_disk(
-                session_id, metadata, sessions_root=root_s
-            )
-            with _CACHE_LOCK:
-                _evict_metadata_cache_locked()
-                _METADATA_CACHE[cache_key] = metadata.copy()
         written = _write_metadata_sync(
             session_id,
             metadata,

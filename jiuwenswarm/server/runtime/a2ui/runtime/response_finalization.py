@@ -27,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Type for a function that can retry a request without A2UI
 RetryWithoutA2UI = Callable[[str], Any]
-_A2UI_FINALIZATION_TIMEOUT_SECONDS = 45.0
+# Must cover max_repair_attempts full LLM rounds: a measured repair turn
+# (schema repair prompt + regenerated JSON, glm-5.2) takes ~30-40s, so the
+# old 45s budget killed the first attempt before it could return and degraded
+# every invalid block to stripped text.
+_A2UI_FINALIZATION_TIMEOUT_SECONDS = 120.0
 _A2UI_FAST_PATH_VALIDATION_TIMEOUT_SECONDS = 5.0
 
 
@@ -39,6 +43,7 @@ async def finalize_a2ui_assistant_content(
     repair_call: RepairCall | None,
     a2ui_enabled: bool,
     retry_without_a2ui_call: RetryWithoutA2UI | None = None,
+    channel: str | None = None,
 ) -> str:
     """Validate and repair a complete assistant response when A2UI is enabled.
     
@@ -88,6 +93,7 @@ async def finalize_a2ui_assistant_content(
                 user_query=user_query,
                 request_id=request_id,
                 repair_call=repair_call,
+                channel=channel,
             ),
             timeout=_A2UI_FINALIZATION_TIMEOUT_SECONDS,
         )

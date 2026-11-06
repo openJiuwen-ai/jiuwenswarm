@@ -10,6 +10,7 @@ import os
 import re
 import time
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from jiuwenswarm.agents.harness.common.tools.web_search.http_client import http_request
 from jiuwenswarm.agents.harness.common.tools.web_search.content_cache import parse_update_time
@@ -43,6 +44,70 @@ def _load_llm_default_headers() -> dict[str, str]:
     return header_map
 
 
+_PETAL_IMAGE_KEYS = (
+    "images",
+    "image_urls",
+    "image",
+    "pic_url",
+    "picUrl",
+    "thumbnail",
+    "thumb",
+    "cover",
+    "img",
+)
+_MAX_IMAGES_PER_ITEM = 5
+
+
+def _collect_image_urls(value: Any, out: list[str]) -> None:
+    """Recursively collect http(s) image URLs from a loosely-typed payload value."""
+    if isinstance(value, str):
+        url = value.strip()
+        if url.startswith(("http://", "https://")):
+            out.append(url)
+        return
+    if isinstance(value, dict):
+        for key in ("url", "image_url", "contentUrl", "src", "link", "thumbnail", "thumbnailUrl"):
+            nested = value.get(key)
+            if isinstance(nested, str):
+                _collect_image_urls(nested, out)
+        return
+    if isinstance(value, list):
+        for entry in value:
+            _collect_image_urls(entry, out)
+
+
+def _dedupe_image_urls(found: list[str], limit: int = _MAX_IMAGES_PER_ITEM) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in found:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append(url)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _extract_item_image_urls(item: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    """Extract image URLs from a web page item using provider-specific field spellings."""
+    found: list[str] = []
+    for key in keys:
+        if key in item:
+            _collect_image_urls(item.get(key), found)
+    return _dedupe_image_urls(found)
+
+
+def _petal_extract_image_urls(item: dict[str, Any]) -> list[str]:
+    """Collect image URLs from a petal web page item.
+
+    Petal's schema is not documented in-repo, so several field spellings are
+    tolerated. When none is present the caller still has HTML extraction as a
+    fallback; this is a cheap shortcut, not the only source.
+    """
+    return _extract_item_image_urls(item, _PETAL_IMAGE_KEYS)
+
+
 def _petal_normalize_web_page_item(item: dict[str, Any]) -> dict[str, Any]:
     raw_url = item.get("url") or item.get("link") or item.get("source_url") or ""
     title = (item.get("title") or item.get("name") or "").strip()
@@ -57,6 +122,7 @@ def _petal_normalize_web_page_item(item: dict[str, Any]) -> dict[str, Any]:
         "summary": summary[:_PETAL_MAX_SUMMARY_LEN],
         "content": content[:_PETAL_MAX_CONTENT_LEN],
         "update_time": parse_update_time(update_time_raw),
+        "images": _petal_extract_image_urls(item),
     }
 
 
@@ -263,6 +329,146 @@ def jina_search_sync(query: str, timeout_seconds: int) -> dict[str, Any]:
     return {"provider": "jina", "answer": (answer or "").strip(), "urls": urls}
 
 
+_BOCHA_MAX_TITLE_LEN = 2000
+_BOCHA_MAX_URL_LEN = 2048
+_BOCHA_MAX_SUMMARY_LEN = 4000
+_BOCHA_MAX_CONTENT_LEN = 20000
+# Bocha 兼容 Bing Search API：网页项内的图片字段 + 顶层 images.value 图片答案
+_BOCHA_IMAGE_KEYS = (
+    "images",
+    "imageUrl",
+    "image_url",
+    "image",
+    "thumbnailUrl",
+    "thumbnail",
+    "primaryImageOfPage",
+    "picUrl",
+)
+
+
+def _bocha_payload_roots(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return both the inner ``data`` object and the envelope, inner first.
+
+    网关/代理包装层可能把结果放在内层，也可能同时保留顶层副本；只锁定一层
+    会让另一种形态整体“无结果”，因此按内层 → 顶层的顺序依次兜底。
+    """
+    inner = data.get("data")
+    if isinstance(inner, dict) and inner is not data:
+        return [inner, data]
+    return [data]
+
+
+def _bocha_web_page_items(root: dict[str, Any]) -> list[dict[str, Any]]:
+    web_pages = root.get("webPages")
+    candidates: list[Any] = []
+    if isinstance(web_pages, dict):
+        candidates.append(web_pages.get("value"))
+    else:
+        candidates.append(web_pages)
+    candidates.append(root.get("results"))
+    for container in candidates:
+        if not isinstance(container, list):
+            continue
+        items = [item for item in container if isinstance(item, dict)]
+        if items:
+            return items
+    return []
+
+
+def _bocha_collect_page_items(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """First root that yields web pages wins; results are not merged across layers."""
+    for root in roots:
+        items = _bocha_web_page_items(root)
+        if items:
+            return items
+    return []
+
+
+def _bocha_normalize_web_page_item(item: dict[str, Any]) -> dict[str, Any]:
+    url = str(item.get("url") or item.get("link") or "").strip()[:_BOCHA_MAX_URL_LEN]
+    title = str(item.get("name") or item.get("title") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    snippet = str(item.get("snippet") or item.get("content") or "").strip()
+    return {
+        "url": url,
+        "title": title[:_BOCHA_MAX_TITLE_LEN],
+        "summary": summary[:_BOCHA_MAX_SUMMARY_LEN],
+        "content": snippet[:_BOCHA_MAX_CONTENT_LEN],
+        "images": _extract_item_image_urls(item, _BOCHA_IMAGE_KEYS),
+    }
+
+
+def _bocha_collect_answer_images(roots: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Collect the ``images`` answer from every payload layer, deduplicated by URL."""
+    collected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for root in roots:
+        node = root.get("images")
+        entries = node.get("value") if isinstance(node, dict) else node
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, str):
+                raw_url, host_page, name = entry, "", ""
+            elif isinstance(entry, dict):
+                raw_url = (
+                    entry.get("contentUrl")
+                    or entry.get("url")
+                    or entry.get("imageUrl")
+                    or entry.get("thumbnailUrl")
+                    or ""
+                )
+                host_page = (
+                    entry.get("hostPageUrl")
+                    or entry.get("hostPageDisplayUrl")
+                    or entry.get("pageUrl")
+                    or ""
+                )
+                name = entry.get("name") or entry.get("title") or ""
+            else:
+                continue
+            url = str(raw_url).strip()
+            if not url.startswith(("http://", "https://")) or url in seen:
+                continue
+            seen.add(url)
+            collected.append(
+                {"url": url, "host_page": str(host_page).strip(), "name": str(name).strip()}
+            )
+    return collected
+
+
+def _page_key(url: str) -> str:
+    parsed = urlparse(url.strip())
+    return f"{(parsed.netloc or '').lower()}{(parsed.path or '/').rstrip('/')}"
+
+
+def _bocha_attach_images(
+    records: list[dict[str, Any]], images: list[dict[str, str]]
+) -> None:
+    """Attach the images answer to the page it was crawled from."""
+    by_page: dict[str, dict[str, Any]] = {}
+    by_host: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not record.get("url"):
+            continue
+        by_page.setdefault(_page_key(record["url"]), record)
+        host = (urlparse(record["url"]).netloc or "").lower()
+        if host:
+            by_host.setdefault(host, record)
+
+    for image in images:
+        host_page = image.get("host_page", "")
+        target = by_page.get(_page_key(host_page)) if host_page else None
+        if target is None and host_page:
+            target = by_host.get((urlparse(host_page).netloc or "").lower())
+        if target is None:
+            continue
+        bucket = target.setdefault("images", [])
+        if image["url"] in bucket or len(bucket) >= _MAX_IMAGES_PER_ITEM:
+            continue
+        bucket.append(image["url"])
+
+
 def bocha_search_sync(
     query: str, max_results: int, timeout_seconds: int
 ) -> dict[str, Any]:
@@ -279,36 +485,31 @@ def bocha_search_sync(
     )
     response.raise_for_status()
     data = response.json()
+    roots = _bocha_payload_roots(data)
 
-    urls: list[str] = []
-    for container in (
-        data.get("data", {}).get("webPages", {}).get("value"),
-        data.get("webPages", {}).get("value"),
-        data.get("data", {}).get("results"),
-        data.get("results"),
-    ):
-        if not isinstance(container, list):
-            continue
-        for item in container[:max_results]:
-            if isinstance(item, dict):
-                maybe_url = item.get("url") or item.get("link")
-                if maybe_url:
-                    urls.append(str(maybe_url))
-        if urls:
-            break
+    records = [
+        _bocha_normalize_web_page_item(item)
+        for item in _bocha_collect_page_items(roots)[:max_results]
+    ]
+    records = [record for record in records if record["url"]]
+    _bocha_attach_images(records, _bocha_collect_answer_images(roots))
 
     answer = ""
-    for value in (
-        data.get("summary"),
-        data.get("answer"),
-        data.get("data", {}).get("summary"),
-        data.get("data", {}).get("answer"),
-    ):
-        if isinstance(value, str) and value.strip():
-            answer = value.strip()
+    for root in roots:
+        for value in (root.get("summary"), root.get("answer")):
+            if isinstance(value, str) and value.strip():
+                answer = value.strip()
+                break
+        if answer:
             break
 
-    return {"provider": "bocha", "answer": answer, "urls": urls[:max_results]}
+    urls = [record["url"] for record in records]
+    return {
+        "provider": "bocha",
+        "answer": answer,
+        "urls": urls[:max_results],
+        "records": records[:max_results],
+    }
 
 
 def _resolve_tavily_api_key() -> str:

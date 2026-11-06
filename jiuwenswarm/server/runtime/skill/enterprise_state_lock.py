@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -13,6 +15,8 @@ from weakref import WeakValueDictionary
 
 import portalocker
 
+
+logger = logging.getLogger(__name__)
 
 _LOCK_TIMEOUT_SECONDS = 30.0
 _LOCKS_META = threading.Lock()
@@ -55,13 +59,28 @@ def enterprise_skill_state_lock(state_file: Path) -> Iterator[bool]:
 
         state_file.parent.mkdir(parents=True, exist_ok=True)
         lock_file = state_file.with_name(f"{state_file.name}.lock")
-        with portalocker.Lock(
-            str(lock_file),
-            mode="a+",
-            timeout=_LOCK_TIMEOUT_SECONDS,
-        ):
-            depths[key] = 1
-            try:
-                yield True
-            finally:
-                depths.pop(key, None)
+        lock_t0 = time.perf_counter()
+        lock_acquired = False
+        try:
+            with portalocker.Lock(
+                str(lock_file),
+                mode="a+",
+                timeout=_LOCK_TIMEOUT_SECONDS,
+            ):
+                lock_acquired = True
+                depths[key] = 1
+                try:
+                    yield True
+                finally:
+                    depths.pop(key, None)
+        except (portalocker.LockException, PermissionError):
+            # LockException=Linux flock 超时；PermissionError=Windows msvcrt 超时。
+            # lock_acquired=True 说明异常来自事务体而非获锁，勿误报
+            if not lock_acquired:
+                logger.error(
+                    "[SkillManager] state lock timeout file=%s waited_ms=%.1f timeout_s=%.1f",
+                    lock_file,
+                    (time.perf_counter() - lock_t0) * 1000.0,
+                    _LOCK_TIMEOUT_SECONDS,
+                )
+            raise

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -33,8 +33,10 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   WS连接建立时固定选择，HTTP请求进入时固定选择；本请求内配置变化不改变输出。
   实时和历史共用此上下文。既有版本消费者停用增强需先明确状态/连接切换，不能热降级。
 
-- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns)` 缓存（省 ~150ms/次）；
+- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns, size)` 缓存（省 ~150ms/次）；
   `get_config()` 按 `(sid, aid)` ns + overlay 内容 hash 做 TTL + 版本号缓存。
+  合并结果只取决于两份 YAML，与环境变量无关：`clear_config_cache(service_id, agent_id)`
+  只清该 ns 的解析缓存，不清合并缓存；无参全量清理才连带清空合并缓存。
   **返回共享引用，消费方禁止原地修改**——要改走 `update_config` / `set_config`。
 - **N2 写回三保险**：portalocker + 原子替换（tmp + os.replace）+ ruamel round-trip
   （保注释保格式）。绕过 `set_config` 直写文件会与锁协议冲突。
@@ -88,11 +90,17 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   保留原规则。`flash` 保留独立 canonical，并纳入单 Agent 轨迹白名单；尚未实现的
   `flash.*` 在此入口拒绝。续接结合已存 `mode` 与 `adapter_mode` 恢复，保证前台准备与租户池二次解析一致；活跃 Plan 与中断归属优先于新的默认模式。
 
-- **N16 Flash 配置占位符**：模板的 `flash.enabled` 与
-  `flash.skill_selection.enabled` 分别引用 `${JIUWENSWARM_FLASH_ENABLED:-false}`
-  与 `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`；两变量属于 Track A，
+- **N16 Flash 配置占位符**：模板的 `flash.enabled`、
+  `flash.skill_selection.enabled`、`flash.evolution.enabled` 与
+  `flash.evolution.skill_sleep.enabled` 分别引用
+  `${JIUWENSWARM_FLASH_ENABLED:-false}`、
+  `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`、
+  `${JIUWENSWARM_FLASH_EVOLUTION_ENABLED:-false}` 与
+  `${JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED:-true}`；四变量属于 Track A，
   沙箱启动注入后经统一配置加载解析，`get_config()` 返回布尔值，消费方不再直读环境。
-  旧 YAML / provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
+  Flash 在线技能自演进不继承 `react.evolution` 全局开关，默认关闭；SkillSleep
+  独立常驻默认开启，训练是否执行仍由技能级 `selfEvolution` 决定。旧 YAML /
+  provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
   未注入时保留原布尔配置。非法字符串关闭开关，不改变其它字段的字符串解析语义。
   配置文件、实例创建/热更新快照及预热均通过 `resolve_config_env_vars` 统一解析。
   原始 YAML、合并缓存及 provider 输入保持不变；重启或清理配置缓存后重新解析。
@@ -118,7 +126,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **tip**：`(session_id, agent_id)` → 生效环境 dict（active ∪ staged，staged 胜）。
 - **overlay**：任务级密封 dict（ContextVar）；`effective_tip = tip ∪ overlay`（overlay
   键存在即覆盖，miss 即 unset）。
-- **config 缓存**：`(path, mtime_ns)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
+- **config 缓存**：`(path, mtime_ns, size)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
   视图 + 版本号。
 - **HooksConfig**：`{events: [{event, matchers}]}`；match 失败静默跳过。
 

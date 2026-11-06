@@ -29,10 +29,12 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 )
 from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
     JiuwenHarnessFetchWebpageTool,
+    JiuwenHarnessImageSearchTool,
 )
 from jiuwenswarm.agents.harness.common.tools.web_search.harness import (
     JiuwenHarnessWebSearchTool,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _resolve_enable_task_loop
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -1119,7 +1121,7 @@ def test_code_adapter_skill_retrieval_sync_respects_configured_tools(monkeypatch
 def test_resolve_enable_task_loop_forces_true_when_skill_create_enabled(monkeypatch):
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {"evolution": {"skill_create": True}},
         )
@@ -1130,7 +1132,7 @@ def test_resolve_enable_task_loop_forces_true_when_skill_create_enabled(monkeypa
 def test_resolve_enable_task_loop_forces_true_when_review_trigger_enabled(monkeypatch):
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {"evolution": {"review_trigger": True}},
         )
@@ -1142,7 +1144,7 @@ def test_resolve_enable_task_loop_preserves_false_when_only_evolution_enabled(mo
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {
                 "evolution": {
@@ -1160,7 +1162,7 @@ def test_resolve_enable_task_loop_preserves_false_without_enforcers(monkeypatch)
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {"evolution": {"enabled": False, "skill_create": False}},
         )
@@ -1209,9 +1211,10 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         tools=ANY,
     )
     research_tools = mock_research.call_args.kwargs["tools"]
-    assert len(research_tools) == 2
+    assert len(research_tools) == 3
     assert isinstance(research_tools[0], JiuwenHarnessWebSearchTool)
     assert isinstance(research_tools[1], JiuwenHarnessFetchWebpageTool)
+    assert isinstance(research_tools[2], JiuwenHarnessImageSearchTool)
     mock_browser.assert_called_once_with(
         model,
         workspace="/tmp/jiuwenswarm-workspace",

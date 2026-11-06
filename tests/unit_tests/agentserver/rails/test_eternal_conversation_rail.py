@@ -41,6 +41,10 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     INTERRUPT_RESUME_SOURCES,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _is_eternal_interaction_resume,
+    _resolve_eternal_conversation_enabled,
+)
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -724,7 +728,7 @@ def test_registry_reuses_coordinator_for_recreated_adapter(tmp_path: Path) -> No
 
 def test_frontend_runtime_flag_is_explicit_and_default_off(value, expected) -> None:
     params = {} if value is None else {"eternal_conversation_enabled": value}
-    assert JiuWenSwarmDeepAdapter._resolve_eternal_conversation_enabled(params) is expected
+    assert _resolve_eternal_conversation_enabled(params) is expected
 
 
 @pytest.mark.parametrize(
@@ -741,13 +745,13 @@ def test_eternal_interaction_resume_covers_all_hitl_resume_sources(source) -> No
     task_id while the interrupted task stays suspended forever, splitting one
     natural task in the evidence chain.
     """
-    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume({"source": source}) is True
+    assert _is_eternal_interaction_resume({"source": source}) is True
 
 
 def test_eternal_interaction_resume_rejects_natural_query_source() -> None:
-    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume({"source": "query"}) is False
-    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume({}) is False
-    assert JiuWenSwarmDeepAdapter._is_eternal_interaction_resume(None) is False
+    assert _is_eternal_interaction_resume({"source": "query"}) is False
+    assert _is_eternal_interaction_resume({}) is False
+    assert _is_eternal_interaction_resume(None) is False
 
 
 class _AbilityManager:

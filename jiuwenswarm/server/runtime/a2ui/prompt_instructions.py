@@ -184,19 +184,19 @@ def build_a2ui_browser_workflow_instruction() -> str:
     )
 
 
-def build_a2ui_autonomy_instruction(language: str = "en") -> str:
+def build_a2ui_autonomy_instruction(language: str = "en", channel: str | None = None) -> str:
     # --- en rules ---
     image_url_rule_en = (
         " Do not invent image URLs. Use user-provided HTTPS URLs or verified "
         "stable sources; do not use guessed upload.wikimedia.org thumbnail paths."
     )
     unsupported_component_rule_en = (
-        " A2UI does not support modal, dialog, popup, alert, toast, "
-        "or floating overlay. Do not simulate these with absolute-positioned "
-        "cards or fake close buttons. Use inline status, inline card, or "
-        "confirmation area inside the normal surface instead. If the request "
-        "cannot be approximated faithfully, answer in plain text that the "
-        "requested component is not currently supported."
+        " A2UI does not support Modal, Dialog, Popup, Alert, Toast, or "
+        "floating overlay components. Do not simulate these components with "
+        "absolute-positioned cards or fake close buttons. Use inline status, "
+        "inline card, or a confirmation area inside the normal surface "
+        "instead. If the request cannot be approximated faithfully, answer "
+        "in plain text that the requested component is not currently supported."
     )
     autonomy_rule_en = (
         " When the user's request requires interactive information collection "
@@ -236,36 +236,81 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "Never write tool_call, invoke, or function-call tags as plain text."
     )
     requested_component_rule_en = (
-        " You must match the requested component type: generate a card list "
+        " [Component-fit] You must match the requested component type: generate a card list "
         "only when the user asks for cards or a card list; Card/list is not "
         "a universal fallback. For a single object detail request, build a "
         "single object detail layout, not a multi-card demo. Do not substitute "
-        "a fixed demo for the requested component. For every user-editable "
+        "a fixed demo for the requested component. "
+        "[Inputs] For every user-editable "
         "interactive component — TextField, MultipleChoice, CheckBox, "
         "DateTimeInput, and Slider — bind its value/selections to a data "
         "model path, initialize that path with dataModelUpdate, and include "
         "the submitted value in Button.action.context using a path reference. "
         "Use DateTimeInput (not TextField) for any date or time selection "
         "field. Do not emit an empty Button.action.context for form submissions. "
-        "Button MUST use \"child\" to reference a component id (e.g. a Text "
+        "[Button-schema] Button MUST use \"child\" to reference a component id (e.g. a Text "
         "component) for its label content; do NOT use a \"label\" field. "
-        "For MultipleChoice, selections MUST be an object with a "
+        "[Selections] For MultipleChoice, selections MUST be an object with a "
         "\"path\" key (e.g. selections={\"path\":\"/form/cabinClass\"}) and "
         "the default selection MUST be provided via dataModelUpdate on that "
-        "path. "
-        "MultipleChoice option values MUST NOT share a name with ANY component id "
+        "path. When MultipleChoice is used for single-select, set "
+        "maxAllowedSelections to 1. "
+        "[Id-uniqueness] MultipleChoice option values MUST NOT share a name with ANY component id "
         "(e.g. if a component id is \"anonymous\", use option value \"anon\" not \"anonymous\" — "
         "matching a component id causes circular dependency). "
         "No Button.action.context \"key\" may equal ANY component id in the same surface. "
-        "For repeated list/card data, encode arrays as one collection key "
-        "with indexed valueMap entries (\"0\", \"1\"); each item contains "
-        "nested valueMap fields. Use item-relative paths inside templates "
-        "(name, price, or /item/name). Do not nest templates inside "
-        "template-rendered components in A2UI; flatten repeated item "
-        "details into fields on the outer item, or use explicit child "
-        "components bound to those fields."
+        "The A2UI component tree is single-parent: every component id is "
+        "referenced by exactly one parent; a component referenced via "
+        "Button/Card/Tabs child MUST NOT also appear in any Column/Row/List "
+        "children.explicitList. "
+        "[Repeat-data] For repeated list/card data, dataModelUpdate keys must not repeat; "
+        "encode arrays as one collection key with indexed valueMap entries "
+        "(\"0\", \"1\"); each item contains nested valueMap fields. Use item-relative "
+        "paths inside templates (name, price, or /item/name). Do not use collection "
+        "absolute paths inside templates (e.g. /phones/name). Do not nest templates "
+        "inside template-rendered components in A2UI; flatten repeated item details "
+        "into fields on the outer item, or use explicit child components bound to "
+        "those fields."
         + image_url_rule_en
         + unsupported_component_rule_en
+    )
+    # officeclaw 专属组件规则：web channel 不注入（channel != "web" 时拼入），
+    # 防止影响 web channel。含 Card 布局壳 / 输入绑定与标题 / 标题 usageHint /
+    # 文本纯净 / 按钮行 / 重置清空 / 取消按钮。
+    officeclaw_component_rules_en = (
+        "[Layout] The outermost structured UI MUST be wrapped in a Card as a container "
+        "shell (this is distinct from card-list presentation, which is only "
+        "for card/card-list requests above); Card's child takes a single "
+        "component id, so multi-part content goes through a container "
+        "(Column for vertical, Row for horizontal, List for repeating items) "
+        "— never lay out controls bare on the surface. "
+        "For a card-list request, do not wrap the List of Cards in an extra "
+        "outer Card — the List itself is the container. "
+        "[Titles] Each of TextField, MultipleChoice, CheckBox, DateTimeInput, and Slider MUST have "
+        "a Text title placed directly above it; for TextField and Slider the "
+        "inline label MUST be present but empty (e.g. {\"literalString\": \"\"}) "
+        "so the title is not duplicated. "
+        "Wrap each Text title and its input component together in a Column. "
+        "Title Text usageHint follows the form structure: the form's main title "
+        "MUST use usageHint \"h1\". If the form has no section grouping (e.g. a "
+        "single input component), each input component's title Text MUST use "
+        "usageHint \"h2\". When input components are grouped into sections, the "
+        "section title Text MUST use usageHint \"h2\", and the title Text directly "
+        "above each input component inside the section MUST use usageHint \"h3\". "
+        "[Text-purity] Titles MUST be plain text and MUST NOT contain any "
+        "Markdown syntax. Emoji MUST NOT be used anywhere in A2UI UI text. "
+        "[Buttons] Action buttons at the bottom of a form MUST go into a horizontal Row; "
+        "when there are multiple, the primary button goes first. "
+        "Standalone buttons inside a section are not subject to this. "
+        "Candidate-selection buttons inside a card list (e.g., hotel_option_select) "
+        "are not form-bottom action buttons and keep their own per-card placement. "
+        "Do not add a Divider above the button row at the bottom of a form. "
+        "Do NOT add buttons that reset or clear form values (e.g. a \"Reset\" or "
+        "\"Clear\" button). Include a Cancel button only "
+        "when genuinely needed (e.g. the user asks for a confirm/cancel choice, "
+        "or cancelling has a real effect); do NOT add a Cancel button by default. "
+        "Do not add no-op buttons with no real effect (e.g., \"Not now\", "
+        "\"Maybe later\", \"暂不需要\")."
     )
     # --- zh rules ---
     image_url_rule_zh = (
@@ -273,7 +318,7 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "不要使用猜测的 upload.wikimedia.org thumbnail 路径。"
     )
     unsupported_component_rule_zh = (
-        " A2UI 不支持弹窗、模态框、dialog、popup、alert、toast、浮层。"
+        " A2UI 不支持 Modal、Dialog、Popup、Alert、Toast、浮层等组件。"
         "不要用绝对定位卡片或假的关闭按钮模拟这些组件。"
         "请在普通 surface 内使用行内状态、行内卡片或确认区域替代。"
         "如果无法忠实近似，请用纯文本说明当前暂不支持该组件。"
@@ -304,23 +349,27 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "绝不能把 tool_call、invoke 或函数调用标签当作普通文本输出。"
     )
     requested_component_rule_zh = (
-        " 必须匹配用户请求的组件类型：只有用户要求卡片或卡片列表时才生成 "
+        " [组件匹配] 必须匹配用户请求的组件类型：只有用户要求卡片或卡片列表时才生成 "
         "card list；Card/list 不是万能 fallback。单个对象详情请求应生成单对象"
         "详情布局，不要生成多卡片 demo。不要用固定 demo 替代用户请求的组件。"
-        "对每个可交互组件——TextField、"
+        " [输入] 对每个可交互组件——TextField、"
         "MultipleChoice、CheckBox、DateTimeInput、Slider——必须把其 value/selections "
         "绑定到 data model 路径，用 dataModelUpdate 初始化该路径，并在 "
         "Button.action.context 中用 path reference 包含提交值。"
         "日期或时间选择字段必须用 DateTimeInput（不用 TextField）。"
         "表单提交不能输出空的 Button.action.context。"
-        "Button 必须用 \"child\" 引用一个组件 id（如 Text 组件）作为按钮文字，不要用 \"label\" 字段。"
-        "MultipleChoice 尤其要注意：selections 必须是带 \"path\" 键的对象"
+        " [按钮引用] Button 必须用 \"child\" 引用一个组件 id（如 Text 组件）作为按钮文字，不要用 \"label\" 字段。"
+        " [选择] MultipleChoice 尤其要注意：selections 必须是带 \"path\" 键的对象"
         "（如 selections={\"path\":\"/form/cabinClass\"}），默认选中值必须通过 "
         "dataModelUpdate 在该路径上设置。"
-        "MultipleChoice 的 option value 不要跟任何组件 id 同名"
+        "MultipleChoice 用作单选时 maxAllowedSelections 必须设为 1。"
+        " [id唯一] MultipleChoice 的 option value 不要跟任何组件 id 同名"
         "（如组件 id=\"anonymous\" 时 option value 用 \"anon\" 而非 \"anonymous\"，否则会致循环依赖）。"
         "Button.action.context 的每个 \"key\" 不得与同一 surface 内任何组件 id 同名。"
-        "List 或卡片列表展示重复数据时，dataModelUpdate 的 key 不能重复，"
+        "A2UI 组件树是单亲树：每个组件 id 只能被一个父级引用一次；"
+        "Button/Card/Tabs 的 child 引用过的组件，"
+        "不得再出现在任何 Column/Row/List 的 children.explicitList 里。"
+        " [重复数据] List 或卡片列表展示重复数据时，dataModelUpdate 的 key 不能重复，"
         "请把数组编码为集合 key 并用索引项（\"0\"、\"1\"），每个 item 含嵌套 "
         "valueMap 字段，模板内用 item-relative path。"
         "不要在模板内使用集合绝对路径（如 /phones/name）。"
@@ -329,19 +378,53 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         + image_url_rule_zh
         + unsupported_component_rule_zh
     )
+    # officeclaw 专属组件规则（中文）：web channel 不注入，channel != "web" 时拼入。
+    officeclaw_component_rules_zh = (
+        " [布局] 最外层结构化 UI 统一用 Card 作为容器壳承载"
+        "（区别于上文的 card-list 展示模式，后者仅用于卡片/卡片列表请求）；"
+        "Card 的 child 只收一个组件 id，"
+        "多件内容经容器承载（纵向 Column、横向 Row、重复列表 List），"
+        "不要让控件裸排在 surface 上。"
+        "card-list 请求时不要再在外层包额外 Card，List 本身即容器。"
+        " [标题] TextField、MultipleChoice、CheckBox、DateTimeInput、Slider 各自在正上方加一个 Text 组件作为标题；"
+        "其中 TextField 与 Slider 的内联 label 必须存在但置空"
+        "（如 {\"literalString\": \"\"}），避免标题重复。"
+        "每个 Text 标题与对应输入组件必须共同包在一个 Column 里。"
+        "标题 Text 的 usageHint 按表单结构定：表单大标题必须用 usageHint \"h1\"；"
+        "表单没有分组时（如单个输入组件），每个输入组件的标题必须用 usageHint \"h2\"；"
+        "输入组件归入分组时，分组标题 Text 必须用 usageHint \"h2\"，"
+        "分组内每个输入组件正上方的标题必须用 usageHint \"h3\"。"
+        " [文本纯净] 标题必须是纯文本，禁止任何 Markdown 语法。"
+        "A2UI 界面全面禁止使用 emoji。"
+        " [按钮] 表单底部的操作按钮必须放进一个 Row 水平排列；有多个时主要按钮放第一位。"
+        "各分组内独立的单个按钮不在此列。"
+        "卡片列表内的候选选择按钮（如 hotel_option_select）不属于表单底部操作按钮，保留各自在卡片内的位置。"
+        "不要在表单底部按钮行上方添加 Divider 分割线。"
+        "禁止添加\"重置\"、\"清空\"等恢复或清空表单值的按钮；"
+        "\"取消\"按钮只有确有需要时才添加（如用户明确要求确认/取消选择，或取消有实际效果），默认不要添加。"
+        "禁止添加\"暂不需要\"、\"以后再说\"等无实际效果的无意义按钮（点击后没有任何真实动作）。"
+    )
 
     if language in {"zh", "cn"}:
-        return (
+        base = (
             "如果决策树判定使用 A2UI，输出一段很短的说明后跟合法的 a2ui-json block。"
             + autonomy_rule_zh
             + requested_component_rule_zh
         )
-    return (
+        # officeclaw 专属组件规则：web channel 不注入（防止影响 web channel）；
+        # channel=None（repair 等拿不到 channel 的场景）默认注入以保持向后兼容。
+        if str(channel or "").strip().lower() != "web":
+            base += officeclaw_component_rules_zh
+        return base
+    base = (
         "If the decision tree determines A2UI is appropriate, output a very "
         "short intro followed by a valid a2ui-json block. "
         + autonomy_rule_en
         + requested_component_rule_en
     )
+    if str(channel or "").strip().lower() != "web":
+        base += " " + officeclaw_component_rules_en
+    return base
 
 
 __all__ = [

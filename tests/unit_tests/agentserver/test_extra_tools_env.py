@@ -22,8 +22,11 @@ from uuid import uuid4
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
+    _EXTRA_TOOLS_CACHE,
+    _load_extra_tools_from_env,
+)
 
 
 class _FakeCard:
@@ -171,9 +174,9 @@ def _make_log_capture() -> tuple[_LogCapture, logging.Handler]:
 @pytest.fixture(autouse=True)
 def _reset_extra_tools_cache():
     """The process-level cache must not leak instances between tests."""
-    JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE.clear()
+    _EXTRA_TOOLS_CACHE.clear()
     yield
-    JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE.clear()
+    _EXTRA_TOOLS_CACHE.clear()
 
 
 class _FakeResourceMgr:
@@ -203,7 +206,10 @@ def fake_resource_mgr(monkeypatch: pytest.MonkeyPatch) -> _FakeResourceMgr:
 
 @pytest.fixture
 def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(interface_deep, "is_enterprise", lambda: True)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory.is_enterprise",
+        lambda: True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +225,13 @@ def test_not_enterprise_ignores_env(
     _write_tool_module(
         tmp_path, monkeypatch, "xtool_valid", _TOOL_MODULE_TEMPLATE.format(prefix="gating")
     )
-    monkeypatch.setattr(interface_deep, "is_enterprise", lambda: False)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory.is_enterprise",
+        lambda: False,
+    )
     monkeypatch.setenv("AGENT_EXTRA_TOOLS", "xtool_valid")
 
-    assert JiuWenSwarmDeepAdapter._load_extra_tools_from_env() == []
+    assert _load_extra_tools_from_env() == []
 
 
 @pytest.mark.parametrize("env_value", [None, "", "   "])
@@ -237,7 +246,7 @@ def test_empty_env_returns_empty(
     else:
         monkeypatch.setenv("AGENT_EXTRA_TOOLS", env_value)
 
-    assert JiuWenSwarmDeepAdapter._load_extra_tools_from_env() == []
+    assert _load_extra_tools_from_env() == []
 
 
 def test_module_without_register_tools_is_skipped(
@@ -252,7 +261,7 @@ def test_module_without_register_tools_is_skipped(
     )
     monkeypatch.setenv("AGENT_EXTRA_TOOLS", "xtool_no_factory;xtool_valid")
 
-    tools = JiuWenSwarmDeepAdapter._load_extra_tools_from_env()
+    tools = _load_extra_tools_from_env()
 
     assert [tool.card.name for tool in tools] == ["biz_system_tool", "get_current_user"]
 
@@ -268,7 +277,7 @@ def test_single_tool_factory_result_is_wrapped(
         _write_tool_module(tmp_path, monkeypatch, "xtool_single", _SINGLE_TOOL_MODULE),
     )
 
-    tools = JiuWenSwarmDeepAdapter._load_extra_tools_from_env()
+    tools = _load_extra_tools_from_env()
 
     assert [tool.card.name for tool in tools] == ["solo_tool"]
 
@@ -285,8 +294,8 @@ def test_factory_exception_is_skipped_and_retried(
     )
     monkeypatch.setenv("AGENT_EXTRA_TOOLS", "xtool_raises;xtool_valid")
 
-    first = JiuWenSwarmDeepAdapter._load_extra_tools_from_env()
-    second = JiuWenSwarmDeepAdapter._load_extra_tools_from_env()
+    first = _load_extra_tools_from_env()
+    second = _load_extra_tools_from_env()
 
     assert [tool.card.name for tool in first] == ["biz_system_tool", "get_current_user"]
     assert second == first
@@ -385,8 +394,8 @@ def test_repeat_and_concurrent_builds_share_cached_instances(
     )
     monkeypatch.setenv("AGENT_EXTRA_TOOLS", name)
 
-    first = JiuWenSwarmDeepAdapter._load_extra_tools_from_env()
-    second = JiuWenSwarmDeepAdapter._load_extra_tools_from_env()
+    first = _load_extra_tools_from_env()
+    second = _load_extra_tools_from_env()
 
     # The factory builds fresh instances per call; only the cache makes the
     # second build identical instead of a new-registration leak.
@@ -395,7 +404,7 @@ def test_repeat_and_concurrent_builds_share_cached_instances(
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         batches = list(
-            pool.map(lambda _: JiuWenSwarmDeepAdapter._load_extra_tools_from_env(), range(8))
+            pool.map(lambda _: _load_extra_tools_from_env(), range(8))
         )
 
     assert all(batch == first for batch in batches)

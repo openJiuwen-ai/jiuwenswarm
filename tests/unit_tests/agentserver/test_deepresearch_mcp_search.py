@@ -143,7 +143,16 @@ async def test_registration_delegates_only_complete_server(monkeypatch, conditio
         snapshot = adapter._deepresearch_mcp_snapshot
         assert snapshot[0] is registration
         names = [s['server_name'] for s in snapshot[1]]
-        assert names == (['search'] if condition == 'complete' else ['first'] if condition == 'duplicate' else [])
+        # builtin 场景不再跳过重名工具：改名后两个工具都装上，来源完整可委派。
+        expected = {
+            'complete': ['search'],
+            'duplicate': ['first'],
+            'builtin': ['search'],
+            'install_failure': [],
+        }
+        assert names == expected[condition]
+        if condition == 'builtin':
+            assert 'search_lookup' in registration.tool_names
     finally:
         await adapter.cleanup_request_scoped_office_claw_mcp(registration)
 

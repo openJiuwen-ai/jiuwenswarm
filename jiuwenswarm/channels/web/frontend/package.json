@@ -4,8 +4,6 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
-    "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",
     "test:request-timeout": "node --test tests/requestTimeout.test.mjs",
     "build": "tsc && vite build",

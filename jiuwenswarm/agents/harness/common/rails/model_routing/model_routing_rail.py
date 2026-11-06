@@ -11,6 +11,7 @@ from jiuwenswarm.common.utils import logger
 from .capability import ModelCapability
 from .classifier import CONTINUATION_CATEGORY, estimate_tokens, validate_score
 from .compressor_sync import sync_agent_compressor_models
+from .image_capability_sync import sync_agent_image_capability
 from .types import (
     PriorModelCall, TaskAnalysis, RoutingDecision,
     _agent_model_name, _extract_agent_info, _new_trace_id,
@@ -486,6 +487,12 @@ class ModelRoutingRail(DeepAgentRail):
                             setattr(ctx.agent, "model_name", mname)
                     except Exception as exc:
                         logger.debug("[ModelRouting] setattr model_name failed: %s", exc)
+                # 换模必须同步看图能力位：自动路由直接 set_llm，若漏掉会沿用旧模型的
+                # enable_read_image_multimodal（视觉入口模型切文本模型后仍 True →
+                # rail 误注入 + 摘掉 VQA）。与 adapter 的换模入口共用同一 helper。
+                capability_synced = sync_agent_image_capability(
+                    ctx.agent, recommended_cap.model
+                )
                 # 主对话换模后，同步已缓存的上下文压缩器 / 会话记忆的 Model。它们
                 # 在 agent 创建时把 model_config 烤了进去，不跟着换就会继续拿旧 id
                 # 调上游 → 模型无效、压缩 noop、上下文膨胀。
@@ -496,9 +503,10 @@ class ModelRoutingRail(DeepAgentRail):
                     previous_model=previous_model,
                 )
                 logger.info(
-                    "[ModelRouting] applied set_llm -> %s compressor_synced=%s",
+                    "[ModelRouting] applied set_llm -> %s compressor_synced=%s capability_synced=%s",
                     mname or "unknown",
                     synced,
+                    capability_synced,
                 )
             except Exception as exc:
                 logger.warning("[ModelRouting] set_llm failed: %s", exc)

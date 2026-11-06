@@ -855,7 +855,10 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "GET", "/workspace/usage", "workspace.usage", "workspace",
-        "查询本人工作区用量与配额状态", query_keys=_TENANT_QUERY,
+        "查询本人工作区用量与配额状态",
+        # force_refresh 必须透传，否则 Agent 只会读缓存/默认 0 用量。
+        query_keys=_TENANT_QUERY + ("session_id", "force_refresh"),
+        bind_session_param=True,
     ),
     WebHttpMappedRoute(
         "DELETE", "/workspace/entries", "workspace.entries.delete", "workspace",

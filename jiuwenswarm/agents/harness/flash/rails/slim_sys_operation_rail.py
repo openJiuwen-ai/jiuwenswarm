@@ -39,17 +39,30 @@ class SlimSysOperationRail(SysOperationRail):
         from ..tools.flash_glob_tool import FlashGlobTool
         from ..tools.flash_read_tool import FlashReadFileTool
 
+        from jiuwenswarm.agents.harness.common.read_file_image_support import (
+            build_read_file_image_kwargs,
+        )
+
         lang = agent.system_prompt_builder.language
         agent_id = getattr(getattr(agent, "card", None), "id", None)
-        enable_read_image_multimodal = should_enable_read_image_multimodal(
-            agent,
-            self._enable_read_image_multimodal,
-        )
+
+        def _image_multimodal_resolver() -> bool:
+            # 调用时求值：切模型后 read_file 的内联行为跟随当前模型能力。
+            return should_enable_read_image_multimodal(
+                agent,
+                self._enable_read_image_multimodal,
+            )
+
         read_tool = FlashReadFileTool(
             self.sys_operation,
             lang,
             agent_id,
-            enable_image_multimodal=enable_read_image_multimodal,
+            # resolver 仅在 core 提供 image_multimodal_resolver 参数时透传；锁定 core
+            # （8215f2c 的 enable_image_multimodal 是纯 bool）退回构造时求值的静态值。
+            **build_read_file_image_kwargs(
+                _image_multimodal_resolver,
+                enable_image_multimodal=_image_multimodal_resolver(),
+            ),
         )
         write_tool = WriteFileTool(self.sys_operation, lang, agent_id)
         edit_tool = FlashEditFileTool(self.sys_operation, lang, agent_id)

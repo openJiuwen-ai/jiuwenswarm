@@ -259,7 +259,7 @@ async def test_run_rewrite_fast_path_calls_prepare_model_commit_once_in_order():
         calls.append("prepare")
         return _json_result(_PREPARED)
 
-    async def model(_messages, *, temperature):
+    async def model(_messages, *, temperature, **_kwargs):
         assert temperature == 0.2
         calls.append("model")
         return SimpleNamespace(
@@ -307,7 +307,7 @@ async def test_run_rewrite_fast_path_preserves_sampling_for_non_polish(action):
 
     assert result is not None
     assert result.status == "completed"
-    assert model.await_args.kwargs == {}
+    assert model.await_args.kwargs == {"request_purpose": "deepresearch_rewrite"}
 
 
 @pytest.mark.asyncio
@@ -875,6 +875,7 @@ async def test_run_rewrite_fast_path_forwards_model_call_kwargs():
     assert model.await_args.kwargs == {
         "temperature": 0.2,
         "extra_body": {"thinking": {"type": "disabled"}},
+        "request_purpose": "deepresearch_rewrite",
     }
 
 

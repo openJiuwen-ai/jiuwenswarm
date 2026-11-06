@@ -124,6 +124,32 @@ _RESERVED_HOOK_EXTRA_BODY_KEYS = frozenset(
     {"thinking", "enable_thinking", "reasoning_effort"}
 )
 
+# before_model_http 用途（积分对账口径）里可由调用点经 ``request_purpose`` 显式
+# 透传的值：compaction 由 agent-core 压缩作用域写入；summary / recap / rewrite /
+# deepresearch_rewrite / skill_turbo / symphony / repair 由 jiuwenswarm 各独立调用点写入。
+# 其余值由执行主体推导、``chat`` 为兜底，不在此列。
+_EXPLICIT_HOOK_PURPOSES = frozenset(
+    {
+        "compaction",
+        "summary",
+        "recap",
+        "rewrite",
+        "deepresearch_rewrite",
+        "skill_turbo",
+        "symphony",
+        "repair",
+    }
+)
+
+# 执行主体 kind（openjiuwen ``ExecutionSubject.kind``）→ 积分对账 purpose 的映射，
+# 覆盖"谁在调用"这一维。``main_agent`` 与未绑定主体都不在表内，回退 ``chat``
+# （普通主对话）。team 模式 leader/member 与 subagent 是不同主体，计费需分开。
+_SUBJECT_KIND_TO_PURPOSE = {
+    "subagent": "subagent",
+    "team_leader": "team_leader",
+    "team_member": "team_member",
+}
+
 # before_model_http 出口包装清单：方法集合按各客户端实际支持的 custom_headers
 # 通道确定（方法内 pop custom_headers 并经 merge_request_headers 合并进
 # extra_headers）。Anthropic / OpenAIAccount 的 generate_image 等多媒体出口
@@ -836,6 +862,31 @@ def _merge_model_http_hook_ctx(ctx: Any, kwargs: dict) -> None:
         kwargs["extra_body"] = merged_body
 
 
+def _resolve_model_http_purpose(kwargs: dict) -> str:
+    """归一化本次模型调用的用途，供 ``before_model_http`` 扩展做积分对账。
+
+    优先级：
+    1. ``request_purpose`` 命中 ``_EXPLICIT_HOOK_PURPOSES`` 中的显式值即用；
+    2. 当前执行主体（``ExecutionSubject.kind``）命中 ``_SUBJECT_KIND_TO_PURPOSE``
+       映射即用——覆盖"谁在调用"这一维；
+    3. 兜底 ``chat``（普通主对话，含工具循环与重试）。
+    """
+    raw = kwargs.get("request_purpose")
+    if raw in _EXPLICIT_HOOK_PURPOSES:
+        return str(raw)
+    try:
+        from openjiuwen.harness.execution_subject import current_execution_subject
+
+        subject = current_execution_subject()
+        kind = getattr(subject, "kind", "") if subject is not None else ""
+        return _SUBJECT_KIND_TO_PURPOSE.get(kind, "chat")
+    except Exception:
+        # 执行主体不可用（旧版 agent-core / import 失败）时静默回退 chat，
+        # 不阻断埋点主链路。
+        pass
+    return "chat"
+
+
 async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
     """触发 ``before_model_http`` 埋点并把扩展口袋合并进本次调用。
 
@@ -862,6 +913,7 @@ async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
         # model_name 来自 ModelRequestConfig（base 客户端组参同源）
         api_base=str(getattr(mcc, "api_base", "") or ""),
         model_name=str(getattr(mc, "model_name", "") or ""),
+        purpose=_resolve_model_http_purpose(kwargs),
     )
     try:
         triggered = await ExtensionRegistry.trigger_if_initialized(

@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Unit tests for sync_agents_configs catalog apply + env ns isolation."""
 
@@ -11,6 +11,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 from jiuwenswarm.server.runtime.sync_agents_configs import (
+    SYNC_ENV_OPTIONAL_KEYS,
     SYNC_ENV_SCHEMA,
     build_agent_spec,
     compute_content_hash,
@@ -421,6 +422,29 @@ class TestSyncAgentsConfigsValidation:
                     ],
                 }
             )
+
+    @staticmethod
+    def test_model_modalities_optional_for_legacy_agents():
+        """Legacy agents omit MODEL_MODALITIES; config.yaml then defaults modalities to text."""
+        assert "MODEL_MODALITIES" in SYNC_ENV_SCHEMA
+        assert "MODEL_MODALITIES" in SYNC_ENV_OPTIONAL_KEYS
+        env = _full_env()
+        del env["MODEL_MODALITIES"]
+        payload = validate_sync_payload(
+            {
+                "revision": "r1",
+                "service_id": "default",
+                "agents": [
+                    {
+                        "agent_id": "agentteam",
+                        "config": {},
+                        "env": env,
+                        "runtime": {},
+                    }
+                ],
+            }
+        )
+        assert "MODEL_MODALITIES" not in payload["agents"][0]["env"]
 
     @staticmethod
     def test_ttse_enabled_required_like_evolution():
@@ -1012,3 +1036,56 @@ class TestOfficeclawGuard:
         )
         assert TenantAgentPool.require_officeclaw_agent(req) is None
 
+@pytest.mark.asyncio
+async def test_sync_revision_change_keeps_schema_cache(mock_warmup, tmp_path, monkeypatch):
+    """Catalog revision churn must not wipe the OfficeClaw MCP schema cache.
+
+    Regression for the belt-and-suspenders invalidation previously wired into
+    sync_agents_configs: the relay revision hashes the whole catalog (agent
+    models, credentials, teams) and churns on most syncs, so the cache was
+    re-filled (a ~400ms Node spawn) every few minutes although the MCP bundle
+    never changed. Freshness is now decided by the bundle-tree fingerprint
+    embedded in the cache key.
+    """
+    from jiuwenswarm.common import mcp_config
+
+    # CR-3: 固定缓存开关,与 test_mcp_schema_cache.py 的 fixture 一致,
+    # 避免执行环境导出禁用值(0/false/no/off)时缓存旁路导致断言漂移
+    monkeypatch.setenv("JIUWENSWARM_MCP_SCHEMA_CACHE", "1")
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.js").write_text("shell v1")
+    params = {
+        "command": "node",
+        "args": [str(dist / "index.js")],
+        "cwd": str(tmp_path),
+        "env": {},
+    }
+
+    calls = 0
+
+    async def _discover(p):
+        nonlocal calls
+        calls += 1
+        return [{"name": "office_claw_post_message", "description": "d", "input_params": {}}]
+
+    with patch.object(mcp_config, "_list_office_claw_mcp_tools_uncached", _discover):
+        mcp_config._clear_office_claw_mcp_schema_cache_for_tests()
+        try:
+            await mcp_config.list_office_claw_mcp_tools(params)
+            await mcp_config.list_office_claw_mcp_tools(params)
+            assert calls == 1
+            assert len(mcp_config._office_claw_mcp_schema_cache) == 1
+
+            pool = TenantAgentPool.get_instance()
+            await pool.sync_agents_configs(_sync_payload(revision="rev-a"))
+            await pool.sync_agents_configs(_sync_payload(revision="rev-b"))
+
+            assert len(mcp_config._office_claw_mcp_schema_cache) == 1, (
+                "catalog revision change must not clear the MCP schema cache"
+            )
+            await mcp_config.list_office_claw_mcp_tools(params)
+            assert calls == 1, "cache entry must survive catalog syncs"
+        finally:
+            mcp_config._clear_office_claw_mcp_schema_cache_for_tests()

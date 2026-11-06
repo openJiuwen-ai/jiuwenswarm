@@ -8,6 +8,7 @@ import logging
 from types import SimpleNamespace
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+from jiuwenswarm.server.runtime.agent_adapter.deep import context_assembly
 
 
 def test_build_context_assemble_rail_uses_modern_signature(monkeypatch):
@@ -17,7 +18,7 @@ def test_build_context_assemble_rail_uses_modern_signature(monkeypatch):
             self.tool_name_allowlist = tool_name_allowlist
 
     monkeypatch.setattr(
-        interface_deep,
+        context_assembly,
         "ContextAssembleRail",
         ModernContextAssembleRail,
     )
@@ -41,7 +42,7 @@ def test_build_context_assemble_rail_falls_back_and_calls_setter(monkeypatch):
             self.allowlist_calls.append(tool_names)
 
     monkeypatch.setattr(
-        interface_deep,
+        context_assembly,
         "ContextAssembleRail",
         LegacyContextAssembleRail,
     )
@@ -64,7 +65,7 @@ def test_build_context_assemble_rail_falls_back_to_no_args(monkeypatch):
             self.disabled_calls.append(tool_names)
 
     monkeypatch.setattr(
-        interface_deep,
+        context_assembly,
         "ContextAssembleRail",
         OldContextAssembleRail,
     )
@@ -90,14 +91,14 @@ def test_build_context_assemble_rail_fallback_logs_effective_not_requested(
             self.disabled_calls.append(tool_names)
 
     monkeypatch.setattr(
-        interface_deep,
+        context_assembly,
         "ContextAssembleRail",
         OldContextAssembleRail,
     )
 
     # jiuwenswarm root logger sets propagate=False and uses QueueHandler;
     # pytest caplog only hangs on root, so attach the handler to this logger.
-    target = interface_deep.logger
+    target = context_assembly.logger
     target.addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger=target.name)
     try:

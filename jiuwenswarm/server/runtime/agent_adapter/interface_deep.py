@@ -30,7 +30,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, ClassVar, List, Optional, Tuple, cast
-from urllib.parse import quote_plus
 
 import yaml
 from openjiuwen.core.context_engine.schema.config import CompressionRecallConfig, ContextEngineConfig
@@ -136,6 +135,10 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
 )
+from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
+    RefusalTextScrub,
+    is_refusal_scrub_control,
+)
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
     TodoCloseTextHold,
     is_todo_close_control,
@@ -159,6 +162,301 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_h
     target_from_commit_result,
     target_from_state,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _account_deepresearch_sdk_usage,
+    _accumulate_usage,
+    _acp_runtime_tools_enabled,
+    _append_cancelled_tools_to_history,
+    _apply_reasoning_only_empty_reply_fallback,
+    _approved_plan_exit_resume_tool_call_id,
+    _circuit_breaker_config_from_mapping,
+    _coerce_circuit_breaker_threshold,
+    _cron_execution_checkpointer,
+    _cron_session_has_context,
+    _deepresearch_rewrite_publish_uncertain,
+    _deepresearch_rewrite_replay_conflict,
+    _deepresearch_rewrite_terminal_kind,
+    _deepresearch_usage_summary,
+    _enterprise_resource_id_from_request,
+    _extract_deepresearch_sdk_usage,
+    _extract_followup_prompt,
+    _extract_request_interactive_ask,
+    _extract_request_system_prompt,
+    _extract_usage_metadata,
+    _followup_response,
+    _format_approval_summary,
+    _format_goal_control_message,
+    _format_llm_usage_summary,
+    _generated_metric_id_key,
+    _get_a2x_config,
+    _get_active_package_config_paths,
+    _get_registered_sys_operation_by_isolation_key,
+    _goal_completed_history_exists,
+    _goal_record_payload,
+    _has_uploaded_file,
+    _inject_attribution_to_config,
+    _inject_request_id_into_inputs,
+    _interaction_goal_updated_payload,
+    _is_approval_event,
+    _is_eternal_interaction_resume,
+    _is_interrupt_resume_dispatch,
+    _is_interrupt_skill_evolution_approval_params,
+    _is_regular_skill_evolution_approval_params,
+    _is_related_session,
+    _is_subagent_approval_answer,
+    _leftover_request_mcp_servers,
+    _new_usage_accumulator,
+    _normalize_deepresearch_usage,
+    _normalize_reload_value,
+    _parse_goal_slash_intent,
+    _push_auto_rebuild_published_metric,
+    _push_skill_sleep_published,
+    _push_skill_sleep_suggest,
+    _push_team_skill_evolve_resolution_status,
+    _record_goal_completed_history_if_needed,
+    _record_goal_set_history_if_needed,
+    _reset_deepresearch_route_context,
+    _reset_runtime_cron_context,
+    _resolve_enable_task_loop,
+    _resolve_eternal_conversation_enabled,
+    _resolve_headless_from_config,
+    _resolve_input_dispatch_mode,
+    _resolve_interrupt_session_id,
+    _resolve_managed_browser_binary_from_config,
+    _resolve_skill_sleep_traces_dir,
+    _resolve_subagent_approval_answer,
+    _restore_omitted_reload_fields,
+    _run_cleanup_steps,
+    _select_registered_runtime_tool_names,
+    _session_adapter_key,
+    _session_adapter_lock_has_waiters,
+    _session_has_live_subagent_runtime,
+    _should_fill_reasoning_only_empty_final,
+    _should_parse_tui_goal_slash,
+    _skill_turbo_answers_to_confirm_payload,
+    _strip_skill_md_fence,
+    _structured_goal_op_from_request,
+    _sys_operation_isolation_key,
+    _ttse_consult_knobs,
+    _valid_deepresearch_rewrite_request_id,
+    _wants_attach_goal,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import (
+    _build_audio_model_config,
+    _build_image_gen_model_config,
+    _build_image_tool_fallback_notice,
+    _build_messages_for_model,
+    _build_model_from_entry,
+    _build_multimodal_image_rail,
+    _build_video_model_config,
+    _build_vision_model_config,
+    _embedding_config_fingerprint,
+    _inject_model_routing_into_inputs,
+    _inject_model_selection_into_inputs,
+    _mask_model_secret,
+    _mcc_looks_usable,
+    _model_looks_usable,
+    _model_reload_fingerprint,
+    _models_config_fingerprint,
+    _prepare_multimodal_image_inputs,
+    _resolve_enable_read_image_multimodal,
+    _stable_reload_fingerprint,
+    _system_prompt_reload_fingerprint,
+    parse_int,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+    _apply_hitl_suppress_clear,
+    _approval_chunk_from_event,
+    _drain_final_content_to_deltas,
+    _fast_path_chunks,
+    _is_ask_user_payload,
+    _is_hitl_suppress_noise_chunk,
+    _iter_delta_for_unstreamed_final,
+    _parse_stream_chunk,
+    _propagate_stream_source_id,
+    _rewrite_html_followup_chunks,
+    _rewrite_skill_turbo_usage_chunk,
+    _run_failure,
+    _stream_text_payload,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.checkpoint_db import (
+    _build_mysql_async_engine,
+    _build_postgresql_async_engine,
+    _gateway_db_pool_kwargs,
+    ensure_persistent_checkpointer,
+    reset_shared_checkpoint_for_tests,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.parse_utils import (
+    _clean_heartbeat_content,
+    _env_truthy,
+    _parse_bool,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.stage_log import (
+    _SLOW_RAIL_BUILD_MS,
+    _SLOW_RUNTIME_CONFIG_MS,
+    _STAGE_LOG_THRESHOLD_ENV,
+    _stage_breakdown_logger,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.git_facts import (
+    _STABLE_GIT_FACTS,
+    _STABLE_GIT_FACTS_LOCK,
+    _STABLE_GIT_FACTS_MAX,
+    _StableGitFacts,
+    _read_git_head,
+    _resolve_stable_git_facts,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_request import (
+    _DEEPRESEARCH_FOLLOWUP_ACTIONS,
+    _DEEPRESEARCH_REPORT_TYPES,
+    _INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE,
+    _extract_deepresearch_followup,
+    _extract_requested_report_type,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.progressive_tools import (
+    _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
+    _LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES,
+    _PROGRESSIVE_META_TOOL_NAMES,
+    _TTSE_CONSULT_TOOL_NAME,
+    _ensure_progressive_meta_tools,
+    _ensure_ttse_consult_eager_tool,
+    _merge_ttse_config,
+    _normalize_progressive_eager_tools,
+    _normalize_tool_names,
+    _ttse_consult_should_be_eager,
+    build_progressive_tool_rail_from_config,
+    is_subagent_tool_lazy_load_enabled,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_source import (
+    STREAM_SOURCE_ID_FIELD,
+    _SKILL_TURBO_TOOL_ID_SUFFIX,
+    _ask_user_questions_key,
+    _is_foreign_stream_source,
+    _is_outer_react_tool_result,
+    _tool_result_lookup,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.observability_helpers import (
+    _extract_iteration_from_chunk,
+    _extract_iteration_from_obj,
+    _resolve_observability_mode,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.agent_config_helpers import (
+    _SESSION_ADAPTER_IDLE_TTL_ENV,
+    _SKILL_SESSION_LAZY_REFRESH_ENV,
+    _agent_ras_kwargs_from_config,
+    _deep_agent_context_engine_config,
+    _deep_agent_kv_cache_affinity_config,
+    _model_provider,
+    _model_routing_enabled,
+    _optional_enable_subagent_runtime,
+    _resolve_instance_config_base,
+    _session_adapter_idle_ttl_default,
+    _set_skill_evolution_triggers,
+    _skill_session_lazy_refresh_enabled,
+    _try_add_cache_control,
+    init_permission_engine,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.subagent_load import (
+    _agent_def_to_subagent_config,
+    _load_custom_subagents,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.context_assembly import (
+    _build_context_assemble_rail,
+    _build_context_processor_rail,
+    _resolve_session_memory_config,
+    _sync_context_assemble_tool_allowlist,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.llm_io_trace_patch import (
+    _LATENCY_PRE_LLM_MARKED,
+    _LLM_IO_TRACE_PATCH_APPLIED,
+    _LLM_TRACE_ITERATION,
+    _LLM_TRACE_MODEL_NAME,
+    _LLM_TRACE_REQUEST_ID,
+    _LLM_TRACE_SESSION_ID,
+    _REASONING_TRACE_LOG_BATCH,
+    _apply_llm_io_trace_patch,
+    _log_latency_pre_llm_once,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.runtime_tool_context import (
+    _CRON_TOOL_BOUND,
+    _CRON_TOOL_CHANNEL_ID,
+    _CRON_TOOL_METADATA,
+    _CRON_TOOL_MODE,
+    _CRON_TOOL_NAMES,
+    _CRON_TOOL_SESSION_ID,
+    _DeepResearchRouteContextToken,
+    _RUNTIME_TOOL_A2A_POLICY_ID,
+    _RUNTIME_TOOL_RESOURCE_ID,
+    _RuntimeCronContextTokens,
+    _RuntimeCronToolContext,
+    get_runtime_tool_a2a_policy_id,
+    get_runtime_tool_channel_id,
+    get_runtime_tool_metadata,
+    get_runtime_tool_resource_id,
+    get_runtime_tool_session_id,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.adapter_types import (
+    _ACP_BLOCKED_DEFAULT_TOOL_NAMES,
+    _DEEPRESEARCH_CHECKPOINT_UNCERTAIN,
+    _DEEPRESEARCH_CHECKPOINT_UNCERTAIN_MESSAGE,
+    _DEEPRESEARCH_REWRITE_DELIVERY_FAILURE_MESSAGE,
+    _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE,
+    _DEEPRESEARCH_REWRITE_REPLAY_MAX_BYTES,
+    _DEEPRESEARCH_REWRITE_REPLAY_MAX_ENTRIES,
+    _DEEPRESEARCH_REWRITE_REPLAY_PATH_MAX_BYTES,
+    _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH,
+    _DEEPRESEARCH_REWRITE_REPLAY_SCHEMA_VERSION,
+    _DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY,
+    _DEEPRESEARCH_REWRITE_REPLAY_TERMINAL_KINDS,
+    _DEEPRESEARCH_REWRITE_SUCCESS_MESSAGE,
+    _GitSnapshot,
+    _MISSING_SESSION_MEMORY_MGR,
+    _MODE_DISPLAY_MAP,
+    _RailBuildInfo,
+    _RequestMcpToolBuffers,
+    _SKILL_RETRIEVAL_TOOL_NAMES,
+    OfficeClawMcpBuiltinNameConflict,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.adapter_statics import (
+    _browser_runtime_enabled,
+    _build_context_overflow_recovery_rail,
+    _build_disabled_tools_rail,
+    _build_eternal_conversation_rail,
+    _build_mcp_server_config,
+    _build_model_routing,
+    _build_request_summary_rail,
+    _build_response_prompt_rail,
+    _build_security_rail,
+    _build_stream_event_rail,
+    _extract_enabled_mcp_server_entries,
+    _is_acp_tool_profile,
+    _is_subagent_default_enabled,
+    _is_subagent_enabled,
+    _register_agent_owned_tool,
+    _register_shared_tool,
+    _resolve_enable_subagent_runtime,
+    _resolve_prompt_channel,
+    _sync_browser_runtime_environment,
+    shutdown_context_session_memory,
+    supports_pending_reload,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
+    _build_avatar_rail,
+    _build_extension_config_debug_rail,
+    _build_heartbeat_rail,
+    _build_llm_retry_rail,
+    _build_skill_protocol_prompt_rail,
+    _build_task_execution_rail,
+    _build_work_plan_approval_rail,
+    _is_sandbox_bound_rail,
+    _load_extra_rails_from_env,
+    _load_extra_tools_from_env,
+    _office_claw_thread_id_from_tools,
+    _set_rail_sys_operation,
+    _should_register_acp_runtime_tools,
+    _stage_request_mcp_tools,
+    _suspend_subagent_permission_rails,
+    find_team_skill_rail,
+)
 
 if TYPE_CHECKING:
     from openjiuwen.harness.schema.config import SubAgentConfig
@@ -170,14 +468,9 @@ _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
 if _ERROR_EVENT is None:
     _ERROR_EVENT = getattr(InteractionEventType, "RUNTIME_ERROR")
 ERROR_EVENT_TYPE = _ERROR_EVENT.value
-# 与 skill_turbo/executor.STREAM_SOURCE_ID_FIELD 一致：并发节点用它标识 source，
-# 前端据其路由到 subagent 行。adapter 转发 llm_reasoning / llm_output 时须原样透传。
-STREAM_SOURCE_ID_FIELD = "stream_source_id"
 _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT = 20
 _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
 
-# SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
-_SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 
 # 协议化恢复信号（agent-core RESUME_SIGNAL，react_agent invoke resume 分支发出）：
 # 显式标记"runner 已进入恢复执行"，消费端据此精确清除 HITL suppress，取代
@@ -185,108 +478,7 @@ _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 # 信号本身无用户可见内容，_parse_stream_chunk 对未知类型返回 None 将其吞掉。
 _RESUME_SIGNAL_CHUNK_TYPE = "__resume_signal__"
 
-# shutdown_context_session_memory 用哨兵区分"属性缺失（框架改名/异型
-# rail）"与"属性合法为 None（未配置或已关闭，框架初始即 None，仅在
-# session_memory_compressor_config.enabled=true 时创建）"——两者日志
-# 级别不同，getattr 默认值无法表达该区分（CR-5）。
-_MISSING_SESSION_MEMORY_MGR = object()
 
-
-def _is_foreign_stream_source(payload: Any) -> bool:
-    """True when the frame was mirrored from a nested stream (subagent / skill node).
-
-    The gateway fills a missing source with the ``"main"`` sentinel, so only a
-    non-empty, non-``main`` id marks a frame that must not touch parent-turn
-    bookkeeping.
-    """
-    if not isinstance(payload, dict):
-        return False
-    source_id = payload.get(STREAM_SOURCE_ID_FIELD)
-    return isinstance(source_id, str) and bool(source_id) and source_id != "main"
-
-
-def _propagate_stream_source_id(
-    src_payload: Any, result: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    """将上游 payload 中的 stream_source_id / task_id 透传到输出帧（原地写入）。
-
-    skill_turbo 并发节点用 stream_source_id 标识 source，前端据其路由到
-    subagent 行。task_id 原样透传，供 RelayClaw 按需把 chat.delta 归入
-    taskRuns；是否进正式正文由上层决定，本函数不裁剪 content。
-    """
-    if result is None or not isinstance(src_payload, dict):
-        return result
-    source_id = src_payload.get(STREAM_SOURCE_ID_FIELD)
-    if source_id:
-        result[STREAM_SOURCE_ID_FIELD] = source_id
-    task_id = src_payload.get("task_id")
-    if isinstance(task_id, str) and task_id.strip():
-        result["task_id"] = task_id.strip()
-    return result
-
-
-def _tool_result_lookup(payload: Any, *keys: str) -> Any:
-    """Read a field from a tool_result payload or its nested ``tool_result`` dict."""
-    if not isinstance(payload, dict):
-        return None
-    nested = payload.get("tool_result")
-    sources = (payload, nested) if isinstance(nested, dict) else (payload,)
-    for source in sources:
-        for key in keys:
-            value = source.get(key)
-            if value is not None and value != "":
-                return value
-    return None
-
-
-def _is_outer_react_tool_result(payload: Any) -> bool:
-    """True when this tool_result belongs to the outer ReAct agent, not SkillTurbo internals.
-
-    Inner PPT/bash/read_file results carry ``stream_source_id`` or a tool id ending
-    in ``_skill_turbo``. Resetting ``has_streamed_content`` on those would leak
-    nested non-streamed answers as ``chat.final``.
-    """
-    source_id = _tool_result_lookup(payload, STREAM_SOURCE_ID_FIELD)
-    if isinstance(source_id, str) and source_id.strip():
-        return False
-    tool_id = _tool_result_lookup(payload, "tool_call_id", "tool_id", "toolCallId")
-    if isinstance(tool_id, str) and tool_id.strip().endswith(_SKILL_TURBO_TOOL_ID_SUFFIX):
-        return False
-    return True
-
-
-def _ask_user_questions_key(payload: dict) -> str:
-    """ask_user 卡片的 questions 规范化键，用于判定同一中断的重复通道。"""
-    try:
-        questions = payload.get("questions") or []
-        return json.dumps(questions, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        return repr(payload.get("questions"))
-
-
-_DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY = "deepresearch_rewrite_fast_path_replays"
-_DEEPRESEARCH_REWRITE_REPLAY_SCHEMA_VERSION = 1
-_DEEPRESEARCH_REWRITE_REPLAY_MAX_ENTRIES = 32
-_DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH = 256
-_DEEPRESEARCH_REWRITE_REPLAY_MAX_BYTES = 256 * 1024
-_DEEPRESEARCH_REWRITE_REPLAY_PATH_MAX_BYTES = 4096
-_DEEPRESEARCH_REWRITE_REPLAY_TERMINAL_KINDS = frozenset(
-    {"success", "report_delivery_failed", "publish_uncertain"}
-)
-_DEEPRESEARCH_REWRITE_SUCCESS_MESSAGE = (
-    "本轮改写已完成。若报告已是最终版本，请回复‘生成 HTML’；"
-    "如需继续改写，可直接选择下一处内容。"
-)
-_DEEPRESEARCH_REWRITE_DELIVERY_FAILURE_MESSAGE = (
-    "改写版本已成功保留，但报告文件交付失败。"
-)
-_DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE = (
-    "改写版本状态不确定，请刷新会话后重试。"
-)
-_DEEPRESEARCH_CHECKPOINT_UNCERTAIN = "DEEPRESEARCH_CHECKPOINT_UNCERTAIN"
-_DEEPRESEARCH_CHECKPOINT_UNCERTAIN_MESSAGE = (
-    "会话检查点状态不确定，请重试以重新加载会话。"
-)
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
     init_a2x_client,
     register_blank_agent_if_teammate,
@@ -582,6 +774,8 @@ from jiuwenswarm.common.config import (
     resolve_string_or_list_config,
 )
 from jiuwenswarm.common.mcp_config import (
+    CONNECTOR_DISCOVERY_FAILED,
+    CONNECTOR_NO_TOOLS,
     MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
@@ -712,7 +906,6 @@ from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
     parse_agent_skill_prebuilt,
 )
 from jiuwenswarm.common.utils import (
-    DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
     fill_template_defaults,
     get_agent_evolution_trajectories_dir,
     get_agent_root_dir,
@@ -736,280 +929,14 @@ from jiuwenswarm.dotenv_early import load_dotenv_runtime
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
 
-_DEEPRESEARCH_REPORT_TYPES = frozenset({"professional", "brief"})
-_INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE = (
-    "params.report_type must be one of: professional, brief"
-)
-
-
-def _extract_requested_report_type(request: AgentRequest) -> DeepResearchReportType | None:
-    """Return the strict request-scoped report type; metadata is not trusted."""
-    params = request.params if isinstance(request.params, dict) else {}
-    if "report_type" not in params:
-        return None
-    value = params["report_type"]
-    if not isinstance(value, str) or value not in _DEEPRESEARCH_REPORT_TYPES:
-        raise ValueError(_INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE)
-    return cast(DeepResearchReportType, value)
-
-
-_DEEPRESEARCH_FOLLOWUP_ACTIONS = frozenset({"upgrade_latest_brief", "refresh_latest_brief"})
-
-
-def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | None:
-    """Return the validated structured DeepResearch follow-up action, if any.
-
-    metadata 是服务端（relay）扩展通道：结构不合法时告警并按未携带处理
-    （请求继续，Main Agent 仍可走手动升级路径），不整体拒绝该消息。
-    """
-    metadata = request.metadata if isinstance(request.metadata, dict) else {}
-    value = metadata.get("deepresearch_followup")
-    if value is None:
-        return None
-    if not isinstance(value, dict) or value.get("v") != 1:
-        logger.warning(
-            "[interface_deep] ignore invalid deepresearch_followup structure "
-            "request_id=%s",
-            request.request_id,
-        )
-        return None
-    action = value.get("action")
-    source_report_id = value.get("source_report_id")
-    valid_action = isinstance(action, str) and action in _DEEPRESEARCH_FOLLOWUP_ACTIONS
-    if (
-        not valid_action
-        or not isinstance(source_report_id, str)
-        or not source_report_id.strip()
-    ):
-        logger.warning(
-            "[interface_deep] ignore invalid deepresearch_followup action "
-            "request_id=%s",
-            request.request_id,
-        )
-        return None
-    return {
-        "v": 1,
-        "action": action,
-        "source_report_id": source_report_id.strip(),
-    }
 TodoModifyTool = CompatibleTodoModifyTool
 install_todo_modify_compat_patch()
 install_evolution_rail_kwargs_compat()
 
 _react_config = get_config().get("react", {})
 
-_CRON_TOOL_CHANNEL_ID: ContextVar[str] = ContextVar(
-    "cron_tool_channel_id",
-    default=CronTargetChannel.WEB.value,
-)
-_CRON_TOOL_SESSION_ID: ContextVar[str | None] = ContextVar(
-    "cron_tool_session_id",
-    default=None,
-)
-_CRON_TOOL_METADATA: ContextVar[dict[str, Any] | None] = ContextVar(
-    "cron_tool_metadata",
-    default=None,
-)
-_CRON_TOOL_MODE: ContextVar[str | None] = ContextVar(
-    "cron_tool_mode",
-    default=None,
-)
-_CRON_TOOL_BOUND: ContextVar[bool] = ContextVar(
-    "cron_tool_bound",
-    default=False,
-)
-_RUNTIME_TOOL_RESOURCE_ID: ContextVar[str] = ContextVar(
-    "runtime_tool_resource_id", default=""
-)
-_RUNTIME_TOOL_A2A_POLICY_ID: ContextVar[str] = ContextVar(
-    "runtime_tool_a2a_policy_id", default=""
-)
-
-_LLM_TRACE_SESSION_ID: ContextVar[str] = ContextVar(
-    "llm_trace_session_id",
-    default="",
-)
-_LLM_TRACE_REQUEST_ID: ContextVar[str] = ContextVar(
-    "llm_trace_request_id",
-    default="",
-)
-_LLM_TRACE_ITERATION: ContextVar[int | None] = ContextVar(
-    "llm_trace_iteration",
-    default=None,
-)
-_LLM_TRACE_MODEL_NAME: ContextVar[str] = ContextVar(
-    "llm_trace_model_name",
-    default="",
-)
-# First Model.invoke/stream of this request → stage=3 pre_llm (jiuwenswarm-only).
-_LATENCY_PRE_LLM_MARKED: ContextVar[bool] = ContextVar(
-    "latency_pre_llm_marked",
-    default=False,
-)
-
-_REASONING_TRACE_LOG_BATCH = 5
-_LLM_IO_TRACE_PATCH_APPLIED = False
-
-
-def _log_latency_pre_llm_once(request_id: str | None) -> None:
-    """Mark ③ endpoint once per request, right before provider call."""
-    if _LATENCY_PRE_LLM_MARKED.get():
-        return
-    _LATENCY_PRE_LLM_MARKED.set(True)
-    logger.info(
-        "[latency] stage=3 name=pre_llm request_id=%s",
-        (request_id or "").strip() or "-",
-    )
-
-
-@dataclass(slots=True)
-class _DeepResearchRouteContextToken:
-    token: Token[dict[str, object] | None] | None
-
-
-@dataclass(slots=True)
-class _RuntimeCronContextTokens:
-    channel: Token[str] | None
-    session: Token[str | None] | None
-    metadata: Token[dict[str, Any] | None] | None
-    mode: Token[str | None] | None
-    bound: Token[bool] | None
-    shell: Token[str | None] | None
-    deepresearch: _DeepResearchRouteContextToken | None
-    send_file: Token | None = None
-    resource_id: Token[str] | None = None
-    a2a_policy_id: Token[str] | None = None
-
-
-def get_runtime_tool_session_id() -> str | None:
-    """Session id bound for the current agent tool invocation (ContextVar)."""
-    return _CRON_TOOL_SESSION_ID.get()
-
-
-def get_runtime_tool_channel_id() -> str:
-    """Channel id bound for the current agent tool invocation (ContextVar)."""
-    return _CRON_TOOL_CHANNEL_ID.get()
-
-
-def get_runtime_tool_metadata() -> dict[str, Any] | None:
-    """Request metadata bound for the current agent tool invocation (ContextVar)."""
-    return _CRON_TOOL_METADATA.get()
-
-
-def get_runtime_tool_resource_id() -> str:
-    """Manager-owned resource id for the current tool invocation."""
-    return _RUNTIME_TOOL_RESOURCE_ID.get()
-
-
-def get_runtime_tool_a2a_policy_id() -> str:
-    """A2A policy selected by the current enterprise Agent template."""
-    return _RUNTIME_TOOL_A2A_POLICY_ID.get()
-
 logger = logging.getLogger(__name__)
 
-
-def _resolve_observability_mode(params: dict[str, Any]) -> str:
-    """Return the canonical mode written into trajectory span attributes."""
-    raw_mode = params.get("mode", "agent")
-    normalized_mode = canonicalize_mode_text(raw_mode)
-    work_mode = normalize_work_mode(params.get("work_mode"))
-    if work_mode is not None:
-        composed_mode = compose_web_mode(normalized_mode, work_mode)
-        if composed_mode is not None:
-            return str(deprecate_mode(composed_mode[2]))
-    return str(deprecate_mode(raw_mode))
-
-_PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None
-_PERSISTENT_CHECKPOINTER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
-_PERSISTENT_CHECKPOINTER_LOCK_INIT = threading.Lock()
-_PERSISTENT_CHECKPOINTER_READY = False
-_shared_checkpoint_checkpointer: Any = None
-_shared_mysql_checkpoint_engine: Any = None
-_shared_postgresql_checkpoint_engine: Any = None
-
-
-def reset_shared_checkpoint_for_tests() -> None:
-    """Reset process-wide checkpoint singleton (tests only)."""
-    global _shared_checkpoint_checkpointer, _PERSISTENT_CHECKPOINTER_READY
-    global _PERSISTENT_CHECKPOINTER_LOCK, _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-    global _shared_mysql_checkpoint_engine, _shared_postgresql_checkpoint_engine
-    _shared_checkpoint_checkpointer = None
-    _PERSISTENT_CHECKPOINTER_READY = False
-    _PERSISTENT_CHECKPOINTER_LOCK = None
-    _PERSISTENT_CHECKPOINTER_LOCK_LOOP = None
-    _shared_mysql_checkpoint_engine = None
-    _shared_postgresql_checkpoint_engine = None
-
-
-def _gateway_db_pool_kwargs() -> dict[str, Any]:
-    """SQLAlchemy 连接池参数（``GATEWAY_DB_POOL_*`` / ``RUNTIME_DB_POOL_*``）。"""
-
-    def _int_env(*names: str, default: int) -> int:
-        for name in names:
-            raw = os.getenv(name, "").strip()
-            if not raw:
-                continue
-            try:
-                return int(raw)
-            except ValueError:
-                continue
-        return default
-
-    return {
-        "pool_size": _int_env("GATEWAY_DB_POOL_SIZE", "RUNTIME_DB_POOL_SIZE", default=2),
-        "max_overflow": _int_env("GATEWAY_DB_MAX_OVERFLOW", "RUNTIME_DB_MAX_OVERFLOW", default=20),
-        "pool_timeout": _int_env("GATEWAY_DB_POOL_TIMEOUT", "RUNTIME_DB_POOL_TIMEOUT", default=30),
-        "pool_recycle": 3600,
-        "pool_pre_ping": True,
-    }
-
-
-def _running_loop() -> asyncio.AbstractEventLoop | None:
-    try:
-        return asyncio.get_running_loop()
-    except RuntimeError:
-        return None
-
-
-async def _get_persistent_checkpointer_lock() -> asyncio.Lock:
-    """Lazy-init or rebind the process-wide checkpointer lock to the running loop.
-
-    ``asyncio.Lock`` binds to the loop of its first ``acquire()``; any later
-    acquire from a different loop raises ``RuntimeError("... is bound to a
-    different event loop")``. The first call may have happened on a transient
-    loop (test harness, ephemeral worker) that is gone by the time AgentServer's
-    main loop needs the lock. To stay correct under that drift we:
-
-    1. Lazily construct the Lock inside the caller's running loop (guarded by a
-       ``threading.Lock`` so concurrent first-acquires from different threads
-       cannot create two Locks).
-    2. Before returning, verify the Lock is still bound to the current loop. If
-       it is bound to a dead/foreign loop, drop and rebuild it so the caller can
-       re-acquire safely. This rebinding is also done under the threading guard.
-
-    After ``_PERSISTENT_CHECKPOINTER_READY`` flips True no one acquires the lock,
-    so rebinding is a no-op for the steady state.
-    """
-    global _PERSISTENT_CHECKPOINTER_LOCK, _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-    current = _running_loop()
-    if current is None:
-        raise RuntimeError(
-            "_get_persistent_checkpointer_lock must be called from a running event loop"
-        )
-    with _PERSISTENT_CHECKPOINTER_LOCK_INIT:
-        bound = _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-        if _PERSISTENT_CHECKPOINTER_LOCK is None or bound is None or bound is not current:
-            if bound is not None and bound is not current and not bound.is_closed():
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] _PERSISTENT_CHECKPOINTER_LOCK rebound: "
-                    "old_loop=%r new_loop=%r (lock repr=%r)",
-                    bound,
-                    current,
-                    _PERSISTENT_CHECKPOINTER_LOCK,
-                )
-            _PERSISTENT_CHECKPOINTER_LOCK = asyncio.Lock()
-            _PERSISTENT_CHECKPOINTER_LOCK_LOOP = current
-    return _PERSISTENT_CHECKPOINTER_LOCK
 
 # Persistence identity of the single-agent card. It is the entity segment of
 # every checkpointer key ("{session_id}:agent:{card_id}:..."), so it must stay
@@ -1034,1574 +961,59 @@ _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
 
-def _extract_iteration_from_obj(value: Any) -> int | None:
-    """Best-effort parse iteration from chunk/payload/dict."""
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        for key in ("iteration", "iter", "step", "round"):
-            if key in value:
-                parsed = _extract_iteration_from_obj(value.get(key))
-                if parsed is not None:
-                    return parsed
-        for key in ("metadata", "meta", "extra", "context"):
-            nested = value.get(key)
-            if isinstance(nested, dict):
-                parsed = _extract_iteration_from_obj(nested)
-                if parsed is not None:
-                    return parsed
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
-        raw = value.strip()
-        if raw.isdigit():
-            return int(raw)
-        return None
-    return None
+_RESOLVED_ARTIFACT_DIRS: dict[str, str] = {}
 
 
-def _extract_iteration_from_chunk(chunk: Any) -> int | None:
-    """Extract iteration from stream chunk object."""
-    for attr in ("iteration", "iter", "step"):
-        if hasattr(chunk, attr):
-            parsed = _extract_iteration_from_obj(getattr(chunk, attr, None))
-            if parsed is not None:
-                return parsed
-    payload = getattr(chunk, "payload", None)
-    return _extract_iteration_from_obj(payload)
+def _resolve_artifact_dir(path: str) -> str:
+    """Resolve a workspace path once; deep research asks for it several times per turn.
 
-
-def _apply_llm_io_trace_patch() -> None:
-    """Monkey Patch Model.invoke/stream 添加 LLM IO trace 日志."""
-    global _LLM_IO_TRACE_PATCH_APPLIED
-    if _LLM_IO_TRACE_PATCH_APPLIED:
-        return
-
-    try:
-        original_invoke = Model.invoke
-        original_stream = Model.stream
-
-        async def _traced_invoke(
-            self: Model,
-            messages: List[Any],
-            tools: List[Any] | None = None,
-            model: str | None = None,
-            **kwargs: Any,
-        ) -> Any:
-            model_name = model or getattr(self.model_config, "model_name", "") or ""
-            trace_sid = _LLM_TRACE_SESSION_ID.get()
-            trace_rid = _LLM_TRACE_REQUEST_ID.get()
-            trace_iter = _LLM_TRACE_ITERATION.get()
-            resolved_iter = (
-                _extract_iteration_from_obj(kwargs) if trace_iter is None else trace_iter
-            )
-            _ev_token = begin_llm_trace_event()
-            try:
-                try:
-                    log_invoke_input(
-                        session_id=trace_sid,
-                        request_id=trace_rid,
-                        iteration=resolved_iter,
-                        model_name=model_name,
-                        messages=messages,
-                        tools=tools,
-                        max_tokens=kwargs.get("max_tokens"),
-                        temperature=kwargs.get("temperature"),
-                        top_p=kwargs.get("top_p"),
-                        stop=kwargs.get("stop"),
-                        timeout=kwargs.get("timeout"),
-                    )
-                except Exception:
-                    logger.debug("[llm_trace] log_invoke_input failed", exc_info=True)
-                _log_latency_pre_llm_once(trace_rid)
-                result = await original_invoke(
-                    self, messages, tools=tools, model=model, **kwargs
-                )
-                try:
-                    log_invoke_output(
-                        session_id=trace_sid,
-                        request_id=trace_rid,
-                        iteration=resolved_iter,
-                        model_name=model_name,
-                        assistant_msg=result,
-                    )
-                except Exception:
-                    logger.debug("[llm_trace] log_invoke_output failed", exc_info=True)
-                return result
-            finally:
-                end_llm_trace_event(_ev_token)
-
-        async def _traced_stream(
-            self: Model,
-            messages: List[Any],
-            tools: List[Any] | None = None,
-            model: str | None = None,
-            **kwargs: Any,
-        ) -> Any:
-            model_name = model or getattr(self.model_config, "model_name", "") or ""
-            trace_sid = _LLM_TRACE_SESSION_ID.get()
-            trace_rid = _LLM_TRACE_REQUEST_ID.get()
-            trace_iter = _LLM_TRACE_ITERATION.get()
-            resolved_iter = (
-                _extract_iteration_from_obj(kwargs) if trace_iter is None else trace_iter
-            )
-            _ev_token = begin_llm_trace_event()
-            try:
-                try:
-                    log_stream_input(
-                        session_id=trace_sid,
-                        request_id=trace_rid,
-                        iteration=resolved_iter,
-                        model_name=model_name,
-                        messages=messages,
-                        tools=tools,
-                        max_tokens=kwargs.get("max_tokens"),
-                        temperature=kwargs.get("temperature"),
-                        top_p=kwargs.get("top_p"),
-                        stop=kwargs.get("stop"),
-                        timeout=kwargs.get("timeout"),
-                    )
-                except Exception:
-                    logger.debug("[llm_trace] log_stream_input failed", exc_info=True)
-                _log_latency_pre_llm_once(trace_rid)
-                accumulated: Any = None
-                reasoning_seq = 0
-                reasoning_trace_pending: List[Tuple[int, str]] = []
-
-                def emit_reasoning_trace_batch() -> None:
-                    if not reasoning_trace_pending:
-                        return
-                    try:
-                        log_reasoning_delta(
-                            session_id=trace_sid,
-                            request_id=trace_rid,
-                            iteration=resolved_iter,
-                            model_name=model_name,
-                            reasoning_seq=reasoning_trace_pending[0][0],
-                            fragment="".join(t[1] for t in reasoning_trace_pending),
-                        )
-                    except Exception:
-                        logger.debug("[llm_trace] log_reasoning_delta failed", exc_info=True)
-                    reasoning_trace_pending.clear()
-
-                async for chunk in original_stream(
-                    self, messages, tools=tools, model=model, **kwargs
-                ):
-                    if accumulated is None:
-                        accumulated = chunk
-                    else:
-                        try:
-                            accumulated = accumulated + chunk
-                        except Exception:
-                            accumulated = chunk
-
-                    reasoning_content = (
-                        getattr(chunk, "reasoning_content", None)
-                        or (
-                            chunk.get("reasoning_content")
-                            if isinstance(chunk, dict)
-                            else None
-                        )
-                        or (
-                            (chunk.payload.get("reasoning_content") or chunk.payload.get("reasoning"))
-                            if isinstance(getattr(chunk, "payload", None), dict)
-                            else None
-                        )
-                    )
-                    if reasoning_content:
-                        reasoning_trace_pending.append(
-                            (reasoning_seq, str(reasoning_content))
-                        )
-                        if len(reasoning_trace_pending) >= _REASONING_TRACE_LOG_BATCH:
-                            emit_reasoning_trace_batch()
-                        reasoning_seq += 1
-
-                    yield chunk
-
-                emit_reasoning_trace_batch()
-
-                if accumulated:
-                    try:
-                        log_stream_output(
-                            session_id=trace_sid,
-                            request_id=trace_rid,
-                            iteration=resolved_iter,
-                            model_name=model_name,
-                            assistant_msg=accumulated,
-                        )
-                    except Exception:
-                        logger.debug("[llm_trace] log_stream_output failed", exc_info=True)
-            except Exception:
-                emit_reasoning_trace_batch()
-                raise
-            finally:
-                end_llm_trace_event(_ev_token)
-
-        Model.invoke = _traced_invoke
-        Model.stream = _traced_stream
-        _LLM_IO_TRACE_PATCH_APPLIED = True
-        logger.info("[JiuWenSwarmDeepAdapter] LLM IO trace patch applied")
-    except Exception:
-        logger.warning(
-            "[JiuWenSwarmDeepAdapter] Failed to apply LLM IO trace patch", exc_info=True
-        )
-
-
-_ACP_BLOCKED_DEFAULT_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "edit_file",
-        "bash",
-    }
-)
-_SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
-    {
-        "skill_index_build",
-        "skill_branch_explore",
-        "skill_branch_peek",
-    }
-)
-# Total ``_update_runtime_config`` cost above which its per-stage breakdown is
-# worth an INFO line. It runs once per turn ahead of the model call, so anything
-# at this scale is directly visible in time-to-first-token.
-_SLOW_RUNTIME_CONFIG_MS = 50.0
-
-# Rail construction reports unconditionally: it happens once per agent, not per
-# turn, so a line per cold start is not noise, and cold start is precisely the
-# budget nobody can otherwise account for. The earlier 100 ms bar was above the
-# real cost, which meant the breakdown never appeared at INFO on a normal run.
-_SLOW_RAIL_BUILD_MS = 0.0
-
-# Profiling escape hatch: overrides every stage-breakdown threshold, in
-# milliseconds. Set it to 0 to report all breakdowns at INFO. The thresholds
-# above are tuned to stay quiet on a healthy run, which is the wrong setting
-# when the question is "where did this un-slow half second go".
-_STAGE_LOG_THRESHOLD_ENV = "JIUWENSWARM_SLOW_STAGE_MS"
-
-
-def _stage_breakdown_logger(total_ms: float, threshold_ms: float) -> Callable[..., None]:
-    """Pick the level a stage breakdown should be reported at.
-
-    Both branches go through ``server_logger`` on purpose. The quiet branch
-    used to go to this module's standard-logging logger, which put it in a
-    different sink running at INFO — so the sub-threshold breakdown, the one
-    needed to explain time that is not obviously slow, was never visible
-    anywhere.
-
-    Args:
-        total_ms: Measured total for the stage group.
-        threshold_ms: Site-specific bar above which the breakdown is INFO.
-
-    Returns:
-        The logging callable to emit the breakdown with.
+    Only absolute paths are cached: a relative path resolves against the process cwd.
     """
-    override = os.environ.get(_STAGE_LOG_THRESHOLD_ENV)
-    if override is not None:
-        try:
-            threshold_ms = float(override)
-        except ValueError:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] ignoring non-numeric %s=%s",
-                _STAGE_LOG_THRESHOLD_ENV,
-                override,
-            )
-    return server_logger.info if total_ms >= threshold_ms else server_logger.debug
-
-
-@dataclass(frozen=True)
-class _GitSnapshot:
-    """Git state as of a conversation's first turn, held for its whole life.
-
-    Attributes:
-        head: Raw ``HEAD`` file contents when the snapshot was taken. Checking
-            it costs a file read rather than a subprocess, which is what makes
-            it affordable to verify on every turn.
-        branch: Current branch name, or "HEAD" when detached.
-        status: ``git status --short`` output, capped at 50 lines.
-        recent_commits: ``git log --oneline -5`` output.
-    """
-
-    head: str
-    branch: str
-    status: str
-    recent_commits: str
-
-
-def _read_git_head(head_file: str) -> str:
-    """Read the HEAD pointer directly, without spawning git.
-
-    Changes whenever the checkout moves — switching branches rewrites the
-    symbolic ref, and a detached checkout writes a different commit id — while
-    staying untouched by ordinary edits to the working tree. That makes it a
-    cheap way to tell "the conversation moved to a different checkout" apart
-    from "the user edited a file", which need opposite treatment: the former
-    must invalidate the snapshot, the latter must not.
-
-    Args:
-        head_file: Absolute path to the git directory's HEAD file.
-
-    Returns:
-        Stripped file contents, or an empty string when it cannot be read —
-        in which case the caller degrades to holding the snapshot as-is.
-    """
-    if not head_file:
-        return ""
-    try:
-        return Path(head_file).read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-@dataclass(frozen=True)
-class _StableGitFacts:
-    """Git facts about a project that do not change between turns of a chat.
-
-    Attributes:
-        is_repo: Whether the directory is inside a git work tree.
-        user_name: ``user.name`` from git config; empty when unset.
-        main_branch: First of origin/main, origin/master, main, master that
-            resolves; empty when none do.
-        head_file: Absolute path to the git directory's HEAD file. Resolved via
-            git so it is correct for a subdirectory, a worktree or a submodule,
-            where it is nowhere near ``<project_dir>/.git/HEAD``.
-    """
-
-    is_repo: bool
-    user_name: str
-    main_branch: str
-    head_file: str
-
-
-_STABLE_GIT_FACTS: dict[str, _StableGitFacts] = {}
-_STABLE_GIT_FACTS_LOCK = threading.Lock()
-# Cache ceiling: ``project_dir`` is per-session (the session workspace), so the
-# key space grows with sessions and an unbounded dict leaks one entry per
-# session forever (issue#5240 residual hunt: +100 entries / 2min ≈ 1MB/h).
-# FIFO-evict the oldest insert at the cap; a miss only costs re-running the
-# six cached git subprocesses, never correctness.
-_STABLE_GIT_FACTS_MAX = 1024
-
-
-def _resolve_stable_git_facts(
-    git_bin: str,
-    project_dir: str,
-    run_git: Callable[[list[str]], str],
-) -> _StableGitFacts:
-    """Resolve the per-project git facts once and reuse them afterwards.
-
-    ``_write_runtime_state`` runs on every turn and used to spawn up to nine git
-    subprocesses each time. Six of them answered questions whose answers cannot
-    change while a conversation is in progress — whether the directory is a repo,
-    who the committer is, and which of the four candidate names the main branch
-    goes by — so they are resolved once per project directory. Branch, status and
-    recent commits stay live, because those are exactly what changes while the
-    user works.
-
-    Args:
-        git_bin: Resolved git executable, part of the cache key so a toolchain
-            switch is not served a stale answer.
-        project_dir: Directory the git commands run in.
-        run_git: Callable running git in ``project_dir`` and returning stripped
-            stdout, or an empty string on failure.
-
-    Returns:
-        The cached facts for this project directory.
-    """
-    cache_key = f"{git_bin}\0{project_dir}"
-    with _STABLE_GIT_FACTS_LOCK:
-        cached = _STABLE_GIT_FACTS.get(cache_key)
-    if cached is not None:
-        return cached
-
-    is_repo = run_git(["rev-parse", "--is-inside-work-tree"]) == "true"
-    user_name = ""
-    main_branch = ""
-    head_file = ""
-    if is_repo:
-        user_name = run_git(["config", "user.name"])
-        for candidate in ("origin/main", "origin/master", "main", "master"):
-            if run_git(["rev-parse", "--verify", "--quiet", candidate]):
-                main_branch = candidate
-                break
-        git_dir = run_git(["rev-parse", "--absolute-git-dir"])
-        if git_dir:
-            head_file = str(Path(git_dir) / "HEAD")
-
-    facts = _StableGitFacts(
-        is_repo=is_repo,
-        user_name=user_name,
-        main_branch=main_branch,
-        head_file=head_file,
-    )
-    with _STABLE_GIT_FACTS_LOCK:
-        if len(_STABLE_GIT_FACTS) >= _STABLE_GIT_FACTS_MAX:
-            _STABLE_GIT_FACTS.pop(next(iter(_STABLE_GIT_FACTS)), None)
-        _STABLE_GIT_FACTS[cache_key] = facts
-    return facts
-
-
-@dataclass
-class _RailBuildInfo:
-    """One rail's construction recipe, shared by the agent and code rail sets.
-
-    Attributes:
-        attr_name: Adapter attribute the built rail is assigned to. Also names
-            the rail in the build-timing breakdown, minus its leading underscore.
-        build_func: Callable returning the rail instance, or None to skip it.
-        params: Keyword arguments for ``build_func``; empty when omitted.
-    """
-
-    attr_name: str
-    build_func: Callable
-    params: dict = None
-
-    def __post_init__(self):
-        """Normalize the optional params mapping to an empty dict."""
-        self.params = self.params or {}
-
-_CRON_TOOL_NAMES = frozenset(
-    {
-        "cron",
-        "cron_list_jobs",
-        "cron_get_job",
-        "cron_create_job",
-        "cron_update_job",
-        "cron_delete_job",
-        "cron_toggle_job",
-        "cron_preview_job",
-    }
-)
-
-_DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
-    "tools_search",
-    "invoke_tool",
-    "web_search",
-    "fetch_webpage",
-    "ask_user",
-    "list_files",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "bash",
-    "skill_tool",
-    "skill_complete",
-    "todo_create",
-    "todo_list",
-    "todo_modify",
-]
-
-_PROGRESSIVE_META_TOOL_NAMES = frozenset({"tools_search", "invoke_tool"})
-_TTSE_CONSULT_TOOL_NAME = "ttse_consult"
-_LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES = {
-    "ask_user_question": "ask_user",
-}
-
-
-def _normalize_tool_names(value: Any, default: list[str] | None = None) -> list[str]:
-    """Normalize comma-separated/list tool-name config values."""
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return list(default or [])
-
-
-def _ensure_progressive_meta_tools(eager_tools: list[str]) -> list[str]:
-    """Ensure tools_search / invoke_tool are in the eager list."""
-    if "tools_search" not in eager_tools:
-        eager_tools.insert(0, "tools_search")
-    if "invoke_tool" not in eager_tools:
-        eager_tools.insert(1, "invoke_tool")
-    return eager_tools
-
-
-def _merge_ttse_config(runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Yaml ``react.ttse`` plus runtime overlay (runtime keys win).
-
-    Same merge used by TTSERail mount and ``ttse_consult`` eager gating so a
-    sparse runtime cache (OfficeAce sync snapshot omitting ``ttse``) still
-    inherits the on-disk default. An explicit runtime ``enabled: false`` wins.
-    """
-    merged: dict[str, Any] = {}
-    try:
-        yaml_ttse = _get_ttse_config(get_config())
-    except Exception:
-        yaml_ttse = {}
-    if isinstance(yaml_ttse, dict):
-        merged.update(yaml_ttse)
-    runtime = _get_ttse_config(runtime_config)
-    if isinstance(runtime, dict):
-        merged.update(runtime)
-    return merged
-
-
-def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
-    """True when TTSE is opted in and inject is on, so ``ttse_consult`` stays in schema.
-
-    Master switch uses :func:`_merge_ttse_config` then :func:`get_ttse_enabled`
-    so eager gating cannot diverge from TTSERail mount.
-    """
-    if not isinstance(react_config, dict):
-        return False
-    merged = _merge_ttse_config(react_config)
-    if not get_ttse_enabled({"ttse": merged}):
-        return False
-    return coerce_config_bool(merged.get("inject_enabled"), True)
-
-
-def _ensure_ttse_consult_eager_tool(
-    eager_tools: list[str],
-    react_config: dict[str, Any] | None,
-) -> list[str]:
-    """Expose ``ttse_consult`` on first turn only after TTSE is explicitly enabled.
-
-    ProgressiveToolRail only exposes ``eager_tools``. After ``react.ttse.enabled``
-    (and inject) is on, P:45 tells the model to call ``ttse_consult`` before
-    ``skill_acceleration_exec``; if the name is filtered out, first-turn consult
-    is impossible without tools_search. Default-off must strip the name even if
-    a yaml eager list still includes it.
-    """
-    if not _ttse_consult_should_be_eager(react_config):
-        return [name for name in eager_tools if name != _TTSE_CONSULT_TOOL_NAME]
-    if _TTSE_CONSULT_TOOL_NAME in eager_tools:
-        return eager_tools
-    if "skill_acceleration_exec" in eager_tools:
-        eager_tools.insert(
-            eager_tools.index("skill_acceleration_exec"),
-            _TTSE_CONSULT_TOOL_NAME,
-        )
-    else:
-        insert_at = 2 if len(eager_tools) >= 2 else len(eager_tools)
-        eager_tools.insert(insert_at, _TTSE_CONSULT_TOOL_NAME)
-    return eager_tools
-
-
-def _normalize_progressive_eager_tools(
-    value: Any,
-    default: list[str] | None = None,
-) -> list[str]:
-    """Normalize eager tools and migrate legacy registered names."""
-    eager_tools: list[str] = []
-    for tool_name in _normalize_tool_names(value, default):
-        normalized_name = _LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES.get(
-            tool_name,
-            tool_name,
-        )
-        if normalized_name not in eager_tools:
-            eager_tools.append(normalized_name)
-    return _ensure_progressive_meta_tools(eager_tools)
-
-
-def is_subagent_tool_lazy_load_enabled(react_config: dict[str, Any] | None) -> bool:
-    """True when react.tool_lazy_load and subagents are both enabled."""
-    config = react_config if isinstance(react_config, dict) else {}
-    lazy_cfg = config.get("tool_lazy_load") or {}
-    if not isinstance(lazy_cfg, dict):
-        return False
-    if not lazy_cfg.get("enabled", False):
-        return False
-    sub_cfg = lazy_cfg.get("subagents") or {}
-    if not isinstance(sub_cfg, dict):
-        return False
-    return bool(sub_cfg.get("enabled", False))
-
-
-def build_progressive_tool_rail_from_config(
-    react_config: dict[str, Any],
-    *,
-    language: str,
-    profile: str = "main",
-    agent_id: str | None = None,
-    agent_card_id: str | None = None,
-    subagent_kind: str | None = None,
-    deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
-    active_skill_provider: Callable[[], str | None] | None = None,
-) -> ProgressiveToolRail | None:
-    """Build ProgressiveToolRail from react.tool_lazy_load config.
-
-    Stable base eager-tools schema; deferred tools are reached via tools_search
-    + invoke_tool, while ToolCard skill gates may add direct tools for the
-    active session skill. For subagents, set profile="subagent" and configure
-    react.tool_lazy_load.subagents.
-    """
-    config = react_config if isinstance(react_config, dict) else {}
-    lazy_cfg = config.get("tool_lazy_load") or {}
-    if not isinstance(lazy_cfg, dict):
-        lazy_cfg = {}
-    lazy_load_enabled = bool(lazy_cfg.get("enabled", False))
-
-    enable_for_models = _normalize_tool_names(
-        lazy_cfg.get("enable_for_models", []), []
-    )
-
-    normalized_profile = (profile or "main").strip().lower()
-    if normalized_profile == "subagent":
-        sub_cfg = lazy_cfg.get("subagents") or {}
-        if not isinstance(sub_cfg, dict):
-            sub_cfg = {}
-        if not sub_cfg.get("enabled", False):
-            return None
-
-        main_eager = _normalize_progressive_eager_tools(
-            lazy_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
-            _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
-        )
-        if sub_cfg.get("inherit_parent_eager_tools", False):
-            eager_tools = list(main_eager)
-        else:
-            eager_tools = _normalize_progressive_eager_tools(
-                sub_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
-                _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
-            )
-    else:
-        eager_tools = _normalize_progressive_eager_tools(
-            lazy_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
-            _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
-        )
-
-    eager_tools = _ensure_ttse_consult_eager_tool(eager_tools, config)
-
-    normalized_language = resolve_language(language)
-    disabled_tools: list[str] = []
-    try:
-        disabled_tools = resolve_string_or_list_config(config.get("disabled_tools"))
-    except Exception as exc:
-        logger.warning(
-            "[ProgressiveToolRail] ignore malformed disabled_tools while building "
-            "progressive rail: %s",
-            exc,
-        )
-
-    logger.info(
-        "[ProgressiveToolRail] mounted lazy_load_enabled=%s profile=%s "
-        "kind=%s eager_tools=%s "
-        "agent_id=%s agent_card_id=%s enable_for_models=%s disabled_tools=%s",
-        lazy_load_enabled,
-        normalized_profile,
-        subagent_kind or "",
-        eager_tools,
-        agent_id,
-        agent_card_id,
-        enable_for_models,
-        disabled_tools,
-    )
-
-    return ProgressiveToolRail(
-        enabled=lazy_load_enabled,
-        eager_tools=eager_tools,
-        language=normalized_language,
-        agent_id=agent_id,
-        agent_card_id=agent_card_id,
-        enable_for_models=enable_for_models,
-        deepresearch_context_provider=deepresearch_context_provider,
-        active_skill_provider=active_skill_provider,
-        disabled_tools=disabled_tools,
-    )
-
-
-def _set_skill_evolution_triggers(
-    rail: Any,
-    *,
-    review_trigger: bool,
-    signal_trigger: bool = True,
-) -> None:
-    rail.review_trigger = review_trigger
-    rail.signal_trigger = signal_trigger
-
-
-def _clean_heartbeat_content(content: str) -> str:
-    """Remove HTML comments and blank lines from HEARTBEAT.md content."""
-    cleaned_lines: list[str] = []
-    for line in content.splitlines():
-        stripped_line = line.strip()
-        if stripped_line.startswith("<!--") and stripped_line.endswith("-->"):
-            continue
-        if stripped_line:
-            cleaned_lines.append(stripped_line)
-    return "\n".join(cleaned_lines)
-
-
-def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
-    """Legacy shim for tests/older call sites.
-
-    The project now relies on openjiuwen's PermissionInterruptRail and does not
-    require a standalone permission engine initialization step.
-    """
-    return None
-
-
-def _mcc_looks_usable(mcc: dict) -> bool:
-    """检查 model_client_config 是否包含有效的 API 凭据。"""
-    api_base = str(mcc.get("api_base", "") or "").strip()
-    if not api_base or is_placeholder_api_base(api_base):
-        return False
-
-    provider = mcc.get("client_provider", "")
-    provider = getattr(provider, "value", provider)
-    if is_openai_account_provider(str(provider or "")):
-        return True
-
-    api_key = str(mcc.get("api_key", "") or "").strip()
-    return bool(api_key)
-
-
-def parse_int(value: Any, default: int) -> int:
-    """Parse integer-like values safely."""
-    try:
-        if value is None or value == "":
-            return default
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _parse_bool(value: Any, *, default: bool = False) -> bool:
-    """Parse YAML bool / env-var-backed boolean strings.
-
-    ``${VAR:-default}`` 插值会把 env 值解析成字符串（config.resolve_env_vars），
-    所以「环境变量驱动的开关」必须容忍 "true"/"1"/"yes"/"on" 这类字符串，不能
-    用 ``is True`` 判等。
-    """
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off", ""}:
-        return False
-    return default
-
-
-def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
-    """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
-
-    relay 侧可经 spawn env 注入 ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（进程级开关，
-    仿 JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED）；env 显式设置时优先于 config.yaml。
-
-    判定委托给 rail 侧 ``model_routing_enabled``：swarm 成员 provider（``swarm.model_routing``）
-    读的是同一个函数，两处不能各读一遍开关。
-    """
-    from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
-        model_routing_enabled,
-    )
-
-    return model_routing_enabled(config)
-
-
-def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[str, Any]:
-    if config_base is None:
-        return copy.deepcopy(get_config())
-    if not isinstance(config_base, dict):
-        raise TypeError("config_base must be a dict when provided")
-    # 外部传入的 config_base（如企业同步的稀疏 override）与 shipped 模板做补缺型
-    # 合并：模板补全缺失键（如 react.ttse / react.subagents），外部显式键与独有
-    # 键全部保留。create_instance 与 reload 共用，避免热更丢掉模板默认值。
-    template = load_yaml_dict(resolve_shipped_template_config_path())
-    return resolve_config_env_vars(fill_template_defaults(config_base, template))
-
-
-def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> ContextEngineConfig:
-    """供 ``create_deep_agent(..., context_engine_config=...)`` 使用（与 agent-core 集成测试方法二一致）。
-
-    仅承接 ContextEngine 自身配置；KV cache affinity 由独立
-    ``react.kv_cache_affinity_config`` 管理。
-    """
-    react_cfg = react_cfg or {}
-    cec = react_cfg.get("context_engine_config")
-    cec = cec if isinstance(cec, dict) else {}
-    recall = cec.get("compression_recall_config")
-    recall = recall if isinstance(recall, dict) else {}
-    return ReActAgentConfig().context_engine_config.model_copy(
-        update={
-            "enable_reload": bool(cec.get("enable_reload", False)),
-            "enable_openrouter_model_context_window_tokens": bool(
-                cec.get("enable_openrouter_model_context_window_tokens", False)
-            ),
-            # 显式设置的上下文窗口上限；非法值回退 None（由 agent-core 按模型解析）
-            "context_window_tokens": parse_int(cec.get("context_window_tokens"), None),
-            # 上下文压缩 debug 落盘开关；目录缺省时由 agent-core 按
-            # OPENJIUWEN_CONTEXT_DEBUG_DIR / workspace 默认路径解析
-            "enable_context_debug": bool(cec.get("enable_context_debug", False)),
-            "context_debug_dir": cec.get("context_debug_dir") or None,
-            # 压缩召回：压缩时归档原始消息，供模型按需召回
-            "compression_recall_config": CompressionRecallConfig(
-                enabled=bool(recall.get("enabled", False)),
-                chunk_size_tokens=parse_int(recall.get("chunk_size_tokens"), 3000),
-                chunk_overlap_tokens=parse_int(recall.get("chunk_overlap_tokens"), 300),
-            ),
-        }
-    )
-
-
-def _model_provider(model: Any) -> str:
-    for owner in (model, getattr(model, "_client", None)):
-        model_client_config = getattr(owner, "model_client_config", None)
-        provider = getattr(model_client_config, "client_provider", None)
-        if provider is not None:
-            return str(getattr(provider, "value", provider) or "").strip()
-    return ""
-
-
-def _deep_agent_kv_cache_affinity_config(
-        react_cfg: dict[str, Any] | None,
-        model: Model | None = None,
-) -> KVCacheAffinityConfig:
-    """Build the ReActAgent KV cache affinity config from jiuwenswarm config."""
-    react_cfg = react_cfg or {}
-    kv_cfg = react_cfg.get("kv_cache_affinity_config")
-    kv_cfg = kv_cfg if isinstance(kv_cfg, dict) else {}
-    affinity_enabled = bool(kv_cfg.get("enable_kv_cache_affinity", False))
-    if affinity_enabled and model is not None:
-        provider = _model_provider(model)
-        if provider != "AscendAffinity":
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] KV cache affinity failed closed: "
-                "model provider=%s requires=AscendAffinity",
-                provider or "<empty>",
-            )
-            affinity_enabled = False
-    return KVCacheAffinityConfig(
-        enable_kv_cache_release=bool(kv_cfg.get("enable_kv_cache_release", False)),
-        enable_kv_cache_affinity=affinity_enabled,
-    )
-
-
-def _build_context_assemble_rail(
-    disabled_tools: list[str] | None = None,
-    tool_name_allowlist: list[str] | None = None,
-) -> ContextAssembleRail | None:
-    """Build ContextAssembleRail.
-
-    ``disabled_tools`` seeds the tools prompt hide-list. Product adapters own
-    the blacklist data flow at construction time (and optional later
-    ``update_disabled_tools`` calls).
-
-    ``tool_name_allowlist`` (typically ProgressiveToolRail.eager_tools) keeps the
-    system ``# 可用工具`` section aligned with the fixed eager schema so deferred
-    / OfficeClaw MCP registrations do not rewrite the prompt prefix mid-task.
-    Compatible with older openjiuwen / test fakes whose constructor does not
-    accept the newer kwargs.
-
-    Merge order: land agent-core !2840 (``tool_name_allowlist`` + tools-section
-    fingerprint ``has_section`` guard) before this change. Without !2840 the
-    modern kwargs raise ``TypeError`` and we silently fall back to the legacy
-    constructor / optional setter path.
-    """
-    try:
-        ctor_path = "modern"
-        effective_disabled: list[str] | None = disabled_tools
-        effective_allowlist: list[str] | None = tool_name_allowlist
-        try:
-            context_assemble_rail = ContextAssembleRail(
-                disabled_tools=disabled_tools,
-                tool_name_allowlist=tool_name_allowlist,
-            )
-        except TypeError:
-            # Requested allowlist is not in effect until a setter applies it.
-            effective_allowlist = None
-            try:
-                context_assemble_rail = ContextAssembleRail(disabled_tools=disabled_tools)
-                ctor_path = "legacy_disabled_kw"
-            except TypeError:
-                context_assemble_rail = ContextAssembleRail()
-                ctor_path = "legacy_no_args"
-                effective_disabled = None
-                update = getattr(context_assemble_rail, "update_disabled_tools", None)
-                if callable(update) and disabled_tools:
-                    update(disabled_tools)
-                    effective_disabled = list(disabled_tools)
-            setter = getattr(context_assemble_rail, "set_tool_name_allowlist", None)
-            if callable(setter) and tool_name_allowlist is not None:
-                setter(tool_name_allowlist)
-                effective_allowlist = list(tool_name_allowlist)
-        # Prefer instance state when the rail exposes what actually stuck.
-        for attr in ("tool_name_allowlist", "_tool_name_allowlist"):
-            if hasattr(context_assemble_rail, attr):
-                effective_allowlist = getattr(context_assemble_rail, attr)
-                break
-        for attr in ("disabled_tools", "_disabled_tools"):
-            if hasattr(context_assemble_rail, attr):
-                value = getattr(context_assemble_rail, attr)
-                if isinstance(value, (set, frozenset)):
-                    effective_disabled = sorted(str(item) for item in value)
-                elif value is not None:
-                    effective_disabled = list(value)
-                else:
-                    effective_disabled = None
-                break
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] ContextAssembleRail create success "
-            "(path=%s disabled_tools=%s allowlist=%s)",
-            ctor_path,
-            list(effective_disabled) if effective_disabled else None,
-            list(effective_allowlist) if effective_allowlist else None,
-        )
-    except Exception as exc:
-        logger.warning("[JiuWenSwarmDeepAdapter] ContextAssembleRail create failed: %s", exc)
-        context_assemble_rail = None
-    return context_assemble_rail
-
-
-def _sync_context_assemble_tool_allowlist(
-    assemble: ContextAssembleRail | None,
-    progressive: Any | None,
-) -> None:
-    """Keep ContextAssemble tools-section allowlist aligned with eager schema."""
-    if assemble is None:
-        return
-    setter = getattr(assemble, "set_tool_name_allowlist", None)
-    if not callable(setter):
-        return
-    if progressive is None:
-        setter(None)
-        return
-    eager = getattr(progressive, "eager_tools", None) or []
-    setter(list(eager))
-
-
-def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[str, Any] | None:
-    raw_config = (
-        context_engine_cfg.get("session_memory_config")
-        or context_engine_cfg.get("session_memory")
-    )
-    if raw_config is True:
-        return {}
-    if isinstance(raw_config, dict):
-        return raw_config
-    return None
-
-
-def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRail | None:
-    """Build ContextProcessorRail with user config.
-
-    从配置中读取 processor 配置，传递给 ContextProcessorRail。
-
-    Args:
-        config: 配置字典
-    """
-    try:
-        user_processors: List[Tuple[str, dict]] = []
-        raw_context_engine_cfg = config.get("context_engine_config", {})
-        context_engine_cfg = raw_context_engine_cfg if isinstance(raw_context_engine_cfg, dict) else {}
-        session_memory_cfg = _resolve_session_memory_config(context_engine_cfg)
-
-        offloader_cfg = context_engine_cfg.get("message_summary_offloader_config", {})
-        if isinstance(offloader_cfg, dict) and offloader_cfg:
-            user_processors.append(("MessageSummaryOffloader", offloader_cfg))
-
-        # 会话记忆：preset 链中默认为禁用，此处用配置覆盖启用
-        session_memory_compressor_cfg = context_engine_cfg.get("session_memory_compressor_config", {})
-        if isinstance(session_memory_compressor_cfg, dict) and session_memory_compressor_cfg:
-            user_processors.append(("SessionMemoryCompressor", session_memory_compressor_cfg))
-
-        compressor_cfg = context_engine_cfg.get("dialogue_compressor_config", {})
-        if isinstance(compressor_cfg, dict) and compressor_cfg:
-            user_processors.append(("DialogueCompressor", compressor_cfg))
-
-        current_round_cfg = context_engine_cfg.get("current_round_compressor_config", {})
-        if isinstance(current_round_cfg, dict) and current_round_cfg:
-            user_processors.append(("CurrentRoundCompressor", current_round_cfg))
-
-        round_level_cfg = context_engine_cfg.get("round_level_compressor_config", {})
-        if isinstance(round_level_cfg, dict) and round_level_cfg:
-            user_processors.append(("RoundLevelCompressor", round_level_cfg))
-
-        # 兜底压缩：整窗口 token 超阈值时调一次 LLM 把历史压成 summary。
-        # ContextOverflowRecoveryRail 在 413/上下文溢出时靠 set_force_compact 触发。
-        # 注意：FullCompactProcessor 不在 0.1.16 preset 链中，_merge_processors 对非 preset
-        # processor 不接受 dict（无 base_cfg 可合并），必须传完整 BaseModel 实例。
-        full_compact_cfg = context_engine_cfg.get("full_compact_processor_config", {})
-        if isinstance(full_compact_cfg, dict) and full_compact_cfg:
-            user_processors.append(
-                ("FullCompactProcessor", FullCompactProcessorConfig(**full_compact_cfg))
-            )
-
-        reasoning_loop_cfg = context_engine_cfg.get("reasoning_tool_loop_compact_config", {})
-        if isinstance(reasoning_loop_cfg, dict) and reasoning_loop_cfg:
-            reasoning_loop_cfg = {
-                **reasoning_loop_cfg,
-                "language": resolve_language(
-                    str(config.get("preferred_language", "zh")).strip().lower()
-                ),
-            }
-            user_processors.append(("ReasoningToolLoopCompactProcessor", reasoning_loop_cfg))
-
-        context_rail = ContextProcessorRail(
-            processors=user_processors if user_processors else None,
-            preset=True,
-            session_memory=session_memory_cfg,
-        )
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] ContextProcessorRail create success for agent mode, "
-            "user_processors=%s session_memory=%s",
-            [p[0] for p in user_processors] if user_processors else "none",
-            "enabled" if isinstance(session_memory_cfg, dict) else "disabled",
-        )
-        return context_rail
-    except Exception as exc:
-        logger.warning("[JiuWenSwarmDeepAdapter] ContextProcessorRail create failed: %s", exc)
-        return None
-
-
-def _patch_compiler_for_on_conflict():
-    """使 MySQL 和 PostgreSQL SQLAlchemy 编译器支持 SQLite 的 ON CONFLICT DO UPDATE.
-
-    openjiuwen SDK 的 DbBasedKVStore 硬编码了 SQLite upsert 语法.
-    此 patch 在 SQL 编译阶段将 ON CONFLICT ... DO UPDATE 翻译为对应数据库的语法,
-    使 checkpoint 可以正常写入 MySQL/PostgreSQL.
-    """
-    try:
-        from sqlalchemy.ext.compiler import compiles
-        from sqlalchemy.dialects.sqlite.dml import OnConflictDoUpdate
-
-        @compiles(OnConflictDoUpdate, "mysql")
-        def _mysql_on_conflict_do_update(element, compiler, **kw):
-            values = getattr(element, "_update_values", None)
-            set_pairs = []
-            if isinstance(values, dict):
-                for col_key in values:
-                    col_name = compiler.preparer.format_column(col_key)
-                    set_pairs.append(f"{col_name} = VALUES({col_name})")
-            if not set_pairs:
-                set_pairs.append("value = VALUES(value)")
-            return f"\nON DUPLICATE KEY UPDATE {', '.join(set_pairs)}"
-
-        @compiles(OnConflictDoUpdate, "postgresql")
-        def _postgresql_on_conflict_do_update(element, compiler, **kw):
-            values = getattr(element, "_update_values", None)
-            set_pairs = []
-            if isinstance(values, dict):
-                for col_key in values:
-                    col_name = compiler.preparer.format_column(col_key)
-                    set_pairs.append(f"{col_name} = EXCLUDED.{col_name}")
-            if not set_pairs:
-                set_pairs.append("value = EXCLUDED.value")
-            return f" ON CONFLICT (key) DO UPDATE SET {', '.join(set_pairs)}"
-    except Exception:
-        pass
-
-
-_patch_compiler_for_on_conflict()
-
-
-async def _build_mysql_async_engine():
-    """构建 / 复用 checkpoint MySQL AsyncEngine。
-
-    连接参数从 ``GATEWAY_DB_*`` 读取；池参数见 ``GATEWAY_DB_POOL_*``。
-    进程内复用同一 engine，避免每个 agent 再建独立连接池。
-    未配置 ``GATEWAY_DB_HOST`` 或非企业版时返回 None，由调用方决定是否回退 SQLite。
-    配置了 ``GATEWAY_DB_HOST`` 但连接/初始化失败时抛出异常，避免静默回退到 SQLite。
-    注意：SQLite 不扛并发，并发时会报：(sqlite3.OperationalError) disk I/O error
-    """
-    global _shared_mysql_checkpoint_engine
-    if not is_enterprise():
-        return None
-    if _shared_mysql_checkpoint_engine is not None:
-        return _shared_mysql_checkpoint_engine
-    db_host = os.getenv("GATEWAY_DB_HOST", "").strip()
-    if not db_host:
-        return None
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        db_port = os.getenv("GATEWAY_DB_PORT", "3306").strip()
-        db_user = os.getenv("GATEWAY_DB_USER", "root").strip()
-        db_password = os.getenv("GATEWAY_DB_PASSWORD", "").strip()
-        db_name = os.getenv("GATEWAY_DB_NAME", "openjiuwen_gateway").strip()
-        # URL-encode 用户名/密码，避免特殊字符（如 @ : / # %）破坏连接串解析
-        _encoded_user = quote_plus(db_user)
-        _encoded_password = quote_plus(db_password)
-        # 先连接不指定库，自动建库
-        server_url = (
-            f"mysql+aiomysql://{_encoded_user}:{_encoded_password}"
-            f"@{db_host}:{db_port}?charset=utf8mb4"
-        )
-        temp_engine = create_async_engine(server_url, echo=False)
-        async with temp_engine.begin() as conn:
-            await conn.execute(
-                text(
-                    f"CREATE DATABASE IF NOT EXISTS `{db_name}` "
-                    f"DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                )
-            )
-        await temp_engine.dispose()
-
-        # 再连接目标库
-        db_url = (
-            f"mysql+aiomysql://{_encoded_user}:{_encoded_password}"
-            f"@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
-        )
-        pool_kwargs = _gateway_db_pool_kwargs()
-        engine = create_async_engine(db_url, **pool_kwargs)
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] checkpoint MySQL engine created: %s:%s/%s "
-            "pool_size=%s max_overflow=%s pool_timeout=%s",
-            db_host,
-            db_port,
-            db_name,
-            pool_kwargs["pool_size"],
-            pool_kwargs["max_overflow"],
-            pool_kwargs["pool_timeout"],
-        )
-
-        # 确保 kv_store.value 列为 LONGTEXT，避免 checkpoint 序列化数据被截断
-        async with engine.begin() as conn:
-            result = await conn.execute(
-                text(
-                    "SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = :db AND TABLE_NAME = 'kv_store' AND COLUMN_NAME = 'value'"
-                ),
-                {"db": db_name},
-            )
-            row = result.fetchone()
-            if row is None:
-                await conn.execute(
-                    text(
-                        "CREATE TABLE IF NOT EXISTS kv_store ("
-                        "`key` VARCHAR(512) PRIMARY KEY,"
-                        "`value` LONGTEXT NOT NULL"
-                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
-                    )
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store table created with value LONGTEXT"
-                )
-            elif str(row[0]).upper() != "LONGTEXT":
-                await conn.execute(
-                    text(
-                        "ALTER TABLE kv_store MODIFY COLUMN `value` LONGTEXT NOT NULL"
-                    )
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store.value altered to LONGTEXT"
-                )
-
-        _shared_mysql_checkpoint_engine = engine
-        return engine
-    except Exception as exc:
-        logger.error(
-            "[JiuWenSwarmDeepAdapter] failed to create checkpoint MySQL engine: %s",
-            exc,
-        )
-        raise
-
-
-async def _build_postgresql_async_engine():
-    """构建 / 复用 checkpoint PostgreSQL AsyncEngine。
-
-    连接参数从 ``GATEWAY_DB_*`` 读取；池参数见 ``GATEWAY_DB_POOL_*``。
-    进程内复用同一 engine，避免每个 agent 再建独立连接池。
-    未配置 ``GATEWAY_DB_HOST`` 或非企业版时返回 None，由调用方决定是否回退 SQLite。
-    配置了 ``GATEWAY_DB_HOST`` 但连接/初始化失败时抛出异常，避免静默回退到 SQLite。
-    注意：SQLite 不扛并发，并发时会报：(sqlite3.OperationalError) disk I/O error
-    """
-    global _shared_postgresql_checkpoint_engine
-    if not is_enterprise():
-        return None
-    if _shared_postgresql_checkpoint_engine is not None:
-        return _shared_postgresql_checkpoint_engine
-    db_host = os.getenv("GATEWAY_DB_HOST", "").strip()
-    if not db_host:
-        return None
-    try:
-        from sqlalchemy import text
-        from openjiuwen_runtime.foundation.db.postgresql_handler import PostgreSQLHandler
-
-        db_port = os.getenv("GATEWAY_DB_PORT", "5432").strip()
-        db_user = os.getenv("GATEWAY_DB_USER", "postgres").strip()
-        db_password = os.getenv("GATEWAY_DB_PASSWORD", "").strip()
-        db_name = os.getenv("GATEWAY_DB_NAME", "openjiuwen_gateway").strip()
-        pg_schema = os.getenv("GATEWAY_PG_SCHEMA", "public").strip() or "public"
-        handler = PostgreSQLHandler(
-            host=db_host,
-            port=int(db_port),
-            database=db_name,
-            schema=pg_schema,
-            user=db_user,
-            password=db_password,
-        )
-        # init_database 幂等：确保目标库与 schema 存在（schema 存在是 search_path 生效的前提）
-        await handler.init_database()
-        await handler.connect()
-        engine = handler.get_engine()
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] checkpoint PostgreSQL engine created: %s:%s/%s schema=%s",
-            db_host,
-            db_port,
-            db_name,
-            pg_schema,
-        )
-
-        # 确保 kv_store.value 列为 TEXT，避免 checkpoint 序列化数据被截断
-        async with engine.begin() as conn:
-            result = await conn.execute(
-                text(
-                    "SELECT data_type FROM information_schema.columns "
-                    "WHERE table_catalog = :db AND table_schema = :schema "
-                    "AND table_name = 'kv_store' AND column_name = 'value'"
-                ),
-                {"db": db_name, "schema": pg_schema},
-            )
-            row = result.fetchone()
-            if row is None:
-                await conn.execute(
-                    text(
-                        "CREATE TABLE IF NOT EXISTS kv_store ("
-                        "key VARCHAR(512) PRIMARY KEY,"
-                        "value TEXT NOT NULL"
-                        ")"
-                    )
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store table created with value TEXT"
-                )
-            elif str(row[0]).lower() != "text":
-                await conn.execute(
-                    text("ALTER TABLE kv_store ALTER COLUMN value TYPE TEXT")
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store.value altered to TEXT"
-                )
-
-        _shared_postgresql_checkpoint_engine = engine
-        return engine
-    except Exception as exc:
-        logger.error(
-            "[JiuWenSwarmDeepAdapter] failed to create checkpoint PostgreSQL engine: %s",
-            exc,
-        )
-        raise
-
-
-async def ensure_persistent_checkpointer() -> None:
-    """Ensure the process-wide default checkpointer uses sqlite / MySQL / PostgreSQL persistence."""
-    global _PERSISTENT_CHECKPOINTER_READY, _shared_checkpoint_checkpointer
-
-    if _PERSISTENT_CHECKPOINTER_READY:
-        if _shared_checkpoint_checkpointer is not None:
-            CheckpointerFactory.set_default_checkpointer(_shared_checkpoint_checkpointer)
-        return
-
-    t_cp_start = time.perf_counter()
-    lock = await _get_persistent_checkpointer_lock()
-    acquired = False
-    try:
-        try:
-            await lock.acquire()
-        except RuntimeError as acquire_exc:
-            logger.exception(
-                "[JiuWenSwarmDeepAdapter] _PERSISTENT_CHECKPOINTER_LOCK acquire failed: %s "
-                "(lock repr=%r, running_loop=%r)",
-                acquire_exc,
-                lock,
-                asyncio.get_event_loop(),
-            )
-            raise
-        acquired = True
-        if _PERSISTENT_CHECKPOINTER_READY:
-            if _shared_checkpoint_checkpointer is not None:
-                CheckpointerFactory.set_default_checkpointer(_shared_checkpoint_checkpointer)
-            return
-
-        try:
-            PersistenceCheckpointerProvider()
-            checkpoint_path = get_checkpoint_dir()
-            conf: dict[str, Any] = {
-                "db_type": "sqlite",
-                "db_path": f"{checkpoint_path}/checkpoint",
-            }
-
-            # 企业版：CHECKPOINT_DB_TYPE=mysql|postgresql 时改用对应库（复用 GATEWAY_DB_*）
-            checkpoint_db_type = os.getenv("CHECKPOINT_DB_TYPE", "").strip().lower()
-            if is_enterprise():
-                from openjiuwen_runtime.foundation.db.utils import is_mysql, is_postgresql
-                if is_mysql(checkpoint_db_type):
-                    mysql_engine = await _build_mysql_async_engine()
-                    if mysql_engine is not None:
-                        conf["db_client"] = mysql_engine
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] use mysql db_client for checkpointer"
-                        )
-                elif is_postgresql(checkpoint_db_type):
-                    postgresql_engine = await _build_postgresql_async_engine()
-                    if postgresql_engine is not None:
-                        conf["db_client"] = postgresql_engine
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] use postgresql db_client for checkpointer"
-                        )
-
-            checkpointer = await CheckpointerFactory.create(
-                CheckpointerConfig(type="persistence", conf=conf),
-            )
-            # [PERF] 打点:包一层计时,定位每轮 checkpoint restore/save 的真实耗时
-            import functools as _perf_ft
-
-            def _perf_wrap_cp(_name, _fn):
-                if not asyncio.iscoroutinefunction(_fn):
-                    return _fn
-
-                @_perf_ft.wraps(_fn)
-                async def _timed(*args, **kwargs):
-                    _t0 = time.perf_counter()
-                    try:
-                        return await _fn(*args, **kwargs)
-                    finally:
-                        logger.info(
-                            "[PERF] checkpoint.%s ms=%.1f",
-                            _name,
-                            (time.perf_counter() - _t0) * 1000,
-                        )
-
-                return _timed
-
-            for _cp_name in dir(checkpointer):
-                if _cp_name.startswith("_"):
-                    continue
-                try:
-                    _cp_attr = getattr(checkpointer, _cp_name)
-                except Exception:  # noqa: BLE001
-                    continue
-                if callable(_cp_attr):
-                    try:
-                        setattr(checkpointer, _cp_name, _perf_wrap_cp(_cp_name, _cp_attr))
-                    except Exception:  # noqa: BLE001
-                        pass
-            _shared_checkpoint_checkpointer = checkpointer
-            CheckpointerFactory.set_default_checkpointer(checkpointer)
-            _PERSISTENT_CHECKPOINTER_READY = True
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] persistent checkpointer ready: %s elapsed_ms=%.1f",
-                checkpoint_path / "checkpoint",
-                (time.perf_counter() - t_cp_start) * 1000,
-            )
-        except Exception as exc:
-            logger.error(
-                "[JiuWenSwarmDeepAdapter] fail to setup checkpoint due to: %s "
-                "elapsed_ms=%.1f",
-                exc,
-                (time.perf_counter() - t_cp_start) * 1000,
-            )
-            raise RuntimeError("persistent checkpointer initialization failed") from exc
-    finally:
-        if acquired:
-            lock.release()
-
-
-_MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
-    "agent": {"cn": "智能体模式", "en": "Agent Mode"},
-    # Web 的 work 单 agent 计划模式（mode=agent.plan + work_mode=work）。
-    "agent.plan": {"cn": "计划模式", "en": "Plan Mode"},
-    # 历史 token 归一到合并后的 agent 显示名（兼容旧会话 / 旧请求）。
-    "agent.fast": {"cn": "智能体模式", "en": "Agent Mode"},
-    "team": {"cn": "集群模式", "en": "Cluster Mode"},
-    "team.plan": {"cn": "集群计划模式", "en": "Cluster Plan Mode"},
-    "code.team": {"cn": "代码集群模式", "en": "Code Team Mode"},
-}
-
-
-def _try_add_cache_control(msg: Any) -> None:
-    """Add cache_control to the last content block of a message.
-
-    Only modifies dict-based content blocks (safe for openjiuwen message types
-    where content is ``Union[str, List[Union[str, dict]]]``). If the last block
-    is a dict, we add ``cache_control: {"type": "ephemeral"}`` to it.
-
-    Mark the last pre-prompt message for prompt caching, 
-    while the btw/recap prompt itself carries no marker
-    (skipCacheWrite — the side response doesn't create a new cache entry).
-
-    String content is left untouched — converting it to a list would change
-    the wire format and break the byte-identical prefix needed for cache hits.
-    """
-    content = getattr(msg, "content", None)
-    if content is None:
-        return
-    if isinstance(content, list) and len(content) > 0:
-        last_block = content[-1]
-        if isinstance(last_block, dict):
-            last_block["cache_control"] = {"type": "ephemeral"}
-
-
-class _RuntimeCronToolContext:
-    """Stable cron tool context proxy backed by per-task contextvars."""
-
-    def __init__(self, tool_scope: str) -> None:
-        self._tool_scope = tool_scope
-        self._fallback_channel_id = CronTargetChannel.WEB.value
-        self._fallback_session_id: str | None = None
-        self._fallback_metadata: dict[str, Any] | None = None
-        self._fallback_mode: str | None = None
-
-    def remember_current_binding(self) -> None:
-        self._fallback_channel_id = _CRON_TOOL_CHANNEL_ID.get()
-        self._fallback_session_id = _CRON_TOOL_SESSION_ID.get()
-        metadata = _CRON_TOOL_METADATA.get()
-        self._fallback_metadata = dict(metadata) if isinstance(metadata, dict) else None
-        self._fallback_mode = _CRON_TOOL_MODE.get()
-
-    @property
-    def channel_id(self) -> str:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_CHANNEL_ID.get()
-        return self._fallback_channel_id
-
-    @property
-    def session_id(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_SESSION_ID.get()
-        return self._fallback_session_id
-
-    @property
-    def metadata(self) -> dict[str, Any] | None:
-        if _CRON_TOOL_BOUND.get():
-            metadata = _CRON_TOOL_METADATA.get()
-            if isinstance(metadata, dict):
-                return metadata
-        return self._fallback_metadata
-
-    @property
-    def mode(self) -> str | None:
-        if _CRON_TOOL_BOUND.get():
-            return _CRON_TOOL_MODE.get()
-        return self._fallback_mode
-
-    @property
-    def tool_scope(self) -> str:
-        return self._tool_scope
-
-
-def _optional_enable_subagent_runtime(enabled: bool) -> dict[str, bool]:
-    """Pass ``enable_subagent_runtime`` only when ``DeepAgentConfig`` accepts it.
-
-    Official ``dev-stable`` openjiuwen 0.1.16 is a dataclass without this
-    field; constructing it with the keyword raises TypeError. Do not filter
-    against ``create_deep_agent``: that factory still has ``**config_kwargs``,
-    so signature filtering would keep the keyword and only warn, or the
-    hot-reload path would still TypeError because it builds ``DeepAgentConfig``
-    directly. Fork overlay and a future official 3A merge keep the field.
-    """
-    return filter_unsupported_kwargs(
-        DeepAgentConfig.__init__,
-        {"enable_subagent_runtime": enabled},
-    )
-
-
-def _agent_ras_kwargs_from_config(config_base: dict[str, Any] | None) -> dict[str, Any]:
-    """Thin YAML gate for create_deep_agent ``agent_ras``.
-
-    Schema validation stays in agent-core. Missing / non-dict section → do
-    not pass (core defaults to Agent RAS enabled). Explicit ``enabled: false``
-    passes ``False`` to disable. Otherwise pass a deep-copied raw dict.
-    """
-    raw = (config_base or {}).get("agent_ras")
-    if not isinstance(raw, dict):
-        if raw is not None:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] ignoring invalid agent_ras section: "
-                "expected dict, got %s",
-                type(raw).__name__,
-            )
-        return {}
-    if raw.get("enabled", True) is not True:
-        return {"agent_ras": False}
-    return {"agent_ras": copy.deepcopy(raw)}
-
-
-class OfficeClawMcpBuiltinNameConflict(RuntimeError):
-    """A request-scoped connector tool's short name collides with a *built-in*
-    agent tool (not a foreign request-scoped tool).
-
-    Unlike a foreign short-name conflict (which must fail closed to prevent a
-    concurrent request from stealing the mapping), colliding with a built-in
-    tool is benign: the connector tool simply cannot claim that short name, so
-    the caller downgrades by skipping just that tool instead of rolling back
-    the whole registration. Carries ``existing_id`` for diagnostics.
-    """
-
-    def __init__(self, message: str, *, existing_id: str = "") -> None:
-        super().__init__(message)
-        self.existing_id = existing_id
-
-
-@dataclass
-class _RequestMcpToolBuffers:
-    """One-request MCP tool-install accumulators (G.FNM.03)."""
-
-    tool_ids: list[str] = field(default_factory=list)
-    tool_names: list[str] = field(default_factory=list)
-    registered_tools: list[RequestScopedOfficeClawMcpTool] = field(default_factory=list)
-    seen_names: set[str] = field(default_factory=set)
-    # Discover every source before mutating the shared resource/ability managers.
-    # The bool preserves fail-closed registration for identity-pinned system tools.
-    pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
-    research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
-    research_tool_names: dict[str, list[str]] = field(default_factory=dict)
-
-
-_SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
-# Kill switch for lazy per-session SkillUseRail whitelist refresh after install.
-# Default on; set to 0/false/off/no to restore pre-fix behavior.
-_SKILL_SESSION_LAZY_REFRESH_ENV = "JIUWEN_SKILL_SESSION_LAZY_REFRESH"
-
-
-def _skill_session_lazy_refresh_enabled() -> bool:
-    """Whether install/uninstall should lazily refresh session SkillUseRail allow-lists."""
-    raw = os.environ.get(_SKILL_SESSION_LAZY_REFRESH_ENV)
-    if raw is None or not str(raw).strip():
-        return True
-    return str(raw).strip().lower() not in {"0", "false", "off", "no"}
-
-
-def _session_adapter_idle_ttl_default() -> int:
-    """Session-scoped adapter idle TTL in seconds (default 2h).
-
-    Override via ``JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC`` at process
-    start; non-numeric or non-positive values warn and fall back to the
-    default so a bad deploy cannot disable eviction entirely.
-    """
-    default = 2 * 60 * 60
-    raw = os.environ.get(_SESSION_ADAPTER_IDLE_TTL_ENV)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        logger.warning(
-            "[JiuWenSwarmDeepAdapter] ignoring non-numeric %s=%s",
-            _SESSION_ADAPTER_IDLE_TTL_ENV,
-            raw,
-        )
-        return default
-    if value <= 0:
-        logger.warning(
-            "[JiuWenSwarmDeepAdapter] ignoring non-positive %s=%s",
-            _SESSION_ADAPTER_IDLE_TTL_ENV,
-            raw,
-        )
-        return default
-    return value
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return str(expanded.resolve())
+    key = str(expanded)
+    resolved = _RESOLVED_ARTIFACT_DIRS.get(key)
+    if resolved is None:
+        resolved = str(expanded.resolve())
+        if len(_RESOLVED_ARTIFACT_DIRS) >= 256:
+            _RESOLVED_ARTIFACT_DIRS.clear()
+        _RESOLVED_ARTIFACT_DIRS[key] = resolved
+    return resolved
 
 
 class JiuWenSwarmDeepAdapter:
+
+    # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
+    _parse_stream_chunk = staticmethod(_parse_stream_chunk)
+    _build_model_from_entry = staticmethod(_build_model_from_entry)
+    shutdown_context_session_memory = staticmethod(shutdown_context_session_memory)
+    _build_model_routing = staticmethod(_build_model_routing)
+    _build_disabled_tools_rail = staticmethod(_build_disabled_tools_rail)
+    _register_agent_owned_tool = staticmethod(_register_agent_owned_tool)
+    _register_shared_tool = staticmethod(_register_shared_tool)
+    _build_request_summary_rail = staticmethod(_build_request_summary_rail)
+    _browser_runtime_enabled = staticmethod(_browser_runtime_enabled)
+    _resolve_prompt_channel = staticmethod(_resolve_prompt_channel)
+    _sync_browser_runtime_environment = staticmethod(_sync_browser_runtime_environment)
+    _build_response_prompt_rail = staticmethod(_build_response_prompt_rail)
+    _build_stream_event_rail = staticmethod(_build_stream_event_rail)
+    _build_context_overflow_recovery_rail = staticmethod(_build_context_overflow_recovery_rail)
+    _build_security_rail = staticmethod(_build_security_rail)
+    _build_eternal_conversation_rail = staticmethod(_build_eternal_conversation_rail)
+    _is_acp_tool_profile = staticmethod(_is_acp_tool_profile)
+    _resolve_enable_subagent_runtime = staticmethod(_resolve_enable_subagent_runtime)
+    _is_subagent_default_enabled = staticmethod(_is_subagent_default_enabled)
+    supports_pending_reload = staticmethod(supports_pending_reload)
+    _is_subagent_enabled = staticmethod(_is_subagent_enabled)
+    _build_mcp_server_config = staticmethod(_build_mcp_server_config)
+    _extract_enabled_mcp_server_entries = staticmethod(_extract_enabled_mcp_server_entries)
     # 只有实际 Flash Adapter 延迟图片 SDK 初始化，其他 Adapter 在构造时完成。
     _defer_image_sdk_imports: ClassVar[bool] = False
     SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
     SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC = 30.0
     _RUNTIME_STATE_WRITE_LIMIT = threading.BoundedSemaphore(2)
-    # Process-level cache for AGENT_EXTRA_TOOLS loads, keyed by module path
-    # (see _load_extra_tools_from_env): session-scoped adapters rebuild per
-    # session, and extra tools register process-shared under their card id,
-    # so the same module must resolve to the same instances on every build.
-    _EXTRA_TOOLS_CACHE: dict[str, list[Any]] = {}
-    _EXTRA_TOOLS_CACHE_LOCK = threading.Lock()
 
     """Deep SDK 适配器，实现 AgentAdapter 协议.
 
@@ -2687,6 +1099,10 @@ class JiuWenSwarmDeepAdapter:
         self._disabled_tools_rail: DisabledToolsRail | None = None
         self._skill_rail: SkillUseRail | None = None
         self._enabled_skills: list[str] | None = None
+        # 串行化 refresh_enabled_skills_from_db 的整段执行（DB 读 → enabled 写 →
+        # rail 换装）：同轮 push、轮边界刷新与会话内安装回调可能并发进入同一
+        # adapter，换装段 unregister→register→赋值间有 await 挂起点。
+        self._skill_refresh_lock = asyncio.Lock()
         self._skill_authorization_rail: Any = None
         # 企业预置 Skill 名快照（安装账本 source_type=prebuilt），供动态授权
         # trust 判定使用；由白名单同步/热刷新/_refresh_skill_identity 维护。
@@ -2789,6 +1205,14 @@ class JiuWenSwarmDeepAdapter:
         self._avatar_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
+        # Active passive-evolution watcher ownership by (channel_id, session_id).
+        # A resumed request gets a new request-id; the old paused stream's watcher
+        # must be superseded instead of idling until the host timeout.
+        self._evolution_watchers: dict[tuple[str, str], asyncio.Task] = {}
+        # SkillSleep background tasks are tracked separately from passive-evolution
+        # watchers so disabling the evolution switch can stop sleep work without
+        # broadening watcher teardown semantics.
+        self._skill_sleep_tasks: set[asyncio.Task] = set()
         self._ttse_cleanup_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
@@ -3062,21 +1486,6 @@ class JiuWenSwarmDeepAdapter:
         else:
             self._prebuilt_skills.discard(name)
 
-    @staticmethod
-    def _session_adapter_key(session_id: str | None) -> str:
-        sid = str(session_id or "").strip()
-        return sid or "default"
-
-    @staticmethod
-    def _enterprise_resource_id_from_request(request: AgentRequest | None) -> str:
-        """Return the authenticated Agent resource id carried by a request."""
-        if request is None:
-            return ""
-        from jiuwenswarm.common.request_identity import web_routing_identity
-
-        metadata = request.metadata if isinstance(request.metadata, dict) else None
-        identity = web_routing_identity(metadata)
-        return str(identity.get("bot_id") or "").strip()
 
     def copy_tenant_env_bindings_from(self, source: "JiuWenSwarmDeepAdapter") -> None:
         """Copy tenant tip namespace bindings from another adapter instance."""
@@ -3155,7 +1564,7 @@ class JiuWenSwarmDeepAdapter:
         return awaiting
 
     def _get_cached_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter | None":
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         return self._session_adapters.get(sid)
 
     def _iter_session_adapters_for_reload(
@@ -3165,13 +1574,13 @@ class JiuWenSwarmDeepAdapter:
         target_sid = str(target_session_id or "").strip()
         if not target_sid:
             return list(self._session_adapters.items())
-        adapter = self._session_adapters.get(self._session_adapter_key(target_sid))
+        adapter = self._session_adapters.get(_session_adapter_key(target_sid))
         if adapter is None:
             return []
-        return [(self._session_adapter_key(target_sid), adapter)]
+        return [(_session_adapter_key(target_sid), adapter)]
 
     def _touch_session_adapter(self, session_id: str | None) -> None:
-        self._session_adapter_last_used[self._session_adapter_key(session_id)] = time.time()
+        self._session_adapter_last_used[_session_adapter_key(session_id)] = time.time()
 
     def _drop_session_adapter_cache_entry(
         self,
@@ -3318,7 +1727,7 @@ class JiuWenSwarmDeepAdapter:
         if parent is None:
             return
         parent.mark_session_skills_current(
-            self._session_adapter_key(self._parent_session_id),
+            _session_adapter_key(self._parent_session_id),
             version_at_bump,
         )
 
@@ -3396,6 +1805,54 @@ class JiuWenSwarmDeepAdapter:
         self._session_skill_versions[session_id] = current
         self._session_skill_refresh_failures.pop(session_id, None)
 
+    async def _push_skill_refresh_to_bound_session(
+        self,
+        request: AgentRequest | None,
+    ) -> None:
+        """Refresh the session adapter bound to an install/uninstall request now.
+
+        Web/facade skill installs land on the root adapter; the bound session's
+        SkillUseRail allow-list otherwise only catches up at its next turn
+        boundary (``_refresh_session_skills_if_stale``), so a same-turn
+        ``skill_tool`` call fails with ``Skill not found``. When the request
+        carries a session id that maps to a live session adapter here, run the
+        same lazy refresh immediately under the session lock; failures fall
+        back to the lazy next-turn semantics (a failed refresh records the
+        shared 30s retry-suppression stamp, so the immediately following
+        boundary retry may be suppressed) and other sessions are untouched.
+        A session cleaned up while this push waits on the lock has its
+        orphaned lock entry dropped so ``has_session_runtime`` stays truthful.
+        """
+        session_id = str(getattr(request, "session_id", None) or "").strip()
+        if not session_id:
+            return
+        sid = _session_adapter_key(session_id)
+        if sid not in self._session_adapters:
+            # Synthetic facade sessions (bff-*) never create a session adapter
+            # on this root; keep the lazy next-turn behavior for them.
+            return
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        try:
+            adapter = None
+            async with lock:
+                adapter = self._session_adapters.get(sid)
+                if adapter is not None:
+                    await self._refresh_session_skills_if_stale(sid, adapter)
+            if adapter is None:
+                # The session was cleaned up while this push waited on the lock;
+                # drop the orphaned lock entry (same idle discipline as
+                # ``cleanup_session_adapter``) so ``has_session_runtime`` stops
+                # reporting runtime for a session that no longer exists.
+                if self._is_session_lock_idle(sid, lock):
+                    self._session_adapter_locks.pop(sid, None)
+        except Exception as exc:  # noqa: BLE001 — push 失败回退下一轮 lazy 追平
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] same-turn skill refresh push failed "
+                "(fallback to lazy next-turn refresh): session_id=%s error=%s",
+                sid,
+                exc,
+            )
+
     async def _evict_idle_session_adapters(self) -> None:
         if self._is_session_scoped_adapter:
             return
@@ -3419,13 +1876,13 @@ class JiuWenSwarmDeepAdapter:
                 continue
             lock = self._session_adapter_locks.get(sid)
             if lock is not None and (
-                lock.locked() or self._session_adapter_lock_has_waiters(lock)
+                lock.locked() or _session_adapter_lock_has_waiters(lock)
             ):
                 continue
             # Persistent subagents stay until an explicit close. Idle TTL must
             # not cancel_all them. Session delete / hot-reload / process exit
             # still use cleanup_session_adapter.
-            if adapter is not None and self._session_has_live_subagent_runtime(
+            if adapter is not None and _session_has_live_subagent_runtime(
                 adapter, sid
             ):
                 continue
@@ -3434,9 +1891,9 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup_session_adapter(self, session_id: str | None) -> bool:
         """Release an idle session-scoped adapter without deleting session history."""
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         if self._is_session_scoped_adapter:
-            if self._session_adapter_key(self._parent_session_id) != sid:
+            if _session_adapter_key(self._parent_session_id) != sid:
                 return False
             if self.is_session_active(sid) or self.is_deep_agent_executing_for_session(sid):
                 return False
@@ -3449,7 +1906,7 @@ class JiuWenSwarmDeepAdapter:
 
         lock = self._session_adapter_locks.get(sid)
         if lock is not None and (
-            lock.locked() or self._session_adapter_lock_has_waiters(lock)
+            lock.locked() or _session_adapter_lock_has_waiters(lock)
         ):
             async with lock:
                 pass
@@ -3496,37 +1953,6 @@ class JiuWenSwarmDeepAdapter:
             logger.info("[JiuWenSwarmDeepAdapter] session scoped DeepAgent removed: session_id=%s", sid)
         return cleaned
 
-    @staticmethod
-    def _session_has_live_subagent_runtime(
-        adapter: "JiuWenSwarmDeepAdapter",
-        session_id: str,
-    ) -> bool:
-        """Return True when a session still has live subagent slots in use.
-
-        A missing control is idle: dest-stable SDK and never-spawned parents
-        have no ``_subagent_controls``. If ``capacity()`` raises, treat the
-        session as occupied so TTL cannot evict an Adapter that may still
-        hold children.
-        """
-        deep_agent = getattr(adapter, "_instance", None)
-        if deep_agent is None:
-            return False
-        controls = getattr(deep_agent, "_subagent_controls", None) or {}
-        if not isinstance(controls, dict):
-            controls = {}
-        control = controls.get(session_id)
-        if control is None:
-            return False
-        try:
-            return int(control.capacity().get("used", 0)) > 0
-        except Exception:
-            # Occupancy unknown: skip TTL eviction rather than drop live children.
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] subagent capacity probe failed; "
-                "treating session as occupied: session_id=%s",
-                session_id,
-            )
-            return True
 
     async def release_subagent_runtime_for_session(
         self,
@@ -3535,7 +1961,7 @@ class JiuWenSwarmDeepAdapter:
         reason: str = "session_deleted",
     ) -> None:
         """Cancel cached subagents and flush persistence for one parent session."""
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         if not sid:
             return
         clear_subagent_progress_batch(sid)
@@ -3563,14 +1989,9 @@ class JiuWenSwarmDeepAdapter:
         return (
             self._session_adapter_locks.get(sid) is lock
             and not lock.locked()
-            and not self._session_adapter_lock_has_waiters(lock)
+            and not _session_adapter_lock_has_waiters(lock)
         )
 
-    @staticmethod
-    def _session_adapter_lock_has_waiters(lock: asyncio.Lock) -> bool:
-        # asyncio.Lock has no public waiter inspection; keep the lock if a reconnect is queued on it.
-        waiters = getattr(lock, "_waiters", None)
-        return any(not waiter.cancelled() for waiter in list(waiters or ()))
 
     async def _get_or_create_session_adapter(
         self,
@@ -3584,11 +2005,11 @@ class JiuWenSwarmDeepAdapter:
             self._touch_session_adapter(session_id)
             return self
 
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
-            requested_resource_id = self._enterprise_resource_id_from_request(request)
+            requested_resource_id = _enterprise_resource_id_from_request(request)
             existing_resource_id = str(
                 getattr(existing, "_enterprise_config_resource_id", None) or ""
             ).strip()
@@ -3695,10 +2116,6 @@ class JiuWenSwarmDeepAdapter:
             )
             return adapter
 
-    @staticmethod
-    def _get_a2x_config(config_base: dict[str, Any]) -> dict[str, Any]:
-        """Resolve A2X config from ``react.a2x_registry`` with safe defaults."""
-        return resolve_a2x_config(config_base)
 
     def _sync_a2x_runtime_state(self) -> None:
         """Expose A2X runtime state on the underlying DeepAgent instance."""
@@ -3716,7 +2133,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _mark_session_active(self, session_id: str) -> None:
         """Increment the active-task count for *session_id*."""
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         self._active_session_ids[sid] += 1
 
     def _unmark_session_active(self, session_id: str, *, cleanup_rail: bool = True) -> None:
@@ -3726,7 +2143,7 @@ class JiuWenSwarmDeepAdapter:
         Skip ``cleanup_rail`` when the stream consumer was cancelled but AgentServer
         work may still be winding down — ``process_interrupt`` owns teardown then.
         """
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         count = self._active_session_ids.get(sid, 0)
         if count <= 1:
             self._active_session_ids.pop(sid, None)
@@ -3754,7 +2171,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _is_session_active(self, session_id: str) -> bool:
         """Return True if at least one task is running for *session_id*."""
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         if self._active_session_ids.get(sid, 0) > 0:
             return True
         return self._session_has_registered_tasks(sid)
@@ -3876,10 +2293,6 @@ class JiuWenSwarmDeepAdapter:
         """Defer a config reload until this adapter is idle."""
         self._pending_reload = (config_base, env_overrides)
 
-    @staticmethod
-    def supports_pending_reload() -> bool:
-        """Whether this adapter can defer reload while busy."""
-        return True
 
     async def apply_pending_reload_if_idle(self) -> ReloadResult | None:
         """Apply deferred reload when harness has verified no inflight work.
@@ -3938,7 +2351,7 @@ class JiuWenSwarmDeepAdapter:
 
     def mark_session_awaiting_tool_permission(self, session_id: str) -> None:
         """Pin a paused tool-approval session on the channel parent adapter."""
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         if not sid or sid == "default":
             return
         parent = self
@@ -3951,7 +2364,7 @@ class JiuWenSwarmDeepAdapter:
             touch(sid)
 
     def clear_session_awaiting_tool_permission(self, session_id: str) -> None:
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         parent = self._session_parent_adapter if self._is_session_scoped_adapter else self
         if parent is None:
             parent = self
@@ -3974,9 +2387,9 @@ class JiuWenSwarmDeepAdapter:
     def has_session_runtime(self, session_id: str | None = None) -> bool:
         """Return whether this adapter still owns session runtime."""
         if session_id is not None:
-            sid = self._session_adapter_key(session_id)
+            sid = _session_adapter_key(session_id)
             if self._is_session_scoped_adapter:
-                return self._session_adapter_key(self._parent_session_id) == sid
+                return _session_adapter_key(self._parent_session_id) == sid
             if sid in self._sessions_awaiting_tool_permission:
                 return True
             return bool(
@@ -4020,7 +2433,7 @@ class JiuWenSwarmDeepAdapter:
         # _other_active_sessions to undercount, triggering a premature global abort.
         if not loop_sid or loop_sid == "default":
             return None
-        return self._resolve_interrupt_session_id(loop_sid)
+        return _resolve_interrupt_session_id(loop_sid)
 
     async def _drop_pending_pure_ask_user_round(
         self,
@@ -4037,7 +2450,7 @@ class JiuWenSwarmDeepAdapter:
         instance = getattr(self, "_instance", None)
         loop_session = getattr(instance, "_loop_session", None)
         loop_sid = self._deep_agent_loop_session_id()
-        target_sid = self._resolve_interrupt_session_id(session_id)
+        target_sid = _resolve_interrupt_session_id(session_id)
         if loop_session is None or loop_sid != target_sid:
             return False
 
@@ -4142,7 +2555,7 @@ class JiuWenSwarmDeepAdapter:
         instance = getattr(self, "_instance", None)
         loop_session = getattr(instance, "_loop_session", None)
         loop_sid = self._deep_agent_loop_session_id()
-        target_sid = self._resolve_interrupt_session_id(session_id)
+        target_sid = _resolve_interrupt_session_id(session_id)
         if loop_session is None or loop_sid != target_sid:
             return False
 
@@ -4239,38 +2652,23 @@ class JiuWenSwarmDeepAdapter:
             loop_sid = self._deep_agent_loop_session_id()
             if loop_sid is None:
                 return True
-            return self._is_related_session(session_id, loop_sid)
+            return _is_related_session(session_id, loop_sid)
         return False
 
     def is_deep_agent_executing_for_session(self, session_id: str) -> bool:
         return self._is_deep_agent_executing_for_session(session_id)
 
     def _is_session_live(self, session_id: str) -> bool:
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         return (
             self._is_session_active(sid)
             or self._is_deep_agent_executing_for_session(sid)
         )
 
-    @staticmethod
-    def _is_related_session(target_sid: str, other_sid: str) -> bool:
-        """Return True when *other_sid* belongs to the same session tree as *target_sid*.
-
-        Covers direct ancestor/descendant relationships only
-        (e.g. ``A`` ↔ ``A_B``, ``A`` ↔ ``A_B_C``).  Siblings such as
-        ``tui_a`` and ``tui_b`` are treated as unrelated — they are
-        independent root sessions that share a channel-prefix convention,
-        not sub-sessions of a common parent.
-        """
-        if not target_sid or not other_sid:
-            return target_sid == other_sid
-        if other_sid == target_sid:
-            return True
-        return other_sid.startswith(f"{target_sid}_") or target_sid.startswith(f"{other_sid}_")
 
     def _other_active_sessions(self, session_id: str) -> int:
         """Return live tasks for sessions unrelated to *session_id*."""
-        normalized = self._resolve_interrupt_session_id(session_id)
+        normalized = _resolve_interrupt_session_id(session_id)
         candidate_sids = set(self._active_session_ids.keys())
         candidate_sids.update(getattr(self, "_session_agent_tasks", {}).keys())
         loop_sid = self._deep_agent_loop_session_id()
@@ -4278,7 +2676,7 @@ class JiuWenSwarmDeepAdapter:
             candidate_sids.add(loop_sid)
         total = 0
         for sid in candidate_sids:
-            if self._is_related_session(normalized, sid):
+            if _is_related_session(normalized, sid):
                 continue
             if self._is_session_live(sid):
                 total += max(self._active_session_ids.get(sid, 0), 1)
@@ -4333,14 +2731,14 @@ class JiuWenSwarmDeepAdapter:
         task = asyncio.current_task()
         if task is None:
             return
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         self._session_agent_tasks.setdefault(sid, set()).add(task)
 
     def _unregister_session_agent_task(self, session_id: str) -> None:
         task = asyncio.current_task()
         if task is None:
             return
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         bucket = self._session_agent_tasks.get(sid)
         if bucket is None:
             return
@@ -4349,7 +2747,7 @@ class JiuWenSwarmDeepAdapter:
             self._session_agent_tasks.pop(sid, None)
 
     async def _cancel_session_agent_tasks(self, session_id: str) -> int:
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         tasks_dict = getattr(self, "_session_agent_tasks", None)
         if not tasks_dict:
             return 0
@@ -4437,7 +2835,7 @@ class JiuWenSwarmDeepAdapter:
     async def _try_init_a2x_client(self, config_base: dict[str, Any], *, reload: bool = False) -> None:
         """Best-effort A2X client init that never blocks agent startup."""
         try:
-            resolved_config = self._get_a2x_config(config_base)
+            resolved_config = _get_a2x_config(config_base)
             if reload and self._a2x_client is not None and resolved_config == self._a2x_config:
                 try:
                     await register_blank_agent_if_teammate(
@@ -4493,15 +2891,6 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
-    @staticmethod
-    def _is_acp_tool_profile(config: dict[str, Any] | None = None) -> bool:
-        if not isinstance(config, dict):
-            return False
-        tool_profile = str(config.get("tool_profile") or "").strip().lower()
-        if tool_profile:
-            return tool_profile == "acp"
-        channel_id = str(config.get("channel_id") or "").strip().lower()
-        return channel_id == "acp"
 
     def _filesystem_rail_enabled_for_profile(self) -> bool:
         raw = self._instance_overrides.get("enable_filesystem_rail", True)
@@ -4524,18 +2913,6 @@ class JiuWenSwarmDeepAdapter:
             return False
         return self._filesystem_rail is None
 
-    @staticmethod
-    def _resolve_prompt_channel(session_id: str | None = None) -> str:
-        """Resolve prompt channel from session id."""
-        if not session_id:
-            return "web"
-
-        channel = session_id.split("_", 1)[0]
-        if channel == "sess":
-            return "web"
-        if channel in {"acp", "cron", "heartbeat", "feishu", "web", "dingtalk", "wecom", "tui"}:
-            return channel
-        return "web"
 
     @staticmethod
     def _resolve_prompt_language() -> str:
@@ -4683,62 +3060,6 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.debug("[JiuWenSwarmDeepAdapter] write runtime_state failed: %s", exc)
 
-    @staticmethod
-    def _browser_runtime_enabled() -> bool:
-        """Whether browser runtime support is enabled for DeepAgent subagent wiring."""
-        value = (
-            str(
-                read_env("PLAYWRIGHT_RUNTIME_MCP_ENABLED")
-                or read_env("BROWSER_RUNTIME_MCP_ENABLED")
-                or ""
-            )
-            .strip()
-            .lower()
-        )
-        return value in {"1", "true", "yes", "on"}
-
-    @staticmethod
-    def _resolve_managed_browser_binary_from_config(
-        config_base: dict[str, Any] | None = None,
-    ) -> str:
-        """Resolve managed-browser binary from saved browser config."""
-        from jiuwenswarm.agents.harness.common.browser_env import (
-            resolve_managed_browser_binary,
-        )
-
-        return resolve_managed_browser_binary(config_base)
-
-    @staticmethod
-    def _resolve_headless_from_config(
-        config_base: dict[str, Any] | None = None,
-    ) -> bool:
-        """Read browser.headless from config (default True = headless)."""
-        from jiuwenswarm.agents.harness.common.browser_env import resolve_headless
-
-        return resolve_headless(config_base)
-
-    @staticmethod
-    def _sync_browser_runtime_environment(
-        config_base: dict[str, Any] | None = None,
-    ) -> None:
-        """Synchronize browser launch settings before browser runtimes are built."""
-        from jiuwenswarm.agents.harness.common.browser_env import (
-            sync_browser_runtime_environment,
-        )
-
-        sync_browser_runtime_environment(config_base)
-
-    @staticmethod
-    def _is_subagent_enabled(subagent_cfg: Any) -> bool:
-        """Treat only explicit `enabled: true` as enabled."""
-        return isinstance(subagent_cfg, dict) and bool(subagent_cfg.get("enabled", False))
-
-    @staticmethod
-    def _is_subagent_default_enabled(subagent_cfg: Any) -> bool:
-        """Default-enabled subagent: enabled unless explicitly set to false."""
-        if not isinstance(subagent_cfg, dict):
-            return True  # no config → default enabled
-        return subagent_cfg.get("enabled", True) is not False
 
     def _build_configured_subagents(
         self,
@@ -4877,14 +3198,6 @@ class JiuWenSwarmDeepAdapter:
 
         return subagents or None, should_add_general_purpose
 
-    @staticmethod
-    def _build_mcp_server_config(entry: dict[str, Any]) -> McpServerConfig | None:
-        # 传入 server_id_scope 生成稳定的 server_id，避免 reload 时重复注册导致进程泄漏
-        return build_mcp_server_config(entry, server_id_scope="jiuwenswarm")
-
-    @staticmethod
-    def _extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict[str, Any]]:
-        return extract_enabled_mcp_server_entries(config_base)
 
     async def _register_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
         if self._instance is None:
@@ -5015,48 +3328,73 @@ class JiuWenSwarmDeepAdapter:
         self._registered_mcp_server_ids.discard(server_id)
         self._registered_mcp_servers.pop(server_id, None)
 
-    @staticmethod
-    def _stage_request_mcp_tools(
-        request: AgentRequest,
+
+    def _is_builtin_shadowed_tool_name(self, tool_name: str) -> bool:
+        """True when a non-request-scoped ability (typically a harness built-in)
+        already occupies ``tool_name`` in this agent's AbilityManager."""
+        if self._instance is None:
+            return False
+        getter = getattr(getattr(self._instance, "ability_manager", None), "get", None)
+        if not callable(getter):
+            return False
+        try:
+            existing = getter(tool_name)
+        except Exception:
+            return False
+        if existing is None:
+            return False
+        existing_id = str(getattr(existing, "id", "") or "")
+        # Request-scoped holders (ours from a previous request or a foreign
+        # request) keep the install-time replace / fail-closed paths; only
+        # built-in occupancy triggers the staging rename.
+        return not is_request_scoped_mcp_tool_id(existing_id)
+
+    def _resolve_shadow_safe_tool_name(
+        self,
         server_name: str,
-        tool_defs: list[dict[str, Any]],
-        params: dict[str, Any],
+        tool_name: str,
         buffers: _RequestMcpToolBuffers,
-        *,
-        use_global_pool: bool = False,
-        strict: bool = False,
-        yield_to_existing: bool = False,
-    ) -> None:
-        """Build request tools without publishing a partially discovered request."""
-        request_scope = hashlib.sha256(
-            f"{request.session_id}:{request.request_id}".encode("utf-8")
-        ).hexdigest()[:20]
-        prefix = MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX if use_global_pool else "office-claw-request-"
-        for tool_def in tool_defs:
-            name = str(tool_def.get("name") or "").strip()
-            if not name or name in buffers.seen_names:
-                if strict and (not name or not yield_to_existing):
-                    raise RuntimeError("OfficeClaw MCP returned an invalid or duplicate tool name")
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] skipping duplicate/invalid MCP tool: "
-                    "request_id=%s server=%s name=%s", request.request_id, server_name, name,
-                )
+    ) -> str:
+        """Rename a connector tool only when its short name is shadowed.
+
+        ``server_name_tool_name`` (LLM-safe) frees connectors such as
+        doubao-search's ``web_search`` from the built-in shadow skip. The
+        rename happens at staging — before any resource_mgr add — so the card
+        id, allowlists, and deepresearch admission all stay consistent.
+        Returns the raw name when no safe candidate exists; the install-time
+        builtin-shadow skip then keeps today's semantics.
+        """
+        if not self._is_builtin_shadowed_tool_name(tool_name):
+            return tool_name
+        base = re.sub(r"[^0-9A-Za-z_]", "_", f"{server_name}_{tool_name}").strip("_")
+        if not base:
+            return tool_name
+        for candidate in [base] + [f"{base}_{index}" for index in range(2, 21)]:
+            if candidate == tool_name or candidate in buffers.seen_names:
                 continue
-            buffers.seen_names.add(name)
-            card = ToolCard(
-                id=f"{prefix}{request_scope}.{server_name}.{name}",
-                name=name,
-                description=str(tool_def.get("description") or ""),
-                input_params=tool_def.get("input_params") or {},
+            if self._is_builtin_shadowed_tool_name(candidate):
+                continue
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] renamed shadowed MCP connector tool: "
+                "server=%s raw=%s staged=%s",
+                server_name,
+                tool_name,
+                candidate,
             )
-            if not strict:
-                timeout = _positive_timeout_s(params.get("timeout_s"))
-                if timeout is not None:
-                    card.properties["resilience"] = {"timeout_s": timeout}
-            tool = RequestScopedOfficeClawMcpTool(
-                card, params, request.request_id, server_name, use_global_pool=use_global_pool,
-            )
-            buffers.pending_tools.append((tool, strict))
+            return candidate
+        return tool_name
+
+    @staticmethod
+    def _staged_research_tool_names(
+        tool_defs: list[dict[str, Any]],
+        rewrites: dict[str, str],
+    ) -> list[str]:
+        """Deepresearch admission compares installed names, so apply the rewrite."""
+        names: list[str] = []
+        for tool in tool_defs:
+            raw_name = str(tool.get("name") or "").strip()
+            names.append(rewrites.get(raw_name, raw_name))
+        return names
 
     async def _append_identity_pinned_office_claw_tools(
         self,
@@ -5068,27 +3406,13 @@ class JiuWenSwarmDeepAdapter:
     ) -> str:
         params = validate_office_claw_mcp_config(raw_config)
         tool_defs = await list_office_claw_mcp_tools(params)
-        self._stage_request_mcp_tools(
+        _stage_request_mcp_tools(
             request, "office-claw", tool_defs, params, buffers,
             strict=True, yield_to_existing=yield_to_existing,
         )
         env = params.get("env") if isinstance(params.get("env"), dict) else {}
         return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
 
-    @staticmethod
-    def _leftover_request_mcp_servers(
-        request_mcp_servers: dict[str, dict[str, Any]] | None,
-        covered_names: list[str],
-    ) -> tuple[dict[str, dict[str, Any]] | None, list[str]]:
-        """Drop servers already named in mcp_server_list; keep leftovers such as pptx-mcp."""
-        if not request_mcp_servers:
-            return None, []
-        covered = set(covered_names)
-        dropped = [name for name in request_mcp_servers if name in covered]
-        leftover = {
-            name: config for name, config in request_mcp_servers.items() if name not in covered
-        }
-        return (leftover or None), dropped
 
     async def _append_request_mcp_server_tools(
         self,
@@ -5109,15 +3433,28 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] request-scoped MCP connector discovery failed: "
                     "request_id=%s server=%s error=%s", request.request_id, server_name, exc,
                 )
+                if server_name != "office-claw":
+                    buffers.unavailable_connectors[server_name] = CONNECTOR_DISCOVERY_FAILED
                 continue
-            self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
+            # Discovery reports failure as empty params; a legitimately empty
+            # connector (e.g. every tool filtered off) still returns params.
+            if server_name != "office-claw" and not tool_defs:
+                buffers.unavailable_connectors[server_name] = (
+                    CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
+                )
+            _stage_request_mcp_tools(
+                request, server_name, tool_defs, params, buffers,
+                staged_name_resolver=self._resolve_shadow_safe_tool_name,
+            )
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
                 research_server = project_search_server(server_name, server_config, params)
                 if research_server:
                     buffers.research_servers.append(research_server)
-                    buffers.research_tool_names[server_name] = [str(tool.get("name") or "").strip()
-                                                               for tool in tool_defs]
+                    rewrites = buffers.research_name_rewrites.get(server_name) or {}
+                    buffers.research_tool_names[server_name] = (
+                        self._staged_research_tool_names(tool_defs, rewrites)
+                    )
             if server_name == "office-claw" and not invocation_id:
                 env = params.get("env") if isinstance(params.get("env"), dict) else {}
                 invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
@@ -5224,8 +3561,9 @@ class JiuWenSwarmDeepAdapter:
             if server_names:
                 snapshots = await get_mcp_server_registry().snapshot_for_chat(server_names)
                 for name, tool_defs, params in snapshots:
-                    self._stage_request_mcp_tools(
+                    _stage_request_mcp_tools(
                         request, name, tool_defs, params, buffers, use_global_pool=True,
+                        staged_name_resolver=self._resolve_shadow_safe_tool_name,
                     )
                     reader = getattr(get_mcp_server_registry(), "get_server", None)
                     try:
@@ -5239,8 +3577,10 @@ class JiuWenSwarmDeepAdapter:
                         research_server = project_search_server(name, policy["config"], params)
                         if research_server:
                             buffers.research_servers.append(research_server)
-                            buffers.research_tool_names[name] = [str(tool.get("name") or "").strip()
-                                                                 for tool in tool_defs]
+                            rewrites = buffers.research_name_rewrites.get(name) or {}
+                            buffers.research_tool_names[name] = (
+                                self._staged_research_tool_names(tool_defs, rewrites)
+                            )
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -5256,6 +3596,15 @@ class JiuWenSwarmDeepAdapter:
                 invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request, office_claw_config, buffers, yield_to_existing=True,
                 )
+
+            if buffers.unavailable_connectors:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connectors unavailable this request: "
+                    "request_id=%s connectors=%s", request.request_id, buffers.unavailable_connectors,
+                )
+                for tool, _strict in buffers.pending_tools:
+                    if tool.server_name == "office-claw":
+                        tool.set_unavailable_connectors(buffers.unavailable_connectors)
 
             if not replace_request_scoped_mcp_registration(generation, generation):
                 logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
@@ -5281,7 +3630,7 @@ class JiuWenSwarmDeepAdapter:
                 register_live_office_claw_tool_instance(tool, registration.tool_ids)
             self._sync_office_claw_allowlist_to_progressive_rail(
                 registration.tool_ids,
-                delivery_thread_id=self._office_claw_thread_id_from_tools(buffers.registered_tools),
+                delivery_thread_id=_office_claw_thread_id_from_tools(buffers.registered_tools),
                 invocation_id=invocation_id,
             )
             logger.info(
@@ -5322,12 +3671,12 @@ class JiuWenSwarmDeepAdapter:
         raw_config = extract_office_claw_mcp(request.params)
         request_mcp_servers = extract_request_mcp_servers(request.params)
         generation = OfficeClawMcpRegistration(
-            request_id=request.request_id, session_id=self._session_adapter_key(request.session_id),
+            request_id=request.request_id, session_id=_session_adapter_key(request.session_id),
             tool_ids=(), tool_names=(),
         )
         publish_request_scoped_mcp_registration(generation)
         if server_list is not None:
-            request_mcp_servers, dropped = self._leftover_request_mcp_servers(
+            request_mcp_servers, dropped = _leftover_request_mcp_servers(
                 request_mcp_servers, server_list,
             )
             if dropped:
@@ -5576,21 +3925,6 @@ class JiuWenSwarmDeepAdapter:
                 exc,
             )
 
-    @staticmethod
-    def _office_claw_thread_id_from_tools(
-        tools: list[RequestScopedOfficeClawMcpTool],
-    ) -> str:
-        for tool in tools:
-            params = getattr(tool, "_params", None)
-            if not isinstance(params, dict):
-                continue
-            env = params.get("env")
-            if not isinstance(env, dict):
-                continue
-            thread_id = str(env.get("OFFICE_CLAW_THREAD_ID") or "").strip()
-            if thread_id:
-                return thread_id
-        return ""
 
     async def _register_mcp_servers_from_config(
         self, config_base: dict[str, Any], *, tag: str = "agent.main"
@@ -5676,149 +4010,6 @@ class JiuWenSwarmDeepAdapter:
             await self._unregister_mcp_server(server_id)
             await self._register_mcp_server(desired_cfg, tag=tag)
 
-    @staticmethod
-    def _build_vision_model_config(
-        config_base: dict[str, Any],
-    ) -> VisionModelConfig | None:
-        """Build DeepAgent vision config from service config/env mapping."""
-        if not dedicated_multimodal_model_configured(config_base, "vision"):
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] vision tools skipped: models.vision has no dedicated "
-                "api_key in config.yaml"
-            )
-            return None
-        apply_vision_model_config_from_yaml(config_base)
-        api_key = str(read_env("VISION_API_KEY", "")).strip()
-        base_url = str(read_env("VISION_BASE_URL") or read_env("VISION_API_BASE") or "").strip()
-        model_name = str(read_env("VISION_MODEL") or read_env("VISION_MODEL_NAME") or "").strip()
-        # Session-mode accounts authenticate via VISION_DEFAULT_HEADERS (e.g. Basic
-        # auth injected by the relay). The value lives in the namespaced env tip;
-        # parse it here and carry it inside VisionModelConfig — do NOT bridge it
-        # into os.environ (pop_track_b_bare_from_environ hygiene actively removes
-        # business keys from os.environ, so an os.environ bridge is unreliable).
-        vision_default_headers = str(read_env("VISION_DEFAULT_HEADERS") or "").strip()
-        vision_headers_dict: dict[str, str] | None = None
-        if vision_default_headers:
-            try:
-                parsed_headers = json.loads(vision_default_headers)
-                if isinstance(parsed_headers, dict) and parsed_headers:
-                    vision_headers_dict = {
-                        str(k): str(v) for k, v in parsed_headers.items()
-                    }
-            except (ValueError, TypeError) as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] VISION_DEFAULT_HEADERS is set but malformed "
-                    "(JSON parse failed: %s) — auth headers dropped; session-mode vision "
-                    "calls will likely 401",
-                    exc,
-                )
-                vision_headers_dict = None
-        if not api_key or not base_url or not model_name:
-            logger.info("[JiuWenSwarmDeepAdapter] vision tools skipped: incomplete config")
-            return None
-        # P2 兜底：依赖的 openjiuwen 版本若尚未包含 default_headers 字段（联动合并
-        # 顺序失控），退回不带 headers 的旧构造——宁可丢认证头也不能让 TypeError
-        # 阻断 agent 创建（_build_vision_model_config 无 try 包裹，异常会冒泡到
-        # AgentManager.create_agent 导致所有视觉 agent 创建失败）。
-        try:
-            return VisionModelConfig(
-                api_key=api_key,
-                base_url=base_url,
-                model=model_name,
-                max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
-                default_headers=vision_headers_dict,
-            )
-        except TypeError:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] VisionModelConfig does not accept "
-                "default_headers (openjiuwen version mismatch?) — falling back to "
-                "no-auth-headers construction"
-            )
-            return VisionModelConfig(
-                api_key=api_key,
-                base_url=base_url,
-                model=model_name,
-                max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
-            )
-
-    @staticmethod
-    def _build_audio_model_config(
-        config_base: dict[str, Any],
-    ) -> AudioModelConfig | None:
-        """Build DeepAgent audio config from service config/env mapping."""
-        if not complete_multimodal_model_configured(config_base, "audio"):
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] audio tools skipped: models.audio requires "
-                "api_key, api_base, and model_name in config.yaml"
-            )
-            return None
-        apply_audio_model_config_from_yaml(config_base)
-        api_key = str(read_env("AUDIO_API_KEY", "")).strip()
-        base_url = str(read_env("AUDIO_BASE_URL") or read_env("AUDIO_API_BASE") or "").strip()
-        if not api_key or not base_url:
-            logger.info("[JiuWenSwarmDeepAdapter] audio tools skipped: incomplete config")
-            return None
-        transcription_model = str(
-            read_env("AUDIO_TRANSCRIPTION_MODEL") or read_env("AUDIO_MODEL_NAME") or ""
-        ).strip()
-        question_answering_model = str(
-            read_env("AUDIO_QUESTION_ANSWERING_MODEL") or read_env("AUDIO_MODEL_NAME") or ""
-        ).strip()
-        config_kwargs: dict[str, Any] = {
-            "api_key": api_key,
-            "base_url": base_url,
-            "max_retries": parse_int(read_env("AUDIO_MAX_RETRIES"), 3),
-            "http_timeout": parse_int(read_env("AUDIO_HTTP_TIMEOUT"), 20),
-            "max_audio_bytes": parse_int(
-                read_env("AUDIO_MAX_AUDIO_BYTES"),
-                25 * 1024 * 1024,
-            ),
-        }
-        acr_access_key = str(read_env("ACR_ACCESS_KEY", "")).strip()
-        acr_access_secret = str(read_env("ACR_ACCESS_SECRET", "")).strip()
-        acr_base_url = str(read_env("ACR_BASE_URL", "")).strip()
-        if acr_access_key:
-            config_kwargs["acr_access_key"] = acr_access_key
-        if acr_access_secret:
-            config_kwargs["acr_access_secret"] = acr_access_secret
-        if acr_base_url:
-            config_kwargs["acr_base_url"] = acr_base_url
-        if transcription_model:
-            config_kwargs["transcription_model"] = transcription_model
-        if question_answering_model:
-            config_kwargs["question_answering_model"] = question_answering_model
-        return AudioModelConfig(**config_kwargs)
-
-    @staticmethod
-    def _build_video_model_config(
-        config_base: dict[str, Any],
-    ) -> bool:
-        """Build DeepAgent video config from service config/env mapping."""
-        if not complete_multimodal_model_configured(config_base, "video"):
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] skip video_understanding: models.video requires "
-                "api_key, api_base, and model_name in config.yaml"
-            )
-            return False
-        apply_video_model_config_from_yaml(config_base)
-        video_api_key = str(read_env("VIDEO_API_KEY", "")).strip()
-        video_api_base = str(read_env("VIDEO_API_BASE", "")).strip()
-        video_model_name = str(read_env("VIDEO_MODEL_NAME", "")).strip()
-        if not video_api_key or not video_api_base or not video_model_name:
-            logger.info("[JiuWenSwarmDeepAdapter] video tools skipped: incomplete config")
-            return False
-        return True
-
-    @staticmethod
-    def _build_image_gen_model_config(
-        config_base: dict[str, Any],
-    ) -> bool:
-        """Build DeepAgent image generation config from service config/env mapping."""
-        apply_image_gen_model_config_from_yaml(config_base)
-        if not read_env("IMAGE_GEN_API_KEY"):
-            logger.info("[JiuWenSwarmDeepAdapter] image_gen tool skipped: incomplete config")
-            return False
-        return True
 
     def _iter_runtime_audio_tools(self, agent_id: str | None) -> list[Any]:
         """Return metadata-only audio tools unless a complete audio model is configured."""
@@ -5834,14 +4025,6 @@ class JiuWenSwarmDeepAdapter:
             return tools
         return [tool for tool in tools if tool.card.name == "audio_metadata"]
 
-    @staticmethod
-    def _mask_model_secret(value: Any) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return "(empty)"
-        if len(text) <= 8:
-            return "***"
-        return f"{text[:4]}***{text[-2:]}"
 
     def _resolve_default_model_mcc_for_log(self) -> tuple[dict[str, Any], dict[str, str]]:
         """与 ``_create_model`` 同源解析 default 槽位（``get_default_models`` + react 回退）。"""
@@ -5900,7 +4083,7 @@ class JiuWenSwarmDeepAdapter:
             mcc.get("client_provider") or mcc.get("provider") or ""
         ).strip()
         fields["api_base"] = str(mcc.get("api_base") or "").strip()
-        fields["api_key"] = self._mask_model_secret(mcc.get("api_key"))
+        fields["api_key"] = _mask_model_secret(mcc.get("api_key"))
         return fields
 
     def _format_active_model_startup_log(self) -> str:
@@ -6020,7 +4203,7 @@ class JiuWenSwarmDeepAdapter:
             self._enterprise_config_resource_id = cached_resource_id
         else:
             self._enterprise_config_resource_id = (
-                self._enterprise_resource_id_from_request(request)
+                _enterprise_resource_id_from_request(request)
                 if request is not None
                 else str(getattr(loaded, "resource_id", "") or "").strip()
             ) or None
@@ -6103,84 +4286,6 @@ class JiuWenSwarmDeepAdapter:
                 len(ext_config),
             )
 
-    @staticmethod
-    def _inject_model_selection_into_inputs(
-        request: AgentRequest, inputs: dict[str, Any]
-    ) -> None:
-        """把请求的模型选择值注入 ``inputs["run"]["context"]["extra"]["model_selection"]``，供 ModelRoutingRail 每请求读取。
-
-        relay 前端下拉框与具体模型同级：四档（fast/balanced/extreme/auto）与具体
-        模型统一经 frame ``params.model_name`` → ``request.params`` → 这里写入
-        ``run_context.extra``（DeepAgent ``_normalize_inputs`` 会把它带进
-        ``InvokeInputs.run_context.extra``）。取值可为具体模型名，或
-        fast/balanced/extreme/auto（写死路由）；缺失不写入，rail 侧走
-        "具体模型/默认"分支（跳过路由）。
-        """
-        params = request.params if isinstance(request.params, dict) else {}
-        raw = str(params.get("model_name") or "").strip()
-        if not raw:
-            return
-        run_extra = (
-            inputs.setdefault("run", {})
-            .setdefault("context", {})
-            .setdefault("extra", {})
-        )
-        if isinstance(run_extra, dict):
-            run_extra["model_selection"] = raw
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] model_selection injected: value=%s", raw
-            )
-
-    @staticmethod
-    def _inject_model_routing_into_inputs(
-        request: AgentRequest, inputs: dict[str, Any]
-    ) -> None:
-        """把 ``params.enable_routing`` 注入 ``inputs["run"]["context"]["extra"]["enable_routing"]``。
-
-        relay 的 auto 档在 ``params.model_name`` 上仍下发**保底具体模型名**，另置
-        ``enable_routing=True`` 表达「本帧模型名可被路由覆盖」。开关经这里写进
-        ``run_context.extra``，供 ``ModelRoutingRail.before_invoke`` 每请求读取。
-
-        严格判 ``is True``：缺省 / ``False`` / 非布尔（含字符串 "true"）一律**不写**，
-        避免任何异常输入把 rail 从「跳过」翻成「真路由」。params 是白名单消费
-        （``_build_inputs`` 逐键 ``params.get``），故 relay 侧必须显式列出该键。
-        """
-        params = request.params if isinstance(request.params, dict) else {}
-        if params.get("enable_routing") is not True:
-            return
-        run_extra = (
-            inputs.setdefault("run", {})
-            .setdefault("context", {})
-            .setdefault("extra", {})
-        )
-        if isinstance(run_extra, dict):
-            run_extra["enable_routing"] = True
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] enable_routing injected: value=True"
-            )
-
-    @staticmethod
-    def _inject_request_id_into_inputs(
-        request: AgentRequest, inputs: dict[str, Any]
-    ) -> None:
-        """把 ``request.request_id`` 注入 ``inputs["run"]["context"]["extra"]["request_id"]``。
-
-        供 ``ModelRoutingRail.before_invoke`` 在 invoke 起点重绑日志的 ``[req=]``
-        ContextVar。agent 执行跑在与 handler **不同的 task**（warm-pool / 长生命周期
-        复用），其 ContextVar 可能是**上一个请求**捕获的陈旧值，导致 rail 决策日志
-        带错 req 标签。这里把本请求 id 作为**数据**随 inputs 传入（与 model_selection /
-        enable_routing 同一条通道，逐请求正确），rail 侧据此重绑即可修正标签。
-        """
-        rid = str(getattr(request, "request_id", "") or "").strip()
-        if not rid:
-            return
-        run_extra = (
-            inputs.setdefault("run", {})
-            .setdefault("context", {})
-            .setdefault("extra", {})
-        )
-        if isinstance(run_extra, dict):
-            run_extra["request_id"] = rid
 
     def _refresh_multimodal_configs(
         self,
@@ -6194,10 +4299,10 @@ class JiuWenSwarmDeepAdapter:
                 continue
             clear_multimodal_env_groups([group])
 
-        self._vision_model_config = self._build_vision_model_config(config_base)
-        self._audio_model_config = self._build_audio_model_config(config_base)
-        self._video_model_config = self._build_video_model_config(config_base)
-        self._image_gen_model_config = self._build_image_gen_model_config(config_base)
+        self._vision_model_config = _build_vision_model_config(config_base)
+        self._audio_model_config = _build_audio_model_config(config_base)
+        self._video_model_config = _build_video_model_config(config_base)
+        self._image_gen_model_config = _build_image_gen_model_config(config_base)
 
         for tool in self._vision_tools:
             tool.vision_model_config = self._vision_model_config
@@ -6456,6 +4561,7 @@ class JiuWenSwarmDeepAdapter:
                 language=self._resolve_runtime_language(),
                 vision_model_config=self._vision_model_config,
                 agent_id=agent_id,
+                operation=self._sys_operation,
             ),
             warn_label="vision tools",
         )
@@ -6636,94 +4742,25 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
                 # Fall back to process-default checkpointer so create_instance can proceed.
-                await ensure_persistent_checkpointer()
+                # Use the return value (not a from-imported global): the singleton is
+                # assigned inside checkpoint_db after import time.
+                shared = await ensure_persistent_checkpointer()
                 if self._checkpointer is None:
-                    self._checkpointer = _shared_checkpoint_checkpointer
+                    self._checkpointer = shared
                 self._bind_checkpointer_to_rails()
 
-    @classmethod
-    def _normalize_reload_value(cls, value: Any) -> Any:
-        """Normalize config-like values for stable hot-reload comparisons."""
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        if isinstance(value, dict):
-            return {
-                str(key): cls._normalize_reload_value(val)
-                for key, val in sorted(value.items(), key=lambda item: str(item[0]))
-            }
-        if isinstance(value, (list, tuple)):
-            return [cls._normalize_reload_value(item) for item in value]
-        if isinstance(value, set):
-            normalized_items = [cls._normalize_reload_value(item) for item in value]
-            return sorted(normalized_items, key=repr)
-        if hasattr(value, "model_dump"):
-            try:
-                return cls._normalize_reload_value(value.model_dump(mode="json"))
-            except TypeError:
-                return cls._normalize_reload_value(value.model_dump())
-        if hasattr(value, "dict"):
-            return cls._normalize_reload_value(value.dict())
-        if hasattr(value, "value") and not isinstance(value, (bytes, bytearray)):
-            return cls._normalize_reload_value(value.value)
-        if hasattr(value, "__dataclass_fields__"):
-            return cls._normalize_reload_value(
-                {field: getattr(value, field) for field in value.__dataclass_fields__}
-            )
-        if hasattr(value, "__dict__"):
-            return cls._normalize_reload_value(vars(value))
-        return repr(value)
-
-    @classmethod
-    def _stable_reload_fingerprint(cls, value: Any) -> str:
-        normalized = cls._normalize_reload_value(value)
-        payload = json.dumps(normalized, sort_keys=True, ensure_ascii=False, default=str)
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-    @classmethod
-    def _model_reload_fingerprint(cls, deep_cfg: Any | None) -> str | None:
-        if deep_cfg is None:
-            return None
-        model = getattr(deep_cfg, "model", None)
-        if model is None:
-            return None
-        return cls._stable_reload_fingerprint(
-            {
-                "model": {
-                    "model_client_config": getattr(model, "model_client_config", None),
-                    "model_config": getattr(model, "model_config", None),
-                },
-                "enable_task_loop": getattr(deep_cfg, "enable_task_loop", False),
-                "max_iterations": getattr(deep_cfg, "max_iterations", None),
-                "context_engine_config": getattr(deep_cfg, "context_engine_config", None),
-            }
-        )
-
-    @classmethod
-    def _system_prompt_reload_fingerprint(cls, deep_cfg: Any | None) -> str | None:
-        if deep_cfg is None:
-            return None
-        system_prompt = getattr(deep_cfg, "system_prompt", None)
-        if system_prompt is None:
-            return None
-        return cls._stable_reload_fingerprint(
-            {
-                "system_prompt": system_prompt,
-                "language": getattr(deep_cfg, "language", None),
-                "prompt_mode": getattr(deep_cfg, "prompt_mode", None),
-            }
-        )
 
     def _previous_model_reload_fingerprint(self) -> str | None:
         if self._last_reload_model_fingerprint is not None:
             return self._last_reload_model_fingerprint
         previous_config = getattr(self._instance, "_deep_config", None)
-        return self._model_reload_fingerprint(previous_config)
+        return _model_reload_fingerprint(previous_config)
 
     def _previous_system_prompt_reload_fingerprint(self) -> str | None:
         if self._last_reload_system_prompt_fingerprint is not None:
             return self._last_reload_system_prompt_fingerprint
         previous_config = getattr(self._instance, "_deep_config", None)
-        return self._system_prompt_reload_fingerprint(previous_config)
+        return _system_prompt_reload_fingerprint(previous_config)
 
     def _omit_unchanged_reload_fields(
         self,
@@ -6733,7 +4770,7 @@ class JiuWenSwarmDeepAdapter:
         reload_fingerprints: dict[str, str] = {}
 
         model = getattr(deep_cfg, "model", None)
-        model_fingerprint = self._model_reload_fingerprint(deep_cfg)
+        model_fingerprint = _model_reload_fingerprint(deep_cfg)
         if model_fingerprint is not None:
             previous_model_fingerprint = self._previous_model_reload_fingerprint()
             if previous_model_fingerprint == model_fingerprint:
@@ -6745,7 +4782,7 @@ class JiuWenSwarmDeepAdapter:
             reload_fingerprints["model"] = model_fingerprint
 
         system_prompt = getattr(deep_cfg, "system_prompt", None)
-        prompt_fingerprint = self._system_prompt_reload_fingerprint(deep_cfg)
+        prompt_fingerprint = _system_prompt_reload_fingerprint(deep_cfg)
         if prompt_fingerprint is not None:
             previous_prompt_fingerprint = self._previous_system_prompt_reload_fingerprint()
             if previous_prompt_fingerprint == prompt_fingerprint:
@@ -6758,13 +4795,6 @@ class JiuWenSwarmDeepAdapter:
 
         return omitted_fields, reload_fingerprints
 
-    @staticmethod
-    def _restore_omitted_reload_fields(
-        deep_cfg: DeepAgentConfig,
-        omitted_fields: dict[str, Any],
-    ) -> None:
-        for field_name, field_value in omitted_fields.items():
-            setattr(deep_cfg, field_name, field_value)
 
     def _commit_reload_fingerprints(self, reload_fingerprints: dict[str, str]) -> None:
         model_fingerprint = reload_fingerprints.get("model")
@@ -6774,101 +4804,6 @@ class JiuWenSwarmDeepAdapter:
         if prompt_fingerprint is not None:
             self._last_reload_system_prompt_fingerprint = prompt_fingerprint
 
-    @staticmethod
-    def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
-        """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
-        name = mcc.get("model_name", "")
-        # models.json 在 relay spawn 前落盘；未登录时 maas 条目 api_base/api_key 为空，
-        # Model 构建会失败（整批跳过，四档路由只能 keep current）。登录后 invoke 同步
-        # 把官方通道凭证 env（API_BASE/API_KEY/default_headers）注入 tip，这里在 api_base
-        # 缺失时原位回填：仅当候选 base 命中官方通道端点标记才填，避免把自定义 OpenAI
-        # 网关误配给官方通道模型。原位修改 mcc 使 _register_model_cache_entry 的
-        # model_ref 哈希与注入后的一致。
-        if not str(mcc.get("api_base") or "").strip():
-            try:
-                from jiuwenswarm.llm_sse_patch import _is_huawei_maas_api_base
-
-                for _base_key in (
-                    "OFFICE_CLAW_HUAWEI_MAAS_BASE_URL",
-                    "API_BASE",
-                    "OPENAI_BASE_URL",
-                    "OPENAI_API_BASE",
-                ):
-                    _base_val = read_env(_base_key, "").strip()
-                    if _base_val and _is_huawei_maas_api_base(_base_val):
-                        mcc["api_base"] = _base_val
-                        # 仅「候选 base 命中 maas 端点标记」时才回填 api_key，与注释承诺一致；
-                        # 避免把 OPENAI_API_KEY/API_KEY/huawei-maas-session 假凭证写进
-                        # 任意 api_base 为空的非 maas 条目（本方法被全部模型缓存构建复用）。
-                        if not str(mcc.get("api_key") or "").strip():
-                            mcc["api_key"] = (
-                                read_env("OPENAI_API_KEY", "").strip()
-                                or read_env("API_KEY", "").strip()
-                                or "huawei-maas-session"
-                            )
-                        break
-            except Exception as exc:
-                logger.debug(
-                    "[JiuWenSwarmDeepAdapter] MaaS credential backfill skipped: %s", exc
-                )
-        mcc_fields = {k: v for k, v in mcc.items() if k != "model_name"}
-        if not mcc_fields.get("client_provider"):
-            mcc_fields["client_provider"] = "OpenAI"
-        # OfficeClaw / Huawei MaaS syncs real auth via tip ``default_headers``
-        # (Authorization: Basic ...). api_key is only the placeholder
-        # ``huawei-maas-session``. Merge into custom_headers; llm_sse_patch keeps
-        # Authorization through openjiuwen sanitize_headers (otherwise APIG.0303).
-        tip_headers = None
-        try:
-            from jiuwenswarm.common.local_env_config import read_default_headers
-
-            tip_headers = read_default_headers()
-        except Exception:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] failed to read tip default_headers",
-                exc_info=True,
-            )
-        if tip_headers:
-            existing = mcc_fields.get("custom_headers")
-            merged = dict(existing) if isinstance(existing, dict) else {}
-            for header_name, header_value in tip_headers.items():
-                key = str(header_name)
-                # Tip credentials must win for Authorization (MaaS Basic auth).
-                if key.lower() == "authorization":
-                    merged[key] = str(header_value)
-                else:
-                    merged.setdefault(key, str(header_value))
-            mcc_fields["custom_headers"] = merged
-            has_authorization = any(
-                str(k).lower() == "authorization" for k in merged
-            )
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] merged tip default_headers into "
-                "custom_headers: keys=%s has_authorization=%s",
-                sorted(str(k) for k in merged),
-                has_authorization,
-            )
-        else:
-            api_key = str(mcc_fields.get("api_key", "") or "").strip()
-            if api_key == "huawei-maas-session":
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] tip default_headers empty; "
-                    "Huawei MaaS calls may fail with APIG.0303"
-                )
-            else:
-                logger.debug(
-                    "[JiuWenSwarmDeepAdapter] tip default_headers empty "
-                    "(api_key_present=%s)",
-                    bool(api_key),
-                )
-        m_config = ModelRequestConfig(
-            **build_reasoning_model_request_kwargs(
-                model_client_config=mcc_fields,
-                model_config_obj=mco,
-                model_name=name,
-            )
-        )
-        return Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
 
     def _register_model_cache_entry(
         self,
@@ -6885,9 +4820,10 @@ class JiuWenSwarmDeepAdapter:
             return
         model_name = mcc["model_name"]
         try:
-            model = self._build_model_from_entry(
+            model = _build_model_from_entry(
                 mcc,
                 entry.get("model_config_obj") or {},
+                entry.get("modalities"),
             )
         except Exception as exc:
             logger.warning(
@@ -6995,7 +4931,13 @@ class JiuWenSwarmDeepAdapter:
             or {}
         )
         try:
-            model = self._build_model_from_entry(mcc, mco)
+            model = _build_model_from_entry(
+                mcc,
+                mco,
+                modalities=default_model_config.get("modalities")
+                if default_model_config.get("modalities") is not None
+                else react_config.get("modalities"),
+            )
             self._model_cache[model_name] = model
             model_ref = build_model_identity_reference(model_name, mcc)
             self._model_identity_to_keys.setdefault(model_ref, []).append(model_name)
@@ -7007,15 +4949,10 @@ class JiuWenSwarmDeepAdapter:
                 model_name, exc,
             )
 
-    @staticmethod
-    def _inject_attribution_to_config(config: dict) -> None:
-        """Inject OpenRouter attribution headers into all model_client_config entries in-place."""
-        from jiuwenswarm.common.openrouter_attribution import inject_attribution_to_config
-        inject_attribution_to_config(config)
 
     def _create_model(self, config: dict) -> Model:
         # 指纹比对：模型配置未变且缓存非空时跳过重建，避免热更新时反复销毁/重建 Model 实例
-        new_fp = self._models_config_fingerprint(config)
+        new_fp = _models_config_fingerprint(config)
         if (
             new_fp == self._last_models_config_fingerprint
             and self._model_cache
@@ -7037,7 +4974,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_identity_owners.clear()
         self._model_entry_by_ref.clear()
         self._tier_model_cache.clear()
-        self._inject_attribution_to_config(config)
+        _inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
         if not self._model_cache:
             self._build_model_cache_legacy(config)
@@ -7091,7 +5028,7 @@ class JiuWenSwarmDeepAdapter:
             mcc = entry.get("model_client_config") or {}
             model_name = str(mcc.get("model_name") or "")
             try:
-                model = self._build_model_from_entry(mcc, entry.get("model_config_obj") or {})
+                model = _build_model_from_entry(mcc, entry.get("model_config_obj") or {}, entry.get("modalities"))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] 保留重载前模型失败 %s: %s", model_name, exc
@@ -7115,50 +5052,6 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] 保留重载前模型 %s", retained
             )
 
-    @staticmethod
-    def _models_config_fingerprint(config: dict) -> str:
-        """计算模型配置段的指纹，用于判断是否需要重建模型缓存。"""
-        models = config.get("models", {})
-        react = config.get("react") or {}
-        # Tip credentials are not in config.yaml; include fingerprints so MaaS
-        # default_headers / API_KEY rotation rebuilds the OpenAI client.
-        tip_api_key = ""
-        tip_api_base = ""
-        tip_headers_raw = ""
-        try:
-            from jiuwenswarm.common.local_env_config import read_default_headers_raw
-
-            tip_api_key = str(read_env("API_KEY", "") or "")
-            tip_api_base = str(read_env("API_BASE", "") or "")
-            tip_headers_raw = str(read_default_headers_raw() or "")
-        except Exception:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] tip credential fingerprint unavailable",
-                exc_info=True,
-            )
-
-        def _fp(value: str) -> str:
-            if not value:
-                return ""
-            return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-
-        payload = json.dumps(
-            {
-                "models": models,
-                "react": {
-                    "model_client_config": react.get("model_client_config"),
-                    "model_name": react.get("model_name"),
-                    "model_config_obj": react.get("model_config_obj"),
-                },
-                "tip": {
-                    "api_key_fp": _fp(tip_api_key),
-                    "api_base": tip_api_base,
-                    "headers_fp": _fp(tip_headers_raw),
-                },
-            },
-            sort_keys=True, default=str, ensure_ascii=False,
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _resolve_model_by_identity(self, model_ref: str) -> Model:
         normalized_ref = normalize_model_identity_reference(model_ref)
@@ -7306,6 +5199,51 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+    def _subagent_ttse_consult_dependencies(self) -> Any | None:
+        """子 Agent 查询父 TTSE 内部状态的唯一入口；始终读取当前实例。"""
+        from jiuwenswarm.agents.harness.common.rails.subagent_ttse_consult_rail import (
+            TTSEConsultDependencies,
+        )
+
+        if self._is_code_agent:
+            return None
+        rail = self._ttse_rail
+        config = self._resolved_ttse_config()
+        if rail is None or not get_ttse_enabled({"ttse": config}):
+            return None
+        if not coerce_config_bool(config.get("inject_enabled"), True):
+            return None
+        disabled = resolve_string_or_list_config(self._config_cache.get("disabled_tools"))
+        live_disabled = getattr(self._disabled_tools_rail, "_disabled_tools", ())
+        if "ttse_consult" in disabled or "ttse_consult" in live_disabled:
+            return None
+        store = getattr(rail, "_ttse_store", None)
+        rail_config = getattr(rail, "_ttse_config", None)
+        if store is None or rail_config is None or not rail_config.inject_enabled:
+            return None
+        return TTSEConsultDependencies(
+            store=store,
+            max_chars=int(getattr(rail_config, "consult_max_chars", 8000) or 8000),
+            max_rules=int(getattr(rail_config, "consult_max_rules", 40) or 40),
+            default_top_k=int(getattr(rail_config, "consult_top_k", 8) or 8),
+            rrf_k=int(getattr(rail_config, "consult_rrf_k", 60) or 60),
+        )
+
+    def _bind_subagent_ttse_wiring(self) -> None:
+        """为非 Code 实例装配查询入口，能力由父级 TTSE 状态和开关决定。"""
+        if self._instance is None or self._is_code_agent:
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.tools.subagent_executor.ttse import (
+                install_subagent_ttse_wiring,
+            )
+
+            install_subagent_ttse_wiring(
+                self._instance, self._subagent_ttse_consult_dependencies,
+            )
+        except Exception:
+            logger.warning("[subagent.ttse] wiring installation failed", exc_info=True)
+
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
@@ -7328,145 +5266,45 @@ class JiuWenSwarmDeepAdapter:
             raise RuntimeError("No model configured for request")
         return model
 
-    @staticmethod
-    def _prepare_multimodal_image_inputs(
-        request: AgentRequest,
-        inputs: dict[str, Any],
-    ) -> dict[str, Any]:
-        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-            extract_multimodal_image_files,
-        )
-
-        image_files = extract_multimodal_image_files(request.params)
-        if not image_files:
-            return inputs
-
-        updated = dict(inputs)
-        updated["_multimodal_image_files"] = image_files
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] Prepared %d image attachment(s) "
-            "for Core multimodal context-window injection",
-            len(image_files),
-        )
-        return updated
 
     @staticmethod
-    def _prepare_react_image_tool_prompt(
-        request: AgentRequest,
-        inputs: dict[str, Any],
-        *,
-        enable_read_image_multimodal: bool,
-    ) -> dict[str, Any]:
-        """Add image file paths to the ReAct prompt when native image input is off."""
-        if enable_read_image_multimodal:
-            return inputs
-
-        query = inputs.get("query")
-        if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
-            return inputs
-
-        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-            extract_multimodal_image_files,
-        )
-
-        image_files = inputs.get("_multimodal_image_files")
-        if not isinstance(image_files, list) or not image_files:
-            image_files = extract_multimodal_image_files(request.params)
-        if not image_files:
-            return inputs
-
-        params = request.params if isinstance(request.params, dict) else {}
-        raw_question = params.get("query")
-        if not isinstance(raw_question, str) or not raw_question.strip():
-            raw_question = params.get("content")
-        question = raw_question.strip() if isinstance(raw_question, str) else ""
-        first_path = str(image_files[0].get("path") or "").strip()
-        if not first_path:
-            return inputs
-
-        media_items = []
-        for image_file in image_files:
-            path = str(image_file.get("path") or "").strip()
-            if not path:
-                continue
-            media_items.append(
-                {
-                    "type": "image",
-                    "filename": image_file.get("filename") or Path(path).name,
-                    "mediaPath": path,
-                    "mimeType": image_file.get("mime_type") or image_file.get("mimeType"),
-                }
-            )
-        if not media_items:
-            return inputs
-
-        tool_context = {
-            "marker": "jiuwenswarm_image_tool_context",
-            "mediaPath": first_path,
-            "mediaItems": media_items,
-            "question": question,
-            "toolHint": (
-                "当前主模型未启用原生图片输入。如果需要理解图片内容，请调用图片理解工具；"
-                "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
-                "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
-            ),
-        }
-
-        updated = dict(inputs)
-        updated.pop("_multimodal_image_files", None)
-        updated["query"] = (
-            query
-            + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
-            + json.dumps(tool_context, ensure_ascii=False)
-        )
-        return updated
-
-    @staticmethod
-    def _build_image_tool_fallback_notice(
-        request: AgentRequest,
-        *,
-        enable_read_image_multimodal: bool,
-        model: Any | None,
-    ) -> dict[str, Any] | None:
-        if enable_read_image_multimodal:
-            return None
-
-        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-            extract_multimodal_image_files,
-        )
-
-        image_files = extract_multimodal_image_files(request.params)
-        if not image_files:
-            return None
-
-        model_config = getattr(model, "model_config", None)
-        model_name = str(getattr(model_config, "model_name", "") or "").strip()
-        model_label = f"（{model_name}）" if model_name else ""
-        content = f"当前模型{model_label}不支持原生图片理解，已切换为图片理解工具处理。"
-        notice = {
-            "event_type": "chat.notice",
-            "notice_type": "image_tool_fallback",
-            "level": "info",
-            "content": content,
-            "request_id": request.request_id,
-            "session_id": request.session_id,
-            "image_count": len(image_files),
-        }
-        if model_name:
-            notice["model_name"] = model_name
-        return notice
+    def _resolve_enable_read_image_multimodal(
+        config: dict[str, Any], model: Any | None = None
+    ) -> bool:
+        """薄封装：唯一真源在 ``deep.model_factory``，保留类方法供子类/测试调用。"""
+        return _resolve_enable_read_image_multimodal(config, model)
 
     def _native_image_input_enabled(self, config: dict[str, Any], model: Any | None) -> bool:
-        # read_file 默认不读取图片：不把图片字节内联进主模型对话，改走 image_reading / VQA 工具。
-        # 仅当 config.yaml 显式设置 enable_read_image_multimodal 时遵从配置；模型名启发式已移除。
-        return self._resolve_enable_read_image_multimodal(config)
+        # 看图能力只由逐模型 modalities 是否含 image 决定（未声明即不支持）。
+        return _resolve_enable_read_image_multimodal(config, model)
 
     @staticmethod
-    def _resolve_enable_read_image_multimodal(config: dict[str, Any]) -> bool:
-        configured = config.get("enable_read_image_multimodal")
-        if isinstance(configured, bool):
-            return configured
-        return DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
+    def _validate_checkpointer_consistency(
+        freeze_checkpointer: Any,
+        recover_checkpointer: Any,
+    ) -> None:
+        """冻结侧（实例级）与恢复侧（session/进程默认）checkpointer 不一致时告警。
+
+        纯检查 + 日志，不改变任何赋值/绑定/创建逻辑。实例相同或底层 ``_kv_store``
+        相同视为一致，不告警。
+        """
+        if freeze_checkpointer is None or recover_checkpointer is None:
+            return
+        if freeze_checkpointer is recover_checkpointer:
+            return
+        freeze_kv = getattr(freeze_checkpointer, "_kv_store", None)
+        recover_kv = getattr(recover_checkpointer, "_kv_store", None)
+        if freeze_kv is None or recover_kv is None:
+            return
+        if freeze_kv is recover_kv:
+            return
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] checkpointer consistency mismatch on "
+            "freeze/recover: freeze_kv=%r recover_kv=%r",
+            freeze_kv,
+            recover_kv,
+        )
+
 
     def _apply_model_to_react_agent(self, model: Model) -> None:
         """将指定模型应用到 react_agent 实例（替换 _llm 和 _config 字段）。
@@ -7526,6 +5364,21 @@ class JiuWenSwarmDeepAdapter:
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] failed to sync deep_config.model",
+                    exc_info=True,
+                )
+            # 主模型切换后必须同步看图能力位：否则文本模型会继承上一个视觉模型的
+            # enable_read_image_multimodal=True，导致 rail 误注入 + 摘掉 VQA。
+            # 与自动路由（ModelRoutingRail.before_invoke 直接 set_llm）共用同一 helper
+            # 收敛，避免换模入口漏同步。
+            try:
+                from jiuwenswarm.agents.harness.common.rails.model_routing.image_capability_sync import (
+                    sync_agent_image_capability,
+                )
+
+                sync_agent_image_capability(self._instance, model)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] failed to sync deep_config.enable_read_image_multimodal",
                     exc_info=True,
                 )
 
@@ -7628,16 +5481,6 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("[JiuWenSwarmDeepAdapter] failed to scan visible skills: %s", exc)
         return visible
 
-    @staticmethod
-    def _build_response_prompt_rail() -> ResponsePromptRail | None:
-        """Build ResponsePromptRail so message rules keep priority ordering."""
-        try:
-            rail = ResponsePromptRail()
-            logger.info("[JiuWenSwarmDeepAdapter] ResponsePromptRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] ResponsePromptRail create failed: %s", exc)
-            rail = None
-        return rail
 
     def _create_sandbox_sys_operation(
         self,
@@ -7712,41 +5555,6 @@ class JiuWenSwarmDeepAdapter:
                 return str(value)
         return None
 
-    @staticmethod
-    def _sys_operation_isolation_key(sysop_card: SysOperationCard) -> str | None:
-        try:
-            sys_operation = SysOperation(sysop_card)
-            return sys_operation.isolation_key_template
-        except Exception as exc:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] failed to resolve sys_operation isolation key: %s",
-                exc,
-            )
-            return None
-
-    @staticmethod
-    def _get_registered_sys_operation_by_isolation_key(
-        isolation_key_template: str | None,
-    ) -> SysOperation | None:
-        if not isolation_key_template:
-            return None
-
-        try:
-            resource_registry = getattr(Runner.resource_mgr, "_resource_registry", None)
-            if resource_registry is None:
-                return None
-            sys_operation_mgr = resource_registry.sys_operation()
-            owner_map = getattr(sys_operation_mgr, "_sandbox_key_owner_map", {})
-            existing_op_id = owner_map.get(isolation_key_template)
-            if not existing_op_id:
-                return None
-            return Runner.resource_mgr.get_sys_operation(existing_op_id)
-        except Exception as exc:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] failed to get registered sys_operation: %s",
-                exc,
-            )
-            return None
 
     def _create_sys_operation(self) -> SysOperation | None:
         """Resolve this adapter's sys operation and take a reference on it.
@@ -7940,9 +5748,9 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: sysop_card is None")
                 return None
             self._sys_operation_card = sysop_card
-            isolation_key_template = JiuWenSwarmDeepAdapter._sys_operation_isolation_key(sysop_card)
+            isolation_key_template = _sys_operation_isolation_key(sysop_card)
             registered_sys_operation = (
-                JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
+                _get_registered_sys_operation_by_isolation_key(
                     isolation_key_template
                 )
             )
@@ -7956,7 +5764,7 @@ class JiuWenSwarmDeepAdapter:
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
                 registered_sys_operation = (
-                    JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
+                    _get_registered_sys_operation_by_isolation_key(
                         isolation_key_template
                     )
                 )
@@ -8035,9 +5843,9 @@ class JiuWenSwarmDeepAdapter:
                     (time.monotonic() - _t0) * 1000,
                 )
                 return None
-            isolation_key = self._sys_operation_isolation_key(sysop_card)
+            isolation_key = _sys_operation_isolation_key(sysop_card)
             if isolation_key:
-                registered = self._get_registered_sys_operation_by_isolation_key(
+                registered = _get_registered_sys_operation_by_isolation_key(
                     isolation_key
                 )
                 if registered is not None:
@@ -8053,7 +5861,7 @@ class JiuWenSwarmDeepAdapter:
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
                 registered = (
-                    self._get_registered_sys_operation_by_isolation_key(isolation_key)
+                    _get_registered_sys_operation_by_isolation_key(isolation_key)
                     if isolation_key
                     else None
                 )
@@ -8146,35 +5954,6 @@ class JiuWenSwarmDeepAdapter:
                 rails.append(rail)
         return rails
 
-    @staticmethod
-    def _is_sandbox_bound_rail(rail: Any) -> bool:
-        """动手类 rail：必须跟 deep_config / 沙箱 sysop，不能强制本地。"""
-        if isinstance(rail, (SysOperationRail, SkillUseRail)):
-            return True
-        try:
-            if isinstance(rail, ConcurrentSafeSysOperationRail):
-                return True
-        except Exception:
-            pass
-        return type(rail).__name__ in {
-            "SysOperationRail",
-            "FileSystemRail",
-            "ConcurrentSafeFileSystemRail",
-            "ConcurrentSafeSysOperationRail",
-            "SkillUseRail",
-        }
-
-    @staticmethod
-    def _set_rail_sys_operation(rail: Any, sysop: SysOperation) -> bool:
-        """给单个 rail 写入 sys_operation；成功返回 True。"""
-        setter = getattr(rail, "set_sys_operation", None)
-        if callable(setter):
-            setter(sysop)
-            return True
-        if hasattr(rail, "sys_operation"):
-            rail.sys_operation = sysop
-            return True
-        return False
 
     def _apply_local_sysop_to_all_rails(self) -> None:
         """按 ``AGENT_FILE_READ_BACKEND`` 把读文件类 rail 切到本地 sysop。"""
@@ -8237,13 +6016,13 @@ class JiuWenSwarmDeepAdapter:
             if rid in seen:
                 continue
             seen.add(rid)
-            if self._is_sandbox_bound_rail(rail):
-                if agent_sysop is not None and self._set_rail_sys_operation(
+            if _is_sandbox_bound_rail(rail):
+                if agent_sysop is not None and _set_rail_sys_operation(
                     rail, agent_sysop
                 ):
                     sandbox_kept += 1
                 continue
-            if self._set_rail_sys_operation(rail, local_sysop):
+            if _set_rail_sys_operation(rail, local_sysop):
                 local_applied += 1
 
         logger.info(
@@ -8281,9 +6060,9 @@ class JiuWenSwarmDeepAdapter:
             self._memory_rail,
             self._external_memory_rail,
         ):
-            if rail is None or self._is_sandbox_bound_rail(rail):
+            if rail is None or _is_sandbox_bound_rail(rail):
                 continue
-            if not self._set_rail_sys_operation(rail, local_sysop):
+            if not _set_rail_sys_operation(rail, local_sysop):
                 continue
             rebound.append(type(rail).__name__)
         if not rebound:
@@ -8438,7 +6217,7 @@ class JiuWenSwarmDeepAdapter:
                     )
                     return
                 try:
-                    isolation_key = self._sys_operation_isolation_key(card)
+                    isolation_key = _sys_operation_isolation_key(card)
                     shared_key = (
                         build_yuanrong_shared_scope_key(
                             str(launcher.base_url), str(isolation_key)
@@ -8565,47 +6344,6 @@ class JiuWenSwarmDeepAdapter:
                 fs_rail = None
         return fs_rail
 
-    @staticmethod
-    def _get_active_package_config_paths() -> list[str]:
-        """Read harness-packages.json to get config_path from active packages.
-
-        Returns:
-            List of harness_config.yaml paths from active packages.
-        """
-        config_paths: list[str] = []
-        try:
-            if not _HARNESS_PACKAGES_FILE.exists():
-                return config_paths
-
-            data = json.loads(_HARNESS_PACKAGES_FILE.read_text(encoding="utf-8"))
-            active_ids = data.get("active_package_ids", [])
-            if not active_ids:
-                return config_paths
-
-            for pkg in data.get("packages", []):
-                pkg_id = pkg.get("id", "")
-                if pkg_id not in active_ids:
-                    continue
-
-                config_path = pkg.get("config_path", "")
-                if not config_path:
-                    continue
-
-                config_file = Path(config_path)
-                if config_file.exists():
-                    config_paths.append(str(config_file))
-                    logger.info(
-                        "[JiuWenSwarmDeepAdapter] Found active package config: %s (package=%s)",
-                        config_path,
-                        pkg_id,
-                    )
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] Failed to read active packages config paths: %s",
-                exc,
-            )
-
-        return config_paths
 
     async def _load_active_packages(self) -> list[str]:
         """Load all active packages via load_harness_config.
@@ -8619,7 +6357,7 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return []
 
-        config_paths = self._get_active_package_config_paths()
+        config_paths = _get_active_package_config_paths()
         if not config_paths:
             return []
 
@@ -8914,22 +6652,6 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
-    @staticmethod
-    def _resolve_skill_sleep_traces_dir() -> Path:
-        """Resolve OTel file-exporter traces dir for skill sleep harvest."""
-        try:
-            full = get_config()
-        except Exception:
-            full = {}
-        if not isinstance(full, dict):
-            full = {}
-        for key in ("agent_observability", "team_observability"):
-            block = full.get(key)
-            if isinstance(block, dict):
-                raw = str(block.get("traces_dir") or "").strip()
-                if raw:
-                    return Path(raw).expanduser()
-        return get_user_workspace_dir() / ".trace"
 
     def _resolve_skill_sleep_skills_dirs(self) -> list[Path]:
         """All registered skills dirs, so sleep finds each skill where it lives."""
@@ -8952,7 +6674,7 @@ class JiuWenSwarmDeepAdapter:
             skills_dirs = self._resolve_skill_sleep_skills_dirs()
             runner = SkillSleepRunner(
                 counter=counter,
-                trajectory_dir=self._resolve_skill_sleep_traces_dir(),
+                trajectory_dir=_resolve_skill_sleep_traces_dir(),
                 skills_base_dir=skills_dirs,
                 state_dir=state_dir,
                 backend=str(sleep_cfg.get("backend") or "model"),
@@ -8961,8 +6683,8 @@ class JiuWenSwarmDeepAdapter:
                 on_task_created=self._track_skill_sleep_task,
                 model_provider=self._skill_sleep_model_spec,
                 skills_dirs_provider=self._resolve_skill_sleep_skills_dirs,
-                on_published=self._push_skill_sleep_published,
-                on_suggest=self._push_skill_sleep_suggest,
+                on_published=_push_skill_sleep_published,
+                on_suggest=_push_skill_sleep_suggest,
             )
             rail = SkillSleepRail(
                 counter=counter,
@@ -8974,11 +6696,11 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] SkillSleepRail create success "
                 "threshold=%s trajectory=%s skills=%s state=%s",
                 rail.call_threshold,
-                self._resolve_skill_sleep_traces_dir(),
+                _resolve_skill_sleep_traces_dir(),
                 ";".join(str(d) for d in skills_dirs),
                 state_dir,
             )
-            traces_dir = self._resolve_skill_sleep_traces_dir()
+            traces_dir = _resolve_skill_sleep_traces_dir()
             if not traces_dir.exists():
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] SkillSleepRail trajectory dir %s does not "
@@ -8994,71 +6716,6 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
-    async def _push_skill_sleep_published(
-        self,
-        *,
-        skill_name: str,
-        version: str,
-        session_id: str,
-        request_id: str,
-    ) -> None:
-        """AOM ``published`` push after an offline sleep cycle auto-adopts a skill."""
-        from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
-
-        push_context = EvolutionPushContext(
-            transport=WebSocketGatewayPushTransport(),
-            channel_id=None,
-            session_id=session_id,
-        )
-        await push_evolution_published(
-            push_context,
-            request_id=request_id,
-            skill_name=skill_name,
-            version=version,
-            build_push_message=build_server_push_message,
-            source="skill_sleep",
-        )
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] skill sleep published push: skill=%s version=%s "
-            "session=%s request_id=%s",
-            skill_name,
-            version,
-            session_id,
-            request_id,
-        )
-
-    async def _push_skill_sleep_suggest(
-        self,
-        *,
-        skill_name: str,
-        session_id: str,
-        request_id: str,
-    ) -> None:
-        """Push ``chat.evolution_status`` end/completed so relay can notify suggest."""
-        from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
-
-        push_context = EvolutionPushContext(
-            transport=WebSocketGatewayPushTransport(),
-            channel_id=None,
-            session_id=session_id,
-        )
-        await push_evolution_status(
-            push_context,
-            build_evolution_status_update(
-                request_id=request_id,
-                status="end",
-                stage="completed",
-                message=f"Skill sleep suggest completed for {skill_name}",
-            ),
-            build_server_push_message,
-        )
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] skill sleep suggest push: skill=%s "
-            "session=%s request_id=%s",
-            skill_name,
-            session_id,
-            request_id,
-        )
 
     def _skill_sleep_model_spec(self) -> SleepModelSpec | None:
         """Resolve the sleep-training model from the main conversation config.
@@ -9111,9 +6768,130 @@ class JiuWenSwarmDeepAdapter:
                 )
 
     def _track_skill_sleep_task(self, task: asyncio.Task) -> None:
-        """Track background sleep tasks with evolution watcher set."""
+        """Track background sleep tasks with the adapter without watcher teardown."""
+        sleep_tasks = getattr(self, "_skill_sleep_tasks", None)
+        if sleep_tasks is None:
+            sleep_tasks = set()
+            self._skill_sleep_tasks = sleep_tasks
+        sleep_tasks.add(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if watcher_tasks is None:
+            watcher_tasks = set()
+            self._evolution_watcher_tasks = watcher_tasks
+        watcher_tasks.add(task)
+        task.add_done_callback(self._on_skill_sleep_task_done)
+
+    def _start_evolution_watcher(
+        self,
+        rid: str,
+        cid: str,
+        session_id: str,
+    ) -> asyncio.Task | None:
+        """Start a passive-evolution watcher owned by channel and session.
+
+        Permission-approved continuation streams use a new request-id. When that
+        continuation reaches stream completion, this method supersedes the old
+        paused request's watcher instead of leaving its idle timer running until
+        timeout. Ownership is scoped to ``(channel_id, session_id)``. Supersession
+        stops only the old watcher; it does not cancel the shared rail's pending
+        evolution work, which may still be serving unrelated sessions.
+        """
+        if self._skill_evolution_rail is None:
+            return None
+
+        key = (str(cid), str(session_id))
+        watchers = getattr(self, "_evolution_watchers", None)
+        if watchers is None:
+            watchers = {}
+            self._evolution_watchers = watchers
+        old_task = watchers.get(key)
+        if old_task is not None and not old_task.done():
+            # The flag is read by the watcher's cancellation handler. A route
+            # handoff must not call ``cancel_pending_evolution()`` because that
+            # SDK method cancels all background tasks on the shared rail.
+            old_task._evolution_watcher_graceful = True  # pylint: disable=protected-access
+            old_task.cancel()
+
+        task = asyncio.create_task(self._watch_evolution_and_push(rid, cid, session_id))
+        watchers[key] = task
         task.add_done_callback(self._on_evolution_watcher_done)
-        self._evolution_watcher_tasks.add(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if watcher_tasks is None:
+            watcher_tasks = set()
+            self._evolution_watcher_tasks = watcher_tasks
+        watcher_tasks.add(task)
+        return task
+
+    async def _cancel_evolution_watchers(self) -> None:
+        """Cancel adapter-owned passive-evolution watcher tasks.
+
+        ``_evolution_watcher_tasks`` is also used to keep SkillSleep background
+        tasks referenceable. Those tasks retain their runner-owned lifecycle and
+        must not be cancelled as a side effect of watcher teardown.
+        """
+        watchers = getattr(self, "_evolution_watchers", None)
+        if not isinstance(watchers, dict):
+            return
+        tasks = set(watchers.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+                if isinstance(watcher_tasks, set):
+                    watcher_tasks.discard(task)
+        watchers.clear()
+
+    def _on_skill_sleep_task_done(self, task: asyncio.Task) -> None:
+        """Discard a completed SkillSleep task and log unexpected failures."""
+        sleep_tasks = getattr(self, "_skill_sleep_tasks", None)
+        if isinstance(sleep_tasks, set):
+            sleep_tasks.discard(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if isinstance(watcher_tasks, set):
+            watcher_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillSleep background task exception: %s",
+                exc,
+            )
+
+    async def _unconfigure_skill_sleep_rail(self) -> None:
+        """Unmount SkillSleep and stop sleep work when evolution is disabled."""
+        rail = getattr(self, "_skill_sleep_rail", None)
+        tasks = getattr(self, "_skill_sleep_tasks", None)
+        if rail is None and not tasks:
+            return
+
+        pending = set(tasks or set())
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if rail is not None:
+            if self._instance is None:
+                self._skill_sleep_rail = None
+                return
+            unregister = getattr(self._instance, "unregister_rail", None)
+            if not callable(unregister):
+                return
+            try:
+                await unregister(rail)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] SkillSleepRail unregister failed: %s",
+                    exc,
+                )
+                return
+        self._skill_sleep_rail = None
 
     async def _reconcile_skill_sleep_rail(self) -> None:
         """Register SkillSleepRail when it is not mounted yet."""
@@ -9198,15 +6976,19 @@ class JiuWenSwarmDeepAdapter:
         return skill_evolution_rail
 
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
+        """FACT/TIP bank shared with expert-team mode; not a user knob.
 
-        Uses ``self._workspace_dir`` (same tenant root as memory rails). Sync
-        and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
+        Uses ``self._workspace_dir`` (same tenant root as memory rails). On the
+        standard ``service_*/agent_*/agent/jiuwenclaw_workspace`` layout this is
+        ``service_*/.ttse/bank.json``, so single-agent and team write one file.
+        Sync and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
         :func:`get_agent_workspace_dir` would fall back to the default-tenant
-        shared workspace and mix FACT/TIP banks across tenants.
+        workspace and pick the wrong service.
         """
+        from jiuwenswarm.common.config import resolve_shared_ttse_bank
+
         root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        return str(resolve_shared_ttse_bank(root))
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).
@@ -9218,27 +7000,6 @@ class JiuWenSwarmDeepAdapter:
         """
         return _merge_ttse_config(config if config is not None else self._config_cache)
 
-    @staticmethod
-    def _ttse_consult_knobs(ttse_cfg: dict[str, Any]) -> tuple[int, str]:
-        """Parse live ``consult_top_k`` / ``consult_retrieve_mode`` from yaml."""
-        try:
-            consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
-        except (TypeError, ValueError):
-            consult_top_k = 8
-        if consult_top_k <= 0:
-            consult_top_k = 8
-        try:
-            from openjiuwen.agent_evolving.ttse.config import (
-                normalize_consult_retrieve_mode,
-            )
-        except ImportError:
-            def normalize_consult_retrieve_mode(value: Any) -> str:
-                raw = str(value or "").strip().lower()
-                return raw if raw in ("hybrid", "embed", "bm25") else "hybrid"
-
-        return consult_top_k, normalize_consult_retrieve_mode(
-            ttse_cfg.get("consult_retrieve_mode")
-        )
 
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
         """Build TTSERail for FACT/TIP dual-track self-evolution.
@@ -9275,7 +7036,7 @@ class JiuWenSwarmDeepAdapter:
                 dream_ttl_days = int(ttse_cfg.get("dream_ttl_days", 90))
             except (TypeError, ValueError):
                 dream_ttl_days = 90
-            consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
+            consult_top_k, consult_retrieve_mode = _ttse_consult_knobs(ttse_cfg)
             try:
                 consult_rrf_k = int(ttse_cfg.get("consult_rrf_k", 60) or 60)
             except (TypeError, ValueError):
@@ -9373,7 +7134,7 @@ class JiuWenSwarmDeepAdapter:
         if cfg_obj is not None:
             cfg_obj.trajectory_export_enabled = trajectory_export_enabled
             cfg_obj.trajectory_export_path = trajectory_export_path
-            consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
+            consult_top_k, consult_retrieve_mode = _ttse_consult_knobs(ttse_cfg)
             for attr, value in (
                 ("consult_top_k", consult_top_k),
                 ("consult_retrieve_mode", consult_retrieve_mode),
@@ -9514,7 +7275,15 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] refresh_enabled_skills_from_db skipped: instance not ready"
             )
             return False
+        # 整段持锁串行（DB 读 → enabled 写 → rail 换装）：同轮 push（持 root
+        # 会话锁）、轮边界刷新与会话内 ``_on_installed_skills_changed`` 回调可能
+        # 并发到达同一 adapter，换装段 unregister→register→赋值间有 await 挂起点，
+        # 交错执行会挂上两个 rail 并让 ``_skill_rail`` 指向陈旧实例。
+        async with self._skill_refresh_lock:
+            return await self._refresh_enabled_skills_from_db_locked()
 
+    async def _refresh_enabled_skills_from_db_locked(self) -> bool:
+        """``refresh_enabled_skills_from_db`` 的持锁执行体（入口已持 ``_skill_refresh_lock``）。"""
         try:
             manager = self._skill_manager or SkillManager(
                 workspace_dir=self._workspace_dir,
@@ -9610,29 +7379,43 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return
 
-        rails = [
-            rail
-            for rail in (self._skill_evolution_rail, self._evolution_interrupt_rail)
-            if rail is not None
-        ]
+        unregistered_rails: list[Any] = []
         try:
             unconfigure_skill_evolution(self._instance, team=False)
-        except AttributeError:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure unavailable"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure failed: %s",
+                exc,
             )
         unregister = getattr(self._instance, "unregister_rail", None)
         if callable(unregister):
-            for rail in rails:
-                await unregister(rail)
+            for attr_name, rail in (
+                ("_skill_evolution_rail", self._skill_evolution_rail),
+                ("_evolution_interrupt_rail", self._evolution_interrupt_rail),
+            ):
+                if rail is None:
+                    continue
+                try:
+                    await unregister(rail)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] evolution rail unregister failed "
+                        "attr=%s error=%s",
+                        attr_name,
+                        exc,
+                    )
+                    continue
+                setattr(self, attr_name, None)
+                unregistered_rails.append(rail)
+        else:
+            self._skill_evolution_rail = None
+            self._evolution_interrupt_rail = None
         stale_rails = getattr(self._instance, "_stale_rails", None)
         if isinstance(stale_rails, list):
-            removed_ids = {id(rail) for rail in rails}
+            removed_ids = {id(rail) for rail in unregistered_rails}
             self._instance._stale_rails = [  # pylint: disable=protected-access
                 rail for rail in stale_rails if id(rail) not in removed_ids
             ]
-        self._skill_evolution_rail = None
-        self._evolution_interrupt_rail = None
 
     def _refresh_active_evolution_rail_refs(self) -> None:
         """Refresh cached rail references after agent-core runtime configure."""
@@ -9708,16 +7491,6 @@ class JiuWenSwarmDeepAdapter:
             rail = None
         return rail
 
-    @staticmethod
-    def _build_stream_event_rail() -> JiuSwarmStreamEventRail | None:
-        """Build JiuSwarmStreamEventRail."""
-        try:
-            stream_event_rail = JiuSwarmStreamEventRail()
-            logger.info("[JiuWenSwarmDeepAdapter] JiuSwarmStreamEventRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] JiuSwarmStreamEventRail create failed: %s", exc)
-            stream_event_rail = None
-        return stream_event_rail
 
     def _build_deepresearch_execution_rail(
         self,
@@ -9738,192 +7511,6 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
-    @staticmethod
-    def _build_context_overflow_recovery_rail() -> ContextOverflowRecoveryRail | None:
-        """Build ContextOverflowRecoveryRail."""
-        try:
-            recovery_rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
-            logger.info("[JiuWenClawDeepAdapter] ContextOverflowRecoveryRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenClawDeepAdapter] ContextOverflowRecoveryRail create failed: %s", exc)
-            recovery_rail = None
-        return recovery_rail
-
-    @staticmethod
-    def _build_task_execution_rail() -> TaskExecutionRail | None:
-        """Build TaskExecutionRail for task.start/complete/update lifecycle events."""
-        try:
-            task_rail = TaskExecutionRail()
-            logger.info("[JiuWenSwarmDeepAdapter] TaskExecutionRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] TaskExecutionRail create failed: %s", exc)
-            task_rail = None
-        return task_rail
-
-    @staticmethod
-    def _build_request_summary_rail() -> Any | None:
-        """Build RequestSummaryRail for per-request performance summaries."""
-        try:
-            from jiuwenswarm.perf.request_summary_rail import RequestSummaryRail
-
-            # Parent adapter owns finalize; rail only records llm/tool events.
-            rail = RequestSummaryRail(record_only=True)
-            logger.info("[JiuWenSwarmDeepAdapter] RequestSummaryRail create success")
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] RequestSummaryRail create failed: %s",
-                exc,
-            )
-            rail = None
-        return rail
-
-    @staticmethod
-    def _build_extension_config_debug_rail() -> Any | None:
-        """Build ExtensionConfigDebugRail when explicitly enabled.
-
-        Off by default. Enterprise only; set ``AGENT_EXTENSION_CONFIG_DEBUG_RAIL``
-        to ``1`` / ``true`` / ``yes`` / ``on`` to mount the debug rail.
-        """
-        if not is_enterprise():
-            return None
-        from jiuwenswarm.agents.harness.common.rails.extension_config_util import (
-            is_extension_config_debug_rail_enabled,
-        )
-
-        if not is_extension_config_debug_rail_enabled():
-            return None
-        try:
-            from jiuwenswarm.agents.harness.common.rails.extension_config_debug_rail import (
-                ExtensionConfigDebugRail,
-            )
-            rail = ExtensionConfigDebugRail()
-            logger.info("[JiuWenSwarmDeepAdapter] ExtensionConfigDebugRail create success")
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] ExtensionConfigDebugRail create failed: %s", exc
-            )
-            rail = None
-        return rail
-
-    @staticmethod
-    def _load_extra_rails_from_env() -> list[Any]:
-        """Load extra DeepAgentRails from AGENT_EXTRA_RAILS env var.
-
-        Env format (semicolon-separated module paths):
-            AGENT_EXTRA_RAILS=path.to.module1;path.to.module2
-
-        Each module must expose a ``register_rails()`` function that returns
-        a list of DeepAgentRail instances. Only honored under enterprise edition.
-        """
-        if not is_enterprise():
-            return []
-        env_value = os.getenv("AGENT_EXTRA_RAILS", "").strip()
-        if not env_value:
-            return []
-
-        extra_rails: list[Any] = []
-        for module_path in [p.strip() for p in env_value.split(";") if p.strip()]:
-            try:
-                mod = importlib.import_module(module_path)
-                register_fn = getattr(mod, "register_rails", None)
-                if register_fn is None:
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] Extra rail module '%s' has no register_rails(), skipping",
-                        module_path,
-                    )
-                    continue
-                rails = register_fn()
-                if rails:
-                    if not isinstance(rails, list):
-                        rails = [rails]
-                    extra_rails.extend(rails)
-                    logger.info(
-                        "[JiuWenSwarmDeepAdapter] Loaded %d rail(s) from '%s'",
-                        len(rails),
-                        module_path,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] Failed to load extra rails from '%s': %s",
-                    module_path,
-                    exc,
-                )
-        return extra_rails
-
-    @staticmethod
-    def _load_extra_tools_from_env() -> list[Any]:
-        """Load extra tools from AGENT_EXTRA_TOOLS env var.
-
-        Env format (semicolon-separated module paths):
-            AGENT_EXTRA_TOOLS=path.to.module1;path.to.module2
-
-        Each module must expose a ``register_tools()`` function that returns
-        a list of Tool instances. Only honored under enterprise edition.
-
-        Results are cached per module for the process lifetime: session-scoped
-        adapters rebuild per session, and extra tools register process-shared
-        under their card id — without the cache, a factory returning fresh
-        instances would register a new id on every build (registry leak,
-        since stateless registrations are never torn down). Failures are not
-        cached, so a transient failure retries on the next build.
-        """
-        if not is_enterprise():
-            return []
-        env_value = os.getenv("AGENT_EXTRA_TOOLS", "").strip()
-        if not env_value:
-            return []
-
-        extra_tools: list[Any] = []
-        for module_path in [p.strip() for p in env_value.split(";") if p.strip()]:
-            try:
-                # The lock spans cache lookup + import + factory call: concurrent
-                # session builds must not race past a not-yet-written cache entry
-                # and invoke register_tools() twice (double-checked locking cannot
-                # close that gap when the factory runs between the checks).
-                with JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE_LOCK:
-                    cached = JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE.get(module_path)
-                    if cached is None:
-                        mod = importlib.import_module(module_path)
-                        register_fn = getattr(mod, "register_tools", None)
-                        if register_fn is None:
-                            logger.warning(
-                                "[JiuWenSwarmDeepAdapter] Extra tool module '%s' has no register_tools(), skipping",
-                                module_path,
-                            )
-                            continue
-                        tools = register_fn()
-                        if tools and not isinstance(tools, list):
-                            tools = [tools]
-                        cached = tools or []
-                        JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE[module_path] = cached
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] Loaded %d tool(s) from '%s'",
-                            len(cached),
-                            module_path,
-                        )
-                extra_tools.extend(cached)
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] Failed to load extra tools from '%s': %s",
-                    module_path,
-                    exc,
-                )
-        return extra_tools
-
-    @staticmethod
-    def _build_multimodal_image_rail(
-        enable_image_multimodal: bool | None = None,
-    ) -> MultimodalImageRail | None:
-        """Build MultimodalImageRail."""
-        try:
-            multimodal_image_rail = MultimodalImageRail(
-                enable_image_multimodal=enable_image_multimodal,
-            )
-            logger.info("[JiuWenSwarmDeepAdapter] MultimodalImageRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] MultimodalImageRail create failed: %s", exc)
-            multimodal_image_rail = None
-        return multimodal_image_rail
 
     def _build_task_planning_rail(
         self, config: dict[str, Any] | None = None
@@ -10002,16 +7589,6 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] StructuredAskUserRail create failed: %s", exc)
             return None
 
-    @staticmethod
-    def _build_security_rail() -> SecurityRail | None:
-        """Build SecurityPromptRail."""
-        try:
-            security_prompt_rail = SecurityRail()
-            logger.info("[JiuWenSwarmDeepAdapter] SecurityPromptRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] SecurityPromptRail create failed: %s", exc)
-            security_prompt_rail = None
-        return security_prompt_rail
 
     # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
     # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
@@ -10019,27 +7596,6 @@ class JiuWenSwarmDeepAdapter:
     _MEMORY_REINDEX_KEYS: set[tuple[str, str]] = set()
     _MEMORY_REINDEX_KEYS_LOCK = threading.Lock()
 
-    @staticmethod
-    def _embedding_config_fingerprint(config: dict | None) -> str:
-        """计算 config.yaml embed 段的配置指纹，用于检测是否变化。
-
-        归一化逻辑与 openjiuwen OpenAICompatibleEmbeddingProvider.normalize_base_url
-        保持一致（去尾斜杠 + 去尾 /embeddings），使等价 endpoint 不会被误判为变化。
-        api_key 取 sha256 截断，不明文比较。
-        """
-        embed = config.get("embed") if isinstance(config, dict) else None
-        if not isinstance(embed, dict):
-            return ""
-        api_key = str(embed.get("embed_api_key") or "")
-        base_url = str(embed.get("embed_base_url") or "").strip()
-        # 与 provider 侧归一化一致：去尾 /embeddings 再去尾斜杠
-        if base_url.endswith("/embeddings"):
-            base_url = base_url.rsplit("/embeddings", 1)[0]
-        while base_url.endswith("/"):
-            base_url = base_url[:-1]
-        model = str(embed.get("embed_model") or "")
-        api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        return f"{model}:{base_url}:{api_key_hash}"
 
     def _schedule_memory_reindex(self) -> None:
         """延时后对记忆重新索引（debounce：多次触发只跑最后一次）。
@@ -10179,111 +7735,29 @@ class JiuWenSwarmDeepAdapter:
             memory_rail = None
         return memory_rail
 
-    @staticmethod
-    def _build_heartbeat_rail() -> HeartbeatRail | None:
-        """Build HeartbeatRail."""
-        try:
-            heartbeat_rail = HeartbeatRail()
-            logger.info("[JiuWenSwarmDeepAdapter] HeartbeatRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] HeartbeatRail create failed: %s", exc)
-            heartbeat_rail = None
-        return heartbeat_rail
-
-    @staticmethod
-    def _build_avatar_rail() -> Any | None:
-        """Build AvatarPromptRail for digital avatar mode."""
-        try:
-            from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
-
-            rail = AvatarPromptRail()
-            logger.info("[JiuWenSwarmDeepAdapter] AvatarPromptRail create success")
-            return rail
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] AvatarPromptRail create failed: %s", exc)
-            return None
-
-    @staticmethod
-    def _build_llm_retry_rail(config_base: dict[str, Any] | None = None) -> NotifyingLLMRetryRail | None:
-        try:
-            config_base = config_base or get_config()
-            guard_cfg = config_base.get("execution_guard", {}) if isinstance(config_base, dict) else {}
-            retry_cfg = guard_cfg.get("llm_retry_rail", {}) if isinstance(guard_cfg, dict) else {}
-            if retry_cfg.get("enabled", False) is not True:
-                logger.info("[JiuWenSwarmDeepAdapter] LLMRetryRail disabled by config")
-                return None
-            rail = NotifyingLLMRetryRail(
-                max_retries=retry_cfg.get("max_retries", 2),
-                repeat_min_pattern_chars=retry_cfg.get("repeat_min_pattern_chars", 2),
-                repeat_max_pattern_chars=retry_cfg.get("repeat_max_pattern_chars", 64),
-                repeat_min_count=retry_cfg.get("repeat_min_count", 6),
-                repeat_min_total_chars=retry_cfg.get("repeat_min_total_chars", 160),
-                repeat_window_chars=retry_cfg.get("repeat_window_chars", 1024),
-                single_char_repeat_count=retry_cfg.get("single_char_repeat_count", 100),
-                retry_transient_invoke_errors=retry_cfg.get("retry_transient_invoke_errors", True),
-                notify_user_on_retry=retry_cfg.get("notify_user_on_retry", True),
-                notify_user_on_exhausted=retry_cfg.get("notify_user_on_exhausted", True),
-            )
-            logger.info("[JiuWenSwarmDeepAdapter] NotifyingLLMRetryRail create success")
-            return rail
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] LLMRetryRail create failed: %s", exc)
-            return None
-
-    @staticmethod
-    def _coerce_circuit_breaker_threshold(value: object, default: int) -> int:
-        try:
-            parsed = int(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return default
-        if parsed <= 0:
-            return default
-        return parsed
-
-    @staticmethod
-    def _circuit_breaker_config_from_mapping(
-        cb_cfg: dict,
-        defaults: CircuitBreakerConfig,
-    ) -> CircuitBreakerConfig | None:
-        warning = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
-            cb_cfg.get("warning_threshold", defaults.warning_threshold),
-            defaults.warning_threshold,
-        )
-        critical = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
-            cb_cfg.get("critical_threshold", defaults.critical_threshold),
-            defaults.critical_threshold,
-        )
-        global_breaker = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
-            cb_cfg.get("global_breaker_threshold", defaults.global_breaker_threshold),
-            defaults.global_breaker_threshold,
-        )
-        unknown = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
-            cb_cfg.get("unknown_tool_threshold", defaults.unknown_tool_threshold),
-            defaults.unknown_tool_threshold,
-        )
-        if warning > critical:
-            return None
-        if critical > global_breaker:
-            return None
-        return CircuitBreakerConfig(
-            warning_threshold=warning,
-            critical_threshold=critical,
-            global_breaker_threshold=global_breaker,
-            unknown_tool_threshold=unknown,
-        )
 
     def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
-        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on."""
+        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on.
+
+        The non_retryable_tool detector is only mounted when
+        ``execution_guard.circuit_breaker.enabled`` is true. Default deployments
+        keep agent_ras as the loop-detection chain, which does not consume
+        ``tool_result_contract``.
+        """
         try:
             guard_cfg = (get_config() or {}).get("execution_guard") or {}
             cb_cfg = guard_cfg.get("circuit_breaker") if isinstance(guard_cfg, dict) else {}
             if not isinstance(cb_cfg, dict):
                 cb_cfg = {}
             if cb_cfg.get("enabled", False) is not True:
-                logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config")
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config; "
+                    "agent_ras is the active loop-detection chain and does not consume "
+                    "tool_result_contract (non_retryable_tool inactive)"
+                )
                 return None
             defaults = CircuitBreakerConfig()
-            config = self._circuit_breaker_config_from_mapping(cb_cfg, defaults)
+            config = _circuit_breaker_config_from_mapping(cb_cfg, defaults)
             if config is None:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] CircuitBreakerRail invalid thresholds"
@@ -10296,44 +7770,79 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
-    @staticmethod
-    def _build_model_routing(config: dict[str, Any] | None = None) -> Any | None:
-        """构建 ModelRoutingRail（模型路由）。
-
-        - 使能：config.yaml ``model_routing.enabled`` = true，或进程级 env
-          ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（relay spawn 注入，见 _model_routing_enabled）。
-        - 始终真切换（apply_routing=True）。
-        - 只对 auto 档生效：relay 置 ``params.enable_routing=True`` 时 rail 跑分类器，
-          score >= 40 换 glm-5.3，否则保留 relay 下发的模型；具体模型名走 skip 分支。
-        - 能力表来自 ``routing_state/models.json``（sidecar）或 config.yaml ``models.defaults``
-          + ``models.vision``（后者作 model_type="vision" 候选）；model_builder 传
-          _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
-        """
-        if not _model_routing_enabled(config):
+    def _build_stalled_access_circuit_rail(self) -> Any | None:
+        """Stop strategy-level auth/credential retry loops."""
+        if _env_truthy("JIUWEN_DISABLE_STALLED_ACCESS_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by env"
+            )
             return None
-
         try:
-            from jiuwenswarm.agents.harness.common.rails.model_routing import (
-                ModelRoutingRail,
-                build_capability_table_from_config,
+            from jiuwenswarm.agents.harness.common.rails.execution_guard.stalled_access_circuit_rail import (
+                StalledAccessCircuitRail,
             )
 
-            caps = build_capability_table_from_config(
-                config,
-                model_builder=JiuWenSwarmDeepAdapter._build_model_from_entry,
-            )
-            rail = ModelRoutingRail(
-                caps,
-                apply_routing=True,
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            stalled_cfg = guard_cfg.get("stalled_access") if isinstance(guard_cfg, dict) else {}
+            if not isinstance(stalled_cfg, dict):
+                stalled_cfg = {}
+            if stalled_cfg.get("enabled", True) is False:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by config"
+                )
+                return None
+            try:
+                auth_threshold = int(stalled_cfg.get("auth_threshold", 5))
+                probe_threshold = int(stalled_cfg.get("probe_threshold", 3))
+                window_seconds = float(stalled_cfg.get("window_seconds", 1800))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail invalid thresholds; "
+                    "using defaults"
+                )
+                auth_threshold, probe_threshold, window_seconds = 5, 3, 1800.0
+
+            rail = StalledAccessCircuitRail(
+                auth_threshold=auth_threshold,
+                probe_threshold=probe_threshold,
+                window_seconds=window_seconds,
+                language=self._resolve_runtime_language(),
             )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] ModelRoutingRail create success, %d models",
-                len(caps),
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create success"
             )
             return rail
         except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] ModelRoutingRail create failed: %s", exc)
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create failed: %s",
+                exc,
+            )
             return None
+
+    def _build_last_iteration_finalize_rail(self) -> Any | None:
+        """Return a partial result when the ReAct budget is exhausted."""
+        if _env_truthy("JIUWEN_DISABLE_LAST_ITERATION_FINALIZE_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.last_iteration_finalize_rail import (
+                LastIterationFinalizeRail,
+            )
+
+            rail = LastIterationFinalizeRail(language=self._resolve_runtime_language())
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create failed: %s",
+                exc,
+            )
+            return None
+
 
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
@@ -10355,62 +7864,6 @@ class JiuWenSwarmDeepAdapter:
             rail = None
         return rail
 
-    @staticmethod
-    def _build_eternal_conversation_rail() -> EternalConversationRail | None:
-        """Mount an inert Rail; a Session request flag activates it later."""
-        try:
-            rail = EternalConversationRail()
-            logger.info("[JiuWenSwarmDeepAdapter] EternalConversationRail created (disabled)")
-            return rail
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] EternalConversationRail create failed: %s", exc)
-            return None
-
-    @staticmethod
-    def shutdown_context_session_memory(context_processor_rail: ContextProcessorRail) -> bool:
-        """Stop overlapping semantic session memory through a stable Adapter API.
-
-        三态区分（CR-5），保证日志不失实：
-
-        - manager 在位：shutdown 并置 None，返回 True；
-        - 属性为 None：未配置（框架默认，仅在
-          session_memory_compressor_config.enabled=true 时创建）或已
-          关闭的合法幂等态，debug 即可，不告警；
-        - 属性缺失（agent-core 私有属性被改名 / rail 类型不符）：
-          保留 CR-2 加固的 WARNING——SessionMemoryManager 可能仍在
-          eternal conversation 旁 unnoticed 运行（双记忆后端风险）。
-
-        上游 02957a531 对两种非在位状态都是静默 False；缺失属性告警
-        是本地有意的加强。
-        """
-        session_memory_manager = getattr(
-            context_processor_rail, "_session_memory_mgr", _MISSING_SESSION_MEMORY_MGR
-        )
-        if session_memory_manager is _MISSING_SESSION_MEMORY_MGR:
-            # _session_memory_mgr is a private agent-core attribute; a renamed
-            # attribute or a wrong rail type would otherwise fail silently
-            # and leave SessionMemoryManager writing beside eternal conversation.
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory found no "
-                "_session_memory_mgr attribute on %r; the framework may have renamed "
-                "it and SessionMemoryManager may keep running beside eternal "
-                "conversation (double memory backend)",
-                type(context_processor_rail).__name__,
-            )
-            return False
-        if session_memory_manager is None:
-            # 合法幂等态：未配置或已成功关闭。上游在 None 时也静默返回
-            # False；这里只留 debug 便于排障，不打 WARNING（CR-5）。
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory: "
-                "no active SessionMemoryManager on %r (not configured or "
-                "already shut down)",
-                type(context_processor_rail).__name__,
-            )
-            return False
-        session_memory_manager.shutdown()
-        setattr(context_processor_rail, "_session_memory_mgr", None)
-        return True
 
     def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
         """Build lightweight agentic skill retrieval prompt guidance."""
@@ -10496,36 +7949,6 @@ class JiuWenSwarmDeepAdapter:
             ).strip()
         return get_session_active_skill(session_id) if session_id else None
 
-    @staticmethod
-    def _build_disabled_tools_rail(
-        config: dict[str, Any]
-    ) -> DisabledToolsRail | None:
-        """Build DisabledToolsRail to filter out disabled tools based on config.
-
-        ``react.disabled_tools`` accepts two formats (same field, pick one):
-          - YAML list:      ``disabled_tools: ["bash", "fork_agent"]``
-          - Env var string: ``disabled_tools: ${DISABLED_TOOLS-defaults}``
-            (set DISABLED_TOOLS=bash,fork_agent in .env)
-        """
-        try:
-            disabled_list = resolve_string_or_list_config(config.get("disabled_tools"))
-            if not disabled_list:
-                return None
-            rail = DisabledToolsRail(disabled_tools=disabled_list)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] DisabledToolsRail create success, "
-                "disabled_tools: %s",
-                disabled_list,
-            )
-            return rail
-        except Exception as exc:
-            logger.error(
-                "[JiuWenSwarmDeepAdapter] DisabledToolsRail create failed: %s", exc,
-                exc_info=True,
-            )
-            # disabled_tools is a security boundary. Refuse to initialize or
-            # hot-reload with the blacklist silently disabled (fail closed).
-            raise
 
     async def _get_deepresearch_mcp_context(self) -> list[dict[str, Any]]:
         from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import get_search_mcp_context
@@ -10631,11 +8054,11 @@ class JiuWenSwarmDeepAdapter:
             getattr(self, "_project_dir", None) or ""
         ).strip()
         if session_workspace:
-            return str(Path(session_workspace).expanduser().resolve())
-        workspace = Path(
-            getattr(self, "_workspace_dir", None) or get_agent_workspace_dir()
-        ).expanduser().resolve()
-        return str(workspace / "projects")
+            return _resolve_artifact_dir(session_workspace)
+        workspace = _resolve_artifact_dir(
+            str(getattr(self, "_workspace_dir", None) or get_agent_workspace_dir())
+        )
+        return str(Path(workspace) / "projects")
 
     async def refresh_skill_rails(self) -> None:
         """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
@@ -10703,7 +8126,7 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("%s Rail %s build returned None", log_prefix, info.attr_name)
 
         # 从环境变量加载额外 Rails（非侵入式扩展；仅企业版）
-        extra_rails = self._load_extra_rails_from_env()
+        extra_rails = _load_extra_rails_from_env()
         if extra_rails:
             rails_list.extend(extra_rails)
             logger.info(
@@ -10775,20 +8198,6 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] WorkAgentModeRail create failed: %s", exc)
             return None
 
-    @staticmethod
-    def _build_work_plan_approval_rail() -> Any | None:
-        """构建 work plan 的审批 rail（``exit_plan_mode`` 即时弹窗）。"""
-        try:
-            from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
-                PlanApprovalInterruptRail,
-            )
-
-            return PlanApprovalInterruptRail()
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] PlanApprovalInterruptRail create failed: %s", exc
-            )
-            return None
 
     def _build_agent_rails(
         self,
@@ -10805,9 +8214,13 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(
                 "_multimodal_image_rail",
-                self._build_multimodal_image_rail,
+                _build_multimodal_image_rail,
                 {
-                    "enable_image_multimodal": self._resolve_enable_read_image_multimodal(config),
+                    # 请求时回退到 deep_config.enable_read_image_multimodal（由模型能力解析写入）。
+                    "enable_image_multimodal": None,
+                    "max_total_bytes": config.get("multimodal_image_budget"),
+                    "max_visual_tokens": config.get("multimodal_image_token_budget"),
+                    "max_count": config.get("multimodal_image_max_count"),
                 },
             ),
             _RailBuildInfo(
@@ -10818,7 +8231,7 @@ class JiuWenSwarmDeepAdapter:
             # opt-in: AGENT_EXTENSION_CONFIG_DEBUG_RAIL=1 (default off)
             _RailBuildInfo(
                 "_extension_config_debug_rail",
-                self._build_extension_config_debug_rail,
+                _build_extension_config_debug_rail,
             ),
             _RailBuildInfo(
                 "_task_planning_rail",
@@ -10826,15 +8239,15 @@ class JiuWenSwarmDeepAdapter:
                 {"config": config},
             ),
             _RailBuildInfo("_security_rail", self._build_security_rail),
-            _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo("_heartbeat_rail", _build_heartbeat_rail),
             _RailBuildInfo("_context_overflow_recovery_rail", self._build_context_overflow_recovery_rail),
             _RailBuildInfo(
                 "_llm_retry_rail",
-                self._build_llm_retry_rail,
+                _build_llm_retry_rail,
                 {"config_base": config_base},
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
-            _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
+            _RailBuildInfo("_avatar_rail", _build_avatar_rail),
             _RailBuildInfo(
                 "_subagent_rail",
                 self._build_subagent_rail,
@@ -10865,6 +8278,20 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        if not mode.startswith("team") and not mode.startswith("code"):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_stalled_access_circuit_rail",
+                    self._build_stalled_access_circuit_rail,
+                )
+            )
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_last_iteration_finalize_rail",
+                    self._build_last_iteration_finalize_rail,
+                )
+            )
 
         # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode
         # 经 _reconcile_evolution_rails 按配置按需注册/注销
@@ -10908,7 +8335,7 @@ class JiuWenSwarmDeepAdapter:
         # 切换 enable_task_execution_rail 需重启实例生效（by design）。
         if self._task_execution_rail_enabled():
             rail_infos.append(
-                _RailBuildInfo("_task_execution_rail", self._build_task_execution_rail)
+                _RailBuildInfo("_task_execution_rail", _build_task_execution_rail)
             )
         else:
             self._task_execution_rail = None
@@ -10934,7 +8361,7 @@ class JiuWenSwarmDeepAdapter:
             rail_infos.append(
                 _RailBuildInfo(
                     "_skill_protocol_prompt_rail",
-                    self._build_skill_protocol_prompt_rail,
+                    _build_skill_protocol_prompt_rail,
                 )
             )
         else:
@@ -10956,8 +8383,8 @@ class JiuWenSwarmDeepAdapter:
                 {"config": config},
             ),
         )
-        # SkillSleepRail is always mounted; per-skill selfEvolution decides
-        # whether a sleep cycle actually runs.
+        # SkillSleepRail is always mounted;
+        # per-skill selfEvolution decides whether a sleep cycle actually runs.
         rail_infos.insert(
             2,
             _RailBuildInfo(
@@ -11001,61 +8428,11 @@ class JiuWenSwarmDeepAdapter:
                 _RailBuildInfo("_work_agent_mode_rail", self._build_work_agent_mode_rail)
             )
             rail_infos.append(
-                _RailBuildInfo("_work_plan_approval_rail", self._build_work_plan_approval_rail)
+                _RailBuildInfo("_work_plan_approval_rail", _build_work_plan_approval_rail)
             )
 
         return self._instantiate_rails(rail_infos, config_base)
 
-    @staticmethod
-    def _resolve_enable_task_loop(
-        config: dict[str, Any], config_base: dict[str, Any] | None
-    ) -> bool:
-        """Resolve enable_task_loop considering evolution rail requirements.
-
-        SkillCreateRail and review-trigger SkillEvolutionRail follow-ups require
-        task-loop mode (enable_task_loop=True) because they use
-        AFTER_TASK_ITERATION events and enqueue_follow_up().
-        When skill_create=True or review_trigger=True, we force enable_task_loop=True
-        regardless of user config.
-
-        Args:
-            config: The react config section.
-            config_base: The full config base (contains evolution.skill_create).
-
-        Returns:
-            True if task-loop should be enabled, False otherwise.
-        """
-        config_base = config_base or get_config()
-        skill_create_enabled = get_skill_create_enabled(config_base)
-        evolution_review_trigger_enabled = get_evolution_review_trigger_enabled(config_base)
-        configured_value = config.get("enable_task_loop", True)
-
-        if skill_create_enabled:
-            if not configured_value:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] skill_create=True requires enable_task_loop=True; "
-                    "overriding user config (enable_task_loop=%s -> True)",
-                    configured_value,
-                )
-            return True
-        if evolution_review_trigger_enabled:
-            if not configured_value:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] evolution.review_trigger=True requires "
-                    "enable_task_loop=True; overriding user config (enable_task_loop=%s -> True)",
-                    configured_value,
-                )
-            return True
-        return configured_value
-
-    @staticmethod
-    def _resolve_enable_subagent_runtime(
-        config_base: dict[str, Any] | None = None,
-    ) -> bool:
-        """Return whether persistent subagent runtime tools should be enabled."""
-        return is_subagent_runtime_enabled(
-            config_base if config_base is not None else get_config()
-        )
 
     def _make_deep_agent_config(
         self,
@@ -11108,7 +8485,7 @@ class JiuWenSwarmDeepAdapter:
             ),
             context_engine_config=_deep_agent_context_engine_config(config),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
-            enable_task_loop=self._resolve_enable_task_loop(config, config_base),
+            enable_task_loop=_resolve_enable_task_loop(config, config_base),
             max_iterations=parse_int(config.get("max_iterations"), 15),
             subagents=configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
@@ -11122,7 +8499,7 @@ class JiuWenSwarmDeepAdapter:
             rails=rails,
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
-            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
+            enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config, model),
             completion_timeout=config.get("completion_timeout", 21600.0),
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
@@ -11408,7 +8785,7 @@ class JiuWenSwarmDeepAdapter:
                 if active_mcp is not None:
                     self._sync_office_claw_allowlist_to_progressive_rail(
                         active_mcp.tool_ids,
-                        delivery_thread_id=self._office_claw_thread_id_from_tools(
+                        delivery_thread_id=_office_claw_thread_id_from_tools(
                             list(active_mcp.tool_instances)
                         ),
                         invocation_id=active_mcp.invocation_id or None,
@@ -11512,59 +8889,9 @@ class JiuWenSwarmDeepAdapter:
         """
         card_id = self._runtime_agent_scope_id()
         if self._is_session_scoped_adapter:
-            return f"{card_id}_s_{self._session_adapter_key(self._parent_session_id)}"
+            return f"{card_id}_s_{_session_adapter_key(self._parent_session_id)}"
         return f"{card_id}_root"
 
-    @staticmethod
-    def _register_shared_tool(tool: Any) -> Any:
-        """Declare a tool instance shared across adapters, then register it.
-
-        Shared here means one instance serves every adapter in the process: the
-        bare id is kept and a repeated registration is an idempotent no-op, so
-        the first registrant wins instead of adapters racing to replace each
-        other. Two kinds of tool take this path — module-level ``@tool``
-        singletons, and toolkits whose backing manager is deliberately
-        process-wide (skills, symphony), where per-session instances would split
-        state that is meant to be shared.
-
-        Args:
-            tool: Tool instance to share process-wide.
-
-        Returns:
-            The process-global registered tool instance (may be an earlier one).
-        """
-        mark_stateless([tool])
-        return register_tool(tool, None)
-
-    @staticmethod
-    def _register_agent_owned_tool(tool: Any, owner_id: str) -> Any:
-        """Register a tool instance owned exclusively by this adapter's agent.
-
-        ``_get_tool_cards`` runs before ``create_deep_agent``, so there is no
-        AbilityManager to route through yet; :func:`register_tool` applies the
-        contract it would have applied, which keeps two things true: rebuilding
-        an agent rebinds the id to the fresh instance instead of failing as a
-        duplicate, and the registration stays reclaimable by
-        ``AbilityManager.teardown_tools`` on cleanup.
-
-        A card that already declares itself shared wins over the call site: the
-        two must agree or teardown would look for an id that was never
-        registered, so the declaration on the card is the one that counts.
-
-        Args:
-            tool: Per-agent tool instance to register.
-            owner_id: Owner id that this adapter's agent registers under.
-
-        Returns:
-            The registered tool instance.
-        """
-        if getattr(tool.card, "stateless", False):
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] tool %s is declared shared; registering it as shared"
-                " despite the agent-owned call site",
-                tool.card.name,
-            )
-        return register_tool(tool, owner_id)
 
     def _register_deepresearch_tool_cards(self, tool_cards: list[Any]) -> None:
         """Register the formal DeepResearch surface as process-shared tools."""
@@ -11595,7 +8922,7 @@ class JiuWenSwarmDeepAdapter:
                 cards are appended in place.
         """
         existing_names = {card.name for card in tool_cards}
-        for tool in self._load_extra_tools_from_env():
+        for tool in _load_extra_tools_from_env():
             tname = getattr(getattr(tool, "card", None), "name", "")
             if not tname:
                 logger.warning(
@@ -11663,6 +8990,7 @@ class JiuWenSwarmDeepAdapter:
                     language=self._resolve_runtime_language(),
                     vision_model_config=self._vision_model_config,
                     agent_id=agent_id,
+                    operation=self._sys_operation,
                 ):
                     registered = self._register_agent_owned_tool(tool, agent_id)
                     tool_cards.append(registered.card)
@@ -12073,6 +9401,15 @@ class JiuWenSwarmDeepAdapter:
                     await self._try_init_a2x_client(config_base)
                 agent_card = AgentCard(name=self._agent_name, id=self._runtime_agent_scope_id())
 
+                # sys_operation 必须先于 _get_tool_cards 解析：vision 等多模态工具在
+                # _get_tool_cards 里创建实例时要透传 self._sys_operation，晚于此处赋值
+                # 的话工具只能拿到 None，沙箱读图能力会静默丢失。
+                sys_operation = self._create_sys_operation()
+                if sys_operation is None:
+                    raise RuntimeError("sys_operation is not available, maybe task is not running")
+
+                self._sys_operation = sys_operation
+
                 tool_cards = await self._get_tool_cards(self._tool_owner_id())
                 self._tool_cards = tool_cards
                 logger.info("[JiuWenSwarmDeepAdapter] Agent card id: %s", agent_card.id)
@@ -12082,12 +9419,6 @@ class JiuWenSwarmDeepAdapter:
                 # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
 
                 rails_list = self._build_agent_rails(config, config_base, mode=mode)
-
-                sys_operation = self._create_sys_operation()
-                if sys_operation is None:
-                    raise RuntimeError("sys_operation is not available, maybe task is not running")
-
-                self._sys_operation = sys_operation
                 configured_subagents, should_add_general_agent = self._build_configured_subagents(
                     model, config, config_base
                 )
@@ -12108,7 +9439,7 @@ class JiuWenSwarmDeepAdapter:
                     tools=tool_cards if tool_cards else [],
                     subagents=configured_subagents,
                     rails=rails_list if rails_list else [],
-                    enable_task_loop=self._resolve_enable_task_loop(config, config_base),
+                    enable_task_loop=_resolve_enable_task_loop(config, config_base),
                     add_general_purpose_agent=should_enable_general_agent,
                     max_iterations=parse_int(config.get("max_iterations"), 15),
                     workspace=self._build_agent_workspace(),
@@ -12132,7 +9463,7 @@ class JiuWenSwarmDeepAdapter:
                     kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
                     vision_model_config=self._vision_model_config,
                     audio_model_config=self._audio_model_config,
-                    enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
+                    enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config, model),
                     enable_llm_retry_rail=((config_base.get("execution_guard") or {}).get("llm_retry_rail") or {}).get(
                         "enabled", False
                     ),
@@ -12140,6 +9471,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
+                self._bind_subagent_ttse_wiring()
 
                 _apply_llm_io_trace_patch()
 
@@ -12421,8 +9753,8 @@ class JiuWenSwarmDeepAdapter:
         """
         target_sid = str(target_session_id or "").strip() or None
         if self._is_session_scoped_adapter and target_sid:
-            own_sid = self._session_adapter_key(self._parent_session_id)
-            if own_sid != self._session_adapter_key(target_sid):
+            own_sid = _session_adapter_key(self._parent_session_id)
+            if own_sid != _session_adapter_key(target_sid):
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] skip scoped reload for unrelated session: target=%s self=%s",
                     target_sid,
@@ -12526,7 +9858,7 @@ class JiuWenSwarmDeepAdapter:
             try:
                 self._instance.configure(deep_cfg)
             finally:
-                self._restore_omitted_reload_fields(deep_cfg, omitted_fields)
+                _restore_omitted_reload_fields(deep_cfg, omitted_fields)
 
             # configure() 把旧 rail 移入 _stale_rails、新 rail 入 _pending_rails 并
             # 置 _initialized=False，但真正的换装（unregister stale + init pending
@@ -12727,7 +10059,7 @@ class JiuWenSwarmDeepAdapter:
                 ),
             )
         except BaseException:
-            self._reset_runtime_cron_context(
+            _reset_runtime_cron_context(
                 _RuntimeCronContextTokens(
                     channel=channel_token,
                     session=session_token,
@@ -12756,86 +10088,6 @@ class JiuWenSwarmDeepAdapter:
             a2a_policy_id=policy_token,
         )
 
-    @staticmethod
-    def _reset_deepresearch_route_context(tokens: _RuntimeCronContextTokens) -> None:
-        """Reset one DeepResearch route token at most once."""
-        route_token = tokens.deepresearch
-        if route_token is None or route_token.token is None:
-            return
-        token = route_token.token
-        reset_deepresearch_route(token)
-        route_token.token = None
-
-    @staticmethod
-    def _run_cleanup_steps(
-        steps: list[tuple[str, Callable[[], None]]],
-    ) -> BaseException | None:
-        """Run every cleanup step, returning the first failure without secrets."""
-        first_error: BaseException | None = None
-        for label, cleanup in steps:
-            try:
-                cleanup()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] cleanup failed: step=%s error_type=%s",
-                    label,
-                    type(exc).__name__,
-                )
-        return first_error
-
-    @classmethod
-    def _reset_runtime_cron_context(
-        cls,
-        tokens: _RuntimeCronContextTokens,
-        *,
-        suppress_errors: bool = False,
-    ) -> None:
-        from openjiuwen.core.sys_operation.shell_process_registry import (
-            reset_shell_session_id,
-        )
-
-        first_error: BaseException | None = None
-
-        def _reset(name: str, reset: Callable[[Any], None]) -> None:
-            nonlocal first_error
-            token = getattr(tokens, name)
-            if token is None:
-                return
-            try:
-                reset(token)
-            except BaseException as exc:  # cleanup must continue through cancellation
-                if first_error is None:
-                    first_error = exc
-            else:
-                setattr(tokens, name, None)
-
-        route_token = tokens.deepresearch
-        if route_token is not None and route_token.token is not None:
-            token = route_token.token
-            try:
-                reset_deepresearch_route(token)
-            except BaseException as exc:
-                first_error = exc
-            else:
-                route_token.token = None
-        if tokens.send_file is not None:
-            from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
-                reset_send_file_request_context,
-            )
-
-            _reset("send_file", reset_send_file_request_context)
-        _reset("shell", reset_shell_session_id)
-        _reset("bound", _CRON_TOOL_BOUND.reset)
-        _reset("a2a_policy_id", _RUNTIME_TOOL_A2A_POLICY_ID.reset)
-        _reset("resource_id", _RUNTIME_TOOL_RESOURCE_ID.reset)
-        _reset("mode", _CRON_TOOL_MODE.reset)
-        _reset("metadata", _CRON_TOOL_METADATA.reset)
-        _reset("session", _CRON_TOOL_SESSION_ID.reset)
-        _reset("channel", _CRON_TOOL_CHANNEL_ID.reset)
-        if first_error is not None and not suppress_errors:
-            raise first_error
 
     def _reset_stream_runtime_context(
         self,
@@ -12845,9 +10097,9 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """Always release DeepResearch routing without changing legacy cancel cleanup."""
         if stream_consumer_cancelled:
-            self._reset_deepresearch_route_context(tokens)
+            _reset_deepresearch_route_context(tokens)
             return
-        self._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
     async def _update_rails_for_mode(self, mode: str) -> None:
         """装配 agent 模式 rails。
@@ -13161,43 +10413,6 @@ class JiuWenSwarmDeepAdapter:
         # register_rail 会把后挂的 ContextAssemble / Memory 绑回沙箱，读盘再切本地。
         self._rebind_late_read_rails_to_local()
 
-    @staticmethod
-    def _acp_runtime_tools_enabled(
-        request_metadata: dict[str, Any] | None,
-    ) -> tuple[bool, bool]:
-        caps = (
-            dict(request_metadata.get("acp_client_capabilities") or {})
-            if isinstance(request_metadata, dict)
-            else {}
-        )
-        logger.info(
-            "[ACP] _acp_runtime_tools_enabled: metadata_keys=%s caps=%s",
-            list((request_metadata or {}).keys()),
-            caps,
-        )
-
-        fs_raw = caps.get("fs")
-        if fs_raw is True:
-            fs_enabled = True
-        elif isinstance(fs_raw, dict):
-            fs_enabled = bool(fs_raw.get("readTextFile") or fs_raw.get("writeTextFile"))
-        else:
-            fs_enabled = False
-
-        terminal_raw = caps.get("terminal")
-        if terminal_raw is True:
-            terminal_enabled = True
-        elif isinstance(terminal_raw, dict):
-            terminal_enabled = bool(
-                terminal_raw.get("create")
-                or terminal_raw.get("output")
-                or terminal_raw.get("waitForExit")
-                or terminal_raw.get("release")
-            )
-        else:
-            terminal_enabled = False
-
-        return fs_enabled, terminal_enabled
 
     async def _update_tools_for_mode(
         self, mode: str, session_id: str | None, request_id: str | None
@@ -13366,9 +10581,9 @@ class JiuWenSwarmDeepAdapter:
                 # instead of piling up under a dead id.
                 self._instance.ability_manager.remove_ability(existing.name)
 
-        fs_enabled, terminal_enabled = self._acp_runtime_tools_enabled(request_metadata)
+        fs_enabled, terminal_enabled = _acp_runtime_tools_enabled(request_metadata)
         has_runtime_capability = fs_enabled or terminal_enabled
-        can_register_acp_runtime_tools = self._should_register_acp_runtime_tools(
+        can_register_acp_runtime_tools = _should_register_acp_runtime_tools(
             channel_id=channel_id,
             request_id=request_id,
             session_id=session_id,
@@ -13394,7 +10609,7 @@ class JiuWenSwarmDeepAdapter:
                 "wait_for_terminal_exit",
                 "release_terminal",
             )
-            acp_runtime_names = self._select_registered_runtime_tool_names(
+            acp_runtime_names = _select_registered_runtime_tool_names(
                 runtime_tool_candidates,
                 ability_names,
             )
@@ -13463,53 +10678,6 @@ class JiuWenSwarmDeepAdapter:
         # 工具复制到 inputs["files"]，流水线 intent_classify 据此设 has_documents。
         files: Any = None
 
-    @staticmethod
-    def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
-        """Read non-empty request.params.system_prompt."""
-        if request is None or not isinstance(request.params, dict):
-            return None
-        raw = request.params.get("system_prompt")
-        if isinstance(raw, str):
-            value = raw.strip()
-            if value:
-                return value
-        return None
-
-    @staticmethod
-    def _extract_request_interactive_ask(request: AgentRequest | None) -> bool:
-        """Guided mode is params.interactive_ask opt-in; never infer from HITL capability."""
-        from jiuwenswarm.server.runtime.skill_turbo.interactive_ask import (
-            extract_interactive_ask,
-        )
-
-        if request is None:
-            return False
-        params = request.params if isinstance(getattr(request, "params", None), dict) else None
-        metadata = request.metadata if isinstance(getattr(request, "metadata", None), dict) else None
-        return extract_interactive_ask(params, metadata)
-
-    @staticmethod
-    def _resolve_eternal_conversation_enabled(params: Any) -> bool:
-        """Resolve the V1 frontend runtime flag; absent remains disabled."""
-        if not isinstance(params, dict):
-            return False
-        value = params.get("eternal_conversation_enabled", False)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().casefold() in {"1", "true", "yes", "on", "enabled"}
-        return bool(value)
-
-    @staticmethod
-    def _is_eternal_interaction_resume(params: Any) -> bool:
-        if not isinstance(params, dict):
-            return False
-        # Single source of truth with the HITL resume dispatch: every source the
-        # framework treats as an interrupt resume (permission/confirm/ask_user/
-        # evolution) must resume the suspended natural task instead of starting
-        # a new one, otherwise ask_user answers would split one natural task in
-        # the eternal-conversation evidence chain.
-        return str(params.get("source") or "").strip() in INTERRUPT_RESUME_SOURCES
 
     async def configure_session_runtime(
         self,
@@ -13644,6 +10812,10 @@ class JiuWenSwarmDeepAdapter:
         circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
         if circuit_breaker_rail is not None:
             circuit_breaker_rail.set_language(resolved_language)
+        for rail_name in ("_stalled_access_circuit_rail", "_last_iteration_finalize_rail"):
+            localized_rail = getattr(self, rail_name, None)
+            if localized_rail is not None:
+                localized_rail.set_language(resolved_language)
 
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
@@ -13868,18 +11040,6 @@ class JiuWenSwarmDeepAdapter:
                     pass
         stage_timer.mark("memory_tools")
 
-    @staticmethod
-    def _should_register_acp_runtime_tools(
-        channel_id: str | None,
-        request_id: str | None,
-        session_id: str | None,
-        has_runtime_capability: bool,
-    ) -> bool:
-        if channel_id != "acp":
-            return False
-        if not request_id or not session_id:
-            return False
-        return has_runtime_capability
 
     async def start_interaction(self, session_id: str) -> None:
         """Bind a product Session and start this adapter's DeepAgent interaction loop.
@@ -13933,37 +11093,6 @@ class JiuWenSwarmDeepAdapter:
             project_dir=project_dir,
         )
 
-    @staticmethod
-    def _cron_session_has_context(inner_session: Any) -> bool:
-        """检测 AgentSession 的 global_state['context'] 是否已带 messages。
-
-        跨 channel（cron 写 / web 读）恢复前用来判断当前 web adapter 的 session 是否
-        已经持有 cron 历史——有则跳过 recover，无则强制从 checkpoint 重新恢复。
-        """
-        try:
-            _state = inner_session.state().get_state(copied=False)
-            if not isinstance(_state, dict):
-                return False
-            _ctx = (_state.get("global_state") or {}).get("context")
-            if not isinstance(_ctx, dict):
-                return False
-            for _cst in _ctx.values():
-                _msgs = _cst.get("messages") if isinstance(_cst, dict) else None
-                if _msgs:
-                    return True
-        except Exception:  # noqa: BLE001
-            pass
-        return False
-
-    @staticmethod
-    def _cron_execution_checkpointer(inner_session: Any) -> Any:
-        """cron 落盘用的是 session 自己的 checkpointer，恢复必须读同一份。"""
-        getter = getattr(inner_session, "checkpointer", None)
-        if callable(getter):
-            checkpointer = getter()
-            if checkpointer is not None:
-                return checkpointer
-        return CheckpointerFactory.get_checkpointer()
 
     def _read_session_interrupt_state(self) -> Any:
         """当前交互会话里的工具暂停。没有则返回 None。"""
@@ -13999,7 +11128,7 @@ class JiuWenSwarmDeepAdapter:
         if self._read_session_interrupt_state() is not None:
             return
         candidates: list[Any] = []
-        primary = self._cron_execution_checkpointer(cron_inner)
+        primary = _cron_execution_checkpointer(cron_inner)
         adapter_cp = self._get_adapter_checkpointer()
         factory_cp = CheckpointerFactory.get_checkpointer()
         for candidate in (primary, adapter_cp, factory_cp):
@@ -14037,9 +11166,13 @@ class JiuWenSwarmDeepAdapter:
         cron_inner = getattr(cron_session, "_inner", None) if cron_session is not None else None
         if cron_inner is None:
             return
-        if not self._cron_session_has_context(cron_inner):
+        if not _cron_session_has_context(cron_inner):
             try:
-                await self._cron_execution_checkpointer(cron_inner).pre_agent_execute(
+                self._validate_checkpointer_consistency(
+                    self._get_adapter_checkpointer(),
+                    _cron_execution_checkpointer(cron_inner),
+                )
+                await _cron_execution_checkpointer(cron_inner).pre_agent_execute(
                     cron_inner, None
                 )
                 logger.info(
@@ -14054,7 +11187,7 @@ class JiuWenSwarmDeepAdapter:
                 )
         if reload_interrupt:
             await self._reload_cron_interrupt(cron_inner, session_id, request_id)
-        if self._cron_session_has_context(cron_inner):
+        if _cron_session_has_context(cron_inner):
             return
         await self._rehydrate_empty_cron_context(session_id, request_id)
 
@@ -14342,19 +11475,6 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] Failed to initialize skill_turbo tool: %s", exc)
 
-    @staticmethod
-    def _build_skill_protocol_prompt_rail() -> Any | None:
-        """构建 SkillProtocolPromptRail: 注入技能执行规范提示词。"""
-        try:
-            from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
-                SkillProtocolPromptRail,
-            )
-            rail = SkillProtocolPromptRail()
-            logger.info("[JiuWenSwarmDeepAdapter] SkillProtocolPromptRail create success")
-            return rail
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] SkillProtocolPromptRail create failed: %s", exc)
-            return None
 
     @staticmethod
     def _build_skill_turbo_prompt_rail() -> Any | None:
@@ -14500,7 +11620,7 @@ class JiuWenSwarmDeepAdapter:
         )
 
         subagent = self._instance.create_subagent("general-purpose", sub_session_id)
-        restore_rails = self._suspend_subagent_permission_rails(subagent)
+        restore_rails = _suspend_subagent_permission_rails(subagent)
         try:
             result = await invoke_subagent_with_trace(
                 subagent,
@@ -14522,114 +11642,6 @@ class JiuWenSwarmDeepAdapter:
             output = result.get("output", "") or ""
         return str(output)
 
-    @staticmethod
-    def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
-        """临时禁用 fallback 子代理继承的权限审批 rail，返回恢复函数。
-
-        general-purpose 子代理与父 agent **共享同一个** PermissionInterruptRail 实例
-        （factory 注入时按引用复制），直接改共享实例会污染父 agent 后续的权限审批，
-        因此采用 suspend/restore：调用方在 spawn 结束后（finally 中）执行恢复。
-        ``resolve_interrupt`` 首次工具调用时会用 ``host.get_permissions_snapshot``
-        刷新配置覆盖本设置，因此该回调也需临时替换。
-        """
-        configured = (
-            subagent.configured_rails()
-            if hasattr(subagent, "configured_rails")
-            else []
-        )
-        rail_names = [rail.__class__.__name__ for rail in configured or []]
-
-        def _make_restore(
-            rail: Any,
-            saved_config: dict,
-            host: Any,
-            saved_snapshot: Any,
-        ) -> Callable[[], None]:
-            """构造恢复函数，捕获当前循环轮次 rail 的挂起状态。"""
-
-            def _restore() -> None:
-                try:
-                    rail.update_config(saved_config)
-                except Exception:
-                    logger.warning(
-                        "[spawn_fallback] failed to restore permission rail config",
-                        exc_info=True,
-                    )
-                if host is not None:
-                    host.get_permissions_snapshot = saved_snapshot
-
-            return _restore
-
-        def _make_disabled_snapshot(config: dict) -> Callable[[], dict]:
-            """构造「原配置 + enabled=False」的权限快照回调。
-
-            resolve_interrupt 刷新时以此覆盖引擎配置；返回残缺 dict 会把
-            tools/file_guard 二次清空（同 update_config 整体替换语义），
-            故必须携带完整挂起配置。
-            """
-
-            def _snapshot() -> dict:
-                return dict(config)
-
-            return _snapshot
-
-        restore_steps: list[Callable[[], None]] = []
-        for rail in configured or []:
-            cls_name = rail.__class__.__name__
-            if cls_name not in (
-                "PermissionInterruptRail",
-                "SkillAuthorizationPermissionRail",
-                "SkillTurboPermissionRail",
-            ):
-                continue
-            try:
-                saved_config = dict(getattr(rail, "_static_config", None) or {})
-                suspended_config = dict(saved_config)
-                suspended_config["enabled"] = False
-                host = getattr(rail, "_host", None)
-                saved_snapshot = (
-                    host.get_permissions_snapshot if host is not None else None
-                )
-
-                rail.update_config(suspended_config)
-                if host is not None:
-                    host.get_permissions_snapshot = _make_disabled_snapshot(suspended_config)
-                restore_steps.append(_make_restore(rail, saved_config, host, saved_snapshot))
-            except Exception:
-                logger.warning(
-                    "[spawn_fallback] failed to suspend permission rail %s",
-                    cls_name,
-                    exc_info=True,
-                )
-        logger.info(
-            "[spawn_fallback] subagent rails=%s suspended_permission_rails=%d",
-            rail_names,
-            len(restore_steps),
-        )
-
-        def restore() -> None:
-            for step in restore_steps:
-                step()
-
-        return restore
-
-    @staticmethod
-    def _has_uploaded_file(params: dict) -> bool:
-        """Whether the request params carry a user-uploaded file (new content)."""
-        try:
-            files = params.get("files") or params.get("files_updated_by_user")
-            if not files:
-                return False
-            import json as _json
-            if isinstance(files, str):
-                files = _json.loads(files)
-            if isinstance(files, list):
-                return len(files) > 0
-            if isinstance(files, dict):
-                return bool(files.get("files"))
-        except Exception:
-            pass
-        return False
 
     async def prepare_plan_pause_for_request(self, request: AgentRequest) -> None:
         """On next agent.plan message after cancel: clear task_plan, inject decision prompt, clear flag."""
@@ -14728,7 +11740,7 @@ class JiuWenSwarmDeepAdapter:
             if clear_task_plan_on_state(state):
                 self._instance.save_state(session, state)
 
-            has_new_file = self._has_uploaded_file(params)
+            has_new_file = _has_uploaded_file(params)
             decision = build_paused_plan_decision_prompt_from_session_snapshot(
                 self._resolve_runtime_language(),
                 snapshot,
@@ -14843,6 +11855,13 @@ class JiuWenSwarmDeepAdapter:
                 if context_engine is not None and freeze_session is not None:
                     actual_session = getattr(freeze_session, "_parent", freeze_session) or freeze_session
                     await context_engine.save_contexts(actual_session)
+                    recover_inner = getattr(
+                        getattr(self._instance, "_interaction_session", None), "_inner", None
+                    )
+                    self._validate_checkpointer_consistency(
+                        self._get_adapter_checkpointer(),
+                        _cron_execution_checkpointer(recover_inner),
+                    )
                     await post_agent_execute_for_session(freeze_session, self._checkpointer)
             except Exception as exc:
                 logger.warning(
@@ -14929,162 +11948,6 @@ class JiuWenSwarmDeepAdapter:
                 exc,
             )
 
-    @staticmethod
-    def _new_usage_accumulator() -> dict[str, Any]:
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "cache_tokens": 0,
-            "input_cost": 0.0,
-            "output_cost": 0.0,
-            "total_cost": 0.0,
-        }
-
-    @staticmethod
-    def _extract_usage_metadata(payload: Any) -> dict[str, Any] | None:
-        """Pull GLM/OpenAI usage numbers out of a SkillTurbo or adapter payload."""
-        if not isinstance(payload, dict):
-            return None
-        event_type = str(payload.get("event_type") or "")
-        if event_type == "chat.usage_metadata":
-            metadata = payload.get("metadata")
-            if isinstance(metadata, dict):
-                inner = metadata.get("usage_metadata", metadata)
-                return inner if isinstance(inner, dict) else None
-            return None
-        if event_type in {"chat.llm_usage", "llm_usage"}:
-            inner = payload.get("usage_metadata")
-            return inner if isinstance(inner, dict) else None
-        return None
-
-    @staticmethod
-    def _accumulate_usage(acc: dict[str, Any], usage_meta: dict[str, Any]) -> None:
-        for token in ("input_tokens", "output_tokens", "total_tokens", "cache_tokens"):
-            acc[token] += usage_meta.get(token, 0) or 0
-        for cost in ("input_cost", "output_cost", "total_cost"):
-            acc[cost] += usage_meta.get(cost, 0.0) or 0.0
-
-    @staticmethod
-    def _extract_deepresearch_sdk_usage(
-        payload: Any,
-    ) -> tuple[str, dict[str, Any]] | None:
-        if not isinstance(payload, dict):
-            return None
-        result_info = payload.get("tool_result", payload)
-        if not isinstance(result_info, dict):
-            return None
-        tool_name = result_info.get("tool_name") or result_info.get("name")
-        if tool_name != "deepresearch_execute":
-            return None
-        raw_output = result_info.get("raw_output")
-        if raw_output is None:
-            raw_output = result_info.get("rawOutput")
-        if raw_output is None:
-            raw_output = result_info.get("result")
-        if isinstance(raw_output, str):
-            try:
-                raw_output = json.loads(raw_output)
-            except (TypeError, ValueError):
-                return None
-        if not isinstance(raw_output, dict) or raw_output.get("kind") != "completed":
-            return None
-        usage = normalize_workflow_llm_token_usage(
-            raw_output.get("workflow_llm_token_usage")
-        )
-        if usage is None or max(
-            usage["total_tokens"],
-            usage["input_tokens"] + usage["output_tokens"],
-        ) <= 0:
-            return None
-        state = raw_output.get("state")
-        conversation_id = (
-            raw_output.get("conversation_id")
-            or (state.get("conversation_id") if isinstance(state, dict) else None)
-            or result_info.get("tool_call_id")
-            or result_info.get("toolCallId")
-        )
-        usage_id = str(conversation_id or "").strip()
-        if not usage_id:
-            return None
-        return usage_id, usage
-
-    @classmethod
-    def _account_deepresearch_sdk_usage(
-        cls,
-        payload: Any,
-        *,
-        request_id: str,
-        usage_accumulator: dict[str, Any],
-        accounted_usage_ids: set[str],
-    ) -> bool:
-        extracted = cls._extract_deepresearch_sdk_usage(payload)
-        if extracted is None:
-            return False
-        usage_id, usage = extracted
-        if usage_id in accounted_usage_ids:
-            return False
-        accounted_usage_ids.add(usage_id)
-        cls._accumulate_usage(usage_accumulator, usage)
-        record_deepresearch_sdk_token_usage(request_id, usage_id, usage)
-        return True
-
-    @staticmethod
-    def _rewrite_skill_turbo_usage_chunk(
-        chunk: AgentResponseChunk,
-        *,
-        session_id: str,
-    ) -> tuple[AgentResponseChunk | None, dict[str, Any] | None]:
-        """Map SkillTurbo ``chat.llm_usage`` onto the adapter's usage_metadata event.
-
-        HITL resume yields AgentResponseChunk payloads directly and never passes
-        through the DeepAgent ``type='llm_usage'`` consumer. Testers grep
-        ``chat.usage_metadata`` / ``chat.usage_summary``, not ``chat.llm_usage``.
-        """
-        payload = chunk.payload
-        usage_meta = JiuWenSwarmDeepAdapter._extract_usage_metadata(payload)
-        if usage_meta is None:
-            return None, None
-        if (
-            isinstance(payload, dict)
-            and payload.get("event_type") == "chat.usage_metadata"
-        ):
-            return chunk, usage_meta
-        return (
-            AgentResponseChunk(
-                request_id=chunk.request_id,
-                channel_id=chunk.channel_id,
-                payload={
-                    "event_type": "chat.usage_metadata",
-                    "metadata": payload,
-                    "session_id": session_id,
-                },
-                is_complete=False,
-                agent_ref=chunk.agent_ref,
-                metadata=chunk.metadata,
-            ),
-            usage_meta,
-        )
-
-    @staticmethod
-    def _format_llm_usage_summary(usage_accumulator: dict[str, Any]) -> dict[str, Any]:
-        summary = {
-            "input_tokens": usage_accumulator["input_tokens"],
-            "output_tokens": usage_accumulator["output_tokens"],
-            "total_tokens": usage_accumulator["total_tokens"],
-        }
-        input_tokens = usage_accumulator["input_tokens"]
-        if input_tokens > 0:
-            cache_tokens = usage_accumulator["cache_tokens"]
-            summary["cache_tokens"] = cache_tokens
-            summary["cache_hit_rate"] = f"{cache_tokens / input_tokens:.1%}"
-        if usage_accumulator["input_cost"] > 0:
-            summary["input_cost"] = round(usage_accumulator["input_cost"], 6)
-        if usage_accumulator["output_cost"] > 0:
-            summary["output_cost"] = round(usage_accumulator["output_cost"], 6)
-        if usage_accumulator["total_cost"] > 0:
-            summary["total_cost"] = round(usage_accumulator["total_cost"], 6)
-        return summary
 
     def _context_usage_fields(self, session_id: str) -> tuple[float | None, int | None]:
         context_usage_percent: float | None = None
@@ -15138,7 +12001,7 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 perf_usage_fallback,
             )
-        summary = self._format_llm_usage_summary(usage_accumulator)
+        summary = _format_llm_usage_summary(usage_accumulator)
         logger.info(
             "[JiuWenSwarmDeepAdapter] llm_usage summary: request_id=%s session_id=%s usage=%s",
             request_id,
@@ -15165,40 +12028,6 @@ class JiuWenSwarmDeepAdapter:
             is_complete=False,
         )
 
-    @staticmethod
-    def _skill_turbo_answers_to_confirm_payload(
-        answers: list,
-        resume_ctx: dict[str, Any],
-    ) -> Any:
-        """将前端 answers 转为 ConfirmPayload（权限审批）或结构化 answers（ask_user）。
-
-        结构化 ask_user 中断（SkillTurboAskUserRail）：前端 ask_user_question 卡片
-        提交 ``{question, selected_options, custom_input}``，原样返回给 rail 解析；
-        权限审批中断：保持原逻辑转为 ConfirmPayload。
-        """
-        if answers and all(
-            isinstance(a, dict) and ("question" in a or "selected_options" in a)
-            for a in answers
-        ):
-            return answers
-        text = ""
-        for ans in answers:
-            if isinstance(ans, dict):
-                a = ans.get("answer") or ans.get("value") or ""
-                if a:
-                    text = str(a).strip()
-                    break
-        if not text and answers:
-            first = answers[0]
-            if isinstance(first, str):
-                text = first
-        if text == "拒绝":
-            return _SkillTurboConfirmPayload(approved=False, feedback="user rejected")
-        if text == "总是允许":
-            return _SkillTurboConfirmPayload(
-                approved=True, auto_confirm=True, persist_allow=True
-            )
-        return _SkillTurboConfirmPayload(approved=True)
 
     async def stop_interaction(self) -> None:
         """Stop this adapter's DeepAgent interaction loop if it was started."""
@@ -15208,6 +12037,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        await self._cancel_evolution_watchers()
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
             try:
@@ -15437,20 +12267,6 @@ class JiuWenSwarmDeepAdapter:
                 ability_names.add(ability_name)
         return ability_names
 
-    @staticmethod
-    def _select_registered_runtime_tool_names(
-        runtime_tool_candidates: tuple[str, ...],
-        ability_names: set[str],
-    ) -> list[str]:
-        selected_names: list[str] = []
-        for name in runtime_tool_candidates:
-            if name in ability_names:
-                selected_names.append(name)
-        return selected_names
-
-    @staticmethod
-    def _resolve_interrupt_session_id(session_id: str | None) -> str:
-        return (session_id or "default").strip() or "default"
 
     async def _stop_session_interrupt_work(
         self,
@@ -15460,7 +12276,7 @@ class JiuWenSwarmDeepAdapter:
         reset_for_new_task: bool = False,
     ) -> list[dict[str, Any]]:
         """Per-session teardown: rail abort, shell kill, cancelled tool collection."""
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         cancelled_tasks = await self._cancel_session_agent_tasks(sid)
         cancelled_tool_results = self._collect_cancelled_tools_for_session(
             session_id,
@@ -15507,7 +12323,7 @@ class JiuWenSwarmDeepAdapter:
         """
         if self._stream_event_rail is None:
             return []
-        sid = self._resolve_interrupt_session_id(session_id)
+        sid = _resolve_interrupt_session_id(session_id)
         self._stream_event_rail.abort(session_id or sid)
         self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
         cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(
@@ -15518,38 +12334,6 @@ class JiuWenSwarmDeepAdapter:
             self._stream_event_rail.reset_for_new_task(session_id or sid)
         return cancelled_tool_results
 
-    @staticmethod
-    def _append_cancelled_tools_to_history(
-        request: AgentRequest,
-        cancelled_tool_results: list[dict[str, Any]],
-    ) -> None:
-        """Persist cancelled tool results so refresh does not leave spinners."""
-        if not cancelled_tool_results:
-            return
-        mode = (
-            request.params.get("mode", "unknown")
-            if isinstance(request.params, dict)
-            else "unknown"
-        )
-        for tool_info in cancelled_tool_results:
-            append_history_record(
-                session_id=request.session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="assistant",
-                event_type="chat.tool_result",
-                content=tool_info.get("result", ""),
-                timestamp=time.time(),
-                extra={
-                    "tool_result": {
-                        "tool_name": tool_info.get("tool_name", ""),
-                        "tool_call_id": tool_info.get("tool_call_id", ""),
-                        "result": tool_info.get("result", ""),
-                        "status": tool_info.get("status", "error"),
-                    },
-                },
-                mode=mode,
-            )
 
     def _has_active_goal_round(self) -> bool:
         """Whether DeepAgent is currently executing a goal round.
@@ -15702,31 +12486,6 @@ class JiuWenSwarmDeepAdapter:
             return False
         return not self._goal_record_is_active()
 
-    @staticmethod
-    def _approved_plan_exit_resume_tool_call_id(params: Any) -> str:
-        """返回已批准 plan-exit resume 对应的工具调用 ID。
-
-        Confirm interrupt 恢复后，运行时可能在模型已经给出结论的情况下只向
-        输出流暴露工具事件。这一标记让流末尾能为该极窄路径补一个用户可见的
-        完成消息；其他 confirm / permission resume 不受影响。
-        """
-        if not isinstance(params, dict):
-            return ""
-        if str(params.get("source") or "").strip() != "confirm_interrupt":
-            return ""
-        tool_call_id = str(params.get("request_id") or "").strip()
-        answers = params.get("answers")
-        if not tool_call_id or not isinstance(answers, list) or not answers:
-            return ""
-        answer = answers[0]
-        if not isinstance(answer, dict):
-            return ""
-        options = answer.get("selected_options")
-        if not isinstance(options, list) or not options:
-            return ""
-        approved_values = {"approve", "本次允许", "批准", "proceed", "开始执行"}
-        selected = str(options[0] or "").strip().lower()
-        return tool_call_id if selected in approved_values else ""
 
     def _plan_exit_fallback_content(self) -> str:
         if self._resolve_runtime_language() == "en":
@@ -15738,23 +12497,6 @@ class JiuWenSwarmDeepAdapter:
 
         return reasoning_only_empty_reply_fallback_text(self._resolve_runtime_language())
 
-    @staticmethod
-    def _should_fill_reasoning_only_empty_final(
-        parsed: dict[str, Any] | None,
-        *,
-        had_reasoning_output: bool,
-        visible_text_since_last_final: bool,
-    ) -> bool:
-        """Whether an empty chat.final should get the reasoning-only short reply."""
-        if not isinstance(parsed, dict):
-            return False
-        if parsed.get("event_type") != "chat.final":
-            return False
-        if str(parsed.get("content") or "").strip():
-            return False
-        if not had_reasoning_output:
-            return False
-        return not visible_text_since_last_final
 
     def _fill_reasoning_only_empty_final_if_needed(
         self,
@@ -15763,7 +12505,7 @@ class JiuWenSwarmDeepAdapter:
         had_reasoning_output: bool,
         visible_text_since_last_final: bool,
     ) -> None:
-        if not self._should_fill_reasoning_only_empty_final(
+        if not _should_fill_reasoning_only_empty_final(
             parsed,
             had_reasoning_output=had_reasoning_output,
             visible_text_since_last_final=visible_text_since_last_final,
@@ -15772,98 +12514,6 @@ class JiuWenSwarmDeepAdapter:
         assert isinstance(parsed, dict)
         parsed["content"] = self._reasoning_only_empty_reply_fallback()
 
-    @staticmethod
-    def _iter_delta_for_unstreamed_final(
-        *, content: str, chunk_payload: Any
-    ) -> list[dict[str, Any]]:
-        """终稿正文未被 chat.delta 真正流式送达时，构造补发 delta 的 payload 列表。
-
-        非 team 前端只按 chat.delta 渲染正文，chat.final 仅作收尾标记（relay-claw
-        会直接丢弃其 content）。当模型把正文只放进 answer chunk、而 llm_output
-        只给出空白/极小片段时，这里补发 delta，保证前端能看到回复。
-        """
-        text = str(content or "")
-        if not text.strip():
-            return []
-        payload = JiuWenSwarmDeepAdapter._stream_text_payload("chat.delta", text)
-        if payload is None:
-            return []
-        _propagate_stream_source_id(chunk_payload, payload)
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] rerouted final content into chat.delta: len=%s",
-            len(text),
-        )
-        return [payload]
-
-    @staticmethod
-    def _drain_final_content_to_deltas(
-        parsed: dict[str, Any],
-        *,
-        segment_streamed_text: str,
-        chunk_payload: Any,
-        preserve_final_content: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Move non-empty ``chat.final`` body onto ``chat.delta`` when needed.
-
-        By default clears ``parsed["content"]`` once the body is known to be (or
-        about to be) on the delta path. Leaving content on ``chat.final`` makes
-        RelayClaw ``computeFinalTextDelta`` append another copy — especially after
-        the post-tool ``\\n\\n`` round-break prefix — triplicating the bubble.
-
-        ``preserve_final_content`` (cron_* web follow-up): still emit rescue
-        deltas, but keep final body so Gateway history / live-bus mirror can
-        fall back when delta frames are dropped. Web UI treats identical final
-        as overwrite, not append.
-        """
-        if parsed.get("event_type") != "chat.final":
-            return []
-        content = str(parsed.get("content") or "")
-        stripped = content.strip()
-        if not stripped:
-            return []
-        streamed = str(segment_streamed_text or "")
-        if stripped in streamed or streamed.rstrip().endswith(stripped):
-            if not preserve_final_content:
-                parsed["content"] = ""
-            return []
-        streamed_visible = streamed.strip()
-        # llm_output already delivered a substantial body this segment; keeping
-        # final content would re-route a duplicate chat.delta.
-        if streamed_visible and len(streamed_visible) >= max(8, len(stripped) // 4):
-            if not preserve_final_content:
-                parsed["content"] = ""
-            return []
-        deltas = JiuWenSwarmDeepAdapter._iter_delta_for_unstreamed_final(
-            content=content,
-            chunk_payload=chunk_payload,
-        )
-        # Body rides on delta; final is trailer-only for non-team hosts —
-        # unless cron_* needs final as history/live fallback.
-        if not preserve_final_content:
-            parsed["content"] = ""
-        return deltas
-
-    @staticmethod
-    def _apply_reasoning_only_empty_reply_fallback(
-        *,
-        has_streamed_content: bool,
-        had_reasoning_output: bool,
-        fallback_content: str,
-        reasoning_only_fallback: str,
-    ) -> str:
-        """Fill empty terminal final content for reasoning-only completions.
-
-        Skip the generic fill when this stream already forwarded visible
-        ``chat.delta`` text — an empty final is then only a trailer.
-        """
-        if str(fallback_content or "").strip():
-            # Preserve dedicated fallbacks (e.g. plan-exit) over the generic text.
-            return fallback_content
-        if has_streamed_content:
-            return fallback_content
-        if not had_reasoning_output:
-            return fallback_content
-        return reasoning_only_fallback
 
     async def _reattach_interrupt_output(self, session_id: str) -> Any | None:
         """Briefly wait for the interrupted consumer to release its output lease."""
@@ -15889,139 +12539,16 @@ class JiuWenSwarmDeepAdapter:
         )
         return None
 
-    @staticmethod
-    def _resolve_input_dispatch_mode(params: Any) -> InputDispatchMode | None:
-        """Map host ``input_mode`` / ``runtime_mode`` onto OpenJiuwen dispatch mode.
-
-        Missing or unknown values keep pre-Goal Gateway replace semantics
-        (``None`` → OpenJiuwen default FOLLOW_UP boundary when idle).
-        """
-        if not isinstance(params, dict):
-            return None
-        input_mode = str(
-            params.get("input_mode") or params.get("runtime_mode") or ""
-        ).strip().lower()
-        if input_mode == "follow_up":
-            return InputDispatchMode.FOLLOW_UP
-        if input_mode == "steer":
-            return InputDispatchMode.STEER
-        return None
-
-    @staticmethod
-    def _wants_attach_goal(params: Any) -> bool:
-        return isinstance(params, dict) and params.get("attach_goal") is True
-
-    @staticmethod
-    def _should_parse_tui_goal_slash(
-        *,
-        pending_goal_op: dict[str, Any] | None,
-        attach_goal_request: bool,
-        channel_id: Any,
-        query: Any,
-    ) -> bool:
-        """Whether to parse chat text ``/goal ...`` (TUI only, when no structured op)."""
-        if pending_goal_op is not None or attach_goal_request:
-            return False
-        if str(channel_id or "").strip().lower() != "tui":
-            return False
-        return isinstance(query, str)
-
-    @staticmethod
-    def _parse_goal_slash_intent(query: str) -> dict[str, Any] | None:
-        """Parse ``/goal ...`` into an action dict without touching GoalManager."""
-        text = query.strip()
-        if not text.startswith("/goal"):
-            return None
-        args = text[5:].strip()
-        if not args:
-            return {"action": "get"}
-        lower = args.lower()
-        if lower in {"pause", "resume", "clear"}:
-            return {"action": lower}
-        if lower.startswith("set "):
-            return {"action": "set", "objective": args[4:].strip()}
-        if lower == "set":
-            return {"action": "set", "objective": ""}
-        return {"action": "set", "objective": args}
 
     def _is_ack_only_dispatch(self, params: Any) -> bool:
         """Steer / follow_up prefer an existing reader when one is present."""
-        mode = self._resolve_input_dispatch_mode(params)
+        mode = _resolve_input_dispatch_mode(params)
         return mode in (InputDispatchMode.STEER, InputDispatchMode.FOLLOW_UP)
 
-    @staticmethod
-    def _is_subagent_approval_answer(request_id: str, params: Any) -> bool:
-        """子代理委托审批应答：显式 source 或 request_id 前缀（兼容旧通道）。"""
-        source = str(params.get("source") or "").strip() if isinstance(params, dict) else ""
-        if source in {"subagent_skill_load", "subagent_tool_permission"}:
-            return True
-        return isinstance(request_id, str) and request_id.startswith(
-            ("subagent_skill_load_", "subagent_tool_permission_")
-        )
-
-    @staticmethod
-    def _resolve_subagent_approval_answer(
-        request: AgentRequest,
-        request_id: str,
-        answers: Any,
-    ) -> bool:
-        """把子代理委托审批应答路由回 SubagentApprovalRegistry 的 pending Future。"""
-        params = request.params if isinstance(request.params, dict) else {}
-        try:
-            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.runtime import (
-                resolve_subagent_approval,
-            )
-
-            return resolve_subagent_approval(
-                request_id=request_id,
-                session_id=str(request.session_id or params.get("session_id") or ""),
-                source=str(params.get("source") or ""),
-                answers=answers,
-                agent_scope_id=str(params.get("agent_scope_id") or ""),
-            )
-        except Exception:  # noqa: BLE001 — 应答路由失败不掩盖 user_answer 响应
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] subagent approval resolve failed: request_id=%s",
-                request_id,
-                exc_info=True,
-            )
-            return False
-
-    @staticmethod
-    def _is_interrupt_resume_dispatch(params: Any) -> bool:
-        """HITL answers must inject into the existing interaction when possible.
-
-        Permission / confirm / ask-user resumes arrive as ``chat.send`` with
-        ``answers``.  When a Goal (or other) consumer already holds the output
-        lease, ``attach_output`` returns ``None`` — we must still ``send_input``
-        so InteractiveInput reaches DeepAgent; otherwise the tool stays blocked
-        while Goal keeps running.
-        """
-        if not isinstance(params, dict):
-            return False
-        source = str(params.get("source") or "").strip()
-        answers = params.get("answers")
-        request_id = str(params.get("request_id") or "").strip()
-        if (
-            bool(request_id)
-            and isinstance(answers, list)
-            and source in {
-                "ask_user_interrupt",
-                "confirm_interrupt",
-                "permission_interrupt",
-                "evolution_interrupt",
-            }
-        ):
-            return True
-        from jiuwenswarm.gateway.message_handler.evolution_approval import (
-            is_interrupt_evolution_approval_answer_payload,
-        )
-
-        return is_interrupt_evolution_approval_answer_payload(params)
 
     def _should_inject_into_existing_interaction(self, params: Any) -> bool:
         """Whether input must be sent even when this request cannot take the lease."""
-        return self._is_ack_only_dispatch(params) or self._is_interrupt_resume_dispatch(
+        return self._is_ack_only_dispatch(params) or _is_interrupt_resume_dispatch(
             params
         )
 
@@ -16038,7 +12565,7 @@ class JiuWenSwarmDeepAdapter:
             return False
         if self._should_inject_into_existing_interaction(params):
             return False
-        if self._wants_attach_goal(params):
+        if _wants_attach_goal(params):
             return False
         if not isinstance(params, dict):
             return True
@@ -16049,35 +12576,6 @@ class JiuWenSwarmDeepAdapter:
             return False
         return True
 
-    @staticmethod
-    def _structured_goal_op_from_request(
-        request: AgentRequest,
-    ) -> dict[str, Any] | None:
-        """Map streaming ``command.goal`` set/resume onto the attach→control path.
-
-        Plain chat text like ``/goal set ...`` is never parsed here — only an
-        explicit ``command.goal`` method (Web/TUI structured API).
-        """
-        if request.req_method != ReqMethod.COMMAND_GOAL:
-            return None
-        raw = request.params if isinstance(request.params, dict) else {}
-        action = str(raw.get("action", "get") or "get").strip().lower()
-        if action not in {"set", "resume"}:
-            return None
-        op: dict[str, Any] = {"action": action}
-        if action == "set":
-            objective = raw.get("objective")
-            op["objective"] = objective if isinstance(objective, str) else ""
-            op["overwrite_confirmed"] = bool(raw.get("overwrite_confirmed", False))
-            for key in ("token_budget", "max_attempts"):
-                value = raw.get(key)
-                if value is None or isinstance(value, bool):
-                    continue
-                if isinstance(value, int):
-                    op[key] = value
-                elif isinstance(value, str) and value.strip().lstrip("-").isdigit():
-                    op[key] = int(value.strip())
-        return op
 
     async def _abort_shared_agent_if_safe(self, normalized_sid: str, intent: str) -> None:
         """Global DeepAgent/scheduler abort when safe for unrelated sessions."""
@@ -16210,7 +12708,7 @@ class JiuWenSwarmDeepAdapter:
         # sessions when any one session is interrupted.
         # Normalize session_id the same way process_message_*_impl does, so that
         # an empty-string or None request.session_id doesn't bypass the guard.
-        _normalized_sid = self._resolve_interrupt_session_id(request.session_id)
+        _normalized_sid = _resolve_interrupt_session_id(request.session_id)
         _session_is_active = self._is_session_active(_normalized_sid)
         if not _session_is_active and intent in ("pause", "resume"):
             logger.info(
@@ -16402,7 +12900,7 @@ class JiuWenSwarmDeepAdapter:
         if cancelled_tool_results:
             payload["cancelled_tools"] = cancelled_tool_results
             # 写入历史记录，确保刷新网页后工具状态正确显示
-            self._append_cancelled_tools_to_history(request, cancelled_tool_results)
+            _append_cancelled_tools_to_history(request, cancelled_tool_results)
 
         return AgentResponse(
             request_id=request.request_id,
@@ -16435,7 +12933,7 @@ class JiuWenSwarmDeepAdapter:
                     status = getattr(record, "status", None) if record is not None else None
                     if status is GoalStatus.ACTIVE:
                         paused = await goal_manager.pause()
-                        paused_goal_payload = self._goal_record_payload(paused)
+                        paused_goal_payload = _goal_record_payload(paused)
                         logger.info(
                             "[JiuWenSwarmDeepAdapter] interrupt(cancel): paused ACTIVE goal "
                             "session=%s",
@@ -16524,7 +13022,7 @@ class JiuWenSwarmDeepAdapter:
             payload["goal"] = paused_goal_payload
         if cancelled_tool_results:
             payload["cancelled_tools"] = cancelled_tool_results
-            self._append_cancelled_tools_to_history(request, cancelled_tool_results)
+            _append_cancelled_tools_to_history(request, cancelled_tool_results)
 
         # Best-effort todo cancellation for user cancel (does not touch runtime).
         if cancelled and intent == "cancel" and request.session_id:
@@ -16616,22 +13114,10 @@ class JiuWenSwarmDeepAdapter:
         # between the first cancel and abort().
         self._cancel_scheduler_running_tasks()
 
-    @staticmethod
-    def _model_looks_usable(model: Model | None) -> bool:
-        if model is None:
-            return False
-        mcc_obj = getattr(model, "model_client_config", None)
-        if not isinstance(mcc_obj, ModelClientConfig):
-            return False
-        return _mcc_looks_usable({
-            "api_key": mcc_obj.api_key,
-            "api_base": getattr(mcc_obj, "api_base", None),
-            "client_provider": getattr(mcc_obj, "client_provider", None),
-        })
 
     def _has_valid_model_config(self, requested_model_name: str = "") -> bool:
         """检查本次请求实际会使用的模型配置是否有效。"""
-        return self._model_looks_usable(
+        return _model_looks_usable(
             self._resolve_model_by_name(requested_model_name)
         )
 
@@ -16719,18 +13205,18 @@ class JiuWenSwarmDeepAdapter:
             )
         elif request_id.startswith("skill_evolve_"):
             resolved = await self._handle_evolution_approval(request_id, answers)
-        elif self._is_interrupt_skill_evolution_approval_params(request_id, request.params):
+        elif _is_interrupt_skill_evolution_approval_params(request_id, request.params):
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] interrupt evolution approval received via "
                 "chat.user_answer; gateway should route it as chat.send: request_id=%s",
                 request_id,
             )
-        elif self._is_regular_skill_evolution_approval_params(request.params):
+        elif _is_regular_skill_evolution_approval_params(request.params):
             resolved = await self._handle_evolution_approval(request_id, answers)
-        elif self._is_subagent_approval_answer(request_id, request.params):
+        elif _is_subagent_approval_answer(request_id, request.params):
             # 子代理委托审批（Skill 加载/工具权限）：按 source 或 request_id 前缀
             # 路由回主会话的 SubagentApprovalRegistry pending Future。
-            resolved = self._resolve_subagent_approval_answer(request, request_id, answers)
+            resolved = _resolve_subagent_approval_answer(request, request_id, answers)
 
         return AgentResponse(
             request_id=request.request_id,
@@ -16825,38 +13311,6 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
         )
 
-    @staticmethod
-    def _is_interrupt_skill_evolution_approval_params(request_id: str, params: Any) -> bool:
-        if not isinstance(params, dict):
-            return False
-        if isinstance(request_id, str) and request_id.startswith("call_"):
-            return JiuWenSwarmDeepAdapter._is_regular_skill_evolution_approval_params(params)
-        evolution_meta = evolution_meta_from_params(params)
-        return (
-            evolution_meta.get("approval_transport") == "interrupt"
-            and JiuWenSwarmDeepAdapter._is_regular_skill_evolution_approval_params(params)
-        )
-
-    @staticmethod
-    def _is_regular_skill_evolution_approval_params(params: Any) -> bool:
-        if not isinstance(params, dict):
-            return False
-        if params.get("source") == "skill_evolution_approval":
-            return True
-        if params.get("approval_schema") == SKILL_EVOLUTION_APPROVAL_SCHEMA:
-            return True
-        approval_detail = params.get("approval_detail")
-        if (
-            isinstance(approval_detail, dict)
-            and approval_detail.get("schema") == SKILL_EVOLUTION_APPROVAL_SCHEMA
-        ):
-            return True
-        evolution_meta = evolution_meta_from_params(params)
-        if evolution_meta.get("event_kind") != "approval":
-            return False
-        approval_kind = evolution_meta.get("approval_kind")
-        rail_kind = evolution_meta.get("rail_kind")
-        return approval_kind in (None, "", "evolve") and rail_kind in (None, "", "regular")
 
     async def handle_heartbeat(self, request: AgentRequest) -> AgentResponse | None:
         """Handle heartbeat request. Returns None to continue normal flow.
@@ -16962,20 +13416,6 @@ class JiuWenSwarmDeepAdapter:
     # Team Skill approval handlers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def find_team_skill_rail(request_id: str, channel_id: str | None = None):
-        """Find TeamSkillEvolutionRail that owns the given pending request_id."""
-        try:
-            from jiuwenswarm.agents.harness.team import (
-                find_team_skill_rail_across_managers,
-                get_team_manager,
-            )
-            rail = get_team_manager(channel_id).find_team_skill_rail_for_request(request_id)
-            if rail is not None:
-                return rail
-            return find_team_skill_rail_across_managers(request_id)
-        except Exception:
-            return None
 
     async def handle_team_skill_evolve_approval(
         self,
@@ -16984,7 +13424,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str | None = None,
         channel_id: str | None = None,
     ) -> bool:
-        rail = self.find_team_skill_rail(request_id, channel_id)
+        rail = find_team_skill_rail(request_id, channel_id)
         if rail is None:
             logger.warning("[JiuWenSwarmDeepAdapter] team skill evolve approval failed: no TeamSkillEvolutionRail")
             return False
@@ -17015,7 +13455,7 @@ class JiuWenSwarmDeepAdapter:
             await reject_evolution_records(rail, request_id)
             logger.info("[JiuWenSwarmDeepAdapter] team skill evolve rejected: request_id=%s", request_id)
 
-        await self._push_team_skill_evolve_resolution_status(
+        await _push_team_skill_evolve_resolution_status(
             request_id,
             session_id=session_id,
             channel_id=channel_id,
@@ -17030,7 +13470,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str | None = None,
         channel_id: str | None = None,
     ) -> bool:
-        rail = self.find_team_skill_rail(request_id, channel_id)
+        rail = find_team_skill_rail(request_id, channel_id)
         if rail is None:
             logger.warning("[JiuWenSwarmDeepAdapter] team simplify approval failed: no TeamSkillEvolutionRail")
             return False
@@ -17071,7 +13511,7 @@ class JiuWenSwarmDeepAdapter:
         if rail_kind == "regular":
             return await self._handle_governance_approval(request_id, answers, "simplify")
 
-        if self.find_team_skill_rail(request_id, channel_id) is not None:
+        if find_team_skill_rail(request_id, channel_id) is not None:
             return await self._handle_team_simplify_approval(
                 request_id,
                 answers,
@@ -17080,71 +13520,6 @@ class JiuWenSwarmDeepAdapter:
             )
         return await self._handle_governance_approval(request_id, answers, "simplify")
 
-    @staticmethod
-    async def _push_team_skill_evolve_resolution_status(
-        request_id: str,
-        *,
-        session_id: str | None,
-        channel_id: str | None,
-        accepted: bool,
-    ) -> None:
-        """Close the frontend evolution status after a team skill approval is resolved."""
-        if not session_id:
-            return
-        from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
-
-        stage = "completed" if accepted else "hidden"
-        message = (
-            "Team skill evolution accepted"
-            if accepted
-            else "Team skill evolution rejected"
-        )
-        try:
-            await push_evolution_status(
-                EvolutionPushContext(
-                    transport=WebSocketGatewayPushTransport(),
-                    channel_id=channel_id,
-                    session_id=session_id,
-                ),
-                build_evolution_status_update(
-                    request_id=request_id,
-                    status="end",
-                    stage=stage,
-                    message=message,
-                ),
-                build_server_push_message,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] team skill evolve status push failed: request_id=%s error=%s",
-                request_id,
-                exc,
-            )
-
-    @staticmethod
-    def _approval_chunk_from_event(event: Any) -> dict[str, Any] | None:
-        parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(event)
-        if not isinstance(parsed, dict) or parsed.get("event_type") != "chat.ask_user_question":
-            return None
-        request_id = parsed.get("request_id")
-        questions = parsed.get("questions")
-        if not isinstance(request_id, str) or not request_id.strip():
-            return None
-        if not isinstance(questions, list) or not questions:
-            return None
-        return parsed
-
-    @staticmethod
-    def _format_approval_summary(
-        *,
-        skill_name: str,
-        questions: list[Any],
-        action_label: str,
-    ) -> str:
-        summaries = "\n".join(
-            f"  {i + 1}. {q.get('question', '')[:200]}" for i, q in enumerate(questions) if isinstance(q, dict)
-        )
-        return f"已为 Skill '{skill_name}' {action_label} {len(questions)} 条待审批内容：\n{summaries}"
 
     def _approval_response_from_event_or_records(
         self,
@@ -17156,11 +13531,11 @@ class JiuWenSwarmDeepAdapter:
         no_changes_output: str,
         invalid_output: str,
     ) -> dict[str, Any]:
-        parsed = self._approval_chunk_from_event(event)
+        parsed = _approval_chunk_from_event(event)
         if parsed is not None:
             questions = parsed.get("questions", [])
             return {
-                "output": self._format_approval_summary(
+                "output": _format_approval_summary(
                     skill_name=skill_name,
                     questions=questions,
                     action_label=action_label,
@@ -17288,9 +13663,6 @@ class JiuWenSwarmDeepAdapter:
         """Compatibility drain used by tests; prefer ``_take_pending_auto_rebuild_jobs``."""
         return [job.skill_name for job in self._take_pending_auto_rebuild_jobs()]
 
-    @staticmethod
-    def _generated_metric_id_key(skill_name: str, entry_id: str) -> str:
-        return f"{skill_name}\0{entry_id}"
 
     def _filter_unreported_generated_items(
         self,
@@ -17303,7 +13675,7 @@ class JiuWenSwarmDeepAdapter:
             entry_id = str(item.get("id") or "").strip()
             if not entry_id:
                 continue
-            key = self._generated_metric_id_key(skill_name, entry_id)
+            key = _generated_metric_id_key(skill_name, entry_id)
             if key in self._auto_evolution_generated_ids:
                 continue
             self._auto_evolution_generated_ids.add(key)
@@ -17543,18 +13915,6 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
-    @staticmethod
-    def _strip_skill_md_fence(text: str) -> str:
-        """Remove optional markdown code fences around a SKILL.md body."""
-        content = str(text or "").strip()
-        if not content.startswith("```"):
-            return content
-        lines = content.split("\n")
-        if lines and lines[0].lstrip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        return "\n".join(lines).strip()
 
     async def _execute_merge_version_rewrite(
         self,
@@ -17618,8 +13978,9 @@ class JiuWenSwarmDeepAdapter:
                     UserMessage(content=user_prompt),
                 ],
                 temperature=0,
+                request_purpose="rewrite",
             )
-            content = self._strip_skill_md_fence(
+            content = _strip_skill_md_fence(
                 getattr(result, "content", None) or ""
             )
             if not content:
@@ -17675,62 +14036,6 @@ class JiuWenSwarmDeepAdapter:
         entries = getattr(evo_log, "entries", None) or []
         return bool(entries)
 
-    async def _push_auto_rebuild_published_metric(
-        self,
-        job: AutoRebuildJob,
-        *,
-        version: str,
-        request_id: str | None = None,
-    ) -> None:
-        """Best-effort AOM ``published`` push after auto rebuild SemVer bump."""
-        if not job.push_metrics:
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] skip published metrics push: "
-                "skill=%s version=%s source=%s reason=source_not_auto_watcher",
-                job.skill_name,
-                version,
-                job.source,
-            )
-            return
-        session_id = str(job.session_id or "").strip()
-        channel_id = str(job.channel_id or "").strip() or None
-        rid = str(
-            request_id or job.request_id or "auto-rebuild"
-        ).strip() or "auto-rebuild"
-        if not session_id:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] skip published metrics push: "
-                "skill=%s version=%s request_id=%s reason=no_session_context",
-                job.skill_name,
-                version,
-                rid,
-            )
-            return
-        try:
-            from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
-
-            push_context = EvolutionPushContext(
-                transport=WebSocketGatewayPushTransport(),
-                channel_id=channel_id,
-                session_id=session_id,
-            )
-            await push_evolution_published(
-                push_context,
-                request_id=rid,
-                skill_name=job.skill_name,
-                version=version,
-                build_push_message=build_server_push_message,
-                source="auto",
-            )
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] auto published metrics push failed: "
-                "skill=%s version=%s request_id=%s error=%s",
-                job.skill_name,
-                version,
-                rid,
-                exc,
-            )
 
     async def _run_auto_rebuild_skills_detached(self, *, request_id: str | None = None) -> None:
         """Background auto version merge gated by per-skill selfEvolution=auto."""
@@ -17769,7 +14074,7 @@ class JiuWenSwarmDeepAdapter:
                                 success = bool(result.get("success"))
                                 new_version = str(result.get("new_version") or "").strip()
                             if success and new_version:
-                                await self._push_auto_rebuild_published_metric(
+                                await _push_auto_rebuild_published_metric(
                                     job,
                                     version=new_version,
                                     request_id=job_request_id,
@@ -17788,27 +14093,6 @@ class JiuWenSwarmDeepAdapter:
             if self._pending_auto_rebuild_jobs:
                 self._schedule_pending_auto_rebuild(request_id)
 
-    @staticmethod
-    def _followup_response(action: str, followup_prompt: str, skill_name: str) -> dict[str, Any]:
-        return {
-            "action": action,
-            "followup_prompt": followup_prompt,
-            "skill_name": skill_name,
-            "result_type": "followup",
-        }
-
-    @staticmethod
-    def _extract_followup_prompt(slash_result: dict[str, Any] | None) -> str | None:
-        """Return follow-up prompt when a slash command should continue as an agent turn."""
-        if not isinstance(slash_result, dict):
-            return None
-        if slash_result.get("result_type") != "followup":
-            return None
-        prompt = slash_result.get("followup_prompt")
-        if not isinstance(prompt, str):
-            return None
-        prompt = prompt.strip()
-        return prompt or None
 
     async def _ensure_evolution_rail_for_slash(self, mode: str) -> str | None:
         """Check evolution availability for slash commands; lazily init rail if needed.
@@ -17928,149 +14212,6 @@ class JiuWenSwarmDeepAdapter:
 
     # Goal capability adapter -------------------------------------------------
 
-    @staticmethod
-    def _goal_record_payload(record: Any | None) -> dict[str, Any] | None:
-        if record is None:
-            return None
-        to_dict = getattr(record, "to_dict", None)
-        return to_dict() if callable(to_dict) else None
-
-    @staticmethod
-    def _format_goal_control_message(action: str, goal: dict[str, Any] | None) -> str:
-        if action == "get":
-            return "No goal in this session." if goal is None else f"Goal: {goal.get('objective', '')}"
-        if action == "pause":
-            return "Goal paused." if goal is not None else "No goal in this session."
-        if action == "clear":
-            return "Goal cleared." if goal is None else "Goal was not cleared."
-        if action == "resume":
-            return "Goal resumed." if goal is not None else "No goal in this session."
-        return "Goal set." if goal is not None else "Goal was not set."
-
-    @staticmethod
-    def _record_goal_set_history_if_needed(
-        request: AgentRequest,
-        *,
-        action: str | None,
-        result_type: str | None,
-        goal_payload: dict[str, Any] | None,
-    ) -> None:
-        """Write objective as a user history turn only after a successful set."""
-        if str(action or "").strip().lower() != "set":
-            return
-        if result_type in {"goal_error", "goal_confirm_required", None}:
-            return
-        if not isinstance(goal_payload, dict):
-            return
-        objective = str(goal_payload.get("objective") or "").strip()
-        if not objective:
-            return
-        params = request.params if isinstance(request.params, dict) else {}
-        goal_id = str(goal_payload.get("goal_id") or "").strip() or None
-        append_history_record(
-            session_id=request.session_id or "default",
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            role="user",
-            content=objective,
-            timestamp=time.time(),
-            channel_metadata=request.metadata,
-            mode=params.get("mode", "unknown"),
-            extra={
-                "goal_id": goal_id,
-                "is_goal_objective_message": True,
-            },
-        )
-
-    @staticmethod
-    def _goal_completed_history_exists(session_id: str, goal_id: str) -> bool:
-        """Return True when this session already persisted a completion card for goal_id."""
-        message_id = f"goal-completed-{goal_id}"
-        try:
-            for rec in load_history_records(session_id):
-                if not isinstance(rec, dict):
-                    continue
-                if str(rec.get("id") or "") == message_id:
-                    return True
-                if rec.get("is_goal_completed_message") and str(rec.get("goal_id") or "") == goal_id:
-                    return True
-        except Exception:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] goal completed history lookup failed: session_id=%s goal_id=%s",
-                session_id,
-                goal_id,
-                exc_info=True,
-            )
-        return False
-
-    # 进程内已完成卡一次性守卫：同 (session, goal) 只落盘一次；跨进程重复由磁盘检查兜底
-    _GOAL_COMPLETED_PERSISTED: ClassVar[set[tuple[str, str]]] = set()
-
-    @staticmethod
-    def _record_goal_completed_history_if_needed(
-        *,
-        session_id: str,
-        channel_id: str,
-        channel_metadata: dict[str, Any] | None,
-        mode: str | None,
-        goal_payload: dict[str, Any] | None,
-    ) -> None:
-        """Persist a goal-completed card once when status first becomes completed."""
-        if not isinstance(goal_payload, dict):
-            return
-        status = goal_payload.get("status")
-        status_value = getattr(status, "value", status)
-        if str(status_value or "").strip().lower() != "completed":
-            return
-        goal_id = str(goal_payload.get("goal_id") or "").strip()
-        if not goal_id:
-            return
-        sid = (session_id or "default").strip() or "default"
-        if (sid, goal_id) in JiuWenSwarmDeepAdapter._GOAL_COMPLETED_PERSISTED:
-            return
-        if JiuWenSwarmDeepAdapter._goal_completed_history_exists(sid, goal_id):
-            return
-
-        evidence = ""
-        last_assessment = goal_payload.get("last_assessment")
-        if isinstance(last_assessment, dict):
-            evidence = str(last_assessment.get("evidence") or "").strip()
-        # Keep the existing frontend GoalCompletedCard wire format so history
-        # restore / localStorage merge keep working without a content-parser fork.
-        content = "goal.completed:" + json.dumps({"evidence": evidence}, ensure_ascii=False)
-        message_id = f"goal-completed-{goal_id}"
-        append_history_record(
-            session_id=sid,
-            request_id=message_id,
-            channel_id=channel_id,
-            role="assistant",
-            content=content,
-            timestamp=time.time(),
-            channel_metadata=channel_metadata,
-            mode=mode,
-            extra={
-                "id": message_id,
-                "goal_id": goal_id,
-                "is_goal_completed_message": True,
-                "evidence": evidence,
-            },
-        )
-        JiuWenSwarmDeepAdapter._GOAL_COMPLETED_PERSISTED.add((sid, goal_id))
-
-    @staticmethod
-    def _interaction_goal_updated_payload(payload: Any) -> dict[str, Any]:
-        """Normalize goal updates to the public Web/TUI payload shape."""
-        if not isinstance(payload, dict):
-            return {"event_type": GOAL_UPDATED_EVENT_TYPE, "goal": None}
-        if "goal" in payload:
-            return {
-                "event_type": GOAL_UPDATED_EVENT_TYPE,
-                "goal": payload.get("goal"),
-            }
-        return {
-            "event_type": GOAL_UPDATED_EVENT_TYPE,
-            "goal": payload or None,
-        }
 
     def _get_goal_manager(self) -> Any:
         if self._instance is None:
@@ -18164,7 +14305,7 @@ class JiuWenSwarmDeepAdapter:
                     }
                 before_status = before.status
                 goal = await goal_manager.pause()
-                goal_payload = self._goal_record_payload(goal)
+                goal_payload = _goal_record_payload(goal)
                 if before_status is not GoalStatus.ACTIVE:
                     status_value = getattr(before_status, "value", str(before_status))
                     return {
@@ -18194,7 +14335,7 @@ class JiuWenSwarmDeepAdapter:
                     }
                 before_status = before.status
                 if before_status is GoalStatus.ACTIVE:
-                    goal_payload = self._goal_record_payload(before)
+                    goal_payload = _goal_record_payload(before)
                     return {
                         "result_type": "goal_control",
                         "action": normalized_action,
@@ -18211,7 +14352,7 @@ class JiuWenSwarmDeepAdapter:
                             f"Goal is {status_value}; only paused/blocked goals "
                             "can be resumed."
                         ),
-                        "goal": self._goal_record_payload(before),
+                        "goal": _goal_record_payload(before),
                     }
                 goal = await goal_manager.resume()
             elif normalized_action == "clear":
@@ -18229,7 +14370,7 @@ class JiuWenSwarmDeepAdapter:
                     "result_type": "goal_control",
                     "action": normalized_action,
                     "goal": None,
-                    "cleared_goal": self._goal_record_payload(removed),
+                    "cleared_goal": _goal_record_payload(removed),
                     "output": "Goal cleared.",
                 }
             else:
@@ -18246,7 +14387,7 @@ class JiuWenSwarmDeepAdapter:
                     "action": normalized_action,
                     "error_code": exc.code,
                     "error": str(exc),
-                    "existing_goal": self._goal_record_payload(exc.goal),
+                    "existing_goal": _goal_record_payload(exc.goal),
                     "requested_objective": objective,
                 }
             return {
@@ -18254,10 +14395,10 @@ class JiuWenSwarmDeepAdapter:
                 "action": normalized_action,
                 "error_code": exc.code,
                 "error": str(exc),
-                "goal": self._goal_record_payload(exc.goal),
+                "goal": _goal_record_payload(exc.goal),
             }
 
-        goal_payload = self._goal_record_payload(goal)
+        goal_payload = _goal_record_payload(goal)
         active = goal is not None and goal.status is GoalStatus.ACTIVE
         return {
             "result_type": "goal_stream"
@@ -18265,7 +14406,7 @@ class JiuWenSwarmDeepAdapter:
             else "goal_control",
             "action": normalized_action,
             "goal": goal_payload,
-            "output": self._format_goal_control_message(normalized_action, goal_payload),
+            "output": _format_goal_control_message(normalized_action, goal_payload),
         }
 
     async def handle_goal_command_structured(
@@ -18510,12 +14651,6 @@ class JiuWenSwarmDeepAdapter:
             model_call_kwargs=model_call_kwargs,
         )
 
-    @staticmethod
-    def _valid_deepresearch_rewrite_request_id(request_id: object) -> bool:
-        return (
-            isinstance(request_id, str)
-            and 0 < len(request_id) <= _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH
-        )
 
     def _decode_deepresearch_rewrite_replays(
         self,
@@ -18562,7 +14697,7 @@ class JiuWenSwarmDeepAdapter:
             raw_target = entry.get("target")
             target = target_from_state(raw_target)
             invalid_entry = (
-                not self._valid_deepresearch_rewrite_request_id(request_id)
+                not _valid_deepresearch_rewrite_request_id(request_id)
                 or not isinstance(query_sha256, str)
                 or len(query_sha256) != 64
                 or any(character not in "0123456789abcdef" for character in query_sha256)
@@ -18636,92 +14771,11 @@ class JiuWenSwarmDeepAdapter:
         return {
             "request_id": request_id,
             "query_sha256": query_sha256,
-            "terminal_kind": self._deepresearch_rewrite_terminal_kind(result),
+            "terminal_kind": _deepresearch_rewrite_terminal_kind(result),
             "action": result.action,
             "target": target.to_state(),
         }
 
-    @staticmethod
-    def _deepresearch_rewrite_replay_conflict() -> RewriteFastPathResult:
-        return RewriteFastPathResult(
-            recognized=True,
-            status="error",
-            action=None,
-            error_code="REPLAY_CONFLICT",
-            message="无法安全重放改写请求，请重新提交。",
-            usage_metadata=None,
-            prepare_ms=0.0,
-            model_ms=0.0,
-            commit_ms=0.0,
-            total_ms=0.0,
-            model_calls=0,
-            commit_result=None,
-        )
-
-    @staticmethod
-    def _deepresearch_rewrite_publish_uncertain(
-        target: RewriteHtmlTarget | None = None,
-    ) -> RewriteFastPathResult:
-        return RewriteFastPathResult(
-            recognized=True,
-            status="error",
-            action=None,
-            error_code="PUBLISH_STATE_UNCERTAIN",
-            message=_DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE,
-            usage_metadata=None,
-            prepare_ms=0.0,
-            model_ms=0.0,
-            commit_ms=0.0,
-            total_ms=0.0,
-            model_calls=0,
-            commit_result=(
-                {
-                    "status": "completed",
-                    "report_delivered": False,
-                    "report_path": target.report_path,
-                    "revision_id": target.revision_id,
-                }
-                if target is not None
-                else None
-            ),
-        )
-
-    @staticmethod
-    def _deepresearch_rewrite_terminal_kind(
-        result: RewriteFastPathResult,
-    ) -> str | None:
-        commit_result = result.commit_result
-        target = (
-            target_from_commit_result(commit_result)
-            if isinstance(commit_result, dict)
-            else None
-        )
-        publish_uncertain = (
-            result.status == "error"
-            and result.action is None
-            and result.error_code == "PUBLISH_STATE_UNCERTAIN"
-            and result.message == _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE
-            and isinstance(commit_result, dict)
-            and commit_result.get("status") == "completed"
-            and commit_result.get("report_delivered") is False
-            and target is not None
-        )
-        if publish_uncertain:
-            return "publish_uncertain"
-        invalid_completed_result = (
-            result.status != "completed"
-            or not isinstance(commit_result, dict)
-            or commit_result.get("status") != "completed"
-            or not isinstance(commit_result.get("report_delivered"), bool)
-            or target is None
-        )
-        if invalid_completed_result:
-            return None
-        if commit_result["report_delivered"] is False:
-            return "report_delivery_failed"
-        if result.error_code is None:
-            return "success"
-        return None
 
     def _load_deepresearch_rewrite_replay(
         self,
@@ -18770,7 +14824,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> RewriteFastPathResult | None:
         """Linearize the irreversible rewrite and its conversation checkpoint."""
         if (
-            not self._valid_deepresearch_rewrite_request_id(request_id)
+            not _valid_deepresearch_rewrite_request_id(request_id)
             or self._deepresearch_rewrite_tx_uncertain
         ):
             return None
@@ -18799,7 +14853,7 @@ class JiuWenSwarmDeepAdapter:
                     query_sha256,
                 )
                 if replay_found:
-                    return replay or self._deepresearch_rewrite_replay_conflict()
+                    return replay or _deepresearch_rewrite_replay_conflict()
                 from jiuwenswarm.agents.harness.common.tools.deepresearch import (
                     rewrite_tools,
                 )
@@ -18892,7 +14946,7 @@ class JiuWenSwarmDeepAdapter:
                                 session_id,
                                 type(task_failure).__name__,
                             )
-                        result = self._deepresearch_rewrite_publish_uncertain(
+                        result = _deepresearch_rewrite_publish_uncertain(
                             published_target
                         )
                         if published_target is None:
@@ -18963,13 +15017,13 @@ class JiuWenSwarmDeepAdapter:
         if not isinstance(query, str):
             return False
 
-        terminal_kind = self._deepresearch_rewrite_terminal_kind(result)
+        terminal_kind = _deepresearch_rewrite_terminal_kind(result)
         html_target = target_from_commit_result(result.commit_result)
         if terminal_kind is None or html_target is None:
             return False
         replay_request_id = (
             request_id
-            if self._valid_deepresearch_rewrite_request_id(request_id)
+            if _valid_deepresearch_rewrite_request_id(request_id)
             and (
                 terminal_kind == "report_delivery_failed"
                 or terminal_kind == "publish_uncertain"
@@ -19236,106 +15290,6 @@ class JiuWenSwarmDeepAdapter:
             return False
         return not self._goal_record_is_active()
 
-    @staticmethod
-    def _fast_path_chunks(
-        result: RewriteFastPathResult,
-        *,
-        request_id: str,
-        channel_id: str,
-    ) -> tuple[AgentResponseChunk, ...]:
-        if result.status == "completed":
-            payload = {
-                "event_type": "chat.final",
-                "content": result.message,
-                "status": "completed",
-            }
-            if result.error_code:
-                payload["error_code"] = result.error_code
-        else:
-            code = result.error_code or "INTERNAL_ERROR"
-            payload = {
-                "event_type": "chat.error",
-                "error": f"改写失败（{code}）：{result.message}",
-                "status": "error",
-                "error_code": code,
-            }
-        return (
-            AgentResponseChunk(
-                request_id=request_id,
-                channel_id=channel_id,
-                payload=payload,
-                is_complete=False,
-            ),
-        )
-
-    @staticmethod
-    def _rewrite_html_followup_chunks(
-        result: RewriteHtmlFollowupResult,
-        *,
-        request_id: str,
-        channel_id: str,
-    ) -> tuple[AgentResponseChunk, ...]:
-        return (
-            AgentResponseChunk(
-                request_id=request_id,
-                channel_id=channel_id,
-                payload={
-                    "event_type": "chat.final",
-                    "content": result.message,
-                },
-                is_complete=False,
-            ),
-        )
-
-    @staticmethod
-    def _normalize_deepresearch_usage(value: object) -> dict[str, float] | None:
-        keys = (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "cache_tokens",
-            "input_cost",
-            "output_cost",
-            "total_cost",
-        )
-        if isinstance(value, dict):
-            raw = value
-        else:
-            model_dump = getattr(value, "model_dump", None)
-            if callable(model_dump):
-                try:
-                    raw = model_dump()
-                except Exception:  # noqa: BLE001
-                    raw = {}
-            else:
-                raw = {key: getattr(value, key, None) for key in keys}
-        if not isinstance(raw, dict):
-            return None
-        normalized = {}
-        for key in keys:
-            item = raw.get(key)
-            if isinstance(item, (int, float)) and not isinstance(raw.get(key), bool):
-                normalized[key] = operator.getitem(raw, key)
-        return normalized or None
-
-    @staticmethod
-    def _deepresearch_usage_summary(
-        usage: dict[str, float],
-    ) -> dict[str, float | str]:
-        summary: dict[str, float | str] = {
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
-        }
-        input_tokens = usage.get("input_tokens", 0)
-        cache_tokens = usage.get("cache_tokens", 0)
-        if input_tokens and cache_tokens:
-            summary["cache_tokens"] = cache_tokens
-            summary["cache_hit_rate"] = f"{cache_tokens / input_tokens:.1%}"
-        for cost in ("input_cost", "output_cost", "total_cost"):
-            if usage.get(cost, 0) > 0:
-                summary[cost] = round(usage[cost], 6)
-        return summary
 
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -19353,8 +15307,8 @@ class JiuWenSwarmDeepAdapter:
         # must resolve the pending Future, not start a new agent round.
         _params = request.params if isinstance(request.params, dict) else {}
         _approval_id = str(_params.get("request_id") or "").strip()
-        if self._is_subagent_approval_answer(_approval_id, _params):
-            resolved = self._resolve_subagent_approval_answer(
+        if _is_subagent_approval_answer(_approval_id, _params):
+            resolved = _resolve_subagent_approval_answer(
                 request, _approval_id, _params.get("answers", [])
             )
             logger.info(
@@ -19481,9 +15435,9 @@ class JiuWenSwarmDeepAdapter:
         await self._refresh_stale_mcp_tool_lists()
 
         self._inject_extension_config_into_inputs(inputs)
-        self._inject_model_selection_into_inputs(request, inputs)
-        self._inject_model_routing_into_inputs(request, inputs)
-        self._inject_request_id_into_inputs(request, inputs)
+        _inject_model_selection_into_inputs(request, inputs)
+        _inject_model_routing_into_inputs(request, inputs)
+        _inject_request_id_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):
@@ -19606,7 +15560,7 @@ class JiuWenSwarmDeepAdapter:
                     },
                     metadata=request.metadata,
                 )
-            followup_prompt = self._extract_followup_prompt(slash_result)
+            followup_prompt = _extract_followup_prompt(slash_result)
             if followup_prompt is not None:
                 inputs = dict(inputs)
                 inputs["query"] = followup_prompt
@@ -19722,7 +15676,7 @@ class JiuWenSwarmDeepAdapter:
                 cleanup_steps.append(lambda: TOOL_PERMISSION_CHANNEL_ID.reset(token_cid))
             cleanup_steps.extend(
                 (
-                    lambda: self._reset_runtime_cron_context(
+                    lambda: _reset_runtime_cron_context(
                         cron_context_tokens,
                         suppress_errors=True,
                     ),
@@ -19754,12 +15708,12 @@ class JiuWenSwarmDeepAdapter:
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
-                    eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                    eternal_conversation_enabled=_resolve_eternal_conversation_enabled(
                         request.params
                     ),
-                    interaction_resume=self._is_eternal_interaction_resume(request.params),
-                    interactive_ask=self._extract_request_interactive_ask(request),
-                    request_system_prompt=self._extract_request_system_prompt(request),
+                    interaction_resume=_is_eternal_interaction_resume(request.params),
+                    interactive_ask=_extract_request_interactive_ask(request),
+                    request_system_prompt=_extract_request_system_prompt(request),
                     files=(
                         request.params.get("files")
                         if isinstance(request.params, dict) else None
@@ -19769,8 +15723,8 @@ class JiuWenSwarmDeepAdapter:
             html_followup_result = None
             if self._is_stream_rewrite_fast_path_eligible(
                 request,
-                pending_goal_op=self._structured_goal_op_from_request(request),
-                attach_goal_request=self._wants_attach_goal(request.params),
+                pending_goal_op=_structured_goal_op_from_request(request),
+                attach_goal_request=_wants_attach_goal(request.params),
                 goal_stream_request=False,
             ):
                 html_followup_result = (
@@ -19790,7 +15744,7 @@ class JiuWenSwarmDeepAdapter:
                     metadata=request.metadata,
                 )
             inputs = dict(inputs)
-            inputs = self._prepare_multimodal_image_inputs(
+            inputs = _prepare_multimodal_image_inputs(
                 request,
                 inputs,
             )
@@ -19798,18 +15752,15 @@ class JiuWenSwarmDeepAdapter:
                 self._config_cache,
                 resolved_model,
             )
-            inputs = self._prepare_react_image_tool_prompt(
-                request,
-                inputs,
-                enable_read_image_multimodal=enable_read_image_multimodal,
-            )
-            from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            from jiuwenswarm.agents.harness.common.multimodal import (
                 set_current_multimodal_image_files,
+                store_current_multimodal_image_files_on_agent,
             )
 
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
+            image_files = inputs.pop("_multimodal_image_files", []) or []
+            image_files_token = set_current_multimodal_image_files(image_files)
+            # ContextVar 不跨「请求协程 → agent 任务」边界，镜像到 DeepAgent 实例跨边界读。
+            store_current_multimodal_image_files_on_agent(self._instance, image_files)
             # Sync single-agent / coding-agent observability with current
             # config before running, and open a root span so OtelCallbackHandler
             # has a parent for LLM/tool spans (see streaming path for details).
@@ -19826,8 +15777,8 @@ class JiuWenSwarmDeepAdapter:
                 request_id=request.request_id,
                 mode=_resolve_observability_mode(request.params),
             )
-            attach_goal = self._wants_attach_goal(request.params)
-            dispatch_mode = self._resolve_input_dispatch_mode(request.params)
+            attach_goal = _wants_attach_goal(request.params)
+            dispatch_mode = _resolve_input_dispatch_mode(request.params)
             if attach_goal:
                 gm = self._get_goal_manager()
                 peek = getattr(gm, "peek", None) if gm is not None else None
@@ -19890,7 +15841,7 @@ class JiuWenSwarmDeepAdapter:
                                 mark_request_first_byte()
                     else:
                         # check for error in other typed chunks (e.g. controller_output.task_failed)
-                        parsed = self._parse_stream_chunk(
+                        parsed = _parse_stream_chunk(
                             chunk,
                             _parent_session_id=session_id,
                         )
@@ -19902,7 +15853,7 @@ class JiuWenSwarmDeepAdapter:
                                     error_text = str(err)
                                     perf_summary_status = "error"
                 else:
-                    parsed = self._parse_stream_chunk(chunk)
+                    parsed = _parse_stream_chunk(chunk)
                     if parsed is not None:
                         text = parsed.get("content", "")
                         if text:
@@ -19952,7 +15903,7 @@ class JiuWenSwarmDeepAdapter:
                     ("run_span", lambda: close_agent_run_span(_run_span, session_id=session_id))
                 )
             if image_files_token is not None:
-                from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+                from jiuwenswarm.agents.harness.common.multimodal import (
                     reset_current_multimodal_image_files,
                 )
                 cleanup_steps.append(
@@ -20020,7 +15971,7 @@ class JiuWenSwarmDeepAdapter:
                 )
             cleanup_steps.extend(
                 (
-                    ("runtime_context", lambda: self._reset_runtime_cron_context(cron_context_tokens)),
+                    ("runtime_context", lambda: _reset_runtime_cron_context(cron_context_tokens)),
                     ("trace_model", lambda: _LLM_TRACE_MODEL_NAME.reset(token_trace_model)),
                     ("trace_iteration", lambda: _LLM_TRACE_ITERATION.reset(token_trace_iter)),
                     ("trace_request", lambda: _LLM_TRACE_REQUEST_ID.reset(token_trace_rid)),
@@ -20028,7 +15979,7 @@ class JiuWenSwarmDeepAdapter:
                     ("log_session", lambda: reset_log_session_id(token_log_sid)),
                 )
             )
-            step_error = self._run_cleanup_steps(cleanup_steps)
+            step_error = _run_cleanup_steps(cleanup_steps)
             if cleanup_error is None:
                 cleanup_error = step_error
             try:
@@ -20123,7 +16074,7 @@ class JiuWenSwarmDeepAdapter:
             or self._should_inject_into_existing_interaction(request.params)
         ):
             return False
-        if self._is_subagent_approval_answer(
+        if _is_subagent_approval_answer(
             str((request.params or {}).get("request_id") or ""), request.params
         ):
             return False
@@ -20183,8 +16134,8 @@ class JiuWenSwarmDeepAdapter:
         # here and ACK — never steal the parent output lease / start a new round.
         _params = request.params if isinstance(request.params, dict) else {}
         _approval_id = str(_params.get("request_id") or "").strip()
-        if self._is_subagent_approval_answer(_approval_id, _params):
-            resolved = self._resolve_subagent_approval_answer(
+        if _is_subagent_approval_answer(_approval_id, _params):
+            resolved = _resolve_subagent_approval_answer(
                 request, _approval_id, _params.get("answers", [])
             )
             logger.info(
@@ -20313,9 +16264,9 @@ class JiuWenSwarmDeepAdapter:
         await self._refresh_stale_mcp_tool_lists()
 
         self._inject_extension_config_into_inputs(inputs)
-        self._inject_model_selection_into_inputs(request, inputs)
-        self._inject_model_routing_into_inputs(request, inputs)
-        self._inject_request_id_into_inputs(request, inputs)
+        _inject_model_selection_into_inputs(request, inputs)
+        _inject_model_routing_into_inputs(request, inputs)
+        _inject_request_id_into_inputs(request, inputs)
 
         is_skill_turbo_resume_request = bool(_params.get("answers")) and (
             str(_params.get("source") or "").strip() == "ask_user_interrupt"
@@ -20412,19 +16363,36 @@ class JiuWenSwarmDeepAdapter:
                 mode=mode,
             )
             perf_summary_status = "ok"
+            team_image_files_token = None
             try:
                 resolved_model = self._resolve_model_for_request(request)
                 self._apply_model_to_react_agent(resolved_model)
-                inputs = self._prepare_multimodal_image_inputs(request, inputs)
+                inputs = _prepare_multimodal_image_inputs(request, inputs)
                 enable_read_image_multimodal = self._native_image_input_enabled(
                     self._config_cache,
                     resolved_model,
                 )
-                inputs = self._prepare_react_image_tool_prompt(
+                image_tool_fallback_notice = _build_image_tool_fallback_notice(
                     request,
-                    inputs,
                     enable_read_image_multimodal=enable_read_image_multimodal,
+                    model=resolved_model,
+                    query=inputs.get("query") if isinstance(inputs.get("query"), str) else None,
                 )
+                from jiuwenswarm.agents.harness.common.multimodal import (
+                    set_current_multimodal_image_files,
+                    store_current_multimodal_image_files_on_agent,
+                )
+
+                image_files = inputs.pop("_multimodal_image_files", []) or []
+                team_image_files_token = set_current_multimodal_image_files(image_files)
+                store_current_multimodal_image_files_on_agent(self._instance, image_files)
+                if image_tool_fallback_notice is not None:
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=image_tool_fallback_notice,
+                        is_complete=False,
+                    )
                 resolved_language = self._resolve_runtime_language()
                 resolved_channel = str(cid or self._resolve_prompt_channel(session_id) or "web").strip() or "web"
                 if self._runtime_prompt_rail:
@@ -20483,7 +16451,7 @@ class JiuWenSwarmDeepAdapter:
                     session_id=session_id,
                     request_id=request.request_id,
                 )
-                self._reset_runtime_cron_context(
+                _reset_runtime_cron_context(
                     team_context_tokens,
                     suppress_errors=True,
                 )
@@ -20492,6 +16460,12 @@ class JiuWenSwarmDeepAdapter:
                 _LLM_TRACE_REQUEST_ID.reset(token_trace_rid)
                 _LLM_TRACE_ITERATION.reset(token_trace_iter)
                 _LLM_TRACE_MODEL_NAME.reset(token_trace_model)
+                if team_image_files_token is not None:
+                    from jiuwenswarm.agents.harness.common.multimodal import (
+                        reset_current_multimodal_image_files,
+                    )
+
+                    reset_current_multimodal_image_files(team_image_files_token)
             return
 
         # Auto-Harness 模式处理
@@ -20524,12 +16498,12 @@ class JiuWenSwarmDeepAdapter:
                         supports_user_interaction=inputs.get(
                             "supports_user_interaction", True
                         ),
-                        eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                        eternal_conversation_enabled=_resolve_eternal_conversation_enabled(
                             request.params
                         ),
-                        interaction_resume=self._is_eternal_interaction_resume(request.params),
-                        interactive_ask=self._extract_request_interactive_ask(request),
-                        request_system_prompt=self._extract_request_system_prompt(request),
+                        interaction_resume=_is_eternal_interaction_resume(request.params),
+                        interactive_ask=_extract_request_interactive_ask(request),
+                        request_system_prompt=_extract_request_system_prompt(request),
                         files=(
                             request.params.get("files")
                             if isinstance(request.params, dict) else None
@@ -20589,17 +16563,17 @@ class JiuWenSwarmDeepAdapter:
         goal_snapshot: dict[str, Any] | None = None
         goal_action: str | None = None
         pending_goal_op: dict[str, Any] | None = None
-        attach_goal_request = self._wants_attach_goal(request.params)
+        attach_goal_request = _wants_attach_goal(request.params)
         # Structured command.goal set/resume (Web/TUI): same attach→set→read path.
         # Plain chat text "/goal ..." is NOT parsed here for Web — only TUI slash.
-        pending_goal_op = self._structured_goal_op_from_request(request)
-        if self._should_parse_tui_goal_slash(
+        pending_goal_op = _structured_goal_op_from_request(request)
+        if _should_parse_tui_goal_slash(
             pending_goal_op=pending_goal_op,
             attach_goal_request=attach_goal_request,
             channel_id=request.channel_id,
             query=query,
         ):
-            intent = self._parse_goal_slash_intent(query)
+            intent = _parse_goal_slash_intent(query)
             if intent is not None and intent.get("action") in {"set", "resume"}:
                 # Defer set/resume until after attach_output (attach → set).
                 pending_goal_op = intent
@@ -20656,7 +16630,7 @@ class JiuWenSwarmDeepAdapter:
                     is_complete=True,
                 )
                 return
-            followup_prompt = self._extract_followup_prompt(slash_result)
+            followup_prompt = _extract_followup_prompt(slash_result)
             if followup_prompt is not None:
                 inputs = dict(inputs)
                 inputs["query"] = followup_prompt
@@ -20722,7 +16696,7 @@ class JiuWenSwarmDeepAdapter:
         emitted_ask_user_request_ids: set[str] = set()
         emitted_ask_user_questions: dict[str, str] = {}
         accounted_deepresearch_usage_ids: set[str] = set()
-        approved_plan_exit_tool_call_id = self._approved_plan_exit_resume_tool_call_id(
+        approved_plan_exit_tool_call_id = _approved_plan_exit_resume_tool_call_id(
             request.params
         )
         saw_approved_plan_exit_result = False
@@ -20818,7 +16792,7 @@ class JiuWenSwarmDeepAdapter:
             # without touching the pure payload parser.
             if event_type == GOAL_UPDATED_EVENT_TYPE:
                 goal_obj = payload.get("goal")
-                self._record_goal_completed_history_if_needed(
+                _record_goal_completed_history_if_needed(
                     session_id=session_id,
                     channel_id=cid,
                     channel_metadata=request.metadata if isinstance(request.metadata, dict) else None,
@@ -20855,6 +16829,7 @@ class JiuWenSwarmDeepAdapter:
         interaction_stream = None
         interaction_stream_abort = True
         perf_summary_status = "ok"
+        emitted_chat_error = False
         hitl_pending_stream = False
         try:
             self._runtime_cron_tool_context.remember_current_binding()
@@ -20943,12 +16918,12 @@ class JiuWenSwarmDeepAdapter:
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
-                    eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                    eternal_conversation_enabled=_resolve_eternal_conversation_enabled(
                         request.params
                     ),
-                    interaction_resume=self._is_eternal_interaction_resume(request.params),
-                    interactive_ask=self._extract_request_interactive_ask(request),
-                    request_system_prompt=self._extract_request_system_prompt(request),
+                    interaction_resume=_is_eternal_interaction_resume(request.params),
+                    interactive_ask=_extract_request_interactive_ask(request),
+                    request_system_prompt=_extract_request_system_prompt(request),
                     files=(
                         request.params.get("files")
                         if isinstance(request.params, dict) else None
@@ -20972,7 +16947,7 @@ class JiuWenSwarmDeepAdapter:
             if html_followup_result is not None:
                 if html_followup_result.status != "completed":
                     perf_summary_status = "error"
-                for chunk in self._rewrite_html_followup_chunks(
+                for chunk in _rewrite_html_followup_chunks(
                     html_followup_result,
                     request_id=rid,
                     channel_id=cid,
@@ -21001,13 +16976,13 @@ class JiuWenSwarmDeepAdapter:
                         or fast_path_result.error_code is not None
                     ):
                         perf_summary_status = "error"
-                    for chunk in self._fast_path_chunks(
+                    for chunk in _fast_path_chunks(
                         fast_path_result,
                         request_id=rid,
                         channel_id=cid,
                     ):
                         yield chunk
-                    usage = self._normalize_deepresearch_usage(
+                    usage = _normalize_deepresearch_usage(
                         fast_path_result.usage_metadata
                     )
                     if usage is not None and usage.get("total_tokens", 0) > 0:
@@ -21017,7 +16992,7 @@ class JiuWenSwarmDeepAdapter:
                             payload={
                                 "event_type": "chat.usage_summary",
                                 "session_id": session_id,
-                                "usage": self._deepresearch_usage_summary(usage),
+                                "usage": _deepresearch_usage_summary(usage),
                                 "model": self._resolve_model_name(),
                             },
                             is_complete=False,
@@ -21033,7 +17008,7 @@ class JiuWenSwarmDeepAdapter:
             if self._stream_event_rail is not None:
                 self._stream_event_rail.reset_abort(session_id)
             inputs = dict(inputs)
-            inputs = self._prepare_multimodal_image_inputs(
+            inputs = _prepare_multimodal_image_inputs(
                 request,
                 inputs,
             )
@@ -21041,15 +17016,11 @@ class JiuWenSwarmDeepAdapter:
                 self._config_cache,
                 resolved_model,
             )
-            image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+            image_tool_fallback_notice = _build_image_tool_fallback_notice(
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
                 model=resolved_model,
-            )
-            inputs = self._prepare_react_image_tool_prompt(
-                request,
-                inputs,
-                enable_read_image_multimodal=enable_read_image_multimodal,
+                query=inputs.get("query") if isinstance(inputs.get("query"), str) else None,
             )
             if image_tool_fallback_notice is not None:
                 yield AgentResponseChunk(
@@ -21058,13 +17029,15 @@ class JiuWenSwarmDeepAdapter:
                     payload=image_tool_fallback_notice,
                     is_complete=False,
                 )
-            from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            from jiuwenswarm.agents.harness.common.multimodal import (
                 set_current_multimodal_image_files,
+                store_current_multimodal_image_files_on_agent,
             )
 
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
+            image_files = inputs.pop("_multimodal_image_files", []) or []
+            image_files_token = set_current_multimodal_image_files(image_files)
+            # ContextVar 不跨「请求协程 → agent 任务」边界，镜像到 DeepAgent 实例跨边界读。
+            store_current_multimodal_image_files_on_agent(self._instance, image_files)
             # Resolve debug-trace settings early: its otel_enabled drives the
             # OTel force-enable below. Best-effort (config read never raises).
             from jiuwenswarm.server.runtime.debug_trace.config import (
@@ -21215,7 +17188,7 @@ class JiuWenSwarmDeepAdapter:
                         },
                         is_complete=False,
                     )
-                self._record_goal_set_history_if_needed(
+                _record_goal_set_history_if_needed(
                     request,
                     action=goal_action if isinstance(goal_action, str) else None,
                     result_type=result_type if isinstance(result_type, str) else None,
@@ -21242,7 +17215,7 @@ class JiuWenSwarmDeepAdapter:
                         },
                         is_complete=False,
                     )
-                self._record_goal_set_history_if_needed(
+                _record_goal_set_history_if_needed(
                     request,
                     action=goal_action if isinstance(goal_action, str) else None,
                     result_type="goal_stream" if goal_stream_request else "goal_control",
@@ -21284,7 +17257,7 @@ class JiuWenSwarmDeepAdapter:
                     SendInputRequest(
                         request_id=rid,
                         inputs=inputs,
-                        mode=self._resolve_input_dispatch_mode(request.params),
+                        mode=_resolve_input_dispatch_mode(request.params),
                     )
                 )
                 if interaction_stream is None:
@@ -21333,7 +17306,7 @@ class JiuWenSwarmDeepAdapter:
                     SendInputRequest(
                         request_id=rid,
                         inputs=inputs,
-                        mode=self._resolve_input_dispatch_mode(request.params),
+                        mode=_resolve_input_dispatch_mode(request.params),
                     )
                 )
             run_failure: tuple[str, str] | None = None
@@ -21351,11 +17324,12 @@ class JiuWenSwarmDeepAdapter:
             runner_stream_started_at = time.monotonic()
             first_chunk_seen = False
             todo_close_hold = TodoCloseTextHold()
+            refusal_scrub = RefusalTextScrub()
 
-            def _take_todo_close_chunks() -> list[AgentResponseChunk]:
+            def _take_held_chunks(hold: Any) -> list[AgentResponseChunk]:
                 """下发挂起的外层正文。drop 过的块不在这里。"""
                 nonlocal emitted_terminal_chat_final, has_streamed_content
-                payloads = todo_close_hold.take()
+                payloads = hold.take()
                 if not payloads:
                     return []
                 chunks: list[AgentResponseChunk] = []
@@ -21404,7 +17378,7 @@ class JiuWenSwarmDeepAdapter:
                 # so new SDK frames cannot re-hang the stream.
                 # Only suppress is cleared (resume forwarding); hitl_pending_stream
                 # stays True to drive the chat.invocation_paused end-frame.
-                suppress_stream_after_hitl, _skip = self._apply_hitl_suppress_clear(
+                suppress_stream_after_hitl, _skip = _apply_hitl_suppress_clear(
                     chunk,
                     suppress_stream_after_hitl=suppress_stream_after_hitl,
                     request_id=rid,
@@ -21415,9 +17389,11 @@ class JiuWenSwarmDeepAdapter:
                 # first token for this round. Hold/drop/release are internal
                 # and are written before the model streams, so they must not
                 # count as the first token.
-                if not first_chunk_seen and not is_todo_close_control(
-                    str(getattr(chunk, "type", "") or "")
-                ):
+                chunk_type_name = str(getattr(chunk, "type", "") or "")
+                internal_hold = is_todo_close_control(chunk_type_name) or is_refusal_scrub_control(
+                    chunk_type_name
+                )
+                if not first_chunk_seen and not internal_hold:
                     first_chunk_seen = True
                     server_logger.info(
                         "[AgentServer] runner streaming first chunk: session_id=%s request_id=%s"
@@ -21439,9 +17415,9 @@ class JiuWenSwarmDeepAdapter:
                     # error answer) on the /debug run-end status instead of a
                     # blanket "ok"; recoverable tool_result errors stay "ok".
                     if run_failure is None:
-                        run_failure = self._run_failure(chunk)
+                        run_failure = _run_failure(chunk)
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
-                    parsed = self._parse_stream_chunk(chunk)
+                    parsed = _parse_stream_chunk(chunk)
                     # Only stamp provenance / inject split on new visible deltas.
                     # A late user-round chat.final must keep the prior content kind.
                     if isinstance(parsed, dict) and parsed.get("event_type") == "chat.delta":
@@ -21459,7 +17435,7 @@ class JiuWenSwarmDeepAdapter:
                     if parsed is not None:
                         if should_skip_duplicate_ask_user(parsed):
                             continue
-                        if self._is_ask_user_payload(parsed):
+                        if _is_ask_user_payload(parsed):
                             hitl_pending_stream = True
                             await self._commit_hitl_pause_before_card(session_id, rid)
                         if accumulated_text:
@@ -21503,12 +17479,27 @@ class JiuWenSwarmDeepAdapter:
                 close_action = todo_close_hold.decide(
                     chunk_type, foreign=foreign_output,
                 )
-                if close_action == "skip":
+                scrub_content = ""
+                if chunk_type == "llm_output":
+                    payload = chunk.payload
+                    if isinstance(payload, dict):
+                        scrub_content = str(payload.get("content") or payload.get("output") or "")
+                    else:
+                        scrub_content = str(payload or "")
+                scrub_action = refusal_scrub.decide(
+                    chunk_type, foreign=foreign_output, content=scrub_content,
+                )
+                if close_action == "skip" or scrub_action == "skip":
                     continue
                 if close_action in ("flush_skip", "flush_pass"):
-                    for held_chunk in _take_todo_close_chunks():
+                    for held_chunk in _take_held_chunks(todo_close_hold):
                         yield held_chunk
                     if close_action == "flush_skip":
+                        continue
+                if scrub_action in ("flush_skip", "flush_pass"):
+                    for held_chunk in _take_held_chunks(refusal_scrub):
+                        yield held_chunk
+                    if scrub_action == "flush_skip":
                         continue
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
@@ -21545,7 +17536,7 @@ class JiuWenSwarmDeepAdapter:
                         if isinstance(chunk.payload, dict)
                         else str(chunk.payload)
                     )
-                    reasoning_payload = self._stream_text_payload(
+                    reasoning_payload = _stream_text_payload(
                         "chat.reasoning", content
                     )
                     if reasoning_payload is None:
@@ -21576,7 +17567,7 @@ class JiuWenSwarmDeepAdapter:
                         if isinstance(chunk.payload, dict)
                         else str(chunk.payload)
                     )
-                    delta_payload = self._stream_text_payload("chat.delta", content)
+                    delta_payload = _stream_text_payload("chat.delta", content)
                     if delta_payload is None:
                         continue
                     _propagate_stream_source_id(chunk.payload, delta_payload)
@@ -21593,6 +17584,9 @@ class JiuWenSwarmDeepAdapter:
                         accumulated_reasoning = ""
                     if close_action == "buffer":
                         todo_close_hold.push(delta_payload)
+                        continue
+                    if scrub_action == "buffer":
+                        refusal_scrub.push(delta_payload)
                         continue
                     has_streamed_content = True
                     boundary = self._begin_visible_chat_content(stream_is_user_originated)
@@ -21633,7 +17627,7 @@ class JiuWenSwarmDeepAdapter:
                         )
                         accumulated_reasoning = ""
                     if has_streamed_content:
-                        parsed = self._parse_stream_chunk(
+                        parsed = _parse_stream_chunk(
                             chunk,
                             _has_streamed_content=True,
                             _streamed_text=segment_streamed_text,
@@ -21645,7 +17639,7 @@ class JiuWenSwarmDeepAdapter:
                                 had_reasoning_output=had_reasoning_output,
                                 visible_text_since_last_final=visible_text_since_last_final,
                             )
-                            for _delta in self._drain_final_content_to_deltas(
+                            for _delta in _drain_final_content_to_deltas(
                                 parsed,
                                 segment_streamed_text=segment_streamed_text,
                                 chunk_payload=chunk.payload,
@@ -21659,7 +17653,7 @@ class JiuWenSwarmDeepAdapter:
                                 )
                             if should_skip_duplicate_ask_user(parsed):
                                 continue
-                            if self._is_ask_user_payload(parsed):
+                            if _is_ask_user_payload(parsed):
                                 hitl_pending_stream = True
                                 await self._commit_hitl_pause_before_card(session_id, rid)
                             if parsed.get("event_type") == "chat.final":
@@ -21676,7 +17670,7 @@ class JiuWenSwarmDeepAdapter:
                                 suppress_stream_after_hitl = True
                                 continue
                         continue
-                    parsed = self._parse_stream_chunk(
+                    parsed = _parse_stream_chunk(
                         chunk,
                         _streamed_text=segment_streamed_text,
                     )
@@ -21687,7 +17681,7 @@ class JiuWenSwarmDeepAdapter:
                             had_reasoning_output=had_reasoning_output,
                             visible_text_since_last_final=visible_text_since_last_final,
                         )
-                        for _delta in self._drain_final_content_to_deltas(
+                        for _delta in _drain_final_content_to_deltas(
                             parsed,
                             segment_streamed_text=segment_streamed_text,
                             chunk_payload=chunk.payload,
@@ -21701,7 +17695,7 @@ class JiuWenSwarmDeepAdapter:
                             )
                         if should_skip_duplicate_ask_user(parsed):
                             continue
-                        if self._is_ask_user_payload(parsed):
+                        if _is_ask_user_payload(parsed):
                             hitl_pending_stream = True
                             await self._commit_hitl_pause_before_card(session_id, rid)
                         if parsed.get("event_type") == "chat.final":
@@ -21743,13 +17737,13 @@ class JiuWenSwarmDeepAdapter:
                     )
                     accumulated_reasoning = ""
                 if chunk_type == "tool_result":
-                    self._account_deepresearch_sdk_usage(
+                    _account_deepresearch_sdk_usage(
                         chunk.payload,
                         request_id=rid,
                         usage_accumulator=usage_accumulator,
                         accounted_usage_ids=accounted_deepresearch_usage_ids,
                     )
-                parsed = self._parse_stream_chunk(
+                parsed = _parse_stream_chunk(
                     chunk,
                     _streamed_text=segment_streamed_text,
                     _parent_session_id=session_id,
@@ -21761,7 +17755,7 @@ class JiuWenSwarmDeepAdapter:
                         had_reasoning_output=had_reasoning_output,
                         visible_text_since_last_final=visible_text_since_last_final,
                     )
-                    for _delta in self._drain_final_content_to_deltas(
+                    for _delta in _drain_final_content_to_deltas(
                         parsed,
                         segment_streamed_text=segment_streamed_text,
                         chunk_payload=getattr(chunk, "payload", None),
@@ -21775,7 +17769,7 @@ class JiuWenSwarmDeepAdapter:
                         )
                     if should_skip_duplicate_ask_user(parsed):
                         continue
-                    if self._is_ask_user_payload(parsed):
+                    if _is_ask_user_payload(parsed):
                         hitl_pending_stream = True
                         await self._commit_hitl_pause_before_card(session_id, rid)
                     if parsed.get("event_type") == "chat.final":
@@ -21811,7 +17805,9 @@ class JiuWenSwarmDeepAdapter:
             # 轮次已正常完成/取消，flush 与合成 final 必须发出，否则前端悬挂）。
             # hitl_pending_stream 只反映"本轮出过 ask_user 卡片"，不随续跑复位。
             if not suppress_stream_after_hitl:
-                for held_chunk in _take_todo_close_chunks():
+                for held_chunk in _take_held_chunks(todo_close_hold):
+                    yield held_chunk
+                for held_chunk in _take_held_chunks(refusal_scrub):
                     yield held_chunk
             if accumulated_text and not suppress_stream_after_hitl:
                 # Same rule as _adapt_goal_intermediate_final: demote host
@@ -21863,14 +17859,14 @@ class JiuWenSwarmDeepAdapter:
                 # Use had_visible_text_ever (not visible_text_since_last_final): the
                 # latter is cleared on tool_call, which would wrongly inject the
                 # "no visible reply" text after pre-tool deltas + post-tool reasoning.
-                fallback_content = self._apply_reasoning_only_empty_reply_fallback(
+                fallback_content = _apply_reasoning_only_empty_reply_fallback(
                     has_streamed_content=had_visible_text_ever,
                     had_reasoning_output=had_reasoning_output,
                     fallback_content=fallback_content,
                     reasoning_only_fallback=self._reasoning_only_empty_reply_fallback(),
                 )
                 if str(fallback_content or "").strip():
-                    for _delta in self._iter_delta_for_unstreamed_final(
+                    for _delta in _iter_delta_for_unstreamed_final(
                         content=fallback_content,
                         chunk_payload=None,
                     ):
@@ -21896,11 +17892,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             if self._skill_evolution_rail is not None:
-                task = asyncio.create_task(
-                    self._watch_evolution_and_push(rid, cid, session_id)
-                )
-                task.add_done_callback(self._on_evolution_watcher_done)
-                self._evolution_watcher_tasks.add(task)
+                self._start_evolution_watcher(rid, cid, session_id)
             if self._ttse_rail is not None:
                 ttse_task = asyncio.create_task(
                     self._cleanup_ttse_background_tasks(rid, session_id)
@@ -22026,7 +18018,7 @@ class JiuWenSwarmDeepAdapter:
                     )
                 )
             if image_files_token is not None:
-                from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+                from jiuwenswarm.agents.harness.common.multimodal import (
                     reset_current_multimodal_image_files,
                 )
                 cleanup_steps.append(
@@ -22035,6 +18027,8 @@ class JiuWenSwarmDeepAdapter:
                         lambda: reset_current_multimodal_image_files(image_files_token),
                     )
                 )
+            if emitted_chat_error and perf_summary_status != "cancelled":
+                perf_summary_status = "error"
             if perf_context_initialized:
                 cleanup_steps.extend(
                     (
@@ -22118,7 +18112,7 @@ class JiuWenSwarmDeepAdapter:
                     ("log_session", lambda: reset_log_session_id(token_log_sid)),
                 )
             )
-            step_error = self._run_cleanup_steps(cleanup_steps)
+            step_error = _run_cleanup_steps(cleanup_steps)
             if cleanup_error is None:
                 cleanup_error = step_error
             if initialization_complete:
@@ -22194,31 +18188,6 @@ class JiuWenSwarmDeepAdapter:
                 is_complete=True,
             )
 
-    @staticmethod
-    def _stream_text_payload(
-        event_type: str,
-        content: Any,
-    ) -> dict[str, Any] | None:
-        """Build a text event without discarding formatting-only chunks."""
-        if content is None or content == "":
-            return None
-        return {"event_type": event_type, "content": content}
-
-    @staticmethod
-    def _is_ask_user_payload(payload: Any) -> bool:
-        """HITL 暂停判定：是否为会打断外层流的 checkpoint ask_user 卡片。
-
-        子 Agent 托管审批（``subagent_tool_permission`` / ``subagent_skill_load``）
-        只是在父会话转发一张卡并 await Future，外层 round 仍在跑；不能置
-        ``suppress_stream_after_hitl`` / 发 ``chat.invocation_paused``，否则点击
-        作答后父流被误收口、任务看起来“直接结束”。
-        """
-        if not isinstance(payload, dict):
-            return False
-        if payload.get("event_type") != "chat.ask_user_question":
-            return False
-        source = str(payload.get("source") or "").strip()
-        return source not in {"subagent_skill_load", "subagent_tool_permission"}
 
     @property
     def _ask_user_card_seq(self) -> dict[str, int]:
@@ -22545,676 +18514,6 @@ class JiuWenSwarmDeepAdapter:
             )
             return False
 
-    @staticmethod
-    def _is_hitl_suppress_noise_chunk(chunk: Any) -> bool:
-        """Metadata that may follow ask_user before the stream truly pauses.
-
-        These must not clear suppress / hitl_pending; any other chunk means the
-        runner resumed in-place and outbound must resume. Includes non-fatal
-        ``controller_output`` tails that arrive with the ask_user card itself
-        (not a user-answer resume).
-
-        ``__interaction__`` is NOT noise: after the forced-emit revert it is the
-        only source of the ask_user card and must clear suppress to be
-        forwarded to the frontend.
-
-        ``controller_output.task_failed`` is NOT noise: it must clear suppress
-        and surface ``chat.error`` (otherwise HITL stays paused forever).
-        """
-        ctype = getattr(chunk, "type", None)
-        if ctype in ("llm_usage", "context.usage"):
-            return True
-        if ctype == "controller_output":
-            return JiuWenSwarmDeepAdapter._run_failure(chunk) is None
-        return False
-
-    @staticmethod
-    def _apply_hitl_suppress_clear(
-        chunk: Any,
-        *,
-        suppress_stream_after_hitl: bool,
-        request_id: str = "",
-    ) -> tuple[bool, bool]:
-        """HITL suppress 清除决策，返回 (suppress_after, skip_chunk)。
-
-        ask_user 之后的 chunk：噪声（llm_usage / context.usage）继续抑制并跳过；
-        协议化恢复信号（``__resume_signal__``，agent-core resume 分支发出）精确
-        清除 suppress 且自身不转发；其余首个非噪声 chunk 兜底清除 suppress
-        （恢复转发，防 invocation 永久挂起——旧版 agent-core 无信号时仍工作）。
-        ``hitl_pending_stream`` 不在此处触碰——由调用方持有，驱动
-        ``chat.invocation_paused`` 收尾帧，气泡保持开启等待用户输入。
-        """
-        if not suppress_stream_after_hitl:
-            return suppress_stream_after_hitl, False
-        if getattr(chunk, "type", None) == _RESUME_SIGNAL_CHUNK_TYPE:
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] HITL suppress cleared on explicit "
-                "resume signal: request_id=%s",
-                request_id,
-            )
-            return False, True
-        if JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(chunk):
-            return suppress_stream_after_hitl, True
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] HITL suppress cleared on runner resume: "
-            "request_id=%s chunk_type=%s",
-            request_id,
-            getattr(chunk, "type", None) or type(chunk).__name__,
-        )
-        return False, False
-
-    @staticmethod
-    def _run_failure(chunk) -> tuple[str, str] | None:
-        """Return ``(error_type, message)`` if *chunk* is a run-level terminal failure.
-
-        These are failures that end the round and are surfaced to the user as a
-        ``chat.error`` by :meth:`_parse_stream_chunk` — a
-        ``controller_output``/``task_failed`` (e.g. model call failed) or an
-        ``answer`` whose ``result_type`` is ``"error"``. Recoverable
-        ``tool_result`` errors are intentionally excluded: the agent loop may
-        still retry them, so they must not flip the run status.
-
-        Used only to give the /debug ``run end`` ``status`` triage value; the
-        chunk still flows through ``_parse_stream_chunk`` unchanged.
-        """
-        ctype = getattr(chunk, "type", None)
-        payload = getattr(chunk, "payload", None)
-
-        def _get(key, default=None):
-            if isinstance(payload, dict):
-                return payload.get(key, default)
-            return getattr(payload, key, default)
-
-        if ctype == "controller_output" and payload is not None:
-            inner_t = getattr(payload, "type", None)
-            if inner_t is None and isinstance(payload, dict):
-                inner_t = payload.get("type")
-            inner_val = getattr(inner_t, "value", inner_t) if inner_t is not None else None
-            if inner_val == "task_failed":
-                data = getattr(payload, "data", None)
-                if data is None and isinstance(payload, dict):
-                    data = payload.get("data")
-                data = data or []
-                msg = next(
-                    (
-                        getattr(item, "text", None)
-                        for item in data
-                        if hasattr(item, "text")
-                    ),
-                    None,
-                )
-                if msg is None and isinstance(data, list):
-                    msg = next(
-                        (
-                            item.get("text")
-                            for item in data
-                            if isinstance(item, dict) and item.get("text")
-                        ),
-                        None,
-                    )
-                return "task_failed", (msg or "task failed")
-            return None
-
-        if ctype == "answer" and _get("result_type") == "error":
-            out = _get("output")
-            if isinstance(out, dict):
-                out = out.get("output")
-            return "answer_error", (str(out) if out else "task failed")
-
-        if isinstance(chunk, dict) and chunk.get("result_type") == "error":
-            return "answer_error", str(chunk.get("output") or "task failed")
-
-        return None
-
-    @staticmethod
-    def _parse_stream_chunk(
-        chunk,
-        *,
-        _has_streamed_content: bool = False,
-        _stage: str = "",
-        _streamed_text: str = "",
-        _protocol_buffer: Any = None,
-        _parent_session_id: str | None = None,
-    ) -> dict | None:
-        """将 SDK OutputSchema 转为前端可消费的 payload dict.
-
-        Args:
-            chunk: OutputSchema 或 dict
-            _has_streamed_content: 是否已通过 llm_output 流式发送过内容
-            _stage: 当前阶段名称，用于 auto_harness harness.message 事件
-            _streamed_text: 本段已通过 chat.delta 发出的可见正文（用于空 final / drain）
-            _protocol_buffer: 调用方持有的 StreamProtocolBuffer；跨 chunk 缓冲在 call site
-                feed/flush，此处仅吸收关键字以免 TypeError
-            _parent_session_id: parent session fallback for native subagent persist
-
-        Returns:
-            dict  – 含 event_type 的 payload，或 None（需跳过的帧）。
-        """
-        _ = _protocol_buffer
-        try:
-            if hasattr(chunk, "type") and hasattr(chunk, "payload"):
-                chunk_type = chunk.type
-                payload = chunk.payload
-
-                if is_todo_close_control(chunk_type):
-                    return None
-
-                if chunk_type == "steering_consumed":
-                    # Only the root/leader receipt may divide the user's main
-                    # conversation. A member's private input is not root input.
-                    role = getattr(chunk, "role", None)
-                    role_value = getattr(role, "value", role)
-                    if role is not None and str(role_value).strip().lower() != "leader":
-                        return None
-                    input_ids = payload.get("input_ids") if isinstance(payload, dict) else None
-                    if (not isinstance(input_ids, list) or not input_ids
-                            or any(not isinstance(value, str) or not value.strip() for value in input_ids)):
-                        return None
-                    return {
-                        "event_type": "chat.steering_consumed",
-                        "input_ids": list(dict.fromkeys(input_ids)),
-                    }
-
-                if chunk_type == GOAL_UPDATED_EVENT_TYPE:
-                    return JiuWenSwarmDeepAdapter._interaction_goal_updated_payload(payload)
-
-                if chunk_type == ERROR_EVENT_TYPE:
-                    err_payload = payload if isinstance(payload, dict) else {}
-                    return {
-                        "event_type": ERROR_EVENT_TYPE,
-                        "code": err_payload.get("code", "execution_error"),
-                        "message": err_payload.get("message", "execution error"),
-                        "goal": err_payload.get("goal"),
-                    }
-
-                if chunk_type == "controller_output" and payload is not None:
-                    inner_t = getattr(payload, "type", None)
-                    if inner_t is None and isinstance(payload, dict):
-                        inner_t = payload.get("type")
-                    inner_val = getattr(inner_t, "value", inner_t) if inner_t is not None else None
-                    if inner_val == "task_failed":
-                        data = getattr(payload, "data", None)
-                        if data is None and isinstance(payload, dict):
-                            data = payload.get("data")
-                        data = data or []
-                        error = next(
-                            (
-                                item.text
-                                for item in data
-                                if hasattr(item, "text")
-                            ),
-                            None,
-                        )
-                        if error is None:
-                            error = next(
-                                (
-                                    item.get("text")
-                                    for item in data
-                                    if isinstance(item, dict) and item.get("text")
-                                ),
-                                "任务执行失败",
-                            )
-                        return {"event_type": "chat.error", "error": error or "任务执行失败"}
-                    if inner_val == "task_interaction":
-                        # native-harness ask_user interrupts
-                        # surface here without __interaction__ payloads reaching
-                        # the stream. Parse the embedded interrupt result so the
-                        # question card still reaches the frontend.
-                        from jiuwenswarm.server.utils.stream_utils import (
-                            parse_task_interaction_payload,
-                        )
-                        try:
-                            interaction_event = parse_task_interaction_payload(payload)
-                        except Exception:
-                            logger.exception(
-                                "[interface_deep] failed to parse task_interaction payload"
-                            )
-                            interaction_event = None
-                        if interaction_event is not None:
-                            return interaction_event
-                        logger.warning(
-                            "[interface_deep] task_interaction without parsable ask_user payload;"
-                            " no question card could be built"
-                        )
-                    # Close the controller_output enum: HITL cards are emitted via
-                    # ``__interaction__``; remaining types are control-plane metadata.
-                    # Never fall through to ``str(payload)`` → chat.delta (ISSUE #3892).
-                    if inner_val not in (
-                        "task_completion",
-                        "task_interaction",
-                        "processing",
-                        "all_tasks_processed",
-                    ):
-                        logger.debug(
-                            "[interface_deep] drop unhandled controller_output type=%r",
-                            inner_val,
-                        )
-                    return None
-
-                if chunk_type == "llm_output":
-                    # Mirror llm_reasoning: openjiuwen uses "output", SkillTurbo "content".
-                    content = (
-                        (payload.get("content", "") or payload.get("output", ""))
-                        if isinstance(payload, dict)
-                        else str(payload)
-                    )
-                    delta_payload = JiuWenSwarmDeepAdapter._stream_text_payload(
-                        "chat.delta", content
-                    )
-                    return _propagate_stream_source_id(payload, delta_payload)
-
-                if chunk_type == "llm_reasoning":
-                    content = (
-                        (payload.get("content", "") or payload.get("output", ""))
-                        if isinstance(payload, dict)
-                        else str(payload)
-                    )
-                    reasoning_payload = JiuWenSwarmDeepAdapter._stream_text_payload(
-                        "chat.reasoning", content
-                    )
-                    return _propagate_stream_source_id(payload, reasoning_payload)
-
-                if chunk_type == "content_chunk":
-                    content = (
-                        payload.get("content", "") if isinstance(payload, dict) else str(payload)
-                    )
-                    delta_payload = JiuWenSwarmDeepAdapter._stream_text_payload(
-                        "chat.delta", content
-                    )
-                    src = payload if isinstance(payload, dict) else {}
-                    return _propagate_stream_source_id(src, delta_payload)
-
-                if chunk_type == "answer":
-                    if isinstance(payload, dict):
-                        if payload.get("result_type") == "error":
-                            return {
-                                "event_type": "chat.error",
-                                "error": payload.get("output", "未知错误"),
-                            }
-                        output = payload.get("output", {})
-                        if isinstance(output, dict) and output.get("result_type") == "error":
-                            logger.warning(
-                                "[interface_deep] nested_answer_error_detected output=%s",
-                                output.get("output", "未知错误"),
-                            )
-                            return {
-                                "event_type": "chat.error",
-                                "error": output.get("output", "未知错误"),
-                            }
-                        content = (
-                            output.get("output", "") if isinstance(output, dict) else str(output)
-                        )
-                        is_chunked = (
-                            output.get("chunked", False) if isinstance(output, dict) else False
-                        )
-                    else:
-                        content = str(payload)
-                        is_chunked = False
-
-                    if not content or not content.strip():
-                        return None
-
-                    if _has_streamed_content and not is_chunked:
-                        # 已通过 chat.delta 流完 → 仅收尾标记，避免下游重复。
-                        # has_streamed_content 可能被空白/极小 delta 误置，真实答案
-                        # 却只在 answer chunk 里。此时保留正文（answer 处理器会以
-                        # chat.delta 补流），保证非 team 前端（只渲染 delta）能看到回复。
-                        if _streamed_text and content.strip() in _streamed_text:
-                            return {"event_type": "chat.final", "content": ""}
-                        streamed_visible = str(_streamed_text or "").strip()
-                        # Substantial stream already on the wire this segment —
-                        # do not keep final body for drain (would duplicate).
-                        if streamed_visible and len(streamed_visible) >= max(
-                            8, len(content.strip()) // 4
-                        ):
-                            return {"event_type": "chat.final", "content": ""}
-                        return {"event_type": "chat.final", "content": content}
-                    if is_chunked:
-                        return {"event_type": "chat.delta", "content": content}
-                    return {"event_type": "chat.final", "content": content}
-
-                if chunk_type == "tool_call":
-                    tool_info = (
-                        payload.get("tool_call", payload) if isinstance(payload, dict) else payload
-                    )
-                    # 只透传 stream_source_id：tool 帧带 task_id 会让 RelayClaw
-                    # 按它开一个假的 taskRuns 段，且 reasoning 帧与 tool 帧被拆开。
-                    return _propagate_stream_source_id(
-                        {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
-                        if isinstance(payload, dict)
-                        else {},
-                        {"event_type": "chat.tool_call", "tool_call": tool_info},
-                    )
-
-                if chunk_type == "tool_update":
-                    if isinstance(payload, dict):
-                        update_info = payload.get("tool_update", payload)
-                        update_payload = (
-                            dict(update_info)
-                            if isinstance(update_info, dict)
-                            else {"content": str(update_info)}
-                        )
-                    else:
-                        update_payload = {"content": str(payload)}
-                    return _propagate_stream_source_id(
-                        {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
-                        if isinstance(payload, dict)
-                        else {},
-                        {"event_type": "chat.tool_update", **update_payload},
-                    )
-
-                if chunk_type == "tool_result":
-                    if isinstance(payload, dict):
-                        result_info = payload.get("tool_result", payload)
-                        result_payload = build_tool_result_payload(result_info)
-                    else:
-                        result_payload = {"result": str(payload)}
-                    return _propagate_stream_source_id(
-                        {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
-                        if isinstance(payload, dict)
-                        else {},
-                        {"event_type": "chat.tool_result", **result_payload},
-                    )
-
-                if chunk_type == "error":
-                    error_msg = (
-                        payload.get("error", str(payload))
-                        if isinstance(payload, dict)
-                        else str(payload)
-                    )
-                    return {"event_type": "chat.error", "error": error_msg}
-
-                if chunk_type == "retry_notification":
-                    if isinstance(payload, dict):
-                        output = payload.get("output", {})
-                        content = output.get("output", "") if isinstance(output, dict) else str(output)
-                    else:
-                        content = str(payload)
-                    return {
-                        "event_type": "chat.delta",
-                        "content": content,
-                        "source_chunk_type": chunk_type,
-                    }
-
-                if chunk_type == "security.alert":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "security.alert",
-                            **payload,
-                        }
-                    return None
-
-                if chunk_type == "chat.retract":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "chat.retract",
-                            **payload,
-                        }
-                    return None
-
-                # send_file OBS path: OutputSchema(type="chat.file", payload={files:[url...]})
-                # must not fall through to _stream_text_payload — files-only payload has
-                # no content/output, so the frame would be dropped and Gateway never
-                # materializes a download token.
-                if chunk_type == "chat.file":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "chat.file",
-                            **payload,
-                        }
-                    return None
-
-                if chunk_type == "thinking":
-                    return {
-                        "event_type": "chat.processing_status",
-                        "is_processing": True,
-                        "current_task": "thinking",
-                    }
-
-                if chunk_type == "todo.updated":
-                    todos = payload.get("todos", []) if isinstance(payload, dict) else []
-                    return {"event_type": "todo.updated", "todos": todos}
-
-                if chunk_type == "task.start":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "task.start",
-                            "task_id": payload.get("task_id"),
-                            "task_content": payload.get("task_content"),
-                            "task_index": payload.get("task_index"),
-                            "total_tasks": payload.get("total_tasks"),
-                            "parent_request_id": payload.get("parent_request_id"),
-                            "timestamp": payload.get("timestamp"),
-                        }
-                    return None
-
-                if chunk_type == "task.update":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "task.update",
-                            "tasks": payload.get("tasks", []),
-                            "total_tasks": payload.get("total_tasks", 0),
-                            "completed_tasks": payload.get("completed_tasks", 0),
-                            "in_progress_tasks": payload.get("in_progress_tasks", 0),
-                            "pending_tasks": payload.get("pending_tasks", 0),
-                            "parent_request_id": payload.get("parent_request_id"),
-                            "timestamp": payload.get("timestamp"),
-                        }
-                    return None
-
-                if chunk_type == "task.complete":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "task.complete",
-                            "task_id": payload.get("task_id"),
-                            "task_content": payload.get("task_content"),
-                            "status": payload.get("status"),
-                            "duration_ms": payload.get("duration_ms"),
-                            "error": payload.get("error"),
-                            "timestamp": payload.get("timestamp"),
-                        }
-                    return None
-
-                handled, parsed = try_handle_subagent_chunk(
-                    chunk_type,
-                    payload,
-                    parent_session_id=_parent_session_id,
-                )
-                if handled:
-                    return parsed
-
-                if chunk_type == "context.usage":
-                    usage_payload = normalize_context_usage_payload(payload)
-                    if usage_payload is not None:
-                        return usage_payload
-                    return {"event_type": "context.usage", "rate": 0}
-
-                if chunk_type == "context.compression_state":
-                    if hasattr(payload, "model_dump"):
-                        state_payload = payload.model_dump(mode="json")
-                    elif isinstance(payload, dict):
-                        state_payload = payload
-                    else:
-                        state_payload = {"summary": str(payload)}
-                    return {
-                        "event_type": "context.compression_state",
-                        **state_payload,
-                    }
-
-                if chunk_type == "chat.ask_user_question":
-                    return parse_ask_user_question_payload(payload)
-
-                if chunk_type == "chat.symphony_status":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "chat.symphony_status",
-                            **payload,
-                        }
-                    return None
-
-                if chunk_type == "__interaction__":
-                    if isinstance(payload, dict) and payload.get("interaction_type") == "activate_confirm":
-                        return {
-                            "event_type": "harness.activate_interaction",
-                            "interaction_type": "activate_confirm",
-                            "interaction_id": payload.get("interaction_id", ""),
-                            "extension_name": payload.get("extension_name", ""),
-                            "runtime_path": payload.get("runtime_path", ""),
-                            "session_runtime_path": payload.get("session_runtime_path", ""),
-                            "extension_runtime_path": payload.get(
-                                "extension_runtime_path", payload.get("runtime_path", "")
-                            ),
-                            "options": payload.get("options", ["accept", "reject"]),
-                        }
-                    return convert_interactions_to_ask_user_question([payload])
-
-                # Auto-harness specific: harness.message event
-                if chunk_type == "message":
-                    content = (
-                        payload.get("content", "")
-                        if isinstance(payload, dict)
-                        else str(payload)
-                    )
-                    # Extract stage from payload if available, fallback to _stage parameter
-                    stage_from_payload = (
-                        payload.get("stage", "")
-                        if isinstance(payload, dict)
-                        else ""
-                    )
-                    result: dict[str, Any] = {
-                        "event_type": "harness.message",
-                        "content": content,
-                        "stage": stage_from_payload or _stage,
-                    }
-                    # Pass through stages array for dynamic stage definition
-                    if isinstance(payload, dict):
-                        if "stages" in payload:
-                            result["stages"] = payload["stages"]
-                        if "pipeline" in payload:
-                            result["pipeline"] = payload["pipeline"]
-                        # Pass through metadata for security alerts and other custom data
-                        if "metadata" in payload:
-                            result["metadata"] = payload["metadata"]
-                    return result
-
-                # Auto-harness specific: harness.stage_result event
-                if chunk_type == "stage_result":
-                    if isinstance(payload, dict):
-                        stage = payload.get("stage", _stage)
-                        return {
-                            "event_type": "harness.stage_result",
-                            "stage": stage,
-                            "status": payload.get("status", "success"),
-                            "error": payload.get("error", ""),
-                            "messages": payload.get("messages", []),
-                            "metrics": payload.get("metrics", {}),
-                            "scope": payload.get("scope", ""),
-                            "parent_stage": payload.get("parent_stage", ""),
-                            "extension_stage": payload.get("extension_stage", ""),
-                            "extension_name": payload.get("extension_name", ""),
-                            "task_id": payload.get("task_id", ""),
-                        }
-                    return None
-
-                # Auto-harness specific: harness.extension_ready event
-                if chunk_type == "extension_ready":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "harness.extension_ready",
-                            "extension_name": payload.get("extension_name", ""),
-                            "runtime_path": payload.get("runtime_path", ""),
-                            "session_runtime_path": payload.get("session_runtime_path", ""),
-                            "extension_runtime_path": payload.get("extension_runtime_path", ""),
-                            "config_path": payload.get("config_path", ""),
-                            "runtime_extensions": payload.get("runtime_extensions", []),
-                            "verify_report": payload.get("verify_report", {}),
-                            "components_summary": payload.get("components_summary", {}),
-                        }
-                    return None
-
-                if chunk_type == "harness_session_finished":
-                    if isinstance(payload, dict):
-                        return {
-                            "event_type": "harness.session_finished",
-                            "pipeline": payload.get("pipeline", ""),
-                            "status": payload.get("status", "success"),
-                            "results_count": payload.get("results_count", 0),
-                            "is_terminal": bool(payload.get("is_terminal", True)),
-                        }
-                    return {
-                        "event_type": "harness.session_finished",
-                        "status": "success",
-                        "is_terminal": True,
-                    }
-
-                # Auto-harness specific: activate_testing_guide summary
-                if chunk_type == "activate_testing_guide":
-                    if isinstance(payload, dict):
-                        text = payload.get("text", "")
-                        if text:
-                            return {"event_type": "chat.delta", "content": text}
-                    return None
-
-                if isinstance(payload, dict):
-                    if "traceId" in payload or "invokeId" in payload:
-                        return None
-                    content = payload.get("content") or payload.get("output")
-                else:
-                    content = str(payload)
-                delta_payload = JiuWenSwarmDeepAdapter._stream_text_payload(
-                    "chat.delta", content
-                )
-                src = payload if isinstance(payload, dict) else {}
-                return _propagate_stream_source_id(src, delta_payload)
-
-            if isinstance(chunk, dict):
-                if "traceId" in chunk or "invokeId" in chunk:
-                    return None
-                # Interaction loop lifecycle events emitted by DeepAgent
-                # (goal.updated snapshot etc.) forwarded to the TUI goal status bar.
-                interaction_evt = chunk.get("type")
-                if interaction_evt == GOAL_UPDATED_EVENT_TYPE:
-                    return JiuWenSwarmDeepAdapter._interaction_goal_updated_payload(
-                        chunk.get("payload")
-                    )
-                if interaction_evt == ERROR_EVENT_TYPE:
-                    err_payload = chunk.get("payload")
-                    err_payload = err_payload if isinstance(err_payload, dict) else {}
-                    return {
-                        "event_type": ERROR_EVENT_TYPE,
-                        "code": err_payload.get("code", "execution_error"),
-                        "message": err_payload.get("message", "execution error"),
-                        "goal": err_payload.get("goal"),
-                    }
-                if chunk.get("result_type") == "error":
-                    logger.warning(
-                        "[interface_deep] top_level_chunk_error_detected output=%s",
-                        chunk.get("output", "未知错误"),
-                    )
-                    return {
-                        "event_type": "chat.error",
-                        "error": chunk.get("output", "未知错误"),
-                    }
-                output_payload = chunk.get("output")
-                if isinstance(output_payload, dict) and output_payload.get("result_type") == "error":
-                    logger.warning(
-                        "[interface_deep] nested_chunk_error_detected output=%s",
-                        output_payload.get("output", "未知错误"),
-                    )
-                    return {
-                        "event_type": "chat.error",
-                        "error": output_payload.get("output", "未知错误"),
-                    }
-                output = chunk.get("output", "")
-                if output:
-                    return {"event_type": "chat.delta", "content": str(output)}
-                return None
-
-        except Exception:
-            logger.debug("[_parse_stream_chunk] 解析异常", exc_info=True)
-
-        return None
-
     async def _handle_memory_rail_by_config(self, mode: str):
         config = (
             self._startup_config_base
@@ -23230,7 +18529,7 @@ class JiuWenSwarmDeepAdapter:
             )
             if builtin_on:
                 # 开启记忆
-                new_embed_fp = self._embedding_config_fingerprint(config)
+                new_embed_fp = _embedding_config_fingerprint(config)
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
@@ -23918,7 +19217,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             # No temperature override — inherit model default to match main agent
             # API params (thinking config is part of the Anthropic cache key).
-            result = await self._model.invoke(recap_messages, tools=tools)
+            result = await self._model.invoke(recap_messages, tools=tools, request_purpose="recap")
             # Tool-use guard: tools schema is passed only to preserve the cache
             # key (matches the main agent). Single turn + discard any tool_use
             # the model emits → tools are never executed. Aligned with
@@ -24004,13 +19303,18 @@ class JiuWenSwarmDeepAdapter:
     async def repair_model_response(self, prompt: str) -> str | None:
         """Run a focused repair prompt using the currently selected chat model."""
         if self._model is None:
-            logger.warning("[JiuWenSwarmDeepAdapter] repair skipped: no model instance available")
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] repair skipped: no model instance available "
+                "(cache_keys=%s default=%s)",
+                list(self._model_cache)[:5], self._default_model_name or "<unset>",
+            )
             return None
         from openjiuwen.core.foundation.llm.schema.message import UserMessage
 
         result = await self._model.invoke(
             [UserMessage(content=prompt)],
             temperature=0,
+            request_purpose="repair",
         )
         content = getattr(result, "content", None)
         if isinstance(content, str):
@@ -24088,7 +19392,7 @@ class JiuWenSwarmDeepAdapter:
             else NO_TOOLS_PREAMBLE + PARTIAL_COMPACT_PROMPT
         )
 
-        recap_messages = self._build_messages_for_model(messages_to_summarize)
+        recap_messages = _build_messages_for_model(messages_to_summarize)
         if not recap_messages:
             return {"status": "no_turn"}
 
@@ -24097,7 +19401,7 @@ class JiuWenSwarmDeepAdapter:
         recap_messages.append(UserMessage(content=prompt))
 
         try:
-            result = await self._model.invoke(recap_messages, temperature=0)
+            result = await self._model.invoke(recap_messages, temperature=0, request_purpose="summary")
             raw = getattr(result, "content", None) or str(result)
         except Exception:
             logger.exception("[compact_partial] model call failed")
@@ -24116,35 +19420,6 @@ class JiuWenSwarmDeepAdapter:
             "summarized_count": summarized_count,
         }
 
-    @staticmethod
-    def _build_messages_for_model(records: list[dict[str, Any]]) -> list[Any]:
-        from openjiuwen.core.foundation.llm.schema.message import UserMessage, AssistantMessage
-
-        messages: list[Any] = []
-        for rec in records:
-            if not isinstance(rec, dict):
-                continue
-            role = rec.get("role")
-            content = rec.get("content")
-            if not isinstance(content, str) or not content.strip():
-                continue
-
-            event_type = rec.get("event_type")
-            # skip tool call/result records — they contain JSON blobs, not useful for summary
-            if role == "user":
-                # strip file-content blocks to save tokens
-                cleaned = re.sub(r"<file-content[^>]*>.*?</file-content>", "", content, flags=re.DOTALL).strip()
-                if cleaned:
-                    messages.append(UserMessage(content=cleaned))
-            elif role == "assistant":
-                if rec.get("is_goal_completed_message"):
-                    continue
-                if event_type in ("chat.final", "context.compact_summary", "context.rewind_summary") or not event_type:
-                    if event_type in ("context.compact_boundary",):
-                        continue
-                    messages.append(AssistantMessage(content=content))
-
-        return messages
 
     async def _count_full_context_tokens(
         self,
@@ -24374,7 +19649,7 @@ class JiuWenSwarmDeepAdapter:
                     push_context,
                     rid,
                     events,
-                    parse_stream_chunk=self._parse_stream_chunk,
+                    parse_stream_chunk=_parse_stream_chunk,
                     build_push_message=build_server_push_message,
                 )
 
@@ -24475,7 +19750,11 @@ class JiuWenSwarmDeepAdapter:
                     return
         except asyncio.CancelledError:
             try:
-                await _cleanup_evolution_rail(cancel=True)
+                current_task = asyncio.current_task()
+                graceful = bool(
+                    getattr(current_task, "_evolution_watcher_graceful", False)
+                )
+                await _cleanup_evolution_rail(cancel=not graceful)
             finally:
                 raise
         except Exception as exc:
@@ -24508,9 +19787,19 @@ class JiuWenSwarmDeepAdapter:
 
         Discards the task from the tracking set and logs any exception.
         """
-        self._evolution_watcher_tasks.discard(task)
+        watchers = getattr(self, "_evolution_watchers", None)
+        if isinstance(watchers, dict):
+            for key, current_task in list(watchers.items()):
+                if current_task is task:
+                    watchers.pop(key, None)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if isinstance(watcher_tasks, set):
+            watcher_tasks.discard(task)
         try:
             task.result()
+        except asyncio.CancelledError:
+            # Supersession and adapter teardown intentionally cancel old watchers.
+            return
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher task exception: %s", exc)
 
@@ -24522,15 +19811,6 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] TTSE cleanup task exception: %s", exc)
 
-    @staticmethod
-    def _is_approval_event(evt) -> bool:
-        """Check whether an OutputSchema event is an approval request."""
-        evt_type = getattr(evt, "type", "")
-        if evt_type == "chat.ask_user_question":
-            return True
-        if hasattr(evt, "payload") and isinstance(evt.payload, dict):
-            return evt.payload.get("event_type") == "chat.ask_user_question"
-        return False
 
     async def try_start_dreaming(self, busy_checker: Callable[[], bool] | None = None) -> None:
         if self._dreaming_started:
@@ -24565,118 +19845,3 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] stop_dreaming failed: %s", exc)
 
 
-def _agent_def_to_subagent_config(
-    agent_def: AgentDefinition,
-    model: Any,
-    workspace: str,
-    model_cache: dict[str, Any] | None = None,
-    sys_operation: SysOperation | None = None,
-) -> SubAgentConfig:
-    """将 AgentDefinition 转换为 SubAgentConfig，用于 SubagentRail 注册。
-
-    Args:
-        agent_def: 自定义 agent 定义（来自 .jiuwenswarm/agents/*.md）
-        model: 父 agent 的 Model 实例（作为默认模型）
-        workspace: 工作空间路径
-        model_cache: 模型缓存字典（用于按名称查找指定模型）
-        sys_operation: 父 agent 的 SysOperation。子 agent 必须复用同一文件系统
-            边界。``DeepAgent.create_subagent`` 只在 ``spec.workspace`` 同时非空时
-            才采用 ``spec.sys_operation``，因此 workspace 也要一并写入 spec，否则
-            会落到一套带 ``restrict_to_sandbox`` 约束的新 LOCAL SysOperation。
-    """
-    from openjiuwen.harness.schema.config import SubAgentConfig
-
-    # Resolve model: if agent_def specifies a model name, look it up in cache
-    resolved_model = model
-    if agent_def.model and isinstance(model_cache, dict):
-        resolved_model = model_cache.get(agent_def.model, model)
-
-    # Build tool list: merge allowed tools and disallowed_tools
-    tools: list[str] = list(agent_def.tools) if agent_def.tools else ["*"]
-    if agent_def.disallowed_tools and tools != ["*"]:
-        tools = [t for t in tools if t not in agent_def.disallowed_tools]
-
-    # A stable id keeps ``create_deep_agent`` on its get-or-create path for this
-    # sub-agent's SysOperation: the id is derived from the card, and the default
-    # ``AgentCard.id`` is a fresh uuid, so leaving it unset made every Agent-tool
-    # invocation register another SysOperation plus its ~16 derived tools in the
-    # process-global resource manager, never to be reclaimed. Same-named
-    # definitions carry the same permissions, so sharing one instance is safe.
-    card = AgentCard(
-        name=agent_def.name,
-        id=f"subagent_{agent_def.name}",
-        description=agent_def.description,
-    )
-
-    # Build progressive tool rail for custom subagent if enabled.
-    custom_rails: list[Any] | None = None
-    config_base = get_config()
-    react_config = config_base.get("react", {}) or {}
-    if is_subagent_tool_lazy_load_enabled(react_config):
-        progressive_rail = build_progressive_tool_rail_from_config(
-            react_config,
-            language=resolve_language(
-                str(config_base.get("preferred_language", "zh"))
-            ),
-            profile="subagent",
-            agent_id=card.id,
-            agent_card_id=card.id,
-        )
-        if progressive_rail is not None:
-            custom_rails = [progressive_rail]
-
-    return SubAgentConfig(
-        agent_card=card,
-        system_prompt=agent_def.prompt,
-        tools=tools,
-        model=resolved_model,
-        workspace=workspace,
-        sys_operation=sys_operation,
-        skills=agent_def.skills,
-        max_iterations=agent_def.max_iterations,
-        enable_task_loop=True,
-        rails=custom_rails,
-    )
-
-
-def _load_custom_subagents(
-    workspace_dir: str,
-    subagents_cfg: dict | None,
-    model: Any,
-    workspace: str,
-    logger_name: str,
-    **kwargs: Any,
-) -> list[Any]:
-    """从 AgentConfigService 加载自定义 agent 并转换为 SubAgentConfig 列表。
-
-    通用逻辑，同时被 JiuWenSwarmDeepAdapter 和 JiuWenSwarmCodeAdapter 使用。
-
-    Args:
-        workspace_dir: 工作空间目录路径
-        subagents_cfg: 子 agent 配置字典
-        model: 模型配置
-        workspace: 工作空间路径
-        logger_name: 日志记录器名称
-        **kwargs: 额外参数，支持 model_cache、sys_operation 等
-    """
-    from jiuwenswarm.server.runtime.agent_config_service import AgentConfigService
-
-    _logger = logging.getLogger(logger_name)
-    agent_service = AgentConfigService(workspace_dir)
-    model_cache: dict | None = kwargs.get("model_cache")
-    sys_operation = kwargs.get("sys_operation")
-    result: list[Any] = []
-    for agent_def in agent_service.list_agents():
-        if agent_def.source == "builtin":
-            continue
-        subagent_cfg = subagents_cfg.get(agent_def.name) if isinstance(subagents_cfg, dict) else None
-        # 只有显式 enabled: true 才加载
-        if not (isinstance(subagent_cfg, dict) and bool(subagent_cfg.get("enabled", False))):
-            continue
-        custom_spec = _agent_def_to_subagent_config(
-            agent_def, model, workspace, model_cache, sys_operation,
-        )
-        custom_spec.factory_kwargs = {"auto_create_workspace": False}
-        result.append(custom_spec)
-        _logger.info("loaded custom agent '%s' from %s", agent_def.name, agent_def.source)
-    return result
