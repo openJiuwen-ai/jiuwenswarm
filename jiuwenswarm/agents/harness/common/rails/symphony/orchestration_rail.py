@@ -120,10 +120,12 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     def __init__(
         self, *, config_base: _ConfigBaseProvider = None,
         skillpack_router: SkillPackRouter | None = None,
+        automatic_skillpack_enabled: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__()
         self._config_base = config_base
         self._skillpack_router = skillpack_router
+        self._automatic_skillpack_enabled = automatic_skillpack_enabled
         self.system_prompt_builder = None
         self._paused_states: dict[_PausedInvokeKey, _SymphonyInvokeState] = {}
         self._active_states: dict[_InvokeScope, _SymphonyInvokeState] = {}
@@ -295,9 +297,13 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         )) if isinstance(raw_selected, list) else []
         state.pack_route = await router.choose(
             state.original_query, selected,
-            mode=direct_route_mode(self._resolve_config_base()),
+            mode=self._direct_route_mode(),
             model_reference=self._request_model_reference(ctx),
         )
+        if (state.pack_route is not None
+                and state.pack_route.source == "confirmed_query_match"
+                and self._direct_route_mode() == "off"):
+            state.pack_route = None
         if state.pack_route is not None:
             self._save_pack_resume_guard(ctx, state.scope, pending=True)
 
@@ -347,21 +353,41 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             route.declined = True
             state.pack_route = None
             return
+        self._block_disabled_automatic_route(route)
+        if route.blocked:
+            return
         for candidate in route.candidates:
             if answer == f"使用 {candidate['id']}":
                 try:
-                    await router.confirm(route, candidate["id"], source="confirmed_query_match")
+                    await router.confirm(route, candidate["id"], source=route.source)
                 except Exception:
                     route.blocked = True
                 return
         # An unrelated or free-form response cannot accidentally confirm a Pack.
         route.confirmation_call_id = ""
 
+    def _direct_route_mode(self) -> str:
+        if self._automatic_skillpack_enabled is None:
+            return direct_route_mode(self._resolve_config_base())
+        try:
+            return "confirm" if self._automatic_skillpack_enabled() is True else "off"
+        except Exception:
+            # A settings read failure disables new automatic offers only.
+            return "off"
+
+    def _block_disabled_automatic_route(self, route: PackRoute) -> None:
+        if (route.token is None and route.source == "confirmed_query_match"
+                and self._direct_route_mode() == "off"):
+            # A stale automatic offer must not execute or silently recompose.
+            # Existing confirmed tokens and explicit selection remain usable.
+            route.blocked = True
+
     def _sync_pack_route(self, ctx: AgentCallbackContext) -> bool:
         state = self._active_state_for_ctx(ctx)
         route = state.pack_route if state is not None else None
         if route is None:
             return False
+        self._block_disabled_automatic_route(route)
         token = route.token
         if token is None:
             guidance = (
@@ -410,6 +436,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         route = state.pack_route if state is not None else None
         if route is None:
             return False
+        self._block_disabled_automatic_route(route)
         name = self._tool_name(ctx.inputs)
         reason = ""
         if route.blocked:

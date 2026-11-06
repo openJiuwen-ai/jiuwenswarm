@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -865,7 +866,9 @@ async def test_manager_confirmation_returns_typed_failure_without_writing(enviro
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
     hub, skills, _, installer = environment
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {
+        "symphony": {"evolution": {"flow": {"enabled": True}}},
+    })
     plan = await _prepare(hub, installer)
     directory = installer.work_dir / "plans" / plan["plan_id"]
     if change == "expired":
@@ -895,6 +898,44 @@ async def test_manager_confirmation_returns_typed_failure_without_writing(enviro
     assert result["detail_key"] == ("skillPackInstall.validationFailed" if invalid else "skillPackInstall.changed")
     assert not (skills / "release-pack").exists()
     assert not (skills / "summary").exists()
+
+
+@pytest.mark.asyncio
+async def test_discovery_off_blocks_new_confirmation_but_not_accepted_install(environment, monkeypatch):
+    hub, skills, _, installer = environment
+    config = {"symphony": {"evolution": {"flow": {"enabled": False}}}}
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
+    # Old deployment settings cannot bypass the persisted UI switch.
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+    plan = await _prepare(hub, installer)
+    manager = SkillManager(workspace_dir=str(skills.parent / "manager"))
+    monkeypatch.setattr(manager, "_skillpack_installer", lambda _: installer)
+    monkeypatch.setattr(manager, "_register_skillpack_install", lambda records: None)
+    params = {"asset_id": "release-pack", "plan_id": plan["plan_id"], "confirmed": True}
+    refused = await manager.handle_skills_team_skills_hub_install(params)
+    assert refused["success"] is False
+    assert not (skills / "release-pack").exists()
+
+    entered, resume = asyncio.Event(), asyncio.Event()
+    original_commit = installer.commit
+
+    async def delayed_commit(*args, **kwargs):
+        entered.set()
+        await resume.wait()
+        return await original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(installer, "commit", delayed_commit)
+    config["symphony"]["evolution"]["flow"]["enabled"] = True
+    task = asyncio.create_task(manager.handle_skills_team_skills_hub_install(params))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        config["symphony"]["evolution"]["flow"]["enabled"] = False
+    finally:
+        resume.set()
+    result = await task
+    assert result["success"] is True
+    assert (skills / "release-pack/SKILL.md").exists()
+    assert (skills / "summary/SKILL.md").exists()
 
 
 @pytest.mark.asyncio
@@ -975,7 +1016,9 @@ async def test_confirmation_cannot_be_used_for_another_asset(environment):
 async def test_manager_marketplace_confirm_and_shared_member_lifecycle(tmp_path, monkeypatch):
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {
+        "symphony": {"evolution": {"flow": {"enabled": True}}},
+    })
     monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "https://localhost")
     hub = HubFixture()
     manager = SkillManager(workspace_dir=str(tmp_path))

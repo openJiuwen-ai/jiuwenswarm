@@ -32,7 +32,6 @@ from jiuwenswarm.server.runtime.skill.skillpack import (
     read_skillpack_section,
     scan_skillpacks,
 )
-from jiuwenswarm.server.runtime.skill.skillpack_config import skillpack_productization_enabled
 from jiuwenswarm.server.runtime.skill.skillpack_install import inventory_mutex
 from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     CandidateEvidenceScope,
@@ -239,7 +238,7 @@ class SwarmSymphonyService:
         self._close_task: asyncio.Task | None = None
         self._recovered_candidates: tuple[CombinationCandidateType, ...] = ()
         self._candidate_locks: dict[tuple[str, int], asyncio.Lock] = {}
-        self._notified_candidates: set[tuple[str, int]] = set()
+        self._notified_candidates: set[tuple[str, int] | tuple[str, int, str]] = set()
         self._install_lock = asyncio.Lock()
         self._install_receipts: dict[str, dict[str, Any]] = {}
         self._skillpack_candidate_lock = asyncio.Lock()
@@ -846,7 +845,7 @@ class SwarmSymphonyService:
         runtime = self._runtime_for(config)
         if isinstance(execution_graph.get("graph"), dict):
             execution_graph = annotate_member_types(execution_graph, config.paths.skills_root)
-        result = await runtime.submit_evolution(
+        await runtime.submit_evolution(
             planned_graph,
             execution_graph,
             session_id=session_id,
@@ -855,6 +854,7 @@ class SwarmSymphonyService:
         flow = runtime.flow_engine
         trace_id = str(execution_graph.get("trace_id") or "")
         evidence = flow.store.find_evidence(trace_id) if flow is not None and trace_id else None
+        trace_recorded = False
         if evidence is not None and session_id:
             try:
                 snapshot = member_snapshot(
@@ -865,6 +865,7 @@ class SwarmSymphonyService:
                 CandidateScopeStore(flow.store.root).record_trace(
                     trace_id, session_id, snapshot, trusted_session_user(session_id),
                 )
+                trace_recorded = True
             except (OSError, ValueError):
                 logger.info("SkillPack evidence has no eligible local member snapshot")
         recovered = ()
@@ -887,15 +888,19 @@ class SwarmSymphonyService:
                 "Symphony Flow startup recovery failed (%s)",
                 type(exc).__name__,
             )
-        candidates = _unique_candidates((*recovered, *result.new_candidates))
-        if skillpack_productization_enabled():
-            # Productized candidates are offered by the explicit conversation Tool.
-            return
-        for candidate in candidates:
+        if trace_recorded and execution_graph.get("outcome") == "success":
             try:
-                await self._notify_candidate(
-                    candidate, session_id=session_id, channel_id=channel_id
-                )
+                # Automatic discovery and the conversation Tool share the same
+                # owner-scoped review and server-owned confirmation receipts.
+                async with self._skillpack_candidate_lock:
+                    identity = CandidateEvidenceScope.resolve(
+                        session_id, trusted_session_user(session_id), "current_user", None,
+                    )
+                    prepared = await self._prepare_skillpack_candidates(session_id=session_id, automatic=True)
+                    for preview in prepared.get("candidates", []):
+                        await self._offer_reviewed_skillpack_candidate(
+                            preview, identity, session_id=session_id, channel_id=channel_id, force=False,
+                        )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Symphony candidate delivery failed (%s)",
@@ -959,7 +964,8 @@ class SwarmSymphonyService:
         key = (candidate.recipe_id, candidate.version)
         lock = self._candidate_locks.setdefault(key, asyncio.Lock())
         async with lock:
-            if key in self._notified_candidates and not force:
+            notification_key = (*key, request_id_override) if request_id_override else key
+            if notification_key in self._notified_candidates and not force:
                 return
             request_id = request_id_override or experience_request_id(*key)
             payload = _candidate_question(
@@ -995,13 +1001,15 @@ class SwarmSymphonyService:
             # Delivery succeeded. Keep the process-local guard even if the
             # user has not answered yet; otherwise concurrent submissions can
             # show the same prompt again.
-            self._notified_candidates.add(key)
+            self._notified_candidates.add(notification_key)
 
     def defer_candidate(self, recipe_id: str, version: int) -> None:
         """Allow a deferred candidate to be offered by a later successful run."""
 
         key = (recipe_id, version)
-        self._notified_candidates.discard(key)
+        self._notified_candidates.difference_update(
+            item for item in tuple(self._notified_candidates) if item[:2] == key
+        )
         runtime = self._runtime
         if runtime is None or runtime.flow_engine is None:
             return
@@ -1030,18 +1038,10 @@ class SwarmSymphonyService:
     def list_experience_candidates(self) -> dict[str, Any]:
         """Return installable Recipe versions retained by the Core Flow store."""
 
-        if skillpack_productization_enabled():
-            return {"success": False, "reason": "scoped_skillpack_tool_required", "candidates": []}
         config = load_symphony_config()
         if not config.enabled or not evolution_flow_enabled(config):
             return {"success": True, "enabled": False, "candidates": []}
-        flow = self._runtime_for(config).flow_engine
-        candidates = flow.list_candidates() if flow is not None else ()
-        return {
-            "success": True,
-            "enabled": True,
-            "candidates": [_candidate_payload(item) for item in candidates],
-        }
+        return {"success": False, "reason": "scoped_skillpack_tool_required", "candidates": []}
 
     async def _skillpack_candidate_flow(
         self, source: Any, config: Any, scope: CandidateEvidenceScope,
@@ -1081,10 +1081,11 @@ class SwarmSymphonyService:
 
     async def _prepare_skillpack_candidates(
         self, *, session_id: str, scope: str = "current_user", source_refs: list[str] | None = None,
+        automatic: bool = False,
     ) -> dict[str, Any]:
         """Review persisted evidence in a Host-authenticated user/session scope."""
         config = load_symphony_config()
-        if not skillpack_productization_enabled():
+        if not evolution_flow_enabled(config):
             return {"success": False, "reason": "skillpack_disabled"}
         if not callable(getattr(SkillPackAdapter, "validate_members", None)):
             return {"success": False, "reason": "core_skillpack_contract_missing"}
@@ -1102,7 +1103,16 @@ class SwarmSymphonyService:
         await flow.start()
         scope_store = CandidateScopeStore(source.store.root)
         previews: list[dict[str, Any]] = []
-        for candidate in flow.list_candidates()[:20]:
+        candidates = flow.list_candidates()
+        if automatic:
+            candidates = tuple(
+                item for item in candidates
+                if not flow.store.is_candidate_acknowledged(item.recipe_id, item.version)
+                and (item.recipe_id, item.version, candidate_request_id(
+                    item.recipe_id, item.version, session_id, identity.key,
+                )) not in self._notified_candidates
+            )
+        for candidate in candidates[:20]:
             recipe = flow.get_recipe(candidate.recipe_id)
             if recipe is None:
                 continue
@@ -1139,6 +1149,8 @@ class SwarmSymphonyService:
                 previews.append(preview)
             except (OSError, ValueError):
                 continue
+        if not evolution_flow_enabled(load_symphony_config()):
+            return {"success": False, "reason": "skillpack_disabled", "candidates": []}
         return {"success": True, "candidates": previews, "scope": effective_scope}
 
     async def request_skillpack_candidate(
@@ -1153,7 +1165,7 @@ class SwarmSymphonyService:
 
     async def _request_skillpack_candidate(
         self, *, recipe_id: str, recipe_version: int, session_id: str, channel_id: str | None,
-        scope: str = "current_user", source_refs: list[str] | None = None,
+        scope: str = "current_user", source_refs: list[str] | None = None, force: bool = True,
     ) -> dict[str, Any]:
         """Offer one reviewed candidate; only the Host answer may install it."""
         user_before_review = trusted_session_user(session_id)
@@ -1161,23 +1173,42 @@ class SwarmSymphonyService:
         if not prepared.get("success"):
             return prepared
         identity = CandidateEvidenceScope.resolve(session_id, user_before_review, scope, source_refs)
-        current_identity = CandidateEvidenceScope.resolve(
-            session_id, trusted_session_user(session_id), scope, source_refs,
-        )
-        if identity.key != current_identity.key:
-            return {"success": False, "reason": "evidence_scope_changed_reconfirm"}
         preview = next((
             item for item in prepared["candidates"]
             if item["recipe_id"] == recipe_id and item["recipe_version"] == recipe_version
         ), None)
         if preview is None:
             return {"success": False, "reason": "candidate_not_available_in_session"}
+        return await self._offer_reviewed_skillpack_candidate(
+            preview, identity, session_id=session_id, channel_id=channel_id, force=force,
+        )
+
+    async def _offer_reviewed_skillpack_candidate(
+        self, preview: dict[str, Any], identity: CandidateEvidenceScope, *,
+        session_id: str, channel_id: str | None, force: bool = True,
+    ) -> dict[str, Any]:
+        """Offer this lock-protected review result without reviewing it again."""
+        current_identity = CandidateEvidenceScope.resolve(
+            session_id, trusted_session_user(session_id), identity.scope,
+            list(identity.source_refs) if identity.source_refs is not None else None,
+        )
+        if identity.key != current_identity.key:
+            return {"success": False, "reason": "evidence_scope_changed_reconfirm"}
+        if not evolution_flow_enabled(load_symphony_config()):
+            return {"success": False, "reason": "skillpack_disabled"}
+        recipe_id, recipe_version = preview["recipe_id"], preview["recipe_version"]
         source = self.runtime().flow_engine
         flow = await self._skillpack_candidate_flow(source, load_symphony_config(), identity)
-        candidate = flow.get_candidate(recipe_id, version=recipe_version)
-        if candidate is None:
+        # Review validates the current recipe version. Its grade can advance
+        # from draft to verified without replacing the historical snapshot.
+        candidate = flow.get_candidate(recipe_id)
+        if candidate is None or candidate.version != recipe_version:
             return {"success": False, "reason": "candidate_not_available_in_session"}
         request_id = candidate_request_id(recipe_id, recipe_version, session_id, identity.key)
+        if not force and (recipe_id, recipe_version, request_id) in self._notified_candidates:
+            return {"success": True, "request_id": request_id, "awaiting_user_confirmation": True}
+        if not evolution_flow_enabled(load_symphony_config()):
+            return {"success": False, "reason": "skillpack_disabled"}
         approval = dict(preview)
         approval["session_id"] = session_id
         approval["evidence_scope"] = identity.to_dict()
@@ -1185,7 +1216,7 @@ class SwarmSymphonyService:
         CandidateScopeStore(source.store.root).grant(request_id, approval)
         await self._notify_candidate(
             candidate,
-            session_id=session_id, channel_id=channel_id, force=True,
+            session_id=session_id, channel_id=channel_id, force=force,
             request_id_override=request_id, preview=preview,
         )
         return {"success": True, "request_id": request_id, "awaiting_user_confirmation": True}
@@ -1200,30 +1231,10 @@ class SwarmSymphonyService:
     ) -> dict[str, Any]:
         """Re-send one retained candidate through the existing Host question flow."""
 
-        if skillpack_productization_enabled():
-            return {"success": False, "reason": "scoped_skillpack_tool_required"}
         config = load_symphony_config()
         if not config.enabled or not evolution_flow_enabled(config):
             return {"success": False, "reason": "flow_disabled"}
-        flow = self._runtime_for(config).flow_engine
-        candidate = (
-            flow.get_candidate(recipe_id, version=recipe_version)
-            if flow is not None
-            else None
-        )
-        if candidate is None:
-            return {"success": False, "reason": "candidate_not_found"}
-        await self._notify_candidate(
-            candidate,
-            session_id=session_id,
-            channel_id=channel_id,
-            force=True,
-        )
-        return {
-            "success": True,
-            "request_id": experience_request_id(recipe_id, recipe_version),
-            "candidate": _candidate_payload(candidate),
-        }
+        return {"success": False, "reason": "scoped_skillpack_tool_required"}
 
     async def install_candidate(
         self, *, request_id: str, recipe_id: str, recipe_version: int,
@@ -1248,18 +1259,16 @@ class SwarmSymphonyService:
     ) -> dict[str, Any]:
         """Prepare, validate, and install one server-owned Skill artifact."""
 
-        from_tool = request_id.startswith("symphony_experience_tool_")
-        if skillpack_productization_enabled() and not from_tool:
-            return {"installed": False, "reason": "scoped_skillpack_tool_required"}
-        if not from_tool and request_id != experience_request_id(recipe_id, recipe_version):
-            return {"installed": False, "reason": "invalid_request_id"}
-        if from_tool and not skillpack_productization_enabled():
-            return {"installed": False, "reason": "skillpack_disabled"}
         config = load_symphony_config()
         if not config.enabled or not evolution_flow_enabled(config):
             return {"installed": False, "reason": "flow_disabled"}
+        from_tool = request_id.startswith("symphony_experience_tool_")
+        if not from_tool:
+            return {"installed": False, "reason": "scoped_skillpack_tool_required"}
         async with self._install_lock:
-            flow = self.runtime().flow_engine
+            # The host accepted this install under the candidate lock. Finish
+            # against this snapshot even if discovery is switched off later.
+            flow = self._runtime_for(config).flow_engine
             if flow is None:
                 return {"installed": False, "reason": "flow_disabled"}
             if from_tool:

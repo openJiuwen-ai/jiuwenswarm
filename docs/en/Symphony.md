@@ -517,15 +517,9 @@ This is an easy distinction to miss: building the skill graph is not composing a
 
 ## SkillPack: compatible Hub publication
 
-Publish an existing thin SkillPack from its detail page. Its members must be independent ordinary Skills, not SwarmSkills or nested Packs. Product publication is off by default; start with an isolated Hub:
+Use a WorkSwarm version that supports SkillPack and enable the existing Discover SkillPack setting under Settings → Experimental Features. Publish an existing thin SkillPack from its detail page. Its members must be independent ordinary Skills, not SwarmSkills or nested Packs.
 
-```sh
-export SKILLPACK_PRODUCTIZATION_ENABLED=true
-export SKILLPACK_HUB_DEPLOYMENT_SCOPE=isolated
-export SKILLPACK_HUB_TRANSPORT_PROFILE=legacy_skill_v1
-```
-
-Deployment scope must be `isolated` or `version_gated`. The latter asserts that the deployment already restricts marketplace client versions; the flag does not implement Hub filtering. A legacy Hub reviews and displays the wrapper as an ordinary Skill. Use `native_skillpack_v1` only with a compatible Hub. Transport failures never change profiles.
+New publications always use the ordinary Skill channel. `SKILLPACK_HUB_TRANSPORT_PROFILE` and `SKILLPACK_HUB_DEPLOYMENT_SCOPE` are no longer required or used to control new publications. Historical operations retain their recorded protocol. Enabling the feature does not publish anything automatically; user confirmation and Hub review still apply.
 
 One preflight lists each member as reuse, publish first, or blocked. User confirmation starts independent member uploads and review waiting, followed by Pack publication. A failed Pack does not delete successfully published members. Reopening the panel resumes status queries; changed local content requires a new preflight and confirmation.
 
@@ -533,7 +527,7 @@ The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and 
 
 Three consecutive Hub check failures stop automatic polling. After connectivity recovers, explicitly retry the confirmed operation with the same upload IDs. Normal moderation waiting does not count as a network failure. Polling backs off to 30 seconds without repeatedly querying approved members; the full member closure is checked before uploading the Pack and before completion. Expired authorization or an unconfirmed upload outcome stops automatic progress until the user addresses the cause and retries the same operation.
 
-Local simulated tests do not establish real Hub moderation, model or desktop acceptance. Record those separately. Disabling the product switch stops new Pack publication; it does not unpublish existing assets.
+Local simulated tests do not establish real Hub moderation, model or desktop acceptance. Record those separately. Disabling discovery stops new Pack publication; it does not unpublish existing assets or interrupt an already-confirmed publication.
 
 ### Development boundaries
 
@@ -545,14 +539,9 @@ A SkillPack is a composite Skill executed by one Agent. Its root `SKILL.md` desc
 
 ### Enable
 
-The product entry points are off by default. Start with an isolated test Hub:
+The existing Discover SkillPack setting under Settings → Experimental Features controls distillation, confirmed reuse, installation and publication. Its persisted key is `symphony.evolution.flow.enabled`; no separate Symphony switch is required. Legacy `SKILLPACK_PRODUCTIZATION_ENABLED`, `SKILLPACK_DIRECT_ROUTE_MODE` and `skillpack.direct_route_mode` no longer override this setting.
 
-```sh
-export SKILLPACK_PRODUCTIZATION_ENABLED=true
-export SKILLPACK_DIRECT_ROUTE_MODE=confirm
-```
-
-Routing accepts `off`, `shadow` (evaluate and log only), or `confirm`. The environment overrides `skillpack.direct_route_mode` in service configuration.
+Disabling discovery stops new automatic work, distillation, installation and publication. Installed Packs remain manageable and can still be selected explicitly for safe execution. Already-confirmed execution, installation and publication continue. Per-Pack enablement, member reference protection and existing permissions still apply.
 
 ### Use
 
