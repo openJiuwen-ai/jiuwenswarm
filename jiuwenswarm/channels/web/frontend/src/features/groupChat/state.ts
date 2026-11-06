@@ -152,6 +152,10 @@ export function pendingMentionReplies(
       ? message.mentions
       : selectedMentions(groupMessageContent(message), [], members),
   }));
+  // 组织执行只记录 Owner；它由创建前最近一条 @ Owner 的消息触发，该消息里 @ 的成员都参与这次组织协作。
+  const organizationTrigger = (execution: GroupExecution) => asks.filter((ask) =>
+    Boolean(execution.owner_member) && ask.mentioned.includes(execution.owner_member as string)
+    && ask.message.timestamp <= execution.created_at * 1000).pop()?.message.message_id;
   const pending = new Map<string, PendingMentionReply[]>();
   for (const { message, mentioned } of asks) {
     const sentHere = sentIds.has(message.client_message_id);
@@ -159,7 +163,8 @@ export function pendingMentionReplies(
       if (messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) return [];
       // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
       const execution = executions.filter((item) =>
-        (item.member_name === memberName || item.owner_member === memberName)
+        (item.member_name === memberName || item.owner_member === memberName
+          || (item.execution_kind === 'organization' && organizationTrigger(item) === message.message_id))
         && item.created_at * 1000 >= message.timestamp).pop();
       if (execution && FINISHED_EXECUTIONS.has(execution.status)) return [];
       if (sentHere) return [{ memberName, execution }];
