@@ -59,6 +59,7 @@ from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
 from jiuwenbox.supervisor.bwrap import BwrapConfig
+from jiuwenbox.supervisor.visible_proc import ensure_visible_proc
 from jiuwenbox.supervisor.daemon_ipc import (
     LISTENER_FD_ENV,
     MAX_FILE_BYTES,
@@ -1229,6 +1230,12 @@ class ProcessRuntime(RuntimeAdapter):
         scripts, seccomp BPF, landlock payload) keep the per-call cost low.
         """
         config = BwrapConfig.from_policy(policy, list(command))
+        # Ubuntu 5.15 blocks bwrap's fresh proc mount when this container's
+        # /proc carries runtime masks. A child-free procfs in this mount
+        # namespace satisfies the kernel check without dropping user or pid
+        # namespaces. Kernels that already allow the mount are unaffected.
+        if config.unshare_user and config.unshare_pid:
+            ensure_visible_proc()
         process_uid = config.uid
         process_gid = config.gid
         if sandbox_env:
