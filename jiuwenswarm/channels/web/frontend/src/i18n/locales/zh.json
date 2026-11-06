@@ -6607,6 +6607,12 @@
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
     "generatingTasks": "任务生成中",
+    "organizationStage": {
+      "starting": "专家团启动中",
+      "processing": "处理中",
+      "executing": "专家执行中",
+      "summarizing": "汇总中"
+    },
     "counts": {
       "total": "总任务数",
       "running": "进行中",
