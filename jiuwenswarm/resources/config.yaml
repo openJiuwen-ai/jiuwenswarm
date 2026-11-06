@@ -1006,7 +1006,8 @@ ssas:
   storage_backend: sqlite
   event_ttl_days: 30
   alert_ttl_days: 90
-  # Rail 配置
+  # Rail 配置 (rail_priority 生效于 agent-core 回调链排序, higher=first;
+  # 默认 80, 低于 PermissionInterruptRail 的 90, 保持"在其他安全 Rail 之后执行")
   rail_priority: 80
   enable_exception_hooks: true
   # 风险报告阈值: safe / low / medium / high / critical
