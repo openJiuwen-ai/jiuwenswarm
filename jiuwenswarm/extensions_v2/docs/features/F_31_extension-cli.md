@@ -76,7 +76,7 @@ AgentServer 本机入口通过 SDK 安全预检 `package.domain`；CLI 只允许
 
 安装同一份最终 ZIP，按以下顺序执行：
 
-1. 读取 manifest，取得包 ID、版本和 domain，计算本地 ZIP 的 SHA-256；不导入包代码。
+1. 读取 manifest，取得包 ID、版本和 `package.domain`，计算本地 ZIP 的 SHA-256；不导入包代码。
 2. 查询当前宿主。已有同 ID 包或安装副本时返回冲突，不自动卸载或覆盖。
 3. 发送一次安装请求，保留管理器的原始报告。
 4. 报告成功后再次查询，核对包 ID、版本、激活序号 generation 和实际安装目录。

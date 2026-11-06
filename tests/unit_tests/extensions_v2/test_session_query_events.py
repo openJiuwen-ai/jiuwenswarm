@@ -7,11 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import logging
-from pathlib import Path
 import subprocess
-import sys
-from types import ModuleType
 
 import pytest
 from openjiuwen.core.events import Event, HandlerLevel, PackageMetadata, SessionContext
@@ -407,32 +403,6 @@ async def test_messages_cap_is_4096_in_chronological_order(query_host):
     assert len(messages) == 4096
     assert messages[0]["text"] == "4" and messages[-1]["text"] == "4099"
 
-
-@pytest.mark.asyncio
-async def test_branch_examples_activate_and_consume_current_contracts(query_host, caplog):
-    from jiuwenswarm.extensions_v2.event_types.context_usage import CONTEXT_USAGE_EVENT, ContextUsageUpdate
-    host, context, sessions, _ = query_host
-    examples = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "extensions_v2" / "examples"
-    names = ("session_query_audit", "session_model_info", "session_repo_info", "session_usage_info", "session_history_audit")
-    for name in names:
-        assert (await host.manager.install([examples / name]))[0].status == "SUCCESS"
-    loggers = [logging.getLogger("jiuwenswarm.server.extensions.example." + name) for name in names]
-    for logger in loggers:
-        logger.addHandler(caplog.handler)
-    try:
-        result = await host.bus.trigger(Event(CONTEXT_USAGE_EVENT, ContextUsageUpdate("session-a", "r2", total_tokens=25)), context)
-    finally:
-        for logger in loggers:
-            logger.removeHandler(caplog.handler)
-    logs = caplog.text
-    assert result.accepted
-    assert "session query summary" in logs
-    assert "session model:" in logs and "query-model" in logs
-    assert "session history audit:" in logs and "visible=True" in logs
-    rows = [json.loads(line) for line in (sessions / "session-a" / "history.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert rows[-1]["extension_package_id"] == "example.session-history-audit"
-
-
 @pytest.mark.asyncio
 async def test_unload_removes_query_user_hooks_but_leaves_platform_queries(query_host):
     host, context, _, _ = query_host
@@ -443,42 +413,3 @@ async def test_unload_removes_query_user_hooks_but_leaves_platform_queries(query
 
     host.bus.register_event_handler("test.query", host_query, {})
     assert await host.bus.trigger(Event("test.query", {}), context) == context.cwd
-
-
-@pytest.mark.asyncio
-async def test_weather_usage_event_passes_seven_query_results_as_parameters_without_render(query_host, tmp_path, monkeypatch):
-    from jiuwenswarm.extensions_v2.event_types.context_usage import CONTEXT_USAGE_EVENT, ContextUsageUpdate
-    host, context, _, _ = query_host
-    received = []
-    sink = ModuleType("session_query_probe_sink")
-    sink.capture = lambda **parameters: received.append(parameters)
-    monkeypatch.setitem(sys.modules, sink.__name__, sink)
-
-    async def unexpected_render(*args, **kwargs):
-        pytest.fail("query verification must not enter ui.render")
-
-    monkeypatch.setattr(host.webui, "render", unexpected_render)
-    source = '''
-from jiuwenswarm.extensions_v2.examples.session_query_audit.extension import SessionQueryAudit
-from session_query_probe_sink import capture
-
-class Probe(SessionQueryAudit):
-    def on_parameters(self, parameters):
-        capture(**parameters)
-
-def create_extension():
-    return Probe()
-'''
-    package = write_package(tmp_path / "probe", package_id="query.parameters-probe", module_source=source)
-    assert (await host.manager.install([package]))[0].status == "SUCCESS"
-    result = await host.bus.trigger(Event(CONTEXT_USAGE_EVENT, ContextUsageUpdate("session-a", "r2", total_tokens=25)), context)
-    assert result.accepted
-    assert len(received) == 1
-    parameters = received[0]
-    assert set(parameters) == {"cwd", "root", "model", "repo", "messages", "turns", "usage"}
-    assert parameters["cwd"] == context.cwd and parameters["model"] == "query-model"
-    assert parameters["root"] == context.metadata["project_root"]
-    assert parameters["repo"] == {"root": context.cwd, "remote": None, "internal": False, "name": None}
-    assert parameters["messages"][-1] == {"role": "user", "text": "second", "toolUses": []}
-    assert parameters["turns"] == 2
-    assert parameters["usage"] == {"context": {"window": 1000, "tokens": 120, "percent": 12}, "rateLimits": []}

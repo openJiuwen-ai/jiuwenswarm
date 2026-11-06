@@ -1,9 +1,9 @@
 """AgentServer report configuration and product manifest contracts."""
 
+import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from openjiuwen.core.extension import ExtensionFailure
 from openjiuwen.core.extension.install_report import PackageInstallState
@@ -40,13 +40,13 @@ def test_invalid_report_time_is_rejected(key, value):
 
 def test_every_product_example_declares_its_actual_domain():
     examples = Path(__file__).resolve().parents[3] / "jiuwenswarm/extensions_v2/examples"
-    paths = list(examples.rglob("manifest.yaml"))
+    paths = list(examples.rglob("manifest.json"))
     assert paths
     for path in paths:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert "domain" not in raw
+        raw = json.loads(path.read_text(encoding="utf-8"))
         manifest = load_manifest(path.parent, require_domain=True)
         expected = "gateway" if path.parent.name == "auth_login_demo" else "agentserver"
+        assert raw["package"]["domain"] == expected
         assert manifest.domain == expected
 
 
@@ -55,16 +55,16 @@ async def test_missing_or_foreign_domain_is_never_loaded(tmp_path):
     await manager.init(make_bus())
     try:
         source = write_package(tmp_path / "source")
-        manifest_path = source / "manifest.yaml"
-        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        manifest_path = source / "manifest.json"
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
         raw["package"].pop("domain")
-        manifest_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        manifest_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
         assert (await manager.install([source]))[0].error.code == "EXTENSION_MANIFEST_INVALID"
         raw["package"]["domain"] = "gateway"
-        manifest_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        manifest_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
         assert (await manager.install([source]))[0].error.code == "EXTENSION_DOMAIN_MISMATCH"
         assert not manager.active_packages()
-        assert not list((tmp_path / "installed").glob("*/*/manifest.yaml"))
+        assert not list((tmp_path / "installed").glob("*/*/manifest.json"))
     finally:
         await manager.shutdown()
 

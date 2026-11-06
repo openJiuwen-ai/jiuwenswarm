@@ -100,7 +100,7 @@ SessionStartOutput(cwd="D:/projects/demo/src")
 
 例如插件读取 rules.json 到自己的 self._rules，后续同一对象的 on_usage 使用这份规则。start CORE 不保存规则；同一实例的成员状态使两个回调能复用。示例包先保存首个工作区观察值，后续用量 Handler 记录初始化是否完成；跨会话状态必须另外按 session_id 管理，不把首个工作区当成所有会话的目录。
 
-下列代码来自 [现有示例包](../../examples/session_start/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。用户传入的空 pattern 仍由宿主补上私有包匹配条件，因此只匹配本包的 `session.start`；用户还可按本事件的公开输入字段 cwd/surface/isInteractive 等值筛选。未匹配不表示以后自动补发。
+下列代码位于包内入口模块，由扩展管理入口按其 manifest 安装后发布 USER 订阅。用户传入的空 pattern 仍由宿主补上私有包匹配条件，因此只匹配本包的 `session.start`；用户还可按本事件的公开输入字段 cwd/surface/isInteractive 等值筛选。未匹配不表示以后自动补发。
 
 ```python
 """Prepare activation-owned state once, then use it on normal notifications."""
@@ -273,5 +273,4 @@ python -m pytest -o addopts= -q tests/unit_tests/core/events tests/unit_tests/co
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionStartInput/Result；参照小写 Mods 事件。
 - [主责规约 S_09](../specs/S_09_session-start.md)。
 - [事件定义与校验](../../event_types/session_start.py)、[默认 CORE](../../event_handlers/session_start.py)。
-- [示例包说明](../../examples/session_start/README.md)。
 - [session.append 文档格式基准](F_16_session-append.md)。

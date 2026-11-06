@@ -222,8 +222,8 @@ store 宿主集成说明与验证见 [F_03](../features/F_03_registry-facade.md#
 - 门面锁用于初始化、卸载和停机。安装、启动、重载直接委托 Core，等待依赖时不占门面锁。
 - Core 报告登记包操作及目标依赖，重复操作返回忙碌；实际文件提交和发现共用短期报告锁。包退出通知在门面锁外。
 - 一个 EventBus 只能绑定一个 Registry；同一进程可以有多个独立 EventBus。
-- 同主机不同域共用根目录与报告；同域重复执行者拒绝启动。Core 已对发布 Handler 的调用计数。
-- 报告格式、默认路径及故障边界见 [F_32](../features/F_32_domain-install-report.md)。
+- 安装目录不提供跨进程锁，多 AgentServer 部署需外部串行化。
+- agent-core 的 `begin_calls/end_calls` 尚未接入事件调用路径，`inflight` 当前恒为 0。
 
 ## 8. 验证索引
 

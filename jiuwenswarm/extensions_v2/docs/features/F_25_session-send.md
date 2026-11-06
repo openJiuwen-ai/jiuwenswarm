@@ -159,7 +159,7 @@ Hook 在原队列锁之外运行，避免规则等待时阻塞整个目标。COR
 | --- | --- | --- |
 | 新增投递测试 | 42 项通过 | [test_session_delivery_events.py](../../../../tests/unit_tests/extensions_v2/test_session_delivery_events.py)：实际 Registry/Bus/Ops 和 SQLite，涵盖正文改写、拒绝/消费、保护字段、伪造结果、并发/重复 next、幂等、归属变化、重入、卸载及取消。会话元数据为测试夹具 |
 | 相关回归 | 1514 项通过、2 项跳过 | extensions_v2、runtime、原 session_messaging、session_switch、history_append_record；两项跳过为本机不支持 symlink / named pipe，不列为通过 |
-| 独立进程安装验收 | 通过 | 实际安装 [session_delivery_policy](../../examples/session_delivery_policy/README.md) 和观察包 ZIP；从磁盘会话元数据生成 A/B 上下文，查询 cwd/root；独立 SQLite SELECT 核对脱敏后内容、拒绝/消费无行、卸载后恢复。后台执行回调收到实际保存正文，退出后装配及后台任务释放 |
+| 独立进程安装验收 | 通过 | 实际安装用户包和观察包 ZIP；从磁盘会话元数据生成 A/B 上下文，查询 cwd/root；独立 SQLite SELECT 核对脱敏后内容、拒绝/消费无行、卸载后恢复。后台执行回调收到实际保存正文，退出后装配及后台任务释放 |
 | 取消/失败边界 | 通过 | 先复现入库后 USER 吞取消并伪装拒绝/消费、捕获存储错误后重复 next 的 3 项失败；修复后纳入上述 42 项，通过且不重做本次底层操作 |
 
 ```powershell
@@ -175,6 +175,6 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov -o log_cli=false te
 ## 7. 参考资料
 
 - [S_13 主责规约](../specs/S_13_session-send.md)、[接收特性](F_26_session-receive.md)。
-- [可安装用户包与触发案例](../../examples/session_delivery_policy/README.md)、[平台上下文与触发](../../../server/runtime/session/session_message_events.py)、[发送 CORE](../../event_handlers/session_send.py)。
+- [平台上下文与触发](../../../server/runtime/session/session_message_events.py)、[发送 CORE](../../event_handlers/session_send.py)。
 - [既有发送工具](../../../agents/harness/common/tools/session_messaging_toolkit.py)、[平台消息服务](../../../server/runtime/session/session_message_service.py)。
 - [Claude 固定类型定义](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts)：CoreEventOf 的 session.receive 注释明确 session.send 为 reserved。

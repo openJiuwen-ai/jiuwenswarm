@@ -12,10 +12,13 @@ SOURCE = Path(__file__).resolve().parent
 
 
 def build_package(output: Path) -> Path:
-    """Write an explicit source allowlist with manifest.yaml at the ZIP root."""
+    """Write an explicit source allowlist with manifest.json at the ZIP root."""
     output = output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    files = [SOURCE / name for name in ("manifest.yaml", "settings.json", "README.md", "README_EN.md")]
+    files = [
+        SOURCE / name
+        for name in ("manifest.json", "settings.json", "README.md", "README_EN.md")
+    ]
     files.extend(sorted((SOURCE / "auth_login_demo").glob("*.py")))
     files.extend(sorted((SOURCE / "assets").iterdir()))
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:

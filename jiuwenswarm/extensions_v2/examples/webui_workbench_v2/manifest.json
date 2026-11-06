@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "expose": true,
+  "package": {
+    "domain": "agentserver",
+    "id": "webui.workbench-v2",
+    "version": "1.0.9"
+  },
+  "display": {
+    "name": {
+      "zh": "插件交互工作台",
+      "en": "Plugin Workbench"
+    },
+    "description": {
+      "zh": "覆盖页面入口、侧边栏、任务区与对话区域的 WebUI 插槽演示插件。",
+      "en": "A WebUI slot showcase covering the app entry, sidebar, task area and conversation."
+    },
+    "tags": [
+      {
+        "zh": "WebUI",
+        "en": "WebUI"
+      },
+      {
+        "zh": "插槽",
+        "en": "Slots"
+      }
+    ],
+    "details": {
+      "zh": "## 功能\n\n- 应用入口：首次进入时展示欢迎卡片。\n- 侧栏与菜单：新增“交互工作台”入口与底部用户菜单。\n- 任务区：新增“任务检查”页面。\n- 对话区域：输入框下方快捷按钮、右侧“工作区文件”与“网页预览”页签、轮次用量、轮次操作菜单、标题状态与刷新按钮。\n\n## 生效机制\n\n1. 插件在 `manifest.json` 的 `ui.items` 中声明各位置的界面贡献。\n2. WebUI 加载激活包后，按声明把界面渲染到对应插槽。\n3. 界面数据由插件后端通过事件返回；工作区文件页签读取当前会话目录。\n4. 应用级插槽无需会话即可显示，会话级插槽在真实对话中生效。",
+      "en": "## Features\n\n- App entry: a welcome card on first visit.\n- Sidebar and menu: a Workbench entry and a footer user menu.\n- Task area: a Task inspector page.\n- Conversation: quick actions below the input, Workbench Files and Web preview tabs on the right, turn usage, turn actions, a header status and a refresh button.\n\n## How it works\n\n1. The plugin declares its UI contributions in `ui.items` inside `manifest.json`.\n2. After loading the active package, the WebUI renders each contribution into its declared slot.\n3. The plugin backend returns the view data through events; the file tab reads the current conversation directory.\n4. Application-scoped slots appear without a conversation; conversation-scoped slots appear inside a real conversation."
+    },
+    "events": [
+      {
+        "name": "ui.ready",
+        "description": {
+          "zh": "页面挂载后渲染插槽内容",
+          "en": "Render slot content after mount"
+        }
+      },
+      {
+        "name": "ui.click",
+        "description": {
+          "zh": "处理按钮与菜单操作",
+          "en": "Handle button and menu actions"
+        }
+      },
+      {
+        "name": "ui.select",
+        "description": {
+          "zh": "处理文件与轮次选择",
+          "en": "Handle file and turn selection"
+        }
+      },
+      {
+        "name": "ui.change",
+        "description": {
+          "zh": "处理文件树展开",
+          "en": "Handle file tree expansion"
+        }
+      }
+    ]
+  },
+  "extensions": [
+    {
+      "id": "workbench-v2",
+      "runtime": "backend",
+      "module": "webui_workbench_v2/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.entry",
+        "slot": "application.entry",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.user",
+        "slot": "application.sidebar.footer",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.menu",
+        "slot": "application.menu",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.main",
+        "slot": "application.menu.main",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.task",
+        "slot": "task.function",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.task.main",
+        "slot": "task.function.main",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.below",
+        "slot": "conversation.input.below",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.details",
+        "slot": "conversation.panel.right",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.iframe",
+        "slot": "conversation.panel.right",
+        "order": 41,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.turn",
+        "slot": "conversation.session.content.after",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.turn.actions",
+        "slot": "conversation.turn.footer.actions",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.title",
+        "slot": "conversation.header.title.after",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workbench.actions",
+        "slot": "conversation.header.actions",
+        "order": 40,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  }
+}

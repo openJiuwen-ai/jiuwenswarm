@@ -18,10 +18,10 @@
 // （返回 unknown method，属预期内——后端只有接口文档、代码还没写），类型先按文档对齐，真实联调
 // 等后端 ready。
 
-export interface LocalizedText {
-  zh: string;
-  en: string;
-}
+import type { LocalizedText } from './localized';
+
+export type { LocalizedText } from './localized';
+export { localizedText } from './localized';
 
 export type PluginPackageSource = 'local' | 'builtin' | 'hub';
 
@@ -76,8 +76,4 @@ export interface PluginPackageDetail extends PluginPackageSummary {
    * 惯例（同 displayName/tags），不是 MCP 那边的纯字符串数组，渲染时要过 localizedText()。
    */
   quickInputs?: LocalizedText[];
-}
-
-export function localizedText(value: LocalizedText, language: string): string {
-  return language.startsWith('zh') ? value.zh : value.en;
 }

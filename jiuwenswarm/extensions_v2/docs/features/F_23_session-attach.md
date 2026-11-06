@@ -130,7 +130,7 @@ SessionAttachOutput(clientId="web:view-main")
 
 例如“会话项目资料”插件：窗口 V 进入 A 后，on_attach 通过 ops.session.root() 读取 A 的可得项目根。插件可以按上下文中的 attachment_id 保存本次关联资料；随后切换 B，由旧 detach 清理 A 的关联资源，再由 B 的 attach 准备新资料。默认 CORE 不替插件准备前端，也不再次切换会话。现成示例包用日志验证 root 和 clientId。
 
-下列代码来自 [现有示例包](../../examples/session_attach/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
+下列代码位于包内入口模块，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
 
 ```python
 """Observe committed views without starting chat or modifying the host."""
@@ -253,5 +253,4 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2/test_session_atta
 - [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionAttachInput/Result；参照小写 Mods 事件。
 - [主责规约 S_11](../specs/S_11_session-attach.md)。
 - [事件定义与校验](../../event_types/session_attach.py)、[默认 CORE](../../event_handlers/session_attach.py)。
-- [示例包说明](../../examples/session_attach/README.md)。
 - [session.append 文档格式基准](F_16_session-append.md)。

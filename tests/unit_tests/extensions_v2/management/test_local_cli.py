@@ -56,7 +56,7 @@ async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch
                         lambda: SimpleNamespace(notify_packages_changed=notify))
     package = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
     archive = archive_package(package)
-    service = transport.LocalControl("agent", handle)
+    service = transport.LocalControl("agent_server", handle)
     await service.start()
     try:
         result, code = await invoke("install", str(archive), "--json")
@@ -123,7 +123,7 @@ class Peer:
 def archive(tmp_path: Path) -> Path:
     path = tmp_path / "中文 package.zip"
     with ZipFile(path, "w") as output:
-        output.writestr("manifest.yaml", 'package:\n  domain: agentserver\n  id: test.pkg\n  version: "1.0.0"\n')
+        output.writestr("manifest.json", '{"package": {"domain": "agentserver", "id": "test.pkg", "version": "1.0.0"}}')
     return path
 
 
@@ -135,7 +135,7 @@ def archive(tmp_path: Path) -> Path:
 ])
 async def test_reports_recovery_and_no_write_retry(archive: Path, mode: str, code: int, status: str) -> None:
     peer = Peer(mode)
-    service = transport.LocalControl("agent", peer.handle)
+    service = transport.LocalControl("agent_server", peer.handle)
     await service.start()
     try:
         result, actual_code = await invoke("install", str(archive), "--timeout", "0.06")
@@ -153,7 +153,7 @@ async def test_reports_recovery_and_no_write_retry(archive: Path, mode: str, cod
 async def test_conflict_does_not_uninstall_or_overwrite(archive: Path) -> None:
     peer = Peer()
     peer.active = True
-    service = transport.LocalControl("agent", peer.handle)
+    service = transport.LocalControl("agent_server", peer.handle)
     await service.start()
     try:
         result, code = await invoke("install", str(archive))
@@ -165,12 +165,12 @@ async def test_conflict_does_not_uninstall_or_overwrite(archive: Path) -> None:
 @pytest.mark.asyncio
 async def test_bad_capability_is_rejected_before_query(archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     peer = Peer()
-    service = transport.LocalControl("agent", peer.handle)
+    service = transport.LocalControl("agent_server", peer.handle)
     await service.start()
     try:
-        context = transport.read_context("agent")
+        context = transport.read_context("agent_server")
         context["token"] = "x" * 43
-        monkeypatch.setenv(transport.ENV_PREFIX + "AGENT", json.dumps(context))
+        monkeypatch.setenv(transport.ENV_PREFIX + "AGENT_SERVER", json.dumps(context))
         result, code = await invoke("install", str(archive))
         assert code == 2 and result["error"]["code"] == "AUTH_REQUIRED"
         assert peer.writes == peer.queries == 0
@@ -181,20 +181,20 @@ async def test_bad_capability_is_rejected_before_query(archive: Path, monkeypatc
 @pytest.mark.asyncio
 async def test_instance_capabilities_do_not_cross() -> None:
     first_peer, second_peer = Peer(), Peer()
-    first = transport.LocalControl("agent", first_peer.handle)
-    second = transport.LocalControl("agent", second_peer.handle)
+    first = transport.LocalControl("agent_server", first_peer.handle)
+    second = transport.LocalControl("agent_server", second_peer.handle)
     await first.start()
-    first_context = transport.read_context("agent")
+    first_context = transport.read_context("agent_server")
     await second.start()
     try:
-        second_context = transport.read_context("agent")
+        second_context = transport.read_context("agent_server")
         forged = {**first_context, "port": second_context["port"]}
         response = await transport.request(forged, "query", {}, 1)
         assert not response["ok"] and second_peer.queries == 0
         result, code = await invoke("query")
         assert code == 0 and second_peer.queries == 1 and first_peer.queries == 0
         await first.close()
-        assert transport.read_context("agent") == second_context
+        assert transport.read_context("agent_server") == second_context
     finally:
         await second.close()
         await first.close()
@@ -221,7 +221,7 @@ async def test_same_instance_record_supports_sibling_host(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_subprocess_uses_inherited_context_and_utf8(archive: Path, tmp_path: Path) -> None:
     peer = Peer()
-    service = transport.LocalControl("agent", peer.handle)
+    service = transport.LocalControl("agent_server", peer.handle)
     await service.start()
     try:
         environment = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1")
@@ -233,7 +233,7 @@ async def test_subprocess_uses_inherited_context_and_utf8(archive: Path, tmp_pat
         result = json.loads(stdout.decode("utf-8"))
         assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
         assert result["ok"] and result["zip_path"] == str(archive)
-        assert transport.read_context("agent")["token"].encode() not in stdout + stderr
+        assert transport.read_context("agent_server")["token"].encode() not in stdout + stderr
     finally:
         await service.close()
 
@@ -249,9 +249,9 @@ async def test_no_context_is_reported_without_port_search(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_manifest_selects_gateway_host(archive: Path) -> None:
     with ZipFile(archive, "w") as output:
-        output.writestr("manifest.yaml", 'package:\n  domain: gateway\n  id: test.pkg\n  version: "1.0.0"\n')
+        output.writestr("manifest.json", '{"package": {"domain": "gateway", "id": "test.pkg", "version": "1.0.0"}}')
     agent_peer, gateway_peer = Peer(), Peer()
-    agent = transport.LocalControl("agent", agent_peer.handle)
+    agent = transport.LocalControl("agent_server", agent_peer.handle)
     gateway = transport.LocalControl("gateway", gateway_peer.handle)
     await agent.start()
     await gateway.start()
@@ -310,12 +310,11 @@ async def test_ready_owner_is_notified_and_disconnect_releases_it() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_control_rejects_gateway_zip_before_loading(tmp_path: Path) -> None:
-    import yaml
     root = write_package(tmp_path / "foreign")
-    path = root / "manifest.yaml"
-    manifest = yaml.safe_load(path.read_text())
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_text())
     manifest["package"]["domain"] = "gateway"
-    path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
     response = await handle("install", {"paths": [str(archive_package(root))]})
     assert not response["ok"] and response["payload"]["code"] == "DOMAIN_MISMATCH"
 
@@ -337,12 +336,12 @@ async def test_invalid_zip_is_rejected_without_host_lookup(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_closed_host_revokes_context() -> None:
-    service = transport.LocalControl("agent", Peer().handle)
+    service = transport.LocalControl("agent_server", Peer().handle)
     await service.start()
-    path = transport.context_path("agent")
+    path = transport.context_path("agent_server")
     assert path.exists()
     await service.close()
-    assert not path.exists() and transport.ENV_PREFIX + "AGENT" not in os.environ
+    assert not path.exists() and transport.ENV_PREFIX + "AGENT_SERVER" not in os.environ
     result, code = await invoke("query")
     assert code == 2 and result["error"]["code"] == "HOST_UNAVAILABLE"
 
@@ -367,14 +366,14 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
             closing.set()
             await super().close()
 
-    service = Control("agent", blocked_query)
+    service = Control("agent_server", blocked_query)
     await service.start()
     monkeypatch.setattr(assembly, "_LOCAL_CLI", service)
     monkeypatch.setattr(assembly, "_ASSEMBLY", SimpleNamespace(
         manager=manager, compact=SimpleNamespace(close=AsyncMock()),
         authorization=SimpleNamespace(close=lambda: None), webui=SimpleNamespace(shutdown=AsyncMock()),
     ))
-    request = asyncio.create_task(transport.request(transport.read_context("agent"), "query", {}, 2))
+    request = asyncio.create_task(transport.request(transport.read_context("agent_server"), "query", {}, 2))
     shutdown = None
     try:
         await asyncio.wait_for(entered.wait(), 2)
@@ -384,7 +383,7 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
         assert (await request)["ok"]
         await shutdown
         assert not manager.initialized
-        assert transport.ENV_PREFIX + "AGENT" not in os.environ
+        assert transport.ENV_PREFIX + "AGENT_SERVER" not in os.environ
     finally:
         release.set()
         await asyncio.gather(request, *([shutdown] if shutdown is not None else []), return_exceptions=True)
@@ -394,13 +393,12 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
 
 @pytest.mark.parametrize("domain", [None, "agent", "GATEWAY", " gateway ", "other", 1])
 def test_cli_rejects_missing_or_illegal_package_domain(tmp_path, domain):
-    import yaml
     path = tmp_path / "invalid-domain.zip"
     package = {"id": "test.pkg", "version": "1.0.0"}
     if domain is not None:
         package["domain"] = domain
     with ZipFile(path, "w") as archive:
-        archive.writestr("manifest.yaml", yaml.safe_dump({"package": package}))
+        archive.writestr("manifest.json", json.dumps({"package": package}))
     with pytest.raises(cli.ClientError, match="package.domain"):
         cli.inspect_zip(str(path))
 
