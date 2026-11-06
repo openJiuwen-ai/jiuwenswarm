@@ -137,7 +137,7 @@ export function VideoDuplexModelSettings({
   const saveDraft = async () => {
     if (!draft || disabled || saving || deleting) return;
     if (!isConfigured(draft, secretLengths)) {
-      setError(t('settingsPanel.voice.requiredFields'));
+      setError(t('settingsPanel.videoDuplex.requiredFields'));
       return;
     }
     setSaving(true);
@@ -380,7 +380,7 @@ export function VideoDuplexModelSettings({
           title={t('settingsPanel.videoDuplex.dialogTitle')}
           submitting={saving}
           confirmDisabled={disabled || deleting || !isConfigured(draft, secretLengths)}
-          description={t('settingsPanel.voice.requiredFields')}
+          description={t('settingsPanel.videoDuplex.requiredFields')}
           confirmLabel={t('common.save')}
           cancelLabel={t('common.cancel')}
           dialogClassName="settings-model-dialog"

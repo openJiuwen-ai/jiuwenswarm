@@ -7,6 +7,7 @@ both halves talk only over the existing E2A push/ACK channel.
 import asyncio
 import uuid
 
+from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 from jiuwenswarm.runtime.host_services import send_runtime_push
 
 _pending = {}
@@ -32,6 +33,8 @@ class RemoteTaskEndpoint:
         command = {**self.identity, **data, "command_id": command_id, "action": action}
         future = asyncio.get_running_loop().create_future()
         _pending[command_id] = (self.identity, future)
+        if action != "status":
+            trace_task("checkpoint_sent", **self.identity, command_id=command_id, action=action)
         try:
             delivered = await send_runtime_push({
                 "request_id": self.identity["request_id"], "channel_id": "video_tool",
@@ -43,7 +46,13 @@ class RemoteTaskEndpoint:
             result = await asyncio.wait_for(asyncio.shield(future), ACK_TIMEOUT)
             if result.get("error"):
                 raise RuntimeError(result["error"])
+            if action != "status":
+                trace_task("checkpoint_acknowledged", **self.identity, command_id=command_id, action=action)
             return result
+        except BaseException as exc:
+            trace_task("checkpoint_failed", **self.identity, command_id=command_id,
+                       action=action, error_type=type(exc).__name__, error=str(exc)[:1000])
+            raise
         finally:
             _pending.pop(command_id, None)
             if not future.done():

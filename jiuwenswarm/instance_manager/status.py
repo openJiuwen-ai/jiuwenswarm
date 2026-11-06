@@ -588,6 +588,30 @@ def _stop_owned_listeners(config: InstanceConfig, timeout: float) -> bool:
     return result
 
 
+def _shutdown_instance_worker(config: InstanceConfig) -> bool:
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    return shutdown_application_worker(workspace=config.workspace)
+
+
+def _complete_instance_stop(config: InstanceConfig, expected_data: dict | None) -> bool:
+    lock = InstanceLock(config)
+    if not lock.acquire(timeout=5.0):
+        logger.warning("Could not acquire final lifecycle lock for instance '%s'", config.name)
+        return False
+    try:
+        if read_pid_file(config) != expected_data:
+            logger.warning("Instance '%s' PID record changed during stop", config.name)
+            return False
+        if not _shutdown_instance_worker(config):
+            return False
+        if expected_data is not None and not delete_pid_file(config, expected_data=expected_data):
+            return False
+        return True
+    finally:
+        lock.release()
+
+
 def stop_instance_process(config: InstanceConfig, timeout: float = 10.0) -> bool:
     """Stop a named instance without signalling processes we cannot identify.
 
@@ -606,7 +630,7 @@ def stop_instance_process(config: InstanceConfig, timeout: float = 10.0) -> bool
     pid_data = read_pid_file(config)
     if pid_data is None:
         stopped = _stop_owned_listeners(config, timeout)
-        return stopped and _ports_are_clear(config)
+        return stopped and _ports_are_clear(config) and _complete_instance_stop(config, None)
 
     pid = pid_data.get("pid", 0)
     if not isinstance(pid, int) or pid <= 0:
@@ -626,18 +650,15 @@ def stop_instance_process(config: InstanceConfig, timeout: float = 10.0) -> bool
         return False
 
     if system == "windows":
-        # Use taskkill to terminate process tree
+        from jiuwenswarm.common.process_supervision import terminate_service_tree
+
+        # Worker subtrees can belong to this old Front or to an earlier one.
+        # Preserve them until the independent final lifecycle check below.
         try:
-            subprocess.run(
-                [
-                    _get_system_executable("taskkill"),
-                    "/PID", str(pid), "/T", "/F"
-                ],
-                capture_output=True,
-                timeout=timeout,
-            )
-        except Exception as exc:
-            logger.warning("taskkill failed for PID %d: %s", pid, exc)
+            terminate_service_tree(pid, timeout=timeout, expected_created=started_at if current_format else None)
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Service tree cleanup failed for PID %d: %s", pid, exc)
+            return False
         stopped = not is_process_alive(pid)
     else:
         if is_process_alive(pid):
@@ -671,19 +692,8 @@ def stop_instance_process(config: InstanceConfig, timeout: float = 10.0) -> bool
 
     success = stopped and _ports_are_clear(config)
     if success:
-        # The lifetime launcher lock is released when the old group exits.
-        # Take it only for final record retirement so a concurrent new start
-        # cannot write a PID file between our equality check and unlink.
-        lock = InstanceLock(config)
-        if not lock.acquire(timeout=5.0):
-            logger.warning("Could not acquire final lifecycle lock for instance '%s'", config.name)
+        if not _complete_instance_stop(config, pid_data):
             return False
-        try:
-            if not delete_pid_file(config, expected_data=pid_data):
-                logger.warning("Instance '%s' PID record changed during stop", config.name)
-                return False
-        finally:
-            lock.release()
         logger.info("Instance '%s' stopped", config.name)
     else:
         logger.warning("Instance '%s' could not be confirmed stopped", config.name)

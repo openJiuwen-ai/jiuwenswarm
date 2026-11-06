@@ -32,8 +32,8 @@ class BrowserTaskPromptRail(SubagentRail):
         # input: the adapter skipped mounting it, or the request model in use
         # now does.
         self._cua_agent_enabled = cua_agent_enabled
-        self._deep_agent: object | None = None
         self._channel: str | None = None
+        self._deep_agent: object | None = None
         super().__init__(
             enable_async_subagent=enable_async_subagent,
             enable_subagent_runtime=enable_subagent_runtime,

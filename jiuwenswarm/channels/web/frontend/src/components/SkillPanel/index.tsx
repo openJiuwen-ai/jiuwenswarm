@@ -1672,6 +1672,7 @@ export function SkillPanel({
           onSelectHubSkill={handleSelectHubSkill}
           renderHubSkillAction={renderHubSkillAction}
           onCategoryChange={handleMarketplaceCategoryChange}
+          onOpenPacks={() => setMarketplaceSubView('packs')}
           onOpenMore={openHubMore}
           onBackFromMore={handleBackToHubDetail}
         />

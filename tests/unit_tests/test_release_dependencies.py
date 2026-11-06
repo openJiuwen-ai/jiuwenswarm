@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from zipfile import ZipFile
 import tomllib
 
 import pytest
@@ -43,8 +44,14 @@ def _project(root: Path, repository: str = OFFICIAL) -> None:
     (root / "scripts").mkdir()
     for name in ("release_dependencies.py", "build_config.py"):
         shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
+    identity_module = Path("jiuwenswarm/common/worker_build_identity.py")
+    (root / identity_module.parent).mkdir(parents=True)
+    shutil.copyfile(ROOT / identity_module, root / identity_module)
     shutil.copyfile(ROOT / "setup.py", root / "setup.py")
-    (root / "MANIFEST.in").write_text("include scripts/*.py\n", encoding="utf-8")
+    (root / "MANIFEST.in").write_text(
+        "include scripts/*.py\ninclude jiuwenswarm/common/worker_build_identity.py\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize("location", ["dependencies", "harmony", "override", "source", "lock"])
@@ -144,7 +151,14 @@ def test_build_hooks_block_candidate_releases_but_allow_editable_installs(tmp_pa
         assert not list(output.iterdir())
     else:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert len(list(output.iterdir())) == 1
+        artifacts = list(output.iterdir())
+        assert len(artifacts) == 1
+        if hook == "build_wheel":
+            with ZipFile(artifacts[0]) as wheel:
+                identity = json.loads(wheel.read("jiuwenswarm/_worker_build_identity.json"))
+            assert identity.get("schema") == 2
+            for key in ("backend_build_id", "source_digest", "dependency_digest", "packaging_digest"):
+                assert len(identity.get(key, "")) == 64
 
 
 def test_sdk_overrides_and_lock_preserve_opt_in_extras_on_one_revision():

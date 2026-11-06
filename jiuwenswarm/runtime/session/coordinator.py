@@ -393,7 +393,9 @@ class RuntimeSessionCoordinator:
                 )
 
             control_ids = interaction_ids(value) if interaction_ids is not None else frozenset()
-            heartbeat_root = self._heartbeat_root(parent)
+            if control_ids and self._ancestor_of_kind(parent, SessionWorkKind.SESSION_MESSAGE) is None:
+                claimed = frozenset(answered) | control_ids
+            heartbeat_root = self._ancestor_of_kind(parent, SessionWorkKind.HEARTBEAT)
             if control_ids and heartbeat_root is not None:
                 parent.waiting_control_ids -= claimed
                 self._registry.mark_awaiting_control(heartbeat_root, control_ids)
@@ -434,12 +436,19 @@ class RuntimeSessionCoordinator:
         owner = self._control_parent(record, request_id)
         if owner is None or owner.execution_id in record.deliveries:
             return None
+        return owner.snapshot() if self._in_execution_lineage(owner, execution_id) else None
+
+    def _in_execution_lineage(self, owner: SessionExecutionHandle, execution_id: str) -> bool:
         ancestor = owner
-        while ancestor is not None and ancestor.session_id == session_id and ancestor.generation == record.generation:
+        while (
+            ancestor is not None
+            and ancestor.session_id == owner.session_id
+            and ancestor.generation == owner.generation
+        ):
             if ancestor.execution_id == execution_id:
-                return owner.snapshot()
+                return True
             ancestor = self._registry.get(ancestor.parent_execution_id) if ancestor.parent_execution_id else None
-        return None
+        return False
 
     def waiting_interactions(self, session_id: str, request_id: str) -> frozenset[str]:
         """Every interaction the execution an answer to ``request_id`` resumes waits on."""
@@ -467,7 +476,7 @@ class RuntimeSessionCoordinator:
         parent = self._control_parent(record, request_id)
         if parent is None:
             parent = self._claimed_control_parent(record, request_id)
-        root = None if parent is None else self._heartbeat_root(parent)
+        root = None if parent is None else self._ancestor_of_kind(parent, SessionWorkKind.HEARTBEAT)
         return root.work_kind if root is not None else None
 
     async def deliver_control_stream(
@@ -489,6 +498,7 @@ class RuntimeSessionCoordinator:
             session_id, answered, duplicate="interaction answer is already in progress"
         )
         claimed = parent.waiting_control_ids
+        reissued: set[str] = set()
         parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
         try:
             handle = self._new_execution(
@@ -510,6 +520,7 @@ class RuntimeSessionCoordinator:
                     async for item in stream:
                         control_ids = interaction_ids(item) if interaction_ids else frozenset()
                         if control_ids:
+                            reissued.update(control_ids)
                             self._registry.mark_awaiting_control(handle, control_ids)
                             self._refresh_control_gate(record)
                         yield item
@@ -528,6 +539,8 @@ class RuntimeSessionCoordinator:
                     self._registry.mark_waiting(parent)
                 raise
             else:
+                if reissued and self._ancestor_of_kind(parent, SessionWorkKind.SESSION_MESSAGE) is None:
+                    claimed = frozenset(answered) | reissued
                 self._answered(parent, claimed, was_waiting=parent_was_waiting)
                 if handle.waiting_control_ids:
                     self._registry.mark_waiting(handle)
@@ -545,6 +558,7 @@ class RuntimeSessionCoordinator:
     ) -> tuple[_SessionRecord, SessionExecutionHandle, str]:
         """Claim the execution ``answered`` names once a delivery to it in flight settles, however long that takes."""
         names = frozenset(answered)
+        waiting_for: str | None = None
         while True:
             record = self._require_open_session(session_id)
             if any(names <= delivery.answered for delivery in record.deliveries.values()):
@@ -553,10 +567,13 @@ class RuntimeSessionCoordinator:
             if target is None:
                 raise NoControlTargetError(f"session has no active execution: {session_id}")
             parent, request_id = target
+            if waiting_for is not None and not self._in_execution_lineage(parent, waiting_for):
+                raise NoControlTargetError("the task awaiting this answer has ended")
             delivery = record.deliveries.get(parent.execution_id)
             if delivery is None:
                 record.deliveries[parent.execution_id] = _Delivery(names)
                 return record, parent, request_id
+            waiting_for = (self._ancestor_of_kind(parent, SessionWorkKind.HEARTBEAT) or parent).execution_id
             await delivery.settled.wait()
 
     @staticmethod
@@ -567,11 +584,11 @@ class RuntimeSessionCoordinator:
         self, parent: SessionExecutionHandle, claimed: frozenset[str], *, was_waiting: bool
     ) -> None:
         parent.waiting_control_ids -= claimed
-        if was_waiting or (
-            parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-            and not parent.waiting_control_ids
-        ):
-            self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
+        if was_waiting or parent.state is SessionExecutionState.WAITING_FOR_CONTROL:
+            if parent.waiting_control_ids:
+                self._registry.mark_waiting(parent)
+            else:
+                self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
 
     async def stream_session_input(
         self,
@@ -1143,7 +1160,7 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             active_only=True,
         ):
-            if request_id not in handle.waiting_control_ids:
+            if handle.cancellation_requested or request_id not in handle.waiting_control_ids:
                 continue
             if handle.state not in deliverable:
                 continue
@@ -1188,14 +1205,14 @@ class RuntimeSessionCoordinator:
             return None
         return self._registry.get(execution_id)
 
-    def _heartbeat_root(
-        self, handle: SessionExecutionHandle
+    def _ancestor_of_kind(
+        self, handle: SessionExecutionHandle, kind: SessionWorkKind
     ) -> SessionExecutionHandle | None:
         current = handle
         seen: set[str] = set()
         while current.execution_id not in seen:
             seen.add(current.execution_id)
-            if current.work_kind is SessionWorkKind.HEARTBEAT:
+            if current.work_kind is kind:
                 return current
             if current.parent_execution_id is None:
                 return None

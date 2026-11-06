@@ -206,6 +206,35 @@ def _seed_valid_agent_group(
     return package
 
 
+def test_uninstall_snapshot_survives_previously_queued_metadata(
+    extension_workspace: Path,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+    group_name = "queued-display-group"
+    _seed_valid_agent_group(extension_workspace, group_name, under="local")
+    catalog.install_agent_group({"id": group_name})
+    sid = "queued-legacy-group"
+    queued = {
+        "session_id": sid,
+        "agent_group_name": group_name,
+        "message_count": 7,
+    }
+    metadata._write_metadata_sync(sid, queued)
+    identity = catalog.resolve_agent_group_display_identity(group_name)
+
+    catalog.uninstall_agent_group({"id": group_name})
+    metadata._write_metadata_sync(
+        sid,
+        {**queued, "message_count": 8},
+        metadata._MetadataWriteOptions(preserve_pin_fields=True),
+    )
+
+    restored = metadata.get_session_metadata(sid, cache_bust=True)
+    assert restored["team_group_identity"] == identity
+    assert restored["message_count"] == 8
+
+
 class TestPrepareWorkspaceAndMarketplace:
     """Lazy-install disk: prepare does not seed; marketplace is installed source of truth."""
 

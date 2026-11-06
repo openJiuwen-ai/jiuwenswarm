@@ -61,7 +61,7 @@ class FakeWebChannelForHandlers:
         self.methods: dict[str, object] = {}
         self.responses: list[dict[str, Any]] = []
 
-    def register_method(self, name: str, handler: object) -> None:
+    def register_method(self, name: str, handler: object, *, local_only=False) -> None:
         self.methods[name] = handler
 
     def on_connect(self, handler: object) -> None:

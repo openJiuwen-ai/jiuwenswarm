@@ -51,7 +51,7 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_user_workspace(tmp_path):
+def _isolate_user_workspace(tmp_path_factory):
     """Keep data written by unit tests (sessions, etc.) out of the real ~/.jiuwenswarm."""
     from jiuwenswarm.server.runtime.session import session_metadata
 
@@ -59,9 +59,25 @@ def _isolate_user_workspace(tmp_path):
     # so the drain below uses the real queue/clock instead of a test's stubs.
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(_utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
+        data = tmp_path_factory.mktemp("unit_workspace") / ".jiuwenswarm"
+        config_dir = data / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
+            config_dir / "config.yaml",
+        )
+        mp.setattr(_utils, "_workspace_base_dir", data)
+        mp.setattr(_utils, "_initialized", False)
+        mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
+        # A Gateway operation can resolve either package's cached config path.
+        for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):
+            module = sys.modules.get(name)
+            if module:
+                for attr in ("CONFIG_YAML_PATH", "_CONFIG_YAML_PATH"):
+                    if hasattr(module, attr):
+                        mp.setattr(module, attr, config_dir / "config.yaml")
         # Subprocesses spawned by tests resolve the workspace from the environment.
-        mp.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / ".jiuwenswarm"))
+        mp.setenv("JIUWENSWARM_DATA_DIR", str(data))
         yield
         # Metadata is written by a background thread; drain it before the patch is undone.
         flush_pending_writes()

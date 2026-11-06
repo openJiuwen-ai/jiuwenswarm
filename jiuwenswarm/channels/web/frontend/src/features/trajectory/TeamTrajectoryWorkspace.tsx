@@ -253,13 +253,6 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     ),
     [flatLanes, laneSections],
   );
-  // Swarmflow worker lanes collapse into one collapsible group per run,
-  // headed by the run's task name. Scheduled control sessions keep their own
-  // lane sections instead, so grouping only feeds the plain lanes branch.
-  const { ungrouped, groups: workflowGroups } = groupTeamMemberLanesByWorkflowRun(
-    flatLanes,
-    workflowRuns ?? [],
-  );
   const taskRuns = useMemo(
     () => groupScheduledTaskRuns(
       laneSections?.members ?? [],
@@ -276,6 +269,14 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     );
     return laneSections.members.filter(member => !nested.has(member.subjectId));
   }, [laneSections, taskRuns]);
+  // Swarmflow worker lanes collapse into one collapsible group per run,
+  // headed by the run's task name. In scheduled sessions only regular member
+  // lanes participate; reviewer lanes keep their Task -> Round hierarchy.
+  const workflowGroupingLanes = laneSections === null ? flatLanes : standaloneMembers;
+  const { ungrouped, groups: workflowGroups } = groupTeamMemberLanesByWorkflowRun(
+    workflowGroupingLanes,
+    workflowRuns ?? [],
+  );
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
   const [actualDuration, setActualDuration] = useState(false);
   const [actualTime, setActualTime] = useState(false);
@@ -609,7 +610,16 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
       >
         {scheduledMode && laneSections !== null ? (
           <>
-            {standaloneMembers.map(renderLane)}
+            {standaloneMembers.length === 0 ? null : (
+              <div className={css.laneSection} data-testid="team-trajectory-member-group">
+                <div className={css.memberSectionHeader}>
+                  <strong>{t('trajectory.team.members')}</strong>
+                  <span>{standaloneMembers.length}</span>
+                </div>
+                {ungrouped.map(renderLane)}
+                {workflowGroups.map(renderWorkflowGroup)}
+              </div>
+            )}
             {taskRuns.map(renderTaskRun)}
             {laneSections.ungroupedReviewers.length === 0 ? null : (
               <div className={css.laneSection}>

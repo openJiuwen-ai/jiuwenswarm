@@ -45,9 +45,22 @@ export function SubagentCompactPanel({ sessionId, onExpand }: { sessionId: strin
             >
               <TeamMemberAvatar member={subagent.subagent_id} alt={subagent.display_name} className="h-6 w-6 rounded-lg" imageClassName="rounded-lg" />
               <span className="subagent-compact-row__copy">
-                <span className="subagent-compact-row__name truncate text-sm font-semibold text-text" data-testid="subagent-compact-row-name">{subagent.display_name}</span>
+                <span
+                  className="subagent-compact-row__name truncate text-sm font-semibold text-text"
+                  data-testid="subagent-compact-row-name"
+                  title={subagent.display_name}
+                >
+                  {subagent.display_name}
+                </span>
                 {(subagent.role || subagent.task_description) ? (
-                  <span className="subagent-compact-row__role truncate text-sm text-text-muted" data-testid="subagent-compact-row-role"> | {subagent.role || subagent.task_description}</span>
+                  <span
+                    className="subagent-compact-row__role truncate text-sm text-text-muted"
+                    data-testid="subagent-compact-row-role"
+                    title={subagent.role || subagent.task_description}
+                  >
+                    {' | '}
+                    {subagent.role || subagent.task_description}
+                  </span>
                 ) : null}
               </span>
               <SubagentStatusIcon status={subagent.status} closedReason={subagent.closed_reason} turnOutcome={subagent.turn_outcome} />

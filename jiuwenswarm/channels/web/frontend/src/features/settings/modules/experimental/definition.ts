@@ -132,7 +132,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'when-parent-checked',
             disabled: 'never',
             items: [
-              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled' },
+              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled', errorDisplay: 'inline' },
               { id: 'multi-model-verification', component: 'custom', render: CollaborationVerifierInterval },
             ],
           },
@@ -151,6 +151,12 @@ export const experimentalModule: SettingsModuleDefinition = {
       ],
     },
     {
+      id: 'computer-control',
+      visibleWhen: 'cua_backend_available',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
+    },
+    {
       id: 'design-mode',
       titleKey: 'settingsPanel.experimental.designMode',
       items: [
@@ -160,6 +166,12 @@ export const experimentalModule: SettingsModuleDefinition = {
           key: 'comfyui_workflow_enabled',
         },
       ],
+    },
+    {
+      id: 'computer-control',
+      visibleWhen: 'cua_backend_available',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
     },
   ],
 };

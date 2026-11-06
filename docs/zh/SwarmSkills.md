@@ -120,7 +120,7 @@ roles:
 
 ## Workflow
 
-0. **预检：检查依赖** — 读取 [dependencies.yaml](dependencies.yaml) 并验证。报告缺失项：`required: true` = 缺少则可能失败；`required: false` = 降级但可用。**用户决定**是否继续。
+0. **预检：检查依赖** — 读取 `dependencies.yaml` 并验证。报告缺失项：`required: true` = 缺少则可能失败；`required: false` = 降级但可用。**用户决定**是否继续。
 1. **coordinator 接收病例** — 分析病例，确定专家需求，创建会诊任务。
 2. **各专家并行评估** — internist / surgeon / radiologist 独立评估并提交专科意见。
 3. **coordinator 整合意见** — 收集所有专家意见，识别分歧，如有分歧组织讨论。
@@ -130,10 +130,10 @@ roles:
 
 | id | Purpose | When dispatched | Input | Key dependencies | Role file |
 |---|---------|----------------|-------|-----------------|-----------|
-| coordinator | 组织专家、汇总意见 | 每次运行 | 用户提交的病例 | — | [roles/coordinator.md](roles/coordinator.md) |
-| internist | 从内科角度评估 | 每次运行（并行） | 分发的病例资料 | — | [roles/internist.md](roles/internist.md) |
-| surgeon | 从外科角度评估 | 每次运行（并行） | 分发的病例资料 | — | [roles/surgeon.md](roles/surgeon.md) |
-| radiologist | 从影像学角度分析 | 每次运行（并行） | 分发的病例资料 | — | [roles/radiologist.md](roles/radiologist.md) |
+| coordinator | 组织专家、汇总意见 | 每次运行 | 用户提交的病例 | — | `roles/coordinator.md` |
+| internist | 从内科角度评估 | 每次运行（并行） | 分发的病例资料 | — | `roles/internist.md` |
+| surgeon | 从外科角度评估 | 每次运行（并行） | 分发的病例资料 | — | `roles/surgeon.md` |
+| radiologist | 从影像学角度分析 | 每次运行（并行） | 分发的病例资料 | — | `roles/radiologist.md` |
 
 > 在分派每个队友之前，读取对应的角色文件并提取 `## Inline Persona for Teammate` 部分，直接粘贴到分派提示词中。
 
@@ -141,10 +141,10 @@ roles:
 
 | File | What it contains | When to read |
 |------|------------------|-------------|
-| [workflow.md](workflow.md) | Mermaid 流程图、步骤协议、集成规则、最终报告格式 | 首次分派前 — 完整执行手册 |
-| [bind.md](bind.md) | 资源限制、行为约束、失败处理和降级模式 | 遇到限制、处理失败或需要降级规则时 |
-| [roles/*.md](roles/) | 每个角色的身份、成功标准、输出格式、Inline Persona | 分派每个队友前 — 提取 Inline Persona |
-| [dependencies.yaml](dependencies.yaml) | 外部技能和工具依赖 | **启动时** — 验证依赖，报告缺失项，用户决定是否继续 |
+| `workflow.md` | Mermaid 流程图、步骤协议、集成规则、最终报告格式 | 首次分派前 — 完整执行手册 |
+| `bind.md` | 资源限制、行为约束、失败处理和降级模式 | 遇到限制、处理失败或需要降级规则时 |
+| `roles/*.md` | 每个角色的身份、成功标准、输出格式、Inline Persona | 分派每个队友前 — 提取 Inline Persona |
+| `dependencies.yaml` | 外部技能和工具依赖 | **启动时** — 验证依赖，报告缺失项，用户决定是否继续 |
 ````
 
 **关键字段说明**：
