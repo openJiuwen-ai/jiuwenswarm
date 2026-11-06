@@ -88,6 +88,10 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
 
         await _activate_installed(assembly.manager)
         _wire_team_extension_bus(assembly.bus)
+        try:
+            _publish_extension_bus(assembly.bus)
+        except Exception:  # noqa: BLE001 - bus publish must not block assembly registration
+            logger.exception("[ExtensionsV2] failed to publish the AgentLoop extension bus")
         _ASSEMBLY = assembly
         try:
             from jiuwenswarm.extensions_v2.management.local_cli import start_local_cli
@@ -132,6 +136,10 @@ async def shutdown_extensions() -> None:
             await _LOCAL_CLI.close()
             _LOCAL_CLI = None
         try:
+            _publish_extension_bus(None)
+        except Exception:  # noqa: BLE001 - withdrawing the bus must not block teardown
+            logger.exception("[ExtensionsV2] failed to withdraw the AgentLoop extension bus")
+        try:
             await assembly.compact.close()
             await assembly.manager.shutdown()
         finally:
@@ -153,6 +161,26 @@ def _wire_team_extension_bus(bus: ExtensionEventBus) -> None:
         logger.warning("[ExtensionsV2] team bus wiring unavailable (agent-core too old): %s", exc)
         return
     Runner.set_team_extension_bus(bus)
+
+
+def _publish_extension_bus(bus: ExtensionEventBus | None) -> None:
+    """Publish (or withdraw with ``None``) the bus AgentLoop tool events go through.
+
+    Soft-gated: an agent-core without ``Runner.set_extension_bus`` keeps
+    AgentLoop on its direct path.
+    """
+
+    try:
+        from openjiuwen.core.runner import Runner
+    except ImportError as exc:
+        logger.warning("[ExtensionsV2] AgentLoop bus publishing unavailable (agent-core too old): %s", exc)
+        return
+
+    set_extension_bus = getattr(Runner, "set_extension_bus", None)
+    if set_extension_bus is None:
+        logger.warning("[ExtensionsV2] AgentLoop bus publishing unavailable (agent-core too old)")
+        return
+    set_extension_bus(bus)
 
 
 def _build_assembly(server: Any) -> ExtensionAssembly:
