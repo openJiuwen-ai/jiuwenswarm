@@ -94,6 +94,19 @@ def _unaccepted_organization(turn: GroupTurn | None) -> bool:
     )
 
 
+def _new_organization_must_wait(
+    first: GroupTurn | None, current: GroupTurn | None, suspended: list,
+) -> bool:
+    """Hold a new organization while an admitted turn is still unfinished."""
+    if first is None or first.route != "organization":
+        return False
+    if _unaccepted_organization(current) and first.client_message_id != current.client_message_id:
+        return True
+    if current is None or current.route != "direct":
+        return False
+    return bool(suspended)
+
+
 def restore_suspended_organization(ctx: Any) -> None:
     """Resume an unaccepted organization only after the intervening direct turn yields."""
     turn = getattr(ctx, "extra", {}).get(TURN_KEY)
@@ -131,10 +144,7 @@ async def bind_consumed_group_turn(ctx: Any, backend: Any, session_id: str, memb
     state["suspended"][:] = [item for item in state["suspended"] if _unaccepted_organization(item[0])]
     current = ctx.extra.get(TURN_KEY)
     first = notices[0][1] if notices else None
-    if first is not None and first.route == "organization" and (
-        (_unaccepted_organization(current) and first.client_message_id != current.client_message_id)
-        or (current is not None and current.route == "direct" and state["suspended"])
-    ):
+    if _new_organization_must_wait(first, current, state["suspended"]):
         # Keep the model working on its admitted request until its proxy
         # handoff completes. A new Organization must not strand its predecessor.
         direct = next(((index, turn) for index, turn in notices if turn.route == "direct"), None)
@@ -174,7 +184,9 @@ async def bind_consumed_group_turn(ctx: Any, backend: Any, session_id: str, memb
         from openjiuwen.core.single_agent.rail.base import SteeringInput
 
         notice = parts[notices[0][0]]
-        state["notice"] = SteeringInput(notice, run_context=ctx.extra["run_context"]) if "run_context" in ctx.extra else notice
+        if "run_context" in ctx.extra:
+            notice = SteeringInput(notice, run_context=ctx.extra["run_context"])
+        state["notice"] = notice
 
 
 async def resolve_group_turn(

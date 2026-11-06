@@ -248,7 +248,11 @@ class GroupTaskPolicyRail(DeepAgentRail):
         from jiuwenswarm.agents.swarm.group_turn import restore_suspended_organization
 
         response = getattr(ctx.inputs, "response", None)
-        if getattr(ctx, "exception", None) is None and response is not None and not getattr(response, "tool_calls", None):
+        if (
+            getattr(ctx, "exception", None) is None
+            and response is not None
+            and not getattr(response, "tool_calls", None)
+        ):
             restore_suspended_organization(ctx)
 
     async def before_invoke(self, ctx):
