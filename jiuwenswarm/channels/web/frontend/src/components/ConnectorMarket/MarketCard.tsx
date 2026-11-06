@@ -23,6 +23,10 @@ interface MarketCardProps {
   onUse?: () => void;
   /** 错误态红点的提示文案；不传为"连接失败"。 */
   errorLabel?: string;
+  /** 覆盖已连接态按钮文案；系统插件用它表达"已启用/重载"。 */
+  connectedLabel?: string;
+  /** 已连接态按钮动作；缺省沿用 onUse。 */
+  onConnectedAction?: () => void;
 }
 
 export function MarketCard({
@@ -40,6 +44,8 @@ export function MarketCard({
   actionDisabled = false,
   onUse,
   errorLabel,
+  connectedLabel,
+  onConnectedAction,
 }: MarketCardProps) {
   const { t } = useTranslation();
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -69,8 +75,9 @@ export function MarketCard({
         {t(busyLabelKey(busyKind))}
       </span>
     );
-  } else if ((state === 'connected' || actionMode === 'use') && onUse) {
-    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled} onClick={event => { event.stopPropagation(); onUse(); }}>{t('connectorMarket.card.use')}</button>;
+  } else if ((state === 'connected' || actionMode === 'use') && (onConnectedAction ?? onUse)) {
+    const action = onConnectedAction ?? onUse;
+    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled} onClick={event => { event.stopPropagation(); action?.(); }}>{connectedLabel ?? t('connectorMarket.card.use')}</button>;
   } else if (state === 'idle' || state === 'error') {
     actionSlot = (
       <button

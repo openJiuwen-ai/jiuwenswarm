@@ -66,7 +66,7 @@ flowchart LR
 | `Registry.install(source)` | 触发 `package.install`，返回 `tuple[ActivationReport, ...]` |
 | `Registry.uninstall(package_id)` | 触发 `package.uninstall`，删除生效包及其版本目录 |
 | `Registry.reload(package_id)` | 从安装副本触发 `package.reload` |
-| `PackageManager.list_installed()` | 返回带 `manifest.yaml` 的版本目录列表 |
+| `PackageManager.list_installed()` | 返回带 `manifest.json` 的版本目录列表 |
 | `PackageManager.version_dir(id, version)` | 返回副本路径，拒绝逃逸安装目录 |
 | `PackageManager.remove_installed(id, version)` | 删除一个版本目录；不存在时报 `EXTENSION_PACKAGE_NOT_INSTALLED` |
 | `load_manifest(root)` | 读取并校验 manifest，失败抛 `ExtensionFailure` |

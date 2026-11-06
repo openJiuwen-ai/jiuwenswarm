@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -64,29 +65,22 @@ def create_extension():
     return AppHome()
 """
 
-_MANIFEST = """
-schemaVersion: 1
-package:
-  id: demo.app-home
-  domain: agentserver
-  version: 1.0.0
-  displayName: App Home
-extensions:
-  - id: app-home
-    runtime: backend
-    module: demo_app/extension.py
-ui:
-  apiVersion: 1
-  items:
-    - type: web.slot.contribution
-      id: home
-      slot: application.test
-      order: 1
-      panel:
-        title: Home
-      renderer:
-        kind: webui-tree
-"""
+_MANIFEST = json.dumps({
+    "package_type": "extension",
+    "schemaVersion": 1,
+    "package": {"id": "demo.app-home", "version": "1.0.0", "domain": "agentserver", "displayName": "App Home"},
+    "extensions": [{"id": "app-home", "runtime": "backend", "module": "demo_app/extension.py"}],
+    "ui": {
+        "apiVersion": 1,
+        "items": [{
+            "type": "web.slot.contribution",
+            "id": "home",
+            "slot": "application.test",
+            "order": 1,
+            "renderer": {"kind": "webui-tree"},
+        }],
+    },
+})
 
 
 class _Push:
@@ -103,7 +97,7 @@ def _write_package(root: Path) -> None:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "extension.py").write_text(_EXTENSION, encoding="utf-8")
-    (root / "manifest.yaml").write_text(_MANIFEST, encoding="utf-8")
+    (root / "manifest.json").write_text(_MANIFEST, encoding="utf-8")
 
 
 _TEST_SLOT = "application.test"

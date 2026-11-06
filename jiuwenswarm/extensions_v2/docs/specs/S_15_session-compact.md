@@ -52,4 +52,4 @@ CompactionError.code 区分 NOT_INTEGRATED（当前生产未接入）、BUSY、S
 
 ## 5. 验证与案例
 
-输入/输出、单次注册、完整用户案例和分版本验收维护在 F_28；当前证据见其第 6.3 节，旧真实模型证据不作为本阶段主流程已启用的结论；独立示例位于 `examples/session_compact`，只返回/记录参数，不渲染界面。测试入口 `tests/unit_tests/extensions_v2/test_session_compact.py`，原命令参数验证在 `tests/unit_tests/agentserver/test_agentserver_cli_commands.py`。Core/Server 提交与真实证据关联在开发计划维护，不用规约代替进度台账。
+输入/输出、单次注册、完整用户案例和分版本验收维护在 F_28；当前证据见其第 6.3 节，旧真实模型证据不作为本阶段主流程已启用的结论；该策略只返回/记录参数，不渲染界面。测试入口 `tests/unit_tests/extensions_v2/test_session_compact.py`，原命令参数验证在 `tests/unit_tests/agentserver/test_agentserver_cli_commands.py`。Core/Server 提交与真实证据关联在开发计划维护，不用规约代替进度台账。

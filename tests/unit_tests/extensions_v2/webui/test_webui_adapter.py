@@ -5,12 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from openjiuwen.core.events import Event, SessionContext
 
 import jiuwenswarm.extensions_v2.assembly as assembly
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions_v2.event_types.context_usage import CONTEXT_USAGE_EVENT, ContextUsageUpdate
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.constants import CODE_SESSION_MISMATCH, CODE_TARGET_INACTIVE
 from jiuwenswarm.extensions_v2.webui.contributions import UiCatalog, UiContribution
@@ -128,23 +126,11 @@ async def test_ready_dispatches_to_the_example_panel(tmp_path: Path, monkeypatch
     installed = await assembly.install_extensions(server)
     assert installed is not None
     try:
-        example = Path(assembly.__file__).parent / "examples" / "token_weather"
+        example = Path(assembly.__file__).parent / "examples" / "webui_workbench_v2"
         reports = await installed.manager.install([example])
         assert reports[0].status == "SUCCESS"
-        await installed.bus.trigger(
-            Event(
-                CONTEXT_USAGE_EVENT,
-                ContextUsageUpdate(
-                    session_id="s1",
-                    request_id="r1",
-                    input_tokens=1000,
-                    output_tokens=200,
-                    total_tokens=1200,
-                ),
-            ),
-            SessionContext(session_id="s1"),
-        )
         server.messages.clear()
+
 
         response = await WebUIDispatchAdapter().handle(
             AgentRequest(
@@ -243,7 +229,7 @@ async def test_click_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatc
     installed = await assembly.install_extensions(FakeServer())
     assert installed is not None
     try:
-        example = Path(assembly.__file__).parent / "examples" / "token_weather"
+        example = Path(assembly.__file__).parent / "examples" / "webui_workbench_v2"
         reports = await installed.manager.install([example])
         assert reports[0].status == "SUCCESS"
         response = await WebUIDispatchAdapter().handle(
@@ -258,7 +244,7 @@ async def test_click_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatc
                     "target": {
                         "session_id": "s1",
                         "slot_id": "conversation.input.below",
-                        "package_id": "webui.token-weather",
+                        "package_id": "webui.workbench-v2",
                         "instance_key": "ghost",
                     },
                     "payload": {"action_id": "file.0"},

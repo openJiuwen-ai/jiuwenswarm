@@ -5,7 +5,6 @@
 import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -21,8 +20,75 @@ from jiuwenswarm.extensions_v2.event_types.context_usage import (
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from tests.unit_tests.extensions_v2.management.support import make_bus
 
-EXAMPLE = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "extensions_v2" / "examples" / "store_probe"
 PACKAGE_ID = "example.store-probe"
+EXAMPLES = Path(assembly.__file__).parent / "examples"
+
+_EXTENSION_PY = """\
+import asyncio
+import logging
+
+from openjiuwen.core.events import Event, EventHandlerOps, EventNext
+from openjiuwen.core.extension import ExtensionRegistrar
+
+logger = logging.getLogger("jiuwenswarm.server.extensions.store_probe")
+
+
+class StoreProbe:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+
+    def register(self, registrar: ExtensionRegistrar) -> None:
+        registrar.register_event_handler("context.usage.updated", self.on_usage, {})
+
+    async def on_usage(self, event: Event, ops: EventHandlerOps, next_handler: EventNext) -> object:
+        async with self._lock:
+            await self.probe(ops)
+        return await next_handler(event)
+
+    async def probe(self, ops: EventHandlerOps) -> None:
+        package_id = await ops.package.name()
+        previous = await ops.store.get("counter", 0)
+        count = previous + 1
+        saved = await ops.store.set("counter", count)
+        logger.info("[store-probe] set package=%s previous=%s current=%s saved=%s", package_id, previous, count, saved)
+        if not saved:
+            return
+        restored = await ops.store.get("counter")
+        scratch_saved = await ops.store.set("scratch", {"temporary": True})
+        keys = await ops.store.keys()
+        deleted = await ops.store.delete("scratch")
+        remaining = await ops.store.keys()
+        logger.info(
+            "[store-probe] get=%s keys=%s scratch_saved=%s delete=%s remaining=%s session=%s",
+            restored, keys, scratch_saved, deleted, remaining,
+            ops.session_context.session_id if ops.session_context else None,
+        )
+
+
+def create_extension() -> StoreProbe:
+    return StoreProbe()
+"""
+
+_MANIFEST = """{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "domain": "agentserver",
+    "id": "example.store-probe",
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Store Probe"
+  },
+  "extensions": [
+    {
+      "id": "store-probe",
+      "runtime": "backend",
+      "module": "extension.py"
+    }
+  ]
+}
+"""
 
 
 @pytest.fixture
@@ -36,7 +102,12 @@ def store_probe_logs(caplog):
         logger.removeHandler(caplog.handler)
 
 
-def _archive(tmp_path: Path, source: Path = EXAMPLE) -> Path:
+def _archive(tmp_path: Path, source: Path | None = None) -> Path:
+    if source is None:
+        source = tmp_path / "store_probe_src"
+        source.mkdir(exist_ok=True)
+        (source / "extension.py").write_text(_EXTENSION_PY, encoding="utf-8")
+        (source / "manifest.json").write_text(_MANIFEST, encoding="utf-8")
     archive = tmp_path / f"{source.name}.zip"
     with ZipFile(archive, "w") as target:
         for path in sorted(source.rglob("*")):
@@ -150,24 +221,18 @@ async def test_agentserver_assembly_injects_the_host_store_directory(tmp_path, m
         await assembly.shutdown_extensions()
 
 
-@pytest.mark.parametrize("weather_first", [True, False])
-async def test_usage_notifier_runs_both_packages_and_preserves_render_deduplication(
-    tmp_path, monkeypatch, store_probe_logs, weather_first,
+@pytest.mark.parametrize("glass_first", [True, False])
+async def test_usage_reaches_every_installed_package(
+    tmp_path, monkeypatch, store_probe_logs, glass_first,
 ) -> None:
     await assembly.shutdown_extensions()
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
-    frames = []
-
-    async def send_push(message):
-        frames.append(message["payload"])
-        return True
-
-    instance = await assembly.install_extensions(SimpleNamespace(send_push=send_push))
+    instance = await assembly.install_extensions()
     assert instance is not None
     try:
-        weather = _archive(tmp_path, EXAMPLE.parent / "token_weather")
+        glass = _archive(tmp_path, EXAMPLES / "token_weather_glass")
         probe = _archive(tmp_path)
-        for archive in ((weather, probe) if weather_first else (probe, weather)):
+        for archive in ((glass, probe) if glass_first else (probe, glass)):
             report = (await instance.manager.install([archive]))[0]
             assert report.status == "SUCCESS", report
         update = ContextUsageUpdate("coexist", "r1", input_tokens=10, output_tokens=5, total_tokens=15)
@@ -177,16 +242,12 @@ async def test_usage_notifier_runs_both_packages_and_preserves_render_deduplicat
         path = tmp_path / "package-data" / f"{PACKAGE_ID}.json"
         assert path.exists(), "The usage chain did not reach Store Probe"
         assert json.loads(path.read_text(encoding="utf-8")) == {"counter": 1}
-        assert len(frames) == 2
-        assert all(frame["event_type"] == "webui.render" for frame in frames)
-        assert all(frame["root"]["component"] == "Box" for frame in frames)
         assert "previous=0 current=1 saved=True" in store_probe_logs.text
 
         task = notify_context_usage(update)
         assert task is not None
         await task
         assert json.loads(path.read_text(encoding="utf-8")) == {"counter": 2}
-        assert len(frames) == 2
         assert "previous=1 current=2 saved=True" in store_probe_logs.text
     finally:
         await assembly.shutdown_extensions()

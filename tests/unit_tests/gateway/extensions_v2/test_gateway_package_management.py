@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from openjiuwen.core.extension import ExtensionFailure
 from jiuwenswarm.gateway.channel_manager.web import extension_package_handlers
 from jiuwenswarm.gateway.extensions_v2 import assembly
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
+from jiuwenswarm.gateway.extensions_v2.management.catalog import package_detail
 from jiuwenswarm.gateway.extensions_v2.management.registry import GatewayPackageManager
 from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 
@@ -98,24 +101,67 @@ def _package_zip(
 ) -> Path:
     source = tmp_path / "src" / package_id / version
     source.mkdir(parents=True)
-    manifest = (
-        "schemaVersion: 1\n"
-        "package:\n"
-        f"  id: {package_id}\n"
-        f"  version: {version}\n"
-        f"domain: {domain}\n"
-        "extensions:\n"
-        "  - id: demo\n"
-        "    runtime: backend\n"
-        "    module: extension.py\n"
-    )
-    (source / "manifest.yaml").write_text(manifest, encoding="utf-8")
+    manifest = json.dumps({
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": package_id, "version": version, "domain": domain},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    })
+    (source / "manifest.json").write_text(manifest, encoding="utf-8")
     (source / "extension.py").write_text(entry, encoding="utf-8")
     archive = tmp_path / f"{package_id}-{version}.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         for file in source.iterdir():
             bundle.write(file, file.name)
     return archive
+
+
+def _package_dir(tmp_path: Path, **manifest_extra) -> Path:
+    root = tmp_path / "examples" / "demo.gateway"
+    root.mkdir(parents=True)
+    manifest = {
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "expose": True,
+        "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+        **manifest_extra,
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+def test_detail_projects_preview_readme_and_events(tmp_path):
+    root = _package_dir(
+        tmp_path,
+        display={
+            "details": "## 能力\n- 示例能力",
+            "events": [{"name": "gateway.request", "description": {"zh": "放行请求", "en": "Route requests"}}],
+        },
+    )
+    (root / "README.md").write_text("# 生效机制\n读取请求头", encoding="utf-8")
+    image = b"\x89PNG-preview"
+    (root / "assets").mkdir()
+    (root / "assets" / "preview.png").write_bytes(image)
+
+    detail = package_detail("demo.gateway", tmp_path / "examples", {})
+
+    assert detail["details"] == {"zh": "## 能力\n- 示例能力", "en": "## 能力\n- 示例能力"}
+    assert detail["readme"] == {"zh": "# 生效机制\n读取请求头", "en": "# 生效机制\n读取请求头"}
+    assert detail["preview"] == f"data:image/png;base64,{base64.b64encode(image).decode()}"
+    assert detail["events"] == [
+        {"name": "gateway.request", "description": {"zh": "放行请求", "en": "Route requests"}}
+    ]
+
+
+def test_detail_omits_missing_preview_and_readme(tmp_path):
+    _package_dir(tmp_path)
+
+    detail = package_detail("demo.gateway", tmp_path / "examples", {})
+
+    assert detail["preview"] is None
+    assert detail["readme"] == {"zh": "", "en": ""}
+    assert detail["details"] == {"zh": "", "en": ""}
+    assert detail["events"] == []
 
 
 async def _runtime(tmp_path: Path) -> GatewayRuntime:
@@ -151,10 +197,10 @@ async def test_agent_package_is_rejected_without_copying(tmp_path):
     runtime = await _runtime(tmp_path)
     manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
 
-    reports = await manager.install([_package_zip(tmp_path, package_id="demo.agent", domain="agent")])
+    reports = await manager.install([_package_zip(tmp_path, package_id="demo.agent", domain="agentserver")])
 
     assert [report.status for report in reports] == ["FAILED"]
-    assert reports[0].error.code == "EXTENSION_SOURCE_INVALID"
+    assert reports[0].error.code == "EXTENSION_DOMAIN_MISMATCH"
     assert manager.installed() == []
     assert runtime.user_handler_count == 0
 
@@ -361,3 +407,250 @@ async def test_local_cli_rejects_invalid_explicit_query_id(tmp_path, monkeypatch
     finally:
         await service.close()
         await runtime.shutdown()
+
+
+async def test_uninstall_retries_a_transient_delete_lock(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    await manager.install([_package_zip(tmp_path)])
+    original = manager._store.remove_installed
+    calls = {"count": 0}
+
+    def flaky(package_id: str, version: str) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ExtensionFailure(StatusCode.EXTENSION_INSTALL_COPY_FAILED, reason="file is locked")
+        original(package_id, version)
+
+    monkeypatch.setattr(manager._store, "remove_installed", flaky)
+
+    report = await manager.uninstall("demo.gateway")
+
+    assert report.status == "SUCCESS"
+    assert calls["count"] == 2
+    assert manager.installed() == []
+
+
+def _example_package(examples_dir: Path, package_id: str, domain: str) -> Path:
+    root = examples_dir / package_id
+    root.mkdir(parents=True)
+    manifest = {
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": package_id, "version": "0.1.0", "displayName": package_id, "domain": domain},
+        "expose": True,
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "extension.py").write_text(ENTRY, encoding="utf-8")
+    return root
+
+
+def _local_gateway(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    examples_dir = tmp_path / "examples"
+    examples_dir.mkdir()
+    install_dir = tmp_path / "extension_pkgs"
+    monkeypatch.setattr(extension_package_handlers, "resolve_examples_dir", lambda: examples_dir)
+    return examples_dir, install_dir
+
+
+async def _handle(runtime: GatewayRuntime, method, params, req_id="r") -> bool:
+    return await extension_package_handlers._handle_locally(
+        channel=runtime.channel,
+        resolve_client=lambda: None,
+        ws=SimpleNamespace(),
+        req_id=req_id,
+        params=params,
+        session_id=None,
+        user_id=None,
+        method=method,
+    )
+
+
+async def test_catalog_lists_gateway_presets_before_any_install(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    _example_package(examples_dir, "demo.gateway", "gateway")
+    _example_package(examples_dir, "demo.agent", "agentserver")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "catalog"}
+    )
+
+    assert handled is True
+    payload = runtime.channel.responses[0]["payload"]
+    assert [package["id"] for package in payload["packages"]] == ["demo.gateway"]
+
+
+async def test_show_answers_for_an_uninstalled_gateway_preset(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    _example_package(examples_dir, "demo.gateway", "gateway")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "demo.gateway"}
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["payload"]["package"]["id"] == "demo.gateway"
+
+
+async def test_show_of_an_agent_package_is_forwarded(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    _example_package(examples_dir, "demo.agent", "agentserver")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "demo.agent"}
+    )
+
+    assert handled is False
+    assert runtime.channel.responses == []
+
+
+async def test_install_by_package_id_is_answered_locally_for_gateway(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
+    _example_package(examples_dir, "demo.gateway", "gateway")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["demo.gateway"]}
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["payload"]["reports"][0]["status"] == "SUCCESS"
+    assert (install_dir / "demo.gateway" / "0.1.0" / "manifest.json").is_file()
+    assert [package.package_id for package in runtime.active_packages()] == ["demo.gateway"]
+
+
+async def test_install_by_package_id_is_forwarded_for_agent(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
+    _example_package(examples_dir, "demo.agent", "agentserver")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["demo.agent"]}
+    )
+
+    assert handled is False
+    assert runtime.channel.responses == []
+    assert not (install_dir / "demo.agent").exists()
+
+
+def _plugin_package(root: Path) -> Path:
+    root.mkdir(parents=True)
+    manifest = {"package_type": "plugin", "schemaVersion": 1, "name": "demo-plugin", "version": "1.0.0"}
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+async def test_import_local_installs_a_gateway_package(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
+    source = _example_package(examples_dir, "demo.gateway", "gateway")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
+    )
+
+    assert handled is True
+    payload = runtime.channel.responses[0]["payload"]
+    assert payload["kind"] == "extension"
+    assert [report["status"] for report in payload["reports"]] == ["SUCCESS"]
+    assert (install_dir / "demo.gateway" / "0.1.0" / "manifest.json").is_file()
+
+
+async def test_import_local_routes_agent_packages_to_the_agent_server(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    calls: list[dict] = []
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return True, {"reports": []}
+
+    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
+
+    extension_source = _example_package(examples_dir, "demo.agent", "agentserver")
+    await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(extension_source)}
+    )
+    plugin_source = _plugin_package(tmp_path / "plugin-src")
+    await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(plugin_source)}
+    )
+
+    assert [call["req_method"] for call in calls] == [
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL,
+        extension_package_handlers.ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL,
+    ]
+    assert calls[0]["params"] == {"paths": [str(extension_source)]}
+    assert calls[1]["params"] == {"path": str(plugin_source)}
+
+
+async def test_import_local_routes_a_zipped_plugin_package(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+    calls: list[dict] = []
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return True, {"id": "demo-plugin"}
+
+    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
+
+    source = tmp_path / "plugin-src"
+    source.mkdir()
+    manifest = {"package_type": "plugin", "schemaVersion": 1, "name": "demo-plugin", "version": "1.0.0"}
+    (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    archive = tmp_path / "demo-plugin.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.write(source / "manifest.json", "manifest.json")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(archive)}
+    )
+
+    assert handled is True
+    assert calls[0]["req_method"] == extension_package_handlers.ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL
+    assert calls[0]["params"] == {"path": str(archive)}
+
+
+async def test_import_local_rejects_an_unknown_package_type(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+    source = tmp_path / "unknown-src"
+    source.mkdir()
+    (source / "manifest.json").write_text(json.dumps({"package_type": "mcp"}), encoding="utf-8")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["ok"] is False
+    assert runtime.channel.responses[0]["code"] == extension_package_handlers.INVALID_PARAMS_CODE
+
+
+async def test_import_local_rejects_the_legacy_agent_domain(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
+    source = _example_package(examples_dir, "demo.legacy", "agent")
+
+    handled = await _handle(
+        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["ok"] is False
+    assert runtime.channel.responses[0]["code"] == extension_package_handlers.INVALID_PARAMS_CODE

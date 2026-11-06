@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 from tempfile import TemporaryDirectory
 
 import pytest
-import yaml
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import (
@@ -165,7 +164,7 @@ def test_plugin_has_separate_complete_language_values() -> None:
     assert setting_view().props["ariaLabel"] == {"zh": "显示 TokenWeather", "en": "Show TokenWeather"}
 
 
-@pytest.mark.parametrize("case", json.loads((ROOT / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiLocalizedTextCases.json").read_text()),
+@pytest.mark.parametrize("case", json.loads((ROOT / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiLocalizedTextCases.json").read_text(encoding="utf-8")),
                          ids=lambda case: case["name"])
 def test_localized_text_contract_matches_both_hosts(case) -> None:
     from jiuwenswarm.gateway.extensions_v2.webui.component_rules import validate_props as gateway_validate_props
@@ -361,7 +360,7 @@ def test_removed_settings_entry_is_not_a_registered_slot() -> None:
 
 @pytest.mark.parametrize("change", ["old_type", "old_slot", "duplicate_target"])
 def test_catalog_rejects_parallel_settings_entries_and_duplicate_instances(tmp_path, change) -> None:
-    manifest = yaml.safe_load((SOURCE / "manifest.yaml").read_text())
+    manifest = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
     item = manifest["ui"]["items"][1]
     if change == "old_type":
         item["type"] = "web.settings.contribution"
@@ -369,7 +368,7 @@ def test_catalog_rejects_parallel_settings_entries_and_duplicate_instances(tmp_p
         item["slot"] = "application.settings.content"
     else:
         manifest["ui"]["items"].append({**item, "id": "other", "instanceKey": item["id"]})
-    (tmp_path / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(ValueError):
         load_package_ui(SimpleNamespace(root=tmp_path, package_id=PACKAGE_ID))
 

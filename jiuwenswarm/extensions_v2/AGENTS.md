@@ -47,7 +47,7 @@
 - [发布与归属](docs/features/F_04_activation-and-attribution.md)：整包发布、可信包身份、重载与在途计数限制。
 - [平台事件](docs/features/F_05_platform-events.md)：`ui.render`、上行 `ui.*`、`ops.build` 与 `ops.ui.render`。
 - [渲染服务](docs/features/F_06_render-service.md)：校验、revision、实例登记、容量淘汰与下行帧。
-- [界面项与交互](docs/features/F_07_ui-contributions.md)：`manifest.yaml ui` 段、槽位目录与 `webui.dispatch`。
+- [界面项与交互](docs/features/F_07_ui-contributions.md)：`manifest.json ui` 段、槽位目录与 `webui.dispatch`。
 - [前端渲染](docs/features/F_08_frontend-render.md)：前端运行时（协议校验、实例管理、挂载所有权）、槽位宿主、渲染注册表、上行交互与验证记录。
 - [门面规约](docs/specs/S_01_extension-management-facade.md)：当前对外契约、不变量、错误码与验证索引。
 - [后端管理入口](docs/features/F_09_backend-management-requests.md)：V2 包管理请求、Web `/extension` 命令及实际安装目录返回。
@@ -56,6 +56,7 @@
 - [停机撤销](docs/features/F_12_management-shutdown.md)：逆依赖撤销、失败保留及上下文释放。
 - [后端包管理协议](docs/specs/S_02_backend-package-management.md)：`extensions.v2.*` 参数、响应及错误边界。
 - [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，说明事件、Handler、Ops 登记与真实业务生效；第 3.7 节区分槽位交互与独立内置请求，列出前端、Gateway 转发和 AgentServer 适配器的完整登记入口，第 4.7 节说明 Gateway 渠道事件的往返链路。新增代码标为待实现模板。
+- [系统插件包开发指南](docs/designs/system-plugin-package-guide.md)：面向插件包作者，说明包结构、`manifest.json` 字段写法、`README.md` 生效机制说明与交付前自检。
 
 新增内置事件或 Handler 时，先阅读内置事件开发模板，再根据涉及的模块查阅规约与特性方案；需要了解完整协作与生命周期时，再查阅详细架构。
 
@@ -67,10 +68,11 @@
 - [assembly.py](assembly.py)：AgentServer 进程内唯一装配入口，负责 EventBus、管理门面、WebUI 运行时、启动加载与退出顺序。
 - [management/](management/)：包管理门面与本地后端；调用方只依赖 `ExtensionManager`。
 - [webui/](webui/)：WebUI 事件、渲染校验、实例登记、下行传输与上行适配。
-- [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `domain: gateway`，由 Gateway 加载；
+- [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `package.domain: gateway`，由 Gateway 加载；
   示例源码集中管理，包的运行宿主由 manifest 决定。
-- [examples/token_weather/](examples/token_weather/)：端到端示例包，验证槽位声明、事件 Handler、运行时渲染树和
-  `ui.ready` 恢复；不作为产品内置包。
+- [examples/token_weather_glass/](examples/token_weather_glass/)：上下文用量示例包，验证槽位声明、事件 Handler、
+  运行时渲染树和 `ui.ready` 恢复。
+- [examples/webui_workbench_v2/](examples/webui_workbench_v2/)：插槽与组件示例包，覆盖应用入口、侧栏、任务区与对话区域。
 
 ## 命名与编号
 

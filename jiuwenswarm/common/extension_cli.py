@@ -30,10 +30,10 @@ def context_path(domain: str) -> Path:
     """Return exactly one current-instance record; never enumerate services."""
     from jiuwenswarm.common.utils import get_user_workspace_dir
 
-    if domain not in {"agent", "gateway"}:
+    if domain not in {"agent_server", "gateway"}:
         raise ControlError("Unsupported extension domain")
-    key = "AGENT_SERVER_PORT" if domain == "agent" else "GATEWAY_PORT"
-    port = os.environ.get(key) or (os.environ.get("AGENT_PORT") if domain == "agent" else None)
+    key = "AGENT_SERVER_PORT" if domain == "agent_server" else "GATEWAY_PORT"
+    port = os.environ.get(key) or (os.environ.get("AGENT_PORT") if domain == "agent_server" else None)
     # No port guessing: a manual terminal without startup context has no target.
     if not port or not port.isdecimal() or not 0 < int(port) < 65536:
         raise ControlError("当前终端没有 Swarm 实例信息，请在运行中的 Swarm agent 内执行。")
@@ -210,24 +210,24 @@ class LocalControl:
 
 def source_domain(path: Path) -> str:
     """Read the declared host without importing package code."""
+    import json
     from zipfile import BadZipFile, ZipFile
-
-    import yaml
 
     try:
         if path.is_dir():
-            manifest_path = path / "manifest.yaml"
+            manifest_path = path / "manifest.json"
             if manifest_path.stat().st_size > 65536:
                 raise ValueError("manifest exceeds 64 KiB")
             raw = manifest_path.read_bytes()
         else:
             with ZipFile(path) as archive:
-                entry = archive.getinfo("manifest.yaml")
+                entry = archive.getinfo("manifest.json")
                 if entry.file_size > 65536:
                     raise ValueError("manifest exceeds 64 KiB")
                 raw = archive.read(entry)
-        manifest = yaml.safe_load(raw)
-    except (OSError, KeyError, BadZipFile, yaml.YAMLError) as error:
+        manifest = json.loads(raw)
+    except (OSError, KeyError, BadZipFile, ValueError, UnicodeError) as error:
         raise ValueError("Cannot read package manifest") from error
-    domain = manifest.get("domain") if isinstance(manifest, dict) else None
-    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else "agent"
+    package = manifest.get("package") if isinstance(manifest, dict) else None
+    domain = package.get("domain") if isinstance(package, dict) else None
+    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else "agentserver"

@@ -16,6 +16,96 @@ from jiuwenswarm.runtime.session_provisioner import (
 )
 from jiuwenswarm.server.runtime.session.attach_notifications import ExtensionSessionAttachParticipant
 
+_ATTACH_MANIFEST = """{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "domain": "agentserver",
+    "id": "example.session-attach",
+    "version": "1.0.0"
+  },
+  "display": {
+    "name": "Session Attach Observer"
+  },
+  "extensions": [
+    {
+      "id": "attach-observer",
+      "runtime": "backend",
+      "module": "extension.py"
+    }
+  ]
+}
+"""
+
+_ATTACH_EXTENSION = """
+import logging
+
+logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_attach")
+
+
+class SessionAttachExample:
+    def register(self, registrar):
+        registrar.register_event_handler("session.attach", self.on_attach, {}, "user")
+
+    async def on_attach(self, event, ops, next_handler):
+        root = await ops.session.root()
+        receipt = await next_handler(event)
+        logger.info("session attach example: session=%s surface=%s client=%s root=%s",
+                    ops.session_context.session_id, event.event_input.surface,
+                    receipt.clientId, root)
+        return receipt
+
+
+def create_extension():
+    return SessionAttachExample()
+"""
+
+_DETACH_MANIFEST = _ATTACH_MANIFEST.replace("session-attach", "session-detach").replace(
+    "Session Attach Observer", "Session Detach Observer",
+)
+
+_DETACH_EXTENSION = """
+import logging
+
+logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_detach")
+
+
+class SessionDetachExample:
+    def __init__(self):
+        self._resources = {}
+
+    def register(self, registrar):
+        registrar.register_event_handler("session.attach", self.on_attach, {}, "user")
+        registrar.register_event_handler("session.detach", self.on_detach, {}, "user")
+
+    async def on_attach(self, event, ops, next_handler):
+        receipt = await next_handler(event)
+        identity = ops.session_context.metadata["session_attachment"]["attachment_id"]
+        self._resources[identity] = {"session_id": ops.session_context.session_id, "client": receipt.clientId}
+        return receipt
+
+    async def on_detach(self, event, ops, next_handler):
+        value = event.event_input
+        identity = ops.session_context.metadata["session_attachment"]["attachment_id"]
+        self._resources.pop(identity, None)
+        receipt = await next_handler(event)
+        logger.info("session detach example: session=%s surface=%s client=%s reason=%s",
+                    ops.session_context.session_id, value.surface, receipt.clientId, value.reason)
+        return receipt
+
+
+def create_extension():
+    return SessionDetachExample()
+"""
+
+
+def _write_package(root: Path, name: str, manifest: str, module: str) -> Path:
+    package = root / name
+    package.mkdir()
+    (package / "manifest.json").write_text(manifest, encoding="utf-8")
+    (package / "extension.py").write_text(module, encoding="utf-8")
+    return package
+
 
 @pytest.mark.asyncio
 async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_path,monkeypatch,caplog):
@@ -37,9 +127,7 @@ async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_pat
     observer = ExtensionSessionAttachParticipant()
     registry.register_host_foreground(observer)
     provisioner = RuntimeSessionProvisioner(agent_manager=SimpleNamespace(),plan_controller=SimpleNamespace(),participant_registry=registry)
-    source = Path(__file__).resolve().parents[3]/"jiuwenswarm/extensions_v2/examples/session_attach"
-    logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_attach")
-    logger.addHandler(caplog.handler)
+    source = _write_package(tmp_path, "session_attach", _ATTACH_MANIFEST, _ATTACH_EXTENSION)
     try:
         assert (await host.manager.install([source]))[0].status == "SUCCESS"
         prepared = await provisioner.prepare_session_switch(SessionSwitchInput(channel_id="web",target_session_id="native-view-session",mode="agent.work.normal"))
@@ -59,7 +147,6 @@ async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_pat
         assert "surface=desktop client=web:native-view" in caplog.text
         assert registry.snapshot_activity() == ()
     finally:
-        logger.removeHandler(caplog.handler)
         await assembly.shutdown_extensions()
         session_metadata._METADATA_CACHE.clear()
 
@@ -84,9 +171,7 @@ async def test_replacement_notifies_old_view_only_after_commit(tmp_path, monkeyp
     observer = ExtensionSessionAttachParticipant()
     registry.register_host_foreground(observer)
     provisioner = RuntimeSessionProvisioner(agent_manager=SimpleNamespace(), plan_controller=SimpleNamespace(), participant_registry=registry)
-    source = Path(__file__).resolve().parents[3] / "jiuwenswarm/extensions_v2/examples/session_detach"
-    logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_detach")
-    logger.addHandler(caplog.handler)
+    source = _write_package(tmp_path, "session_detach", _DETACH_MANIFEST, _DETACH_EXTENSION)
     try:
         assert (await host.manager.install([source]))[0].status == "SUCCESS"
         context = SessionProvisionCommitContext(foreground_scope_id="native-view")
@@ -107,6 +192,5 @@ async def test_replacement_notifies_old_view_only_after_commit(tmp_path, monkeyp
         assert observer.associations.get("web", "native-view").session_id == "native-second"
         assert (sessions / "native-first/metadata.json").is_file()
     finally:
-        logger.removeHandler(caplog.handler)
         await assembly.shutdown_extensions()
         session_metadata._METADATA_CACHE.clear()

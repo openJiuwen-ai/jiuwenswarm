@@ -55,7 +55,7 @@ sequenceDiagram
     R->>BS: register_handlers(bus)
     BS->>W: register_handlers(bus)
     R->>R: trigger(ops.build) 一次
-    M->>R: await open_install_dir(install_dir, report_path, domain=agentserver, ...)
+    M->>R: open_install_dir(install_dir, report_path, domain=agentserver, allowed_domains)
     A->>M: load_installed()
     A-->>L: ExtensionAssembly
 ```

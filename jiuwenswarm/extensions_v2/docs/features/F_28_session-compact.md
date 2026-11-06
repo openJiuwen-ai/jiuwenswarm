@@ -248,7 +248,7 @@ async def compact(*, instructions: str | None = None) -> SessionCompacted | Sess
 
 ### 4.2 一个不用前端的完整验证案例
 
-本轮需求是“接口已做好，但不接入可能继续改动的主流程”。[示例包](../../examples/session_compact/README.md) 默认只订阅 `session.compact` 策略，生产压缩不会自动触发该策略。显式选择 `ProjectCompaction(compact_on_attach=True)` 后，on_attach 会尝试 Ops 并记录 COMPACT_NOT_INTEGRATED，随后继续原 attach 链；不会真的压缩会话。
+本轮需求是“接口已做好，但不接入可能继续改动的主流程”。示例策略默认只订阅 `session.compact` 策略，生产压缩不会自动触发该策略。显式选择 `ProjectCompaction(compact_on_attach=True)` 后，on_attach 会尝试 Ops 并记录 COMPACT_NOT_INTEGRATED，随后继续原 attach 链；不会真的压缩会话。
 
 ```text
 生产装配 / 安装真实扩展包

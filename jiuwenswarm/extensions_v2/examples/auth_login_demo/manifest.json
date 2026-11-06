@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "expose": true,
+  "package": {
+    "id": "webui.login-demo",
+    "version": "1.0.0",
+    "domain": "gateway"
+  },
+  "display": {
+    "name": {
+      "zh": "认证与登录",
+      "en": "Auth and sign-in"
+    },
+    "description": {
+      "zh": "在应用入口提供登录与注册页面，登录后自动为请求附加凭证，并在侧边栏提供账号菜单。",
+      "en": "Adds sign-in and sign-up pages at the application entry, attaches credentials to requests, and shows an account menu in the sidebar."
+    },
+    "details": {
+      "zh": "## 功能\n\n- 登录与注册：启动后先进入登录页，注册成功即可直接登录。\n- 凭证注入：登录后自动为 HTTP 与 WebSocket 请求附加凭证。\n- 账号菜单：侧边栏底部展示当前账号、头像和退出入口。\n\n## 生效机制\n\n1. 插件激活后在 `application.entry` 渲染登录页，在 `application.sidebar.footer` 渲染账号菜单。\n2. 登录成功后，凭证写入当前浏览器的本地存储。\n3. `requestBindings` 在请求发出前注入凭证，`gateway.request` 校验登录态并放行或拒绝请求。\n4. 退出登录会清除本地凭证并撤销当前 token。",
+      "en": "## Features\n\n- Sign-in and sign-up: the entry page appears first; a successful registration signs you in.\n- Credential injection: authenticated HTTP and WebSocket requests receive the credential automatically.\n- Account menu: the sidebar footer shows the current account, avatar and sign-out entry.\n\n## How it works\n\n1. Once active, the plugin renders the sign-in page at `application.entry` and the account menu at `application.sidebar.footer`.\n2. A successful sign-in stores the credential in the browser's local storage.\n3. `requestBindings` injects the credential before requests are sent; `gateway.request` validates the session and allows or rejects each request.\n4. Signing out clears the local credential and revokes the current token."
+    },
+    "avatar": "assets/avatar.svg",
+    "events": [
+      {
+        "name": "ui.ready",
+        "description": {
+          "zh": "页面挂载后渲染登录入口与账号菜单",
+          "en": "Render the sign-in entry and account menu after mount"
+        }
+      },
+      {
+        "name": "ui.click",
+        "description": {
+          "zh": "处理登录、注册与退出操作",
+          "en": "Handle sign-in, sign-up and sign-out actions"
+        }
+      },
+      {
+        "name": "ui.select",
+        "description": {
+          "zh": "处理登录页内的表单切换",
+          "en": "Handle form switching on the sign-in page"
+        }
+      },
+      {
+        "name": "gateway.request",
+        "description": {
+          "zh": "校验请求登录态并按路由放行或拒绝",
+          "en": "Validate the session and route or reject requests"
+        }
+      },
+      {
+        "name": "gateway.disconnect",
+        "description": {
+          "zh": "连接断开时清理页面状态",
+          "en": "Clear page state when the connection closes"
+        }
+      }
+    ]
+  },
+  "extensions": [
+    {
+      "id": "login-demo",
+      "runtime": "backend",
+      "module": "auth_login_demo/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "login-demo.entry",
+        "slot": "application.entry",
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "login-demo.user",
+        "slot": "application.sidebar.footer",
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  },
+  "client": {
+    "requestBindings": [
+      {
+        "type": "http",
+        "source": {
+          "key": "login",
+          "path": [
+            "accessToken"
+          ]
+        },
+        "target": {
+          "location": "header",
+          "name": "Authorization",
+          "prefix": "Bearer "
+        }
+      },
+      {
+        "type": "websocket",
+        "source": {
+          "key": "login",
+          "path": [
+            "accessToken"
+          ]
+        },
+        "target": {
+          "location": "message",
+          "path": [
+            "request_context",
+            "headers",
+            "Authorization"
+          ],
+          "prefix": "Bearer "
+        }
+      }
+    ]
+  }
+}
