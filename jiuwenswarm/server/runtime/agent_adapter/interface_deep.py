@@ -120,6 +120,26 @@ from openjiuwen.harness.rails.context_engineer.context_assemble_rail import Cont
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
+
+# AgentSSAS: 可选导入 AgentSSASSecurityRail(fail-open,未安装时降级为不注册)
+# 注: try/except 条件导入块整体对 E402 豁免, _SSAS_AVAILABLE 赋值必须
+# 放在块内(而非 try 之前的裸赋值), 否则后续导入全部触发 E402
+# 捕获 Exception 而非仅 ImportError: agent-ssas 安装损坏(依赖的二进制
+# 模块异常/配置解析错误等任意导入期异常)同样降级为不注册, 可选组件的
+# 导入失败不得拖垮宿主模块; 异常细节进告警日志保持可观测
+try:
+    from agent_ssas.core.framework.config.settings import AgentSSASConfig
+    from agent_ssas.backend_client.openjiuwen.agent_ssas_security_rail import AgentSSASSecurityRail
+    _SSAS_AVAILABLE = True
+except Exception as _ssas_import_exc:
+    AgentSSASSecurityRail = None  # type: ignore[assignment,misc]
+    _SSAS_AVAILABLE = False
+    # 模块级 logger 尚未定义,此处必须内联获取,确保 fail-open 不因日志而崩溃
+    logging.getLogger(__name__).warning(
+        "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not loaded: %s",
+        _ssas_import_exc,
+    )
+
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -761,6 +781,219 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
     return query.strip() if isinstance(query, str) else ""
 
 logger = logging.getLogger(__name__)
+
+# AgentSSAS backend 异步初始化 Task 的强引用集合:
+# asyncio Task 仅被弱引用持有, 未保存引用可能被 GC 中途销毁;
+# done callback 负责: 1) 从集合移除已完成 Task  2) 记录初始化异常(否则异常静默丢失)
+_SSAS_INIT_TASKS: "set[asyncio.Task[None]]" = set()
+# 集合可能被不同线程的事件循环并发增删(实例创建/team member 装配等路径),
+# 遍历前须持锁快照, 避免 "Set changed size during iteration"。
+# 用 RLock: 竞态落败路径在临界区内调用 _close_ssas_backend_in_background,
+# 后者需再入同一线程的锁登记 close Task, 非重入锁会自锁死
+_SSAS_INIT_TASKS_LOCK = threading.RLock()
+# 收口等待上界(秒): 初始化含检测模块加载与一次启动 TTL 清理, 留足余量;
+# 超时告警后放行(fail-open), 后续事件由 backend 的 _ensure_initialized 兜底
+_SSAS_INIT_WAIT_TIMEOUT: float = 30.0
+# 初始化 Task -> (缓存键, backend) 反查表: 初始化失败/收口超时时剔除缓存
+# 条目, 让下次装配重建 backend 并重试(自愈), 而非永远复用未就绪实例;
+# 与 _SSAS_INIT_TASKS 同锁保护, done callback 中随 Task 一并清理
+_SSAS_INIT_TASK_KEYS: "dict[asyncio.Task[None], tuple[tuple[Any, str], Any]]" = {}
+# 竞态落败/初始化失败/收口超时剔除 backend 的后台 close Task 强引用集
+# (防 GC 中途销毁); done callback 中自动移出, 与 _SSAS_INIT_TASKS 同锁保护
+_SSAS_CLOSE_TASKS: "set[asyncio.Task[None]]" = set()
+
+
+def _log_ssas_close_result(task: "asyncio.Task[None]") -> None:
+    """被剔除/落败 backend 的后台 close 完成回调: 移除引用并记录异常."""
+    with _SSAS_INIT_TASKS_LOCK:
+        _SSAS_CLOSE_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend background close failed: %s", exc)
+
+
+def _close_ssas_backend_in_background(
+    backend: Any, loop: asyncio.AbstractEventLoop
+) -> None:
+    """后台关闭被剔除/落败的 backend, 防 SQLite 连接等资源泄漏.
+
+    backend 构造期即建立 SQLite 连接等同步资源, 初始化失败/收口超时剔除
+    或双检锁竞态落败后不再被缓存与任何 rail 持有, 不关闭的话重复失败
+    装配会持续累积泄漏, 故统一经本通道关闭: close Task 强引用存入
+    _SSAS_CLOSE_TASKS(防 GC 中途销毁), done callback(_log_ssas_close_result)
+    记录异常并移出。close 经 getattr 防御获取, backend 无 close 入口或其
+    所属循环已关闭时静默放弃——后者资源随循环销毁整体回收, 由装配期的
+    已关闭循环清扫兜底。
+    """
+    if backend is None or loop.is_closed():
+        return
+    close = getattr(backend, "close", None)
+    if close is None:
+        return
+    try:
+        close_task = loop.create_task(close())
+    except RuntimeError:
+        return
+    with _SSAS_INIT_TASKS_LOCK:
+        _SSAS_CLOSE_TASKS.add(close_task)
+    close_task.add_done_callback(_log_ssas_close_result)
+
+
+def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
+    """AgentSSAS backend 初始化 Task 完成回调: 移除引用并记录异常."""
+    evicted: "tuple[tuple[Any, str], Any] | None" = None
+    with _SSAS_INIT_TASKS_LOCK:
+        _SSAS_INIT_TASKS.discard(task)
+        entry = _SSAS_INIT_TASK_KEYS.pop(task, None)
+        if task.cancelled():
+            logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
+            _evict_ssas_backend_locked(entry)
+            evicted = entry
+        else:
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
+                _evict_ssas_backend_locked(entry)
+                evicted = entry
+    # 初始化失败/被取消的 backend 已被剔除出缓存, 后台关闭其构造期建立的
+    # SQLite 连接等资源(重复失败装配不累积泄漏); 收口超时路径先行 pop
+    # 反查表, 此处 entry 为 None, 不会二次关闭
+    if evicted is not None:
+        _close_ssas_backend_in_background(evicted[1], task.get_loop())
+
+
+def _evict_ssas_backend_locked(
+    entry: "tuple[tuple[Any, str], Any] | None",
+) -> None:
+    """剔除初始化失败/超时的 backend 缓存条目(须持 _SSAS_INIT_TASKS_LOCK).
+
+    backend 在 initialize() 完成前即入缓存(装配与初始化解耦, 由收口点
+    统一等待); 若初始化失败或收口超时的 backend 留在缓存中, 复用分支会
+    一直复用这个永远不会就绪的实例, 安全感知静默失效。剔除后下一次装配
+    重建 backend 并重新派发初始化(自愈); 已有 rail 经代理持有的旧 backend
+    引用仍有效, 其事件由 backend report_event 入口的 _ensure_initialized
+    兜底。缓存条目被并发替换为其它 backend 时不误剔(按对象同一性校验)。
+    """
+    if entry is None:
+        return
+    backend_key, backend = entry
+    if _SSAS_BACKEND_CACHE.get(backend_key) is backend:
+        _SSAS_BACKEND_CACHE.pop(backend_key, None)
+
+
+async def _await_ssas_init_tasks() -> None:
+    """等待 AgentSSAS backend 初始化 Task 完成(有界等待, fail-open).
+
+    rail 构建链路是同步契约, 无法直接 await initialize(), 只能 fire-and-forget
+    派发 Task(见 _build_ssas_rail); 本函数在 rail 列表构建完成后统一收口,
+    保证 rail 进入 agent 实例前 backend 已完成初始化, 消除"rail 已注册但
+    backend 未就绪"的窗口期。初始化异常已由 done callback 记录并告警,
+    此处不再上抛, 保持 fail-open 语义。
+
+    防御约束:
+    - 持锁快照避免并发增删触发 RuntimeError; 仅等待当前事件循环的 Task,
+      跨循环等待会抛 RuntimeError 且各循环路径由自己的收口点负责;
+    - asyncio.wait 带超时上界, 避免初始化挂死无限阻塞实例创建;
+      超时仅告警并放行, 后续首个事件仍由 backend report_event 入口的
+      _ensure_initialized 兜底等待(等待而非丢弃);
+    - 超时剔除的 backend 经 _close_ssas_backend_in_background 后台关闭,
+      防止其构造期建立的资源随重复失败装配持续累积泄漏。
+    """
+    loop = asyncio.get_running_loop()
+    with _SSAS_INIT_TASKS_LOCK:
+        pending = [
+            task
+            for task in _SSAS_INIT_TASKS
+            if not task.done() and task.get_loop() is loop
+        ]
+    if not pending:
+        return
+    _done, still_pending = await asyncio.wait(
+        pending, timeout=_SSAS_INIT_WAIT_TIMEOUT
+    )
+    if still_pending:
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] AgentSSAS backend init wait timeout after "
+            "%ss (tasks=%d), fail-open and let backend._ensure_initialized backstop",
+            _SSAS_INIT_WAIT_TIMEOUT,
+            len(still_pending),
+        )
+        # 超时剔除: 挂死 Task 移出跟踪集、取消执行并剔除对应缓存条目。
+        # 不移出的话, 后续每次 create_instance 收口都会对同一挂死 Task
+        # 重复等满 30s; 不取消的话, Task 与其 backend 引用会永久滞留(泄漏);
+        # 剔除缓存后, 下次装配重建 backend 并重新初始化(自愈); 已装配
+        # rail 的事件由 _ensure_initialized 兜底。取消触发 done callback
+        # (cancelled 分支), 其中 discard/pop 均为幂等空操作, 安全。
+        evicted_backends: list[Any] = []
+        with _SSAS_INIT_TASKS_LOCK:
+            for task in still_pending:
+                _SSAS_INIT_TASKS.discard(task)
+                entry = _SSAS_INIT_TASK_KEYS.pop(task, None)
+                _evict_ssas_backend_locked(entry)
+                if entry is not None:
+                    evicted_backends.append(entry[1])
+                task.cancel()
+        # 先取消后关闭: close Task 排在取消投递之后调度, 挂死的初始化协程
+        # 先处理取消再由 close 释放资源; 反查表条目已被本分支独占 pop,
+        # done callback 不会二次关闭同一 backend
+        for backend in evicted_backends:
+            _close_ssas_backend_in_background(backend, loop)
+
+
+# AgentSSAS backend 进程级复用缓存: create_instance 会被 reload/权限隔离/
+# 逐 agent 创建反复触发, 无复用时每次新建 inprocess backend(独立 SQLite
+# 连接 + 重复检测模块加载 + 重复周期清理任务)。键为(事件循环对象, ssas 配置
+# 指纹)——持 loop 对象强引用, 避免用 id(loop) 在旧循环被 GC 后发生 id 复用、
+# 新循环误用绑定在已死循环上的 backend; 不同事件循环不共享(asyncio.Lock
+# 等资源绑定循环)。backend 生命周期为进程级, 随进程退出由 OS 回收, 不随
+# 单个 rail 卸载关闭(AgentSSAS 侧后续迭代提供共享 backend 工厂与显式释放后
+# 替换此实现)。
+_SSAS_BACKEND_CACHE: "dict[tuple[Any, str], Any]" = {}
+# 缓存条目上界: 防御多事件循环进程(测试套件每个用例新建循环等)无界
+# 增长; 查找时先清理已关闭循环的条目, 仍超上界则淘汰最旧条目(已装配
+# rail 经代理持有的引用不受影响, 见 _build_ssas_rail)
+_SSAS_BACKEND_CACHE_MAX = 16
+
+
+class _SharedSSASBackendProxy:
+    """共享 backend 代理: 全量委托目标 backend, 资源释放入口拦截为 no-op。
+
+    AgentSSASSecurityRail 的全部释放入口最终都收敛到 backend.close():
+    - uninit(agent) -> ensure_future(self.close())(rail 源码 uninit 钩子);
+    - rail.close()  -> close = getattr(self._backend, "close", None) -> await close()。
+    rail 持有的 _backend 即本代理, getattr 命中下方 no-op close, 因此 rail
+    卸载(uninit/close 两条路径)均不会关闭共享 backend, 否则其余 rail 的事
+    件会打到已关闭的 backend; 生命周期由此提升到进程级(与 inprocess 模式
+    "backend 与宿主同生命周期"的定位一致)。其余属性/方法经 __getattr__ 按
+    需委托目标 backend, 不覆写任何具体方法, 不收窄上游签名。
+    """
+
+    def __init__(self, backend: Any) -> None:
+        self._ssas_backend = backend
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ssas_backend, name)
+
+    async def close(self) -> None:
+        """no-op: 共享 backend 不随单个 rail 卸载关闭, 见类 docstring。"""
+
+
+def _ssas_backend_fingerprint(ssas_cfg: dict[str, Any]) -> str:
+    """计算共享 backend 的 ssas 配置指纹(键排序稳定, 排除 rail 级旋钮)。
+
+    enabled/rail_priority/decision_policy 只影响 rail 装配不影响 backend,
+    排除后调节这些旋钮不会不必要地新建 backend。
+    """
+    rail_level_keys = {"enabled", "rail_priority", "decision_policy"}
+    fingerprint_src = {
+        key: value for key, value in ssas_cfg.items() if key not in rail_level_keys
+    }
+    try:
+        return json.dumps(fingerprint_src, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return repr(sorted((key, repr(value)) for key, value in fingerprint_src.items()))
 
 
 def _model_name_names_selection(model_name: str, selection: ModelSelection) -> bool:
@@ -2135,6 +2368,8 @@ class JiuWenSwarmDeepAdapter:
         self._personal_context_rail: PersonalContextRail | None = None
         self._personal_context_rail_lock = asyncio.Lock()
         self._security_rail: SecurityRail | None = None
+        # AgentSSAS: 安全态势感知 Rail
+        self._ssas_rail: "AgentSSASSecurityRail | None" = None
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
@@ -10270,6 +10505,120 @@ class JiuWenSwarmDeepAdapter:
             security_prompt_rail = None
         return security_prompt_rail
 
+    @staticmethod
+    def _build_ssas_rail(config_base: dict[str, Any] | None = None) -> "AgentSSASSecurityRail | None":
+        """Build AgentSSASSecurityRail (AgentSSAS 安全态势感知)."""
+        if not _SSAS_AVAILABLE:
+            logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not available (agent-ssas not installed)")
+            return None
+        try:
+            config_base = config_base or get_config()
+            ssas_cfg = config_base.get("ssas", {}) if isinstance(config_base, dict) else {}
+            if ssas_cfg.get("enabled", False) is not True:
+                logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail disabled by config")
+                return None
+            ssas_config = AgentSSASConfig.from_dict(ssas_cfg)
+            # 同步创建 backend: INPROCESS 模式直接构造 + initialize; 复用见下方缓存
+            from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
+            from agent_ssas.core.framework.access_adapter.agent_remote_backend import AgentSSASRemoteBackend
+            from agent_ssas.core.framework.config.settings import AgentSSASMode
+            # backend 进程级复用: 同一(事件循环, ssas 配置指纹)内 reload/
+            # 逐 agent 创建/team member 装配共享同一 backend, 避免每次装配
+            # 新建 SQLite 连接与重复初始化; 共享 backend 经 _SharedSSASBackendProxy
+            # 交给 rail, 防止单个 rail 卸载时关闭其余 rail 仍在使用的 backend。
+            loop = asyncio.get_running_loop()
+            backend_key = (loop, _ssas_backend_fingerprint(ssas_cfg))
+            with _SSAS_INIT_TASKS_LOCK:
+                # 缓存治理: 清理已关闭循环的条目(该循环上的 backend 不会再
+                # 被复用), 以及滞留的挂死 init Task/反查表条目(循环关闭后
+                # Task 永不再执行, 强引用滞留会阻止其 backend 被 GC);
+                # 确需新建时若达上界则淘汰最旧条目, 保证多循环进程有界增长
+                for stale_key in [
+                    key for key in _SSAS_BACKEND_CACHE if key[0].is_closed()
+                ]:
+                    _SSAS_BACKEND_CACHE.pop(stale_key, None)
+                for stale_task in [
+                    task
+                    for task in _SSAS_INIT_TASKS
+                    if task.get_loop().is_closed()
+                ]:
+                    _SSAS_INIT_TASKS.discard(stale_task)
+                    _SSAS_INIT_TASK_KEYS.pop(stale_task, None)
+                shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
+            backend_created = False
+            if shared_backend is None:
+                # 构造移出锁外: AgentSSASBackend 构造含 mkdir/sqlite 建库等
+                # 同步 I/O, 持锁构造会阻塞其它事件循环线程的装配与 done
+                # callback; 完成后双检锁插入, 兜底并发装配竞态
+                if ssas_config.mode == AgentSSASMode.HTTP:
+                    candidate: Any = AgentSSASRemoteBackend(ssas_config)
+                else:
+                    candidate = AgentSSASBackend(ssas_config)
+                with _SSAS_INIT_TASKS_LOCK:
+                    shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
+                    if shared_backend is None:
+                        while len(_SSAS_BACKEND_CACHE) >= _SSAS_BACKEND_CACHE_MAX:
+                            _SSAS_BACKEND_CACHE.pop(next(iter(_SSAS_BACKEND_CACHE)))
+                        _SSAS_BACKEND_CACHE[backend_key] = candidate
+                        shared_backend = candidate
+                        backend_created = True
+                    else:
+                        # 竞态落败: 保留赢家, 后台关闭多余 candidate 防
+                        # SQLite 连接等资源泄漏(close Task 强引用防 GC)
+                        _close_ssas_backend_in_background(candidate, loop)
+            backend: Any = shared_backend
+            if backend_created:
+                # initialize() 是 async: builder 链路(_create_instance ->
+                # _build_agent_rails -> 本方法)必然运行于事件循环内,
+                # fire-and-forget 派发初始化 Task 并保存强引用(done callback
+                # 记录异常, 避免被 GC 中途销毁或异常静默丢失); 随后由
+                # _create_instance 统一 await 收口(见 _await_ssas_init_tasks),
+                # 保证 rail 生效前 backend 完成初始化。复用路径不再派发:
+                # initialize 幂等, 已初始化的 backend 由首次装配收口保证。
+                # 若异常态下无运行中事件循环, get_running_loop 抛出的
+                # RuntimeError 由外层 except 捕获, 告警并降级为不注册
+                # rail(fail-open)。
+                init_task = asyncio.get_running_loop().create_task(
+                    backend.initialize()
+                )
+                with _SSAS_INIT_TASKS_LOCK:
+                    _SSAS_INIT_TASKS.add(init_task)
+                    # 反查表供初始化失败/收口超时剔除缓存条目(自愈重试)
+                    _SSAS_INIT_TASK_KEYS[init_task] = (backend_key, backend)
+                init_task.add_done_callback(_log_ssas_init_result)
+            else:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] AgentSSASBackend reuse (cache size=%d)",
+                    len(_SSAS_BACKEND_CACHE),
+                )
+            rail = AgentSSASSecurityRail(
+                backend=_SharedSSASBackendProxy(backend),
+                policy_name=ssas_config.decision_policy,
+            )
+            # 消费配置旋钮 rail_priority: agent-core 按 priority 排序各事件的
+            # 回调链(higher=first)。rail 类默认 80(低于 PermissionInterruptRail
+            # 的 90, 保持"在其他安全 Rail 之后执行, 可观察前序 Rail 的决策"),
+            # 配置后在注册前覆盖实例级 priority, 使该旋钮真实生效。
+            rail_priority = ssas_cfg.get("rail_priority")
+            if rail_priority is not None:
+                try:
+                    rail.priority = int(rail_priority)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] invalid ssas.rail_priority %r, keep rail default 80",
+                        rail_priority,
+                    )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s, priority=%s",
+                ssas_config.mode,
+                ssas_config.decision_policy,
+                getattr(rail, "priority", 80),
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create failed: %s", exc)
+            return None
+
     # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
     # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
     _MEMORY_REINDEX_DELAY_SECONDS: float = 5.0
@@ -10944,6 +11293,11 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
+            _RailBuildInfo(
+                "_ssas_rail",
+                self._build_ssas_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo(
                 "_model_anomaly_detection_rail",
                 self._build_model_anomaly_detection_rail,
@@ -12494,6 +12848,9 @@ class JiuWenSwarmDeepAdapter:
             mode=mode,
             composition_scope=composition_scope,
         )
+        # AgentSSAS backend 初始化 Task 收口: rail 进入实例前确保 backend
+        # 已完成初始化(初始化异常已由 done callback 告警, fail-open 不阻断)
+        await _await_ssas_init_tasks()
         resolved_language = self._resolve_runtime_language()
         workspace_obj = Workspace(
             root_path=self._workspace_dir or "./",
