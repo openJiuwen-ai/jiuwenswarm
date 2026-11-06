@@ -163,10 +163,26 @@ Gateway 的回执与渲染帧由页面内的替身按 S_09 生成（平台帧逻
 | 新启动、可跳过 | 显示“长按空格跳过”；按住 0.3 秒松开不跳过；按住 1 秒在约 2.4 秒时以 `skip` 结束，早于页面自身的结束 |
 | `ui.ready` 载荷 | 含启动标识；首次为 `first_visit: true`，完成过一次后为 `false` |
 
+F_12-V-10（2026-11-06，EXTV2-GW-14）：真实插件“主题背景”在两种真实环境中联调。
+
+- 真实 Gateway 与 WebChannel（隔离实例，无头 Chromium 157）：首次打开播放开场、背景与外观生效，刷新不重播；
+  安装登录示例时，登录前开场与背景照常显示（平台帧不受请求策略影响），登录后主界面保持背景。
+- fork 的 Electron 外壳（Electron 43.5.1 / Chrome 150，开发模式，独立的应用名、配置目录、家目录、数据目录与 worker 套接字）。
+  每次从零冷启动，经 CDP 在页面脚本运行前注入音频探针，每 100 ms 采样一次：
+
+| 场景 | 结果（毫秒，从启动器开始计） |
+| --- | --- |
+| 早期导航 | Web 服务就绪（约 340）即导航到应用，约 430 时中性层已显示且 `jiuwenDesktop.launchId` 可用；Gateway 约 2860 才就绪 |
+| 门控 | 约 580 起中性层移除、门控“判定”、`#root` 为 `inert`；约 2200 准备、2300 播放（背景同时生效）；约 10600 结束并开放。播放前从未出现可交互的工作界面 |
+| 启动标识 | 同一窗口刷新时 launchId 不变且不重播；退出后重新启动得到新的 launchId，按“每次启动”再次播放 |
+| 有声开场自动播放 | 无任何用户操作时：科研终端开场页（沙箱 iframe）创建的 AudioContext 初始状态即为 `running`；蜂巢协同开场页的 `<audio>.play()` 成功且未静音 |
+
+隔离核对：已安装 WorkSwarm 的 `~/Library/Application Support/jiuwenswarm-electron` 与 `~/.jiuwenswarm` 在测试期间没有任何文件变化。
+
 ### 8.3 验证结论
 
-第 2.2 节场景在单元范围与 Chromium 中成立。Gateway 与浏览器之间的真实 WebSocket 往返、Electron 启动标识与
-冷启动时序随真实插件在桌面打包版中联调。
+第 2.2 节场景在单元范围、Chromium、真实 Gateway 与 WebChannel 以及 Electron 开发模式中成立。
+打包版（PyInstaller 后端、签名应用）与 Windows 未在本条目验证，交由打包团队按 V-10 的场景检查。
 
 ## 9. 风险与已知遗留
 
@@ -175,4 +191,4 @@ Gateway 的回执与渲染帧由页面内的替身按 S_09 生成（平台帧逻
 - 安装报告中缺少超时声明的提示（agent-core `ActivationReport` 无警告字段），目前只记录日志。
 - 开场顺序与停用设置待 GW-12；`disabled`、`removed` 原因届时启用。（2026-11-05 已由 GW-12 实现，见 [F_13](F_13_application-settings-page.md)。）
 - 开场期间断线后重连，运行时会向当前提供者重发 `ui.ready`；服务端已随断线丢弃开场实例，随后的 `ui.closed` 会被拒绝。
-- 桌面打包版（Electron）联调待真实插件完成后进行。
+- 桌面打包版（Electron）联调待真实插件完成后进行。（2026-11-06：Electron 开发模式已验证，见 V-10；打包版与 Windows 交由打包团队。）
