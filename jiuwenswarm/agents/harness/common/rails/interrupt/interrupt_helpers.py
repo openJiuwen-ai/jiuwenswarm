@@ -1035,6 +1035,13 @@ def build_permission_rail(
             permission_key,
         )
     except Exception as exc:
+        if permission_config.get("enabled", False):
+            logger.error(
+                "[InterruptHelpers] PermissionInterruptRail create failed with "
+                "permissions enabled; failing closed: %s",
+                exc,
+            )
+            raise
         logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
         permission_rail = None
     return permission_rail

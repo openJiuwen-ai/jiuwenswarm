@@ -8617,18 +8617,25 @@ class JiuWenSwarmDeepAdapter:
             session_id=""
         )
         wanted_key = resolve_permission_key(**self._permission_key_dims())
+        stale_rail = None
         if self._permission_rail is not None:
             current_key = getattr(self._permission_rail, "permission_key", None)
             if getattr(self._permission_rail, "routing_key", current_key) != wanted_key:
-                # Adapter identity is fixed for the rail lifetime; never silently
-                # drop the old rail (would leak the old manager key without uninit).
-                logger.error(
-                    "[JiuWenSwarmDeepAdapter] _permission_rail key mismatch "
-                    "current=%s wanted=%s; keep existing rail (no rebuild)",
+                # Pooled adapters can serve different routing identities over
+                # their lifetime. Rebuild instead of failing the whole request,
+                # releasing the old manager registration first so it is not
+                # leaked.
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] _permission_rail key changed "
+                    "current=%s wanted=%s; rebuilding",
                     current_key,
                     wanted_key,
                 )
-                raise ValueError("Permission rail routing identity changed")
+                # 旧注册在重建定论后才注销：重建抛错时保留旧 key，在途请求
+                # 不会撞上已注销的 key（unregistered -> 全量 DENY）。
+                stale_rail = self._permission_rail
+                self._permission_rail = None
+        if self._permission_rail is not None:
             self._sync_permission_workspace(self._permission_rail)
             self._permission_rail.update_config(permission_config)
             logger.info(
@@ -8669,6 +8676,12 @@ class JiuWenSwarmDeepAdapter:
                     )
             else:
                 raise RuntimeError("Permission rail could not be constructed")
+        if stale_rail is not None and self._permission_rail is not stale_rail:
+            # 重建成功或权限被显式关闭后才注销旧 key；重建抛异常时跳过注销，
+            # 旧 key 继续服务在途请求（残留注册仅在极少数失败场景出现）。
+            release = getattr(stale_rail, "_release_registration", None)
+            if callable(release):
+                release()
 
     def _resolve_permission_config_for_agent(
         self,

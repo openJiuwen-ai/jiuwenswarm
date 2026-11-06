@@ -311,6 +311,11 @@ class SubagentPermissionRail(ConfirmInterruptRail):
             return
         if not self._enabled():
             return
+        permission_config = self._config_provider()
+        if not permission_config.get("enabled", False):
+            # Permissions are off, so no scoped config is ever published here.
+            # Looking one up would deny every subagent tool call.
+            return
         permission_context = TOOL_PERMISSION_CONTEXT.get()
         if (
             permission_context is not None
@@ -346,7 +351,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         if is_skill_authorization_gate_call(
             tool_name,
             tool_args,
-            self._config_provider(),
+            permission_config,
         ):
             return
 

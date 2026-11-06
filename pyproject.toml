@@ -74,7 +74,7 @@ dependencies = [
     "minio>=7.2.0",
     "uvloop==0.22.1; sys_platform != 'win32'",
     "python-json-logger>=2.0.0",
-    "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=jiuwenbox",
+    "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@38db5a46327c11e21efc40d7f541d05ea120e08a#subdirectory=jiuwenbox",
     "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_shield",
     "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_ssas",
     "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=foundation",
