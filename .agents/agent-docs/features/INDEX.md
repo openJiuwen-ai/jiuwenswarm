@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: william9200000
-author_email: wangchen309@h-partners.com
+author: xinyang_bali
+author_email: 835397263@qq.com
 generated: true
 ---
 
@@ -20,10 +20,9 @@ generated: true
 | [jiuwenswarm/agents/harness/common/rails](#module-3) |
 | [jiuwenswarm/agents/harness/common/tools](#module-4) |
 | [jiuwenswarm/channels/web/frontend](#module-5) |
-| [jiuwenswarm/channels/web/frontend/src/features/trajectory](#module-6) |
-| [jiuwenswarm/extensions/sdk](#module-7) |
-| [jiuwenswarm/resources/plugins/ttse](#module-8) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-9) |
+| [jiuwenswarm/extensions/sdk](#module-6) |
+| [jiuwenswarm/resources/plugins/ttse](#module-7) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-8) |
 
 <a id="module-1"></a>
 
@@ -67,21 +66,13 @@ generated: true
 
 <a id="module-6"></a>
 
-## jiuwenswarm/channels/web/frontend/src/features/trajectory
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261105_1625_team-shared-axis-user-turn-gaps](F_20261105_1625_team-shared-axis-user-turn-gaps.md) | F | 集群共享轴隔夜交界对齐单 Agent user_turn 空隙 | william9200000 | jiuwenswarm/channels/web/frontend/src/features/trajectory | jiuwenswarm/channels/web/frontend/src/features/trajectory/diagnosis/diagnosisTimeSelection.ts, jiuwenswarm/channels/web/frontend/src/features/trajectory/diagnosis/useSharedTimeAxis.ts, jiuwenswarm/channels/web/frontend/src/features/trajectory/TrajectoryPanel.tsx, jiuwenswarm/channels/web/frontend/src/features/trajectory/client/TrajectoryExplorer.tsx, jiuwenswarm/channels/web/frontend/src/features/trajectory/client/TrajectoryTimeline.tsx, jiuwenswarm/channels/web/frontend/src/features/trajectory/AGENTS.md, jiuwenswarm/channels/web/frontend/tests/trajectoryDiagnosis.test.mjs, jiuwenswarm/channels/web/frontend/tests/singleAgentSurface.test.mjs | 无独立 D：无独立 D；按分析页对照单 Agent 隔夜双时间交界的结论直接落地。 |
-
-<a id="module-7"></a>
-
 ## jiuwenswarm/extensions/sdk
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-8"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -89,7 +80,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-9"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
