@@ -4241,10 +4241,30 @@ def _lock_free_media_task(cfg: dict[str, Any]) -> str:
     )
 
 
-def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> list[str]:
-    """Every character spec node is a data predecessor of every clip node.
+def _is_stale_char_edge(edge: dict[str, Any], *, sources: set[str], target: str) -> bool:
+    """True for a leftover ``e_char_*`` edge this clip no longer needs."""
+    return (
+        str(edge.get("source") or "") in sources
+        and str(edge.get("target") or "") == target
+        and str(edge.get("id") or "").startswith("e_char_")
+    )
 
-    Guarantees all character specs finish before any compose/edit clip runs.
+
+def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> list[str]:
+    """Each clip waits for the character specs it actually shows.
+
+    The previous rule wired every character spec into every clip, so an aerial
+    or timelapse shot with no on-screen cast still waited for the slowest
+    character sheet in the film (and carried all of their references). The clip
+    already declares its cast, so gate on that set instead:
+
+    - ``character_node_ids`` wins when the clip declares it;
+    - otherwise ``on_screen`` is mapped through each spec's ``character_ids``;
+    - a clip that explicitly declares no cast takes no character edge at all;
+    - a clip that declares neither keeps the whole-ensemble gate (legacy).
+
+    Stale ``e_char_*`` edges from an earlier pass are pruned so the result is
+    idempotent on re-run.
     """
     notes: list[str] = []
     nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
@@ -4256,6 +4276,14 @@ def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> 
     ]
     if not character_spec_node_ids:
         return notes
+    # character id -> spec node id, for clips that only declare on_screen.
+    spec_by_character_id: dict[str, str] = {}
+    for sid in character_spec_node_ids:
+        cfg = by_id[sid].get("config") or {}
+        for cid in cfg.get("character_ids") or []:
+            token = str(cid or "").strip()
+            if token:
+                spec_by_character_id.setdefault(token, sid)
     edge_pairs = {
         (str(e.get("source") or ""), str(e.get("target") or ""))
         for e in (graph.get("edges") or [])
@@ -4269,8 +4297,66 @@ def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> 
             continue
         cfg = dict(node.get("config") or {})
         inputs = [str(x) for x in (cfg.get("inputs") or []) if str(x)]
+        declared_nodes = cfg.get("character_node_ids")
+        declared_cast = cfg.get("on_screen")
+        if isinstance(declared_nodes, list) and declared_nodes:
+            gate_ids = [str(x) for x in declared_nodes if str(x) in character_spec_node_ids]
+        elif isinstance(declared_nodes, list) or isinstance(declared_cast, list):
+            # Declared, but nothing on screen: this shot draws no character.
+            gate_ids = []
+            for cid in declared_cast or []:
+                node_id = spec_by_character_id.get(str(cid).strip())
+                if node_id:
+                    gate_ids.append(node_id)
+        else:
+            gate_ids = list(character_spec_node_ids)
+        # A clip names its cast through several fields. Anyone the clip can draw
+        # (including a partially visible face) must keep the spec edge even when
+        # on_screen was written from only one of them. Offscreen/absent cast is
+        # in the scene but not in frame, so they need no identity reference.
+        named: list[str] = list(gate_ids)
+        for key in ("character_ids", "featured_cast_ids", "compose_cast_ids", "identity_ref_ids"):
+            for cid in cfg.get(key) or []:
+                named.append(str(cid))
+        identity_refs = cfg.get("identity_refs")
+        if isinstance(identity_refs, dict):
+            for cid in identity_refs.get("character_ids") or []:
+                named.append(str(cid))
+            for nid in identity_refs.get("character_node_ids") or []:
+                token = str(nid)
+                if token in character_spec_node_ids:
+                    named.append(token)
+        hidden = {
+            str(x)
+            for key in ("offscreen", "off_screen_cast_ids", "exited_ids", "exiting_character_ids")
+            for x in (cfg.get(key) or [])
+        }
+        for token in named:
+            if not token or token in hidden:
+                continue
+            sid = token if token in character_spec_node_ids else spec_by_character_id.get(token)
+            if sid:
+                gate_ids.append(sid)
+        gate_ids = list(dict.fromkeys(gate_ids))
+        gate_set = set(gate_ids)
+        # Prune character gates this clip no longer needs.
+        stale = {
+            (sid, fid)
+            for sid in character_spec_node_ids
+            if sid not in gate_set and (sid, fid) in edge_pairs
+        }
+        if stale:
+            stale_sources = {s for s, _ in stale}
+            graph["edges"] = [
+                e
+                for e in (graph.get("edges") or [])
+                if not _is_stale_char_edge(e, sources=stale_sources, target=fid)
+            ]
+            edge_pairs -= stale
+            inputs = [x for x in inputs if x not in stale_sources]
+            notes.append(f"{fid}: character_spec_gate pruned {len(stale)}")
         changed = False
-        for sid in character_spec_node_ids:
+        for sid in gate_ids:
             if sid not in inputs:
                 inputs.append(sid)
                 changed = True
@@ -4287,7 +4373,7 @@ def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> 
                 edge_pairs.add((sid, fid))
                 notes.append(f"{fid}: character_spec_gate <- {sid}")
                 changed = True
-        if changed:
+        if changed or stale:
             cfg["inputs"] = list(dict.fromkeys(inputs))
             node["config"] = cfg
     return notes
