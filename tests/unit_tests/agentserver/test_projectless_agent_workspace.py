@@ -660,6 +660,22 @@ def test_agent_projectless_resolution_does_not_promote_legacy_cwd(tmp_path):
     assert resolve_request_project_dir(request) == str(tmp_path / "caller-cwd")
 
 
+def test_project_resolution_preserves_legacy_workspace_for_team(tmp_path):
+    workspace = tmp_path / "legacy-team-workspace"
+    request = AgentRequest(
+        request_id="req-team",
+        channel_id="web",
+        params={
+            "mode": "team",
+            "workspace_dir": str(workspace),
+            "cwd": str(tmp_path / "caller-cwd"),
+        },
+    )
+
+    assert resolve_request_project_dir(request) == str(workspace)
+    assert resolve_request_project_dir(request, include_legacy_fallbacks=False) is None
+
+
 def test_projectless_sandbox_mounts_task_root_instead_of_server_cwd(
     tmp_path, monkeypatch
 ):
