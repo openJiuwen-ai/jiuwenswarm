@@ -31,6 +31,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
+from jiuwenswarm.common.timezone import get_default_timezone
+
 from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     HEARTBEAT_TERMINAL_STATUSES,
     HeartbeatJob,
@@ -617,7 +619,7 @@ class HeartbeatSchedulerService:
 
     @staticmethod
     def _next_cron_ts(job: HeartbeatJob, base_ts: float) -> float | None:
-        tz_name = job.schedule.timezone or job.timezone or "Asia/Shanghai"
+        tz_name = job.schedule.timezone or job.timezone or get_default_timezone().key
         tz = ZoneInfo(tz_name)
         base_dt = datetime.fromtimestamp(base_ts, tz=tz)
         try:
@@ -969,12 +971,12 @@ class HeartbeatSchedulerService:
 
     @staticmethod
     def _format_preview(
-        ts: float, *, timezone: str = "Asia/Shanghai"
+        ts: float, *, timezone: str | None = None
     ) -> dict[str, Any]:
         from datetime import datetime as _dt
 
         try:
-            iso = _dt.fromtimestamp(ts, tz=ZoneInfo(timezone)).isoformat()
+            iso = _dt.fromtimestamp(ts, tz=ZoneInfo(timezone or get_default_timezone().key)).isoformat()
         except Exception:
             iso = ""
         return {"run_at": ts, "iso": iso}
