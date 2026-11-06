@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "JiuwenExpertGroupCatalog",
     "JiuwenExpertTeamLauncher",
     "install_expert_org_adapters",
     "register_expert_adapter_installer",
@@ -13,10 +12,6 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "JiuwenExpertGroupCatalog":
-        from jiuwenswarm.agents.harness.team.expert_org.catalog import JiuwenExpertGroupCatalog
-
-        return JiuwenExpertGroupCatalog
     if name == "JiuwenExpertTeamLauncher":
         from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
 
