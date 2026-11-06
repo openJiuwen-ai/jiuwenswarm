@@ -4,23 +4,29 @@
 
 A client such as the PowerPoint task pane shows one conversation next to the
 resource it edits (an open document) and runs that conversation's resource
-tools itself. It attaches with ``client.attach``: the conversation, the app plugin that knows
-the resource (``registry``), the resource, and what its host can run.
-AgentServer then installs the plugin and equips the conversation with it
-(``plugins``), keeps the capabilities and the resource with the conversation
+tools itself. It attaches with ``client.attach``: the conversation, the resource,
+and what its host can run. The app that knows the resource (``registry``) is
+the conversation's ``client_app``, named once at ``session.create``.
+AgentServer keeps the capabilities and the resource with the conversation
 (``client_capabilities.json``: the conversation's resource outlives any lease),
 and lists the attachment (``directory``) for as long as the client
 renews it (``client.renew``, every ``renew_every_seconds`` of the attach
 response). A renew refused with ``NOT_ATTACHED`` (the lease lapsed, the
-Worker restarted, the socket reconnected) makes the client attach again.
+Worker restarted, the socket reconnected) makes the client attach again; one
+refused with ``DISPLACED`` (another client attached the same resource, as when
+a copied file is open too) makes it stop renewing and leave the resource to the
+other client until its user chooses otherwise.
 
 ``resource.key`` is a stable identity the client keeps with the resource itself
 (for a document, an id written into the file), so it survives save-as, renames
-and moves; it must not be a file path or URL.
+and moves; it must not be a file path or URL. A client finds the conversations
+its resource was attached to with ``client.conversations``, the most recently
+active first, so the resource itself keeps nothing but its key.
 
 One resource is attached to one conversation. An attach is refused with
-``CONFLICT`` when the conversation already belongs to another app or is attached
-to another resource right now; the client then starts a new conversation.
+``CONFLICT`` when the conversation was not created by a client app (it has no
+registered ``client_app``) or is attached to another resource right now; the
+client then starts a new conversation.
 
 A user's attached clients can find each other (``client.list``) and read each
 other's latest messages (``client.conversation.messages``).
@@ -32,7 +38,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -51,13 +56,7 @@ from jiuwenswarm.server.client_attachments.directory import (
     attachment_id_for,
     get_attachment_directory,
 )
-from jiuwenswarm.server.client_attachments.plugins import (
-    check_client_plugin,
-    check_declared_tools,
-    ensure_plugin,
-    equip,
-)
-from jiuwenswarm.server.client_attachments.registry import app_plugin
+from jiuwenswarm.server.client_attachments.registry import ClientApp, conversation_app, registered_app
 from jiuwenswarm.server.client_attachments.watch import Push, announce_change, pending_interactions
 from jiuwenswarm.server.ws_send import send_wire_payload
 
@@ -68,11 +67,11 @@ CLIENT_ATTACH_REQ_METHODS = frozenset({
     ReqMethod.CLIENT_RENEW,
     ReqMethod.CLIENT_LIST,
     ReqMethod.CLIENT_CONVERSATION_MESSAGES,
+    ReqMethod.CLIENT_CONVERSATIONS,
 })
 
 _CAPABILITIES_FILE = "client_capabilities.json"
 _MAX_CAPABILITIES_BYTES = 64 * 1024
-_PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _RESOURCE_FIELDS = ("key", "display_name", "kind", "host_vendor")
 _LEASE = {"lease_seconds": LEASE_SECONDS, "renew_every_seconds": RENEW_EVERY_SECONDS}
 
@@ -108,6 +107,8 @@ async def _answer(request: AgentRequest, push: Push) -> dict[str, Any]:
     if method == ReqMethod.CLIENT_CONVERSATION_MESSAGES:
         target, _owner = await asyncio.to_thread(_owned_session, request, params.get("target_session_id"))
         return {"messages": await asyncio.to_thread(_latest_messages, target)}
+    if method == ReqMethod.CLIENT_CONVERSATIONS:
+        return {"conversations": await asyncio.to_thread(_conversations, request, params)}
     raise ClientAttachError(ClientAttachErrorCode.BAD_REQUEST, f"not a client attach method: {method}")
 
 
@@ -129,12 +130,10 @@ def _owned_session(request: AgentRequest, session_id: Any) -> tuple[str, str]:
 
 
 async def _attach(request: AgentRequest, params: dict[str, Any], push: Push) -> dict[str, Any]:
-    """This socket's client attaches its resource to ``session_id``, through ``plugin_id``."""
+    """This socket's client attaches its resource to ``session_id``, through the conversation's app."""
     session_id, owner = await asyncio.to_thread(_owned_session, request, params.get("session_id"))
-    plugin_id, resource, capabilities = params.get("plugin_id"), params.get("resource"), params.get("capabilities")
+    resource, capabilities = params.get("resource"), params.get("capabilities")
     bad_request = ClientAttachErrorCode.BAD_REQUEST
-    if not isinstance(plugin_id, str) or not _PLUGIN_ID.fullmatch(plugin_id):
-        raise ClientAttachError(bad_request, "client.attach needs a plugin_id")
     if not isinstance(resource, dict) or not all(
             isinstance(resource.get(k), str) and resource[k].strip() for k in _RESOURCE_FIELDS):
         raise ClientAttachError(bad_request, f"client.attach needs a resource with {', '.join(_RESOURCE_FIELDS)}")
@@ -143,23 +142,16 @@ async def _attach(request: AgentRequest, params: dict[str, Any], push: Push) -> 
     ws_id = str((request.metadata or {}).get("ws_id") or "")
     if not request.channel_id or not ws_id:
         raise ClientAttachError(bad_request, "client.attach needs a client connection")
-    plugin = await asyncio.to_thread(app_plugin, plugin_id)
-    check_declared_tools(plugin, capabilities)
+    app = await asyncio.to_thread(_conversation_app, session_id)
+    check_declared_tools(app, capabilities)
     directory = get_attachment_directory()
     resource = {k: " ".join(resource[k].split()) for k in _RESOURCE_FIELDS}
-    attach = {"channel_id": request.channel_id, "ws_id": ws_id, "owner_id": owner, "plugin_id": plugin_id}
-    directory.check_attach(**attach, resource_key=resource["key"], session_id=session_id)
-    attached_plugin_id = await asyncio.to_thread(_attached_plugin_id, session_id)
-    await asyncio.to_thread(check_client_plugin, session_id, plugin_id, attached_plugin_id)
-    await ensure_plugin(plugin)
-    await asyncio.to_thread(equip, session_id, plugin_id, attached_plugin_id)
-    # Checked again: the requests of other sockets (another attach) ran
-    # while this one awaited. Nothing awaits from here to attach.
+    attach = {"channel_id": request.channel_id, "ws_id": ws_id, "owner_id": owner, "client_app": app.id}
     displaced = directory.displaced_by(channel_id=request.channel_id, ws_id=ws_id,
-                                       attachment_id=attachment_id_for(owner, plugin_id, resource["key"]))
+                                       attachment_id=attachment_id_for(owner, app.id, resource["key"]))
     connection = directory.attach(**attach, resource=resource, session_id=session_id)
     try:
-        await asyncio.to_thread(save_client_capabilities, session_id, plugin_id, capabilities,
+        await asyncio.to_thread(save_client_capabilities, session_id, capabilities,
                                 attachment_id=connection.attachment_id, resource=resource)
         pending = await pending_interactions(session_id)
         await asyncio.to_thread(_route_pushes_to_socket, session_id, request)
@@ -169,19 +161,65 @@ async def _attach(request: AgentRequest, params: dict[str, Any], push: Push) -> 
         raise ClientAttachError(
             ClientAttachErrorCode.UNAVAILABLE, f"the client could not attach: {exc}") from exc
     await announce_change(push, owner)
-    return {"attachment_id": connection.attachment_id, "session_id": session_id, "plugin_id": plugin_id,
+    return {"attachment_id": connection.attachment_id, "session_id": session_id, "client_app": app.id,
             "pending": pending, **_LEASE}
+
+
+def _conversation_app(session_id: str) -> ClientApp:
+    """The app the conversation was created for (``session.create``'s ``client_app``)."""
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    app = conversation_app(get_session_metadata(session_id, enable_writeback=False))
+    if app is None:
+        raise ClientAttachError(ClientAttachErrorCode.CONFLICT, "this conversation was not created by a client app")
+    return app
+
+
+def check_declared_tools(app: ClientApp, capabilities: dict[str, Any]) -> None:
+    """A client declares only tools its client app defines."""
+    declared = capabilities.get("supported_tools")
+    if not isinstance(declared, list) or not all(isinstance(name, str) for name in declared):
+        raise ClientAttachError(
+            ClientAttachErrorCode.INVALID_ARGUMENT, "supported_tools must be a list of tool names")
+    unknown = sorted(set(declared) - app.tool_names)
+    if unknown:
+        raise ClientAttachError(
+            ClientAttachErrorCode.INVALID_ARGUMENT,
+            f"supported_tools names tools the {app.id} app does not have: {', '.join(unknown)}",
+        )
 
 
 def _renew(request: AgentRequest, params: dict[str, Any]) -> dict[str, Any]:
     """Extend the lease of this socket's attachment; cheap, as every attached client sends it often."""
-    renewed = get_attachment_directory().renew(
+    get_attachment_directory().renew(
         channel_id=request.channel_id or "", ws_id=str((request.metadata or {}).get("ws_id") or ""),
         attachment_id=str(params.get("attachment_id") or ""), session_id=str(params.get("session_id") or ""),
     )
-    if renewed is None:
-        raise ClientAttachError(ClientAttachErrorCode.NOT_ATTACHED, "no such attachment: attach again")
     return dict(_LEASE)
+
+
+def _conversations(request: AgentRequest, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """The requester's conversations of the app ``client_app`` last attached to the resource ``resource_key``."""
+    from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
+
+    client_app, key = params.get("client_app"), params.get("resource_key")
+    if not isinstance(client_app, str) or not isinstance(key, str) or not key.strip():
+        raise ClientAttachError(ClientAttachErrorCode.BAD_REQUEST,
+                                "client.conversations needs a client_app and a resource_key")
+    registered_app(client_app)
+    key = " ".join(key.split())  # as attach saved it
+    owner = str(request.user_id or "").strip()
+    conversations = []
+    for metadata in collect_all_sessions_metadata(enable_writeback=False):
+        if str(metadata.get("user_id") or "").strip() != owner or metadata.get("client_app") != client_app:
+            continue
+        session_id = metadata["session_id"]
+        resource = _saved_capabilities(session_id).get("resource")
+        if not isinstance(resource, dict) or resource.get("key") != key:
+            continue
+        conversations.append({"session_id": session_id, "title": metadata.get("title") or "",
+                              "last_message_at": float(metadata.get("last_message_at") or 0)})
+    return sorted(conversations, key=lambda c: (-c["last_message_at"], c["session_id"]))
 
 
 def _route_pushes_to_socket(session_id: str, request: AgentRequest) -> None:
@@ -235,10 +273,9 @@ def _capabilities_path(session_id: str) -> Path:
 
 
 def save_client_capabilities(
-    session_id: str, plugin_id: str, capabilities: dict[str, Any], *, attachment_id: str, resource: dict[str, str],
+    session_id: str, capabilities: dict[str, Any], *, attachment_id: str, resource: dict[str, str],
 ) -> None:
-    saved = {"plugin_id": plugin_id, "capabilities": capabilities, "attachment_id": attachment_id,
-             "resource": resource}
+    saved = {"capabilities": capabilities, "attachment_id": attachment_id, "resource": resource}
     path = _capabilities_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -260,18 +297,9 @@ def _saved_capabilities(session_id: str) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _attached_plugin_id(session_id: str) -> str | None:
-    """The app plugin whose client attached the conversation last, if any."""
-    plugin_id = _saved_capabilities(session_id).get("plugin_id")
-    return plugin_id if isinstance(plugin_id, str) and plugin_id else None
-
-
-def load_client_capabilities(session_id: str, plugin_id: str) -> dict[str, Any] | None:
-    """What the client of ``plugin_id`` declared for this conversation at its last attach."""
-    raw = _saved_capabilities(session_id)
-    if raw.get("plugin_id") != plugin_id:
-        return None
-    capabilities = raw.get("capabilities")
+def load_client_capabilities(session_id: str) -> dict[str, Any] | None:
+    """What the conversation's client declared at its last attach."""
+    capabilities = _saved_capabilities(session_id).get("capabilities")
     return capabilities if isinstance(capabilities, dict) else None
 
 
