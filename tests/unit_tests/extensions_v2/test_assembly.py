@@ -20,8 +20,23 @@ class FakeServer:
         return True
 
 
+def _runner_extension_bus_accessors():
+    try:
+        from openjiuwen.core.runner import Runner
+    except ImportError:
+        return None, None
+    return getattr(Runner, "get_extension_bus", None), getattr(Runner, "set_extension_bus", None)
+
+
+def _reset_runner_extension_bus() -> None:
+    _, set_bus = _runner_extension_bus_accessors()
+    if set_bus is not None:
+        set_bus(None)
+
+
 @pytest.mark.asyncio
 async def test_install_extensions_only_activates_installed_packages_once(tmp_path: Path, monkeypatch) -> None:
+    _reset_runner_extension_bus()
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_report_path", lambda: tmp_path / "report.yaml")
     store = tmp_path / "store"
@@ -38,10 +53,16 @@ async def test_install_extensions_only_activates_installed_packages_once(tmp_pat
         assert active == {"saved.pkg"}
         assert assembly.get_extension_manager() is first.manager
         assert assembly.get_webui_runtime() is first.webui
+        get_bus, _ = _runner_extension_bus_accessors()
+        if get_bus is not None:
+            assert get_bus() is first.bus
     finally:
         await assembly.shutdown_extensions()
 
     assert assembly.get_extension_manager() is None
+    get_bus, _ = _runner_extension_bus_accessors()
+    if get_bus is not None:
+        assert get_bus() is None
 
 
 @pytest.mark.asyncio
