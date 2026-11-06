@@ -60,7 +60,7 @@ sequenceDiagram
     B->>B: 保存能力目录
     B-->>R: Build 成功
     R-->>M: core 初始化完成
-    M->>R: open_install_dir(解析后的路径)
+    M->>R: await open_install_dir(安装根目录, report_path, domain=agentserver)
     M-->>A: init 返回
     A->>M: load_installed()
     M-->>A: 返回逐包结果

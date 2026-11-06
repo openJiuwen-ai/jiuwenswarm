@@ -47,20 +47,22 @@ async def invoke(action: str, target: str = "", *options: str) -> tuple[dict[str
 
 @pytest.mark.asyncio
 async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    manager = ExtensionManager(tmp_path / "installed")
+    manager = ExtensionManager(tmp_path / "installed", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
     monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_extension_manager", lambda: manager)
     notify = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
-                        lambda: SimpleNamespace(notify_packages_installed=notify))
+                        lambda: SimpleNamespace(notify_packages_changed=notify))
     package = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
     archive = archive_package(package)
     service = transport.LocalControl("agent", handle)
     await service.start()
     try:
         result, code = await invoke("install", str(archive), "--json")
-        assert code == 0 and result["ok"] and result["domain"] == "agent"
+        assert code == 0
+        assert result["ok"]
+        assert result["domain"] == "agentserver"
         assert result["verification_status"] == "SUCCESS"
         assert result["ui_notified"] is True
         notify.assert_awaited_once_with([PACKAGE_ID])
@@ -121,7 +123,7 @@ class Peer:
 def archive(tmp_path: Path) -> Path:
     path = tmp_path / "中文 package.zip"
     with ZipFile(path, "w") as output:
-        output.writestr("manifest.yaml", 'package:\n  id: test.pkg\n  version: "1.0.0"\n')
+        output.writestr("manifest.yaml", 'package:\n  domain: agentserver\n  id: test.pkg\n  version: "1.0.0"\n')
     return path
 
 
@@ -247,7 +249,7 @@ async def test_no_context_is_reported_without_port_search(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_manifest_selects_gateway_host(archive: Path) -> None:
     with ZipFile(archive, "w") as output:
-        output.writestr("manifest.yaml", 'domain: gateway\npackage:\n  id: test.pkg\n  version: "1.0.0"\n')
+        output.writestr("manifest.yaml", 'package:\n  domain: gateway\n  id: test.pkg\n  version: "1.0.0"\n')
     agent_peer, gateway_peer = Peer(), Peer()
     agent = transport.LocalControl("agent", agent_peer.handle)
     gateway = transport.LocalControl("gateway", gateway_peer.handle)
@@ -257,7 +259,7 @@ async def test_manifest_selects_gateway_host(archive: Path) -> None:
         result, code = await invoke("install", str(archive))
         assert code == 0 and result["domain"] == "gateway"
         assert gateway_peer.writes == 1 and agent_peer.writes == 0
-        result, code = await invoke("install", str(archive), "--domain", "agent")
+        result, code = await invoke("install", str(archive), "--domain", "agentserver")
         assert code == 2 and result["error"]["code"] == "DOMAIN_MISMATCH"
     finally:
         await gateway.close()
@@ -297,20 +299,24 @@ async def test_ready_owner_is_notified_and_disconnect_releases_it() -> None:
     push = Push()
     runtime = WebUIRuntime(bus=make_bus(), transport=RenderTransport(push=push))
     runtime.remember_ready_client("ws-1", "session-1")
-    assert await runtime.notify_packages_installed([PACKAGE_ID])
+    assert await runtime.notify_packages_changed([PACKAGE_ID])
     message = push.messages[0]
     assert message["metadata"] == {"ws_id": "ws-1"}
     assert message["payload"]["package_ids"] == [PACKAGE_ID]
     await runtime.drop_connection("ws-1")
-    assert not await runtime.notify_packages_installed([PACKAGE_ID])
+    assert not await runtime.notify_packages_changed([PACKAGE_ID])
     assert len(push.messages) == 1
 
 
 @pytest.mark.asyncio
-async def test_agent_control_rejects_gateway_zip_before_loading(archive: Path) -> None:
-    with ZipFile(archive, "w") as output:
-        output.writestr("manifest.yaml", 'domain: gateway\npackage:\n  id: test.pkg\n  version: "1.0.0"\n')
-    response = await handle("install", {"paths": [str(archive)]})
+async def test_agent_control_rejects_gateway_zip_before_loading(tmp_path: Path) -> None:
+    import yaml
+    root = write_package(tmp_path / "foreign")
+    path = root / "manifest.yaml"
+    manifest = yaml.safe_load(path.read_text())
+    manifest["package"]["domain"] = "gateway"
+    path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    response = await handle("install", {"paths": [str(archive_package(root))]})
     assert not response["ok"] and response["payload"]["code"] == "DOMAIN_MISMATCH"
 
 
@@ -347,7 +353,7 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
 ) -> None:
     from jiuwenswarm.extensions_v2 import assembly
 
-    manager = ExtensionManager(tmp_path / "installed")
+    manager = ExtensionManager(tmp_path / "installed", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     entered, release, closing = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -384,3 +390,25 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
         await asyncio.gather(request, *([shutdown] if shutdown is not None else []), return_exceptions=True)
         await service.close()
         await manager.shutdown()
+
+
+@pytest.mark.parametrize("domain", [None, "agent", "GATEWAY", " gateway ", "other", 1])
+def test_cli_rejects_missing_or_illegal_package_domain(tmp_path, domain):
+    import yaml
+    path = tmp_path / "invalid-domain.zip"
+    package = {"id": "test.pkg", "version": "1.0.0"}
+    if domain is not None:
+        package["domain"] = domain
+    with ZipFile(path, "w") as archive:
+        archive.writestr("manifest.yaml", yaml.safe_dump({"package": package}))
+    with pytest.raises(cli.ClientError, match="package.domain"):
+        cli.inspect_zip(str(path))
+
+
+def test_cli_default_timeout_tracks_dependency_budget(monkeypatch):
+    from jiuwenswarm.extensions_v2 import config
+    monkeypatch.setattr(config, "resolve_install_report_settings", lambda: SimpleNamespace(dependency_timeout=600))
+    monkeypatch.setattr(transport, "read_context", lambda domain: {"domain": domain})
+    args = cli.parser().parse_args(["query"])
+    settings = cli.Settings.from_args(args)
+    assert settings.timeout == 630

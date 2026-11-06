@@ -37,7 +37,7 @@ async def test_core_publication_failure_rolls_back_without_repeating_management(
         return await next_handler(event)
 
     bus.register_event_handler("extension.rollback", observe_rollback, {}, HandlerLevel.BUILTIN)
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source", module_source=TWO_HANDLERS_EXTENSION)
     if reload_existing:
@@ -72,7 +72,7 @@ async def test_core_publication_failure_rolls_back_without_repeating_management(
 async def test_install_that_loses_report_is_queried_without_reinstalling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     source = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
     install = manager.registry.install

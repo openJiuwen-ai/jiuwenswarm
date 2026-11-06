@@ -181,11 +181,11 @@ class WebUIRuntime:
             while len(self._ready_clients) > 1024:
                 self._ready_clients.pop(next(iter(self._ready_clients)))
 
-    async def notify_packages_installed(self, package_ids: list[str]) -> bool:
-        """Ask connected owners to replay ui.ready for newly installed packages."""
+    async def notify_packages_changed(self, package_ids: list[str]) -> bool:
+        """Ask connected owners to replay ui.ready after a package changes."""
         delivered = False
         for connection_id, session_id in tuple(self._ready_clients):
-            sent = await self.transport.notify_packages_installed(connection_id, session_id, package_ids)
+            sent = await self.transport.notify_packages_changed(connection_id, session_id, package_ids)
             delivered = sent or delivered
         return delivered
 

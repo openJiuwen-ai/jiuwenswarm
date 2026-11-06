@@ -37,7 +37,7 @@
 PyInstaller 配置显式收集命令模块，不另外发布一套桌面 CLI 启动器。
 
 命令用法见[命令行指令](../../../../docs/zh/命令行指令.md#扩展包管理extension)。
-`install` 从最终 ZIP 的 manifest 读取包 ID、版本和 domain；其他操作默认选择 AgentServer，
+`install` 从最终 ZIP 的 manifest.package 读取 id、version 和 domain；其他操作默认选择 AgentServer，
 管理 Gateway 包时显式使用 `--domain gateway`。
 
 ## 3. 连接运行中的宿主
@@ -69,7 +69,7 @@ AgentServer、Gateway 在扩展模块装配完成后，各自创建一个只监�
 这是当前操作系统账号使用的管理能力，不提供远程用户授权接口。
 
 AgentServer 复用 `PackageManagementAdapter`；Gateway 调用自己的包管理器。
-两侧在写入前检查包的 domain，避免把包安装到错误宿主；Gateway 与 AgentServer 不互相导入扩展实现。
+AgentServer 本机入口通过 SDK 安全预检 `package.domain`；CLI 只允许 `agentserver`/`gateway`，缺省选择 `agentserver`。既有本机端点名称 `agent`/`gateway` 保留为通信标识。
 包加载、依赖检查、Handler 发布和回滚继续由原管理链路完成，不创建第二套 Runtime、Bus 或 Registry。
 
 ## 4. 执行流程与失败处理

@@ -1,5 +1,6 @@
 schemaVersion: 1
 package:
+  domain: agentserver
   id: webui.plugin-manager
   version: 1.0.0
   displayName: Plugin Manager / 插件管理

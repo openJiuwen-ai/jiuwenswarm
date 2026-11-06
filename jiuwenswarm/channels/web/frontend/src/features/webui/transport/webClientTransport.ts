@@ -51,11 +51,11 @@ export function createWebClientTransport(client: WebUIClientLike, capabilities?:
       const offDeclarations = capabilities ? client.on('client.declarations', (event) => {
         try { capabilities.configure(event.payload); } catch { /* The capability host exposes a localized configuration error. */ }
       }) : undefined;
-      const offInstalled = client.on('extensions.v2.installed', (event) => {
+      const offPackagesChanged = client.on('extensions.v2.installed', (event) => {
         const ids = event.payload.package_ids;
         if (Array.isArray(ids) && ids.length <= 128 && ids.every((id) => typeof id === 'string' && id.length <= 128)) {
           const sessionId = event.payload.session_id;
-          handlers.onPackagesInstalled?.(ids, typeof sessionId === 'string' ? sessionId : undefined);
+          handlers.onPackagesChanged?.(ids, typeof sessionId === 'string' ? sessionId : undefined);
         }
       });
       const offState = client.onStateChange((state) => {
@@ -65,7 +65,7 @@ export function createWebClientTransport(client: WebUIClientLike, capabilities?:
         offRender();
         offClear();
         offError();
-        offInstalled();
+        offPackagesChanged();
         offState();
         offOperation?.();
         offDeclarations?.();

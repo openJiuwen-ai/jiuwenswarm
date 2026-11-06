@@ -73,7 +73,7 @@ class PackageManagementAdapter(GatewayAdapter):
             logger.exception("[ExtensionsV2] could not encode management result")
             return _error_response(request, "Could not encode V2 package management result")
         if install_reports is not None:
-            payload["ui_notified"] = await _notify_installed_packages(install_reports)
+            payload["ui_notified"] = await _notify_changed_packages(install_reports)
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -84,8 +84,8 @@ class PackageManagementAdapter(GatewayAdapter):
         )
 
 
-async def _notify_installed_packages(reports: Sequence[ActivationReport]) -> bool:
-    """Refresh mounted WebUI slots after a confirmed install from any entry point."""
+async def _notify_changed_packages(reports: Sequence[ActivationReport]) -> bool:
+    """Refresh mounted WebUI slots after a confirmed package installation."""
     succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
     if not succeeded:
         return False
@@ -93,9 +93,9 @@ async def _notify_installed_packages(reports: Sequence[ActivationReport]) -> boo
 
     try:
         runtime = get_webui_runtime()
-        return await runtime.notify_packages_installed(succeeded) if runtime is not None else False
+        return await runtime.notify_packages_changed(succeeded) if runtime is not None else False
     except Exception:  # noqa: BLE001 - notification failure does not undo a successful install
-        logger.warning("[ExtensionsV2] installation UI notification failed", exc_info=True)
+        logger.warning("[ExtensionsV2] package change UI notification failed", exc_info=True)
         return False
 
 
@@ -201,6 +201,7 @@ def _encode(value: object) -> Any:
     """Encode Core value objects without publishing their implementation enums."""
     if isinstance(value, QueryResult):
         state = {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
+        state["package_ids"] = sorted(record.package_id for record in value.packages if record.successful)
         state["installed_packages"] = [
             {"package_id": root.parent.name, "version": root.name, "install_path": str(root)}
             for root in value.installed
