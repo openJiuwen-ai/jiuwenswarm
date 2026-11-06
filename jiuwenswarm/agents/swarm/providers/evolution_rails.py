@@ -44,6 +44,7 @@ from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     merge_evolution_disabled_skills,
 )
+from jiuwenswarm.common.utils import get_agent_skills_dir
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
 logger = logging.getLogger(__name__)
@@ -55,10 +56,23 @@ MEMBER_SKILL_EVOLUTION = "swarm.member_skill_evolution"
 EVOLUTION_INTERRUPT = "swarm.evolution_interrupt"
 
 
+def _skill_library_dir(ctx: SwarmBuildContext) -> str:
+    """Return the one physical Skill library evolution writes into.
+
+    Args:
+        ctx: The per-member build context.
+
+    Returns:
+        The absolute Skill library path.
+    """
+    raw = str(ctx.global_skills_dir or "").strip()
+    return raw or str(get_agent_skills_dir())
+
+
 def _build_team_workspace_info(
     *,
     team_ws_root: str | None,
-    team_skills_dir: str | None,
+    skills_dir: str | None,
     team_id: str,
     config: dict[str, Any] | None,
 ) -> Any:
@@ -73,7 +87,7 @@ def _build_team_workspace_info(
 
     Args:
         team_ws_root: Team shared workspace root path.
-        team_skills_dir: Team shared skills directory (rebuild gate + sync source).
+        skills_dir: The single Skill library (rebuild gate + authoring root).
         team_id: Team name.
         config: The resolved ``config.yaml`` mapping.
 
@@ -86,7 +100,7 @@ def _build_team_workspace_info(
 
     return TeamWorkspaceInfo(
         root_dir=team_ws_root,
-        skills_dir=team_skills_dir,
+        skills_dir=skills_dir,
         team_id=team_id,
         config=config,
     )
@@ -154,7 +168,7 @@ class SwarmTeamSkillEvolutionRail(TeamSkillEvolutionRail):
         channel: str,
         session_id: str,
         team_ws_root: str | None,
-        team_skills_dir: str,
+        skills_dir: str,
         team_id: str,
         config: dict[str, Any] | None,
     ) -> None:
@@ -164,16 +178,16 @@ class SwarmTeamSkillEvolutionRail(TeamSkillEvolutionRail):
             channel: Resolved channel key used to locate the team manager.
             session_id: Active session id owning the rail.
             team_ws_root: Team shared workspace root path.
-            team_skills_dir: Team shared skills directory.
+            skills_dir: The single Skill library.
             team_id: Team name.
             config: The resolved ``config.yaml`` mapping.
         """
         self._swarm_channel = channel
         self._swarm_session_id = session_id
-        self._swarm_team_skills_dir = team_skills_dir
+        self._swarm_skills_dir = skills_dir
         self._swarm_team_workspace = _build_team_workspace_info(
             team_ws_root=team_ws_root,
-            team_skills_dir=team_skills_dir,
+            skills_dir=skills_dir,
             team_id=team_id,
             config=config,
         )
@@ -211,7 +225,7 @@ class SwarmTeamSkillEvolutionRail(TeamSkillEvolutionRail):
                 "[swarm.team_skill_evolution] registered live rail "
                 "(session=%s, skills_dir=%s)",
                 self._swarm_session_id,
-                self._swarm_team_skills_dir,
+                self._swarm_skills_dir,
             )
         except Exception as exc:
             logger.warning(
@@ -228,7 +242,7 @@ class SwarmTeamSkillCreateRail(TeamSkillCreateRail):
         channel: str,
         session_id: str,
         team_ws_root: str | None,
-        team_skills_dir: str,
+        skills_dir: str,
         team_id: str,
         config: dict[str, Any] | None,
     ) -> None:
@@ -238,7 +252,7 @@ class SwarmTeamSkillCreateRail(TeamSkillCreateRail):
             channel: Resolved channel key used to locate the team manager.
             session_id: Active session id owning the rail.
             team_ws_root: Team shared workspace root path.
-            team_skills_dir: Team shared skills directory.
+            skills_dir: The single Skill library.
             team_id: Team name.
             config: The resolved ``config.yaml`` mapping.
         """
@@ -246,7 +260,7 @@ class SwarmTeamSkillCreateRail(TeamSkillCreateRail):
         self._swarm_session_id = session_id
         self._swarm_team_workspace = _build_team_workspace_info(
             team_ws_root=team_ws_root,
-            team_skills_dir=team_skills_dir,
+            skills_dir=skills_dir,
             team_id=team_id,
             config=config,
         )
@@ -396,8 +410,12 @@ class TeamSkillEvolutionInput(ConstructionInput):
     auto_save: bool = param_field(
         default=False, description="Evolution auto-save approval flag."
     )
-    team_skills_dir: str | None = context_field(
-        attr="team_skills_dir", description="Team shared skills directory."
+    team_skill_visibility_path: str | None = context_field(
+        attr="team_skill_visibility_path",
+        description="Team skills-visibility.json path (authoring audience).",
+    )
+    global_skills_dir: str | None = context_field(
+        attr="global_skills_dir", description="The single Skill library."
     )
     language: str = context_field(
         attr="language", default="cn", description="Member language code."
@@ -442,18 +460,19 @@ def build_team_skill_evolution_rail(
         is configured.
     """
     # Cheap gate before resolving (avoids building the evolution LLM for non-leaders).
-    if ctx.role != "leader" or not ctx.team_skills_dir:
+    if ctx.role != "leader" or not ctx.global_skills_dir:
         return []
 
     try:
         inp = TeamSkillEvolutionInput.resolve(params, ctx)
-        Path(inp.team_skills_dir).mkdir(parents=True, exist_ok=True)
+        skills_dir = _skill_library_dir(ctx)
+        Path(skills_dir).mkdir(parents=True, exist_ok=True)
         llm_model, actual_model_name = _build_evolution_llm_from(
             inp.evolution_model_config
         )
         review_runtime = EvolutionReviewRuntime()
         rail = SwarmTeamSkillEvolutionRail(
-            inp.team_skills_dir,
+            skills_dir,
             llm=llm_model,
             model=actual_model_name,
             review_runtime=review_runtime,
@@ -471,14 +490,14 @@ def build_team_skill_evolution_rail(
             channel=inp.channel,
             session_id=inp.session_id,
             team_ws_root=inp.team_ws_root,
-            team_skills_dir=inp.team_skills_dir,
+            skills_dir=skills_dir,
             team_id=inp.team_id,
             config=ctx.config,
         )
         logger.info(
             "[swarm.team_skill_evolution] built: skills_dir=%s, model=%s, "
             "review_trigger=%s",
-            inp.team_skills_dir,
+            skills_dir,
             actual_model_name,
             inp.review_trigger,
         )
@@ -502,8 +521,12 @@ class TeamSkillCreateInput(ConstructionInput):
         default=False,
         description="Skill-create flag (env SKILL_CREATE overrides config).",
     )
-    team_skills_dir: str | None = context_field(
-        attr="team_skills_dir", description="Team shared skills directory."
+    team_skill_visibility_path: str | None = context_field(
+        attr="team_skill_visibility_path",
+        description="Team skills-visibility.json path (authoring audience).",
+    )
+    global_skills_dir: str | None = context_field(
+        attr="global_skills_dir", description="The single Skill library."
     )
     language: str = context_field(
         attr="language", default="cn", description="Member language code."
@@ -546,16 +569,17 @@ def build_team_skill_create_rail(
         member is not the leader, no team skills directory is configured, or
         skill creation is disabled.
     """
-    if ctx.role != "leader" or not ctx.team_skills_dir:
+    if ctx.role != "leader" or not ctx.global_skills_dir:
         return None
 
     inp = TeamSkillCreateInput.resolve(params, ctx)
+    skills_dir = _skill_library_dir(ctx)
     if not inp.skill_create:
         return None
 
     try:
         rail = SwarmTeamSkillCreateRail(
-            inp.team_skills_dir,
+            skills_dir,
             language=inp.language,
             auto_trigger=True,
             trajectory_span_processor=get_trajectory_span_processor(),
@@ -564,12 +588,12 @@ def build_team_skill_create_rail(
             channel=inp.channel,
             session_id=inp.session_id,
             team_ws_root=inp.team_ws_root,
-            team_skills_dir=inp.team_skills_dir,
+            skills_dir=skills_dir,
             team_id=inp.team_id,
             config=ctx.config,
         )
         logger.info(
-            "[swarm.team_skill_create] built: skills_dir=%s", inp.team_skills_dir
+            "[swarm.team_skill_create] built: skills_dir=%s", skills_dir
         )
         return rail
     except Exception as exc:
@@ -592,8 +616,12 @@ class MemberSkillEvolutionInput(ConstructionInput):
         default=False,
         description="Teammates use passive signal scans, not leader review follow-ups.",
     )
-    team_skills_dir: str | None = context_field(
-        attr="team_skills_dir", description="Team shared skills directory."
+    team_skill_visibility_path: str | None = context_field(
+        attr="team_skill_visibility_path",
+        description="Team skills-visibility.json path (authoring audience).",
+    )
+    global_skills_dir: str | None = context_field(
+        attr="global_skills_dir", description="The single Skill library."
     )
     language: str = context_field(
         attr="language", default="cn", description="Member language code."
@@ -634,17 +662,18 @@ def build_member_skill_evolution_rail(
         directory is configured.
     """
     # Cheap gate before resolving (avoids building the evolution LLM for the leader).
-    if ctx.role == "leader" or not ctx.team_skills_dir:
+    if ctx.role == "leader" or not ctx.global_skills_dir:
         return []
 
     try:
         inp = MemberSkillEvolutionInput.resolve(params, ctx)
+        skills_dir = _skill_library_dir(ctx)
         llm_model, actual_model_name = _build_evolution_llm_from(
             inp.evolution_model_config
         )
         review_runtime = EvolutionReviewRuntime()
         rail = SwarmMemberSkillEvolutionRail(
-            inp.team_skills_dir,
+            skills_dir,
             llm=llm_model,
             model=actual_model_name,
             review_runtime=review_runtime,
