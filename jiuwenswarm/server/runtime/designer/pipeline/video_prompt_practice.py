@@ -27,7 +27,6 @@ from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
 
 _PHRASES: dict[str, dict[str, str]] = {
     "en": {
-        "empty_room": "the empty room",
         "while": "{first}, while {second}.",
         "says": '{who} says: "{line}".',
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
@@ -41,6 +40,7 @@ _PHRASES: dict[str, dict[str, str]] = {
             "same setting and faces continue from that authored start_state."
         ),
         "scene_as_in": "The scene is as in {scene_word}: {place}.",
+    "scene_as_in_unnamed": "The scene is as shown in {scene_word}.",
         "scene_description": "Scene description: {desc}.",
         "props_in_view": "Props in view: {props}.",
         "connected_still": "{word} is the connected still {label}, and that subject is visible in this shot.",
@@ -61,7 +61,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "shot_brief_default_camera": "medium / eye-level",
     },
     "zh": {
-        "empty_room": "空房间",
         "while": "{first}，同时{second}。",
         "says": "{who}说：“{line}”。",
         "says_offscreen": "{who}在画外说：“{line}”。",
@@ -72,6 +71,7 @@ _PHRASES: dict[str, dict[str, str]] = {
         "tod": "时间是{label}。",
         "continue": "本镜头开始时，分镜中此前已完成的情节不再重演，同一场景和人物从既定的起始状态继续。",
         "scene_as_in": "场景如 {scene_word} 所示：{place}。",
+    "scene_as_in_unnamed": "场景如 {scene_word} 所示。",
         "scene_description": "场景描述：{desc}。",
         "props_in_view": "画面中的道具：{props}。",
         "connected_still": "{word} 是相连的静帧「{label}」，该主体在本镜头中可见。",
@@ -186,16 +186,28 @@ def on_screen_names(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[s
 
 
 def _scene_name(cfg: dict[str, Any], lang: str = "en") -> str:
+    """Best available place label, or "" when the shot names no place.
+
+    Never asserts a place the storyboard did not provide: the former fallback
+    wrote "the empty room" onto outdoor and aerial shots. Omitting the noun is
+    always safer than naming the wrong one.
+    """
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
-    place = str(bible.get("scene_name") or bible.get("place") or "").strip()
-    if place:
+    for key in ("scene_name", "place", "description"):
+        place = str(bible.get(key) or "").strip()
+        if not place:
+            continue
         place = re.split(r"[.。]", place, maxsplit=1)[0].strip()[:80]
-        if len(place.split()) <= 6:
+        if not place:
+            continue
+        # A short label is a place name; a long clause is prose, not a name.
+        # CJK writes without spaces, so cap characters as well as words.
+        if len(place.split()) <= 8 and len(place) <= 40:
             return place
     setting = str(cfg.get("setting_id") or "").strip()
     if setting and not setting.lower().startswith("set_"):
         return setting
-    return phrase(_PHRASES, lang, "empty_room")
+    return ""
 
 
 def _style_phrase(cfg: dict[str, Any]) -> str:
@@ -910,7 +922,11 @@ def compose_practice_prompt(
     scene_word = _image_word(scene_index, family)
     sentences: list[str] = []
 
-    sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    if place:
+        sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    else:
+        # No place name in the storyboard: point at the image without inventing one.
+        sentences.append(phrase(_PHRASES, lang, "scene_as_in_unnamed", scene_word=scene_word))
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
     objects = bible.get("objects") if isinstance(bible.get("objects"), list) else []
     props = [

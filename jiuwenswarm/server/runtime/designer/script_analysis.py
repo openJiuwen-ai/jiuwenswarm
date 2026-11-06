@@ -923,6 +923,17 @@ def _parse_json_array(text: str) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _scene_name_is_placeholder(name: str, scene_id: str) -> bool:
+    """True when a scene "name" is just its id (``set_1``, ``scene_2``)."""
+    value = str(name or "").strip().casefold()
+    sid = str(scene_id or "").strip().casefold()
+    if not value:
+        return True
+    if value == sid:
+        return True
+    return value.startswith("set_") and value[4:].isdigit()
+
+
 def _heuristic_lean_shot(
     prompt: str,
     characters: list[dict[str, Any]],
@@ -1263,11 +1274,18 @@ def _normalize_llm_analysis(
     for i, sc in enumerate(scenes[:_MAX_SCENES], start=1):
         if not isinstance(sc, dict):
             continue
+        sid = str(sc.get("id") or f"scene_{i}")
+        name = str(sc.get("name") or "").strip()
+        desc = str(sc.get("description") or "").strip()
+        if not name or _scene_name_is_placeholder(name, sid):
+            # A name equal to the id carries no place information; the video
+            # prompt quotes it, so prefer the description over the bare id.
+            name = desc or ""
         norm_scenes.append(
             {
-                "id": str(sc.get("id") or f"scene_{i}"),
-                "name": str(sc.get("name") or f"Scene {i}"),
-                "description": str(sc.get("description") or ""),
+                "id": sid,
+                "name": name,
+                "description": desc,
             }
         )
     if not norm_scenes:
@@ -1373,14 +1391,16 @@ def _normalize_llm_analysis(
         entry["title"] = derive_clip_name(entry, fallback_index=i)
         norm_shots.append(entry)
     if not norm_scenes and norm_shots:
-        seen: dict[str, str] = {}
+        seen: dict[str, dict[str, Any]] = {}
         for sh in norm_shots:
             sid = str(sh.get("setting_id") or "").strip() or "set_1"
-            if sid not in seen:
-                seen[sid] = sid
-        norm_scenes = [
-            {"id": sid, "name": sid, "description": ""} for sid in seen
-        ]
+            seen.setdefault(sid, sh)
+        norm_scenes = []
+        for sid, first in seen.items():
+            # The shot carries its setting text under these keys; the older
+            # name was never part of a shot entry, so the fallback was always "".
+            place = str(first.get("setting_description") or first.get("setting") or "").strip()
+            norm_scenes.append({"id": sid, "name": place, "description": place})
     if not norm_shots:
         return None
     audio = parsed.get("audio") if isinstance(parsed.get("audio"), dict) else base.get("audio")
@@ -1618,6 +1638,8 @@ async def analyze_creative_brief(
             '"empty", or "unspecified". Set "continue": true to mean "same unnamed group as the '
             'previous shot in this setting". Never invent a new crowd mid-setting and never '
             'clear one without an exit beat. '
+            "scenes[]: one per setting_id; name is a real 2-6 word place label (never "
+            "the id, never empty). "
             "Infer one film-wide visual style from the user's exact wording. Preserve "
             "non-English style cues verbatim. If no style can be inferred, use cartoonish "
             "animation with flat shapes, soft rendering, and rounded forms. "
@@ -1648,6 +1670,7 @@ async def analyze_creative_brief(
             '"crowd_spec":{"present":true,"density":"sparse","placement":"background","note":"..."},'
             '"emotion":"setup","irreversible":"what is newly true at the end",'
             '"cast_states":{"char_1":{"wardrobe":"","emotion":"","presence":"on_screen"}}}],'
+            '"scenes":[{"id":"set_1","name":"2-6 word place label","description":"..."}],'
             '"target_clip_count":N'
             + (f',"target_duration_sec":{duration_sec}' if duration_sec else "")
             + (
