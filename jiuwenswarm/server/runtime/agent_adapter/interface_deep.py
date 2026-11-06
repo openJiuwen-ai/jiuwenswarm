@@ -930,14 +930,14 @@ def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
     with _SSAS_INIT_TASKS_LOCK:
         _SSAS_INIT_TASKS.discard(task)
         entry = _SSAS_INIT_TASK_KEYS.pop(task, None)
-    if task.cancelled():
-        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
-        _evict_ssas_backend_locked(entry)
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
-        _evict_ssas_backend_locked(entry)
+        if task.cancelled():
+            logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
+            _evict_ssas_backend_locked(entry)
+        else:
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
+                _evict_ssas_backend_locked(entry)
 
 
 def _evict_ssas_backend_locked(
