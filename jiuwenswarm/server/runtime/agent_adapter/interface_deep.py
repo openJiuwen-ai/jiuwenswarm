@@ -949,11 +949,24 @@ def _close_ssas_backend_in_fresh_loop(close: Any) -> None:
 
     backend 构造期即建立 SQLite 连接等同步资源, 不随其所属事件循环销毁
     释放; 已关闭循环条目的 close 无法派发到原循环, 改在独立线程的全新
-    循环中执行释放。close 体内若触碰绑定在已关闭循环上的 asyncio 对象
-    (如跨循环等待周期清理 Task), 在此抛 RuntimeError 由调用侧记录告警,
-    不影响调用方事件循环。
+    循环中执行释放。已知限制: 真实 backend 的 close() 首行会取消周期
+    清理 Task, 若该 Task 绑定在已关闭循环上且已挂起, cancel 会经已关闭
+    循环的 call_soon 调度回调并抛 RuntimeError, 阻断后续 SQLite 同步
+    资源释放——该场景按降级路径处理: 捕获 RuntimeError 输出明确告警,
+    释放链留待 agent-ssas 侧同步释放入口 close_nowait() 落地后由本分支
+    改调(TODO: 上游落地后切换), 不再让异常经 to_thread 冒泡成泛化告警。
     """
-    asyncio.run(close())
+    try:
+        asyncio.run(close())
+    except RuntimeError as exc:
+        # 降级路径: 死循环绑定对象触发的已知根因, 非本层缺陷;
+        # TODO(上游 close_nowait 落地后本分支改调同步释放, 消除该限制)
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] AgentSSAS backend close 在全新循环内"
+            "触达已关闭循环绑定的 asyncio 对象, 本次释放降级放弃"
+            "(等待上游 agent-ssas 提供同步释放入口 close_nowait): %s",
+            exc,
+        )
 
 
 def _close_ssas_backend_in_background(
