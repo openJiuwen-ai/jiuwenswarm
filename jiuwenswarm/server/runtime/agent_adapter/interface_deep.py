@@ -1033,7 +1033,7 @@ class JiuWenSwarmDeepAdapter:
         if is_enterprise() or sys.platform != "win32":
             return
         try:
-            from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+            from jiuwenswarm.common.config import get_file_soft_delete_settings
 
             enabled, archive = get_file_soft_delete_settings(
                 get_config(),
@@ -8556,15 +8556,12 @@ class JiuWenSwarmDeepAdapter:
             raw = getattr(request, "metadata", None)
             meta = raw if isinstance(raw, dict) else None
         identity = web_routing_identity(meta)
-        self._permission_routing = {
-            key: value
-            for key, value in (
-                ("group_id", identity.get("group_id")),
-                ("bot_id", identity.get("bot_id")),
-                ("user_id", identity.get("user_id")),
-            )
-            if isinstance(value, str) and value.strip()
-        }
+        routing = {}
+        for key in ("group_id", "bot_id", "user_id"):
+            value = identity.get(key)
+            if isinstance(value, str) and value.strip():
+                routing[key] = value
+        self._permission_routing = routing
 
     def _permission_key_dims(self) -> dict[str, str | None]:
         """Args for ``resolve_permission_key`` / ``make_key`` (personal → all None)."""
@@ -8576,6 +8573,10 @@ class JiuWenSwarmDeepAdapter:
             "bot_id": routing.get("bot_id"),
             "user_id": routing.get("user_id"),
         }
+
+    def permission_key_dims(self) -> dict[str, str | None]:
+        """Public dims for callers outside this class (codecheck G.CLS.11)."""
+        return self._permission_key_dims()
 
     def _update_permission_rail(
         self,
@@ -8725,7 +8726,8 @@ class JiuWenSwarmDeepAdapter:
                     exc_info=True,
                 )
 
-    def _permission_rail_factory(self) -> Any | None:
+    @staticmethod
+    def _permission_rail_factory() -> Any | None:
         """Optional rail class/factory; None → default SkillAuthorization/PermissionInterrupt rail."""
         return None
 

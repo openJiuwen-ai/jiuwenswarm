@@ -397,7 +397,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 changed |= updated
         if not changed:
             return False
-        # 1B: host persist refreshes via rail.update_config; yaml path publishes here.
+        # 1B: host persist refreshes via rail.update_config; yaml path does the same.
         if self._host.persist_allow_rule is not None:
             try:
                 return bool(self._host.persist_allow_rule(config))
@@ -413,5 +413,5 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             )
         )
         if saved:
-            self._publish_persisted(config)
+            self.update_config(config)
         return saved

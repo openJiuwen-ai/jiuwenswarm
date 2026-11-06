@@ -76,7 +76,7 @@ dependencies = [
     "python-json-logger>=2.0.0",
     "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=jiuwenbox",
     "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_shield",
-    "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent-ssas",
+    "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_ssas",
     "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=foundation",
 ]
 

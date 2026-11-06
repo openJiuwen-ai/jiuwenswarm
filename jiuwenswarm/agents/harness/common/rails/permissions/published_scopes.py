@@ -303,6 +303,9 @@ class PublishedPermissionScopes:
         read = getattr(self._store, "get_active_for_permission", self._store.get_active)
         return read(session_id, scope)
 
+    def get_active(self, session_id, scope):
+        return self._active(session_id, scope)
+
     def has_active_grant(self, session_id, scope):
         return self._active(session_id, scope) is not None
 

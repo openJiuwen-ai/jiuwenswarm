@@ -161,7 +161,8 @@ async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_pro
             from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
                 resolve_permission_key,
             )
-            dims = adapter._permission_key_dims() if hasattr(adapter, "_permission_key_dims") else {
+            dims_reader = getattr(adapter, "permission_key_dims", None)
+            dims = dims_reader() if callable(dims_reader) else {
                 "group_id": None, "bot_id": None, "user_id": None,
             }
             key = resolve_permission_key(**dims)

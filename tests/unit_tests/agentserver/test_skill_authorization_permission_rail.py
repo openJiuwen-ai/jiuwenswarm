@@ -448,4 +448,4 @@ async def test_subagent_tool_permission_card_leads_with_intent_headline(monkeypa
         "> 发起方：子 Agent `child-sess`（当前 Skill：`weekly-report`）"
         in captured["question"]
     )
-    assert [opt["label"] for opt in captured["options"]] == ["本次允许", "拒绝"]>>>>>>> bb9ba7d35 (feat(security): W1a 权限 rail 统一 key/发布与 skill 临时 config=)
+    assert [opt["label"] for opt in captured["options"]] == ["本次允许", "拒绝"]
