@@ -52,6 +52,7 @@ _MANIFEST = """\
 schemaVersion: 1
 package:
   id: example.state-probe
+  domain: agentserver
   version: 1.0.0
   displayName: State Probe
   description: Exercise durable session state after a chat round.
@@ -85,6 +86,7 @@ async def _manager(tmp_path: Path):
         tmp_path / "installed",
         store_dir=tmp_path / "data",
         state_dir=tmp_path / "state",
+        report_path=tmp_path / "report.yaml",
     )
     await manager.init(bus)
     return manager, bus
@@ -125,6 +127,7 @@ async def test_zip_state_survives_restart_and_uninstall_deletes(tmp_path) -> Non
 async def test_agentserver_assembly_injects_the_host_state_directory(tmp_path, monkeypatch) -> None:
     await assembly.shutdown_extensions()
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    monkeypatch.setattr(assembly, "resolve_install_report_path", lambda: tmp_path / "report.yaml")
     instance = await assembly.install_extensions()
     assert instance is not None
     try:

@@ -55,7 +55,7 @@ sequenceDiagram
     R->>BS: register_handlers(bus)
     BS->>W: register_handlers(bus)
     R->>R: trigger(ops.build) 一次
-    M->>R: open_install_dir(install_dir, host_version)
+    M->>R: await open_install_dir(install_dir, report_path, domain=agentserver, ...)
     A->>M: load_installed()
     A-->>L: ExtensionAssembly
 ```
@@ -86,7 +86,7 @@ sequenceDiagram
 
 ### 4.2 已安装包
 
-`manager.load_installed()` 选择每个包的最高未生效版本批量安装。单个包失败只记录 `ActivationReport`，不阻断其他包。
+`manager.load_installed()` 委托 Core 从根目录完整发现、选版和稳定排序，再选择 `agentserver` 的包加载。共享报告和 domain 规则见 [F_32](F_32_domain-install-report.md)。单包失败不阻断独立包。
 
 ### 4.3 新包来源
 

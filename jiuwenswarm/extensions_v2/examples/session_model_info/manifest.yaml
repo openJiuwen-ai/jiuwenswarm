@@ -1,5 +1,6 @@
 schemaVersion: 1
 package:
+  domain: agentserver
   id: example.session-model-info
   version: 1.0.0
   displayName: Session Model Info

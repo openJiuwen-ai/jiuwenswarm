@@ -32,7 +32,11 @@ async def compact_runtime(tmp_path):
 
     async def create(*, bind_native=True):
         bus = ExtensionEventBus()
-        manager = ExtensionManager(tmp_path / "installed", store_dir=tmp_path / "package-data")
+        manager = ExtensionManager(
+            tmp_path / "installed",
+            store_dir=tmp_path / "package-data",
+            report_path=tmp_path / "report.yaml",
+        )
         callbacks = {}
         completed = {}
         service = SessionCompactionService(

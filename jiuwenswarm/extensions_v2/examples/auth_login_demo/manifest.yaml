@@ -1,6 +1,6 @@
 schemaVersion: 1
-domain: gateway
 package:
+  domain: gateway
   id: webui.login-demo
   version: 1.0.0
   displayName: WorkSwarm Login Example

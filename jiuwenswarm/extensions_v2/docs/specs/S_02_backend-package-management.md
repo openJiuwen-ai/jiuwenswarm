@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-05 |
+| 最近修订 | 2026-11-06 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md) |
 
@@ -33,7 +33,7 @@
 
 | 场景 | ok | payload |
 | --- | --- | --- |
-| 查询完成 | true | `state`：active、installed、installed_packages、inflight、published |
+| 查询完成 | true | `state`：active、installed、installed_packages、inflight、published、packages、package_ids |
 | 取得写操作结果 | true | `reports`：Core ActivationReport 数组 |
 | 方法或参数错误 | false | `code=INVALID_PARAMS`、`error` |
 | 门面尚不可用 | false | `code=EXTENSION_MANAGER_NOT_INITIALIZED`、`error` |
@@ -50,12 +50,15 @@ Report 字段沿用 Core，`error` 编码为 `{code, message, params}`，不发�
 `install_path` 是目标 AgentServer 上的实际安装绝对路径，来自记录的 `root`；不是最初的来源路径。
 未取得匹配记录时不伪造目录，原始 Report 仍保留。失败 Report 不产生安装成功提示。
 
-AgentServer 的公共安装适配器在取得报告后，将本次 `SUCCESS` 包 ID 通知曾上报 `ui.ready` 的连接。
-网页 `/extension install`、本机 CLI 和其它调用该适配器的入口共用这一步，CLI 不重复通知。
+AgentServer 在包进入可重新就绪状态后，将本次 `SUCCESS` 包 ID 通知曾上报 `ui.ready` 的连接。
+安装由公共管理适配器发送；热重载由旧代际的视图清理回调在下发 `webui.render.clear` 后发送，避免异步 clear 擦掉新视图。
+网页 `/extension install`、本机 CLI 和其它调用该适配器的入口共用安装通知，CLI 不重复通知。
 前端收到 `extensions.v2.installed` 后，为仍挂载且允许 ready 的槽位重新发送 `ui.ready`，无需手动刷新页面。
+安装完成和热重载清理完成后，`extensions.v2.installed` 都表示指定包需要重新发送 `ui.ready`。
 Gateway 下发该事件时保留完整结构，包括 `package_ids` 和 `session_id`（应用级通知为空字符串），
 不得按聊天消息只提取 `content`；通知继续按 `metadata.ws_id` 定向发送。
 安装响应的 `ui_notified` 表示通知是否送达；未连接或通知失败时为 false，不改变安装报告和 `ok`，不回滚已成功的安装。
+热重载的代际释放与通知在成功 Report 返回后异步执行，因此 reload 响应不承诺该通知已经送达。
 失败包不加入通知；全部失败时不发送通知。通知送达不等于插件自身渲染或业务验收通过。
 
 查询的 `state` 另含 `installed_packages`，各项为 `{package_id, version, install_path}`。
@@ -85,14 +88,15 @@ Gateway 将路由使用的会话标识移入 E2A 会话字段，不传入管理�
 Gateway 保留失败 payload。Web 按 Report.status 判断成功或失败；超时、断连或 `outcome=unknown`
 显示结果未确认和查询用法，不自动重试。查询失败不展示为空列表。
 安装、查询、卸载和重载结果明确标注 `package_id`。安装成功展示版本和安装目录，
-提示修改安装副本后执行热重载；查询展示版本、状态和目录，不向用户显示进程名称或 generation。
+提示修改安装副本后执行热重载；无参数查询按包 ID 升序显示共享报告中的 package_id、domain 和生效版本，
+并将当前进程所属包的运行状态和目录合并在同一包下；指定 ID 的查询显示该包详情，不向用户显示 generation 或内部进程 ID。
 
 ## 4. 不变量与边界
 
 1. 只使用已装配门面，不创建第二个 Bus 或 Registry。
 2. 网络方法名与 Core 事件名分开，不接收候选对象或管理事件输入。
 3. 查询不触发安装、回滚或重载；失败报告与没有报告的异常分开处理。
-4. 不提供已发布版本回退或跨进程锁；Web 仅提供命令入口，不提供管理页面。
+4. Core 共享报告提供同主机跨进程管理保护；Web 仅提供命令入口，不提供管理页面。
 
 验证入口：`tests/unit_tests/extensions_v2/management/test_management_adapter.py`。
 
@@ -104,12 +108,12 @@ EXE、DMG 使用现有后端程序的 `extension` 分发，参数与结果使用
 | 命令参数 | 语义 |
 | --- | --- |
 | `install <ZIP>` | 读取最终 ZIP 的 ID、版本与 domain，再交给对应的运行宿主安装 |
-| `query [package_id]` | 查询选定宿主；缺省 domain 为 agent |
+| `query [package_id]` | 查询选定宿主；缺省 domain 为 agentserver |
 | `reload <package_id>` | 从选定宿主的安装副本重载 |
 | `uninstall <package_id>` | 卸载选定宿主中的包 |
-| `--domain agent/gateway` | install 与 ZIP 声明必须一致；其它操作用于选择宿主 |
+| `--domain agentserver/gateway` | install 与 ZIP 声明必须一致；其它操作用于选择宿主 |
 | `--json` | 结构化输出；当前默认也输出 JSON |
-| `--timeout <seconds>` | 每次本机请求的超时，缺省 130，必须为正的有限数 |
+| `--timeout <seconds>` | 每次本机请求的超时，缺省为配置的依赖等待上限加 30 秒，必须为正的有限数 |
 | `--server-path <ZIP>` | 宿主已可读取的绝对路径；不执行上传 |
 
 ### 5.1 连接与授权

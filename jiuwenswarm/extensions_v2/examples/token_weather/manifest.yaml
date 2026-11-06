@@ -1,5 +1,6 @@
 schemaVersion: 1
 package:
+  domain: agentserver
   id: webui.token-weather
   version: 1.0.0
   displayName: Token Weather

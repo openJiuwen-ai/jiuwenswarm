@@ -292,7 +292,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   }
 
   const transportHandlers: WebUITransportHandlers = {
-    onPackagesInstalled(packageIds, sessionId) {
+    onPackagesChanged(packageIds, sessionId) {
       const targets = new Set<string>();
       for (const owner of owners.values()) {
         if (owner.closed || (sessionId !== undefined && owner.sessionId !== sessionId)) continue;

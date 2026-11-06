@@ -55,10 +55,16 @@ class Settings:
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> Settings:
+        if args.timeout is None:
+            from jiuwenswarm.extensions_v2.config import resolve_install_report_settings
+            try:
+                args.timeout = resolve_install_report_settings().dependency_timeout + 30
+            except ValueError as error:
+                raise ClientError("INVALID_CONFIG", str(error)) from None
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ClientError("INVALID_CONFIG", "--timeout 必须是大于零的有限秒数。")
         try:
-            context = control.read_context(args.domain or "agent")
+            context = control.read_context("gateway" if args.domain == "gateway" else "agent")
         except control.ControlError as error:
             raise ClientError("HOST_UNAVAILABLE", str(error)) from None
         return cls(context, args.timeout)
@@ -129,8 +135,9 @@ def inspect_zip(value: str) -> dict[str, str]:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
     except OSError:
         raise ClientError("INVALID_INPUT", "无法读取最终 ZIP，请核对文件权限。") from None
-    domain = manifest.get("domain")
-    domain = "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else "agent"
+    domain = package.get("domain")
+    if domain not in ("gateway", "agentserver"):
+        raise ClientError("INVALID_ZIP", "manifest 的 package.domain 必须是 gateway 或 agentserver。")
     return {"package_id": package_id, "version": version, "zip_path": str(source),
             "zip_sha256": digest, "domain": domain}
 
@@ -276,7 +283,7 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 result["package_id"] = valid_id(args.target)
             elif args.action != "query":
                 raise ClientError("INVALID_INPUT", "reload 和 uninstall 需要 package_id。")
-        result["domain"] = args.domain or "agent"
+        result["domain"] = args.domain or "agentserver"
         settings = Settings.from_args(args)
         return result, await perform(args, settings, result)
     except ClientError as error:
@@ -293,10 +300,14 @@ def parser() -> argparse.ArgumentParser:
     command = JsonArgumentParser(description="管理当前运行实例中的扩展包；无需提供 Gateway 地址或浏览器登录凭据。")
     command.add_argument("action", choices=("install", "query", "reload", "uninstall"))
     command.add_argument("target", nargs="?", help="install 传最终 ZIP；其他操作传 package_id，query 可省略")
-    command.add_argument("--domain", choices=("agent", "gateway"), help="install 从 manifest 确定；其他操作默认 agent")
+    command.add_argument(
+        "--domain",
+        choices=("agentserver", "gateway"),
+        help="install 从 package.domain 确定；其他操作默认 agentserver",
+    )
     command.add_argument("--json", action="store_true", help="使用结构化 JSON 输出（默认也是 JSON）")
     command.add_argument("--server-path", help="宿主可读取的 ZIP 绝对路径；默认使用最终 ZIP 路径，不负责上传")
-    command.add_argument("--timeout", type=float, default=130, help="每次请求的超时秒数，默认 130")
+    command.add_argument("--timeout", type=float, default=None, help="每次请求的超时秒数，默认配置的依赖等待时间加 30 秒")
     return command
 
 
