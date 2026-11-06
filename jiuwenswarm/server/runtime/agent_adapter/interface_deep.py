@@ -6516,6 +6516,36 @@ class JiuWenSwarmDeepAdapter:
             params,
         )
 
+    async def load_enterprise_mcp_names(self, request: AgentRequest) -> set[str] | None:
+        """Refresh this adapter's policy cache and return enabled MCP names.
+
+        Keep the resolved configuration local to this session adapter; do not
+        persist enterprise templates to shared YAML or marketplace state.
+        Return None on load failure so reconciliation keeps the message picker.
+        An empty set represents a successfully loaded policy without MCPs.
+        """
+        try:
+            resolved = await self._load_enterprise_config(
+                request, base=dict(self._config_base_cache or {}),
+            )
+        except Exception:  # noqa: BLE001 - policy read failures must not abort chat
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] enterprise MCP policy load failed; "
+                "keeping per-message selection",
+                exc_info=True,
+            )
+            return None
+        self._config_base_cache = resolved.config.copy()
+        mcp_section = resolved.config.get("mcp") or {}
+        names: set[str] = set()
+        for entry in mcp_section.get("servers", []):
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if name:
+                names.add(name)
+        return names
+
     async def reconcile_session_mcp(
         self,
         session_id: str | None,
@@ -6542,6 +6572,9 @@ class JiuWenSwarmDeepAdapter:
         by the refresh_skill_rails on change. Because reconcile can be the
         first session-child creation point, it also forwards the current
         request's disk-history boundary into context warmup.
+
+        In enterprise mode, the routed Agent's enabled MCP templates replace
+        the per-message selection when an execution request is available.
         """
         if (
             runtime_binding is not None
@@ -6566,6 +6599,16 @@ class JiuWenSwarmDeepAdapter:
             **({"moa_can_access": moa_can_access} if moa_can_access is not None else {}),
             **({"retain_moa_snapshot": True} if retain_moa_snapshot else {}),
         )
+        # Enterprise Web has no per-message MCP picker. Resolve the current
+        # routed Agent's enabled templates before name lookup/registration.
+        # Never write these entries into the shared YAML or marketplace state.
+        from jiuwenswarm.enterprise.config.config_provider import (
+            ConfigSource, resolve_config_source,
+        )
+        if execution_request is not None and resolve_config_source() == ConfigSource.ENTERPRISE:
+            enterprise_names = await child.load_enterprise_mcp_names(execution_request)
+            if enterprise_names is not None:
+                needed_set = enterprise_names
         if child._instance is None:
             pending_holder = getattr(
                 child,
