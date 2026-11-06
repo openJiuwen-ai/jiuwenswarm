@@ -330,7 +330,8 @@ models:
         max_tokens: ${LLM_MAX_TOKENS:-32768}
       # 该主模型的原生能力模态（OpenAI 风格）：只有 modalities 含 image 才走原生看图；
       # 未声明 / 不含 image / 其它值一律按不支持处理（走 VQA / 视觉工具链），不再内置能力表猜测。
-      # modalities: [text, image]
+      # 按前端「图片输入」开关下发 MODEL_MODALITIES（text,image / 不传即 text）。
+      modalities: ${MODEL_MODALITIES:-text}
       is_default: true
   video:
     model_client_config:
@@ -1679,6 +1680,18 @@ web_search:
   paid_provider_order:
     - petal
     - bocha
+  # Image discovery settings for the web image channel (search -> download -> multimodal).
+  # 相关性由搜索引擎排序负责，客户端只做结构性校验（内网地址/占位图/最小尺寸/去重）。
+  image_search:
+    max_images: 6              # 单次最多下载张数（上限 12）
+    max_pages: 3               # 兜底抓页时最多解析多少个结果页（上限 5）
+    min_image_side: 200        # 仅用于滤掉图标/表情等小图，不做相关性判断
+    max_bytes_per_image: 6291456    # 单图字节上限（6MB）
+    max_total_bytes: 18874368       # 单次总字节上限（18MB），超出即停止
+    # 搜索引擎返回的图片结果已按查询相关性排序，默认独占本次检索，不掺网页扒图。
+    prefer_provider_images: true
+    # 仅在 provider 无图、或上面为 false 且张数不足时，才抓结果页 <img> 补足。
+    allow_page_fallback: false
 
 modes:
   # 一级模式 agent / code / team
@@ -1840,6 +1853,15 @@ flash:
   enabled: ${JIUWENSWARM_FLASH_ENABLED:-false}
   # 必须在模板声明：启动清理及配置合并会删除模板中不存在的字段。
   # 模块可独立删除；这些默认值不启用功能，也不影响其他 Agent mode。
+  # Flash 专属受限技能自演进开关：
+  #   evolution.enabled=false（默认）— Flash 不挂在线被动演进 / HITL 审批 rail，
+  #     不继承全局 react.evolution.enabled，避免升级后静默开启。
+  #   evolution.skill_sleep.enabled=true（默认）— 保持 Deep 的 SkillSleep 常驻契约，
+  #     是否离线训练仍由技能级 selfEvolution 决定；两者独立。
+  evolution:
+    enabled: ${JIUWENSWARM_FLASH_EVOLUTION_ENABLED:-false}
+    skill_sleep:
+      enabled: ${JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED:-true}
   skill_selection:
     enabled: ${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}
     catalog_check_interval_s: 5.0

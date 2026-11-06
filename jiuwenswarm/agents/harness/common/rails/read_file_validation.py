@@ -252,7 +252,8 @@ def build_non_text_read_error(path: str, *, language: str = "cn") -> str:
     target = path or "<unknown>"
     if language == "cn":
         hint = (
-            "若要理解图片内容，请改用 visual_question_answering 工具并传入文件路径；"
+            "若要理解图片内容，请改用可用的图像理解工具（image_ocr / "
+            "visual_question_answering，需当前环境已启用）；"
             if is_image_file_path(path)
             else "若要处理 PDF/音视频等，请使用对应的专用工具。"
         )
@@ -264,7 +265,8 @@ def build_non_text_read_error(path: str, *, language: str = "cn") -> str:
     return (
         f"{READ_FILE_ERROR_PREFIX} Cannot read '{target}' as text. "
         "This path looks like an image or binary file. "
-        "Use visual_question_answering for images, or an appropriate specialized tool "
+        "Use an available image understanding tool (image_ocr / "
+        "visual_question_answering) for images, or an appropriate specialized tool "
         "for other binary formats."
     )
 
@@ -426,7 +428,8 @@ def validate_read_file_result(path: str, result: Any) -> tuple[bool, str | None]
     if _looks_like_binary_payload(text):
         return False, (
             f"{READ_FILE_ERROR_PREFIX} 读取到的内容不像有效文本（可能是二进制文件被误读）。"
-            "请确认文件类型，并对图片使用 visual_question_answering。"
+            "请确认文件类型，并对图片使用可用的图像理解工具（image_ocr / "
+            "visual_question_answering）。"
         )
 
     return True, None

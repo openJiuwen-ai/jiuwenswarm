@@ -108,6 +108,7 @@ TOOL_WHITELIST = frozenset({
     "free_search",
     "fetch_webpage",
     "paid_search",
+    "web_image_search",
     "vision",
     "audio",
     "image_ocr",

@@ -962,6 +962,27 @@ _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
 
+_RESOLVED_ARTIFACT_DIRS: dict[str, str] = {}
+
+
+def _resolve_artifact_dir(path: str) -> str:
+    """Resolve a workspace path once; deep research asks for it several times per turn.
+
+    Only absolute paths are cached: a relative path resolves against the process cwd.
+    """
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return str(expanded.resolve())
+    key = str(expanded)
+    resolved = _RESOLVED_ARTIFACT_DIRS.get(key)
+    if resolved is None:
+        resolved = str(expanded.resolve())
+        if len(_RESOLVED_ARTIFACT_DIRS) >= 256:
+            _RESOLVED_ARTIFACT_DIRS.clear()
+        _RESOLVED_ARTIFACT_DIRS[key] = resolved
+    return resolved
+
+
 class JiuWenSwarmDeepAdapter:
 
     # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
@@ -1185,6 +1206,14 @@ class JiuWenSwarmDeepAdapter:
         self._avatar_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
+        # Active passive-evolution watcher ownership by (channel_id, session_id).
+        # A resumed request gets a new request-id; the old paused stream's watcher
+        # must be superseded instead of idling until the host timeout.
+        self._evolution_watchers: dict[tuple[str, str], asyncio.Task] = {}
+        # SkillSleep background tasks are tracked separately from passive-evolution
+        # watchers so disabling the evolution switch can stop sleep work without
+        # broadening watcher teardown semantics.
+        self._skill_sleep_tasks: set[asyncio.Task] = set()
         self._ttse_cleanup_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
@@ -3301,6 +3330,73 @@ class JiuWenSwarmDeepAdapter:
         self._registered_mcp_servers.pop(server_id, None)
 
 
+    def _is_builtin_shadowed_tool_name(self, tool_name: str) -> bool:
+        """True when a non-request-scoped ability (typically a harness built-in)
+        already occupies ``tool_name`` in this agent's AbilityManager."""
+        if self._instance is None:
+            return False
+        getter = getattr(getattr(self._instance, "ability_manager", None), "get", None)
+        if not callable(getter):
+            return False
+        try:
+            existing = getter(tool_name)
+        except Exception:
+            return False
+        if existing is None:
+            return False
+        existing_id = str(getattr(existing, "id", "") or "")
+        # Request-scoped holders (ours from a previous request or a foreign
+        # request) keep the install-time replace / fail-closed paths; only
+        # built-in occupancy triggers the staging rename.
+        return not is_request_scoped_mcp_tool_id(existing_id)
+
+    def _resolve_shadow_safe_tool_name(
+        self,
+        server_name: str,
+        tool_name: str,
+        buffers: _RequestMcpToolBuffers,
+    ) -> str:
+        """Rename a connector tool only when its short name is shadowed.
+
+        ``server_name_tool_name`` (LLM-safe) frees connectors such as
+        doubao-search's ``web_search`` from the built-in shadow skip. The
+        rename happens at staging — before any resource_mgr add — so the card
+        id, allowlists, and deepresearch admission all stay consistent.
+        Returns the raw name when no safe candidate exists; the install-time
+        builtin-shadow skip then keeps today's semantics.
+        """
+        if not self._is_builtin_shadowed_tool_name(tool_name):
+            return tool_name
+        base = re.sub(r"[^0-9A-Za-z_]", "_", f"{server_name}_{tool_name}").strip("_")
+        if not base:
+            return tool_name
+        for candidate in [base] + [f"{base}_{index}" for index in range(2, 21)]:
+            if candidate == tool_name or candidate in buffers.seen_names:
+                continue
+            if self._is_builtin_shadowed_tool_name(candidate):
+                continue
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] renamed shadowed MCP connector tool: "
+                "server=%s raw=%s staged=%s",
+                server_name,
+                tool_name,
+                candidate,
+            )
+            return candidate
+        return tool_name
+
+    @staticmethod
+    def _staged_research_tool_names(
+        tool_defs: list[dict[str, Any]],
+        rewrites: dict[str, str],
+    ) -> list[str]:
+        """Deepresearch admission compares installed names, so apply the rewrite."""
+        names: list[str] = []
+        for tool in tool_defs:
+            raw_name = str(tool.get("name") or "").strip()
+            names.append(rewrites.get(raw_name, raw_name))
+        return names
+
     async def _append_identity_pinned_office_claw_tools(
         self,
         request: AgentRequest,
@@ -3347,14 +3443,19 @@ class JiuWenSwarmDeepAdapter:
                 buffers.unavailable_connectors[server_name] = (
                     CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
                 )
-            _stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
+            _stage_request_mcp_tools(
+                request, server_name, tool_defs, params, buffers,
+                staged_name_resolver=self._resolve_shadow_safe_tool_name,
+            )
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
                 research_server = project_search_server(server_name, server_config, params)
                 if research_server:
                     buffers.research_servers.append(research_server)
-                    buffers.research_tool_names[server_name] = [str(tool.get("name") or "").strip()
-                                                               for tool in tool_defs]
+                    rewrites = buffers.research_name_rewrites.get(server_name) or {}
+                    buffers.research_tool_names[server_name] = (
+                        self._staged_research_tool_names(tool_defs, rewrites)
+                    )
             if server_name == "office-claw" and not invocation_id:
                 env = params.get("env") if isinstance(params.get("env"), dict) else {}
                 invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
@@ -3463,6 +3564,7 @@ class JiuWenSwarmDeepAdapter:
                 for name, tool_defs, params in snapshots:
                     _stage_request_mcp_tools(
                         request, name, tool_defs, params, buffers, use_global_pool=True,
+                        staged_name_resolver=self._resolve_shadow_safe_tool_name,
                     )
                     reader = getattr(get_mcp_server_registry(), "get_server", None)
                     try:
@@ -3476,8 +3578,10 @@ class JiuWenSwarmDeepAdapter:
                         research_server = project_search_server(name, policy["config"], params)
                         if research_server:
                             buffers.research_servers.append(research_server)
-                            buffers.research_tool_names[name] = [str(tool.get("name") or "").strip()
-                                                                 for tool in tool_defs]
+                            rewrites = buffers.research_name_rewrites.get(name) or {}
+                            buffers.research_tool_names[name] = (
+                                self._staged_research_tool_names(tool_defs, rewrites)
+                            )
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -5128,6 +5232,51 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+    def _subagent_ttse_consult_dependencies(self) -> Any | None:
+        """子 Agent 查询父 TTSE 内部状态的唯一入口；始终读取当前实例。"""
+        from jiuwenswarm.agents.harness.common.rails.subagent_ttse_consult_rail import (
+            TTSEConsultDependencies,
+        )
+
+        if self._is_code_agent:
+            return None
+        rail = self._ttse_rail
+        config = self._resolved_ttse_config()
+        if rail is None or not get_ttse_enabled({"ttse": config}):
+            return None
+        if not coerce_config_bool(config.get("inject_enabled"), True):
+            return None
+        disabled = resolve_string_or_list_config(self._config_cache.get("disabled_tools"))
+        live_disabled = getattr(self._disabled_tools_rail, "_disabled_tools", ())
+        if "ttse_consult" in disabled or "ttse_consult" in live_disabled:
+            return None
+        store = getattr(rail, "_ttse_store", None)
+        rail_config = getattr(rail, "_ttse_config", None)
+        if store is None or rail_config is None or not rail_config.inject_enabled:
+            return None
+        return TTSEConsultDependencies(
+            store=store,
+            max_chars=int(getattr(rail_config, "consult_max_chars", 8000) or 8000),
+            max_rules=int(getattr(rail_config, "consult_max_rules", 40) or 40),
+            default_top_k=int(getattr(rail_config, "consult_top_k", 8) or 8),
+            rrf_k=int(getattr(rail_config, "consult_rrf_k", 60) or 60),
+        )
+
+    def _bind_subagent_ttse_wiring(self) -> None:
+        """为非 Code 实例装配查询入口，能力由父级 TTSE 状态和开关决定。"""
+        if self._instance is None or self._is_code_agent:
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.tools.subagent_executor.ttse import (
+                install_subagent_ttse_wiring,
+            )
+
+            install_subagent_ttse_wiring(
+                self._instance, self._subagent_ttse_consult_dependencies,
+            )
+        except Exception:
+            logger.warning("[subagent.ttse] wiring installation failed", exc_info=True)
+
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
@@ -6652,9 +6801,130 @@ class JiuWenSwarmDeepAdapter:
                 )
 
     def _track_skill_sleep_task(self, task: asyncio.Task) -> None:
-        """Track background sleep tasks with evolution watcher set."""
+        """Track background sleep tasks with the adapter without watcher teardown."""
+        sleep_tasks = getattr(self, "_skill_sleep_tasks", None)
+        if sleep_tasks is None:
+            sleep_tasks = set()
+            self._skill_sleep_tasks = sleep_tasks
+        sleep_tasks.add(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if watcher_tasks is None:
+            watcher_tasks = set()
+            self._evolution_watcher_tasks = watcher_tasks
+        watcher_tasks.add(task)
+        task.add_done_callback(self._on_skill_sleep_task_done)
+
+    def _start_evolution_watcher(
+        self,
+        rid: str,
+        cid: str,
+        session_id: str,
+    ) -> asyncio.Task | None:
+        """Start a passive-evolution watcher owned by channel and session.
+
+        Permission-approved continuation streams use a new request-id. When that
+        continuation reaches stream completion, this method supersedes the old
+        paused request's watcher instead of leaving its idle timer running until
+        timeout. Ownership is scoped to ``(channel_id, session_id)``. Supersession
+        stops only the old watcher; it does not cancel the shared rail's pending
+        evolution work, which may still be serving unrelated sessions.
+        """
+        if self._skill_evolution_rail is None:
+            return None
+
+        key = (str(cid), str(session_id))
+        watchers = getattr(self, "_evolution_watchers", None)
+        if watchers is None:
+            watchers = {}
+            self._evolution_watchers = watchers
+        old_task = watchers.get(key)
+        if old_task is not None and not old_task.done():
+            # The flag is read by the watcher's cancellation handler. A route
+            # handoff must not call ``cancel_pending_evolution()`` because that
+            # SDK method cancels all background tasks on the shared rail.
+            old_task._evolution_watcher_graceful = True  # pylint: disable=protected-access
+            old_task.cancel()
+
+        task = asyncio.create_task(self._watch_evolution_and_push(rid, cid, session_id))
+        watchers[key] = task
         task.add_done_callback(self._on_evolution_watcher_done)
-        self._evolution_watcher_tasks.add(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if watcher_tasks is None:
+            watcher_tasks = set()
+            self._evolution_watcher_tasks = watcher_tasks
+        watcher_tasks.add(task)
+        return task
+
+    async def _cancel_evolution_watchers(self) -> None:
+        """Cancel adapter-owned passive-evolution watcher tasks.
+
+        ``_evolution_watcher_tasks`` is also used to keep SkillSleep background
+        tasks referenceable. Those tasks retain their runner-owned lifecycle and
+        must not be cancelled as a side effect of watcher teardown.
+        """
+        watchers = getattr(self, "_evolution_watchers", None)
+        if not isinstance(watchers, dict):
+            return
+        tasks = set(watchers.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+                if isinstance(watcher_tasks, set):
+                    watcher_tasks.discard(task)
+        watchers.clear()
+
+    def _on_skill_sleep_task_done(self, task: asyncio.Task) -> None:
+        """Discard a completed SkillSleep task and log unexpected failures."""
+        sleep_tasks = getattr(self, "_skill_sleep_tasks", None)
+        if isinstance(sleep_tasks, set):
+            sleep_tasks.discard(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if isinstance(watcher_tasks, set):
+            watcher_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillSleep background task exception: %s",
+                exc,
+            )
+
+    async def _unconfigure_skill_sleep_rail(self) -> None:
+        """Unmount SkillSleep and stop sleep work when evolution is disabled."""
+        rail = getattr(self, "_skill_sleep_rail", None)
+        tasks = getattr(self, "_skill_sleep_tasks", None)
+        if rail is None and not tasks:
+            return
+
+        pending = set(tasks or set())
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if rail is not None:
+            if self._instance is None:
+                self._skill_sleep_rail = None
+                return
+            unregister = getattr(self._instance, "unregister_rail", None)
+            if not callable(unregister):
+                return
+            try:
+                await unregister(rail)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] SkillSleepRail unregister failed: %s",
+                    exc,
+                )
+                return
+        self._skill_sleep_rail = None
 
     async def _reconcile_skill_sleep_rail(self) -> None:
         """Register SkillSleepRail when it is not mounted yet."""
@@ -6739,15 +7009,19 @@ class JiuWenSwarmDeepAdapter:
         return skill_evolution_rail
 
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
+        """FACT/TIP bank shared with expert-team mode; not a user knob.
 
-        Uses ``self._workspace_dir`` (same tenant root as memory rails). Sync
-        and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
+        Uses ``self._workspace_dir`` (same tenant root as memory rails). On the
+        standard ``service_*/agent_*/agent/jiuwenclaw_workspace`` layout this is
+        ``service_*/.ttse/bank.json``, so single-agent and team write one file.
+        Sync and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
         :func:`get_agent_workspace_dir` would fall back to the default-tenant
-        shared workspace and mix FACT/TIP banks across tenants.
+        workspace and pick the wrong service.
         """
+        from jiuwenswarm.common.config import resolve_shared_ttse_bank
+
         root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        return str(resolve_shared_ttse_bank(root))
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).
@@ -7138,29 +7412,43 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return
 
-        rails = [
-            rail
-            for rail in (self._skill_evolution_rail, self._evolution_interrupt_rail)
-            if rail is not None
-        ]
+        unregistered_rails: list[Any] = []
         try:
             unconfigure_skill_evolution(self._instance, team=False)
-        except AttributeError:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure unavailable"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure failed: %s",
+                exc,
             )
         unregister = getattr(self._instance, "unregister_rail", None)
         if callable(unregister):
-            for rail in rails:
-                await unregister(rail)
+            for attr_name, rail in (
+                ("_skill_evolution_rail", self._skill_evolution_rail),
+                ("_evolution_interrupt_rail", self._evolution_interrupt_rail),
+            ):
+                if rail is None:
+                    continue
+                try:
+                    await unregister(rail)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] evolution rail unregister failed "
+                        "attr=%s error=%s",
+                        attr_name,
+                        exc,
+                    )
+                    continue
+                setattr(self, attr_name, None)
+                unregistered_rails.append(rail)
+        else:
+            self._skill_evolution_rail = None
+            self._evolution_interrupt_rail = None
         stale_rails = getattr(self._instance, "_stale_rails", None)
         if isinstance(stale_rails, list):
-            removed_ids = {id(rail) for rail in rails}
+            removed_ids = {id(rail) for rail in unregistered_rails}
             self._instance._stale_rails = [  # pylint: disable=protected-access
                 rail for rail in stale_rails if id(rail) not in removed_ids
             ]
-        self._skill_evolution_rail = None
-        self._evolution_interrupt_rail = None
 
     def _refresh_active_evolution_rail_refs(self) -> None:
         """Refresh cached rail references after agent-core runtime configure."""
@@ -7797,11 +8085,11 @@ class JiuWenSwarmDeepAdapter:
             getattr(self, "_project_dir", None) or ""
         ).strip()
         if session_workspace:
-            return str(Path(session_workspace).expanduser().resolve())
-        workspace = Path(
-            getattr(self, "_workspace_dir", None) or get_agent_workspace_dir()
-        ).expanduser().resolve()
-        return str(workspace / "projects")
+            return _resolve_artifact_dir(session_workspace)
+        workspace = _resolve_artifact_dir(
+            str(getattr(self, "_workspace_dir", None) or get_agent_workspace_dir())
+        )
+        return str(Path(workspace) / "projects")
 
     async def refresh_skill_rails(self) -> None:
         """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
@@ -8126,8 +8414,8 @@ class JiuWenSwarmDeepAdapter:
                 {"config": config},
             ),
         )
-        # SkillSleepRail is always mounted; per-skill selfEvolution decides
-        # whether a sleep cycle actually runs.
+        # SkillSleepRail is always mounted;
+        # per-skill selfEvolution decides whether a sleep cycle actually runs.
         rail_infos.insert(
             2,
             _RailBuildInfo(
@@ -9215,6 +9503,7 @@ class JiuWenSwarmDeepAdapter:
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
                 self._bind_subagent_runtime_config(config_base)
+                self._bind_subagent_ttse_wiring()
 
                 _apply_llm_io_trace_patch()
 
@@ -11779,6 +12068,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        await self._cancel_evolution_watchers()
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
             try:
@@ -13719,6 +14009,7 @@ class JiuWenSwarmDeepAdapter:
                     UserMessage(content=user_prompt),
                 ],
                 temperature=0,
+                request_purpose="rewrite",
             )
             content = _strip_skill_md_fence(
                 getattr(result, "content", None) or ""
@@ -17632,11 +17923,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             if self._skill_evolution_rail is not None:
-                task = asyncio.create_task(
-                    self._watch_evolution_and_push(rid, cid, session_id)
-                )
-                task.add_done_callback(self._on_evolution_watcher_done)
-                self._evolution_watcher_tasks.add(task)
+                self._start_evolution_watcher(rid, cid, session_id)
             if self._ttse_rail is not None:
                 ttse_task = asyncio.create_task(
                     self._cleanup_ttse_background_tasks(rid, session_id)
@@ -18961,7 +19248,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             # No temperature override — inherit model default to match main agent
             # API params (thinking config is part of the Anthropic cache key).
-            result = await self._model.invoke(recap_messages, tools=tools)
+            result = await self._model.invoke(recap_messages, tools=tools, request_purpose="recap")
             # Tool-use guard: tools schema is passed only to preserve the cache
             # key (matches the main agent). Single turn + discard any tool_use
             # the model emits → tools are never executed. Aligned with
@@ -19058,6 +19345,7 @@ class JiuWenSwarmDeepAdapter:
         result = await self._model.invoke(
             [UserMessage(content=prompt)],
             temperature=0,
+            request_purpose="repair",
         )
         content = getattr(result, "content", None)
         if isinstance(content, str):
@@ -19144,7 +19432,7 @@ class JiuWenSwarmDeepAdapter:
         recap_messages.append(UserMessage(content=prompt))
 
         try:
-            result = await self._model.invoke(recap_messages, temperature=0)
+            result = await self._model.invoke(recap_messages, temperature=0, request_purpose="summary")
             raw = getattr(result, "content", None) or str(result)
         except Exception:
             logger.exception("[compact_partial] model call failed")
@@ -19493,7 +19781,11 @@ class JiuWenSwarmDeepAdapter:
                     return
         except asyncio.CancelledError:
             try:
-                await _cleanup_evolution_rail(cancel=True)
+                current_task = asyncio.current_task()
+                graceful = bool(
+                    getattr(current_task, "_evolution_watcher_graceful", False)
+                )
+                await _cleanup_evolution_rail(cancel=not graceful)
             finally:
                 raise
         except Exception as exc:
@@ -19526,9 +19818,19 @@ class JiuWenSwarmDeepAdapter:
 
         Discards the task from the tracking set and logs any exception.
         """
-        self._evolution_watcher_tasks.discard(task)
+        watchers = getattr(self, "_evolution_watchers", None)
+        if isinstance(watchers, dict):
+            for key, current_task in list(watchers.items()):
+                if current_task is task:
+                    watchers.pop(key, None)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if isinstance(watcher_tasks, set):
+            watcher_tasks.discard(task)
         try:
             task.result()
+        except asyncio.CancelledError:
+            # Supersession and adapter teardown intentionally cancel old watchers.
+            return
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher task exception: %s", exc)
 

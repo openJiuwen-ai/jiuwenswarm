@@ -83,19 +83,26 @@ def records_from_paid_payload(
         for item in (payload.get("urls") or [])
         if item
     ][:max_results]
-    # petal 携带 records（含 content/update_time/summary）；其他 provider 无此字段
+    # petal / bocha 携带 records（含 title/content/update_time/summary/images）；其他 provider 无此字段
     raw_records = payload.get("records") if isinstance(payload.get("records"), list) else []
 
-    # 构建 url -> {content, update_time, summary} 映射（仅 petal 有）
+    # 构建 url -> {title, content, update_time, summary, images} 映射
     extras: dict[str, dict[str, Any]] = {}
     for rr in raw_records:
         if isinstance(rr, dict):
             u = str(rr.get("url") or "").strip()
             if u:
+                raw_images = rr.get("images")
                 extras[u] = {
+                    "title": str(rr.get("title") or "").strip(),
                     "content": str(rr.get("content") or ""),
                     "update_time": rr.get("update_time"),   # Optional[float]，None 表示缺失
                     "summary": str(rr.get("summary") or ""),
+                    "images": [
+                        str(item).strip()
+                        for item in (raw_images or [])
+                        if isinstance(item, str) and item.strip()
+                    ],
                 }
 
     records: list[WebSearchRecord] = []
@@ -105,12 +112,13 @@ def records_from_paid_payload(
         extra = extras.get(url, {})
         records.append(
             WebSearchRecord(
-                title=_title_from_url(url),
+                title=extra.get("title") or _title_from_url(url),
                 url=url,
                 snippet=extra.get("summary", ""),      # 修复：petal summary 透传到 snippet
                 source=f"paid:{provider}",
                 content=extra.get("content", ""),
                 update_time=extra.get("update_time"),
+                images=list(extra.get("images") or []),
             )
         )
     return records, answer

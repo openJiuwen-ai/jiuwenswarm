@@ -96,6 +96,7 @@ class A2UIResponseFinalizer:
             request_id: str,
             repair_call: RepairCall | None,
             max_repair_attempts: int = 2,
+            channel: str | None = None,
     ) -> A2UIFinalizationResult:
         _ = request_id
         if not should_finalize_a2ui_content(content):
@@ -138,6 +139,7 @@ class A2UIResponseFinalizer:
                 invalid_content=repaired_content,
                 validation_error=last_error,
                 user_query=str(user_query or ""),
+                channel=channel,
             )
             response = repair_call(prompt)
             if inspect.isawaitable(response):

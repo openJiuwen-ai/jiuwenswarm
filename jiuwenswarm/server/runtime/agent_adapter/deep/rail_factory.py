@@ -50,8 +50,15 @@ def _stage_request_mcp_tools(
     use_global_pool: bool = False,
     strict: bool = False,
     yield_to_existing: bool = False,
+    staged_name_resolver: Callable[[str, str, _RequestMcpToolBuffers], str] | None = None,
 ) -> None:
-    """Build request tools without publishing a partially discovered request."""
+    """Build request tools without publishing a partially discovered request.
+
+    ``staged_name_resolver`` (adapter-provided, keeps this module instance-free)
+    may rename a connector tool whose short name is shadowed by a built-in;
+    rewrites are recorded in ``buffers.research_name_rewrites`` so deepresearch
+    admission sees the staged names.
+    """
     request_scope = hashlib.sha256(
         f"{request.session_id}:{request.request_id}".encode("utf-8")
     ).hexdigest()[:20]
@@ -67,9 +74,17 @@ def _stage_request_mcp_tools(
             )
             continue
         buffers.seen_names.add(name)
+        staged_name = (
+            name
+            if strict or staged_name_resolver is None
+            else staged_name_resolver(server_name, name, buffers)
+        )
+        if staged_name != name:
+            buffers.research_name_rewrites.setdefault(server_name, {})[name] = staged_name
+            buffers.seen_names.add(staged_name)
         card = ToolCard(
-            id=f"{prefix}{request_scope}.{server_name}.{name}",
-            name=name,
+            id=f"{prefix}{request_scope}.{server_name}.{staged_name}",
+            name=staged_name,
             description=str(tool_def.get("description") or ""),
             input_params=tool_def.get("input_params") or {},
         )
@@ -79,6 +94,7 @@ def _stage_request_mcp_tools(
                 card.properties["resilience"] = {"timeout_s": timeout}
         tool = RequestScopedOfficeClawMcpTool(
             card, params, request.request_id, server_name, use_global_pool=use_global_pool,
+            remote_tool_name=name,
         )
         buffers.pending_tools.append((tool, strict))
 

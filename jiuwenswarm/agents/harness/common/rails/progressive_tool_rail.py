@@ -4,6 +4,9 @@
 
 - eager_tools: always visible in the model tools schema
 - skill-gated tools: direct-visible only while their required skill is active
+- recall_compressed_context: kept in the schema when registered, ungated, and
+  not disabled, even if it is absent from eager_tools. It is not listed as a
+  deferred tool, so navigation does not tell the model that a direct call fails
 - deferred_tools: registered at runtime but hidden from schema; accessed via
   tools_search + invoke_tool
 - disabled_tools / DisabledToolsRail: excluded from schema, navigation,
@@ -68,6 +71,9 @@ logger = logging.getLogger(__name__)
 
 _LOG_PREFIX = "[ProgressiveToolRail]"
 _REQUIRED_SKILL_KEY = "required_skill"
+# Registered by agent-core only while compression recall is enabled. Pinning the
+# name here does not register the tool; an input list without it is unchanged.
+_PINNED_SCHEMA_TOOL_NAME = "recall_compressed_context"
 _EAGER_DEEPRESEARCH_BINDINGS_KEY = "__eager_deepresearch_bindings__"
 _DEEPRESEARCH_CONTEXT_TOOLS = frozenset({
     "deepresearch_execute",
@@ -83,6 +89,11 @@ _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
         "office_claw_update_scheduled_task",
     }
 )
+
+
+def _is_pinned_schema_tool(tool_name: str, registered_card: Any) -> bool:
+    """True when the recall tool is registered and therefore directly callable."""
+    return tool_name == _PINNED_SCHEMA_TOOL_NAME and registered_card is not None
 
 
 def _json_safe_value(value: Any) -> Any:
@@ -128,6 +139,9 @@ class ProgressiveToolRail(DeepAgentRail):
 
     - eager_tools: always visible in the model tools schema
     - skill-gated tools: direct-visible only while their declared skill is active
+    - recall_compressed_context: schema-visible when registered and ungated,
+      ordered after eager and active skill-gated tools. Disabled and skill
+      gates still win. Absent from the input list, it is not invented
     - deferred_tools: registered in ability_manager but hidden from schema;
       accessed via tools_search (get schema) + invoke_tool (proxy call)
     - ordinary tool schema stays stable, maximizing LLM prefix cache
@@ -140,7 +154,7 @@ class ProgressiveToolRail(DeepAgentRail):
     # parent rails by reference; the child's init then rebinds the shared
     # instance and overwrites the cache with the child's smaller tool set.
     # Parent tools_search / invoke_tool for deferred names such as
-    # subagent_wait then miss (「未注册或不在按需可见工具列表中」) while the
+    # subagent_wait then miss (「工具 ... 未注册」) while the
     # child is still running. react.tool_lazy_load.subagents.enabled is
     # already false — this flag makes factory honor that.
     inherit_to_subagents = False
@@ -898,14 +912,23 @@ class ProgressiveToolRail(DeepAgentRail):
                     if name not in active_gated_names:
                         active_gated_names.append(name)
                 continue
-            if not lazy_load_active or name in self.eager_tools:
+            if (
+                not lazy_load_active
+                or name in self.eager_tools
+                or name == _PINNED_SCHEMA_TOOL_NAME
+            ):
                 filtered_tools.append(tool)
         if lazy_load_active:
             # Canonical eager order — never follow ability_manager / MCP rebind order.
             # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
+            # _order_tools_by_name_list emits every name in the key, so the pinned
+            # tool is appended only when eager and active gates do not already place it.
+            ordered_names = [*self.eager_tools, *active_gated_names]
+            if _PINNED_SCHEMA_TOOL_NAME not in ordered_names:
+                ordered_names.append(_PINNED_SCHEMA_TOOL_NAME)
             inputs.tools = self._order_tools_by_name_list(
                 filtered_tools,
-                [*self.eager_tools, *active_gated_names],
+                ordered_names,
             )
         else:
             inputs.tools = filtered_tools
@@ -1249,26 +1272,43 @@ class ProgressiveToolRail(DeepAgentRail):
             )
             return []
 
+    def _deferred_tools(self, tools: list[Any], disabled: Iterable[str]) -> list[Any]:
+        """Return tools that stay hidden and are advertised as not directly callable.
+
+        Skill-gated and disabled tools are omitted. The pinned recall tool is
+        schema-visible, so leaving it here would tell the model a direct call fails.
+        """
+        blocked = set(disabled)
+        deferred: list[Any] = []
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            declared, _required_skill = _required_skill_requirement(tool)
+            if not name or declared:
+                continue
+            if name in self.eager_tools or name in blocked:
+                continue
+            if name == _PINNED_SCHEMA_TOOL_NAME:
+                continue
+            deferred.append(tool)
+        return deferred
+
     async def _refresh_deferred_tool_cache(
         self, agent: Any = None
     ) -> None:
         """Refresh cached tool lists from live ability_manager.
 
         ``_cached_all_tool_infos`` stays unfiltered for staleness checks.
-        Deferred/nav/search/invoke omit both non-eager and disabled tools so
-        blacklist entries never appear in the navigation section.
+        Deferred/nav/search/invoke omit disabled tools, skill-gated tools, and
+        the pinned recall tool. The recall tool is schema-visible, so navigation
+        must not describe it as a tool that cannot be called directly.
         """
         resolved = agent or self._resolve_runtime_agent()
         all_tools = await self._get_all_tool_infos(resolved)
         self._cached_all_tool_infos = all_tools
-        disabled = self._current_disabled_tools()
-        deferred_tools = []
-        for tool in all_tools:
-            name = str(getattr(tool, "name", "") or "")
-            declared, _required_skill = _required_skill_requirement(tool)
-            if not declared and name not in self.eager_tools and name not in disabled:
-                deferred_tools.append(tool)
-        self._cached_deferred_tool_infos = deferred_tools
+        self._cached_deferred_tool_infos = self._deferred_tools(
+            all_tools,
+            self._current_disabled_tools(),
+        )
 
     @staticmethod
     def _tool_name_set(tools: list[Any]) -> set[str]:
@@ -1327,13 +1367,10 @@ class ProgressiveToolRail(DeepAgentRail):
         ):
             await self._refresh_deferred_tool_cache(agent)
             return
-        disabled = self._current_disabled_tools()
-        live_deferred = []
-        for tool in live_tools:
-            name = str(getattr(tool, "name", "") or "")
-            declared, _required_skill = _required_skill_requirement(tool)
-            if not declared and name not in self.eager_tools and name not in disabled:
-                live_deferred.append(tool)
+        live_deferred = self._deferred_tools(
+            live_tools,
+            self._current_disabled_tools(),
+        )
         if self._tool_name_set(live_deferred) != self._tool_name_set(
             self._cached_deferred_tool_infos
         ):
@@ -1434,6 +1471,43 @@ class ProgressiveToolRail(DeepAgentRail):
                     "（可能被并发请求清理），请稍后重试。"
                 ),
             }
+
+        if not result_matches:
+            # 反查全量注册表识别技能未激活场景：skill 未激活时 deferred
+            # 搜索缓存被过滤导致 matches 为空，但全量注册表（unfiltered）
+            # 仍保留门控工具卡片，可据此给出与 invoke_tool 门控拒绝分支
+            # 一致的重载指引，避免模型据此降级到非技能路径。注意 declared
+            # 卡片被 _deferred_tools 无条件排除，技能激活态下 matches 同样
+            # 为空——须先比对当前激活技能再下结论，已激活时直接可见可调用。
+            registered_card = self._tool_by_name(
+                getattr(self, "_cached_all_tool_infos", ()),
+                tool_name,
+            )
+            _, required_skill = _required_skill_requirement(registered_card)
+            if required_skill:
+                if required_skill == self._current_active_skill():
+                    return {
+                        "success": False,
+                        "matches": [],
+                        "count": 0,
+                        "message": (
+                            f"工具 '{tool_name}' 已随技能 '{required_skill}' "
+                            "激活并直接可见，请直接调用，无需 tools_search。"
+                        ),
+                    }
+                return {
+                    "success": False,
+                    "matches": [],
+                    "count": 0,
+                    "message": (
+                        f"工具 '{tool_name}' 属于技能 '{required_skill}' 的"
+                        "专属入口，当前该技能未激活（技能可能因闲置过期或"
+                        "会话切换而处于未激活状态）。请先调用 skill_tool("
+                        f'skill_name="{required_skill}") 重新加载技能，'
+                        "再直接调用该工具。这属于技能未激活，不代表能力"
+                        "不可用，不要据此降级或改用其他工具绕过。"
+                    ),
+                }
 
         return {
             "success": bool(result_matches),
@@ -1699,20 +1773,24 @@ class ProgressiveToolRail(DeepAgentRail):
             getattr(self, "_cached_all_tool_infos", ()),
             tool_name,
         )
-        if registered_card is None:
-            registered_card = self._tool_by_name(
-                self._cached_deferred_tool_infos,
-                tool_name,
-            )
-        declared, _required_skill = _required_skill_requirement(registered_card)
+        declared, required_skill = _required_skill_requirement(registered_card)
         if declared:
+            skill_hint = f"（required_skill={required_skill}）" if required_skill else ""
             return {
                 "success": False,
-                "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
+                "error": (
+                    f"工具 '{tool_name}' 是技能门控工具{skill_hint}，"
+                    "不能通过 invoke_tool 代理调用。若其当前不可见，通常是"
+                    "所属技能未激活或授权已失效：请先通过 skill_tool 重新"
+                    "加载对应技能，再直接调用该工具。这属于技能未激活，"
+                    "不代表能力不可用，不要据此降级或改用其他工具绕过。"
+                ),
                 "tool_name": tool_name,
             }
 
-        if tool_name in self.eager_tools:
+        if tool_name in self.eager_tools or _is_pinned_schema_tool(
+            tool_name, registered_card
+        ):
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 是常驻可见工具，可直接调用，无需通过 invoke_tool。",
@@ -1769,7 +1847,11 @@ class ProgressiveToolRail(DeepAgentRail):
                 }
             return {
                 "success": False,
-                "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
+                "error": (
+                    f"工具 '{tool_name}' 未注册。若它属于某个技能（声明了 "
+                    "required_skill），其可见性依赖技能激活：先通过 skill_tool "
+                    "加载对应技能，再直接调用该工具，不要据此判定能力不可用。"
+                ),
                 "tool_name": tool_name,
             }
 

@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 )
 from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
     JiuwenHarnessFetchWebpageTool,
+    JiuwenHarnessImageSearchTool,
 )
 from jiuwenswarm.agents.harness.common.tools.web_search.harness import (
     JiuwenHarnessWebSearchTool,
@@ -1210,9 +1211,10 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         tools=ANY,
     )
     research_tools = mock_research.call_args.kwargs["tools"]
-    assert len(research_tools) == 2
+    assert len(research_tools) == 3
     assert isinstance(research_tools[0], JiuwenHarnessWebSearchTool)
     assert isinstance(research_tools[1], JiuwenHarnessFetchWebpageTool)
+    assert isinstance(research_tools[2], JiuwenHarnessImageSearchTool)
     mock_browser.assert_called_once_with(
         model,
         workspace="/tmp/jiuwenswarm-workspace",

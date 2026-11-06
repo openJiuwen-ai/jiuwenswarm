@@ -9,6 +9,10 @@ helpers so sync and async paths stay in lockstep.
 
 from __future__ import annotations
 
+import os
+import ssl
+import threading
+import time
 from typing import Any, Literal
 
 import httpx
@@ -23,6 +27,36 @@ from .errors import (
 )
 
 HTTPMethod = Literal["GET", "POST", "PUT", "DELETE"]
+
+_SSL_CONTEXT_TTL_S = 300.0
+_SSL_CONTEXTS: dict[tuple, tuple[float, ssl.SSLContext]] = {}
+_SSL_CONTEXT_LOCK = threading.Lock()
+
+
+def _trust_path_stamp(path: str | None) -> tuple[int, int] | None:
+    if not path:
+        return None
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return None
+    return stat_result.st_mtime_ns, stat_result.st_size
+
+
+def _shared_ssl_context() -> ssl.SSLContext:
+    cert_file = os.environ.get("SSL_CERT_FILE")
+    cert_dir = os.environ.get("SSL_CERT_DIR")
+    key = (cert_file, _trust_path_stamp(cert_file), cert_dir, _trust_path_stamp(cert_dir))
+    now = time.monotonic()
+    with _SSL_CONTEXT_LOCK:
+        cached = _SSL_CONTEXTS.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        context = httpx.create_ssl_context()
+        if len(_SSL_CONTEXTS) >= 16:
+            _SSL_CONTEXTS.clear()
+        _SSL_CONTEXTS[key] = (now + _SSL_CONTEXT_TTL_S, context)
+        return context
 
 
 def _parse_payload(resp: httpx.Response) -> dict[str, Any] | None:
@@ -69,7 +103,9 @@ class HTTPTransport:
         timeout: float = 30.0,
         headers: dict[str, str] | None = None,
     ) -> None:
-        self._client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
+        self._client = httpx.Client(
+            base_url=base_url, timeout=timeout, headers=headers, verify=_shared_ssl_context()
+        )
 
     def request(
         self,
@@ -106,7 +142,9 @@ class AsyncHTTPTransport:
         timeout: float = 30.0,
         headers: dict[str, str] | None = None,
     ) -> None:
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, headers=headers)
+        self._client = httpx.AsyncClient(
+            base_url=base_url, timeout=timeout, headers=headers, verify=_shared_ssl_context()
+        )
 
     async def request(
         self,

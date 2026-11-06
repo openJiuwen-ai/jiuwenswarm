@@ -515,6 +515,62 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
     assert manager.get_team_agent("sess-1") is team_agent
 
 
+@pytest.mark.asyncio
+async def test_create_team_bakes_ttse_bank_from_explicit_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _FakeWorkspace:
+        root_path = None
+
+    def fake_load_team_spec(_session_id: str):
+        class _Spec:
+            team_name = "demo-team"
+            workspace = _FakeWorkspace()
+
+            @staticmethod
+            def build():
+                return SimpleNamespace()
+
+        return _Spec()
+
+    seen: dict[str, str] = {}
+
+    def fake_enrich(spec, **kwargs):
+        del spec, kwargs
+        from jiuwenswarm.agents.swarm.config_specs import _ttse_bank_path
+
+        seen["bank"] = _ttse_bank_path("leader")
+
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(fake_load_team_spec))
+
+    async def _noop_init_links(_spec):
+        return None
+
+    monkeypatch.setattr(
+        TeamManager,
+        "_initialize_team_shared_skill_links",
+        staticmethod(_noop_init_links),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
+        fake_enrich,
+    )
+    workspace = tmp_path / "service_billing" / "agent_office" / "agent" / "jiuwenclaw_workspace"
+    manager = TeamManager()
+
+    await manager.create_team(
+        "sess-1",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="web", agent_workspace=workspace),
+    )
+
+    assert seen["bank"] == str(tmp_path / "service_billing" / ".ttse" / "bank.json")
+    from jiuwenswarm.server.runtime.tenant_context import get_bound_jiuwenclaw_workspace
+
+    assert get_bound_jiuwenclaw_workspace() is None
+
+
 def test_get_team_agent_includes_runner_owned_leader() -> None:
     manager = TeamManager()
     leader = SimpleNamespace()

@@ -99,7 +99,6 @@ class _FakeEvolutionRail:
     async def cleanup_background_tasks(self) -> None:
         self.cleanup_calls += 1
 
-
 class _FakeApprovalRail:
     def __init__(
         self,
@@ -174,6 +173,231 @@ class _TestAdapter(JiuWenSwarmDeepAdapter):
     ) -> None:
         watcher = getattr(self, "_watch_evolution_and_push")
         await watcher(request_id, channel_id, session_id)
+
+
+@pytest.mark.asyncio
+async def test_evolution_watcher_supersedes_previous_request_for_same_session(monkeypatch):
+    """A resumed request replaces the paused request's old watcher ownership."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._skill_evolution_rail = object()
+    adapter._evolution_watcher_tasks = set()
+    adapter._evolution_watchers = {}
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def watch(request_id: str, channel_id: str, session_id: str) -> None:
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(adapter, "_watch_evolution_and_push", watch)
+
+    first = adapter._start_evolution_watcher("rid-old", "channel-1", "session-1")
+    await started.wait()
+    started.clear()
+    second = adapter._start_evolution_watcher("rid-new", "channel-1", "session-1")
+    await started.wait()
+    await asyncio.sleep(0)
+
+    assert first.cancelled()
+    assert getattr(first, "_evolution_watcher_graceful", False) is True
+    assert adapter._evolution_watchers[("channel-1", "session-1")] is second
+    assert second in adapter._evolution_watcher_tasks
+
+    release.set()
+    await second
+    await asyncio.sleep(0)
+
+    assert ("channel-1", "session-1") not in adapter._evolution_watchers
+    assert second not in adapter._evolution_watcher_tasks
+
+
+@pytest.mark.asyncio
+async def test_cancel_evolution_watchers_does_not_cancel_skill_sleep_tasks():
+    """Adapter-owned watchers are teardown-safe without changing SkillSleep lifetime."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._evolution_watcher_tasks = set()
+    adapter._evolution_watchers = {}
+    watcher_release = asyncio.Event()
+    sleep_release = asyncio.Event()
+    watcher_task = asyncio.create_task(watcher_release.wait())
+    sleep_task = asyncio.create_task(sleep_release.wait())
+    adapter._evolution_watcher_tasks.update({watcher_task, sleep_task})
+    adapter._evolution_watchers[("channel-1", "session-1")] = watcher_task
+
+    await adapter._cancel_evolution_watchers()
+
+    assert watcher_task.cancelled()
+    assert not adapter._evolution_watchers
+    assert sleep_task in adapter._evolution_watcher_tasks
+    assert not sleep_task.done()
+
+    sleep_release.set()
+    await sleep_task
+
+
+@pytest.mark.asyncio
+async def test_stream_start_does_not_cancel_inflight_route_watcher(monkeypatch):
+    """A new request must not abort an in-flight prior passive evolution."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = True
+    adapter._instance = object()
+    adapter._deepresearch_rewrite_tx_uncertain = False
+    adapter._STALE_CRON_PERMISSION_TEXT = "stale"
+
+    async def refresh_stale_mcp_tool_lists() -> None:
+        return None
+
+    async def block_stale_cron_permission_resume(request) -> bool:
+        return True
+
+    monkeypatch.setattr(adapter, "_refresh_stale_mcp_tool_lists", refresh_stale_mcp_tool_lists)
+    monkeypatch.setattr(
+        adapter,
+        "_inject_extension_config_into_inputs",
+        lambda inputs: None,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "_inject_model_selection_into_inputs",
+        lambda request, inputs: None,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "_inject_model_routing_into_inputs",
+        lambda request, inputs: None,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "_inject_request_id_into_inputs",
+        lambda request, inputs: None,
+    )
+    monkeypatch.setattr(adapter, "_has_valid_model_config", lambda model_name: True)
+    monkeypatch.setattr(
+        adapter,
+        "_block_stale_cron_permission_resume",
+        block_stale_cron_permission_resume,
+    )
+    request = SimpleNamespace(
+        request_id="rid-new",
+        channel_id="channel-1",
+        session_id="session-1",
+        params={},
+        metadata={},
+    )
+    chunks = [chunk async for chunk in adapter._process_message_stream_impl(request, {})]
+
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.asyncio
+async def test_superseded_evolution_watcher_does_not_cancel_shared_pending_evolution(
+    monkeypatch,
+):
+    """Route handoff stops the listener without killing rail-owned evolution work."""
+    _FakeTransport.pushes = []
+    drain_release = asyncio.Event()
+
+    class _BlockingRail(_FakeEvolutionRail):
+        def __init__(self):
+            super().__init__(batches=[[]])
+            self.cancel_calls = 0
+
+        async def cancel_pending_evolution(self) -> None:
+            self.cancel_calls += 1
+
+        async def drain_pending_approval_events(self, wait=False, timeout=None):
+            self.drain_waits.append(wait)
+            await drain_release.wait()
+            return []
+
+    rail = _BlockingRail()
+    adapter = _TestAdapter.build_with_rail(rail)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
+        _FakeTransport,
+    )
+    task = asyncio.create_task(
+        adapter.watch_evolution_and_push("rid", "channel-1", "session-1")
+    )
+    await asyncio.sleep(0)
+    assert rail.drain_waits
+
+    task._evolution_watcher_graceful = True
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert rail.cleanup_calls == 1
+    assert rail.cancel_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_active_evolution_rail_unconfigure_isolates_failures(monkeypatch):
+    """One failed unregister keeps its cached reference; the other can still unload."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    active_rail = object()
+    interrupt_rail = object()
+    adapter._instance = SimpleNamespace()
+    adapter._skill_evolution_rail = active_rail
+    adapter._evolution_interrupt_rail = interrupt_rail
+    calls: list[object] = []
+
+    async def unregister(rail):
+        calls.append(rail)
+        if rail is active_rail:
+            raise RuntimeError("active rail unregister failed")
+
+    def bulk_unconfigure(instance, team=False):
+        return None
+
+    adapter._instance.unregister_rail = unregister
+    monkeypatch.setattr(interface_deep_module, "unconfigure_skill_evolution", bulk_unconfigure)
+
+    await adapter._unconfigure_active_evolution_rails()
+
+    assert calls == [active_rail, interrupt_rail]
+    assert adapter._skill_evolution_rail is active_rail
+    assert adapter._evolution_interrupt_rail is None
+
+
+@pytest.mark.asyncio
+async def test_skill_sleep_rail_unconfigure_keeps_cache_on_failure():
+    """A failed SkillSleep unregister must not erase the still-mounted rail reference."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    rail = object()
+    adapter._instance = SimpleNamespace()
+    adapter._skill_sleep_rail = rail
+    adapter._skill_sleep_tasks = set()
+
+    async def unregister(unmounted_rail):
+        assert unmounted_rail is rail
+        raise RuntimeError("SkillSleep unregister failed")
+
+    adapter._instance.unregister_rail = unregister
+
+    await adapter._unconfigure_skill_sleep_rail()
+
+    assert adapter._skill_sleep_rail is rail
+
+
+@pytest.mark.asyncio
+async def test_cancel_evolution_watchers_cleans_registry_without_user_data():
+    """Adapter teardown cancels its own in-flight watchers and empties ownership."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._evolution_watcher_tasks = set()
+    adapter._evolution_watchers = {}
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    adapter._evolution_watcher_tasks.add(task)
+    adapter._evolution_watchers[("channel-1", "session-1")] = task
+
+    await adapter._cancel_evolution_watchers()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert not adapter._evolution_watchers
+    assert not adapter._evolution_watcher_tasks
 
 
 @pytest.mark.asyncio

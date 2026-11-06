@@ -33,6 +33,7 @@ _DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
     "invoke_tool",
     "web_search",
     "fetch_webpage",
+    "web_image_search",
     "ask_user",
     "list_files",
     "read_file",

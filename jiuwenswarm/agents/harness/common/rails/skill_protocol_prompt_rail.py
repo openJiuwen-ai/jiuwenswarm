@@ -29,6 +29,11 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
 
 可用技能清单与加载约定见本 prompt 的「技能」段（SkillUseRail 注入），**须与该段一致**。
 
+### 经验查询与技能流程的顺序
+当前任务要求 TTSE 前置经验查询且 `ttse_consult` 可用时，**必须先单独查询并阅读结果，再加载技能**，不得与技能或 todo 工具同批调用。
+已有当前任务的查询结果或运行时前置查询结果附件时，先阅读结果，不重复查询。
+以下技能加载、“第一个工作工具”、todo 及新任务清理旧 todo 的顺序要求，均从前置查询完成后开始适用；用户明确要求不查询经验时遵循用户要求。
+
 ### 加载 SKILL.md 正文（禁止用 bash 执行工具名）
 - **必须**且**只能**使用 `skill_tool(skill_name=..., relative_file_path="SKILL.md")` 加载。不要把工具名当作 shell 命令执行。
 - **禁止**用 `read_file` 或任何其它工具读取、拼凑 SKILL.md。遇到技能名或 `.../<skill_name>/SKILL.md` 路径一律走 `skill_tool`；普通参考文件不受此限制。
@@ -71,6 +76,11 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
 _EN_PROTOCOL = """## Skill Execution Protocol (Mandatory)
 
 The "Skills" section of this prompt (from SkillUseRail) lists available skills and how to load them — **follow that section**.
+
+### Experience lookup before the skill workflow
+When this task requires a TTSE lookup and `ttse_consult` is available, **consult alone and read the result before loading a skill**; never batch it with skill or todo tools.
+Read an existing consult or runtime preflight result for this task without repeating the lookup.
+The skill-loading, first-work-tool, todo, and old-todo cleanup rules below apply after the lookup completes; follow explicit user instructions not to consult.
 
 ### Load SKILL.md body (never run tool names as shell/bash commands)
 - You **must** use **only** `skill_tool(skill_name=..., relative_file_path="SKILL.md")` to load the body. Do not execute tool names as shell commands.

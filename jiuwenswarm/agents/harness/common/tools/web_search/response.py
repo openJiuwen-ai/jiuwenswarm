@@ -35,10 +35,19 @@ def _format_records_block(
         return lines
     # petal 已将完整正文(content)内联返回，模型通常无需再 fetch
     lines.append("Hint: 结果已内联展示正文（Content）；仅在正文缺失时才需 fetch_webpage。")
+    if any(rec.images for rec in deduped):
+        lines.append(
+            "Hint: 结果含候选图片；需要真实配图时调用 web_image_search"
+            "（Flash 模式为 web_flash 的 images 动作）下载到本地，再用 read_file "
+            "或图片工具使用；是否内联为原生图片由模型能力决定。"
+        )
     for idx, rec in enumerate(deduped, 1):
         lines.append(f"{idx}. {rec.title}")
         if rec.url:
             lines.append(f"   URL: {rec.url}")
+        images = [url for url in (rec.images or []) if url]
+        if images:
+            lines.append(f"   Images: {' | '.join(images)}")
         # 优先展示完整 content；content 缺失（非 petal 源）时回退 snippet(summary)
         body = (rec.content or "").strip() or (rec.snippet or "").strip()
         if body:
