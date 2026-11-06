@@ -122,35 +122,20 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 
 # AgentSSAS: 可选导入 AgentSSASSecurityRail(fail-open,未安装时降级为不注册)
-_SSAS_AVAILABLE = True
+# 注: try/except 条件导入块整体对 E402 豁免, _SSAS_AVAILABLE 赋值必须
+# 放在块内(而非 try 之前的裸赋值), 否则后续导入全部触发 E402
 try:
     from agent_ssas.core.framework.config.settings import AgentSSASConfig
-    from agent_ssas.backend_client.openjiuwen.factory import create_agent_ssas_rail
     from agent_ssas.backend_client.openjiuwen.agent_ssas_security_rail import AgentSSASSecurityRail
+    _SSAS_AVAILABLE = True
 except ImportError as _ssas_import_exc:
-    _SSAS_AVAILABLE = False
     AgentSSASSecurityRail = None  # type: ignore[assignment,misc]
+    _SSAS_AVAILABLE = False
     # 模块级 logger 尚未定义,此处必须内联获取,确保 fail-open 不因日志而崩溃
     logging.getLogger(__name__).warning(
         "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not loaded: %s",
         _ssas_import_exc,
     )
-
-# AgentSSAS backend 异步初始化 Task 的强引用集合:
-# asyncio Task 仅被弱引用持有, 未保存引用可能被 GC 中途销毁;
-# done callback 负责: 1) 从集合移除已完成 Task  2) 记录初始化异常(否则异常静默丢失)
-_SSAS_INIT_TASKS: "set[asyncio.Task[None]]" = set()
-
-
-def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
-    """AgentSSAS backend 初始化 Task 完成回调: 移除引用并记录异常."""
-    _SSAS_INIT_TASKS.discard(task)
-    if task.cancelled():
-        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
 
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
@@ -793,6 +778,36 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
     return query.strip() if isinstance(query, str) else ""
 
 logger = logging.getLogger(__name__)
+
+# AgentSSAS backend 异步初始化 Task 的强引用集合:
+# asyncio Task 仅被弱引用持有, 未保存引用可能被 GC 中途销毁;
+# done callback 负责: 1) 从集合移除已完成 Task  2) 记录初始化异常(否则异常静默丢失)
+_SSAS_INIT_TASKS: "set[asyncio.Task[None]]" = set()
+
+
+def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
+    """AgentSSAS backend 初始化 Task 完成回调: 移除引用并记录异常."""
+    _SSAS_INIT_TASKS.discard(task)
+    if task.cancelled():
+        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
+
+
+async def _await_ssas_init_tasks() -> None:
+    """等待 AgentSSAS backend 初始化 Task 全部完成(fail-open, 不阻断实例创建).
+
+    rail 构建链路是同步契约, 无法直接 await initialize(), 只能 fire-and-forget
+    派发 Task(见 _build_ssas_rail); 本函数在 rail 列表构建完成后统一收口,
+    保证 rail 进入 agent 实例前 backend 已完成初始化, 消除"rail 已注册但
+    backend 未就绪"的窗口期。初始化异常已由 done callback 记录并告警,
+    此处仅等待, 不再上抛, 保持 fail-open 语义。
+    """
+    pending = [task for task in _SSAS_INIT_TASKS if not task.done()]
+    if pending:
+        await asyncio.wait(pending)
 
 
 def _model_name_names_selection(model_name: str, selection: ModelSelection) -> bool:
@@ -10325,21 +10340,19 @@ class JiuWenSwarmDeepAdapter:
                 backend = AgentSSASRemoteBackend(ssas_config)
             else:
                 backend = AgentSSASBackend(ssas_config)
-                # initialize() 是 async, 在同步上下文中用事件循环驱动
-                # 注: 复用模块级 asyncio 导入,不再函数内重复 import
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # 已在事件循环中: 创建 Task 并保存强引用, done callback 记录异常,
-                        # 避免 Task 被 GC 中途销毁或初始化异常静默丢失
-                        init_task = asyncio.ensure_future(backend.initialize())
-                        _SSAS_INIT_TASKS.add(init_task)
-                        init_task.add_done_callback(_log_ssas_init_result)
-                    else:
-                        loop.run_until_complete(backend.initialize())
-                except RuntimeError:
-                    # 没有事件循环, 创建新的
-                    asyncio.run(backend.initialize())
+                # initialize() 是 async: builder 链路(_create_instance ->
+                # _build_agent_rails -> 本方法)必然运行于事件循环内,
+                # fire-and-forget 派发初始化 Task 并保存强引用(done callback
+                # 记录异常, 避免被 GC 中途销毁或异常静默丢失); 随后由
+                # _create_instance 统一 await 收口(见 _await_ssas_init_tasks),
+                # 保证 rail 生效前 backend 完成初始化。若异常态下无运行中
+                # 事件循环, get_running_loop 抛出的 RuntimeError 由外层
+                # except 捕获, 告警并降级为不注册 rail(fail-open)。
+                init_task = asyncio.get_running_loop().create_task(
+                    backend.initialize()
+                )
+                _SSAS_INIT_TASKS.add(init_task)
+                init_task.add_done_callback(_log_ssas_init_result)
             rail = AgentSSASSecurityRail(
                 backend=backend,
                 policy_name=ssas_config.decision_policy,
@@ -12583,6 +12596,9 @@ class JiuWenSwarmDeepAdapter:
             mode=mode,
             composition_scope=composition_scope,
         )
+        # AgentSSAS backend 初始化 Task 收口: rail 进入实例前确保 backend
+        # 已完成初始化(初始化异常已由 done callback 告警, fail-open 不阻断)
+        await _await_ssas_init_tasks()
         resolved_language = self._resolve_runtime_language()
         workspace_obj = Workspace(
             root_path=self._workspace_dir or "./",
