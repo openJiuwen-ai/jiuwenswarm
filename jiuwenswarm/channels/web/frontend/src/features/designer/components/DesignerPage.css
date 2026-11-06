@@ -1027,6 +1027,7 @@
 }
 
 .designer-chat-panel__composer-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1097,6 +1098,70 @@
 
 .designer-chat-panel__composer-actions .chat-mode-select__label {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "@" node picker, floating above the composer box. */
+.designer-chat-panel__at-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+}
+
+.designer-chat-panel__at-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.designer-chat-panel__at-menu button:hover,
+.designer-chat-panel__at-menu button.is-active {
+  background: var(--color-action-secondary);
+}
+
+.designer-chat-panel__at-thumb {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--color-surface-shell);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.designer-chat-panel__at-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.designer-chat-panel__at-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

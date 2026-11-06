@@ -8,6 +8,7 @@ import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
 import { findDesignModelsProblem } from './designPromptReadiness';
+import { stripMentionAppendix, withMentionAppendix } from './designerMentions';
 import {
   mediaItemsToBootstrapReferences,
   type DesignerBootstrapReference,
@@ -84,7 +85,7 @@ export function seedDesignerChatHistory(sessionId: string, messages: DesignerCha
     .map((item) => ({
       id: item.id,
       role: item.role === 'user' ? 'user' : 'assistant',
-      content: item.content,
+      content: item.role === 'user' ? stripMentionAppendix(item.content) : item.content,
       timestamp: new Date(item.createdAt || Date.now()).toISOString(),
     }));
   if (history.length > 0) {
@@ -92,7 +93,10 @@ export function seedDesignerChatHistory(sessionId: string, messages: DesignerCha
   }
 }
 
-/** One leader round: echo the user bubble, then ``chat.send(mode='team.design')``. */
+/**
+ * One leader round: echo the user bubble, then ``chat.send(mode='team.design')``.
+ * "@Label" mentions of canvas nodes reach the leader with their node ids appended.
+ */
 export async function sendDesignerLeaderMessage(params: {
   sessionId: string;
   prompt: string;
@@ -115,7 +119,7 @@ export async function sendDesignerLeaderMessage(params: {
     await flushApplicationConversationHistory(sessionId);
     await webClient.request('chat.send', {
       session_id: sessionId,
-      query: prompt,
+      query: withMentionAppendix(prompt, useDesignerStore.getState().domainGraph),
       mode: DESIGNER_TEAM_MODE,
       ...buildConversationModelPayload({
         mode: DESIGNER_TEAM_MODE,

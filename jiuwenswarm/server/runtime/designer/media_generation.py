@@ -7,9 +7,10 @@ Design reads the same Settings > Agent slots as the chat tools
 tool, a clip waits for its video job: the submit / check_video pair is polled
 here until the file is saved or the deadline passes.
 
-Only the vendor-native backends are driven (MiniMax, ModelArk, DashScope,
-vLLM-Omni): Design relies on reference images, which the OpenRouter path does
-not take.
+Vendor-native endpoints (MiniMax, ModelArk, DashScope, vLLM-Omni) use their own
+backends; any other endpoint (e.g. https://openrouter.ai/api/v1) is driven as an
+OpenRouter-style API through ``gen_toolkits.OPENROUTER``, which carries the
+reference images Design relies on.
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ class SlotSettings:
     api_key: str
     api_base: str
     model: str
+    # A native backend, gen_toolkits.OPENROUTER for any other endpoint, None when no URL is set.
     backend: str | None
 
     @property
@@ -70,11 +72,14 @@ class SlotSettings:
 def slot_settings(kind: Kind) -> SlotSettings:
     prefix = _ENV_PREFIX[kind]
     api_base = os.environ.get(f"{prefix}_API_BASE", "").strip()
+    backend = gen_toolkits.detect_backend(f"{prefix}_PROTOCOL", api_base)
+    if backend is None and api_base:
+        backend = gen_toolkits.OPENROUTER
     return SlotSettings(
         api_key=os.environ.get(f"{prefix}_API_KEY", "").strip(),
         api_base=api_base,
         model=os.environ.get(f"{prefix}_MODEL_NAME", "").strip(),
-        backend=gen_toolkits.detect_backend(f"{prefix}_PROTOCOL", api_base),
+        backend=backend,
     )
 
 
@@ -112,14 +117,8 @@ def generation_problem(kind: Kind) -> str | None:
     label = _SETTINGS_LABEL[kind]
     if not generation_enabled(kind):
         return f"{label} is switched off in Settings > Agent."
-    settings = slot_settings(kind)
-    if not settings.complete:
+    if not slot_settings(kind).complete:
         return f"{label} is not configured: set the API URL, API key and model in Settings > Agent."
-    if settings.backend is None:
-        return (
-            f"{label} for Design needs a MiniMax, BytePlus ModelArk / Volcengine, Alibaba DashScope or "
-            f"vLLM-Omni endpoint; {settings.api_base} is not one of them. Change it in Settings > Agent."
-        )
     return None
 
 

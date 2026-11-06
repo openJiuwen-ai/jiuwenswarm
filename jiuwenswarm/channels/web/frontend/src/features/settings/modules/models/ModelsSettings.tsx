@@ -454,7 +454,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
           checkRefreshStatus();
         } catch (error) {
           const referenced = extractModelSelectionReferences(error);
-          if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
+          if (referenced.length > 0) {
             throw new Error(
               t('settingsPanel.models.modelGroupReferenced', {
                 count: referenced.length || 1,

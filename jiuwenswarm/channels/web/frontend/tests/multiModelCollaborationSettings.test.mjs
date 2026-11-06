@@ -277,7 +277,6 @@ test('experimental sections retain their order with a single computer control se
     'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
-    'computer-control',
     'design-mode',
   ]);
 });

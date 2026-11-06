@@ -99,6 +99,7 @@ const BACKEND_LABELS: Record<string, string> = {
   modelark: 'ModelArk',
   dashscope: 'DashScope',
   'vllm-omni': 'vLLM-Omni',
+  openrouter: 'OpenRouter',
 };
 
 /** Configured model name; a provider that allows an empty model name (vLLM-Omni) shows its own name. */

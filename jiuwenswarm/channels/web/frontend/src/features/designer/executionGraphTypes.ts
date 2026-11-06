@@ -306,7 +306,7 @@ export type DesignerMediaSettingsPatch = {
 export type DesignerMediaCapabilities = {
   video: {
     configured_model: string;
-    /** Native generation backend of the slot; null on the OpenRouter-style path. */
+    /** Generation backend of the slot ('openrouter' for any non-native endpoint); null when no URL is set. */
     backend: string | null;
     model_id: string;
     provider: string;

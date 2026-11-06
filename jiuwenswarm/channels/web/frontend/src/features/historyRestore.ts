@@ -22,6 +22,7 @@ import {
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { stripMentionAppendix } from './designer/designerMentions';
 import { expertTeamId } from './teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
 import { readAgentTemplateName } from './agentIdentity';
@@ -1138,7 +1139,8 @@ function parseSessionHistoryTimelineEntry(
         id,
         role: 'user',
         outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
-        content,
+        // A design "@" mention carries a leader-only appendix; show the user's own text.
+        content: stripMentionAppendix(content),
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
