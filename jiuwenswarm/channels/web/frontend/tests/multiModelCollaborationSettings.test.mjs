@@ -279,7 +279,6 @@ test('computer control is the last experimental section and other sections retai
     'tool-optimize',
     'computer-control',
     'design-mode',
-    'computer-control',
   ]);
 });
 
