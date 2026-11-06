@@ -131,6 +131,12 @@ import {
   setDiagnosisEnabled,
   useDiagnosisEnabled,
 } from './features/trajectory/featureConfig';
+import { RsiPage } from './features/rsi/RsiPage';
+import {
+  normalizeRSIEnabled,
+  setRSIFeatureEnabled,
+  useRSIFeatureEnabled,
+} from './features/rsi/featureConfig';
 import { useWorkspaceQuotaEnabled } from './features/workspace/useWorkspaceQuotaEnabled';
 import './App.css';
 
@@ -399,6 +405,7 @@ function AppContent() {
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const diagnosisEnabled = useDiagnosisEnabled();
+  const rsiFeatureEnabled = useRSIFeatureEnabled();
   const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -420,6 +427,8 @@ function AppContent() {
   const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(activeNav === 'personalContext');
   // 诊断面板保活：切走再切回不丢流式输出（卸载会销毁流式状态并断 SSE）
   const [hasVisitedDiagnosis, setHasVisitedDiagnosis] = useState(activeNav === 'diagnosis');
+  // RSI 实验页左栏（实验管理栏）收起态；DST 无 dev 侧二级侧栏体系，用本地状态承载。
+  const [rsiSidebarCollapsed, setRsiSidebarCollapsed] = useState(false);
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
@@ -481,6 +490,13 @@ function AppContent() {
       setActiveNav('chat');
     }
   }, [activeNav, diagnosisEnabled]);
+
+  // RSI 开关关闭后残留的 sessionStorage 导航态不应继续渲染实验页。
+  useEffect(() => {
+    if (!rsiFeatureEnabled && activeNav === 'experiments') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, rsiFeatureEnabled]);
 
   // 配额特性关闭时隐藏工作空间；申请页仅企业版 + 配额开，残留会话态回退对话页。
   useEffect(() => {
@@ -1131,6 +1147,7 @@ function AppContent() {
     try {
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
+      setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
       setDiagnosisEnabled(normalizeDiagnosisEnabled(config.diagnosis_enabled));
       setServerConfig(config);
@@ -2815,12 +2832,13 @@ function AppContent() {
             ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS]
             : ['sessions', 'history', 'approvals'];
           const withDiagnosis = diagnosisEnabled ? base : [...base, 'diagnosis' as MainNavKey];
+          const withRsi = rsiFeatureEnabled ? withDiagnosis : [...withDiagnosis, 'experiments' as MainNavKey];
           if (workspaceQuotaEnabled) {
-            return withDiagnosis;
+            return withRsi;
           }
           return enterpriseMode
-            ? [...withDiagnosis, 'agents', 'approvals']
-            : [...withDiagnosis, 'agents'];
+            ? [...withRsi, 'agents', 'approvals']
+            : [...withRsi, 'agents'];
         })()}
         onMorePanelOpenChange={setSidebarMorePanelOpen}
       />
@@ -3083,6 +3101,14 @@ function AppContent() {
             <Suspense fallback={null}>
               <LazyDiagnosisHistoryPanel request={request} currentSessionId={sessionId} />
             </Suspense>
+          </div>
+        )}
+        {activeNav === 'experiments' && (
+          <div className="app-section">
+            <RsiPage
+              collapsed={rsiSidebarCollapsed}
+              onCollapse={() => { setRsiSidebarCollapsed((v) => !v); }}
+            />
           </div>
         )}
 

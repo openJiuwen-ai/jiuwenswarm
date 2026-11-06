@@ -61,6 +61,7 @@ from jiuwenswarm.common.config import (
     update_skill_retrieval_in_config,
     update_symphony_in_config,
     update_setup_guide_enabled_in_config,
+    update_rsi_enabled_in_config,
     update_swarmflow_enabled_in_config,
     update_updater_in_config,
     update_proactive_recommendation_in_config,
@@ -782,6 +783,25 @@ _FORWARD_REQ_METHODS = frozenset({
     "issue.state.list",
     "issue.matrix",
     "issue.delete",
+    # RSI 优化平台（rsi.*；AgentServer 侧统一分发，见 server/rsi/rsi_handlers.py）
+    "rsi.dataset.validate",
+    "rsi.task.create",
+    "rsi.task.list",
+    "rsi.task.get",
+    "rsi.task.delete",
+    "rsi.training.start",
+    "rsi.training.pause",
+    "rsi.training.resume",
+    "rsi.training.terminate",
+    "rsi.report.get",
+    "rsi.usage.get",
+    "rsi.artifact.download",
+    "rsi.artifact.files.list",
+    "rsi.artifact.files.get",
+    "rsi.tree.get",
+    "rsi.harness.install",
+    "rsi.harness.versions.list",
+    "rsi.harness.rollback",
     "im.hosting.status",
     "im.hosting.discover",
     "im.hosting.targets.list",
@@ -925,6 +945,25 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.server.update",
     "mcp.server.list",
     "mcp.server.get",
+    # RSI 优化平台（rsi.*；转发且不做本地 ack，AgentServer 侧统一分发）
+    "rsi.dataset.validate",
+    "rsi.task.create",
+    "rsi.task.list",
+    "rsi.task.get",
+    "rsi.task.delete",
+    "rsi.training.start",
+    "rsi.training.pause",
+    "rsi.training.resume",
+    "rsi.training.terminate",
+    "rsi.report.get",
+    "rsi.usage.get",
+    "rsi.artifact.download",
+    "rsi.artifact.files.list",
+    "rsi.artifact.files.get",
+    "rsi.tree.get",
+    "rsi.harness.install",
+    "rsi.harness.versions.list",
+    "rsi.harness.rollback",
     "im.hosting.status",
     "im.hosting.discover",
     "im.hosting.targets.list",
@@ -1018,6 +1057,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
     "setup_guide_enabled",
+    "rsi_enabled",
 })
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
@@ -2365,6 +2405,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["diagnosis_enabled"] = (
                 "true" if diagnosis_cfg.get("enabled", False) else "false"
             )
+            rsi_cfg = raw.get("rsi") or {}
+            payload["rsi_enabled"] = (
+                "true" if rsi_cfg.get("enabled", True) else "false"
+            )
             for key, val in payload.items():
                 payload[key] = decrypt(key, val)
             react_cfg = raw.get("react") or {}
@@ -2420,6 +2464,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("diagnosis_enabled", "false")
+            payload.setdefault("rsi_enabled", "true")
             payload.setdefault("evolution_enabled", "true")
             payload.setdefault("ttse_enabled", "true")
             payload.setdefault("skill_create", "false")
@@ -2621,6 +2666,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     await update_permissions_enabled_in_config(parsed)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "rsi_enabled":
+                    update_rsi_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
                     update_trajectory_ui_in_config(parsed)
                 elif param_key == "diagnosis_enabled":
