@@ -4654,8 +4654,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             isActive
             onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
             onUsePrompt={handleUseAgentPrompt}
-            onUseAgentGroup={handleUseAgentGroup}
-            onUseGroupPrompt={handleUseGroupPrompt}
+            onUseAgentGroup={(groupId) => {
+              setIsJiuwenMate(false);
+              handleUseAgentGroup(groupId);
+            }}
+            onUseGroupPrompt={(groupId, prompt) => {
+              setIsJiuwenMate(false);
+              handleUseGroupPrompt(groupId, prompt);
+            }}
             onCreateViaChat={() => {
               setIsJiuwenMate(false);
               requestSessionNavigation('new', {

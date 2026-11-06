@@ -114,8 +114,7 @@
       "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
-      "openModelSettings": "Open Settings",
-      "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again."
+      "openModelSettings": "Open Settings"
     },
     "activity": {
       "thinking": "Thinking",
@@ -6074,6 +6073,7 @@
       "welinkCredentialDone": "Done",
       "welinkShowAssistantQr": "Show assistant code",
       "welinkRetry": "Retry",
+      "welinkScanReminder": "This page will advance automatically once binding succeeds. Please keep it open and do not select Cancel.",
       "welinkAssistantWaiting": "Scan the assistant code and confirm",
       "welinkAssistantScan": "Create by scanning",
       "welinkAssistantExisting": "Enter an existing AK/SK",

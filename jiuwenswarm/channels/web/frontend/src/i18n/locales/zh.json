@@ -114,8 +114,7 @@
       "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
       "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
       "notSelected": "未选择模型",
-      "openModelSettings": "去设置",
-      "chatAnthropicUnsupported": "设计暂不支持 Anthropic 协议的对话模型。请在「设置」中改为配置 OpenAI 协议的模型后再试。"
+      "openModelSettings": "去设置"
     },
     "activity": {
       "thinking": "思考中",
@@ -6071,6 +6070,7 @@
       "welinkCredentialDone": "完成",
       "welinkShowAssistantQr": "弹出助手码",
       "welinkRetry": "重试",
+      "welinkScanReminder": "绑定成功后页面会自动跳转，请勿关闭窗口或点击“取消”。",
       "welinkAssistantWaiting": "请用手机扫描确认",
       "welinkAssistantScan": "扫码创建",
       "welinkAssistantExisting": "填写已有 AK/SK",
