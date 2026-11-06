@@ -20,6 +20,10 @@ interface MarketCardProps {
   quickAction?: 'install' | 'connect';
   actionDisabled?: boolean;
   onUse?: () => void;
+  /** 覆盖已连接态按钮文案；系统插件用它表达"已启用/重载"。 */
+  connectedLabel?: string;
+  /** 已连接态按钮动作；缺省沿用 onUse。 */
+  onConnectedAction?: () => void;
 }
 
 export function MarketCard({
@@ -35,6 +39,8 @@ export function MarketCard({
   quickAction = 'install',
   actionDisabled = false,
   onUse,
+  connectedLabel,
+  onConnectedAction,
 }: MarketCardProps) {
   const { t } = useTranslation();
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -65,7 +71,8 @@ export function MarketCard({
       </span>
     );
   } else if (state === 'connected') {
-    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={!onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;
+    const action = onConnectedAction ?? onUse;
+    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={!action} onClick={event => { event.stopPropagation(); action?.(); }}>{connectedLabel ?? t('connectorMarket.card.use')}</button>;
   } else if (state === 'idle' || state === 'error') {
     actionSlot = (
       <button

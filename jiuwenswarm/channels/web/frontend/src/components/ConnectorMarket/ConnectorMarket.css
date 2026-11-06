@@ -29,3 +29,7 @@
 }
 
 .connector-market-card-install:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.ui-dialog.system-plugin-readme-dialog {
+  width: min(860px, calc(100vw - 32px));
+}

@@ -8,9 +8,12 @@ import { useTranslation } from 'react-i18next';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
+import { useSystemPluginStore } from '../../stores/systemPluginStore';
+import { localizedText } from '../../types/localized';
+import type { SystemPluginSummary } from '../../types/systemPlugin';
 import { connectorApi } from '../../services/connectorApi';
 import { pluginPackagesApi } from '../../services/pluginPackagesApi';
-import { localizedText, type PluginPackageSummary } from '../../types/pluginPackage';
+import type { PluginPackageSummary } from '../../types/pluginPackage';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { ConnectTokenModal } from './ConnectTokenModal';
@@ -27,7 +30,12 @@ import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingCon
 import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs, EmptyState } from '../ui';
 
 export type MarketKind = 'plugin' | 'mcp';
+export type PluginKind = 'agent' | 'system';
 export type TopTab = MarketKind | 'my';
+
+type MyPluginEntry =
+  | { kind: 'agent'; pkg: PluginPackageSummary }
+  | { kind: 'system'; pkg: SystemPluginSummary };
 // 状态筛选：'pending' 对应不可用态（插件未安装或MCP未连接/绑定MCP未连接），'available' 对应
 // 可用态。2026-08-15 去除全局启用/禁用后不再有第三个"disabled"筛选项，见
 // state-model-rectification-v2-remove-global-toggle.md。
@@ -37,8 +45,11 @@ interface MarketplacePageProps {
   onTopTabChange: (tab: TopTab) => void;
   myKind: MarketKind;
   onMyKindChange: (kind: MarketKind) => void;
+  pluginKind: PluginKind;
+  onPluginKindChange: (kind: PluginKind) => void;
   onOpenConnectorDetail: (name: string) => void;
   onOpenPluginDetail: (id: string) => void;
+  onOpenSystemPluginDetail: (id: string) => void;
   /** "会话使用"点击——跳新会话并顺带打开这个扩展的会话内启用开关，跟详情页顶部"使用"按钮
    * 是同一条 onUseExtension 通道（见 ConnectorMarket/index.tsx），这里需要知道点的是卡片列表
    * 里的哪一个，所以带上 kind/id。 */
@@ -49,17 +60,7 @@ interface MarketplacePageProps {
   onRegisterCustomMcp: () => void;
 }
 
-// 2026-08-07：backend-requests.md 需求8 已解决——plugin_packages.list/show 现在真的下发单值
-// category 字段（对齐专家与插件装备-前端接口(3).md v1.5）。插件的 category 是 manifest 里的
-// 自由字符串，不是后端定死的固定枚举，没法用一份写死的 tab 列表。这里改成前端自己统计：拿当前
-// 已加载的 packages，按 category 出现频次从高到低取前 N 个作为独立 tab，其余（含空 category）
-// 一律归进"其他"——"其他"这个 tab 只在真的有条目落在它里面时才显示，避免空 tab。
-//
-// 2026-08-10：MCP 那边原来用的是一份写死的固定枚举（`CONNECTOR_CATEGORIES`），用户指出这不对——
-// MCP 接口文档里 `category` 也是后端下发的自由字符串（"预留字段，前端可按此分组但不依赖"，预置
-// 多为空串、自定义为 "custom"），跟插件的 category 是同一种"后端不保证固定取值"的字段，不该有
-// 两套不一致的处理方式。改成和插件同一套统计逻辑（见下方 `mcpTopCategories`），`CONNECTOR_
-// CATEGORIES` 这个写死的枚举已从 types/connector.ts 删除。
+// MCP 分类是后端下发的自由字符串；按当前已加载的连接器统计前 N 个分类，其余归入“其他”。
 const CATEGORY_TOP_N = 6;
 
 /** 首批渲染数量；触底后每批追加同数量（列表数据在内存中，这里做增量展示）。 */
@@ -73,8 +74,11 @@ export function MarketplacePage({
   onTopTabChange,
   myKind,
   onMyKindChange,
+  pluginKind,
+  onPluginKindChange,
   onOpenConnectorDetail,
   onOpenPluginDetail,
+  onOpenSystemPluginDetail,
   onUse,
   onCreateManual,
   onCreateWithSkill,
@@ -83,7 +87,6 @@ export function MarketplacePage({
 }: MarketplacePageProps) {
   const { t, i18n } = useTranslation();
   const [category, setCategory] = useState<string>('all');
-  const [pluginCategory, setPluginCategory] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [marketConnectorResults, setMarketConnectorResults] = useState<ConnectorSummary[] | null>(null);
   const [marketPluginResults, setMarketPluginResults] = useState<PluginPackageSummary[] | null>(null);
@@ -130,6 +133,13 @@ export function MarketplacePage({
   const pluginIsLoading = usePluginPackageStore((s) => s.isLoading);
   const pluginInstallPendingMap = usePluginPackageStore((s) => s.installPendingMap);
   const clearPluginInstallPending = usePluginPackageStore((s) => s.clearInstallPending);
+
+  const systemCatalog = useSystemPluginStore((s) => s.catalog);
+  const systemMine = useSystemPluginStore((s) => s.mine);
+  const systemBusyIds = useSystemPluginStore((s) => s.busyIds);
+  const systemLoading = useSystemPluginStore((s) => s.loading);
+  const installSystemPlugin = useSystemPluginStore((s) => s.install);
+  const reloadSystemPlugin = useSystemPluginStore((s) => s.reload);
 
   useEffect(() => {
     const searchQuery = query.trim();
@@ -283,31 +293,6 @@ export function MarketplacePage({
     return tabs;
   }, [builtinConnectors, mcpTopCategories, mcpTopCategorySet, t]);
 
-  const pluginTopCategories = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const pkg of packages) {
-      const cat = pkg.category.trim();
-      if (!cat) continue;
-      counts.set(cat, (counts.get(cat) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([key]) => key)
-      .slice(0, CATEGORY_TOP_N);
-  }, [packages]);
-
-  const pluginTopCategorySet = useMemo(() => new Set(pluginTopCategories), [pluginTopCategories]);
-
-  const pluginCategoryTabs = useMemo(() => {
-    const hasOther = packages.some((pkg) => !pluginTopCategorySet.has(pkg.category.trim()));
-    const tabs = [
-      { value: 'all', label: t('connectorMarket.categories.all') },
-      ...pluginTopCategories.map((key) => ({ value: key, label: t(`connectorMarket.categories.${key}`, key) })),
-    ];
-    if (hasOther) tabs.push({ value: 'other', label: t('connectorMarket.categories.other') });
-    return tabs;
-  }, [packages, pluginTopCategories, pluginTopCategorySet, t]);
-
   const filteredConnectors = useMemo(() => {
     if (topTab === 'my' ? myKind !== 'mcp' : topTab !== 'mcp') return [];
     const q = query.trim().toLowerCase();
@@ -338,17 +323,15 @@ export function MarketplacePage({
     category,
     mcpTopCategorySet,
     query,
-    mcpCardStates,
     installationFilter,
     marketConnectorResults,
   ]);
 
   const filteredPlugins = useMemo(() => {
     if (topTab === 'my' ? myKind !== 'plugin' : topTab !== 'plugin') return [];
+    if (topTab === 'plugin' && pluginKind !== 'agent') return [];
     const q = query.trim().toLowerCase();
-    // "我的插件"vs"插件广场"现在也由后端 filter 参数分好（builtin/local，见上面 packages/
-    // localPackages 的注释），跟 filteredConnectors 同款，不用再按 pkg.source 二次过滤。分类
-    // 筛选（category）只在"广场"视角适用，"我的"没有分类 tab。
+    // “我的插件”vs“插件广场”由后端 filter 参数分好，前端不再按 pkg.source 二次过滤。
     const base = topTab === 'my'
       ? localPackages
       : q
@@ -356,11 +339,6 @@ export function MarketplacePage({
         : packages;
     return base.filter((pkg) => {
       if (!matchesInstallation(!!installed[pkg.id], installationFilter)) return false;
-      if (topTab !== 'my' && pluginCategory !== 'all') {
-        const cat = pkg.category.trim();
-        if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
-      }
-
       if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language) ?? ''])) return false;
       return true;
     });
@@ -370,25 +348,45 @@ export function MarketplacePage({
     localPackages,
     topTab,
     myKind,
-    pluginCategory,
-    pluginTopCategorySet,
+    pluginKind,
     installed,
-    pluginConnectionStateMap,
     query,
     marketPluginResults,
     i18n.language,
   ]);
 
-  // 当前实际展示的那份列表（四个渲染分支互斥，取其一即可），分页条/总数/isEmpty 都基于它算。
+  const filteredSystemPlugins = useMemo(() => {
+    const inPluginTab = topTab === 'plugin' && pluginKind === 'system';
+    const inMyTab = topTab === 'my' && myKind === 'plugin';
+    if (!inPluginTab && !inMyTab) return [];
+    const base = topTab === 'my' ? systemMine : systemCatalog;
+    return base.filter((pkg) => {
+      if (!matchesInstallation(pkg.installed, installationFilter)) return false;
+      if (query.trim() && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language)])) return false;
+      return true;
+    });
+  }, [pluginKind, topTab, myKind, systemCatalog, systemMine, installationFilter, query, i18n.language]);
+
+  const filteredMyPlugins = useMemo<MyPluginEntry[]>(() => {
+    if (topTab !== 'my' || myKind !== 'plugin') return [];
+    return [
+      ...filteredPlugins.map((pkg) => ({ kind: 'agent' as const, pkg })),
+      ...filteredSystemPlugins.map((pkg) => ({ kind: 'system' as const, pkg })),
+    ];
+  }, [topTab, myKind, filteredPlugins, filteredSystemPlugins]);
+
+  // 当前实际展示的列表，分页条/总数/isEmpty 都基于它算。
   const activeKindForEmpty: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
   const activeList =
     topTab === 'my'
       ? myKind === 'mcp'
         ? filteredConnectors
-        : filteredPlugins
+        : filteredMyPlugins
       : topTab === 'mcp'
         ? filteredConnectors
-        : filteredPlugins;
+        : pluginKind === 'system'
+          ? filteredSystemPlugins
+          : filteredPlugins;
   const isEmpty = activeList.length === 0;
   // 列表为空时要分清"数据还没回来"和"回来了但真的没有"——首次/切 tab 的非静默 loadList() 会把
   // 对应 store 的 isLoading 短暂置 true，10s 静默轮询不影响它（见两个 store 的 loadList 实现），
@@ -397,17 +395,23 @@ export function MarketplacePage({
     ? marketSearchLoading
     : activeKindForEmpty === 'mcp'
       ? connectorIsLoading
-      : pluginIsLoading;
+      : topTab === 'my' && myKind === 'plugin'
+        ? pluginIsLoading || systemLoading
+        : pluginKind === 'system'
+          ? systemLoading
+          : pluginIsLoading;
 
   // 切换 tab/子筛选/分类/状态筛选/搜索词都会让 activeList 变成一份新列表，统一回到首批
   //（对齐原分页的重置行为，同款处理见 CronPanel/index.tsx 的"搜索内容变化时重置回第 1 页"）。
   useEffect(() => {
     setMarketVisibleCount(MARKET_BATCH_SIZE);
-  }, [topTab, myKind, category, pluginCategory, query, installationFilter]);
+  }, [topTab, myKind, pluginKind, category, query, installationFilter]);
 
   const hasMoreMarketItems = marketVisibleCount < activeList.length;
   const visibleConnectors = filteredConnectors.slice(0, marketVisibleCount);
   const visiblePlugins = filteredPlugins.slice(0, marketVisibleCount);
+  const visibleSystemPlugins = filteredSystemPlugins.slice(0, marketVisibleCount);
+  const visibleMyPlugins = filteredMyPlugins.slice(0, marketVisibleCount);
 
   const appendNextMarketBatch = useCallback(() => {
     setMarketVisibleCount((count) => Math.min(count + MARKET_BATCH_SIZE, activeList.length));
@@ -574,14 +578,17 @@ export function MarketplacePage({
         </div>
       )}
 
-      {topTab === 'plugin' && pluginCategoryTabs.length > 1 && (
+      {topTab === 'plugin' && (
         <div className="page-shell">
-          <CategoryTabs
-            items={pluginCategoryTabs}
-            value={pluginCategory}
-            onChange={setPluginCategory}
-            wrapperTestId="connector-market-plugin-category-tabs"
-            itemTestId="connector-market-plugin-category-tab"
+          <CategoryTabs<PluginKind>
+            items={[
+              { value: 'agent', label: t('connectorMarket.tabs.agentPlugin') },
+              { value: 'system', label: t('connectorMarket.tabs.systemPlugin') },
+            ]}
+            value={pluginKind}
+            onChange={onPluginKindChange}
+            wrapperTestId="connector-market-plugin-kind-tabs"
+            itemTestId="connector-market-plugin-kind-tab"
           />
         </div>
       )}
@@ -627,14 +634,43 @@ export function MarketplacePage({
                   />
                 );
               })
-            : visiblePlugins.map((pkg) => {
+            : visibleMyPlugins.map((entry) => {
+                if (entry.kind === 'system') {
+                  const pkg = entry.pkg;
+                  const tags = Array.from(new Set([
+                    t('connectorMarket.systemPlugin.badge'),
+                    ...pkg.tags.map((tag) => localizedText(tag, i18n.language)),
+                  ]));
+                  return (
+                    <MyMarketCard
+                      key={`system-${pkg.id}`}
+                      title={localizedText(pkg.displayName, i18n.language)}
+                      tags={tags}
+                      description={localizedText(pkg.displayDescription, i18n.language)}
+                      iconUrl={pkg.avatar || undefined}
+                      state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
+                      busyKind="install"
+                      actionDisabled={!!systemBusyIds[pkg.id]}
+                      onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
+                      connectedLabel={t('connectorMarket.systemPlugin.detail')}
+                      onConnectedAction={() => onOpenSystemPluginDetail(pkg.id)}
+                      onQuickInstall={() => { void installSystemPlugin(pkg.id); }}
+                      quickAction="install"
+                    />
+                  );
+                }
+                const pkg = entry.pkg;
                 const pluginInstalled = !!installed[pkg.id];
                 const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
+                const tags = Array.from(new Set([
+                  t('connectorMarket.tabs.agentPlugin'),
+                  ...(pkg.tags ?? []).map((tag) => localizedText(tag, i18n.language)),
+                ]));
                 return (
                   <MyMarketCard
-                    key={pkg.id}
+                    key={`agent-${pkg.id}`}
                     title={localizedText(pkg.displayName, i18n.language)}
-                    tags={(pkg.tags ?? []).map(tag => localizedText(tag, i18n.language))}
+                    tags={tags}
                     description={localizedText(pkg.displayDescription, i18n.language)}
                     iconUrl={pkg.avatar || undefined}
                     state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
@@ -673,6 +709,27 @@ export function MarketplacePage({
                   />
                 );
               })
+            : pluginKind === 'system'
+              ? visibleSystemPlugins.map((pkg) => (
+                <MarketCard
+                  key={pkg.id}
+                  title={localizedText(pkg.displayName, i18n.language)}
+                  tags={pkg.tags.map((tag) => localizedText(tag, i18n.language))}
+                  description={localizedText(pkg.displayDescription, i18n.language)}
+                  iconUrl={pkg.avatar || undefined}
+                  state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
+                  busyKind="install"
+                  actionDisabled={!!systemBusyIds[pkg.id]}
+                  canOpenDetail
+                  onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
+                  onQuickAdd={() => { void installSystemPlugin(pkg.id); }}
+                  connectedLabel={t(pkg.active ? 'connectorMarket.systemPlugin.enabled' : 'connectorMarket.systemPlugin.reload')}
+                  onConnectedAction={() => {
+                    if (pkg.active) onOpenSystemPluginDetail(pkg.id);
+                    else void reloadSystemPlugin(pkg.id);
+                  }}
+                />
+              ))
             : visiblePlugins.map((pkg) => {
                 const pluginInstalled = !!installed[pkg.id];
                 const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
