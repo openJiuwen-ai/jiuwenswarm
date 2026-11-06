@@ -344,9 +344,9 @@ class WorkflowRunState(BaseModel):
     # event for advisory cold-start context; distinct from ``script`` above.
     script_path: Optional[str] = None
     # Member name currently hosting the run (relaunch host on a resume; the
-    # leader's own name for a leader-hosted run). Refreshed on every started
-    # event, so badge and resume handoff always follow the latest host; None
-    # only for legacy events with no team context.
+    # leader's own name for a leader-hosted run). Latched from every progress
+    # event in apply(), so badge and resume handoff always follow the latest
+    # host; None only when no event ever carried team context.
     executor: Optional[str] = None
     # Disk-restored after a cold start with no live controller handle; the
     # frontend greys this run's control buttons until a launch-plane relaunch
@@ -494,12 +494,25 @@ class WorkflowRunState(BaseModel):
 
         Returns None if no push is needed (e.g. log, or unknown kind).
         """
+        # Run attribution: the publisher stamps executor on every progress
+        # event, so latch it here — an observer that missed the started event
+        # (recovered / re-attached mid-run) still learns the host, and the
+        # cold-restore snapshot reads it back. None clears nothing.
+        if progress.executor is not None:
+            self.executor = progress.executor
         kind = progress.kind
         handler = self._KIND_HANDLERS.get(kind)
         if handler is None:
             return None
         method = getattr(self, handler)
-        return method(progress)
+        delta = method(progress)
+        # Attach attribution to every emitted delta while known, so a consumer
+        # joining mid-run self-heals from the next frame. Never attach an
+        # explicit None: the frontend's incremental merge would overwrite a
+        # cold-restored name.
+        if delta is not None and self.executor is not None:
+            delta["executor"] = self.executor
+        return delta
 
     def finalize_if_running(self, terminal_status: str = "stopped") -> bool:
         """Force a non-terminal run to a terminal status. Returns True if changed.
@@ -1134,11 +1147,6 @@ class WorkflowRunState(BaseModel):
         self.name = progress.workflow_name or "workflow"
         self.summary = progress.description or ""
         self.script_path = progress.script_path
-        # Executor reflects whoever hosts the run right now (leader included);
-        # a None from an unattributed event clears nothing but a new member
-        # name takes over.
-        if progress.executor is not None:
-            self.executor = progress.executor
         self.status = "running"
         was_recovered = self.recovered
         self.recovered = False
@@ -1811,9 +1819,6 @@ class WorkflowRunState(BaseModel):
             "name": self.name,
             "summary": self.summary,
             "status": self.status,
-            # Run attribution rides the top-level deltas (started / paused);
-            # the frontend's incremental merge keeps fields later deltas omit.
-            "executor": self.executor,
             "agent_count": self.agent_count,
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
