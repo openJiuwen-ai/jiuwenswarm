@@ -944,26 +944,52 @@ def _log_ssas_close_result(task: "asyncio.Task[None]") -> None:
         logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend background close failed: %s", exc)
 
 
-def _close_ssas_backend_in_background(
-    backend: Any, loop: asyncio.AbstractEventLoop
-) -> None:
-    """后台关闭被剔除/落败的 backend, 防 SQLite 连接等资源泄漏.
+def _close_ssas_backend_in_fresh_loop(close: Any) -> None:
+    """在独立线程内以全新事件循环执行 backend close(同步入口, 供 to_thread).
 
-    backend 构造期即建立 SQLite 连接等同步资源, 初始化失败/收口超时剔除
-    或双检锁竞态落败后不再被缓存与任何 rail 持有, 不关闭的话重复失败
-    装配会持续累积泄漏, 故统一经本通道关闭: close Task 强引用存入
-    _SSAS_CLOSE_TASKS(防 GC 中途销毁), done callback(_log_ssas_close_result)
-    记录异常并移出。close 经 getattr 防御获取, backend 无 close 入口或其
-    所属循环已关闭时静默放弃——后者资源随循环销毁整体回收, 由装配期的
-    已关闭循环清扫兜底。
+    backend 构造期即建立 SQLite 连接等同步资源, 不随其所属事件循环销毁
+    释放; 已关闭循环条目的 close 无法派发到原循环, 改在独立线程的全新
+    循环中执行释放。close 体内若触碰绑定在已关闭循环上的 asyncio 对象
+    (如跨循环等待周期清理 Task), 在此抛 RuntimeError 由调用侧记录告警,
+    不影响调用方事件循环。
     """
-    if backend is None or loop.is_closed():
+    asyncio.run(close())
+
+
+def _close_ssas_backend_in_background(
+    backend: Any, backend_loop: asyncio.AbstractEventLoop
+) -> None:
+    """后台关闭被剔除/落败/清扫的 backend, 防 SQLite 连接等资源泄漏.
+
+    backend 构造期即建立 SQLite 连接等同步资源, 初始化失败/收口超时剔除、
+    双检锁竞态落败或已关闭循环条目清扫后不再被缓存复用, 不关闭的话重复
+    失败装配会持续累积泄漏(SQLite 连接 fd 耗尽、Windows 上 WAL 文件句柄
+    锁定), 故统一经本通道关闭: close Task 强引用存入 _SSAS_CLOSE_TASKS
+    (防 GC 中途销毁), done callback(_log_ssas_close_result)记录异常并
+    移出。close 经 getattr 防御获取; backend 所属循环已关闭时, close
+    无法派发到原循环, 改经 to_thread 在独立线程的全新事件循环中执行
+    (见 _close_ssas_backend_in_fresh_loop), 保证循环生命周期之外的
+    同步资源同样被释放。close Task 登记在调用方运行中的事件循环上。
+    """
+    if backend is None:
         return
     close = getattr(backend, "close", None)
     if close is None:
         return
     try:
-        close_task = loop.create_task(close())
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 无运行中事件循环(理论不可达: 调用点均处于循环线程同步上下文):
+        # 放弃后台关闭, 资源随进程退出由 OS 回收
+        return
+    if backend_loop.is_closed():
+        close_coro: Any = asyncio.to_thread(
+            _close_ssas_backend_in_fresh_loop, close
+        )
+    else:
+        close_coro = close()
+    try:
+        close_task = loop.create_task(close_coro)
     except RuntimeError:
         return
     with _SSAS_INIT_TASKS_LOCK:
@@ -11360,19 +11386,40 @@ class JiuWenSwarmDeepAdapter:
                 # 缓存治理: 清理已关闭循环的条目(该循环上的 backend 不会再
                 # 被复用), 以及滞留的挂死 init Task/反查表条目(循环关闭后
                 # Task 永不再执行, 强引用滞留会阻止其 backend 被 GC);
-                # 确需新建时若达上界则淘汰最旧条目, 保证多循环进程有界增长
+                # 清扫条目的 backend 不随循环销毁释放(SQLite 连接等同步资源
+                # 在循环生命周期之外), 收集后锁外统一后台关闭防泄漏;
+                # 缓存条目与反查表条目可能引用同一 backend, 按对象同一性
+                # 去重避免重复 close。确需新建时若达上界则淘汰最旧条目,
+                # 保证多循环进程有界增长
+                stale_close_pairs: "list[tuple[Any, asyncio.AbstractEventLoop]]" = []
+                stale_seen: "set[int]" = set()
                 for stale_key in [
                     key for key in _SSAS_BACKEND_CACHE if key[0].is_closed()
                 ]:
-                    _SSAS_BACKEND_CACHE.pop(stale_key, None)
+                    stale_backend = _SSAS_BACKEND_CACHE.pop(stale_key, None)
+                    if stale_backend is not None and id(stale_backend) not in stale_seen:
+                        stale_seen.add(id(stale_backend))
+                        stale_close_pairs.append((stale_backend, stale_key[0]))
                 for stale_task in [
                     task
                     for task in _SSAS_INIT_TASKS
                     if task.get_loop().is_closed()
                 ]:
                     _SSAS_INIT_TASKS.discard(stale_task)
-                    _SSAS_INIT_TASK_KEYS.pop(stale_task, None)
+                    stale_entry = _SSAS_INIT_TASK_KEYS.pop(stale_task, None)
+                    if (
+                        stale_entry is not None
+                        and id(stale_entry[1]) not in stale_seen
+                    ):
+                        stale_seen.add(id(stale_entry[1]))
+                        stale_close_pairs.append((stale_entry[1], stale_entry[0][0]))
                 shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
+            # 锁外后台释放已关闭循环条目的 backend(其 SQLite 连接等同步
+            # 资源不随循环销毁释放): 经独立线程全新事件循环执行 close,
+            # 防 fd 泄漏与 SQLite 文件锁滞留; 锁内仅收集登记, 关闭的
+            # 派发与调度不占装配锁
+            for stale_backend, stale_loop in stale_close_pairs:
+                _close_ssas_backend_in_background(stale_backend, stale_loop)
             backend_created = False
             if shared_backend is None:
                 # 构造移出锁外: AgentSSASBackend 构造含 mkdir/sqlite 建库等

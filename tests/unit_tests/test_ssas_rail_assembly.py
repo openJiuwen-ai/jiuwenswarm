@@ -12,12 +12,10 @@ import pytest
 
 import jiuwenswarm.server.runtime.agent_adapter.interface_deep as m
 
-pytestmark = [
-    pytest.mark.filterwarnings("ignore"),
-    pytest.mark.skipif(
-        not m._SSAS_AVAILABLE, reason="agent-ssas not installed"
-    ),
-]
+# agent-ssas 是必装依赖(uv.lock 固定): 缺失属安装/锁定失败, 本模块用例
+# 会在收集/运行期直接 error 硬红, 不设 skipif——避免依赖缺失时整模块跳过
+# 伪装成"通过"
+pytestmark = [pytest.mark.filterwarnings("ignore")]
 
 
 def _cfg(tmp_path, **overrides):
@@ -239,7 +237,7 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
     stale_key = (other_loop, "fp_stale_probe")
 
     class _StaleBackend:
-        """替身: 记录已关闭循环清扫路径的释放契约(close 不会被调用)."""
+        """替身: 记录已关闭循环清扫路径的释放契约(close 会被调用)."""
 
         def __init__(self):
             self.closed = False
@@ -260,11 +258,17 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
         assert stale_key not in m._SSAS_BACKEND_CACHE
         assert hung not in m._SSAS_INIT_TASKS
         assert hung not in m._SSAS_INIT_TASK_KEYS
-    # 已关闭循环条目的释放契约: 仅丢弃引用, 不得尝试 close——条目所属循环
-    # 已关闭, 无法调度 close Task(资源随循环销毁整体回收)。这与初始化失败/
-    # 收口超时两条剔除路径的"后台关闭"契约(evicted.closed is True)不同,
-    # 三条路径的释放契约由本用例与另两用例分别显式锁定
-    assert stale_backend.closed is False
+        pending_close = [
+            task for task in m._SSAS_CLOSE_TASKS if not task.done()
+        ]
+    # 已关闭循环条目的释放契约: backend 构造期即建立 SQLite 连接等同步
+    # 资源, 不随循环销毁释放——清扫必须经独立线程的全新事件循环后台执行
+    # close(条目所属循环已关闭, 无法派发), 与初始化失败/收口超时两条剔除
+    # 路径的"后台关闭"契约一致(evicted.closed is True), 三条路径的释放
+    # 契约由本用例与另两用例分别显式锁定; gather 确定性等待清扫派发的
+    # 全部 close Task 完成(to_thread 线程内 asyncio.run 退出即 close 落定)
+    await asyncio.gather(*pending_close, return_exceptions=True)
+    assert stale_backend.closed is True
     await rail._backend._ssas_backend.close()
 
 
