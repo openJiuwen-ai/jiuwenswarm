@@ -260,10 +260,18 @@ def prune_non_contributing_nodes(graph: DesignerExecutionGraph) -> list[str]:
             if p not in contributing:
                 stack.append(p)
     user_added = {str(n.get("id")) for n in nodes if _is_user_added(n)}
-    # A spec that a surviving clip still stages is load-bearing even when its
-    # edge was dropped earlier: pruning it strips the clip's identity plate
-    # (character) or its scene master. Treat those as contributing.
-    keep_referenced = _specs_referenced_by_clips(nodes)
+    # A spec that a surviving clip stages is load-bearing, and the shot list is
+    # still being written when this runs (character_ids/cast_names are backfilled
+    # later), so identity plates and scene masters are production assets, never
+    # optional branches. Combined cast sheets stay prunable: they duplicate what
+    # the per-character plates already provide.
+    keep_specs = {
+        str(n.get("id"))
+        for n in nodes
+        if node_pipeline(n) in {"character", "scene"}
+        and not bool((n.get("config") or {}).get("combined_cast"))
+    }
+    keep_referenced = keep_specs | _specs_referenced_by_clips(nodes)
     orphan = ids - contributing - keep_referenced
     preserved = sorted(orphan & user_added)
     pruned = sorted(orphan - user_added)
