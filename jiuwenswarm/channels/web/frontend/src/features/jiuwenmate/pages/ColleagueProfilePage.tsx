@@ -1676,6 +1676,14 @@ function ProfileSectionDetail({
                                 <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-description">
                                   {t('jiuwenmate.profile.dingtalkAuth.description')}
                                 </p>
+                                {auth?.status !== 'connected' ? (
+                                  <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-prerequisite">
+                                    {t('jiuwenmate.profile.dingtalkAuth.prerequisite')}{' '}
+                                    <a href="https://open-dev.dingtalk.com/fe/old#/developerSettings" target="_blank" rel="noreferrer" data-testid="jiuwenmate-dingtalk-user-auth-admin">
+                                      {t('jiuwenmate.profile.dingtalkAuth.openAdmin')}
+                                    </a>
+                                  </p>
+                                ) : null}
                                 <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-status">
                                   {busy && auth?.status !== 'authorizing' && auth?.status !== 'connected'
                                     ? t('jiuwenmate.profile.dingtalkAuth.beginPending')
@@ -1718,11 +1726,6 @@ function ProfileSectionDetail({
                                   )}
                                 </div>
                                 {error ? <p className="jiuwenmate-profile__mail-note" role="alert" data-testid="jiuwenmate-dingtalk-user-auth-error">{error}</p> : null}
-                                {auth?.error_code === 'org_access_denied' ? (
-                                  <a href="https://open-dev.dingtalk.com/fe/old#/developerSettings" target="_blank" rel="noreferrer" data-testid="jiuwenmate-dingtalk-user-auth-admin">
-                                    {t('jiuwenmate.profile.dingtalkAuth.openAdmin')}
-                                  </a>
-                                ) : null}
                               </div>
                             </div>
                           );
