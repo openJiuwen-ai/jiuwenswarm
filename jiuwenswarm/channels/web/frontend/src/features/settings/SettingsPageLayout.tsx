@@ -7,7 +7,7 @@ import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefini
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
 import { useSettingsServices } from './services/SettingsServicesProvider';
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from './services/settingsSaveFeedback';
-import { SettingsSourceProvider, SettingsSourceVisibility } from './services/SettingsSourceProvider';
+import { SettingsSourceProvider, SettingsSourceVisibility, useSettingsSource } from './services/SettingsSourceProvider';
 import type { SettingsModuleTarget } from './settingsNavigation';
 import './SettingsPage.css';
 
@@ -67,9 +67,13 @@ function visibleItems(definition: SettingsPageDefinition, module: SettingsModule
 function SettingsItem({
   item,
   access,
+  disabled = false,
+  onEditingChange,
 }: {
   item: SettingsModuleDefinition['sections'][number]['items'][number];
   access: SettingsAccessResult;
+  disabled?: boolean;
+  onEditingChange?: (id: string, editing: boolean) => void;
 }) {
   const { t } = useTranslation();
   const readOnly = access.level === 'readOnly';
@@ -92,9 +96,37 @@ function SettingsItem({
           {readOnlyReason}
         </p>
       ) : null}
-      <SettingItemRenderer item={item} disabled={readOnly} />
+      <SettingItemRenderer item={item} disabled={readOnly || disabled} onEditingChange={onEditingChange} />
     </div>
   );
+}
+
+function ExclusiveSettingsSectionItems({
+  items,
+}: {
+  items: Array<{ item: SettingsModuleDefinition['sections'][number]['items'][number]; access: SettingsAccessResult }>;
+}) {
+  const { savingKeys } = useSettingsSource();
+  const [editors, setEditors] = useState<ReadonlySet<string>>(() => new Set());
+  const reportEditing = useCallback((id: string, editing: boolean) => {
+    setEditors((current) => {
+      if (current.has(id) === editing) return current;
+      const next = new Set(current);
+      if (editing) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const saving = items.some(({ item }) => item.component !== 'custom' && savingKeys.has(item.key));
+  return items.map(({ item, access }) => (
+    <SettingsItem
+      key={item.id}
+      item={item}
+      access={access}
+      disabled={saving || [...editors].some((id) => id !== item.id)}
+      onEditingChange={reportEditing}
+    />
+  ));
 }
 
 export function SettingsPageLayout({
@@ -233,7 +265,9 @@ export function SettingsPageLayout({
                         description={section.descriptionKey ? t(section.descriptionKey) : undefined}
                         separatedRows={section.separatedRows === true}
                       >
-                        {items.map(({ item, access }) => (
+                        {section.exclusiveEditing ? (
+                          <ExclusiveSettingsSectionItems items={items} />
+                        ) : items.map(({ item, access }) => (
                           <SettingsItem key={item.id} item={item} access={access} />
                         ))}
                       </SettingsSection>

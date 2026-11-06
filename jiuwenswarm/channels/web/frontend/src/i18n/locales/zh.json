@@ -831,7 +831,8 @@
       "multiModelCollaboration": "多模型协同",
       "toolOptimize": "工具检索优化",
       "designMode": "设计模式",
-      "computerControl": "电脑操控"
+      "computerControl": "电脑操控",
+      "tts": "语音合成"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -1212,6 +1213,30 @@
       "cua_agent_enabled": {
         "title": "启用电脑操控",
         "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
+      },
+      "tts_provider": {
+        "title": "语音合成服务",
+        "description": "各服务使用同一组地址、密钥、模型和音色设置。切换时会替换这些值，之后请重新开始会议。"
+      },
+      "tts_api_base": {
+        "title": "语音合成 API 地址",
+        "description": "CosyVoice 填写 HTTP(S) 基础地址或 /audio/speech 地址，Qwen 填写实时 WebSocket 地址。",
+        "placeholder": "https://api.siliconflow.cn/v1"
+      },
+      "tts_api_key": {
+        "title": "语音合成 API 密钥",
+        "description": "已保存的密钥不会显示，输入新密钥可替换。与语音识别密钥独立配置。",
+        "placeholder": "输入 API 密钥"
+      },
+      "tts_model": {
+        "title": "语音合成模型",
+        "description": "用于朗读会议发言摘要的模型。",
+        "placeholder": "FunAudioLLM/CosyVoice2-0.5B"
+      },
+      "tts_voice": {
+        "title": "默认语音合成音色",
+        "description": "Leader 的默认音色，其他成员会分配同一模型的稳定音色。更改后请重新开始会议。",
+        "placeholder": "Anna"
       }
     },
     "validation": {
@@ -1227,6 +1252,18 @@
         "apiBaseInvalid": "请输入有效的 HTTP 或 HTTPS 地址，且不包含登录凭据。",
         "intervalInvalid": "请输入大于 0 的整数。"
       }
+    },
+    "tts": {
+      "testTitle": "测试语音合成",
+      "testDescription": "向已保存的语音合成服务、模型和音色发送“this is working”，并播放返回的音频。",
+      "testButton": "测试 TTS",
+      "testing": "测试中…",
+      "testSuccess": "语音合成服务已响应，音频已开始播放。",
+      "testFailed": "语音合成测试失败：未返回音频。",
+      "playbackFailed": "语音合成服务已响应，但音频播放失败。请检查浏览器音频权限后重试。",
+      "switchTitle": "配置所选语音合成服务",
+      "cosyvoice": "CosyVoice2",
+      "qwen": "Qwen Omni"
     }
   },
   "trajectory": {

@@ -184,6 +184,11 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),
   envField('asr_api_key', 'experimental', 'text', 'ASR_API_KEY'),
   envField('asr_model', 'experimental', 'text', 'ASR_MODEL_NAME'),
+  envField('tts_api_base', 'experimental', 'text', 'TTS_API_BASE'),
+  envField('tts_api_key', 'experimental', 'text', 'TTS_API_KEY'),
+  envField('tts_model', 'experimental', 'text', 'TTS_MODEL_NAME'),
+  envField('tts_voice', 'experimental', 'text', 'TTS_VOICE'),
+  envField('tts_provider', 'experimental', 'text', 'TTS_PROVIDER'),
   yamlField(
     'kv_cache_affinity_enabled',
     'experimental',
@@ -274,6 +279,7 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'tts.test',
   'config.get',
   'config.save_all',
   'config.validate_model',

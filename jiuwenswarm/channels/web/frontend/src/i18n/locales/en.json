@@ -831,7 +831,8 @@
       "multiModelCollaboration": "Multi-model collaboration",
       "toolOptimize": "Tool retrieval optimization",
       "designMode": "Design Mode",
-      "computerControl": "Computer control"
+      "computerControl": "Computer control",
+      "tts": "Speech synthesis"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -1212,6 +1213,30 @@
       "cua_agent_enabled": {
         "title": "Enable computer control",
         "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+      },
+      "tts_provider": {
+        "title": "TTS provider",
+        "description": "Providers use the same URL, key, model and voice settings. Switching replaces these values. Restart the meeting afterward."
+      },
+      "tts_api_base": {
+        "title": "TTS API URL",
+        "description": "CosyVoice: HTTP(S) base URL or /audio/speech endpoint. Qwen: Realtime WebSocket URL.",
+        "placeholder": "https://api.siliconflow.cn/v1"
+      },
+      "tts_api_key": {
+        "title": "TTS API key",
+        "description": "Saved keys are hidden. Enter a key to replace it; ASR credentials are configured separately.",
+        "placeholder": "Enter API key"
+      },
+      "tts_model": {
+        "title": "TTS model",
+        "description": "Model used to read meeting summaries.",
+        "placeholder": "FunAudioLLM/CosyVoice2-0.5B"
+      },
+      "tts_voice": {
+        "title": "Default TTS voice",
+        "description": "Leader voice. Other members receive stable voices from the same model. Restart the meeting after changing settings.",
+        "placeholder": "Anna"
       }
     },
     "validation": {
@@ -1227,6 +1252,18 @@
         "apiBaseInvalid": "Enter a valid HTTP or HTTPS URL without login credentials.",
         "intervalInvalid": "Enter an integer greater than 0."
       }
+    },
+    "tts": {
+      "testTitle": "Test speech synthesis",
+      "testDescription": "Send “this is working” to the saved TTS provider, model, and voice, then play the response.",
+      "testButton": "Test TTS",
+      "testing": "Testing…",
+      "testSuccess": "TTS responded and audio playback started.",
+      "testFailed": "TTS test failed: no audio was returned.",
+      "playbackFailed": "TTS responded, but audio playback failed. Check your browser audio permissions and try again.",
+      "switchTitle": "Configure the selected TTS provider",
+      "cosyvoice": "CosyVoice2",
+      "qwen": "Qwen Omni"
     }
   },
   "trajectory": {

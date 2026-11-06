@@ -11,6 +11,7 @@ import {
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
+import { TtsProviderConfiguration, TtsSynthesisCheck, ttsModelOptions, ttsModelUpdates, ttsProviderOptions, ttsVoiceOptions } from './TtsSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -18,6 +19,19 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
+    {
+      id: 'tts',
+      titleKey: 'settingsPanel.experimental.tts',
+      exclusiveEditing: true,
+      items: [
+        { id: 'tts-provider', component: 'select', key: 'tts_provider', options: ttsProviderOptions, configure: TtsProviderConfiguration },
+        { id: 'tts-api-base', component: 'input', key: 'tts_api_base', required: true },
+        { id: 'tts-api-key', component: 'input', key: 'tts_api_key', inputType: 'password', required: true },
+        { id: 'tts-model', component: 'select', key: 'tts_model', options: ttsModelOptions, buildUpdates: ttsModelUpdates },
+        { id: 'tts-voice', component: 'select', key: 'tts_voice', options: ttsVoiceOptions },
+        { id: 'tts-test', component: 'custom', render: TtsSynthesisCheck },
+      ],
+    },
     {
       id: 'asr',
       titleKey: 'settingsPanel.experimental.taskAsr',
