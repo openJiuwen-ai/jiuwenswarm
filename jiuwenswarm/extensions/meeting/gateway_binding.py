@@ -10,6 +10,7 @@ from typing import Any
 
 from agent_gateway.common.protocol_ids import is_valid_session_id
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
+from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
 
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.voice.input_stream import close_voice_input
@@ -27,6 +28,9 @@ class MeetingGatewayBinding:
         self.channel = channel
         self.agent_client = agent_client
         self._connections: set[Any] = set()
+        self._push_callback_attribute: str | None = None
+        self._previous_push_callback = None
+        self._push_lock = asyncio.Lock()
 
     def bind(self) -> None:
         for method in (
@@ -43,8 +47,34 @@ class MeetingGatewayBinding:
             self.channel.register_method(method, partial(handler, self.channel), local_only=True)
         self.channel.on_disconnect(self.disconnect)
 
-    def server_push_handlers(self) -> dict:
-        return {EVENT: gateway_playback.handle_playback_push}
+    def _bind_playback_push(self) -> None:
+        """Compose with the client's registered handler without changing Gateway."""
+        setter = getattr(self.agent_client, "set_server_push_handler", None)
+        # Gateway's WebSocket/runtime clients and routed clients store their
+        # registered callback under these names; its public setter replaces it.
+        for attribute in ("_on_server_push", "_push_handler"):
+            previous = getattr(self.agent_client, attribute, None)
+            if previous == self._handle_server_push:
+                return
+            if callable(setter) and callable(previous):
+                self._push_callback_attribute = attribute
+                self._previous_push_callback = previous
+                setter(self._handle_server_push)
+                return
+        raise RuntimeError("Meeting playback requires an initialized Gateway push handler")
+
+    async def _handle_server_push(self, wire: dict) -> None:
+        try:
+            chunk = parse_agent_server_wire_chunk(wire)
+        except Exception:
+            # Keep the Gateway's existing handling and diagnostics for invalid frames.
+            await self._previous_push_callback(wire)
+            return
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
+            async with self._push_lock:
+                await gateway_playback.handle_playback_push(chunk.payload)
+            return
+        await self._previous_push_callback(wire)
 
     async def control(self, method: ReqMethod, ws: Any, req_id: Any, params: Any, session_id: Any) -> None:
         params = params if isinstance(params, dict) else {}
@@ -86,6 +116,7 @@ class MeetingGatewayBinding:
         )
 
     async def playback_ready(self, ws: Any, req_id: Any, params: Any, session_id: Any) -> None:
+        self._bind_playback_push()
         await gateway_playback.playback_ready(
             self.channel, lambda: self.agent_client, ws, req_id, params, session_id,
         )
@@ -125,3 +156,8 @@ class MeetingGatewayBinding:
 
     async def aclose(self) -> None:
         await asyncio.gather(*(self.disconnect(ws, ()) for ws in tuple(self._connections)))
+        if (
+            self._push_callback_attribute is not None
+            and getattr(self.agent_client, self._push_callback_attribute, None) == self._handle_server_push
+        ):
+            self.agent_client.set_server_push_handler(self._previous_push_callback)

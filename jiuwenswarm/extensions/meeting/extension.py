@@ -28,9 +28,6 @@ class MeetingApplicationPlugin(ApplicationPluginExtension):
         self._binding = MeetingGatewayBinding(channel, services.require_agent_client())
         self._binding.bind()
 
-    def server_push_handlers(self) -> dict:
-        return self._binding.server_push_handlers() if self._binding is not None else {}
-
     def frontend_contributions(self) -> tuple[FrontendContribution, ...]:
         return (FrontendContribution(
             id="meeting", nav_key="app:meeting", title="Team meetings",
