@@ -5,6 +5,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest, type WsEvent } from '../../services/webClient';
 import { attachTeamSession } from '../../services/teamAttach';
+import { formatTimestamp } from '../../utils';
 import ChatModelSelector from '../../components/ChatPanel/ChatModelSelector';
 import { TeamMemberAvatar } from '../../components/TeamMemberAvatar';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -38,6 +39,12 @@ function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: Gr
       download_token: typeof file.download_token === 'string' ? file.download_token : '',
     }]} onPreview={() => onPreview(file)} />
   </div>;
+}
+
+/** 任务模式同款消息时间（YYYY-MM-DD HH:MM），常显。 */
+function GroupMessageTime({ at }: { at: number }) {
+  const iso = new Date(at).toISOString();
+  return <time dateTime={iso} data-testid="group-chat-message-time">{formatTimestamp(iso)}</time>;
 }
 
 /** One open group conversation with its member and file panels; the group list lives in the chat sidebar. */
@@ -514,16 +521,28 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             <Fragment key={item.id}>
               <article id={`group-chat-message-${item.id}`} className={`group-chat-message${item.message.sender === 'user' ? ' is-user' : ''}`}
                 data-testid="group-chat-message" data-variant={item.id}>
-                {item.message.sender !== 'user' && <header data-testid="group-chat-message-header">
-                  <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
-                  <strong>{item.message.sender_name || item.message.sender}</strong>
-                  <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-                </header>}
-                <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} members={group.members} />
-                {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
-                  {t('groupChat.sending')}
-                </small>}
-                {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
+                {item.message.sender === 'user' ? (
+                  <>
+                    <div className="group-chat-message__bubble">
+                      <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} members={group.members} />
+                      {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
+                        {t('groupChat.sending')}
+                      </small>}
+                      {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
+                    </div>
+                    <GroupMessageTime at={item.at} />
+                  </>
+                ) : (
+                  <>
+                    <header data-testid="group-chat-message-header">
+                      <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
+                      <strong>{item.message.sender_name || item.message.sender}</strong>
+                      <GroupMessageTime at={item.at} />
+                    </header>
+                    <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} members={group.members} />
+                    {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
+                  </>
+                )}
               </article>
               {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution }) => {
                 const member = group.members.find((item2) => item2.member_name === memberName);

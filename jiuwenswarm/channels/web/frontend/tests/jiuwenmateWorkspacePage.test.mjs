@@ -82,7 +82,8 @@ async function renderWorkspace() {
       return {
         request: {
           requestId: `request-${messageId}`, conversationId, messageId, text, receivedAt: '2026-10-26T03:00:00Z',
-          status: 'ended', outcome: 'completed', running: false, replies: [], files: [], reason: null, draft: null,
+          updatedAt: '2026-10-26T03:00:05Z',
+          status: 'ended', outcome: 'completed', running: false, replies: ['进展如下'], files: [], reason: null, draft: null,
           control: null, recovery: null, approval: null,
         },
         conversation: { id: conversationId, title: text, updatedAt: '2026-10-26T03:00:00Z', lastMessage: text },
@@ -194,6 +195,23 @@ test('a Web result found while an IM workspace is chosen is offered, and message
     assert.equal(page.select().value, 'config-web');
     assert.ok(page.calls.some(([kind, agentId, id]) => kind === 'history' && agentId === 'config-web' && id === 'new-web-result'));
     assert.equal(page.container.querySelector('[data-testid="jiuwenmate-workspace-web-result"]'), null);
+  } finally {
+    await page.close();
+  }
+});
+
+test('chat messages carry sent and replied timestamps like the task-mode records', async () => {
+  const page = await renderWorkspace();
+  try {
+    await page.send('今天进展');
+    const sentTime = page.container.querySelector('[data-testid="jiuwenmate-chat-message-time"]');
+    assert.ok(sentTime, 'the sent message shows its time');
+    assert.equal(sentTime.getAttribute('dateTime'), '2026-10-26T03:00:00Z');
+    assert.match(sentTime.textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    const replyTime = page.container.querySelector('[data-testid="jiuwenmate-chat-reply-time"]');
+    assert.ok(replyTime, 'the colleague reply shows its time');
+    assert.equal(replyTime.getAttribute('dateTime'), '2026-10-26T03:00:05Z');
+    assert.match(replyTime.textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   } finally {
     await page.close();
   }
