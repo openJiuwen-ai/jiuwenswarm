@@ -257,12 +257,28 @@ def build_subagent_authorization_rails(
         if permission_key:
             # 无会话 Manager key：Skill 门禁读用户级 key。
             gate_rail.set_permission_key_resolver(lambda _ctx: permission_key)
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+            SkillAuthorizationPermissionRail,
+        )
+
+        # 子 Agent 工具判定委托此 rail，Skill 临时 config 只在其 _check_tool_permission 生成。
+        base_cfg = effective_config_provider()
+        if not isinstance(base_cfg, dict):
+            base_cfg = {}
+        tool_check_rail = SkillAuthorizationPermissionRail(
+            config=base_cfg,
+            permission_key=permission_key,
+        )
+        tool_check_rail.set_skill_scope_resolver(
+            lambda _ctx: (main_session_id, scope)
+        )
         permission_rail = SubagentPermissionRail(
             agent_scope_id=scope,
             session_id=main_session_id,
             permission_key=permission_key,
             workspace_root=workspace_root,
             config_provider=effective_config_provider,
+            tool_check_rail=tool_check_rail,
         )
         from openjiuwen.harness.security.skill_authorization import (
             get_skill_grant_store,

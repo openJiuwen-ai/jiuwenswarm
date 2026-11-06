@@ -13,7 +13,6 @@ from uuid import uuid4
 
 from agent_shield.tool_permission import get_permission_manager
 from openjiuwen.harness.security.skill_authorization import (
-    compose_skill_permissions,
     is_skill_authorization_enabled,
 )
 
@@ -185,22 +184,26 @@ class PublishedPermissionScopes:
         )
         return f"{self.base_key}:session:{suffix}"
 
-    def publish_session(self, session_id, config):
+    @staticmethod
+    def publish_session(session_id, config):
         """会话级 Manager key 已停用；保留空实现兼容旧调用方。"""
         _ = session_id, config
         return
 
-    def _lease(self, session_id):
+    @staticmethod
+    def _lease(session_id):
         """会话租约已停用；返回空释放回调。"""
         _ = session_id
         return lambda: None
 
-    def acquire_session(self, session_id, config):
+    @staticmethod
+    def acquire_session(session_id, config):
         """会话级 Manager key 已停用；不发布、不租约。"""
         _ = session_id, config
         return lambda: None
 
-    def retain_session(self, session_id):
+    @staticmethod
+    def retain_session(session_id):
         """会话租约已停用；子 Agent 与主 Agent 共用用户级 key。"""
         _ = session_id
         return lambda: None
@@ -211,41 +214,13 @@ class PublishedPermissionScopes:
             if remove or self._closed:
                 self.remove_session(session_id)
 
-    def _refresh(self, session_id):
-        manager = get_permission_manager()
-        previous = {
-            route: value
-            for route, value in self._skills.items()
-            if route[0] == session_id
-        }
-        published = set()
-        base = self._sessions[session_id]
-        try:
-            if not is_skill_authorization_enabled(base):
-                return
-            for scope in self._store.active_scopes(session_id):
-                active = self._active(session_id, scope)
-                if active is None or not active.overlay_snapshot:
-                    continue
-                version = _grant_version(active)
-                key = self._key(session_id, scope, version)
-                config = compose_skill_permissions(base, active.overlay_snapshot)
-                # A stable key is atomically replaced by the SDK, never briefly
-                # removed during an ordinary policy refresh.
-                publish_with_key_budget(lambda: manager.update_config(config, key))
-                self._owned_keys.add(key)
-                self._skills[session_id, scope] = version, key
-                self._skill_metadata[key] = _projection_metadata(config)
-                published.add((session_id, scope))
-        finally:
-            # Failed/revoked/superseded scopes cannot retain their old permission.
-            for route, (_, key) in previous.items():
-                if route not in published or self._skills[route][1] != key:
-                    manager.remove_config(key)
-                    self._owned_keys.discard(key)
-                    self._skill_metadata.pop(key, None)
-                    if route not in published:
-                        self._skills.pop(route, None)
+    @staticmethod
+    def _refresh(session_id):
+        """Skill 临时 config 改由 SkillAuthorizationPermissionRail._check_tool_permission
+        判定时合成；此处不再登记 Skill Manager key。
+        """
+        _ = session_id
+        return
 
     def _active(self, session_id, scope):
         read = getattr(self._store, "get_active_for_permission", self._store.get_active)

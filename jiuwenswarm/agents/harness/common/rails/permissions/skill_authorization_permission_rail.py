@@ -6,8 +6,8 @@
 调用完成门禁裁决后，会在 ``ctx.extra`` 写入 ``SKILL_AUTHORIZATION_GATE_HANDLED_KEY``
 标记；本 rail（priority=90）命中标记即跳过，避免同一次调用重复弹权限审批卡。
 
-用户级配置登记在 Manager 的 routing/instance key 上。企业版会话 overlay
-仅在判定时合成临时 ``config=``，不再发布会话级 Manager key。
+用户级配置登记在 Manager 的 routing/instance key 上。Skill / 企业会话 overlay
+的临时 ``config=`` 只在 ``_check_tool_permission`` 内合成，调用方不组配置。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional
 from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
-from openjiuwen.harness.security.models import PermissionResult
+from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
 from openjiuwen.harness.security.permission_checks import fail_closed_permission_callback
 
 from jiuwenswarm.common.audit_emit import emit_audit_evt
@@ -154,23 +154,54 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         _ = ctx
         return self._key
 
-    def _compose_session_overlay_config(self, ctx) -> dict[str, Any] | None:
-        """企业版有会话内存 overlay 时，合成临时配置（不进 Manager）。"""
+    def _temp_permission_config_for_check(self, ctx) -> dict[str, Any] | None:
+        """组装本次判定用的临时配置（会话 overlay + Skill overlay）。
+
+        仅由 ``_check_tool_permission`` 使用：有增量则返回合成结果并走
+        ``config=``；都没有则返回 None，调用方回落用户级 key。
+        """
+        from openjiuwen.harness.security.skill_authorization import (
+            compose_skill_permissions,
+            is_skill_authorization_enabled,
+        )
         from .config_loader import (
             has_session_permissions_overlay,
             merge_session_permissions_overlay,
         )
 
         scope = self._permission_scope(ctx)
-        if scope is None or not has_session_permissions_overlay(scope[0]):
-            return None
-        return merge_session_permissions_overlay(self._static_config, session_id=scope[0])
+        base = copy.deepcopy(self._static_config)
+        used_temp = False
+        if scope is not None and has_session_permissions_overlay(scope[0]):
+            base = merge_session_permissions_overlay(
+                self._static_config, session_id=scope[0]
+            )
+            used_temp = True
+        if scope is None or not scope[1]:
+            return base if used_temp else None
+        if not is_skill_authorization_enabled(base):
+            return base if used_temp else None
+        if not self._published_scopes.has_active_grant(*scope):
+            return base if used_temp else None
+        active = self._published_scopes.get_active(*scope)
+        if active is not None and active.overlay_snapshot:
+            base = compose_skill_permissions(base, active.overlay_snapshot)
+            used_temp = True
+        return base if used_temp else None
 
     def projection_config_for(self, ctx):
-        session_cfg = self._compose_session_overlay_config(ctx)
-        if session_cfg is not None:
-            return session_cfg
-        return self._static_config
+        # 投影只读镜像；与判定一致时复用同一套临时合成（不另开生成路径）。
+        temp = self._temp_permission_config_for_check(ctx)
+        return temp if temp is not None else self._static_config
+
+    async def evaluate_tool_call_permission(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        ctx: AgentCallbackContext,
+    ) -> PermissionResult:
+        """供子 Agent 等外部 rail 调用的公有入口（避免跨类访问受保护方法）。"""
+        return await self._check_tool_permission(tool_name, tool_args, ctx)
 
     async def _check_tool_permission(
         self,
@@ -178,19 +209,38 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         tool_args: dict[str, Any],
         ctx: AgentCallbackContext,
     ) -> PermissionResult:
-        session_cfg = self._compose_session_overlay_config(ctx)
-        if session_cfg is None:
+        """工具判定入口：唯一生成 Skill/会话临时 config 的封装点。"""
+        temp_cfg = self._temp_permission_config_for_check(ctx)
+        if temp_cfg is None:
             return await super()._check_tool_permission(tool_name, tool_args, ctx)
         from agent_shield.tool_permission import get_permission_manager
-
-        return await get_permission_manager().check_permission(
-            tool_name, tool_args, config=session_cfg
+        from openjiuwen.harness.security.permission_checks import (
+            _FETCH_TOOLS,
+            merge_permission_results,
         )
 
+        manager = get_permission_manager()
+        if tool_name in _FETCH_TOOLS:
+            urls = tool_args.get("url")
+            if isinstance(urls, list):
+                if not urls or any(
+                    not isinstance(url, str) or not url.strip() for url in urls
+                ):
+                    return PermissionResult(
+                        PermissionLevel.DENY,
+                        "host:invalid_urls",
+                        "Invalid fetch URL list",
+                    )
+                results = [
+                    await manager.check_permission(
+                        tool_name, {**tool_args, "url": url}, config=temp_cfg
+                    )
+                    for url in urls
+                ]
+                return merge_permission_results(results)
+        return await manager.check_permission(tool_name, tool_args, config=temp_cfg)
+
     def outbound_checks_enabled(self, ctx):
-        scope = self._permission_scope(ctx)
-        if scope is None or not self._published_scopes.has_session(scope[0]):
-            return super().outbound_checks_enabled(ctx)
         return bool(self.projection_config_for(ctx).get("net_guard", {}).get("enabled", False))
 
     def set_skill_scope_resolver(

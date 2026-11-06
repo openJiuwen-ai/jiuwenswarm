@@ -226,7 +226,7 @@ async def test_enterprise_always_allow_session_remember_is_inert(
     assert sid in config_loader._session_overlays
     assert rail._published_scopes.session_ids() == []
     for name in ("get_current_user", "read_memory"):
-        session_cfg = rail._compose_session_overlay_config(ctx)
+        session_cfg = rail._temp_permission_config_for_check(ctx)
         assert session_cfg is not None
         assert (
             await manager.check_permission(name, {}, config=session_cfg)

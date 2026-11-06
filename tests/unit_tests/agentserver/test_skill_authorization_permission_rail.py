@@ -228,7 +228,7 @@ def active_skill_permissions(tmp_path, monkeypatch):
         "skill_authorization": {"enabled": True},
     }
     rail = SkillAuthorizationPermissionRail(config=baseline)
-    rail.update_session_config("session-1", baseline)
+    # 会话 publish 已停用：Skill overlay 在 _check_tool_permission 里临时 config=。
     gate = SkillAuthorizationRail(permission_key=rail.permission_key, grant_store=store)
     rail.set_skill_scope_resolver(gate.resolve_scope)
     ctx = SimpleNamespace(session=SimpleNamespace(session_id="session-1"))
@@ -247,12 +247,14 @@ async def test_active_skill_overlay_survives_missing_task_context(active_skill_p
     assert rail._static_config == original
 
 
-def test_permission_composition_reads_one_snapshot(active_skill_permissions):
+@pytest.mark.asyncio
+async def test_permission_composition_reads_one_snapshot(active_skill_permissions):
     rail, ctx, store, _, _ = active_skill_permissions
     with patch.object(store, "get_active", wraps=store.get_active) as read:
-        # Reading selects the published key; composition ran at publication.
-        rail.permission_key_for(ctx)
-    read.assert_called_once_with("session-1", "main")
+        # Skill 临时 config 只在 _check_tool_permission 合成时读 grant。
+        assert rail.permission_key_for(ctx) == rail.permission_key
+        await rail._check_tool_permission("get_current_user", {}, ctx)
+    read.assert_called_with("session-1", "main")
 
 
 @pytest.mark.parametrize(

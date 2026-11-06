@@ -189,6 +189,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         config_provider: Callable[[], dict[str, Any]] | None = None,
         session_id: str | None = None,
         workspace_root: Any = None,
+        tool_check_rail: Any | None = None,
     ) -> None:
         super().__init__(tool_names=[])
         self._agent_scope_id = (agent_scope_id or "").strip()
@@ -217,6 +218,8 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         self._sessions_root: Path | None = None
         self._workspace_root = Path(workspace_root) if workspace_root else None
         self._rejected_call_fingerprints: set[str] = set()
+        # Skill/会话临时 config 只在 SkillAuthorizationPermissionRail._check_tool_permission 生成。
+        self._tool_check_rail = tool_check_rail
 
     def set_sessions_root(self, sessions_root: Path) -> None:
         """Keep only trusted parent identity across child callback tasks."""
@@ -348,30 +351,20 @@ class SubagentPermissionRail(ConfirmInterruptRail):
             return
 
         from openjiuwen.harness.security.permission_checks import check_tool_permission
-        from agent_shield.tool_permission import get_permission_manager
-        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-            has_session_permissions_overlay,
-            merge_session_permissions_overlay,
-        )
 
-        # 无会话 Manager key：子 Agent 与主 Agent 共用用户级 key；
-        # 企业会话 overlay 用临时 config=。
         key = self._permission_key or "default"
         normalized = TOOL_NAME_ALIASES.get(tool_name, tool_name)
-        base_config = self._config_provider() if callable(self._config_provider) else {}
-        if not isinstance(base_config, dict):
-            base_config = {}
-        if has_session_permissions_overlay(session_id):
-            session_cfg = merge_session_permissions_overlay(
-                base_config, session_id=session_id
+        # 判定委托给 SkillAuthorizationPermissionRail，避免在此生成 Skill 临时 config。
+        if self._tool_check_rail is not None:
+            result = await self._tool_check_rail.evaluate_tool_call_permission(
+                normalized, tool_args, ctx
             )
-            result = await get_permission_manager().check_permission(
-                normalized, tool_args, config=session_cfg
-            )
-            config = session_cfg
+            config = self._tool_check_rail.projection_config_for(ctx)
         else:
             result = await check_tool_permission(normalized, tool_args, key)
-            config = base_config
+            config = self._config_provider() if callable(self._config_provider) else {}
+            if not isinstance(config, dict):
+                config = {}
 
         # 与主 Agent 一致：owner_scopes 只能在引擎（含 Skill overlay）之后收紧。
         try:

@@ -18,7 +18,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
 from openjiuwen.harness.rails.security.tool_security_rail import compute_batch_allow_key
 from openjiuwen.harness.security.host import ToolPermissionHost
 from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
-from openjiuwen.harness.security.permission_checks import check_tool_permission, merge_permission_results
+from openjiuwen.harness.security.permission_checks import merge_permission_results
 from openjiuwen.harness.security.patterns import (
     merge_file_guard_access_allows,
     merge_permission_allow_rule_into_permissions,
@@ -102,7 +102,10 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             )
         results = [outer]
         for operation in operations:
-            result = await check_tool_permission(operation.name, operation.args, self.permission_key_for(ctx))
+            # 子操作走父类封装（Skill 临时 config 只在那里生成），此处不组 config。
+            result = await super()._check_tool_permission(
+                operation.name, operation.args, ctx
+            )
             if _requires_explicit_approval(
                 operation, result.permission, result.matched_rule
             ):
