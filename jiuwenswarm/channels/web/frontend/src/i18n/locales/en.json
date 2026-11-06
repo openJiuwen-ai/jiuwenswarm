@@ -439,6 +439,7 @@
       "dingtalkAuth": {
         "title": "DingTalk user account authorization",
         "description": "Start account authorization through the DingTalk CLI. Authorization information is stored separately for each employee. Once authorized, the employee can read connected group messages, work with online documents, and manage calendar events within the permissions granted by the account and organization.",
+        "prerequisite": "Before first authorization, ask an organization administrator to enable CLI access in the DingTalk developer platform's CLI settings, add this employee's bound application, and allow the authorizing account to use it. Creating and publishing a bot application does not enable CLI access.",
         "begin": "Authorize DingTalk account",
         "beginPending": "Starting authorization…",
         "popupBlocked": "The authorization page did not open or was closed. Continue with the link below without starting again.",
