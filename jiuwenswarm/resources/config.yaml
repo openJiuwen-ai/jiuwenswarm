@@ -3,7 +3,7 @@
 config_version: ""
 
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
-preferred_language: zh
+preferred_language: en
 
 # Agent 模式与集群模式（Leader / Teammate）是否启用渐进式工具暴露（tool_search + deferred 工具）
 # true：只向模型暴露 direct 工具和 tool_search，其他工具按需搜索；集群成员的

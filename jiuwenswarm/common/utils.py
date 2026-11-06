@@ -549,21 +549,21 @@ def _find_config_template_path() -> Path:
 def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
-    """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 zh。"""
+    """Resolve initialization language from an explicit choice or config; default to English."""
     if explicit is not None:
         lang = str(explicit).strip().lower()
-        return lang if lang in ("zh", "en") else "zh"
+        return lang if lang in ("zh", "en") else "en"
     if config_yaml_dest.exists():
         try:
             rt = YAML()
             with open(config_yaml_dest, "r", encoding="utf-8") as f:
                 data = rt.load(f) or {}
-            lang = str(data.get("preferred_language") or "zh").strip().lower()
+            lang = str(data.get("preferred_language") or "en").strip().lower()
             if lang in ("zh", "en"):
                 return lang
         except Exception as e:
             logger.error(f"Failed to load config.yaml: {e}")
-    return "zh"
+    return "en"
 
 
 def _is_interactive() -> bool:
@@ -576,11 +576,11 @@ def _is_interactive() -> bool:
 
 def prompt_preferred_language() -> Optional[Literal["zh", "en"]]:
     """交互询问语言偏好。仅接受明确选项；空输入、不在列表或取消用语 → 返回 None（调用方应终止 init）。
-    非交互环境（stdin非TTY）默认返回 'zh'。
+    非交互环境（stdin非TTY）默认返回 'en'。
     """
     if not _is_interactive():
-        print("[jiuwenswarm-init] Non-interactive mode: using default language 'zh'")
-        return "zh"
+        print("[jiuwenswarm-init] Non-interactive mode: using default language 'en'")
+        return "en"
     print()
     print("[jiuwenswarm-init] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("[jiuwenswarm-init]  请选择默认语言 / Choose your default language")
