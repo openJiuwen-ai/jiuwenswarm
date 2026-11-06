@@ -6073,6 +6073,7 @@
       "welinkCredentialDone": "Done",
       "welinkShowAssistantQr": "Show assistant code",
       "welinkRetry": "Retry",
+      "welinkScanReminder": "This page will advance automatically once binding succeeds. Please keep it open and do not select Cancel.",
       "welinkAssistantWaiting": "Scan the assistant code and confirm",
       "welinkAssistantScan": "Create by scanning",
       "welinkAssistantExisting": "Enter an existing AK/SK",
