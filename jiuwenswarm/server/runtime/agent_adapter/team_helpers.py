@@ -1483,10 +1483,11 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     return payload
 
 
-def _record_group_organization_plan(session_id: str, group_input: dict) -> None:
+async def _record_group_organization_plan(session_id: str, group_input: dict) -> str | None:
     """Record coordination state without changing the message or its mentions."""
     try:
         from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            publish_pending_organization_card,
             record_organization_plan,
         )
 
@@ -1496,6 +1497,8 @@ def _record_group_organization_plan(session_id: str, group_input: dict) -> None:
             body=str(group_input.get("body") or ""),
             plan_id=str(group_input["client_message_id"]),
         )
+        if plan is not None:
+            await publish_pending_organization_card(session_id, plan)
         logger.info(
             "[TeamHelpers] group organization plan candidate session_id=%s "
             "mentions=%s recorded=%s",
@@ -1503,11 +1506,42 @@ def _record_group_organization_plan(session_id: str, group_input: dict) -> None:
             group_input["mentions"],
             bool(plan),
         )
+        if plan is None:
+            return None
+        return str(plan.get("plan_id") or "") or None
     except Exception:
         logger.exception(
             "[TeamHelpers] group organization plan failed session_id=%s",
             session_id,
         )
+        return None
+
+
+async def _abandon_unstarted_organization_plan(session_id: str, plan_id: str | None) -> None:
+    """Close an early card when this round fails before any proxy turn starts."""
+    if not plan_id:
+        return
+    try:
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import fail_unstarted_organization_round
+
+        await fail_unstarted_organization_round(session_id, plan_id)
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] unstarted organization close failed session_id=%s plan_id=%s",
+            session_id,
+            plan_id,
+        )
+
+
+def _schedule_unstarted_organization_close(session_id: str, plan_id: str | None) -> None:
+    """Keep cancellation from dropping the close of a plan that never started."""
+    if not plan_id:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_abandon_unstarted_organization_plan(session_id, plan_id))
 
 
 def _deliverable(turn: UserTurn, text: Any) -> Any:
@@ -3137,10 +3171,11 @@ async def _process_team_message_stream(
             payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
         )
         return
+    recorded_organization_plan_id = None
     if group_input is not None:
         query = group_input
         if len(group_input["mentions"]) > 1:
-            _record_group_organization_plan(session_id, group_input)
+            recorded_organization_plan_id = await _record_group_organization_plan(session_id, group_input)
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -4325,6 +4360,7 @@ async def _process_team_message_stream(
                         )
         except asyncio.CancelledError:
             event_stream_cancelled = True
+            _schedule_unstarted_organization_close(session_id, recorded_organization_plan_id)
             logger.info(
                 "[TeamHelpers] event stream cancelled: channel_id=%s session_id=%s request_id=%s",
                 _resolve_channel_id(channel_id),
@@ -4333,6 +4369,7 @@ async def _process_team_message_stream(
             )
             raise
         except Exception as exc:
+            await _abandon_unstarted_organization_plan(session_id, recorded_organization_plan_id)
             logger.exception(
                 "[TeamHelpers] event stream failed: channel_id=%s session_id=%s error=%s",
                 _resolve_channel_id(channel_id),
@@ -4362,6 +4399,7 @@ async def _process_team_message_stream(
         )
     except asyncio.CancelledError:
         event_stream_cancelled = True
+        _schedule_unstarted_organization_close(session_id, recorded_organization_plan_id)
         raise
     finally:
         if request_queue is not None:

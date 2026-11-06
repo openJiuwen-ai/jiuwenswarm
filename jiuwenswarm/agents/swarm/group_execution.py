@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
 from openjiuwen.agent_teams.group_chat.tools import GroupSendMessageTool
@@ -21,6 +22,7 @@ _LEADER_MUTE_ERROR = (
     "Leader public group output is temporarily muted; "
     "do not retry this tool."
 )
+logger = logging.getLogger(__name__)
 
 
 def _reject_tool(ctx, error: str) -> None:
@@ -196,6 +198,20 @@ class GroupTaskPolicyRail(DeepAgentRail):
         super().__init__()
         self.context = context
 
+    async def on_user_message(self, ctx):
+        if read_group(self.context.session_id) is None:
+            return
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            note_organization_turn_started,
+            peek_member_turn,
+        )
+
+        plan_id = peek_member_turn(self.context.session_id, self.context.member_name)
+        if plan_id:
+            note_organization_turn_started(
+                self.context.session_id, self.context.member_name, plan_id,
+            )
+
     async def before_invoke(self, ctx):
         from openjiuwen.harness.prompts import PromptSection
 
@@ -295,6 +311,17 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
     async def before_tool_call(self, ctx):
         group = read_group(self.context.session_id)
+        if group is not None and ctx.inputs.tool_name == "run_team":
+            from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+                note_organization_run_attempt,
+                peek_member_turn,
+            )
+
+            plan_id = peek_member_turn(self.context.session_id, self.context.member_name)
+            if plan_id:
+                note_organization_run_attempt(
+                    self.context.session_id, self.context.member_name, plan_id,
+                )
         # Temporary mute: public-group leader role allocation is not designed
         # yet. Revisit once leader responsibilities are explicitly assigned.
         if (
@@ -398,6 +425,16 @@ class GroupTaskPolicyRail(DeepAgentRail):
         })
 
     async def after_invoke(self, ctx):
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import finish_organization_member_turn
+
+        try:
+            await finish_organization_member_turn(self.context.session_id, self.context.member_name)
+        except Exception:
+            logger.exception(
+                "organization turn close failed session=%s member=%s",
+                self.context.session_id,
+                self.context.member_name,
+            )
         if read_group(self.context.session_id) is None:
             return
         store = GroupExecutions(self.context.session_id)
