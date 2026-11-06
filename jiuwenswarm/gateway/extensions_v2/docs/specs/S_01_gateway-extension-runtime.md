@@ -149,12 +149,16 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
 8. 包只能通过 Handler 的包身份访问自己的存储与数据目录，不能指定其他包。
 9. 包存储与数据目录只在卸载时删除；删除失败不删除安装副本。
 10. 包释放后，浏览器不再显示该包的应用级实例与外观；释放时发送的清除帧版本号不会被之后的渲染复用。
+11. 每次加载包（启动、安装、重装、重载）都使用新的模块名：在同一路径重装同一版本也执行新的代码，不复用上一次加载缓存在
+    `sys.modules` 中的同包子模块。已加载过的模块对象在进程结束前不移除。
 
 ## 10. 验证索引
 
 | 契约 | 用例 |
 | --- | --- |
 | 入口幂等与降级 | `test_gateway_request.py` |
+| 渠道断线钩子（WebChannel 与 GatewayServer 的调用方式）释放连接状态 | `test_gateway_request.py` |
+| 同版本重装加载新代码（不变量 11） | `test_gateway_package_management.py` |
 | 四路由 | `test_gateway_request.py` |
 | 扩展鉴权与匿名请求内传 | `test_gateway_request.py`、`test_gateway_package_management.py` |
 | application 槽位交互与请求策略 | `test_gateway_browser_bridge.py` |
