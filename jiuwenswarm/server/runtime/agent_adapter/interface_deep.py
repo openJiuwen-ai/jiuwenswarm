@@ -144,6 +144,23 @@ except ImportError as _ssas_import_exc:
         "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not loaded: %s",
         _ssas_import_exc,
     )
+
+# AgentSSAS backend 异步初始化 Task 的强引用集合:
+# asyncio Task 仅被弱引用持有, 未保存引用可能被 GC 中途销毁;
+# done callback 负责: 1) 从集合移除已完成 Task  2) 记录初始化异常(否则异常静默丢失)
+_SSAS_INIT_TASKS: "set[asyncio.Task[None]]" = set()
+
+
+def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
+    """AgentSSAS backend 初始化 Task 完成回调: 移除引用并记录异常."""
+    _SSAS_INIT_TASKS.discard(task)
+    if task.cancelled():
+        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
+
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -11141,8 +11158,11 @@ class JiuWenSwarmDeepAdapter:
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        # 已在事件循环中, 创建 task 但不 await (fire-and-forget 初始化)
-                        asyncio.ensure_future(backend.initialize())
+                        # 已在事件循环中: 创建 Task 并保存强引用, done callback 记录异常,
+                        # 避免 Task 被 GC 中途销毁或初始化异常静默丢失
+                        init_task = asyncio.ensure_future(backend.initialize())
+                        _SSAS_INIT_TASKS.add(init_task)
+                        init_task.add_done_callback(_log_ssas_init_result)
                     else:
                         loop.run_until_complete(backend.initialize())
                 except RuntimeError:

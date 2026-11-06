@@ -1069,12 +1069,13 @@ ssas:
   enabled: true
   # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
   mode: inprocess
-  # HTTP 模式配置 (mode=http 时生效)
-  http_endpoint: "http://localhost:8443"
-  http_timeout: 5.0
-  http_token:
-  http_host: "0.0.0.0"
-  http_port: 8443
+  # HTTP 模式配置 (默认 mode=inprocess 不启用; 切换 mode=http 时需显式取消注释并配置,
+  # http_host 默认仅监听本机回环地址, http_token 为空时 http 模式不应对外提供服务)
+  # http_endpoint: "http://127.0.0.1:8443"
+  # http_timeout: 5.0
+  # http_token:
+  # http_host: "127.0.0.1"
+  # http_port: 8443
   # 存储配置 (遵循 JIUWENSWARM_HOME 约定)
   ssas_home:
   storage_backend: sqlite
