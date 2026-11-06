@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -24,11 +25,19 @@ from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService, experienc
 from jiuwenswarm.runtime.symphony.skillpack_candidates import CandidateScopeStore, member_snapshot
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.runtime.symphony.experience import _EdgeEvaluationModelAdapter
+from jiuwenswarm.common.host_services import install_runtime_push_handler, restore_runtime_push_handler
 
 
 class Approver:
     async def review(self, package):
         return "approved"
+
+
+@pytest.fixture(autouse=True)
+def isolated_discovery_config(monkeypatch):
+    config = {"symphony": {"evolution": {"flow": {"enabled": False}}}}
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
+    return config
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
@@ -72,8 +81,8 @@ def _execution(trace_id):
 
 
 @pytest.fixture
-def environment(tmp_path, monkeypatch):
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+def environment(tmp_path, monkeypatch, isolated_discovery_config):
+    isolated_discovery_config["symphony"]["evolution"]["flow"]["enabled"] = True
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
     skills = tmp_path / "skills"
     for name in ("search", "writer"):
@@ -108,6 +117,191 @@ async def _collect(service, session="session-a"):
         await service.submit_evolution_and_notify(
             None, _execution(f"trace-{index}"), session_id=session, capture_mode="agent", channel_id="web",
         )
+
+
+def _disable_discovery(monkeypatch, config):
+    from jiuwenswarm.runtime.symphony import service as service_module
+
+    config["symphony"]["evolution"]["flow"]["enabled"] = False
+    current = service_module.load_symphony_config()
+    disabled = replace(current, evolution=replace(
+        current.evolution, flow=replace(current.evolution.flow, enabled=False),
+    ))
+    monkeypatch.setattr(service_module, "load_symphony_config", lambda: disabled)
+
+
+@pytest.mark.asyncio
+async def test_automatic_discovery_uses_scoped_confirmation_and_deduplicates(environment, monkeypatch):
+    service, source, skills = environment
+    monkeypatch.setattr(service, "_notify_candidate", SwarmSymphonyService._notify_candidate.__get__(service))
+    reviewer = AsyncMock(wraps=source.gate._review_agent.review)
+    monkeypatch.setattr(source.gate._review_agent, "review", reviewer)
+    pushes = []
+
+    async def push(message):
+        pushes.append(message)
+        return True
+
+    previous = install_runtime_push_handler(push)
+    try:
+        for index in range(3):
+            await service.submit_evolution_and_notify(
+                None, _execution(f"trace-{index}"), session_id="session-a", capture_mode="agent", channel_id="web",
+            )
+            assert len(pushes) == (1 if index == 2 else 0)
+        assert reviewer.await_count == 1
+        reviewer.reset_mock()
+        await service.submit_evolution_and_notify(
+            None, _execution("trace-2"), session_id="session-a", capture_mode="agent", channel_id="web",
+        )
+        reviewer.assert_not_awaited()
+    finally:
+        restore_runtime_push_handler(push, previous)
+
+    assert len(pushes) == 1
+    payload = pushes[0]["payload"]
+    assert payload["request_id"].startswith("symphony_experience_tool_")
+    approval = CandidateScopeStore(source.store.root).approval(payload["request_id"])
+    assert approval["session_id"] == "session-a"
+    assert approval["evidence_scope"]["scope"] == "current_session"
+    assert approval["members"] == ["search", "writer"]
+    assert {path.name for path in skills.iterdir()} == {"search", "writer"}
+
+
+@pytest.mark.asyncio
+async def test_automatic_discovery_preserves_scoped_acknowledgements_after_restart(environment, monkeypatch):
+    service, source, skills = environment
+    await _collect(service)
+    scoped = next(iter(service._skillpack_candidate_flows.values()))
+    candidate = scoped.list_candidates()[0]
+    assert scoped.acknowledge_candidate(candidate.recipe_id, candidate.version)
+    reviewer = AsyncMock(wraps=source.gate._review_agent.review)
+    monkeypatch.setattr(source.gate._review_agent, "review", reviewer)
+    runtime = service._runtime_for(None)
+    restarted = SwarmSymphonyService()
+    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: runtime)
+    monkeypatch.setattr(restarted, "_notify_candidate", AsyncMock())
+    await restarted.submit_evolution_and_notify(
+        None, _execution("trace-2"), session_id="session-a", capture_mode="agent", channel_id="web",
+    )
+    restarted._notify_candidate.assert_not_awaited()
+    reviewer.assert_not_awaited()
+    # A user's explicit request may still inspect the retained candidate.
+    manual = await restarted.prepare_skillpack_candidates(session_id="session-a")
+    assert len(manual["candidates"]) == 1
+    reviewer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_automatic_discovery_deduplicates_only_within_the_same_owner_scope(environment, monkeypatch):
+    service, source, skills = environment
+    monkeypatch.setattr(service, "_notify_candidate", SwarmSymphonyService._notify_candidate.__get__(service))
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.trusted_session_user",
+        lambda session: {"session-a": "user-a", "session-b": "user-b"}[session],
+    )
+    pushes = []
+
+    async def push(message):
+        pushes.append(message)
+        return True
+
+    previous = install_runtime_push_handler(push)
+    try:
+        for session in ("session-a", "session-b"):
+            for index in range(3):
+                await service.submit_evolution_and_notify(
+                    None, _execution(f"{session}-{index}"), session_id=session, capture_mode="agent", channel_id="web",
+                )
+    finally:
+        restore_runtime_push_handler(push, previous)
+    assert len(pushes) == 2
+    request_ids = {message["payload"]["request_id"] for message in pushes}
+    assert len(request_ids) == 2
+    store = CandidateScopeStore(source.store.root)
+    assert {store.approval(request_id)["evidence_scope"]["user_id"] for request_id in request_ids} == {"user-a", "user-b"}
+
+
+@pytest.mark.asyncio
+async def test_switch_off_blocks_tool_new_candidates_and_pending_confirmation(
+    environment, monkeypatch, isolated_discovery_config,
+):
+    service, source, skills = environment
+    await _collect(service)
+    automatic = service._notify_candidate.call_args.kwargs
+    candidate = automatic["preview"]
+    service._notify_candidate.reset_mock()
+    _disable_discovery(monkeypatch, isolated_discovery_config)
+    assert (await SkillPackToolkit(service).distill("save workflow"))["reason"] == "skillpack_disabled"
+    assert (await service.prepare_skillpack_candidates(session_id="session-a"))["reason"] == "skillpack_disabled"
+    assert not (await service.request_skillpack_candidate(
+        recipe_id=candidate["recipe_id"], recipe_version=candidate["recipe_version"],
+        session_id="session-a", channel_id="web",
+    ))["success"]
+    await service.submit_evolution_and_notify(
+        None, _execution("disabled-trace"), session_id="session-a", capture_mode="agent", channel_id="web",
+    )
+    assert source.store.find_evidence("disabled-trace") is None
+    manager = Mock()
+    result = await service.install_candidate(
+        request_id=automatic["request_id_override"], recipe_id=candidate["recipe_id"],
+        recipe_version=candidate["recipe_version"], package_id=None, integrity=None,
+        skill_manager=manager, session_id="session-a",
+    )
+    assert result == {"installed": False, "reason": "flow_disabled"}
+    service._notify_candidate.assert_not_awaited()
+    manager.install_symphony_skill_artifact.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_switch_off_during_review_does_not_offer_a_new_confirmation(
+    environment, monkeypatch, isolated_discovery_config,
+):
+    service, source, skills = environment
+    await _collect(service)
+    candidate = (await service.prepare_skillpack_candidates(session_id="session-a"))["candidates"][0]
+    service._notify_candidate.reset_mock()
+    original = service._prepare_skillpack_candidates
+
+    async def prepare_and_disable(**kwargs):
+        result = await original(**kwargs)
+        _disable_discovery(monkeypatch, isolated_discovery_config)
+        return result
+
+    monkeypatch.setattr(service, "_prepare_skillpack_candidates", prepare_and_disable)
+    result = await service.request_skillpack_candidate(
+        recipe_id=candidate["recipe_id"], recipe_version=candidate["recipe_version"],
+        session_id="session-a", channel_id="web",
+    )
+    assert result == {"success": False, "reason": "skillpack_disabled"}
+    service._notify_candidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_accepted_install_finishes_if_discovery_is_disabled_during_review(
+    environment, monkeypatch, isolated_discovery_config, allow_macos_pytest_temp_sources,
+):
+    service, source, skills = environment
+    await _collect(service)
+    automatic = service._notify_candidate.call_args.kwargs
+    candidate = automatic["preview"]
+    scoped = next(iter(service._skillpack_candidate_flows.values()))
+    original = scoped.review_and_prepare_install
+
+    async def review_and_disable(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        _disable_discovery(monkeypatch, isolated_discovery_config)
+        return result
+
+    monkeypatch.setattr(scoped, "review_and_prepare_install", review_and_disable)
+    manager = SkillManager(workspace_dir=str(skills.parent))
+    result = await service.install_candidate(
+        request_id=automatic["request_id_override"], recipe_id=candidate["recipe_id"],
+        recipe_version=candidate["recipe_version"], package_id=None, integrity=None,
+        skill_manager=manager, session_id="session-a",
+    )
+    assert result["installed"] is True
+    assert (skills / "writer-pack" / "SKILL.md").is_file()
 
 
 @pytest.mark.parametrize("field,value", [
@@ -188,7 +382,11 @@ def test_trace_ownership_is_a_detached_snapshot_without_approvals(tmp_path):
 async def test_real_evidence_to_reviewed_candidate_and_confirmation_without_install(environment):
     service, flow, skills = environment
     await _collect(service)
-    service._notify_candidate.assert_not_called()
+    service._notify_candidate.assert_awaited_once()
+    automatic = service._notify_candidate.call_args.kwargs
+    assert automatic["request_id_override"].startswith("symphony_experience_tool_")
+    assert automatic["session_id"] == "session-a"
+    assert automatic["force"] is False
     preview = await service.prepare_skillpack_candidates(session_id="session-a")
     assert len(preview["candidates"]) == 1
     candidate = preview["candidates"][0]
@@ -285,8 +483,8 @@ async def test_tool_accepts_only_intent_and_server_candidate_references(environm
 
 @pytest.mark.parametrize("source_refs", ["trace-1", [], ["trace-1"] * 101, [None], [{}], ["  "], ["x" * 257]])
 @pytest.mark.asyncio
-async def test_tool_rejects_invalid_source_refs_without_calling_service(monkeypatch, source_refs):
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+async def test_tool_rejects_invalid_source_refs_without_calling_service(isolated_discovery_config, source_refs):
+    isolated_discovery_config["symphony"]["evolution"]["flow"]["enabled"] = True
     service = SimpleNamespace(prepare_skillpack_candidates=AsyncMock())
     token = bind_session_messaging_route(session_id="session-a", request_id="chat-1", user_id="user-a")
     try:
@@ -298,8 +496,8 @@ async def test_tool_rejects_invalid_source_refs_without_calling_service(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_distill_route_survives_supervisor_and_parallel_tools(monkeypatch):
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+async def test_distill_route_survives_supervisor_and_parallel_tools(isolated_discovery_config):
+    isolated_discovery_config["symphony"]["evolution"]["flow"]["enabled"] = True
     service = SimpleNamespace(prepare_skillpack_candidates=AsyncMock(return_value={"success": True, "candidates": []}))
     toolkit = SkillPackToolkit(service)
     rail = SessionMessagingRouteRail()
@@ -349,21 +547,24 @@ def test_snapshot_rejects_symlink_and_disabled_member(environment, tmp_path):
 
 
 def test_tool_is_absent_by_default(monkeypatch):
-    monkeypatch.delenv("SKILLPACK_PRODUCTIZATION_ENABLED", raising=False)
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
     assert SkillPackToolkit().get_tools() == []
 
 
-@pytest.mark.parametrize("symphony_enabled,productization_enabled", [(False, False), (False, True), (True, False), (True, True)])
-def test_tool_registration_requires_symphony_and_productization(monkeypatch, symphony_enabled, productization_enabled):
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", str(productization_enabled).lower())
-    tools = SymphonyToolkit().get_tools({"symphony": {"enabled": symphony_enabled}})
-    assert ("skillpack_distill" in [tool.card.name for tool in tools]) is (symphony_enabled and productization_enabled)
+@pytest.mark.parametrize("symphony_enabled,discovery_enabled", [(False, False), (False, True), (True, False), (True, True)])
+def test_tool_registration_follows_discovery_switch(monkeypatch, symphony_enabled, discovery_enabled):
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", str(not discovery_enabled).lower())
+    tools = SymphonyToolkit().get_tools({"symphony": {
+        "enabled": symphony_enabled, "evolution": {"flow": {"enabled": discovery_enabled}},
+    }})
+    assert ("skillpack_distill" in [tool.card.name for tool in tools]) is discovery_enabled
 
 
 @pytest.mark.asyncio
 async def test_productization_blocks_unscoped_experiment_endpoints(environment):
     service, flow, skills = environment
     await _collect(service)
+    service._notify_candidate.reset_mock()
     candidate = flow.list_candidates()[0]
     assert service.list_experience_candidates() == {
         "success": False, "reason": "scoped_skillpack_tool_required", "candidates": [],
@@ -604,9 +805,12 @@ async def test_trusted_owner_changed_during_review_cannot_authorize_install(envi
 
     monkeypatch.setattr(scoped, "review_and_prepare_install", change_owner)
     if phase == "request":
+        approvals_before = CandidateScopeStore(source.store.root)._read().get("approvals", {})
+        service._notify_candidate.reset_mock()
         result = await service.request_skillpack_candidate(**arguments)
         assert not result["success"]
-        assert CandidateScopeStore(source.store.root)._read().get("approvals", {}) == {}
+        assert CandidateScopeStore(source.store.root)._read().get("approvals", {}) == approvals_before
+        service._notify_candidate.assert_not_awaited()
     else:
         manager = Mock()
         result = await service.install_candidate(
@@ -643,6 +847,7 @@ async def test_scoped_confirmation_and_receipt_survive_service_restart(
     await service.close()
     restarted = SwarmSymphonyService()
     monkeypatch.setattr(restarted, "runtime", lambda: SimpleNamespace(flow_engine=source))
+    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow_engine=source))
     result = await restarted.install_candidate(**arguments)
     assert result["installed"]
     assert result["replayed"] is installed_before_restart
