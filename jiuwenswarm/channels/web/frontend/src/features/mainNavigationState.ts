@@ -1,4 +1,5 @@
 export type MainNavKey =
+  | 'experiments'
   | 'chat'
   | 'skills'
   | 'agents'
@@ -22,6 +23,7 @@ export type MainNavKey =
 export const MAIN_NAV_STORAGE_KEY = 'jiuwenswarm.active-main-nav';
 
 const MAIN_NAV_KEYS = new Set<MainNavKey>([
+  'experiments',
   'chat',
   'skills',
   'agents',

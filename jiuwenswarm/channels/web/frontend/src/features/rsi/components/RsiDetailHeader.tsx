@@ -19,7 +19,6 @@ import {
   type RsiActionKind,
 } from '../rsiPresentation';
 import { useRsiStore } from '../rsiStore';
-import { usePluginPackageStore } from '../../../stores/pluginPackageStore';
 import {
   rsiTaskDelete,
   rsiTrainingPause,
@@ -187,8 +186,9 @@ export function RsiDetailHeader({
           // Harness artifacts are refs, not archives; the RSI installer resolves and registers the package.
           await rsiHarnessInstall(task.task_id);
           markTaskInstalled(task.task_id);
-          await usePluginPackageStore.getState().loadList('mine', { silent: true });
-          const snapshotName = report?.best_artifact?.name || task.best_artifact?.name;
+          // The stable runtime keeps RSI versions in its own activation store.
+          const snapshotName =
+            report?.best_artifact?.name || task.best_artifact?.name;
           showActionMessage(
             'success',
             t('rsi.detail.actionInstallSuccess', {

@@ -93,6 +93,7 @@
     "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
   },
   "nav": {
+    "experiments": "Experiments",
     "chat": "Chat",
     "work": "Work",
     "agent": "Agent",

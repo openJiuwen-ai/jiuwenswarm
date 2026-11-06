@@ -88,9 +88,7 @@ interface FormState {
 function defaultForm(): FormState {
   return {
     name: '',
-    // 后端本构建仅分发 program_opt/paper_opt 引擎（HARNESS 创建会被拒绝），
-    // 默认落在可用的产物优化·论文分支。
-    scenario: 'ARTIFACT',
+    scenario: 'HARNESS',
     artifactType: 'PAPER',
     optimizer: '',
     tester: '',
@@ -228,7 +226,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
         update('datasetFile', file.path);
         setDatasetValid(null);
       } else {
-        const result = await selectProjectDirectory({ initialDir: form.artifactPath || undefined });
+        const result = await selectProjectDirectory();
         if (!result.ok || !result.path) return;
         update('artifactPath', result.path);
       }
@@ -368,11 +366,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
               active={form.scenario === 'HARNESS'}
               onClick={() => switchScenario('HARNESS')}
               label={t('rsi.createDialog.typeHarness')}
-            />
-            <BranchButton
-              active={isArtifact}
-              onClick={() => switchScenario('ARTIFACT')}
-              label={t('rsi.createDialog.typeArtifact')}
             />
           </div>
         </Field>

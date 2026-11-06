@@ -93,6 +93,7 @@
     "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
   },
   "nav": {
+    "experiments": "实验",
     "chat": "对话",
     "work": "工作",
     "agent": "智能体",

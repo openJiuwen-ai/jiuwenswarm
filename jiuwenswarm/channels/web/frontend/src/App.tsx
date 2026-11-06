@@ -1,3 +1,5 @@
+import { RsiPage } from './features/rsi/RsiPage';
+import { useRSIFeatureEnabled, setRSIFeatureEnabled } from './features/rsi/featureConfig';
 /**
  * App 主组件
  *
@@ -368,6 +370,7 @@ async function saveShareImage(dataUrl: string, filename: string): Promise<boolea
 const HISTORY_PRELOAD_MAX_WAIT_MS = 1500;
 
 function AppContent() {
+  const rsiEnabled = useRSIFeatureEnabled();
   const { t, i18n } = useTranslation();
   const { route, navigate } = useChatRoute();
   const routeKey = route.kind === 'chat-session'
@@ -1177,6 +1180,19 @@ function AppContent() {
       console.warn('Failed to fetch models list:', error);
     }
   }, [enterpriseMode, request, t, setAvailableModels]);
+
+  useEffect(() => {
+    let active = true;
+    if (!isConnected) { setRSIFeatureEnabled(false); return; }
+    void webRequest<{ enabled: boolean }>('rsi.capabilities').then((result) => {
+      if (active) setRSIFeatureEnabled(result.enabled === true);
+    }).catch(() => { if (active) setRSIFeatureEnabled(false); });
+    return () => { active = false; };
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!rsiEnabled && activeNav === 'experiments') setActiveNav('chat');
+  }, [rsiEnabled, activeNav]);
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
@@ -2937,6 +2953,7 @@ function AppContent() {
           const base: MainNavKey[] = enterpriseMode
             ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS]
             : ['sessions', 'history', 'approvals'];
+          if (!rsiEnabled) base.push('experiments');
           const withDiagnosis = diagnosisEnabled ? base : [...base, 'diagnosis' as MainNavKey];
           const withRsi = rsiFeatureEnabled ? withDiagnosis : [...withDiagnosis, 'experiments' as MainNavKey];
           if (workspaceQuotaEnabled) {
@@ -3122,6 +3139,7 @@ function AppContent() {
             />
           </div>
         )}
+        {rsiEnabled && activeNav === 'experiments' && <RsiPage />}
         {activeNav === 'cron' && (
           <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
             <ConversationSidebar
