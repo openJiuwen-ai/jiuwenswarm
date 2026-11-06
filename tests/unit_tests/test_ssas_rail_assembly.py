@@ -237,10 +237,21 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
 
     hung = await asyncio.to_thread(_hang_then_close)
     stale_key = (other_loop, "fp_stale_probe")
+
+    class _StaleBackend:
+        """替身: 记录已关闭循环清扫路径的释放契约(close 不会被调用)."""
+
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    stale_backend = _StaleBackend()
     with m._SSAS_INIT_TASKS_LOCK:
-        m._SSAS_BACKEND_CACHE[stale_key] = object()
+        m._SSAS_BACKEND_CACHE[stale_key] = stale_backend
         m._SSAS_INIT_TASKS.add(hung)
-        m._SSAS_INIT_TASK_KEYS[hung] = (stale_key, object())
+        m._SSAS_INIT_TASK_KEYS[hung] = (stale_key, stale_backend)
 
     rail = m.JiuWenSwarmDeepAdapter._build_ssas_rail(_cfg(tmp_path))
     assert rail is not None
@@ -249,6 +260,11 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
         assert stale_key not in m._SSAS_BACKEND_CACHE
         assert hung not in m._SSAS_INIT_TASKS
         assert hung not in m._SSAS_INIT_TASK_KEYS
+    # 已关闭循环条目的释放契约: 仅丢弃引用, 不得尝试 close——条目所属循环
+    # 已关闭, 无法调度 close Task(资源随循环销毁整体回收)。这与初始化失败/
+    # 收口超时两条剔除路径的"后台关闭"契约(evicted.closed is True)不同,
+    # 三条路径的释放契约由本用例与另两用例分别显式锁定
+    assert stale_backend.closed is False
     await rail._backend._ssas_backend.close()
 
 

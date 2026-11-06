@@ -336,8 +336,12 @@ execution_guard:
       bailout_threshold: 3
 
 # AgentSSAS 安全态势感知系统配置（分布式模板为完整配置，不合并基础 config.yaml；
-# 缺失本段会静默关闭安全感知。inprocess 模式下 leader/teammate 进程各自独立
-# 建库感知，如需集中统一感知可切换 mode=http 指向同一 AgentSSAS HTTP 服务）
+# 缺失本段会静默关闭安全感知。inprocess 模式下每个进程在自身数据目录内建库感知；
+# 同机部署的 leader/teammate 若共享同一数据目录（ssas_home 留空时按
+# SSAS_HOME -> JIUWENSWARM_DATA_DIR -> JIUWENSWARM_HOME -> ~/.jiuwenswarm 顺序
+# 自动解析，二者会解析到同一 ssas_core.db），并发写入可能触发 SQLite 文件锁
+# 冲突、安全事件混库，此时须为各角色显式配置不同的 ssas_home；如需集中统一
+# 感知可切换 mode=http 指向同一 AgentSSAS HTTP 服务）
 ssas:
   # 总开关. 关闭后不注册 AgentSSASSecurityRail
   enabled: true
