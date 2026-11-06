@@ -55,6 +55,10 @@ a2ui:
   non_web_fallback_enabled: false
   dev_smoke_tools_enabled: false
 
+# RSI 递归自我改进实验入口；默认开启
+rsi:
+  enabled: true
+
 symphony:
   enabled: false
   paths:
