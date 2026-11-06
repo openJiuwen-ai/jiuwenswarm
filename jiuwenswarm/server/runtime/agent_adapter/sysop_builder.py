@@ -450,6 +450,19 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
     return extra_params
 
 
+def _deduplicate_adx_workspace_mount(mounts: list, expected: dict) -> None:
+    """Allow equivalent historical mounts while protecting platform targets."""
+    for item in list(mounts):
+        if not isinstance(item, dict) or item.get("target") != expected["target"]:
+            continue
+        normalized = dict(item)
+        if normalized.get("type") == "bind":
+            normalized.pop("type")
+        if normalized != expected:
+            raise ValueError("ADX sandbox mounts cannot replace an AgentOS workspace")
+        mounts.remove(item)
+
+
 def _build_adx_extra_params() -> dict[str, Any]:
     """Map the AgentOS workspaces to the tool Environment."""
     endpoint = get_sandbox_endpoint()
@@ -488,15 +501,25 @@ def _build_adx_extra_params() -> dict[str, Any]:
         })
         for mount in reversed(workspace_mounts):
             target = mount["target"]
-            if any(isinstance(item, dict) and item.get("target") == target for item in mounts):
-                raise ValueError("ADX sandbox mounts cannot replace an AgentOS workspace")
-            mounts.insert(0, {
+            expected = {
                 "host_path": mount["source"], "target": target,
                 "options": ["ro" if mount.get("readonly") else "rw"],
-            })
+            }
+            _deduplicate_adx_workspace_mount(mounts, expected)
+            mounts.insert(0, expected)
     extra["mounts"] = mounts
     extra["workdir"] = str(endpoint.get("workdir") or workspace)
     _apply_tool_sandbox_env_overrides(extra)
+    # Management-plane request overrides must not exceed a retained user limit.
+    for env_key, request, limit in (
+        ("TOOL_SANDBOX_CPU", "cpu", "cpu_limit"),
+        ("TOOL_SANDBOX_MEMORY", "memory", "mem_limit"),
+    ):
+        if os.getenv(env_key, "").strip() and limit in extra:
+            value = extra[limit]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"sandbox.{limit} must be an integer")
+            extra[limit] = max(value, extra[request])
     return extra
 
 
@@ -528,12 +551,12 @@ def build_adx_team_sysop_spec(team_name: str, role: str):
         teams_home.mkdir(parents=True, exist_ok=True)
         target = str(teams_home)
         mounts = card.gateway_config.launcher_config.extra_params["mounts"]
-        if any(mount.get("target") == target for mount in mounts):
-            raise ValueError("ADX sandbox mounts cannot replace an AgentOS Team workspace")
-        mounts.append({
+        expected = {
             "host_path": str(Path(os.environ["JIUWENSWARM_USER_DIRECTORY"]) / teams_home.relative_to(home)),
             "target": target, "options": ["rw"],
-        })
+        }
+        _deduplicate_adx_workspace_mount(mounts, expected)
+        mounts.append(expected)
     return SysOperationSpec(id=card.id, mode=card.mode, work_config=card.work_config,
                             gateway_config=card.gateway_config)
 

@@ -70,29 +70,87 @@ def read_environment(path):
 
 
 
+# These names belong to the retired YuanRong installer, or duplicate values
+# now supplied by the ADX deployment's service launcher.
+_OBSOLETE_APPLICATION_ENV = (
+    "YR_PYTHON_VERSION", "YR_FUNC_CODE_DIR", "FUNC_SVC_NAME", "FUNCTION_ID", "SANDBOX_TYPE",
+    "MGR_CPU", "MGR_MEMORY", "MGR_MIN_INSTANCE", "MGR_MAX_INSTANCE", "MGR_CONCURRENT_NUM",
+    "MASTER_NODE_IP", "FRONTEND_HOST", "FRONTEND_PORT", "ETCD_ENDPOINTS", "WEB_ENABLED",
+    "GATEWAY_CONCURRENCY", "GATEWAY_INVOKE_TIMEOUT", "GATEWAY_SESSION_MAP_SCOPE",
+    "TOOL_SANDBOX_TYPE", "TOOL_SANDBOX_ENABLE", "TOOL_SANDBOX_IMAGE", "TOOL_SANDBOX_EXECUTOR",
+    "TOOL_SANDBOX_USER", "TOOL_SANDBOX_GROUP", "BIND_IP",
+    "GATEWAY_HOST", "GATEWAY_PORT", "WEB_HOST", "WEB_PORT", "WEB_STATIC_HOST", "WEB_STATIC_PORT",
+    "ADX_GATEWAY_TOKEN",
+)
+_TOOL_ENV_SETTINGS = (
+    ("TOOL_SANDBOX_CPU", "cpu", "cpu_limit"),
+    ("TOOL_SANDBOX_MEMORY", "memory", "mem_limit"),
+    ("TOOL_SANDBOX_IDLE_TIMEOUT", "idle_timeout", None),
+)
+
+
+def migrate_tool_environment(config, path):
+    """Preserve effective legacy resource overrides in YAML before removing them."""
+    from dotenv import dotenv_values
+
+    if not Path(path).is_file():
+        return config
+    values = dotenv_values(path, interpolate=False)
+    sandbox = config["sandbox"]
+    for name, key, limit in _TOOL_ENV_SETTINGS:
+        raw = values.get(name)
+        if raw is None or not raw.strip():
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            raise ValueError(f"{name} must be an integer before migration") from None
+        if value < 0 or (key != "idle_timeout" and value == 0):
+            raise ValueError(f"{name} is outside the supported ADX range")
+        sandbox[key] = value
+        if limit and sandbox.get(limit):
+            sandbox[limit] = max(sandbox[limit], value)
+    return config
+
+
 def gateway_config(config, settings):
     config = copy.deepcopy(config)
     runtime = settings["runtime"]
     gateway = config.setdefault("gateway", {})
     gateway["agent_client"] = {"type": "adx_router", "agent_namespace": settings["namespace"]}
-    gateway["adx"] = {
+    adx_options = gateway.get("adx") or {}
+    gateway["adx"] = {key: copy.deepcopy(adx_options[key]) for key in
+                      ("connect_timeout_seconds", "ssh_user", "ssh_known_hosts", "restart_policy")
+                      if key in adx_options}
+    gateway["adx"].setdefault("connect_timeout_seconds", 180)
+    gateway["adx"].update({
         "ingress_url": settings["ingress_url"], "tenant": settings["tenant"],
-        "token_env": "ADX_GATEWAY_TOKEN", "builtin_image": runtime["agent_image"],
+        "token_env": "ADX_TOKEN", "builtin_image": runtime["agent_image"],
         "runtime_class": runtime.get("agent_runtime", "supervisor"), "builtin_process_from_image": True,
-        "workspace_target": "/home/agentos", "connect_timeout_seconds": 180,
-    }
+        "workspace_target": "/home/agentos",
+    })
     gateway.setdefault("agentos", {})["workspace_root"] = settings["workspace_root"]
     account = pwd.getpwnam(runtime["user"]) if runtime.get("user") else pwd.getpwuid(os.getuid())
-    config["sandbox"] = {
-        "enabled": True, "type": "adx-environment", "startup_mode": "external",
-        "url": "${JIUWENSWARM_ADX_NODE_INGRESS_URL}", "runtime": runtime.get("tool_runtime", "conch"), "image": runtime["tool_image"],
+    from jiuwenswarm.common.adx_config import managed_adx_sandbox
+    defaults = {
+        "enabled": True, "type": "adx-environment",
+        "runtime": runtime.get("tool_runtime", "conch"), "image": runtime["tool_image"],
         "cpu": 2000, "memory": 4096, "cpu_limit": 2000, "mem_limit": 4096,
         "idle_timeout": 60, "user": str(account.pw_uid), "group": str(account.pw_gid),
         "connection": {"verify_tls": True},
     }
+    if settings.get("profile", "standalone") != "agentos":
+        defaults["url"] = "${JIUWENSWARM_ADX_NODE_INGRESS_URL}"
+    config["sandbox"] = managed_adx_sandbox(config.get("sandbox"), defaults)
+    ssh = gateway.get("agentos", {}).get("ssh")
+    if isinstance(ssh, dict):
+        ssh.pop("user_template", None)
+    for section, key in (("checkpoint", "sqlite_journal_mode"), ("workspace_sqlite", "journal_mode")):
+        if isinstance(config.get(section), dict):
+            config[section].pop(key, None)
+            if not config[section]:
+                config.pop(section)
     if settings.get("shared_workspace_sqlite", False):
-        config.setdefault("checkpoint", {})["sqlite_journal_mode"] = "DELETE"
-        config.setdefault("workspace_sqlite", {})["journal_mode"] = "DELETE"
         for team in config.get("modes", {}).get("team", {}).values():
             if isinstance(team, dict):
                 storage = team.setdefault("storage", {"type": "sqlite"})
@@ -180,7 +238,21 @@ def configure(settings):
                        env=environment, stdin=subprocess.DEVNULL, check=True)
         if options.get("base_config"):
             write_yaml(config, read_yaml(options["base_config"]))
-    value = gateway_config(read_yaml(config), settings)
+    # Validate every historical configuration before changing existing files.
+    user_updates = []
+    for user in workspace.iterdir() if settings.get("update_user_configs", False) else ():
+        user_config = user / ".jiuwenswarm/config/config.yaml"
+        if user_config.is_file():
+            try:
+                updated = migrate_tool_environment(
+                    gateway_config(read_yaml(user_config), settings), user_config.with_name(".env"))
+            except ValueError as exc:
+                raise ValueError(f"Cannot migrate {user_config}: {exc}") from None
+            user_updates.append((user_config, updated))
+    env_file = data / "config/.env"
+    custom = Path(settings.get("business_env_file") or Path(__file__).with_name(".env.custom"))
+    value = migrate_tool_environment(gateway_config(read_yaml(config), settings),
+                                     env_file if env_file.exists() else custom)
     agentos = value["gateway"].setdefault("agentos", {})
     if settings.get("profile", "standalone") == "standalone":
         agentos.update(auth_enabled=False, auth_service_url="", registry={"endpoint": ""})
@@ -190,18 +262,12 @@ def configure(settings):
         value["gateway"]["session_map_scope"] = "per_chat_bot_user"
     write_yaml(config, value)
     settings.setdefault("gateway", {})["agentos"] = value["gateway"]["agentos"]
-    env_file = data / "config/.env"
     if fresh or not env_file.exists():
-        custom = Path(settings.get("business_env_file") or Path(__file__).with_name(".env.custom"))
         write_private(env_file, custom.read_text() if custom.exists() else "")
     update_environment(env_file, settings, service=True)
     # Existing users retain model/IAM/session configuration and all data files.
-    for user in workspace.iterdir() if settings.get("update_user_configs", False) else ():
-        user_config = user / ".jiuwenswarm/config/config.yaml"
-        if not user_config.is_file():
-            continue
-        original = read_yaml(user_config)
-        write_yaml(user_config, gateway_config(original, settings))
+    for user_config, updated in user_updates:
+        write_yaml(user_config, updated)
         update_environment(user_config.with_name(".env"), settings, user_config.stat())
     return env_file
 
@@ -214,10 +280,10 @@ def update_environment(path, settings, owner=None, *, service=False):
             os.chown(path, owner.st_uid, owner.st_gid)
     owner = path.stat()
     token = Path(settings["token_file"]).read_text().strip()
-    values = {"ADX_TOKEN": token, "ADX_GATEWAY_TOKEN": token,
-              "SSL_CERT_FILE": settings["ca_file"]}
+    values = {"ADX_TOKEN": token, "SSL_CERT_FILE": settings["ca_file"]}
     node_ingress_key = "JIUWENSWARM_ADX_NODE_INGRESS_URL"
-    if service or settings.get("persist_user_node_ingress_url", True):
+    if (settings.get("profile", "standalone") != "agentos"
+            and (service or settings.get("persist_user_node_ingress_url", True))):
         values[node_ingress_key] = settings["node_ingress_url"]
     elif node_ingress_key in dotenv_values(path, interpolate=False):
         unset_key(str(path), node_ingress_key)
@@ -228,6 +294,10 @@ def update_environment(path, settings, owner=None, *, service=False):
         })
     for key, setting in values.items():
         set_key(str(path), key, str(setting))
+    existing = dotenv_values(path, interpolate=False)
+    for key in (*_OBSOLETE_APPLICATION_ENV, *(item[0] for item in _TOOL_ENV_SETTINGS)):
+        if key in existing:
+            unset_key(str(path), key)
     os.chown(path, owner.st_uid, owner.st_gid)
     path.chmod(0o600)
 

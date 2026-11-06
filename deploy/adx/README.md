@@ -72,3 +72,68 @@ an unresolved placeholder. A composer may explicitly provide `SWARM_HOME` and
 `SWARM_INSTANCE_NAME` (empty for the default services), allowing cleanup even when
 startup settings have not been prepared. An unresolved custom instance name fails
 explicitly instead of stopping the default instance.
+
+### Managed tool configuration and existing workspaces
+
+The generated `sandbox` block contains only ADX tool settings. ADX manages tool
+lifecycle, so `startup_mode` is unnecessary; old `internal`/`external` values are
+accepted and ADX always uses external lifecycle management.
+
+In the AgentOS runtime profile, tool ingress comes only from the selected node's
+launcher-injected `JIUWENSWARM_ADX_NODE_INGRESS_URL`. Templates omit `sandbox.url`,
+Gateway sandbox JSON omits the address, and application/user dotenv files do not
+persist it. Runtime resolves the injected value into the SDK's effective URL;
+missing injection is an error. Deployment owns the backend, enabled state and TLS
+verification. Historical
+user `url` and `connection.server_address/gateway_address/token/use_tls` values
+cannot override that route. Credentials continue to come from the deployment's
+ADX environment settings. Personal/non-ADX profiles keep their existing merge
+behavior.
+
+Repeated configuration preserves models, IAM, sessions, supported ADX options,
+SSH known-hosts settings and connection timeout. Portable legacy CPU/memory,
+UID/GID, workdir and absolute local mounts are retained. A legacy mount's
+`source/target/readonly` becomes ADX `host_path/target/options`; omitted target
+means source and omitted readonly means writable, matching the previous mapping.
+`rootfs.workdir/mounts/user` are also supported. Identical platform workspace
+mounts are deduplicated, while conflicting mounts are rejected.
+
+Legacy Docker image/executor and Jiuwenbox template selectors are replaced by
+the deployment's registered ADX image/runtime, with a warning containing field
+names only. A custom Docker image must be registered as an ADX image binding and
+configured explicitly with `type: adx-environment`. Nonlocal legacy mount
+sources, other rootfs fields, file policies and excluded commands require explicit
+migration; configuration reports an error instead of dropping these settings.
+The deploy command updates existing user YAML and connection environment files;
+workspace content, model settings and session databases are retained.
+
+Unused `checkpoint.sqlite_journal_mode`, `workspace_sqlite.journal_mode` and
+legacy SSH `user_template` are no longer generated. Team SQLite's `db_enable_wal`
+and `mmap_size_mb` settings remain active and are retained for shared workspaces.
+For AgentOS, node addresses are not persisted in application or user `.env` files;
+legacy `persist_user_node_ingress_url` remains accepted for standalone deployments.
+
+Management-plane `TOOL_SANDBOX_CPU/MEMORY/IDLE_TIMEOUT` overrides retain their
+existing priority over user YAML. User resource settings are fallback values;
+when a request is overridden, a lower retained limit is raised to that request.
+A higher user limit is retained.
+
+### YAML and dotenv ownership
+
+Persisted ADX tool resources live in `config.yaml::sandbox`. Deployment first
+migrates effective legacy `TOOL_SANDBOX_CPU/MEMORY/IDLE_TIMEOUT` dotenv values to
+YAML, then removes the duplicates and retired YuanRong installer variables.
+Invalid resource values fail before writing existing files. Management-plane
+process overrides retain their existing priority and dynamic update behavior.
+
+Gateway and tool SDK authentication share `ADX_TOKEN`; the generated
+`gateway.adx.token_env` selects it. The identical `ADX_GATEWAY_TOKEN` duplicate is
+removed. Model credentials and unknown application variables are retained.
+Gateway/Web listen addresses and ports come from deployment settings via the
+launcher, so stale application dotenv copies are removed. Builtin Agent resource
+environment variables and CA settings remain active inputs. Node ingress is
+supplied only by the runtime launcher.
+
+ADX's `deployment.env` expands native deployment YAML into component JSON; some
+Ingress settings are also consumed directly from its process environment. These
+bindings and generated outputs are separate stages of the same configuration.

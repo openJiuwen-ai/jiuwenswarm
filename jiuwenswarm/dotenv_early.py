@@ -131,7 +131,11 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     if preserve and os.environ.get(ELECTRON_ENV_FLAG) == "1":
         preserved_keys += DESKTOP_BROWSER_PRESERVED_ENV_KEYS
     if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() == "agentos":
-        preserved_keys += ("JIUWENSWARM_ADX_NODE_INGRESS_URL",)
+        preserved_keys += (
+            "JIUWENSWARM_ADX_NODE_INGRESS_URL", "JIUWENSWARM_RUNTIME_PROFILE",
+            "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG", "JIUWENSWARM_USER_DIRECTORY",
+            "SSL_CERT_FILE", "ADX_TOKEN",
+        )
     saved = {k: os.environ[k] for k in preserved_keys if k in os.environ}
     loaded = load_dotenv(dotenv_path=dotenv_path, override=override)
     if saved:

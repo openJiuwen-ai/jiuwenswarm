@@ -406,3 +406,23 @@ async def test_config_request_retains_adx_warmup_failure(monkeypatch):
         release_create.set()
         release_waiter.set()
         await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adx_gateway_does_not_broadcast_its_tool_ingress_to_another_node(monkeypatch):
+    router, _ = _router(_config(monkeypatch))
+    router.set_or_update_server_config(config={"sandbox": {
+        "enabled": True, "type": "adx-environment", "url": "https://master:8443",
+        "startup_mode": "external", "image": "tools:v1", "runtime": "conch",
+    }})
+    await router.connect("")
+    try:
+        assert (await router.send_request(_request())).ok
+        env = router.test_api.creates[0]["env"]
+        deployment = json.loads(env["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"])
+        assert "url" not in deployment
+        assert "startup_mode" not in deployment
+        assert "JIUWENSWARM_ADX_NODE_INGRESS_URL" not in env
+        assert deployment["image"] == "tools:v1"
+    finally:
+        await router.shutdown()

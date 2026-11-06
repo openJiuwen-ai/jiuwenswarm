@@ -146,3 +146,32 @@ def test_adx_team_tools_mount_user_team_workspaces(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, 'get_agent_teams_home', lambda: tmp_path / 'outside')
     with pytest.raises(ValueError, match='Team workspace.*AgentOS home'):
         builder.build_adx_team_sysop_spec('team-a', 'teammate')
+
+
+def test_adx_equivalent_historical_workspace_mount_is_deduplicated():
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import _deduplicate_adx_workspace_mount
+
+    expected = {"host_path": "/shared/alice", "target": "/workspace", "options": ["rw"]}
+    mounts = [dict(expected, type="bind"), dict(expected)]
+    _deduplicate_adx_workspace_mount(mounts, expected)
+    assert mounts == []
+    mounts = [dict(expected, options=["ro"])]
+    with pytest.raises(ValueError, match="cannot replace"):
+        _deduplicate_adx_workspace_mount(mounts, expected)
+
+
+def test_management_resource_override_keeps_retained_limits_valid(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
+
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "")
+    monkeypatch.setenv("TOOL_SANDBOX_CPU", "2000")
+    monkeypatch.setenv("TOOL_SANDBOX_MEMORY", "4096")
+    monkeypatch.setattr(builder, "_resolve_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(builder, "get_sandbox_endpoint", lambda: {
+        "type": "adx-environment", "cpu": 500, "cpu_limit": 500,
+        "memory": 512, "mem_limit": 8192,
+    })
+    result = builder._build_adx_extra_params()
+    assert result["cpu"] == result["cpu_limit"] == 2000
+    assert result["memory"] == 4096
+    assert result["mem_limit"] == 8192

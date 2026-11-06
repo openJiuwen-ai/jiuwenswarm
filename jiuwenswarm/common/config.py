@@ -266,11 +266,21 @@ def get_config():
         ):
             try:
                 defaults = json.loads(os.getenv(env_key, "{}"))
-                if isinstance(defaults, dict) and defaults:
-                    local = config_base.get(section)
-                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
             except (ValueError, TypeError):
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
+                continue
+            if isinstance(defaults, dict) and defaults:
+                local = config_base.get(section)
+                if section == "sandbox" and defaults.get("type") == "adx-environment":
+                    from jiuwenswarm.common.adx_config import managed_adx_sandbox
+                    defaults = resolve_env_vars(defaults)
+                    node_ingress = os.getenv("JIUWENSWARM_ADX_NODE_INGRESS_URL", "").strip()
+                    if not node_ingress:
+                        raise ValueError("Managed ADX tools require launcher-injected JIUWENSWARM_ADX_NODE_INGRESS_URL")
+                    defaults["url"] = node_ingress
+                    config_base[section] = managed_adx_sandbox(local, defaults)
+                else:
+                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
 
     return apply_runtime_model_config(config_base)
 
@@ -3954,6 +3964,8 @@ def get_sandbox_startup_mode() -> str:
     """
     cfg = get_config() or {}
     sandbox = cfg.get("sandbox") or {}
+    if sandbox.get("type") == "adx-environment":
+        return "external"
     return _normalize_sandbox_startup_mode(sandbox.get("startup_mode"))
 
 
@@ -3970,6 +3982,8 @@ def get_sandbox_startup_mode_explicit() -> str | None:
     """
     cfg = get_config() or {}
     sandbox = cfg.get("sandbox") or {}
+    if sandbox.get("type") == "adx-environment":
+        return "external"
     raw = sandbox.get("startup_mode")
     if not isinstance(raw, str):
         return None
@@ -4198,7 +4212,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         "url": url,
         "type": sandbox_type,
         "preserve_file_sharing_mode": mode or "",
-        "startup_mode": _normalize_sandbox_startup_mode(sandbox.get("startup_mode")),
+        "startup_mode": "external" if sandbox_type == "adx-environment" else _normalize_sandbox_startup_mode(sandbox.get("startup_mode")),
         "policy_file": str(sandbox.get("policy_file") or "").strip(),
     }
     if sandbox_type == "yuanrong":

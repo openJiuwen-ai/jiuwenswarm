@@ -3126,6 +3126,9 @@ class AgentOSRouterClient(AgentServerClient):
                     "user", "group",
                 ))
                 if sandbox_config.get("type") == "adx-environment":
+                    # The selected runtime node injects its tool ingress at launch.
+                    deployment.pop("url", None)
+                    deployment.pop("startup_mode", None)
                     deployment.update(_pick_keys(sandbox_config, (
                         "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network",
                     )))

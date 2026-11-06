@@ -106,16 +106,92 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(value["sandbox"]["cpu_limit"], 2000)
             self.assertEqual(value["sandbox"]["memory"], 4096)
             self.assertEqual(value["sandbox"]["mem_limit"], 4096)
-            self.assertEqual(value["sandbox"]["url"], "${JIUWENSWARM_ADX_NODE_INGRESS_URL}")
+            self.assertNotIn("url", value["sandbox"])
             env_text = path.with_name(".env").read_text()
             self.assertIn("MODEL_NAME='original'", env_text)
-            self.assertIn("TOOL_SANDBOX_CPU=2000", env_text)
-            self.assertIn("TOOL_SANDBOX_MEMORY=4096", env_text)
+            self.assertNotIn("TOOL_SANDBOX_CPU=", env_text)
+            self.assertNotIn("TOOL_SANDBOX_MEMORY=", env_text)
             self.assertIn("ADX_TOKEN=", path.with_name(".env").read_text())
             self.assertEqual(path.with_name(".env").stat().st_mode & 0o777, 0o600)
         self.assertEqual(sentinel.read_bytes(), b"retained-session-fixture")
         self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
-        self.assertIn("JIUWENSWARM_ADX_NODE_INGRESS_URL='https://node.example:8443'", environment.read_text())
+        self.assertNotIn("JIUWENSWARM_ADX_NODE_INGRESS_URL=", environment.read_text())
+
+    def test_regeneration_preserves_supported_customization_and_removes_noops(self):
+        self.settings["shared_workspace_sqlite"] = True
+        original = {"sandbox": {"type": "adx-environment", "cpu": 1200, "workdir": "/chosen",
+                                "mounts": [{"host_path": "/shared/data", "target": "/data", "options": ["ro"]}]},
+                    "gateway": {"adx": {"ssh_known_hosts": "/trust/hosts", "connect_timeout_seconds": 42},
+                                "agentos": {"ssh": {"user_template": "old-{user}", "port": 2222}}},
+                    "checkpoint": {"sqlite_journal_mode": "DELETE", "db_type": "sqlite"},
+                    "workspace_sqlite": {"journal_mode": "DELETE"},
+                    "modes": {"team": {"code": {"storage": {"type": "sqlite", "params": {"path": "/keep"}}}}}}
+        result = deploy.gateway_config(original, self.settings)
+        self.assertEqual(result["sandbox"]["cpu"], 1200)
+        self.assertEqual(result["sandbox"]["cpu_limit"], 1200)
+        self.assertEqual(result["sandbox"]["mounts"], original["sandbox"]["mounts"])
+        self.assertEqual(result["gateway"]["adx"]["ssh_known_hosts"], "/trust/hosts")
+        self.assertEqual(result["gateway"]["adx"]["connect_timeout_seconds"], 42)
+        self.assertEqual(result["gateway"]["agentos"]["ssh"], {"port": 2222})
+        self.assertEqual(result["checkpoint"], {"db_type": "sqlite"})
+        self.assertNotIn("workspace_sqlite", result)
+        self.assertNotIn("startup_mode", result["sandbox"])
+        self.assertEqual(result["modes"]["team"]["code"]["storage"]["params"],
+                         {"path": "/keep", "db_enable_wal": False, "mmap_size_mb": 0})
+        self.assertEqual(deploy.gateway_config(result, self.settings), result)
+
+
+    def test_unsupported_user_policy_fails_before_changing_existing_files(self):
+        config = self.root / "home/.jiuwenswarm/config/config.yaml"
+        user = self.root / "users/alice/.jiuwenswarm/config/config.yaml"
+        deploy.write_yaml(config, {"models": [{"name": "original"}]})
+        deploy.write_yaml(user, {"sandbox": {"type": "jiuwenbox", "policy_file": "/old/policy"}})
+        before = {path: path.read_bytes() for path in (config, user)}
+        with patch.object(deploy, "check_business"), self.assertRaisesRegex(ValueError, "alice.*policy_file"):
+            deploy.configure(self.settings)
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+            self.assertFalse(path.with_name(".env").exists())
+
+    def test_legacy_env_migrates_effective_resources_and_removes_duplicate_inputs(self):
+        from dotenv import dotenv_values
+
+        config = self.root / "home/.jiuwenswarm/config/config.yaml"
+        deploy.write_yaml(config, {"sandbox": {"type": "adx-environment", "cpu": 2000, "cpu_limit": 2000}})
+        environment = config.with_name(".env")
+        environment.write_text("TOOL_SANDBOX_CPU=3000\nTOOL_SANDBOX_MEMORY=8192\n"
+                               "TOOL_SANDBOX_IDLE_TIMEOUT=0\nTOOL_SANDBOX_TYPE=yuanrong\n"
+                               "TOOL_SANDBOX_IMAGE=old-image\nGATEWAY_PORT=1234\n"
+                               "ADX_GATEWAY_TOKEN=old-fixture\nMODEL_NAME=keep\nCUSTOM_APP_VALUE=keep\n")
+        with patch.object(deploy, "check_business"):
+            deploy.configure(self.settings)
+            before = config.read_bytes()
+            deploy.configure(self.settings)
+        self.assertEqual(config.read_bytes(), before)
+        value = deploy.read_yaml(config)
+        self.assertEqual(value["sandbox"]["cpu"], 3000)
+        self.assertEqual(value["sandbox"]["cpu_limit"], 3000)
+        self.assertEqual(value["sandbox"]["memory"], 8192)
+        self.assertEqual(value["sandbox"]["mem_limit"], 8192)
+        self.assertEqual(value["sandbox"]["idle_timeout"], 0)
+        self.assertEqual(value["gateway"]["adx"]["token_env"], "ADX_TOKEN")
+        actual = dotenv_values(environment)
+        self.assertEqual(actual["MODEL_NAME"], "keep")
+        self.assertEqual(actual["CUSTOM_APP_VALUE"], "keep")
+        self.assertIn("ADX_TOKEN", actual)
+        self.assertFalse(set(actual) & set(deploy._OBSOLETE_APPLICATION_ENV))
+        self.assertFalse(any(name in actual for name, _, _ in deploy._TOOL_ENV_SETTINGS))
+
+    def test_invalid_legacy_resource_env_does_not_modify_existing_configuration(self):
+        config = self.root / "home/.jiuwenswarm/config/config.yaml"
+        deploy.write_yaml(config, {"sandbox": {"type": "adx-environment"}})
+        environment = config.with_name(".env")
+        environment.write_text("TOOL_SANDBOX_CPU=invalid\n")
+        before = {path: path.read_bytes() for path in (config, environment)}
+        with patch.object(deploy, "check_business"), self.assertRaisesRegex(ValueError, "TOOL_SANDBOX_CPU"):
+            deploy.configure(self.settings)
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
 
     def test_missing_config_initialization_preserves_existing_workspace(self):
         sentinel = self.root / "home/.jiuwenswarm/history.db"
@@ -133,14 +209,17 @@ class DeploymentTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(sentinel.read_bytes(), b"retained-history")
 
-    def test_shared_workspace_removes_node_address_and_keeps_service_address(self):
+    def test_managed_profile_removes_persisted_node_addresses(self):
         from dotenv import dotenv_values
 
-        self.settings["persist_user_node_ingress_url"] = False
+        # Old explicit True must not persist a node address into a shared user home.
+        self.settings["persist_user_node_ingress_url"] = True
         config = self.root / "home/.jiuwenswarm/config/config.yaml"
         user_config = self.root / "users/alice/.jiuwenswarm/config/config.yaml"
         for path in (config, user_config):
             deploy.write_yaml(path, {})
+        config.with_name(".env").write_text("JIUWENSWARM_ADX_NODE_INGRESS_URL=https://old-master:8443\n")
+        self.settings.pop("node_ingress_url")
         user_env = user_config.with_name(".env")
         user_env.write_text("MODEL_NAME='original'\nJIUWENSWARM_ADX_NODE_INGRESS_URL='https://old:8443'\n")
         owner = user_env.stat()
@@ -151,8 +230,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(dotenv_values(user_env)["MODEL_NAME"], "original")
         self.assertEqual((user_env.stat().st_uid, user_env.stat().st_gid), (owner.st_uid, owner.st_gid))
         self.assertEqual(user_env.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(dotenv_values(service_env)["JIUWENSWARM_ADX_NODE_INGRESS_URL"],
-                         self.settings["node_ingress_url"])
+        self.assertNotIn("JIUWENSWARM_ADX_NODE_INGRESS_URL", dotenv_values(service_env))
 
 
 
