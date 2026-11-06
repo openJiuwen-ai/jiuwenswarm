@@ -141,3 +141,12 @@ AgentServer egress selects model origins from the user's model configuration and
 The generated AgentServer traffic policy can select `network.ingress_policy_peer`; Enterprise maps that peer to each node bridge in the optional ADX baseline. Restored requests retain the logical peer while the endpoint file supplies the actual target-node URL. Model policy refresh sends the lifecycle `X-ADX-Request-ID` separately from correlation headers. An unconfigured model grants no model network access. Workspace model resolution does not inherit model endpoints from the Gateway process. The managed `agentos-tools:v1` Conch binding follows the deployment image when selecting runsc; other explicitly configured OCI images remain unchanged.
 
 For runsc AgentServers, ADX owns the Environment's idle deletion and checkpoint retention. Gateway copies its configured Agent idle timeout into `idleTimeoutSeconds` when creating the Environment. Later timeout changes apply to new Environments. Gateway's idle/disconnect cleanup releases local routing state and closes Relay activity; it does not delete the native Environment. A business transport error also retains Running, Pausing, Paused, Resuming and retrying executions. Confirmed terminal failures can use the existing cleanup path. Explicit user deletion still retires the Environment and its checkpoints. The tool idle timeout remains independent.
+
+Managed runsc AgentServers retire saved Gateway transport connections after a
+node/context, guest address, or native ADX runtime ID changes on restore.
+The runtime ID is read from the existing runsc `/proc/gvisor/spec_environ`
+interface, so restoring on the same node and IP also retires old transports.
+The new push connection is published first; only the old connection-owned request
+streams are cancelled. Resident Team producers and history remain available, and
+the Web client reattaches its Team observer. Without a managed node-context file,
+Front keeps its existing multiple-connection behavior.

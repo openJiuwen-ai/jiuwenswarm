@@ -87,3 +87,9 @@ AgentOS 可设置 `update_user_configs: false`：校验旧配置，保留用户 
 `network.ingress_policy_peer` 对应 ADX 节点基线中的逻辑 peer，由各目标节点映射到本机网桥；恢复请求保留该 peer，连接地址继续从目标节点上下文文件读取。模型策略更新使用生命周期操作头 `X-ADX-Request-ID`。未配置模型时不授予模型网络权限，也不继承 Gateway 自身的模型地址。旧 `agentos-tools:v1` 是托管 Conch 绑定，切换 runsc 时跟随部署镜像；其他显式 OCI 自定义镜像继续保留。
 
 runsc AgentServer 的 Environment 空闲删除和 checkpoint 保留由 ADX 管理。Gateway 在创建时将 Agent 空闲超时写入 `idleTimeoutSeconds`；后续超时配置变更对新建 Environment 生效。Gateway 的空闲/断连清理只释放本地路由状态并关闭 Relay 活动，不删除原生 Environment。业务传输异常也保留 Running、Pausing、Paused、Resuming 及等待重试的执行；确认终态失败后仍可使用原清理流程。用户显式删除继续回收 Environment 及其 checkpoint。工具沙箱的空闲超时独立配置。
+
+受管 runsc AgentServer 恢复后，若节点上下文、沙箱地址或原生 ADX runtime ID
+变化，Front 会先发布新的 Gateway 推送连接，再关闭旧连接并取消旧连接所属的
+请求流。驻留 Team producer 和历史保留，Web 客户端按原协议重新订阅 Team。
+runtime ID 读取现有 runsc `/proc/gvisor/spec_environ` 接口，同节点、同 IP
+恢复也能识别新执行实例。未配置受管节点上下文时，Front 保持原有多连接行为。
