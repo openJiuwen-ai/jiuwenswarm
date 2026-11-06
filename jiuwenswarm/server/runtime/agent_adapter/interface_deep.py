@@ -16364,6 +16364,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     inputs,
                     self._instance,
+                    image_files=image_files,
                     **team_stream_kwargs,
                 ):
                     maybe_mark_answer_first_byte(getattr(chunk, "payload", None))

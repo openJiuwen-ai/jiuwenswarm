@@ -13,11 +13,13 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmen
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.common.multimodal import (
+    augment_message_with_reference_lines,
     collect_image_references_from_messages,
     collect_provided_image_paths,
     count_image_content_blocks,
     current_multimodal_image_files_from_agent,
     ensure_multimodal_image_filter_window_mutator,
+    ensure_manifest_images_referenced,
     inject_image_content_from_references,
     remove_multimodal_image_filter_window_mutator,
 )
@@ -62,12 +64,24 @@ class MultimodalImageRail(DeepAgentRail):
         max_total_bytes: int = 0,
         max_visual_tokens: int = 0,
         max_count: int = 0,
+        image_files: list[dict[str, Any]] | None = None,
+        dispatch_hint: bool = False,
     ) -> None:
         super().__init__()
         self._enable_image_multimodal = enable_image_multimodal
         self._max_total_bytes = max(0, int(max_total_bytes or 0))
         self._max_visual_tokens = max(0, int(max_visual_tokens or 0))
         self._max_count = max(0, int(max_count or 0))
+        # 装配期绑定的上传清单（None = 未绑定，回退 agent 实例属性）。
+        # 只有「rail 在成员 agent 之外计算清单」的装配方（team 成员由 swarm
+        # provider 构造）才显式传：清单在 rail 构造时快照，每轮重建即刷新。
+        self._bound_image_files: list[dict[str, Any]] | None = (
+            [dict(item) for item in image_files if isinstance(item, dict)]
+            if image_files is not None
+            else None
+        )
+        # leader 专用提示：把图片交给成员时如何转述引用行（否则成员拿不到像素）。
+        self._dispatch_hint = bool(dispatch_hint)
         self._deep_agent: Any | None = None
         self._system_prompt_builder: Any | None = None
         self._attachment_manager: Any | None = None
@@ -85,6 +99,23 @@ class MultimodalImageRail(DeepAgentRail):
             or getattr(self._deep_agent, "_deep_config", None)
         )
         return bool(getattr(deep_config, "enable_read_image_multimodal", False))
+
+    def _resolve_request_image_files(self) -> list[dict[str, Any]] | None:
+        """返回本次请求的上传清单；``None`` 表示未绑定、回退 ContextVar。
+
+        team 成员（leader）的清单由 adapter 写进 build context，provider 在
+        rail 构造时快照传入——成员 agent 不是 adapter 的 ``self._instance``，
+        agent 属性镜像拿不到；返回 ``[]`` 是权威事实（本轮没有新上传），
+        不能让 inject 回退到 ContextVar 读到别的轮次残留。
+        """
+        if self._bound_image_files is not None:
+            return [dict(item) for item in self._bound_image_files]
+        return current_multimodal_image_files_from_agent(self._deep_agent)
+
+    def _is_team_member_rail(self) -> bool:
+        """是否是 team 成员（非 leader）的 rail：绑定清单且无 leader 分发提示。"""
+
+        return self._bound_image_files is not None and not self._dispatch_hint
 
     def _sync_image_policy_section(self, enabled: bool, images_sent: int) -> None:
         """按「这次到底有没有把像素发出去」写策略段。
@@ -105,6 +136,32 @@ class MultimodalImageRail(DeepAgentRail):
             # 段不存在或 builder 未实现移除时不影响本轮注入，仅记录便于定位。
             logger.warning("remove %s section failed", section_name, exc_info=True)
         if enabled and images_sent <= 0:
+            if not self._is_team_member_rail():
+                return
+            # team 成员：还没有像素，但任务里常只给本地路径。最好走 read_file——
+            # read_file 的原生读图 resolver 读 deep_config，会把图片以图像内容返回给
+            # 原生模型；不引导的话成员会惯性调用 VQA/OCR（线上 trace 已多次复现）。
+            path_cn = (
+                "本次请求可能涉及本地图片。如果上下文中出现图片文件路径，请直接使用 "
+                "read_file 读取该路径：当前模型支持原生图片理解，read_file 会返回图像内容"
+                "（不要调用 visual_question_answering / image_ocr 去读取本地文件）。"
+                "只有远程 URL、或读取失败导致没有像素时，才使用视觉工具兜底。"
+            )
+            path_en = (
+                "This request may involve local image files. When a local image path appears "
+                "in the context, call read_file on it directly: the current model supports "
+                "native image understanding and read_file returns image content (do not use "
+                "visual_question_answering / image_ocr to read local files). Use a vision tool "
+                "only for remote URLs or when reading failed and no pixels are available."
+            )
+            try:
+                builder.add_section(PromptSection(
+                    name=section_name,
+                    content={"cn": path_cn, "en": path_en},
+                    priority=96,
+                ))
+            except Exception:
+                logger.warning("add %s section failed", section_name, exc_info=True)
             return
         native_cn = (
             "本次请求可能包含用户上传的图片。当前模型支持原生图片理解，"
@@ -117,6 +174,20 @@ class MultimodalImageRail(DeepAgentRail):
             "Use your vision capability directly; do not call visual_question_answering "
             "or image_reading tools."
         )
+        if self._dispatch_hint:
+            # team leader 专用：图片要交给成员处理时，必须把引用行原样转述到成员能读到
+            # 的消息通道（send_message）。只给绝对路径 / 只写进任务看板都不物化像素。
+            native_cn += (
+                "\n\n如果要把本次请求中的图片交给团队成员处理，请用 send_message 在消息正文中"
+                "原样保留该图的 `[image #n] path=... filename=... mime=...` 引用行——成员据此"
+                "直接查看像素。只给文件路径、或只写进任务看板正文时，成员看不到图片内容。"
+            )
+            native_en += (
+                "\n\nTo hand one of these images to a teammate, keep its "
+                "`[image #n] path=... filename=... mime=...` reference line verbatim in the "
+                "send_message body — the teammate needs that line to see the pixels. A bare "
+                "file path, or a path only written into the task board, gives it no image."
+            )
         fallback_cn = (
             "本次请求可能包含用户上传的图片。当前模型不支持原生图片理解；"
             "如需理解图片内容，请调用 visual_question_answering 或 image_reading 工具。"
@@ -399,12 +470,26 @@ class MultimodalImageRail(DeepAgentRail):
             has_image_references = bool(
                 collect_image_references_from_messages(list(messages))
             )
+            # 成员侧确定性分发：leader 只把路径写进任务看板 / 只留占位符时，成员上下文
+            # 里提到清单图（文件名 / 完整路径）也应直接看像素，而不是回退 VQA。
+            if self._is_team_member_rail():
+                try:
+                    ensured = ensure_manifest_images_referenced(
+                        list(messages), self._bound_image_files
+                    )
+                    if ensured:
+                        has_image_references = bool(
+                            collect_image_references_from_messages(list(messages))
+                        )
+                except Exception as exc:  # pragma: no cover - 防御：补引用失败不阻断注入
+                    logger.warning(
+                        "[MultimodalImageRail] ensure manifest image references failed: %s",
+                        exc,
+                    )
             try:
                 messages, attached = inject_image_content_from_references(
                     list(messages),
-                    image_files=current_multimodal_image_files_from_agent(
-                        self._deep_agent
-                    ),
+                    image_files=self._resolve_request_image_files(),
                     max_total_bytes=self._max_total_bytes,
                     max_visual_tokens=self._max_visual_tokens,
                     max_count=self._max_count,
@@ -506,3 +591,57 @@ class MultimodalImageRail(DeepAgentRail):
         logger.info(
             "[MultimodalImageRail] after_model_call final_window_images=%d", images_sent
         )
+
+    async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        """leader 给成员发消息时，把"只提了文件名 / 路径"的上传图补成引用行。
+
+        为什么需要：提示词只要求 leader 用 send_message 保留引用行，但实测它常把
+        引用行写进任务看板（tool result，不物化）、消息里只写 "识别 3.jpg"。这里在
+        工具执行前按本轮上传清单补引用行——只有消息真正提到的图才补，广播 / 回用户
+        不补（避免把清单发给无关成员或用户）。成员侧仍由安全门按清单 ∩ 引用行物化。
+        """
+
+        if not self._dispatch_hint:
+            return
+        try:
+            inputs = getattr(ctx, "inputs", None)
+            tool_call = getattr(inputs, "tool_call", None)
+            tool_name = str(
+                getattr(inputs, "tool_name", "") or getattr(tool_call, "name", "") or ""
+            )
+            if tool_name != "send_message":
+                return
+            arguments = getattr(tool_call, "arguments", None)
+            if not isinstance(arguments, dict):
+                return
+            target = arguments.get("to")
+            if isinstance(target, str):
+                if target.strip() in {"", "*", "user"}:
+                    return
+            elif isinstance(target, (list, tuple)):
+                names = [str(item or "").strip() for item in target]
+                if not names or any(name in {"", "*", "user"} for name in names):
+                    return
+            else:
+                return
+            content = arguments.get("content")
+            if not isinstance(content, str) or not content.strip():
+                return
+            updated = augment_message_with_reference_lines(
+                content, self._resolve_request_image_files()
+            )
+            if updated == content:
+                return
+            arguments["content"] = updated
+            if tool_call is not None:
+                tool_call.arguments = arguments
+            if inputs is not None:
+                inputs.tool_args = arguments
+            logger.info(
+                "[MultimodalImageRail] dispatch message augmented with image reference lines"
+            )
+        except Exception as exc:  # pragma: no cover - 旁路失败不阻断工具调用
+            logger.warning(
+                "[MultimodalImageRail] augment dispatch message failed: %s", exc
+            )
+

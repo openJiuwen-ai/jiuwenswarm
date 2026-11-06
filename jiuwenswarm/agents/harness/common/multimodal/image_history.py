@@ -38,7 +38,9 @@ from jiuwenswarm.agents.harness.common.multimodal.image_reference import (
     _normalize_image_file,
     build_image_reference_line,
     current_multimodal_image_files,
+    normalize_image_mention_text,
     normalize_image_path,
+    normalized_text_mentions_image,
     parse_image_references,
 )
 from jiuwenswarm.common.utils import logger
@@ -395,6 +397,126 @@ def _append_image_part(message: Any, index: int, data_uri: str) -> None:
             {"type": "image_url", "image_url": {"url": data_uri}},
         ],
     )
+
+
+def _processed_image_paths(messages: list[Any]) -> set[str]:
+    """历史里已被处理过（``attached`` ∪ ``omitted``）的上传图路径集合。
+
+    为什么 ``omitted`` 也算已处理：被预算淘汰 / 读取失败写下的
+    ``[image #n omitted: ...]`` 是「这张图这轮没给」的既成事实（N5 状态行就是权威
+    记录）。若只把 ``attached`` 当已处理，下一次 ``before_model_call`` 还会在上下文
+    里命中同一路径 → 再补一条引用行、再读一次盘、再写一条 ``omitted``，每次 LLM
+    迭代重复一遍，上下文无界膨胀。``omitted: duplicate`` 同理是终态（同一路径已由
+    别的消息提供过像素）。
+
+    状态行与引用行按消息作用域配对（同一条消息里的 index→path）：压缩把老消息搬进
+    摘要后，新消息里的同号引用不会被老状态行误判成「已处理」。
+    """
+
+    processed: set[str] = set()
+    for message in messages:
+        if not is_user_authored_message(message):
+            # 引用行只认 user 消息：tool result / assistant 文本里的同格式行不参与
+            # 状态配对，否则被读到的文件内容可以伪造成「已处理」改变图片分发决策。
+            continue
+        text = _content_to_query_text(_message_content(message))
+        if not text:
+            continue
+        states = _message_image_states(message)
+        if not states:
+            continue
+        refs = {
+            int(ref.get("index", -1)): str(ref.get("path") or "")
+            for ref in parse_image_references(text)
+        }
+        for index in states:
+            path = refs.get(index)
+            if path:
+                processed.add(normalize_image_path(path))
+    return processed
+
+
+def ensure_manifest_images_referenced(
+    messages: list[Any],
+    image_files: list[dict[str, Any]] | None,
+    *,
+    max_images: int = 4,
+) -> int:
+    """成员侧确定性分发：清单里的图在上下文任意位置被提到时，补成引用行。
+
+    为什么需要：team leader 常把图片路径只写进任务看板（tool result，不物化）或只在
+    消息里留 ``[image #...] path=...`` 占位符；成员侧注入只认 user 消息里的真实引用行。
+    这里扫描**全部消息文本**（含 tool result——只用于判断"提到了哪张图"，不把 tool
+    result 内容当引用行来源），命中本轮上传清单的文件名 / 完整路径后，把对应引用行追加
+    到最近一条 user 消息末尾，交给 ``inject_image_content_from_references`` 统一物化。
+    提及判定走 ``normalized_text_mentions_image``（分隔符 / 大小写归一 + 边界对齐）：
+    ``1.png`` 不会被 ``11.png`` / ``data.png`` 误命中，Windows 反斜杠路径形态也能命中。
+    每条消息的文本只归一一次再对清单图复用——本函数每次模型调用都跑，逐图重复 lower
+    全量消息（含 60k 级 tool result）会抵消「不做全量扫描」的优化。
+
+    幂等：已有 ``attached`` / ``omitted`` 状态行（含 ``omitted: duplicate``）的路径是
+    终态，不重复补；``max_images`` 限单次补几张。返回本次补了几张。
+    """
+
+    files = [_normalize_image_file(item) for item in (image_files or [])]
+    files = [item for item in files if item]
+    if not files:
+        return 0
+    # 清单图全部已处理时直接返回：本函数在每次模型调用（before_model_call）都跑，
+    # 把「已处理」判定提到对全部消息的文本扫描之前，稳定状态下不再做小写全量匹配。
+    processed = _processed_image_paths(messages)
+    files = [
+        image
+        for image in files
+        if normalize_image_path(str(image.get("path") or "")) not in processed
+    ]
+    if not files:
+        return 0
+    used: set[int] = set()
+    mentioned: list[dict[str, Any]] = []
+    # 归一文本按「消息」缓存（不是按「图片」）：同一段 tool result 可能很长，逐图重复
+    # 替换反斜杠 + 小写会把本函数退化成 N 张图 × 全量文本的扫描。
+    normalized_texts: list[str] = []
+    for message in messages:
+        text = _content_to_query_text(_message_content(message))
+        if text:
+            normalized_texts.append(normalize_image_mention_text(text))
+            for ref in parse_image_references(text):
+                used.add(int(ref.get("index", 0)))
+        for index in _message_image_states(message):
+            used.add(int(index))
+    cap = max(0, int(max_images or 0))
+    for image in files:
+        if len(mentioned) >= cap:
+            break
+        path = str(image.get("path") or "").strip()
+        if not path:
+            continue
+        if any(
+            normalized_text_mentions_image(image, normalized_text)
+            for normalized_text in normalized_texts
+        ):
+            mentioned.append(image)
+    if not mentioned:
+        return 0
+    target = next(
+        (message for message in reversed(messages) if is_user_authored_message(message)),
+        None,
+    )
+    if target is None:
+        return 0
+    next_index = (max(used) + 1) if used else 1
+    lines = []
+    for image in mentioned:
+        lines.append(build_image_reference_line(image, next_index))
+        next_index += 1
+    _append_parts(target, [{"type": "text", "text": "\n" + "\n".join(lines)}])
+    logger.info(
+        "[ensure_manifest_images_referenced] referenced %d manifest image(s)",
+        len(mentioned),
+    )
+    return len(mentioned)
+
 
 
 def _collect_image_slots(messages: list[Any]) -> list[dict[str, Any]]:

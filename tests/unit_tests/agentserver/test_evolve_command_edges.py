@@ -703,7 +703,18 @@ async def test_team_stream_keeps_image_reference_for_non_vision_model(
         request
     )
     assert tenant_workspace_key == expected_workspace_key
-    assert captured["runtime_context"] == {
+    runtime_context = dict(captured["runtime_context"])
+    # 上传清单随请求传进 team_helpers：leader 的 rail 只能在成员侧读到它
+    # （adapter 的 self._instance 属性镜像到不了 team 成员）。
+    assert runtime_context.pop("image_files") == [
+        {
+            "type": "image",
+            "filename": "persisted.png",
+            "path": "agent/sessions/sess-team-image/uploads/persisted.png",
+            "mime_type": "image/png",
+        }
+    ]
+    assert runtime_context == {
         "config_base": tenant_config,
         "sessions_root": resolve_tenant_sessions_dir(
             tenant_workspace_key,
