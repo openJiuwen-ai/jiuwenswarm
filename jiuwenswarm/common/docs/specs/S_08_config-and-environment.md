@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -33,8 +33,10 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   WS连接建立时固定选择，HTTP请求进入时固定选择；本请求内配置变化不改变输出。
   实时和历史共用此上下文。既有版本消费者停用增强需先明确状态/连接切换，不能热降级。
 
-- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns)` 缓存（省 ~150ms/次）；
+- **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns, size)` 缓存（省 ~150ms/次）；
   `get_config()` 按 `(sid, aid)` ns + overlay 内容 hash 做 TTL + 版本号缓存。
+  合并结果只取决于两份 YAML，与环境变量无关：`clear_config_cache(service_id, agent_id)`
+  只清该 ns 的解析缓存，不清合并缓存；无参全量清理才连带清空合并缓存。
   **返回共享引用，消费方禁止原地修改**——要改走 `update_config` / `set_config`。
 - **N2 写回三保险**：portalocker + 原子替换（tmp + os.replace）+ ruamel round-trip
   （保注释保格式）。绕过 `set_config` 直写文件会与锁协议冲突。
@@ -124,7 +126,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **tip**：`(session_id, agent_id)` → 生效环境 dict（active ∪ staged，staged 胜）。
 - **overlay**：任务级密封 dict（ContextVar）；`effective_tip = tip ∪ overlay`（overlay
   键存在即覆盖，miss 即 unset）。
-- **config 缓存**：`(path, mtime_ns)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
+- **config 缓存**：`(path, mtime_ns, size)` → 合并 dict；`(sid, aid, overlay_hash)` → agent
   视图 + 版本号。
 - **HooksConfig**：`{events: [{event, matchers}]}`；match 失败静默跳过。
 

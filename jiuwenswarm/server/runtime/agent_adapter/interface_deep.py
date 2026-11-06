@@ -961,6 +961,27 @@ _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
 
+_RESOLVED_ARTIFACT_DIRS: dict[str, str] = {}
+
+
+def _resolve_artifact_dir(path: str) -> str:
+    """Resolve a workspace path once; deep research asks for it several times per turn.
+
+    Only absolute paths are cached: a relative path resolves against the process cwd.
+    """
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return str(expanded.resolve())
+    key = str(expanded)
+    resolved = _RESOLVED_ARTIFACT_DIRS.get(key)
+    if resolved is None:
+        resolved = str(expanded.resolve())
+        if len(_RESOLVED_ARTIFACT_DIRS) >= 256:
+            _RESOLVED_ARTIFACT_DIRS.clear()
+        _RESOLVED_ARTIFACT_DIRS[key] = resolved
+    return resolved
+
+
 class JiuWenSwarmDeepAdapter:
 
     # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
@@ -8031,11 +8052,11 @@ class JiuWenSwarmDeepAdapter:
             getattr(self, "_project_dir", None) or ""
         ).strip()
         if session_workspace:
-            return str(Path(session_workspace).expanduser().resolve())
-        workspace = Path(
-            getattr(self, "_workspace_dir", None) or get_agent_workspace_dir()
-        ).expanduser().resolve()
-        return str(workspace / "projects")
+            return _resolve_artifact_dir(session_workspace)
+        workspace = _resolve_artifact_dir(
+            str(getattr(self, "_workspace_dir", None) or get_agent_workspace_dir())
+        )
+        return str(Path(workspace) / "projects")
 
     async def refresh_skill_rails(self) -> None:
         """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
