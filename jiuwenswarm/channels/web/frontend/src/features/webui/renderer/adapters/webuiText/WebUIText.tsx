@@ -8,15 +8,18 @@ import { Typography, theme } from 'antd';
 import type { TextProps } from 'antd/es/typography/Text';
 import type { CSSProperties } from 'react';
 import type { WebUIAdapterProps } from '../../types.ts';
+import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
+import { useLocalizedText } from '../../useLocalizedText.ts';
 
 export function WebUIText({ node, appearance }: WebUIAdapterProps) {
   const p = node.props as Pick<
     TextProps,
     'type' | 'disabled' | 'mark' | 'code' | 'keyboard' | 'underline' | 'delete' | 'strong' | 'italic' | 'ellipsis'
   > & {
-    value?: string;
+    value?: LocalizedText;
     size?: 'small' | 'medium' | 'large' | 'sm' | 'md' | 'lg';
   };
+  const value = useLocalizedText(p.value) ?? '';
   const { token } = theme.useToken();
   const size = {
     sm: token.fontSizeSM,
@@ -46,7 +49,7 @@ export function WebUIText({ node, appearance }: WebUIAdapterProps) {
       style={style}
       data-testid="webui-text"
     >
-      {p.value ?? ''}
+      {value}
     </Typography.Text>
   );
 }

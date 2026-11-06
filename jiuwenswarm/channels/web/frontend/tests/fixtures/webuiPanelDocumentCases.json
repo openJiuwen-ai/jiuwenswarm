@@ -1,0 +1,349 @@
+[
+  {
+    "name": "url source",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "https://example.com",
+        "title": "Page"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "inline document",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "srcDoc": "<!doctype html><p>Usage</p>",
+        "title": "Details"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "localized document",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "srcDoc": {
+          "zh": "<p>用量</p>",
+          "en": "<p>Usage</p>"
+        },
+        "title": {
+          "zh": "用量详情",
+          "en": "Usage details"
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "both sources rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "srcDoc": "<p>Usage</p>",
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "missing source rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "blank source rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "srcDoc": " ",
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "incomplete locale rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "srcDoc": {
+          "zh": "<p>用量</p>"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "blank locale rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "srcDoc": {
+          "zh": "<p>用量</p>",
+          "en": " "
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "long title rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "srcDoc": "<p>Details</p>",
+        "title": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "data url rejected",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "data:text/html,details",
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "own instance reference",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Details",
+        "openPanel": "details"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "empty instance rejected",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Details",
+        "openPanel": ""
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "composite identity rejected",
+    "root": {
+      "component": "Button",
+      "props": {
+        "value": "Details",
+        "openPanel": "other|package|details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "minimum width 0",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": 0
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "minimum width 360",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": 360
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "minimum width 4096",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": 4096
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "minimum width 240.5",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": 240.5
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "minimum width -1",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": -1
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "minimum width 4097",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": 4097
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "minimum width '360px'",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": "360px"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "minimum width True",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "minimum width None",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "/page",
+        "title": "Page",
+        "minWidth": null
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "component visibility is not an Iframe property",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "title": "Details",
+        "srcDoc": "<p>Usage</p>",
+        "visibleWhen": {
+          "key": "visible",
+          "default": true
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized resource URLs",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/extension-assets/_agent/route/set/zh.html",
+          "en": "/extension-assets/_agent/route/set/en.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "localized URL missing language",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized URL unsafe translation",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html",
+          "en": "file:///tmp/page.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized URL empty translation",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html",
+          "en": " "
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "localized URL unknown language",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": {
+          "zh": "/zh.html",
+          "en": "/en.html",
+          "fr": "/fr.html"
+        },
+        "title": "Details"
+      }
+    },
+    "valid": false
+  }
+]

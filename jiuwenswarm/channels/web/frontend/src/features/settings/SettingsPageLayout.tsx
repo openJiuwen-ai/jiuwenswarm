@@ -2,10 +2,10 @@ import { useCallback, useMemo, useState, useSyncExternalStore, type HTMLAttribut
 import { Check, CircleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../components/ui';
-import { WebUIHost } from '../webui';
 import { SettingItemRenderer, SettingsConfirmDialog, SettingsSection } from './components';
 import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefinition } from './registry/types';
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
+import { usePluginSettings } from './registry/usePluginSettings';
 import { useSettingsServices } from './services/SettingsServicesProvider';
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from './services/settingsSaveFeedback';
 import { SettingsSourceProvider, SettingsSourceVisibility } from './services/SettingsSourceProvider';
@@ -99,7 +99,7 @@ function SettingsItem({
 }
 
 export function SettingsPageLayout({
-  definition,
+  definition: baseDefinition,
   initialModuleId,
   sidebar,
 }: {
@@ -108,6 +108,7 @@ export function SettingsPageLayout({
   sidebar?: SettingsSidebarControls;
 }) {
   const { t } = useTranslation();
+  const { definition, loadError, contributionErrors } = usePluginSettings(baseDefinition);
   const { saveQueue, unsavedChanges } = useSettingsServices();
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [pendingModuleId, setPendingModuleId] = useState<string | null>(null);
@@ -224,6 +225,16 @@ export function SettingsPageLayout({
                 </span>
               ) : null}
             </header>
+            {loadError && (
+              <p role="alert" data-testid="settings-plugin-load-error">
+                {t('webui.settingsLoadFailed')}
+              </p>
+            )}
+            {contributionErrors > 0 && (
+              <p role="alert" data-testid="settings-plugin-location-error">
+                {t('webui.settingsContributionError')}
+              </p>
+            )}
             <InlineSaveFeedbackContext.Provider value={registerInlineFeedback}>
               <SettingsSourceProvider source={active.module.source}>
                 <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
@@ -243,7 +254,6 @@ export function SettingsPageLayout({
                 </div>
               </SettingsSourceProvider>
             </InlineSaveFeedbackContext.Provider>
-            <WebUIHost slotId="application.settings" />
           </div>
         </main>
       )}

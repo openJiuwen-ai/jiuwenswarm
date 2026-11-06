@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import math
 from collections.abc import Mapping
 from dataclasses import replace
+import json
+import math
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext
 
@@ -40,16 +40,24 @@ from .views import (
     USER_INSTANCE,
     USER_LOGIN_ACTION,
     USER_SELECT_ACTION,
-    WEATHER_HIDE_ACTION,
-    WEATHER_SHOW_ACTION,
     build_view,
     signed_out_view,
+    task_function_view,
     user_menu_view,
     welcome_page,
 )
 from .workspace import apply_file_action, load_workspace
 
 EVENTS = ("ui.click", "ui.change", "ui.press_enter", "ui.search", "ui.clear", "ui.select")
+
+
+def _valid_tokens(value: object) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
+def _usage_key(session_id: str, request_id: str) -> str:
+    return json.dumps(["turn-usage.v2", session_id, request_id], separators=(",", ":"))
 
 
 class WorkbenchHandlers:
@@ -75,45 +83,33 @@ class WorkbenchHandlers:
         update = event.event_input
         if (not isinstance(update, ContextUsageUpdate) or ops is None
                 or ops.session_context is None or ops.session_context.session_id != update.session_id
-                or not update.request_id):
+                or not update.request_id
+                or not _valid_tokens(update.input_tokens) or not _valid_tokens(update.output_tokens)):
             return await next_handler(event)
         lock = self._locks.setdefault(update.session_id, asyncio.Lock())
         async with lock:
+            usage = {"input_tokens": update.input_tokens, "output_tokens": update.output_tokens}
+            if not await ops.store.set(_usage_key(update.session_id, update.request_id), usage):
+                raise RuntimeError("could not persist Workbench round usage")
             state = self._sessions.setdefault(update.session_id, SessionState())
-            total = update.total_tokens
-            if isinstance(total, (int, float)) and not isinstance(total, bool) and math.isfinite(total) and total >= 0:
-                state.turn(update.request_id).total_tokens = total
-                await ops.store.set(self._usage_key(update.session_id, update.request_id), {
-                    "session_id": update.session_id,
-                    "turn": {"request_id": update.request_id, "total_tokens": total},
-                })
-                slot = "conversation.session.content.after"
-                if (slot, update.request_id) in state.mounted:
-                    await self._render(ops, update.session_id, slot, update.request_id, state)
+            turn = state.turn(update.request_id)
+            turn.input_tokens = update.input_tokens
+            turn.output_tokens = update.output_tokens
+            slot = "conversation.session.content.after"
+            if (slot, update.request_id) in state.mounted:
+                await self._render(ops, update.session_id, slot, update.request_id, state)
         return await next_handler(event)
 
     @staticmethod
-    def _usage_key(session_id: str, request_id: str) -> str:
-        return "turn-usage:" + json.dumps([session_id, request_id], ensure_ascii=True)
-
-    @staticmethod
-    async def _load_usage(
-        ops: EventHandlerOps,
-        session_id: str,
-        request_id: str,
-        state: SessionState,
-    ) -> bool:
-        usage = await ops.store.get(WorkbenchHandlers._usage_key(session_id, request_id))
-        if not isinstance(usage, Mapping) or usage.get("session_id") != session_id:
-            return False
-        turn_usage = usage.get("turn")
-        if not isinstance(turn_usage, Mapping) or turn_usage.get("request_id") != request_id:
-            return False
-        total = turn_usage.get("total_tokens")
-        if not isinstance(total, (int, float)) or isinstance(total, bool) or not math.isfinite(total) or total < 0:
-            return False
-        state.turn(request_id).total_tokens = total
-        return True
+    async def _load_usage(ops: EventHandlerOps, session_id: str, request_id: str, state: SessionState) -> None:
+        usage = await ops.store.get(_usage_key(session_id, request_id))
+        if usage is not None:
+            if (not isinstance(usage, Mapping) or set(usage) != {"input_tokens", "output_tokens"}
+                    or not all(_valid_tokens(value) for value in usage.values())):
+                raise ValueError("invalid saved Workbench round usage")
+        turn = state.turn(request_id)
+        turn.input_tokens = usage["input_tokens"] if usage is not None else None
+        turn.output_tokens = usage["output_tokens"] if usage is not None else None
 
     async def on_event(
         self,
@@ -129,6 +125,8 @@ class WorkbenchHandlers:
             return await self._on_application_entry(request, ops, next_handler, event)
         if target.slot_id == "application.sidebar.footer":
             return await self._on_sidebar_footer(request, ops, next_handler, event)
+        if target.slot_id in ("task.function", "task.function.main"):
+            return await self._on_task_function(request, ops, next_handler, event)
         if target.package_id not in ("", PACKAGE_ID) or not target.session_id:
             return await next_handler(event)
         if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
@@ -144,7 +142,7 @@ class WorkbenchHandlers:
                     return UiActionOutput(accepted=False, status="invalid_instance")
                 failed_status = None
                 for instance in instances:
-                    if target.slot_id in TURN_SLOTS and state.turn(instance).total_tokens is None:
+                    if target.slot_id in TURN_SLOTS and state.turn(instance).input_tokens is None:
                         await self._load_usage(ops, target.session_id, instance, state)
                     if target.slot_id == "conversation.panel.right" and instance == INSTANCE:
                         await load_workspace(ops, state.workspace)
@@ -159,20 +157,6 @@ class WorkbenchHandlers:
             if target.slot_id == "conversation.panel.right" and target.instance_key != INSTANCE:
                 return UiActionOutput(accepted=False, status="invalid_instance")
             action = request.payload.get("action_id")
-            if action in (WEATHER_HIDE_ACTION, WEATHER_SHOW_ACTION):
-                if (target.slot_id != "conversation.input.above" or target.instance_key != INSTANCE
-                        or request.event_type != "ui.click"):
-                    return UiActionOutput(accepted=False, status="invalid")
-                state.weather_visible = action == WEATHER_SHOW_ACTION
-                targets = {("conversation.input.above", INSTANCE)}
-                if ("application.settings", INSTANCE) in state.mounted:
-                    targets.add(("application.settings", INSTANCE))
-                failed_status = None
-                for slot, instance in sorted(targets):
-                    output = await self._render(ops, target.session_id, slot, instance, state)
-                    if output is None or output.status != "delivered":
-                        failed_status = output.status if output else "unavailable"
-                return UiActionOutput(accepted=failed_status is None, status=failed_status or "rendered")
             if isinstance(action, str) and action.startswith("workbench.files."):
                 data = request.payload.get("data", {})
                 if (target.slot_id != "conversation.panel.right" or target.instance_key != INSTANCE
@@ -205,6 +189,38 @@ class WorkbenchHandlers:
             if failed_status:
                 return UiActionOutput(accepted=False, status=failed_status)
             return UiActionOutput(accepted=True, status="rendered")
+
+    async def _on_task_function(
+        self,
+        request: UiActionInput,
+        ops: EventHandlerOps | None,
+        next_handler: EventNext,
+        event: Event,
+    ) -> UiActionOutput:
+        """Render connection-scoped task navigation without creating session state."""
+        target = request.target
+        if target.package_id not in ("", PACKAGE_ID) or target.session_id:
+            return await next_handler(event)
+        if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
+            return await next_handler(event)
+        if ops is None:
+            return UiActionOutput(accepted=False, status="unavailable")
+        if request.event_type == "ui.ready":
+            if not self._instances(target):
+                return UiActionOutput(accepted=False, status="invalid_instance")
+            output = await ops.ui.render(UiRenderInput(
+                target=replace(target, package_id=PACKAGE_ID, instance_key=TASK_INSTANCE),
+                root=task_function_view(target.slot_id),
+            ))
+            delivered = output is not None and output.status == "delivered"
+            status = "rendered" if delivered else (output.status if output is not None else "unavailable")
+            return UiActionOutput(accepted=delivered, status=status)
+        if target.instance_key != TASK_INSTANCE:
+            return UiActionOutput(accepted=False, status="invalid_instance")
+        if (request.event_type == "ui.click" and target.slot_id == "task.function"
+                and request.payload.get("action_id") == "workbench.open"):
+            return UiActionOutput(accepted=True, status="selected")
+        return UiActionOutput(accepted=False, status="invalid")
 
     async def _on_application_entry(
         self,
@@ -322,9 +338,7 @@ class WorkbenchHandlers:
                 return "invalid"
             turn.result_visible = True
             return "updated"
-        if action == "workbench.option" and args.get("field") == "weather_visible" and type(data.get("checked")) is bool:
-            state.weather_visible = data["checked"]
-        elif action not in ("workbench.open", "workbench.refresh", QUICK_LAUNCH_ACTION):
+        if action not in ("workbench.open", "workbench.refresh", QUICK_LAUNCH_ACTION):
             return "invalid"
         state.last_result = f"已更新 / Updated · {state.operations + 1} · {state.summary()}"
         return "updated"

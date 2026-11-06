@@ -136,7 +136,20 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
     if request.mode not in (RenderMode.CLEAR, RenderMode.REPLACE) or not isinstance(request.mode, RenderMode):
         return _fail("invalid render mode")
     if request.mode is RenderMode.CLEAR:
+        if request.visible_when is not None:
+            return _fail("clear mode must not include visible_when")
         return _OK
+    binding = request.visible_when
+    if binding is not None:
+        if (not isinstance(binding, Mapping) or set(binding) != {"key", "default"}
+                or not isinstance(binding["key"], str) or not binding["key"].strip()
+                or type(binding["default"]) is not bool or not request.target.package_id):
+            return _fail("invalid visible_when preference binding")
+        try:
+            if len(binding["key"].encode("utf-8")) > 128:
+                return _fail("visible_when key exceeds 128 UTF-8 bytes")
+        except UnicodeError:
+            return _fail("invalid visible_when key Unicode")
     if request.root is None:
         return _fail("render tree is required for replace mode")
     report = validate_root(request.root)

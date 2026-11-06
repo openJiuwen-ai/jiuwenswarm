@@ -38,6 +38,7 @@ from jiuwenswarm.extensions_v2.webui.models import (
 )
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.transport import RenderTransport
+from jiuwenswarm.extensions_v2.webui.resources import WebUIResourceService
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class WebUIRuntime:
         self.transport = transport
         self.registry = registry or ActiveRenderRegistry()
         self._catalog = catalog or WebUICatalogService(lambda: ())
+        self.resources = WebUIResourceService(self._catalog)
         self._locate_workspace = workspace_locator
         self._ready_clients: dict[tuple[str, str], None] = {}
         self._connections: WeakValueDictionary[str, WebUIConnectionContext] = WeakValueDictionary()
@@ -78,7 +80,7 @@ class WebUIRuntime:
         target = bus or self.bus
         target.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
-            build_webui_ops_build_handler(target, WebUIEvent.RENDER.value, render=self.render),
+            build_webui_ops_build_handler(target, WebUIEvent.RENDER.value, render=self.render, resources=self.resources),
             {},
             HandlerLevel.BUILTIN,
         )
@@ -124,7 +126,8 @@ class WebUIRuntime:
 
         connection_id = request.target.connection_id or connection_id
         spec = slot_spec(request.target.slot_id)
-        if spec is not None and spec.scope is SlotScope.APPLICATION and connection_id and not request.target.connection_id:
+        if (spec is not None and request.target.resolved_scope == SlotScope.APPLICATION.value
+                and connection_id and not request.target.connection_id):
             request = replace(
                 request,
                 target=replace(request.target, scope=SlotScope.APPLICATION.value, connection_id=connection_id),
@@ -197,6 +200,7 @@ class WebUIRuntime:
         connection = self._connections.get(connection_id)
         if connection is not None:
             connection.closed = True
+        await self.resources.drop(connection_id=connection_id)
         self.registry.drop_connection(connection_id)
 
     async def drop_package(self, package_id: str) -> None:
@@ -212,6 +216,7 @@ class WebUIRuntime:
                 if not delivered:
                     raise RuntimeError(f"Could not clear package view: {instance.target.key}")
                 self.registry.drop_instance(instance.target)
+        await self.resources.drop(package_id=package_id)
 
     async def drop_session(self, session_id: str) -> None:
         """Remove all views of a session and notify the browser."""
@@ -219,6 +224,7 @@ class WebUIRuntime:
         for key in tuple(self._ready_clients):
             if key[1] == session_id:
                 self._ready_clients.pop(key, None)
+        await self.resources.drop(session_id=session_id)
         for instance in self.registry.drop_session(session_id):
             await self.transport.send_clear(clear_frame(instance, reason="session_closed"))
 
@@ -226,6 +232,7 @@ class WebUIRuntime:
         """Remove every active view."""
 
         self._ready_clients.clear()
+        await self.resources.shutdown()
         for connection in tuple(self._connections.values()):
             connection.closed = True
         for instance in self.registry.snapshot():

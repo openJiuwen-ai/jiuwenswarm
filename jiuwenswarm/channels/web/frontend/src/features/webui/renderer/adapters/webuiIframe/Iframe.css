@@ -16,21 +16,32 @@
   flex-shrink: 0;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 4px 12px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--color-border-default);
   background: var(--color-surface-card);
 }
 
-.webui-iframe__modes,
+.webui-iframe__source {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 20px;
+  user-select: text;
+}
+
 .webui-iframe__actions {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 4px;
 }
 
-.webui-iframe__mode,
 .webui-iframe__action {
   display: inline-flex;
   min-height: 28px;
@@ -48,14 +59,11 @@
   cursor: pointer;
 }
 
-.webui-iframe__mode:hover,
-.webui-iframe__action:hover,
-.webui-iframe__mode[aria-pressed='true'] {
+.webui-iframe__action:hover {
   background: var(--color-action-secondary);
   color: var(--color-text-primary);
 }
 
-.webui-iframe__mode:focus-visible,
 .webui-iframe__action:focus-visible {
   outline: 2px solid var(--color-text-primary);
   outline-offset: -2px;
@@ -96,10 +104,6 @@
   min-width: 0;
   min-height: 0;
   border: 0;
-}
-
-.webui-iframe__viewport[data-variant='desktop'] > .webui-iframe__frame {
-  min-width: 1280px;
 }
 
 .webui-iframe__notice {

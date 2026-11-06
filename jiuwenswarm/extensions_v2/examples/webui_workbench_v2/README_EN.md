@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-`webui.workbench-v2` demonstrates 14 registered WebUI slots (15 contributions in total, with two instances in the right panel), covering catalog components such as `Avatar`, `Card`, `Dropdown`, `FileTree`, `FilePreview`, `Panel`, `Iframe`, `Switch`, `Button`, `Tag`, `Box`, and `Text`. The sidebar main page and task inspection main page use `Iframe` roots, while the right panel provides both a workspace files tab (`Panel` root combining `FileTree` and `FilePreview`) and a web preview tab (`Iframe` root). The plugin stores session state and platform file results, then publishes complete render trees. File components handle expansion, selection, and status messages locally. The demo calls no model or external business API.
+`webui.workbench-v2` demonstrates 12 registered WebUI slots (13 contributions in total, with two instances in the right panel), covering catalog components such as `Avatar`, `Card`, `Dropdown`, `FileTree`, `FilePreview`, `Panel`, `Iframe`, `Button`, `Tag`, `Box`, and `Text`. The sidebar main page and task inspection main page use `Iframe` roots, while the right panel provides both a workspace files tab (`Panel` root combining `FileTree` and `FilePreview`) and a web preview tab (`Iframe` root). The plugin stores session state and platform file results, then publishes complete render trees. File components handle expansion, selection, and status messages locally. The demo calls no model or external business API.
 
 ## Install and activate
 
@@ -15,7 +15,7 @@ Place the generated ZIP where the AgentServer machine can read it, then run thes
 /extension query webui.workbench-v2
 ```
 
-If an older package with the same ID is active, run `/extension uninstall webui.workbench-v2` first, then install the new ZIP and query it. Successful installation activates the package immediately. Startup loads installed copies and does not scan `examples/` in the source tree. Management commands work in a new empty conversation, session-scoped rendering requires a real session; application-scope slots (`application.entry`, `application.sidebar.footer`) do not.
+If an older package with the same ID is active, run `/extension uninstall webui.workbench-v2` first, then install the new ZIP and query it. Successful installation activates the package immediately. Startup loads installed copies and does not scan `examples/` in the source tree. Management commands work in a new empty conversation, session-scoped rendering requires a real session; application-scope slots (`application.entry`, `application.sidebar.footer`, `task.function`, `task.function.main`) do not.
 
 After installation, open an existing real conversation and refresh or re-enter it so the Host sends `ui.ready`. The first ready builds the demo trees; later ready events restore the active extension's state. Ready for the file instance reads the root directory again and clears the preview; ready for the webpage instance republishes its Iframe.
 
@@ -26,9 +26,7 @@ After installation, open an existing real conversation and refresh or re-enter i
 | `application.entry` | Welcome card and Avatar on first visit; Get started closes it. Accepted ready stores a visit marker, so refresh skips mounting |
 | `application.sidebar.footer` | User menu at the bottom of the icon rail (`Avatar` + `Dropdown`, instance `user-menu`): application scope, single capacity |
 | `application.menu` → `application.menu.main` | Click "交互工作台 / Workbench" in the sidebar to open the main page (`Iframe` root); both use instance `workbench` |
-| `task.function` → `task.function.main` | Click "任务检查 / Inspect tasks" in the task area to open the task page (`Iframe` root); both use `task-inspector` |
-| `application.settings` | "天气详情 / Weather details" switch in the settings content area, scoped to the current conversation |
-| `conversation.input.above` | Token Weather demo with a hide/show button on the right, arranged horizontally in a `Box` with wrapping on narrow screens; the host provides a muted rounded strip above the activity panel in team mode |
+| `task.function` → `task.function.main` | Click "Inspect tasks" in the task area to open the task page (`Iframe` root); labels follow the interface language, and both use application-scoped `task-inspector`, including in an empty conversation. Visiting a chat hides the page; returning to the entry reuses its iframe |
 | `conversation.input.below` | Four quick actions for weekly reports, bug fixes, presentations, and idle tasks, using `file-text`, `wrench`, `presentation`, and `clock` icons respectively |
 | `conversation.panel.right` | "Workspace files" (`Panel` root, instance `workbench`) and "Web preview" (`Iframe` root, instance `iframe-preview`) tabs, mutually exclusive with native content |
 | `conversation.session.content.after` | Real token usage for a completed assistant round, using the ghost Button style and database icon without a click action; round menu actions add a result row |
@@ -40,23 +38,28 @@ Normal buttons use `size="md"`: 32px height, 14px text, 16px horizontal padding,
 8px corners, and no default shadow. The host theme owns these metrics; the plugin only selects size.
 The four quick actions below the input use this same normal size.
 
-Turn slots use the actual `requestId` as `instance_key`. Usage appears as a label such as `用量：22.8M tokens`,
+Turn slots use the actual `requestId` as `instance_key`. Usage appears as a localized label such as `Input 22.9K · Output 82`,
 using `Button(type="text", size="md", icon="database")` without a `ui.click` binding, for display only.
-The total comes from `total_tokens` on the `context.usage.updated` notification.
-It is the provider's round total, not context occupancy or a cumulative bill.
-`ops.session.usage()` reports context-window information and no longer exposes a round `turn` field.
+The two counts come directly from `input_tokens` and `output_tokens` in the same `context.usage.updated` notification.
+They represent the provider's input and output for that round.
+The backend plugin uses the existing `ops.store` to persist both values in one `turn-usage.v2` record, isolated by session and requestId.
+The Chinese label is `输入 22.9K · 输出 82`. Numbers follow the native context popover's decimal K convention, with one decimal place and no trailing zero.
+Repeated notifications replace the values without adding them. Reported zero is displayed as `Input 0 · Output 0`;
+missing observations show `Input not reported · Output not reported`. Legacy v1 totals are retained without treating totals or context occupancy as input/output counts or deriving the missing split.
 
-- Notifications replace the value for the same session and requestId and continue the handler chain.
-- The package stores round totals in its own store. Mounting, reloading and reactivation recover only the matching record.
-- Reported zero is displayed as `用量：0 tokens`. Missing notifications or records show "not reported"; input/output counts are not added to infer a total.
-- "Refresh round" reads the stored value and updates the filter summary and refresh count. "Round details" displays the requestId and saved summary. Other rounds and sessions remain independent.
+The first mount restores the matching round from the plugin's own store. Notifications received before mounting are saved too.
+"Refresh round" reads saved usage again, saves the current filter summary, and displays that round's refresh count.
+"Round details" displays its requestId and saved summary. Other rounds and sessions do not overwrite these values.
+Saved counts survive page refresh, plugin reload and service restart; uninstall deletes the package store under the platform's existing rules.
+Rounds never observed or saved before this fix remain "not reported". The plugin neither reads internal host history files nor adds a host query API.
+The runtime must support the existing `ops.store`; a failed write is not reported as saved.
 
 The round menu uses `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")` and keeps its muted background while open.
 A plugin-rendered `Button(value="👍", type="text")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.
 Opening the menu sends no business event. Selecting an item sends `ui.select` with action `workbench.turn.select` and data.key `refresh` or `details`.
 Standalone Button nodes also support icon-only mode (`icon="ellipsis", type="text"` without `value`; `aria-label` provides the accessible name and hover hint).
 
-The above-input view displays fixed demo values: `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06`, followed by secondary text `上下文充裕`. These values do not represent live usage. This view belongs to Workbench and does not require the separate `token_weather` plugin. Hiding details keeps the `Token 天气` label and a show button. Visibility is scoped to the conversation, survives subsequent ready events, and resets when the plugin is activated again. The plugin uses `Box`, `Text`, and `Button` without a `Card`; the host slot supplies the background, border radius, and padding.
+Workbench no longer provides the above-input Token Weather demo or its Weather details setting. The independent [Token Weather plugin](../token_weather_glass/README_EN.md) provides the real usage bar and client display preference.
 
 ## Sidebar user entry
 
@@ -75,7 +78,7 @@ When the file instance receives `ui.ready`, it calls `ops.session.files` to read
 Drag the file tree's right divider to resize it, or focus the divider and use the left/right arrow keys. Directory and preview updates retain the scroll position and width. Clearing the instance or disconnecting resets them; they are not persisted to storage.
 
 The webpage instance uses an `Iframe` root, which is only permitted at the root of slots that declare it (`conversation.panel.right`, `application.menu.main`, `task.function.main`). It cannot be nested inside `Panel`, `Box`, or other components, and accepts no children, events, or srcdoc. The host pins `sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`.
-The right-side Web preview loads `https://httpbin.org/forms/post` for manual checks of loading, text input, options and form submission. Its response declares neither `X-Frame-Options` nor a restrictive `frame-ancestors`, making it suitable for iframe integration checks; network availability still depends on the target site.
+The right-side Web preview loads `https://www.weather.com.cn/` and declares `Iframe.minWidth: 1280` for the desktop webpage. The host supplies horizontal scrolling in narrower panels; resizing the panel changes layout without reloading the page. Its title follows the host language. Network availability and embedding restrictions still depend on the target site.
 Ordinary clicks, input and navigation inside the iframe do not require same-origin access. The loading notice does not intercept pointer events. Relative pages also receive an opaque origin, so pages depending on storage or same-origin requests may be incompatible; do not add `allow-same-origin` as a workaround. See [F_08](../../docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互) for the security decision.
 
 ## Reload and uninstall
@@ -98,7 +101,7 @@ Reload reads the installed copy, not the original ZIP. After editing repository 
 
 Manifest `schemaVersion: 1`, `ui.apiVersion: 1`, and frame `schema_version: 1` describe separate formats. This package uses declared component events such as `events['ui.click']`. Business arguments come from the declared action's `args`; control values come from normalized event `data`. A dispatch response is a receipt, never a replacement tree. See [F_08](../../docs/features/F_08_frontend-render.md) for the shared version and validation strategy.
 
-`application.entry` and `application.sidebar.footer` use application identity from the current Web connection, without `session_id`; all other slots require a real session. `application.menu`, `task.function` and `application.settings` do not mount in a new empty conversation. The right panel uses two stable instances with isolated events and updates; other single slots select the latest update. `message.assistant.meta` is outside this package's targets.
+`application.entry`, `application.sidebar.footer`, `task.function` and `task.function.main` use application identity from the current Web connection, without `session_id`; all other slots require a real session. Task navigation and its page mount in an empty conversation and retain their instances across session changes; clicking the task entry does not read or write session state. `application.menu` and its main page do not mount in a new empty conversation. The right panel uses two stable instances with isolated events and updates; other single slots select the latest update. `message.assistant.meta` is outside this package's targets.
 
 ## Rebuild after editing sources
 

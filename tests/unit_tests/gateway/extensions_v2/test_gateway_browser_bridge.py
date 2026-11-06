@@ -248,12 +248,14 @@ async def test_http_default_forward_keeps_the_native_route(tmp_path, mode):
             response = await client.get("/business")
         assert response.status_code == 200
         assert response.json() == {"source": "native"}
+        assert "access-control-allow-origin" not in response.headers
     finally:
         await runtime.shutdown()
 
 
 @pytest.mark.parametrize("route", ["deny", "consume"])
-async def test_http_keeps_plugin_denial_and_consumption(tmp_path, route):
+@pytest.mark.parametrize("path", ["/business", "/extension-assets/test.browser-controls/1/page.js"])
+async def test_http_keeps_plugin_denial_and_consumption(tmp_path, route, path):
     async def policy(event, ops, next_handler):
         return GatewayRequestOutput(
             handled=True, route=route, response={"source": "policy"},
@@ -272,9 +274,40 @@ async def test_http_keeps_plugin_denial_and_consumption(tmp_path, route):
             return {}
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/business")
+            response = await client.get(path, headers={"Origin": "null"})
         assert response.status_code == (403 if route == "deny" else 200)
         assert response.json() == ({"code": "POLICY_DENIED"} if route == "deny" else {"source": "policy"})
         assert native_calls == []
+        assert "access-control-allow-origin" not in response.headers
     finally:
         await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize("source", ["active", "missing-runtime", "missing-asset", "inactive-package"])
+async def test_package_asset_cors_is_scoped_to_file_responses(tmp_path, method, source):
+    asset = tmp_path / "module.js"
+    asset.write_text("export const value = 1;", encoding="utf-8")
+
+    def asset_file(package_id, generation, path):
+        assert (package_id, generation, path) == (PACKAGE, "1", "module.js")
+        if source == "missing-asset":
+            raise ValueError("missing asset")
+        if source == "inactive-package":
+            raise StopIteration
+        return asset
+
+    runtime = SimpleNamespace(browser=SimpleNamespace(enabled=False, asset_file=asset_file))
+    app = FastAPI()
+    attach_browser_routes(app, lambda: None if source == "missing-runtime" else runtime)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.request(method, f"/extension-assets/{PACKAGE}/1/module.js", headers={"Origin": "null"})
+    assert response.status_code == (200 if source == "active" else 404)
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in response.headers
+    if method == "HEAD":
+        assert response.content == b""
+    if source == "active":
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["x-content-type-options"] == "nosniff"

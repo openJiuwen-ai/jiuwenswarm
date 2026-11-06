@@ -18,12 +18,14 @@
 | 项 | 内容 |
 | --- | --- |
 | 事件名 | `ui.render` |
-| 输入 | `UiRenderInput(target, root=None, mode=RenderMode.REPLACE)` |
+| 输入 | `UiRenderInput(target, root=None, mode=RenderMode.REPLACE, *, visible_when=None)` |
 | 输出 | `UiRenderOutput(status, revision=0)` |
 | CORE Handler | `webui/core_handlers/render_core.py::build_render_core_handler(transport, registry)` |
 | 匹配 | `match_pattern_subset` |
 
 `status` 取 `delivered`、`rejected`、`delivery_failed`。`revision` 是本次提交后的实例版本；被拒绝时为 0 或上次版本。
+
+可选实例显示条件 visible_when 的形态、快照和替换语义统一遵循 [S_17 §2.4](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md#24-渲染实例的显示条件)，由客户端槽位宿主管理外层容器，不属于组件 props。
 
 ## 2. Ops 契约
 
@@ -75,7 +77,7 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 
 | 事件 | 载荷 |
 | --- | --- |
-| `webui.render` | `target`、`revision`、`mode`、`root`、`schema_version=1` |
+| `webui.render` | `target`、`revision`、`mode`、`root`、`schema_version=1`、可选 `visible_when` |
 | `webui.render.clear` | `target`、`revision`、可选 `reason` |
 | `webui.render.error` | `target`、`revision`、`code`、`message` |
 
@@ -124,6 +126,8 @@ Component props follow S_17, including host-specific capabilities. Gateway keeps
 
 ## 9. 验证索引
 
+Text.value、Button.value 和 Switch.ariaLabel 的多语言文本值与前端组件 C-33 对齐：接受普通字符串或完整 zh/en 字符串对象，逐字段文本预算不变；缺失语言、额外字段或非法类型拒绝。语言由前端当前界面语言决定，Gateway 不替换插件文案或在服务端保存客户端语言。
+
 | 契约 | 用例 |
 | --- | --- |
 | `ops.ui.render` 下发与 revision | `test_gateway_ui_render.py` |
@@ -131,3 +135,9 @@ Component props follow S_17, including host-specific capabilities. Gateway keeps
 | clear 模式 | `test_gateway_ui_render.py` |
 | 目标连接隔离与断线清理 | `test_gateway_ui_render.py` |
 | 组件目录覆盖 `Form` / `Form.Item` / `Button.form` / `Dropdown` | `test_gateway_ui_render.py` |
+
+## 内联文档与面板打开
+
+Iframe 必须且只能提供 src 或 srcDoc；srcDoc 和 title 支持完整 zh/en 文本值，每个标题仍限 200 UTF-8 字节、每种语言的文档限 16 KiB。固定沙箱不变。Button.openPanel 只表达同包同会话右侧目标，ui.click 明确成功后由当前客户端导航，普通数据帧不抢焦点、不重开已关闭页签。属性主责见 AgentServer 文档目录的 S_17_webui-component-props。
+
+Iframe accepts exactly one of src or srcDoc. Localized documents and titles retain the shared text limits and fixed sandbox. The plugin declares minWidth in pixels (default 0); the host supplies horizontal scrolling for narrower containers, with the same rule for URL and inline documents and no width mode selector. Button.openPanel opens a rendered same-package, same-session panel only after an accepted explicit click. Render updates do not navigate or affect other clients.

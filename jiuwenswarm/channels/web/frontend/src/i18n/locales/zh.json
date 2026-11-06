@@ -83,7 +83,9 @@
     "entryLabel": "应用界面",
     "menuLabel": "打开操作菜单",
     "clientOperationError": "无法执行浏览器操作。",
-    "clientConfigurationError": "无法启用浏览器扩展能力。"
+    "clientConfigurationError": "无法启用浏览器扩展能力。",
+    "settingsLoadFailed": "无法加载插件设置，请重新进入设置页面。",
+    "settingsContributionError": "部分插件设置无法显示，请检查插件的设置位置配置。"
   },
   "nav": {
     "chat": "对话",
@@ -530,6 +532,7 @@
       "hideValue": "隐藏明文"
     },
     "general": {
+      "display": "显示设置",
       "preferences": "界面与连接",
       "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",
@@ -5336,14 +5339,11 @@
     "waiting": "处理中..."
   },
   "webuiIframe": {
+    "pluginPage": "插件页面",
     "loading": "页面加载中...",
     "slow": "页面加载较慢，可重新加载或在新标签页打开",
     "error": "页面加载失败",
     "inactive": "页面已停止，恢复后将重新加载",
-    "displayMode": "页面显示模式",
-    "fit": "适应面板",
-    "desktop": "桌面宽度",
-    "desktopHint": "使用至少 1280px 的网页宽度，可横向滚动",
     "reload": "重新加载页面",
     "openSource": "在新标签页打开原始地址"
   },

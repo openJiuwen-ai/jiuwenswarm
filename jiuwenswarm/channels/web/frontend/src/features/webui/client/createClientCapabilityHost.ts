@@ -1,3 +1,4 @@
+import { isPluginResourceURL } from '../resources/urls.ts';
 import { isRecord } from '../protocol/utils.ts';
 import type { ClientContextChange, ClientDeclarationSnapshot, ClientOperation, RequestBinding } from './types.ts';
 
@@ -61,8 +62,6 @@ export interface ClientCapabilityHostOptions {
   reloadPage?: () => void;
 }
 
-export type PackageAssetState = { status: 'active'; version: string } | { status: 'inactive' };
-
 export function createClientCapabilityHost(options: ClientCapabilityHostOptions) {
   let declarations: ClientDeclarationSnapshot | null = null;
   let epoch = 0;
@@ -125,25 +124,6 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     const url = new URL(input instanceof Request ? input.url : String(input), base);
     return ['http:', 'https:'].includes(url.protocol) && url.origin === base.origin
       && (base.pathname === '/' || url.pathname === base.pathname || url.pathname.startsWith(base.pathname.replace(/\/$/, '') + '/'));
-  }
-  function getPackageAssetState(input: string | URL | Request): PackageAssetState | null {
-    if (!declarations && !invalidConfiguration && !awaitingDeclarations) return null;
-    if (!isGateway(input)) return null;
-    const base = new URL(options.gatewayUrl());
-    const url = new URL(input instanceof Request ? input.url : String(input), base);
-    const prefix = base.pathname.replace(/\/$/, '') + '/extension-assets/';
-    if (!url.pathname.startsWith(prefix)) return null;
-    const parts = url.pathname.slice(prefix.length).split('/');
-    if (!declarations || parts.length < 3 || !parts.slice(2).join('/')) return { status: 'inactive' };
-    let packageId: string;
-    let generation: string;
-    try {
-      packageId = decodeURIComponent(parts[0]);
-      generation = decodeURIComponent(parts[1]);
-    } catch { return { status: 'inactive' }; }
-    const pkg = declarations.packages.find((item) => item.packageId === packageId && item.activationGeneration === generation);
-    return pkg ? { status: 'active', version: JSON.stringify([declarations.gatewayInstanceId, packageId, generation]) }
-      : { status: 'inactive' };
   }
   function configure(input: unknown): void {
     try {
@@ -250,10 +230,11 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     return Object.keys(requestContext).length > 0 ? { ...message, request_context: requestContext } : message;
   }
   function bindHTTP(input: string | URL | Request, headers?: HeadersInit): Headers {
+    const result = new Headers(headers);
+    if (isPluginResourceURL(input, options.gatewayUrl())) return result;
     requireValue(!awaitingDeclarations, 'CLIENT_DECLARATIONS_REQUIRED');
     requireValue(!invalidConfiguration, 'CONFIGURATION_ERROR');
-    const result = new Headers(headers);
-    if (!declarations || !isGateway(input) || getPackageAssetState(input)) return result;
+    if (!declarations || !isGateway(input)) return result;
     const current = capture();
     allBindings().forEach(({ binding }, index) => {
       if (binding.type !== 'http' || binding.target.location !== 'header' || current[index] === undefined) return;
@@ -263,7 +244,7 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     return result;
   }
   return {
-    configure, acceptOperation, bindWebSocket, bindHTTP, isGateway, getPackageAssetState,
+    configure, acceptOperation, bindWebSocket, bindHTTP, isGateway, getGatewayUrl: options.gatewayUrl,
     refresh: () => { if (declarations) capture(); },
     getEpoch: () => epoch,
     isChanging: () => changing,
@@ -280,14 +261,12 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     getError: () => errorCode,
     clearError: () => reportError(null),
     acceptsFrame: (input: unknown) => {
-      if (awaitingDeclarations || invalidConfiguration) return false;
-      if (!declarations) return true;
       if (!plain(input) || !plain(input.target)) return false;
       const packageId = input.target.package_id;
-      const pkg = declarations.packages.find((item) => item.packageId === packageId);
-      // Capability declarations cover participating packages, not the ordinary WebUI catalog.
-      if (!pkg) return !Object.prototype.hasOwnProperty.call(input, 'activation_generation');
-      return input.activation_generation === pkg.activationGeneration;
+      const pkg = declarations?.packages.find((item) => item.packageId === packageId);
+      if (!Object.prototype.hasOwnProperty.call(input, 'activation_generation')) return !pkg;
+      return !awaitingDeclarations && !invalidConfiguration && !!pkg
+        && input.activation_generation === pkg.activationGeneration;
     },
     invalidate: () => { declarations = null; invalidConfiguration = false; awaitingDeclarations = false; signature = ''; advance(); },
     suspendConnection: () => {

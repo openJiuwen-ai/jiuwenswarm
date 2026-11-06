@@ -79,6 +79,7 @@ def build_render_core_handler(
                 revision=claim.instance.revision + 1,
                 mode=request.mode,
                 root=request.root,
+                visible_when=request.visible_when,
             )
             report = frame_payload_bytes(preview)
             if not report.ok:

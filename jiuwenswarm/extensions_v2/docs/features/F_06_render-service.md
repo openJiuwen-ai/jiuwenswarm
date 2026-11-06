@@ -61,9 +61,9 @@ flowchart LR
 | --- | --- | --- |
 | `RenderTarget` | `session_id`、`slot_id`、`package_id`、`instance_key`、`scope`、`connection_id` | 按槽位范围确定实例归属，字段与实例键见下文 |
 | `RenderNode` | `component`、`props`、`children`、`events` | 渲染树节点，组件名区分大小写 |
-| `UiRenderInput` | `target`、`root`、`mode` | `mode` 为 `replace` 或 `clear` |
+| `UiRenderInput` | `target`、`root`、`mode`、可选 `visible_when` | 显示条件与 root 同级，规则见 [S_17 §2.4](../specs/S_17_webui-component-props.md#24-渲染实例的显示条件) |
 | `UiRenderOutput` | `status`、`revision` | `delivered`、`rejected` 或 `delivery_failed` |
-| `RenderFrame` | `target`、`revision`、`mode`、`root`、`schema_version` | 下行 `webui.render` 载荷 |
+| `RenderFrame` | `target`、`revision`、`mode`、`root`、`schema_version`、可选 `visible_when` | 下行 `webui.render` 载荷，实例显示条件参与快照和回滚 |
 | `ClearFrame` | `target`、`revision`、`reason` | 独立 `webui.render.clear` 载荷 |
 
 `revision` 按实例递增，不跨实例比较；`instance_key` 由插件在请求中给出，用于同一包在同一槽位创建多个实例。

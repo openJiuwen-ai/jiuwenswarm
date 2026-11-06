@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-04。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
+最近修订：2026-11-05。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
 
 ## 范围与适用条件
 
@@ -12,7 +12,8 @@
 Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon。字段、默认值、必填与事件数据统一遵循
 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
-槽位目录包含应用范围的 `application.entry` 与 `application.sidebar.footer`，其余 13 个槽位为会话范围。
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`；
+其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
 
 ## 表单、菜单与应用插槽
 
@@ -100,8 +101,8 @@ Box provides bounded dimensions, padding, background-image fitting and explicit 
 - C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
   重新激活或 src 改变后重新加载，不保留旧文档。
   相对路径与 HTTP(S) 来源均使用不含 `allow-same-origin` 的固定 sandbox；加载提示不覆盖整页、不拦截鼠标。
-  宿主提供本地适应面板/桌面宽度切换；桌面模式的最小视口为 1280px，溢出由外层横向滚动容器承载，
-  切换模式不重建文档。重新加载操作重建当前 src；新标签页入口打开配置的 src 并隔离 opener。
+  插件通过 minWidth 声明最小视口宽度，默认为 0；容器较窄时由外层横向滚动容器承载，
+  不再提供宽度模式切换，容器尺寸变化不重建文档；replace 仍整树重建。重新加载操作重建当前文档；新标签页入口打开配置的 src 并隔离 opener。
   加载 15 秒后显示非阻塞慢加载提示，继续接受 load；超时不等同加载失败，load 不证明远端业务可用。
 - C-19：Input 只为已绑定的 ui.change 派发 `{value, isComposing}`；组合输入结束发送一次提交值，
   其后浏览器重复的同值提交不再派发。未绑定 change 时允许本地编辑；disabled、readOnly 和断连时不派发。
@@ -151,6 +152,20 @@ Box provides bounded dimensions, padding, background-image fitting and explicit 
 - C-31：Icon 是叶子组件，只接受图标白名单中的 `name`（含 `refresh` 兼容别名），不声明子节点与事件。
   `size` 可选 small/medium/large，兼容 sm/md/lg，缺省 medium；省略 `aria-label` 时按装饰图标渲染 `aria-hidden`，
   提供时必须非空并作为可访问名称。宿主不接受白名单外的名称、任意 SVG、className 或 style。
+- C-32：Box 复用宿主公共组件和主题样式，不接受 background、style 或 className 等自定义背景与样式属性。
+  输入框上方槽位统一沿用宿主既有外观；Box.padding 的 none/sm/md/lg 布局档位保留。
+- C-33：Switch.preference 与实例级 visible_when 使用 `{key, default}` 布尔偏好绑定；key 为非空、UTF-8
+  最长 128 字节的字符串，default 必须为布尔值。可信 target.packageId 与 key 共同隔离当前客户端持久偏好。
+  Switch.preference 与 checked/defaultChecked 互斥，关闭时 Switch 本身始终保留。
+  实例级 visible_when 与 root 同级，由槽位宿主控制容器或 Tab，内部组件不参与；规则见主责 S_17 §2.4。
+  Box 不接受 visibleWhen，visibleFrom 的响应式断点行为保持不变。
+  成功持久化后更新同客户端所有挂载及同源标签页；失败保留旧值并显示本地化保存错误。
+  未声明绑定时保持原有行为。此存储只用于客户端界面偏好，不提供账号同步或敏感配置存储。
+- C-34：Text.value、Button.value / aria-label、Switch.ariaLabel 接受普通字符串或 `{zh: string, en: string}`。
+  多语言对象两项均必填，不接受额外字段或非字符串值，每项沿用 16 KiB 文本预算。
+  宿主按当前界面语言选择：zh 及其地区变体使用 zh，其余沿用宿主的 en 分支；普通字符串保持逐字显示。
+  语言切换即时更新文字，不重建实例、不派发业务事件，不改变开关状态或包级偏好。
+  纯图标 Button 的两种语言标签均须非空；无障碍标签和显示标签使用同一选定语言。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
@@ -164,8 +179,17 @@ Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍�
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
 隐藏内容也计入 8 层、512 节点预算，Panel/Iframe 不能嵌套为普通子节点。
-`application.entry` 与 `application.sidebar.footer` 使用 application 范围，以当前 Web 连接为身份，不要求会话；其他槽位使用 session 范围。
+`application.entry`、`application.sidebar.footer` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
+`application.settings` 默认 session，允许按声明显式使用 application；两种范围的实例和挂载所有权隔离，
+清理会话不清理应用范围设置。其他槽位使用 session 范围。设置菜单、分类、位置及实例准入见
+[设置 location 规约](../../../../../../../../extensions_v2/docs/specs/S_18_settings-location.md)。
 
 验证入口为 `npm run test:webui-contracts`、`npm run test:webui-protocol`、
 `npm run test:webui-runtime`、`npm run test:webui-events`、`npm run test:webui-renderer`
 和 `npm run test:webui-components`。
+
+## 显式打开右侧面板
+
+Iframe.src、srcDoc、title 的完整多语言规则和 Button.openPanel 字段以 [S_17](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) 为准。Button 继续使用 ui.click；明确成功回执后，客户端依据可信源实例派生同包、同会话右侧目标。失活源实例、未渲染目标和拒绝/未知回执不触发导航。后台 replace 不产生导航意图，关闭的插件 Tab 仅在用户显式再次打开时恢复。
+
+Inline iframe documents and their tab titles follow the host language. An accepted explicit button action opens only a live panel owned by the same plugin and session on the calling client. Ordinary render updates never select or reopen a tab.

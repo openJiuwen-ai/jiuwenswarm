@@ -1,0 +1,211 @@
+{
+  "catalog": {
+    "items": [
+      {
+        "package_id": "webui.token-weather-glass",
+        "id": "show-weather",
+        "kind": "item",
+        "location": {
+          "menu": "general",
+          "section": "display"
+        },
+        "title": {
+          "zh": "显示 TokenWeather",
+          "en": "Show TokenWeather"
+        },
+        "description": {
+          "zh": "在输入框上方显示真实用量，适用于当前客户端的所有会话。",
+          "en": "Show observed usage above the input in all conversations on this client."
+        },
+        "scope": "application",
+        "instance_key": "show-weather",
+        "presentation": "row"
+      },
+      {
+        "package_id": "webui.settings-example",
+        "id": "menu",
+        "kind": "menu",
+        "location": {
+          "after": "general"
+        },
+        "title": {
+          "zh": "扩展配置示例",
+          "en": "Extension example"
+        },
+        "icon": "settings"
+      },
+      {
+        "package_id": "webui.settings-example",
+        "id": "tools",
+        "kind": "section",
+        "location": {
+          "menu": "webui.settings-example::menu"
+        },
+        "title": {
+          "zh": "工具",
+          "en": "Tools"
+        }
+      },
+      {
+        "package_id": "webui.settings-example",
+        "id": "skills",
+        "kind": "section",
+        "location": {
+          "menu": "webui.settings-example::menu"
+        },
+        "title": {
+          "zh": "技能",
+          "en": "Skills"
+        }
+      },
+      {
+        "package_id": "webui.settings-example",
+        "id": "tool-enabled",
+        "kind": "item",
+        "location": {
+          "menu": "webui.settings-example::menu",
+          "section": "webui.settings-example::tools"
+        },
+        "title": {
+          "zh": "启用工具",
+          "en": "Enable tools"
+        },
+        "description": {
+          "zh": "插件声明的配置项，由宿主统一呈现。",
+          "en": "Plugin-declared control in the shared settings layout."
+        },
+        "scope": "application",
+        "instance_key": "tool-enabled",
+        "presentation": "row"
+      },
+      {
+        "package_id": "webui.settings-example",
+        "id": "skill-enabled",
+        "kind": "item",
+        "location": {
+          "menu": "webui.settings-example::menu",
+          "section": "webui.settings-example::skills"
+        },
+        "title": {
+          "zh": "启用技能",
+          "en": "Enable skills"
+        },
+        "scope": "application",
+        "instance_key": "skill-enabled",
+        "presentation": "row"
+      }
+    ],
+    "errors": {},
+    "revision": "b72f3370696b5da0817679aa5cefdb55475af45b5db9c61eb1d2e7e5ef246768-preview"
+  },
+  "widget": {
+    "component": "Box",
+    "props": {
+      "direction": "row",
+      "align": "center",
+      "justify": "between",
+      "gap": "sm",
+      "wrap": true
+    },
+    "children": [
+      {
+        "component": "Box",
+        "props": {
+          "direction": "row",
+          "align": "center",
+          "gap": "sm",
+          "wrap": true,
+          "flex": 1
+        },
+        "children": [
+          {
+            "component": "Text",
+            "props": {
+              "value": {
+                "zh": "☀ 晴朗",
+                "en": "☀ Clear"
+              },
+              "type": "success",
+              "strong": true,
+              "size": "sm"
+            }
+          },
+          {
+            "component": "Text",
+            "props": {
+              "value": {
+                "zh": "20.6% · 54K/256K Token",
+                "en": "20.6% · 54K/256K tokens"
+              },
+              "size": "sm"
+            }
+          },
+          {
+            "component": "Text",
+            "props": {
+              "value": "▂▃▃▄▅▆▇█▅▅▆▇",
+              "code": true,
+              "size": "sm"
+            }
+          },
+          {
+            "component": "Text",
+            "props": {
+              "value": {
+                "zh": "上轮上下文 +6K",
+                "en": "Last context change +6K"
+              },
+              "size": "sm",
+              "type": "secondary"
+            }
+          }
+        ]
+      },
+      {
+        "component": "Button",
+        "props": {
+          "value": {
+            "zh": "打开详情",
+            "en": "Open details"
+          },
+          "type": "text",
+          "size": "md",
+          "openPanel": "details"
+        },
+        "events": {
+          "ui.click": {
+            "id": "weather.details",
+            "args": {}
+          }
+        }
+      }
+    ]
+  },
+  "setting": {
+    "component": "Switch",
+    "props": {
+      "preference": {
+        "key": "visible",
+        "default": true
+      },
+      "ariaLabel": {
+        "zh": "显示 TokenWeather",
+        "en": "Show TokenWeather"
+      }
+    }
+  },
+  "details": {
+    "component": "Iframe",
+    "props": {
+      "title": {
+        "zh": "用量详情",
+        "en": "Usage details"
+      },
+      "srcDoc": {
+        "zh": "<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>用量详情</title><style>\n*{box-sizing:border-box}html{color-scheme:light dark}body{margin:0;background:Canvas;color:CanvasText;\nfont:13px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}main{max-width:860px;margin:auto;padding:28px 24px 36px}\nheader{padding-bottom:22px;border-bottom:1px solid GrayText}\n.brand{font-size:10px;letter-spacing:.16em;color:GrayText}h1{font-size:24px;letter-spacing:-.04em;font-weight:600;margin:7px 0 4px}\np{margin:0;color:GrayText;font-size:12px}dl{display:flex;flex-wrap:wrap;gap:18px 36px;margin:22px 0 0}dt{color:GrayText;font-size:11px}\ndd{margin:3px 0 0;font-size:16px;font-weight:500;font-variant-numeric:tabular-nums}\nsection{padding-top:26px}h2{font-size:14px;font-weight:600;margin:0 0 5px}.legend{display:flex;gap:14px;margin:14px 0 2px;font-size:11px}\n.legend span:before{content:'';display:inline-block;width:13px;border-top:2px solid currentColor;margin-right:5px;vertical-align:middle}\n.context,.total{color:#647ac7}.input{color:#4c9791}.output{color:#b37b9d}\nsvg{width:100%;height:auto;display:block;overflow:visible}.axis{fill:GrayText;font-size:10px}.grid{stroke:GrayText;opacity:.18}\n.line{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}.point{fill:currentColor}\n.empty{padding:36px 12px;text-align:center}.empty strong{display:block;font-size:14px;font-weight:500;margin-bottom:6px}\n.table-scroll{overflow:auto;margin-top:16px}table{border-collapse:collapse;width:100%;white-space:nowrap;font-size:12px;font-variant-numeric:tabular-nums}\nth{font-size:10px;font-weight:500;color:GrayText}th,td{text-align:right;padding:10px 8px;border-bottom:1px solid GrayText}\nth:first-child,td:first-child{text-align:left;padding-left:0}\nfooter{padding-top:24px;color:GrayText;font-size:11px}@media(max-width:420px){main{padding:20px 16px}dl{gap:14px 24px}h1{font-size:21px}}\n</style></head><body><main><header><div class=\"brand\">TOKEN WEATHER</div><h1>用量详情</h1><p>最近 12 个已观测轮次</p><dl><div><dt>当前上下文</dt><dd>54,000</dd></div><div><dt>上下文上限</dt><dd>262,144</dd></div><div><dt>窗口占用</dt><dd>21%</dd></div></dl></header><section><h2>上下文占用趋势</h2><p>每轮结束时的上下文占用，下降可能来自上下文压缩，不代表退还消耗。</p><svg viewBox=\"0 0 560 180\" role=\"img\" aria-label=\"上下文占用趋势\"><line class=\"grid\" x1=\"42\" y1=\"146\" x2=\"546\" y2=\"146\"/><line class=\"grid\" x1=\"42\" y1=\"22\" x2=\"546\" y2=\"22\"/><text class=\"axis\" x=\"38\" y=\"25\" text-anchor=\"end\">60000</text><text class=\"axis\" x=\"38\" y=\"149\" text-anchor=\"end\">0</text><polyline class=\"line context\" points=\"42.00,121.20 87.82,108.80 133.64,96.40 179.45,75.73 225.27,63.33 271.09,46.80 316.91,36.47 362.73,22.00 408.55,73.67 454.36,59.20 500.18,46.80 546.00,34.40\"/><circle class=\"point context\" cx=\"42.00\" cy=\"121.20\" r=\"3\"><title>第 1 轮 · 上下文 12,000</title></circle><circle class=\"point context\" cx=\"87.82\" cy=\"108.80\" r=\"3\"><title>第 2 轮 · 上下文 18,000</title></circle><circle class=\"point context\" cx=\"133.64\" cy=\"96.40\" r=\"3\"><title>第 3 轮 · 上下文 24,000</title></circle><circle class=\"point context\" cx=\"179.45\" cy=\"75.73\" r=\"3\"><title>第 4 轮 · 上下文 34,000</title></circle><circle class=\"point context\" cx=\"225.27\" cy=\"63.33\" r=\"3\"><title>第 5 轮 · 上下文 40,000</title></circle><circle class=\"point context\" cx=\"271.09\" cy=\"46.80\" r=\"3\"><title>第 6 轮 · 上下文 48,000</title></circle><circle class=\"point context\" cx=\"316.91\" cy=\"36.47\" r=\"3\"><title>第 7 轮 · 上下文 53,000</title></circle><circle class=\"point context\" cx=\"362.73\" cy=\"22.00\" r=\"3\"><title>第 8 轮 · 上下文 60,000</title></circle><circle class=\"point context\" cx=\"408.55\" cy=\"73.67\" r=\"3\"><title>第 9 轮 · 上下文 35,000</title></circle><circle class=\"point context\" cx=\"454.36\" cy=\"59.20\" r=\"3\"><title>第 10 轮 · 上下文 42,000</title></circle><circle class=\"point context\" cx=\"500.18\" cy=\"46.80\" r=\"3\"><title>第 11 轮 · 上下文 48,000</title></circle><circle class=\"point context\" cx=\"546.00\" cy=\"34.40\" r=\"3\"><title>第 12 轮 · 上下文 54,000</title></circle><text class=\"axis\" x=\"42\" y=\"169\" text-anchor=\"start\">第 1 轮</text><text class=\"axis\" x=\"546\" y=\"169\" text-anchor=\"end\">第 12 轮</text></svg></section><section><h2>逐轮 Token 消耗</h2><p>本轮模型调用的实际输入、输出与总 Token。缓存命中属于输入，不重复加入总量。</p><div class=\"legend\"><span class=\"total\">总量</span><span class=\"input\">输入</span><span class=\"output\">输出</span></div><svg viewBox=\"0 0 560 180\" role=\"img\" aria-label=\"逐轮 Token 消耗\"><line class=\"grid\" x1=\"42\" y1=\"146\" x2=\"546\" y2=\"146\"/><line class=\"grid\" x1=\"42\" y1=\"22\" x2=\"546\" y2=\"22\"/><text class=\"axis\" x=\"38\" y=\"25\" text-anchor=\"end\">22680</text><text class=\"axis\" x=\"38\" y=\"149\" text-anchor=\"end\">0</text><polyline class=\"line total\" points=\"42.00,98.98 87.82,91.98 133.64,84.98 179.45,77.99 225.27,70.99 271.09,63.99 316.91,56.99 362.73,49.99 408.55,42.99 454.36,36.00 500.18,29.00 546.00,22.00\"/><circle class=\"point total\" cx=\"42.00\" cy=\"98.98\" r=\"3\"><title>第 1 轮 · 总量 8,600</title></circle><circle class=\"point total\" cx=\"87.82\" cy=\"91.98\" r=\"3\"><title>第 2 轮 · 总量 9,880</title></circle><circle class=\"point total\" cx=\"133.64\" cy=\"84.98\" r=\"3\"><title>第 3 轮 · 总量 11,160</title></circle><circle class=\"point total\" cx=\"179.45\" cy=\"77.99\" r=\"3\"><title>第 4 轮 · 总量 12,440</title></circle><circle class=\"point total\" cx=\"225.27\" cy=\"70.99\" r=\"3\"><title>第 5 轮 · 总量 13,720</title></circle><circle class=\"point total\" cx=\"271.09\" cy=\"63.99\" r=\"3\"><title>第 6 轮 · 总量 15,000</title></circle><circle class=\"point total\" cx=\"316.91\" cy=\"56.99\" r=\"3\"><title>第 7 轮 · 总量 16,280</title></circle><circle class=\"point total\" cx=\"362.73\" cy=\"49.99\" r=\"3\"><title>第 8 轮 · 总量 17,560</title></circle><circle class=\"point total\" cx=\"408.55\" cy=\"42.99\" r=\"3\"><title>第 9 轮 · 总量 18,840</title></circle><circle class=\"point total\" cx=\"454.36\" cy=\"36.00\" r=\"3\"><title>第 10 轮 · 总量 20,120</title></circle><circle class=\"point total\" cx=\"500.18\" cy=\"29.00\" r=\"3\"><title>第 11 轮 · 总量 21,400</title></circle><circle class=\"point total\" cx=\"546.00\" cy=\"22.00\" r=\"3\"><title>第 12 轮 · 总量 22,680</title></circle><polyline class=\"line input\" points=\"42.00,102.26 87.82,95.70 133.64,89.14 179.45,82.58 225.27,76.02 271.09,69.46 316.91,62.90 362.73,56.34 408.55,49.77 454.36,43.21 500.18,36.65 546.00,30.09\"/><circle class=\"point input\" cx=\"42.00\" cy=\"102.26\" r=\"3\"><title>第 1 轮 · 输入 8,000</title></circle><circle class=\"point input\" cx=\"87.82\" cy=\"95.70\" r=\"3\"><title>第 2 轮 · 输入 9,200</title></circle><circle class=\"point input\" cx=\"133.64\" cy=\"89.14\" r=\"3\"><title>第 3 轮 · 输入 10,400</title></circle><circle class=\"point input\" cx=\"179.45\" cy=\"82.58\" r=\"3\"><title>第 4 轮 · 输入 11,600</title></circle><circle class=\"point input\" cx=\"225.27\" cy=\"76.02\" r=\"3\"><title>第 5 轮 · 输入 12,800</title></circle><circle class=\"point input\" cx=\"271.09\" cy=\"69.46\" r=\"3\"><title>第 6 轮 · 输入 14,000</title></circle><circle class=\"point input\" cx=\"316.91\" cy=\"62.90\" r=\"3\"><title>第 7 轮 · 输入 15,200</title></circle><circle class=\"point input\" cx=\"362.73\" cy=\"56.34\" r=\"3\"><title>第 8 轮 · 输入 16,400</title></circle><circle class=\"point input\" cx=\"408.55\" cy=\"49.77\" r=\"3\"><title>第 9 轮 · 输入 17,600</title></circle><circle class=\"point input\" cx=\"454.36\" cy=\"43.21\" r=\"3\"><title>第 10 轮 · 输入 18,800</title></circle><circle class=\"point input\" cx=\"500.18\" cy=\"36.65\" r=\"3\"><title>第 11 轮 · 输入 20,000</title></circle><circle class=\"point input\" cx=\"546.00\" cy=\"30.09\" r=\"3\"><title>第 12 轮 · 输入 21,200</title></circle><polyline class=\"line output\" points=\"42.00,142.72 87.82,142.28 133.64,141.84 179.45,141.41 225.27,140.97 271.09,140.53 316.91,140.10 362.73,139.66 408.55,139.22 454.36,138.78 500.18,138.35 546.00,137.91\"/><circle class=\"point output\" cx=\"42.00\" cy=\"142.72\" r=\"3\"><title>第 1 轮 · 输出 600</title></circle><circle class=\"point output\" cx=\"87.82\" cy=\"142.28\" r=\"3\"><title>第 2 轮 · 输出 680</title></circle><circle class=\"point output\" cx=\"133.64\" cy=\"141.84\" r=\"3\"><title>第 3 轮 · 输出 760</title></circle><circle class=\"point output\" cx=\"179.45\" cy=\"141.41\" r=\"3\"><title>第 4 轮 · 输出 840</title></circle><circle class=\"point output\" cx=\"225.27\" cy=\"140.97\" r=\"3\"><title>第 5 轮 · 输出 920</title></circle><circle class=\"point output\" cx=\"271.09\" cy=\"140.53\" r=\"3\"><title>第 6 轮 · 输出 1,000</title></circle><circle class=\"point output\" cx=\"316.91\" cy=\"140.10\" r=\"3\"><title>第 7 轮 · 输出 1,080</title></circle><circle class=\"point output\" cx=\"362.73\" cy=\"139.66\" r=\"3\"><title>第 8 轮 · 输出 1,160</title></circle><circle class=\"point output\" cx=\"408.55\" cy=\"139.22\" r=\"3\"><title>第 9 轮 · 输出 1,240</title></circle><circle class=\"point output\" cx=\"454.36\" cy=\"138.78\" r=\"3\"><title>第 10 轮 · 输出 1,320</title></circle><circle class=\"point output\" cx=\"500.18\" cy=\"138.35\" r=\"3\"><title>第 11 轮 · 输出 1,400</title></circle><circle class=\"point output\" cx=\"546.00\" cy=\"137.91\" r=\"3\"><title>第 12 轮 · 输出 1,480</title></circle><text class=\"axis\" x=\"42\" y=\"169\" text-anchor=\"start\">第 1 轮</text><text class=\"axis\" x=\"546\" y=\"169\" text-anchor=\"end\">第 12 轮</text></svg></section><section><h2>逐轮明细</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">观测轮次</th><th scope=\"col\">输入</th><th scope=\"col\">输出</th><th scope=\"col\">缓存命中</th><th scope=\"col\">总量</th><th scope=\"col\">上下文</th></tr></thead><tbody><tr><td>1</td><td>8,000</td><td>600</td><td>4,000</td><td>8,600</td><td>12,000</td></tr><tr><td>2</td><td>9,200</td><td>680</td><td>4,600</td><td>9,880</td><td>18,000</td></tr><tr><td>3</td><td>10,400</td><td>760</td><td>5,200</td><td>11,160</td><td>24,000</td></tr><tr><td>4</td><td>11,600</td><td>840</td><td>5,800</td><td>12,440</td><td>34,000</td></tr><tr><td>5</td><td>12,800</td><td>920</td><td>6,400</td><td>13,720</td><td>40,000</td></tr><tr><td>6</td><td>14,000</td><td>1,000</td><td>7,000</td><td>15,000</td><td>48,000</td></tr><tr><td>7</td><td>15,200</td><td>1,080</td><td>7,600</td><td>16,280</td><td>53,000</td></tr><tr><td>8</td><td>16,400</td><td>1,160</td><td>8,200</td><td>17,560</td><td>60,000</td></tr><tr><td>9</td><td>17,600</td><td>1,240</td><td>8,800</td><td>18,840</td><td>35,000</td></tr><tr><td>10</td><td>18,800</td><td>1,320</td><td>9,400</td><td>20,120</td><td>42,000</td></tr><tr><td>11</td><td>20,000</td><td>1,400</td><td>10,000</td><td>21,400</td><td>48,000</td></tr><tr><td>12</td><td>21,200</td><td>1,480</td><td>10,600</td><td>22,680</td><td>54,000</td></tr></tbody></table></div></section><footer>从插件启用后开始记录，最多保留最近 12 轮；插件重载后重新采集。</footer></main></body></html>",
+        "en": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>Usage details</title><style>\n*{box-sizing:border-box}html{color-scheme:light dark}body{margin:0;background:Canvas;color:CanvasText;\nfont:13px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}main{max-width:860px;margin:auto;padding:28px 24px 36px}\nheader{padding-bottom:22px;border-bottom:1px solid GrayText}\n.brand{font-size:10px;letter-spacing:.16em;color:GrayText}h1{font-size:24px;letter-spacing:-.04em;font-weight:600;margin:7px 0 4px}\np{margin:0;color:GrayText;font-size:12px}dl{display:flex;flex-wrap:wrap;gap:18px 36px;margin:22px 0 0}dt{color:GrayText;font-size:11px}\ndd{margin:3px 0 0;font-size:16px;font-weight:500;font-variant-numeric:tabular-nums}\nsection{padding-top:26px}h2{font-size:14px;font-weight:600;margin:0 0 5px}.legend{display:flex;gap:14px;margin:14px 0 2px;font-size:11px}\n.legend span:before{content:'';display:inline-block;width:13px;border-top:2px solid currentColor;margin-right:5px;vertical-align:middle}\n.context,.total{color:#647ac7}.input{color:#4c9791}.output{color:#b37b9d}\nsvg{width:100%;height:auto;display:block;overflow:visible}.axis{fill:GrayText;font-size:10px}.grid{stroke:GrayText;opacity:.18}\n.line{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}.point{fill:currentColor}\n.empty{padding:36px 12px;text-align:center}.empty strong{display:block;font-size:14px;font-weight:500;margin-bottom:6px}\n.table-scroll{overflow:auto;margin-top:16px}table{border-collapse:collapse;width:100%;white-space:nowrap;font-size:12px;font-variant-numeric:tabular-nums}\nth{font-size:10px;font-weight:500;color:GrayText}th,td{text-align:right;padding:10px 8px;border-bottom:1px solid GrayText}\nth:first-child,td:first-child{text-align:left;padding-left:0}\nfooter{padding-top:24px;color:GrayText;font-size:11px}@media(max-width:420px){main{padding:20px 16px}dl{gap:14px 24px}h1{font-size:21px}}\n</style></head><body><main><header><div class=\"brand\">TOKEN WEATHER</div><h1>Usage details</h1><p>Last 12 observed turns</p><dl><div><dt>Current context</dt><dd>54,000</dd></div><div><dt>Context limit</dt><dd>262,144</dd></div><div><dt>Window occupied</dt><dd>21%</dd></div></dl></header><section><h2>Context occupancy</h2><p>Context occupied at the end of each turn. A drop can reflect compaction, not refunded usage.</p><svg viewBox=\"0 0 560 180\" role=\"img\" aria-label=\"Context occupancy\"><line class=\"grid\" x1=\"42\" y1=\"146\" x2=\"546\" y2=\"146\"/><line class=\"grid\" x1=\"42\" y1=\"22\" x2=\"546\" y2=\"22\"/><text class=\"axis\" x=\"38\" y=\"25\" text-anchor=\"end\">60000</text><text class=\"axis\" x=\"38\" y=\"149\" text-anchor=\"end\">0</text><polyline class=\"line context\" points=\"42.00,121.20 87.82,108.80 133.64,96.40 179.45,75.73 225.27,63.33 271.09,46.80 316.91,36.47 362.73,22.00 408.55,73.67 454.36,59.20 500.18,46.80 546.00,34.40\"/><circle class=\"point context\" cx=\"42.00\" cy=\"121.20\" r=\"3\"><title>Turn 1 · Context 12,000</title></circle><circle class=\"point context\" cx=\"87.82\" cy=\"108.80\" r=\"3\"><title>Turn 2 · Context 18,000</title></circle><circle class=\"point context\" cx=\"133.64\" cy=\"96.40\" r=\"3\"><title>Turn 3 · Context 24,000</title></circle><circle class=\"point context\" cx=\"179.45\" cy=\"75.73\" r=\"3\"><title>Turn 4 · Context 34,000</title></circle><circle class=\"point context\" cx=\"225.27\" cy=\"63.33\" r=\"3\"><title>Turn 5 · Context 40,000</title></circle><circle class=\"point context\" cx=\"271.09\" cy=\"46.80\" r=\"3\"><title>Turn 6 · Context 48,000</title></circle><circle class=\"point context\" cx=\"316.91\" cy=\"36.47\" r=\"3\"><title>Turn 7 · Context 53,000</title></circle><circle class=\"point context\" cx=\"362.73\" cy=\"22.00\" r=\"3\"><title>Turn 8 · Context 60,000</title></circle><circle class=\"point context\" cx=\"408.55\" cy=\"73.67\" r=\"3\"><title>Turn 9 · Context 35,000</title></circle><circle class=\"point context\" cx=\"454.36\" cy=\"59.20\" r=\"3\"><title>Turn 10 · Context 42,000</title></circle><circle class=\"point context\" cx=\"500.18\" cy=\"46.80\" r=\"3\"><title>Turn 11 · Context 48,000</title></circle><circle class=\"point context\" cx=\"546.00\" cy=\"34.40\" r=\"3\"><title>Turn 12 · Context 54,000</title></circle><text class=\"axis\" x=\"42\" y=\"169\" text-anchor=\"start\">Turn 1</text><text class=\"axis\" x=\"546\" y=\"169\" text-anchor=\"end\">Turn 12</text></svg></section><section><h2>Tokens per turn</h2><p>Actual input, output and total tokens across the turn&#x27;s model calls. Cached input is included, not added again.</p><div class=\"legend\"><span class=\"total\">Total</span><span class=\"input\">Input</span><span class=\"output\">Output</span></div><svg viewBox=\"0 0 560 180\" role=\"img\" aria-label=\"Tokens per turn\"><line class=\"grid\" x1=\"42\" y1=\"146\" x2=\"546\" y2=\"146\"/><line class=\"grid\" x1=\"42\" y1=\"22\" x2=\"546\" y2=\"22\"/><text class=\"axis\" x=\"38\" y=\"25\" text-anchor=\"end\">22680</text><text class=\"axis\" x=\"38\" y=\"149\" text-anchor=\"end\">0</text><polyline class=\"line total\" points=\"42.00,98.98 87.82,91.98 133.64,84.98 179.45,77.99 225.27,70.99 271.09,63.99 316.91,56.99 362.73,49.99 408.55,42.99 454.36,36.00 500.18,29.00 546.00,22.00\"/><circle class=\"point total\" cx=\"42.00\" cy=\"98.98\" r=\"3\"><title>Turn 1 · Total 8,600</title></circle><circle class=\"point total\" cx=\"87.82\" cy=\"91.98\" r=\"3\"><title>Turn 2 · Total 9,880</title></circle><circle class=\"point total\" cx=\"133.64\" cy=\"84.98\" r=\"3\"><title>Turn 3 · Total 11,160</title></circle><circle class=\"point total\" cx=\"179.45\" cy=\"77.99\" r=\"3\"><title>Turn 4 · Total 12,440</title></circle><circle class=\"point total\" cx=\"225.27\" cy=\"70.99\" r=\"3\"><title>Turn 5 · Total 13,720</title></circle><circle class=\"point total\" cx=\"271.09\" cy=\"63.99\" r=\"3\"><title>Turn 6 · Total 15,000</title></circle><circle class=\"point total\" cx=\"316.91\" cy=\"56.99\" r=\"3\"><title>Turn 7 · Total 16,280</title></circle><circle class=\"point total\" cx=\"362.73\" cy=\"49.99\" r=\"3\"><title>Turn 8 · Total 17,560</title></circle><circle class=\"point total\" cx=\"408.55\" cy=\"42.99\" r=\"3\"><title>Turn 9 · Total 18,840</title></circle><circle class=\"point total\" cx=\"454.36\" cy=\"36.00\" r=\"3\"><title>Turn 10 · Total 20,120</title></circle><circle class=\"point total\" cx=\"500.18\" cy=\"29.00\" r=\"3\"><title>Turn 11 · Total 21,400</title></circle><circle class=\"point total\" cx=\"546.00\" cy=\"22.00\" r=\"3\"><title>Turn 12 · Total 22,680</title></circle><polyline class=\"line input\" points=\"42.00,102.26 87.82,95.70 133.64,89.14 179.45,82.58 225.27,76.02 271.09,69.46 316.91,62.90 362.73,56.34 408.55,49.77 454.36,43.21 500.18,36.65 546.00,30.09\"/><circle class=\"point input\" cx=\"42.00\" cy=\"102.26\" r=\"3\"><title>Turn 1 · Input 8,000</title></circle><circle class=\"point input\" cx=\"87.82\" cy=\"95.70\" r=\"3\"><title>Turn 2 · Input 9,200</title></circle><circle class=\"point input\" cx=\"133.64\" cy=\"89.14\" r=\"3\"><title>Turn 3 · Input 10,400</title></circle><circle class=\"point input\" cx=\"179.45\" cy=\"82.58\" r=\"3\"><title>Turn 4 · Input 11,600</title></circle><circle class=\"point input\" cx=\"225.27\" cy=\"76.02\" r=\"3\"><title>Turn 5 · Input 12,800</title></circle><circle class=\"point input\" cx=\"271.09\" cy=\"69.46\" r=\"3\"><title>Turn 6 · Input 14,000</title></circle><circle class=\"point input\" cx=\"316.91\" cy=\"62.90\" r=\"3\"><title>Turn 7 · Input 15,200</title></circle><circle class=\"point input\" cx=\"362.73\" cy=\"56.34\" r=\"3\"><title>Turn 8 · Input 16,400</title></circle><circle class=\"point input\" cx=\"408.55\" cy=\"49.77\" r=\"3\"><title>Turn 9 · Input 17,600</title></circle><circle class=\"point input\" cx=\"454.36\" cy=\"43.21\" r=\"3\"><title>Turn 10 · Input 18,800</title></circle><circle class=\"point input\" cx=\"500.18\" cy=\"36.65\" r=\"3\"><title>Turn 11 · Input 20,000</title></circle><circle class=\"point input\" cx=\"546.00\" cy=\"30.09\" r=\"3\"><title>Turn 12 · Input 21,200</title></circle><polyline class=\"line output\" points=\"42.00,142.72 87.82,142.28 133.64,141.84 179.45,141.41 225.27,140.97 271.09,140.53 316.91,140.10 362.73,139.66 408.55,139.22 454.36,138.78 500.18,138.35 546.00,137.91\"/><circle class=\"point output\" cx=\"42.00\" cy=\"142.72\" r=\"3\"><title>Turn 1 · Output 600</title></circle><circle class=\"point output\" cx=\"87.82\" cy=\"142.28\" r=\"3\"><title>Turn 2 · Output 680</title></circle><circle class=\"point output\" cx=\"133.64\" cy=\"141.84\" r=\"3\"><title>Turn 3 · Output 760</title></circle><circle class=\"point output\" cx=\"179.45\" cy=\"141.41\" r=\"3\"><title>Turn 4 · Output 840</title></circle><circle class=\"point output\" cx=\"225.27\" cy=\"140.97\" r=\"3\"><title>Turn 5 · Output 920</title></circle><circle class=\"point output\" cx=\"271.09\" cy=\"140.53\" r=\"3\"><title>Turn 6 · Output 1,000</title></circle><circle class=\"point output\" cx=\"316.91\" cy=\"140.10\" r=\"3\"><title>Turn 7 · Output 1,080</title></circle><circle class=\"point output\" cx=\"362.73\" cy=\"139.66\" r=\"3\"><title>Turn 8 · Output 1,160</title></circle><circle class=\"point output\" cx=\"408.55\" cy=\"139.22\" r=\"3\"><title>Turn 9 · Output 1,240</title></circle><circle class=\"point output\" cx=\"454.36\" cy=\"138.78\" r=\"3\"><title>Turn 10 · Output 1,320</title></circle><circle class=\"point output\" cx=\"500.18\" cy=\"138.35\" r=\"3\"><title>Turn 11 · Output 1,400</title></circle><circle class=\"point output\" cx=\"546.00\" cy=\"137.91\" r=\"3\"><title>Turn 12 · Output 1,480</title></circle><text class=\"axis\" x=\"42\" y=\"169\" text-anchor=\"start\">Turn 1</text><text class=\"axis\" x=\"546\" y=\"169\" text-anchor=\"end\">Turn 12</text></svg></section><section><h2>Turn details</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Observed turn</th><th scope=\"col\">Input</th><th scope=\"col\">Output</th><th scope=\"col\">Cached input</th><th scope=\"col\">Total</th><th scope=\"col\">Context</th></tr></thead><tbody><tr><td>1</td><td>8,000</td><td>600</td><td>4,000</td><td>8,600</td><td>12,000</td></tr><tr><td>2</td><td>9,200</td><td>680</td><td>4,600</td><td>9,880</td><td>18,000</td></tr><tr><td>3</td><td>10,400</td><td>760</td><td>5,200</td><td>11,160</td><td>24,000</td></tr><tr><td>4</td><td>11,600</td><td>840</td><td>5,800</td><td>12,440</td><td>34,000</td></tr><tr><td>5</td><td>12,800</td><td>920</td><td>6,400</td><td>13,720</td><td>40,000</td></tr><tr><td>6</td><td>14,000</td><td>1,000</td><td>7,000</td><td>15,000</td><td>48,000</td></tr><tr><td>7</td><td>15,200</td><td>1,080</td><td>7,600</td><td>16,280</td><td>53,000</td></tr><tr><td>8</td><td>16,400</td><td>1,160</td><td>8,200</td><td>17,560</td><td>60,000</td></tr><tr><td>9</td><td>17,600</td><td>1,240</td><td>8,800</td><td>18,840</td><td>35,000</td></tr><tr><td>10</td><td>18,800</td><td>1,320</td><td>9,400</td><td>20,120</td><td>42,000</td></tr><tr><td>11</td><td>20,000</td><td>1,400</td><td>10,000</td><td>21,400</td><td>48,000</td></tr><tr><td>12</td><td>21,200</td><td>1,480</td><td>10,600</td><td>22,680</td><td>54,000</td></tr></tbody></table></div></section><footer>Recorded since this plugin was enabled. Keeps the last 12 turns; resets when the plugin reloads.</footer></main></body></html>"
+      },
+      "minWidth": 360
+    }
+  }
+}
