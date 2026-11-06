@@ -3,9 +3,11 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -503,6 +505,73 @@ def test_final_exit_never_kills_a_reused_pid(monkeypatch):
     supervisor._worker_create_time = 1.0
     with pytest.raises(RuntimeError, match="PID identity changed"):
         supervisor._reap_validated_worker(deadline=time.monotonic() + 0.1)
+
+
+@pytest.mark.parametrize("budget", [0.5, 5.0])
+def test_retirement_confirms_forced_exit_within_original_deadline(monkeypatch, budget):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(supervisor_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    signals = []
+
+    class Process:
+        def create_time(self):
+            return 1.0
+
+        def terminate(self):
+            signals.append("terminate")
+
+        def kill(self):
+            signals.append("kill")
+
+        def wait(self, *, timeout):
+            if "kill" not in signals:
+                clock.now += timeout
+                raise psutil.TimeoutExpired(timeout, pid=123)
+            # SIGKILL delivery and exit observation are not instantaneous.
+            if timeout < 0.1:
+                raise psutil.TimeoutExpired(timeout, pid=123)
+            clock.now += 0.1
+            return -9
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Process())
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 1.0
+    supervisor._owns_process = True
+    deadline = clock.now + budget
+    supervisor._reap_validated_worker(deadline=deadline, terminate=True)
+    assert signals == ["terminate", "kill"]
+    assert clock.now <= deadline
+    assert not supervisor._owns_process
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGTERM/SIGKILL exit semantics")
+async def test_retirement_reaps_child_that_ignores_sigterm(monkeypatch):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
+    proc = subprocess.Popen([
+        sys.executable, "-c",
+        "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+        "print('ready',flush=True); time.sleep(60)",
+    ], stdout=subprocess.PIPE)
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = proc.pid
+    supervisor._worker_create_time = psutil.Process(proc.pid).create_time()
+    try:
+        assert (await asyncio.to_thread(proc.stdout.readline)).strip() == b"ready"
+        started = time.monotonic()
+        await asyncio.wait_for(supervisor._retire_unhealthy_worker(), 6)
+        assert time.monotonic() - started < 6
+        assert proc.poll() is not None
+        assert supervisor.worker_pid is None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        await asyncio.to_thread(proc.wait, 2)
+        proc.stdout.close()
 
 
 @pytest.mark.asyncio

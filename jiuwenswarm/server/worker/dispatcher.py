@@ -40,6 +40,7 @@ from jiuwenswarm.server.ipc.protocol import (
 )
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.diagnostics import LoopBeat, heartbeat_reply
+from jiuwenswarm.server.worker.stall_context import request_metadata
 from jiuwenswarm.server.worker.event_store import DispatchRecord
 from jiuwenswarm.server.worker.gateway_bridge import (
     WorkerGatewayBridge,
@@ -377,6 +378,14 @@ class WorkerDispatcher:
         return True
 
     async def _run_request(self, request: AgentRequest, generation: int, dispatch_id: str = "") -> None:
+        beat = getattr(self, "_beat", None)
+        if beat is None:
+            await self._dispatch_request(request, generation, dispatch_id)
+        else:
+            with beat.activity(request_metadata(request, dispatch_id)):
+                await self._dispatch_request(request, generation, dispatch_id)
+
+    async def _dispatch_request(self, request: AgentRequest, generation: int, dispatch_id: str = "") -> None:
         if not dispatch_id:
             dispatch_id = uuid.uuid4().hex
             self._bridge.events.register(request, dispatch_id)
