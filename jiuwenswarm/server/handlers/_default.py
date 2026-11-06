@@ -330,6 +330,26 @@ async def _ensure_code_mode_state(
             (request.params or {}).get("source") if isinstance(request.params, dict) else None,
         )
         return False
+    # ①号修复（issue 5223 round-008）：mode 同步必须落在 serving 轮将要
+    # 使用的会话适配器上。get_live_session_instance 在适配器尚被并发创建
+    # （session prewarm / 前端 command.goal 竞速）时会 MISS，fallback 只写
+    # checkpointer；serving 适配器随后按 pre-commit 快照 primed，Session
+    # 运行时缓存停留在 stale normal，AgentModeRail(85) 据此把 plan 工具从
+    # 模型 schema 滤掉。先解析适配器（与轮次路径共用 per-sid 锁，复用或
+    # 创建一次）使 live 查找必中、switch_mode 直写 live session 缓存。
+    # 失败不阻塞 chat，退回既有 fallback 语义。
+    if request.session_id:
+        ensure_adapter = getattr(agent, "ensure_session_adapter", None)
+        if callable(ensure_adapter):
+            try:
+                await ensure_adapter(request.session_id, request=request)
+            except Exception:  # noqa: BLE001 - 钉扎失败退回 fallback，不阻塞 chat
+                logger.warning(
+                    "[_ensure_code_mode_state] session adapter pre-resolve failed "
+                    "for session=%s",
+                    request.session_id,
+                    exc_info=True,
+                )
     restored_after_approval = False
     async with _session_mode_sync_lock(session_id):
         deep_agent, session, live = await _open_plan_state_session(
