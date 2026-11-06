@@ -43,6 +43,8 @@ import {
   rawOtelSpanInterval,
   rawOtelSpanIntervals,
   resolveSelectionWallMs,
+  trajectoryRecordCount,
+  trajectoryRecordIntervals,
   sharedWallClockDomain,
   visibleAxisTicks,
   wallToCompressed,
@@ -571,6 +573,41 @@ test('otelSpanWallInterval reads start/end nanos and collapses a missing end', (
   assert.equal(otelSpanWallInterval({ startTimeUnixNano: msToNano(-1) }), null);
 });
 
+test('trajectoryRecordCount keeps user, assistant and tool rows', () => {
+  const turns = [{
+    groups: [{
+      cells: [
+        { kind: 'system', startedAt: 1_000 },
+        { kind: 'context', startedAt: 1_000 },
+        { kind: 'user', startedAt: 1_000 },
+        { kind: 'context', startedAt: 1_000 },
+        { kind: 'message', startedAt: 2_000, timeSeconds: 1 },
+        { kind: 'tool', startedAt: 3_000, timeSeconds: 1 },
+        { kind: 'message', startedAt: 4_000, timeSeconds: 1 },
+        { kind: 'tool', startedAt: 5_000, timeSeconds: 1 },
+        { kind: 'message', startedAt: 6_000, requestOnly: true },
+        { kind: 'message', startedAt: 7_000, timeSeconds: 1 },
+        { kind: 'tool', startedAt: 8_000, timeSeconds: 1 },
+        { kind: 'message', startedAt: 9_000, timeSeconds: 1 },
+      ],
+    }],
+  }];
+  assert.equal(trajectoryRecordCount(turns), 8);
+  assert.equal(trajectoryRecordIntervals(turns).length, 8);
+  assert.deepEqual(
+    trajectoryRecordIntervals([{
+      groups: [{
+        cells: [
+          { kind: 'context', startedAt: 1_000 },
+          { kind: 'user', startedAt: 1_000 },
+          { kind: 'context', startedAt: 1_000 },
+        ],
+      }],
+    }]),
+    [{ startMs: 1_000, endMs: 1_000 }],
+  );
+});
+
 test('rawOtelSpanIntervals keep every timed raw record and skip unusable ones', () => {
   assert.equal(rawOtelSpanInterval(rawOtelRecord({ empty: true })), null);
   assert.equal(rawOtelSpanInterval({ otlp: { resourceSpans: [] } }), null);
@@ -754,6 +791,13 @@ test('clipIntervalAgainstGaps splits spans that cross a forced user_turn blank',
   );
   assert.deepEqual(clipIntervalAgainstGaps(3_950, 4_050, gaps), []);
   assert.deepEqual(clipIntervalAgainstGaps(0, 3_000, gaps), [{ startMs: 0, endMs: 3_000 }]);
+  assert.deepEqual(
+    clipIntervalAgainstGaps(1_000, 1_000, gaps),
+    [{ startMs: 1_000, endMs: 1_000 }],
+  );
+  assert.deepEqual(clipIntervalAgainstGaps(3_900, 3_900, gaps), [{ startMs: 3_900, endMs: 3_900 }]);
+  assert.deepEqual(clipIntervalAgainstGaps(4_000, 4_000, gaps), []);
+  assert.deepEqual(clipIntervalAgainstGaps(Number.NaN, 1_000, gaps), []);
 });
 
 test('formatUserTurnClock puts month-day above the clock', () => {
