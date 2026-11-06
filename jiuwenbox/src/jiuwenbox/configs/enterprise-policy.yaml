@@ -119,7 +119,14 @@ namespace:
   # pid:
   #   true: create a new PID namespace
   #   false: reuse the current PID namespace
-  pid: true
+  # Must stay false in container-based deployments: with a new PID namespace,
+  # bubblewrap mounts a fresh procfs inside the new user namespace, and the kernel
+  # rejects it (EPERM in fs/namespace.c::mnt_already_visible) because the container's
+  # /proc carries locked, non-empty runtime masks (/proc/bus, /proc/irq, /proc/sys,
+  # tmpfs masks, ...). Independent of the bubblewrap version. Process isolation is
+  # compensated by cgroup pids limits plus signal-based supervision. Bare-host runs
+  # are not subject to this restriction and may use pid: true (default-policy.yaml).
+  pid: false
 
   # ipc:
   #   true: create a new IPC namespace
