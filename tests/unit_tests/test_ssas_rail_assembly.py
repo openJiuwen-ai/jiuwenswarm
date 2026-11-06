@@ -111,16 +111,39 @@ async def test_init_failure_evicts_cache_for_retry(tmp_path):
     async def boom():
         raise RuntimeError("injected init failure")
 
+    class _EvictedBackend:
+        """替身: 顶替缓存条目模拟初始化失败态, 记录后台 close 是否触达."""
+
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    evicted = _EvictedBackend()
     fail_task = asyncio.get_running_loop().create_task(boom())
     with m._SSAS_INIT_TASKS_LOCK:
+        m._SSAS_BACKEND_CACHE[key] = evicted
         m._SSAS_INIT_TASKS.add(fail_task)
-        m._SSAS_INIT_TASK_KEYS[fail_task] = (key, backend)
+        m._SSAS_INIT_TASK_KEYS[fail_task] = (key, evicted)
     fail_task.add_done_callback(m._log_ssas_init_result)
     # 确定性等待: await 该 Task 本身, done callback(_log_ssas_init_result)
     # 先于 wait 完成, 无需固定 sleep 依赖调度时序
     with pytest.raises(RuntimeError, match="injected init failure"):
         await asyncio.wait_for(fail_task, timeout=5.0)
     assert m._SSAS_BACKEND_CACHE.get(key) is None
+    # 剔除的 backend 被后台关闭, 防构造期资源随重复失败装配累积泄漏
+    pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
+    if pending_close:
+        await asyncio.wait_for(
+            asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
+        )
+    # 协程完成与 done callback(_log_ssas_close_result)移出集合相差一个
+    # 循环节拍, 补一拍确定性等待后再断言
+    await asyncio.sleep(0)
+    assert evicted.closed is True
+    with m._SSAS_INIT_TASKS_LOCK:
+        assert len(m._SSAS_CLOSE_TASKS) == 0
 
     rail_retry = m.JiuWenSwarmDeepAdapter._build_ssas_rail(cfg)
     await m._await_ssas_init_tasks()
@@ -138,9 +161,18 @@ async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
     async def hang():
         await asyncio.sleep(3600)
 
+    class _HungBackend:
+        """替身: 记录超时剔除后的后台 close 是否触达."""
+
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
     hung = asyncio.get_running_loop().create_task(hang())
     key = (asyncio.get_running_loop(), "fp_hang_probe")
-    fake_backend = object()
+    fake_backend = _HungBackend()
     with m._SSAS_INIT_TASKS_LOCK:
         m._SSAS_INIT_TASKS.add(hung)
         m._SSAS_INIT_TASK_KEYS[hung] = (key, fake_backend)
@@ -161,6 +193,19 @@ async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
     with m._SSAS_INIT_TASKS_LOCK:
         assert hung not in m._SSAS_INIT_TASKS
         assert key not in m._SSAS_BACKEND_CACHE
+    # 超时剔除的 backend 被后台关闭(防资源泄漏), 若 close Task 尚未完成
+    # 则确定性等待其结束
+    pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
+    if pending_close:
+        await asyncio.wait_for(
+            asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
+        )
+    # 协程完成与 done callback(_log_ssas_close_result)移出集合相差一个
+    # 循环节拍, 补一拍确定性等待后再断言
+    await asyncio.sleep(0)
+    assert fake_backend.closed is True
+    with m._SSAS_INIT_TASKS_LOCK:
+        assert len(m._SSAS_CLOSE_TASKS) == 0
     t1 = time.monotonic()
     await m._await_ssas_init_tasks()
     assert time.monotonic() - t1 < 1.0
