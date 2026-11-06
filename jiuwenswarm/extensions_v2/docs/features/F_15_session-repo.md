@@ -117,7 +117,7 @@ USER／BUILTIN 的普通异常或非法输出沿用 Core 故障隔离，可能�
 
 ### 3.4 注册、筛选、改写示例
 
-本例要做的事情是：**保留仓库归属，隐藏本次返回中的远端地址**。下面是扩展入口模块 `extension.py`；由已有 manifest 指定该模块并通过管理入口安装即可，包格式参照 [session_query_audit](../../examples/session_query_audit/manifest.yaml)。
+本例要做的事情是：**保留仓库归属，隐藏本次返回中的远端地址**。下面是扩展入口模块 `extension.py`；由已有 manifest 指定该模块并通过管理入口安装即可，包格式参照 [session_query_audit](../../examples/session_query_audit/manifest.json)。
 
 ```python
 class Extension:

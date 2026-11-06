@@ -26,7 +26,7 @@
 
 | 术语 | 含义 |
 | --- | --- |
-| 扩展包 / 包根 | 含 `manifest.yaml` 的目录；V2 安装副本位于 `<install_dir>/<package.id>/<version>/` |
+| 扩展包 / 包根 | 含 `manifest.json` 的目录；V2 安装副本位于 `<install_dir>/<package.id>/<version>/` |
 | 扩展单元 | `manifest.extensions` 的一项，指向包根下的一个 `.py` 入口文件 |
 | 生效记录 | agent-core 控制面中该包已生效的事实，含版本、包根与 generation |
 | Report | 一次管理操作的逐包结果，区分成功、失败与依赖未满足 |
@@ -53,7 +53,7 @@
 | 包管理注册表 | 门面直接委托 agent-core `Registry`；控制面与发布不在宿主重建 | EXTV2-03、EXTV2-04 |
 | 包身份 | 归属事实以 agent-core 生效记录为准；发布 Handler 时通过 `register_event_handler(..., package_metadata=...)` 写入注册记录，由 Events 在构建 Ops 时注入，不从事件输入或会话上下文读取；扩展的受限注册入口不接收包身份 | EXTV2-04 |
 | 清理帧 | 独立下行事件 `webui.render.clear`，只携带目标与原因，不复用带 `mode` 的渲染帧 | EXTV2-06 |
-| 界面项声明 | 写在 `manifest.yaml` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构；`renderer.kind` 在本方案中新增 `webui-tree`，前端需支持该渲染模式；agent-core 只解析已知字段，JiuwenSwarm 从生效记录的包根读取原始 `manifest.yaml` 并完成内容校验 | EXTV2-07 |
+| 界面项声明 | 写在 `manifest.json` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构；`renderer.kind` 在本方案中新增 `webui-tree`，前端需支持该渲染模式；agent-core 只解析已知字段，JiuwenSwarm 从生效记录的包根读取原始 `manifest.json` 并完成内容校验 | EXTV2-07 |
 | revision 作用域 | 实例内单调；实例由会话、slot、包与实例标识定位，跨包排序由前端槽位模式处理 | EXTV2-06、EXTV2-08 |
 | 重连恢复 | 服务端重发各活跃实例最近一帧，revision 不变；不新增同步接口，不要求扩展重新生成 | EXTV2-06 |
 
@@ -86,7 +86,7 @@
 
 ### EXTV2-02 包声明与加载控制面接入
 
-- **目标与范围：** 接入 agent-core 包加载控制面：读取并校验 `manifest.yaml`、写入安装副本、按依赖定序执行单包计划、创建候选模块、写入生效记录、判断卸载条件。JiuwenSwarm 不自建 manifest Schema、依赖排序或版本规则。不包含管理门面、总线发布与界面项。
+- **目标与范围：** 接入 agent-core 包加载控制面：读取并校验 `manifest.json`、写入安装副本、按依赖定序执行单包计划、创建候选模块、写入生效记录、判断卸载条件。JiuwenSwarm 不自建 manifest Schema、依赖排序或版本规则。不包含管理门面、总线发布与界面项。
 - **责任与契约：** `ExtensionManager` 触发 agent-core 的 `package.install` 管理事件，解析、依赖定序、复制与加载全部由对端完成；宿主只读取 `PackageManager.list_installed()` 并补偿 prepare 失败留下的新副本。错误沿用 `EXTENSION_*` 号段，对上层返回逐包 `ActivationReport`。
 - **开工硬前置：** 安装目录解析 `extensions_v2/config.py`（EXTV2-01 的配置子项，已提供）。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/management/test_registry_facade.py`。
@@ -173,14 +173,14 @@
 ### EXTV2-07 界面项声明、挂载与上行交互
 
 - **目标与范围：** 从生效包派生可用的扩展UI界面项与允许槽位供前端发现；挂载上报按该目录校验，未声明的包或槽位被拒，没有界面贡献时不占位；上行交互进入事件链并返回可区分回执。
-- **责任与契约：** `extensions_v2/webui/contributions.py` 从生效记录的包根读取 `manifest.yaml` 的 `ui` 段（`apiVersion` 加 `items`；字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构，`renderer.kind` 新增 `webui-tree`），校验 `type`、`id`、`slot`、`order`、`panel`、`localeId`、`renderer` 与 `web.locale` 资源路径，产出可用界面项目录；语义校验全部在本模块完成，不依赖 agent-core 返回该段。`extensions_v2/webui/adapter.py` 是唯一上行入口，回执沿用 `event`、`accepted`、`status`、`code` 字段。
+- **责任与契约：** `extensions_v2/webui/contributions.py` 从生效记录的包根读取 `manifest.json` 的 `ui` 段（`apiVersion` 加 `items`；字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构，`renderer.kind` 新增 `webui-tree`），校验仅允许 `web.slot.contribution`、`id` 唯一、`slot` 已登记、`order` 为整数且 `renderer.kind` 受支持，产出可用界面项目录；语义校验全部在本模块完成，不依赖 agent-core 返回该段。`extensions_v2/webui/adapter.py` 是唯一上行入口，回执沿用 `event`、`accepted`、`status`、`code` 字段。
 - **开工硬前置：** EXTV2-04、EXTV2-06。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_webui_adapter.py`、`tests/unit_tests/extensions_v2/webui/test_webui_runtime.py` 与页面路径。
 - **独立验证条件：** 至少一个含界面声明的样例包与一个纯后端包。
 - **验收标准：**
   1. EXTV2-07-V-01：只有生效包声明的界面项可以挂载；未声明、包已停用或槽位不在声明内均被拒绝。
   2. EXTV2-07-V-02：纯后端包不产生界面项，页面不出现空占位。
-  3. EXTV2-07-V-03：`apiVersion` 非 1、`type` 未知、同类型 `id` 重复、`localeId` 悬空、资源路径逃逸或 `renderer.kind` 不受支持时整包拒绝，不发布部分条目。
+  3. EXTV2-07-V-03：`apiVersion` 非 1、`type` 未知、`ui` 最外层或 `items` 非对象/数组、`id` 重复、`slot` 未登记或 `renderer.kind` 不受支持时整包拒绝，不发布部分条目。
   4. EXTV2-07-V-04：按压、输入、开关、选择四类交互在活跃实例上返回处理结果；无 Handler 时回执为 `no_handler`，非活跃实例为 `inactive`，两者都不产生副作用。
 - **来源验证点与共享场景：** 架构 EXTV2-A06 与第 4.4.1、4.4.2、5.2.2 节；主责 EXTV2-07，参与 EXTV2-M1、M2。
 - **前端独立验证：** 槽位宿主在没有可用界面项时不渲染容器。

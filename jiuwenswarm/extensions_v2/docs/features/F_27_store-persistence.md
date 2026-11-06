@@ -71,7 +71,7 @@ Core 不加入 Swarm 目录、WebUI 类型或应用配置；面向应用的示�
 未捕获到原失败的结构化原因，因此没有将短路径或任何具体猜测写成根因，也没有添加生产自动重试。
 既有示例安装断言现在保留 ActivationReport，便于再次出现时定位。
 
-交付包只包含 manifest.yaml、extension.py 和 README.md；用法见
+交付包只包含 manifest.json、extension.py 和 README.md；用法见
 [示例说明](../../examples/store_probe/README.md)。验证复用了生产管理/事件链，未启动真实浏览器或运行真实模型对话。
 
 本地调试依赖已指向 `D:/lzy/test/agent-core`；这是本地开发配置，发布前需切回正式依赖。

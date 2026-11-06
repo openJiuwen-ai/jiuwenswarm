@@ -150,7 +150,7 @@ def create_extension():
     return Extension()
 ```
 
-matcher 为等值条件合取，空字典匹配全部；嵌套字段用 `origin.kind` / `message.role` 点路径，不写成嵌套匹配字典。这里 next 继续当前链，不再调用 append Ops，以免 APPEND_REENTRANT。用户提供 manifest.yaml 和模块，通过管理入口安装；平台负责触发和收集上下文，不要求用户手写平台 Adapter。
+matcher 为等值条件合取，空字典匹配全部；嵌套字段用 `origin.kind` / `message.role` 点路径，不写成嵌套匹配字典。这里 next 继续当前链，不再调用 append Ops，以免 APPEND_REENTRANT。用户提供 manifest.json 和模块，通过管理入口安装；平台负责触发和收集上下文，不要求用户手写平台 Adapter。
 
 ## 4. 方法契约
 

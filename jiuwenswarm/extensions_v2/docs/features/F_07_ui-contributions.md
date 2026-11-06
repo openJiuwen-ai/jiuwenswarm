@@ -17,14 +17,14 @@
 前端不能凭插件任意声明就占用页面位置，也不能把任意请求送进事件链。宿主需要从**已生效**的包中派生可用界面项，
 只允许声明的槽位挂载，并为浏览器交互确认会话或 Web 连接归属。全局槽位不依赖聊天会话。
 
-一句话概括：**界面项目录从生效包的 `manifest.yaml ui` 段派生，前端按目录挂载槽位，所有上行交互经唯一入口 `webui.dispatch` 校验后进入事件链。**
+一句话概括：**界面项目录从生效包的 `manifest.json ui` 段派生，前端按目录挂载槽位，所有上行交互经唯一入口 `webui.dispatch` 校验后进入事件链。**
 
 ## 2. 范围
 
 ### 2.1 本次范围
 
 - 读取并校验生效包的 `ui` 段，产出界面项目录。
-- 声明槽位、顺序、面板标题、语言资源和 `webui-tree` 渲染器。
+- 声明槽位、顺序和 `webui-tree` 渲染器。
 - 提供槽位白名单与槽位展示模式（`list` / `single`）。
 - 提供唯一上行入口 `webui.dispatch`，按槽位范围校验事件名、会话或连接、目标和贡献。
 - 定义上行回执字段与状态。
@@ -43,7 +43,7 @@
 ```mermaid
 flowchart LR
     A["生效包 ActivePackageRecord"] --> C["WebUICatalogService"]
-    C -->|"读取 manifest.yaml ui 段"| V["load_package_ui 校验"]
+    C -->|"读取 manifest.json ui 段"| V["load_package_ui 校验"]
     V --> D["UiCatalog"]
     D -->|"allows_target"| AD["WebUIDispatchAdapter"]
     FE["React 槽位宿主"] -->|"webui.dispatch"| AD
@@ -55,31 +55,31 @@ flowchart LR
 
 ### 3.2 声明结构
 
-```yaml
-ui:
-  apiVersion: 1
-  items:
-    - type: web.slot.contribution
-      id: token-weather.turn
-      slot: message.assistant.meta
-      order: 10
-      panel:
-        title: Turn Usage
-      renderer:
-        kind: webui-tree
+```json
+{
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "token-weather.turn",
+        "slot": "message.assistant.meta",
+        "order": 10,
+        "renderer": { "kind": "webui-tree" }
+      }
+    ]
+  }
+}
 ```
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `apiVersion` | 是 | 当前只接受 `1` |
-| `items[].type` | 是 | `web.slot.contribution` 或 `web.locale` |
+| `items[].type` | 是 | 当前只接受 `web.slot.contribution` |
 | `items[].id` | 是 | 包内同类型唯一 |
 | `items[].slot` | 贡献项必填 | 必须在槽位白名单内 |
 | `items[].order` | 否 | 整数，默认 0，用于同槽位排序 |
-| `items[].panel` | 否 | 映射，当前用于 `title` |
 | `items[].renderer.kind` | 贡献项必填 | 当前只接受 `webui-tree` |
-| `items[].localeId` | 否 | 必须引用同包的 `web.locale` 条目 |
-| `items[].resources` | 否 | 语言到包内相对路径的映射，路径不得逃逸包根 |
 
 一个包只要有一项声明非法，整包的界面项都不发布，错误记录在 `UiCatalog.errors`；其他包不受影响。
 
@@ -343,8 +343,6 @@ Chrome 在用户截图对应的 20:13 历史回合确认显示“输入 未上�
 - 目录校验目标包是否声明了该槽位；广播 ready 的空包目标只检查槽位贡献。实例键按槽位范围确定，见 [F_06 第 3.2.2 节](F_06_render-service.md#322-实例标识)；未登记实例返回 `inactive`。
 - revision 与当前实例不符时返回 `stale/TARGET_INACTIVE`；动作或数据非法时返回 `invalid_action/SCHEMA_ERROR`。
 - 校验保证进入事件链时请求有效，不锁住 Handler 的整个执行期；Handler 等待期间视图可能被其他任务替换。
-- 语言资源只校验路径存在且不逃逸包根；文本解析与按语言选择尚未实现。
-- `panel` 目前只做结构校验并保留在目录中，前端尚未使用；标题本地化未实现。
 
 ## 6. 关键决策
 
@@ -357,7 +355,7 @@ Chrome 在用户截图对应的 20:13 历史回合确认显示“输入 未上�
 
 ## 7. 实施影响
 
-- `manifest.yaml` 新增 `ui` 段；agent-core 只解析已知字段，宿主从生效记录的包根读取原始文件。
+- `manifest.json` 新增 `ui` 段；agent-core 只解析已知字段，宿主从生效记录的包根读取原始文件。
 - Gateway 需要把 `webui.dispatch` 路由到 AgentServer；AgentServer 注册 `WebUIDispatchAdapter`。
 - 前端槽位宿主在挂载和切换会话时上报 `ui.ready`。
 - 包卸载时目录因生效记录变化自动刷新，前端同时收到清除帧。

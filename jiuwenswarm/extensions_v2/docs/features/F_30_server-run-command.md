@@ -152,7 +152,7 @@ Handler 的普通异常或非法输入/输出可能被 Core 隔离并继续默�
 
 ### 3.4 可直接安装的 USER Handler
 
-将下面模块与 [manifest.yaml](../../examples/server_run_command/manifest.yaml) 放在 ZIP 根目录安装。在能到达 Worker 原生文本入口的会话输入 `/project_status demo`：返回目录文字，备注进入模型上下文，不执行任何原生命令。
+将下面模块与 [manifest.json](../../examples/server_run_command/manifest.json) 放在 ZIP 根目录安装。在能到达 Worker 原生文本入口的会话输入 `/project_status demo`：返回目录文字，备注进入模型上下文，不执行任何原生命令。
 
 ```python
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.

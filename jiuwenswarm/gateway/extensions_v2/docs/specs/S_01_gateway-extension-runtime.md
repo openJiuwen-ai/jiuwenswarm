@@ -43,8 +43,9 @@
 
 | 项 | 要求 |
 | --- | --- |
-| 目录 | `<install_dir>/<package_id>/<version>/manifest.yaml`，或 `<install_dir>/<package_id>/manifest.yaml` |
+| 目录 | `<install_dir>/<package_id>/<version>/manifest.json`，或 `<install_dir>/<package_id>/manifest.json` |
 | `schemaVersion` | 必须为 `1` |
+| `package_type` | 必须为 `extension`；值为 `plugin` 的包归 Agent 插件 |
 | `package.id` | 非空标识符 |
 | `package.version` | 非空字符串 |
 | `domain` | `gateway` 才由 Gateway 加载；缺省视为 `agent`，只允许 `agent` / `gateway` |

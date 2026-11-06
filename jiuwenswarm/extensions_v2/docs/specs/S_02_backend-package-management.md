@@ -18,14 +18,59 @@
 | 方法 | params | 行为 |
 | --- | --- | --- |
 | `extensions.v2.query` | 可选 `package_id: str` | 查询全部或一个包 |
+| `extensions.v2.catalog` | `scope: "catalog" \| "mine"` | 列出预设包或已生效包 |
+| `extensions.v2.show` | `package_id: str` | 返回一个包的详情投影 |
 | `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录 |
+| `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 manifest 的 `domain` 分流安装（Gateway 入口） |
 | `extensions.v2.uninstall` | `package_id: str` | 卸载包或未生效副本 |
 | `extensions.v2.reload` | `package_id: str` | 从安装副本热重载，不先卸载 |
+| `extensions.v2.file.list` | `package_id: str` | 列出包内可预览文件树 |
+| `extensions.v2.file.read` | `package_id: str`、`path: str` | 读取一个可预览文件 |
 
 包标识沿用 Core 约束：1～128 个字符，首位为英文字母或数字，其余可包含英文字母、数字、点、
-下划线和连字符，不允许空格或连续两个点。未知参数拒绝，不接受自建 Plan 或修改安装目录的参数。
+下划线和连字符；不含空格与 `..`，不以点结尾，也不使用 Windows 保留名。未知参数拒绝，不接受自建
+Plan 或修改安装目录的参数。
 外部安装请求先校验绝对路径、`.zip` 后缀和文件类型，再交给 Core 校验归档、manifest 与依赖。
 此限制只在外部请求入口生效；启动通过 `load_installed()` 加载安装目录内的解压副本，不受影响。
+
+`extensions.v2.import` 面向未定域的上传入口，由 Gateway 读取包根 `manifest.json` 后分流：
+`package_type` 为 `extension` 的包按 `domain` 归属，`gateway` 在 Gateway 安装，`agent` 转为
+`extensions.v2.install`；其余包（如 `package_type: plugin`）转为 `plugin_packages.import_local`。
+响应附 `kind`（`extension` 或 `plugin`）供前端区分刷新目标。
+
+### 1.1 详情与文件投影
+
+`details` 取 manifest 的 `details`，`readme` 分别取包根 `README.md` 与 `README_EN.md`；
+两者都编码为 `{zh, en}`，单一语言缺失时回落到另一语言。
+`preview` 取包根固定的 `preview.png`，文件缺失或超过 10 MB 时为 `null`；
+`events` 取 manifest 的 `events`，每项为 `{name, description: {zh, en}}`，
+声明该包消费的事件，不参与加载校验。
+
+文件树和文件读取复用 AgentServer 的包预览能力：只列非隐藏文件和目录，`previewable` 覆盖
+`.md`、`.mdx`、`.json`、`.py`、`.pdf`，单文件上限 1 MB，拒绝绝对路径、`..`、隐藏段和符号链接。
+Gateway 不实现本地读取，`files` 与 `file.read` 始终转发给 AgentServer，两域共用同一包源解析入口。
+
+### 1.2 manifest 字段
+
+| 字段 | 必填 | 消费方 | 说明 |
+| --- | --- | --- | --- |
+| `schemaVersion` | 是 | Core | 固定为 1 |
+| `package_type` | 是 | Core | 固定为 `extension` |
+| `package.id`、`package.version` | 是 | Core | 包标识与版本 |
+| `extensions[]` | 是 | Core | `id`、`runtime=backend`、`module`；模块文件须位于包内 |
+| `domain` | 否 | 宿主 | `gateway` 归 Gateway，缺省为 `agent` |
+| `expose` | 否 | 宿主 | 为 `true` 才出现在插件广场 |
+| `display_name` | 否 | 宿主 | `{zh, en}`，缺省回退 `package.displayName` 或包 ID |
+| `display_description` | 否 | 宿主 | `{zh, en}`，缺省回退 `package.description` |
+| `tags` | 否 | 宿主 | 双语文本数组，渲染为卡片标签 |
+| `avatar` | 否 | 宿主 | 包内相对路径，不超过 256 KB |
+| `details` | 否 | 宿主 | `{zh, en}` Markdown，详情页“内容详情” |
+| `events` | 否 | 宿主 | `[{name, description}]`，详情页“依赖事件” |
+| `ui` | 否 | 宿主 | 槽位贡献，见 [F_07](../features/F_07_ui-contributions.md) |
+| `client` | 否 | Gateway | `requestBindings`，安装激活后随 client.declarations 下发 |
+
+Core 不解析 `domain`、`expose`、`display_name` 等宿主字段，宿主从生效记录的包根读取原始文件。
+界面文案统一使用 `{zh, en}` 对象，单语字符串按双语同值处理；声明与消费不再有其它文案来源。
 
 ## 2. 响应
 
@@ -34,6 +79,10 @@
 | 场景 | ok | payload |
 | --- | --- | --- |
 | 查询完成 | true | `state`：active、installed、installed_packages、inflight、published、packages、package_ids |
+| 列表完成 | true | `packages`：卡片数组 |
+| 详情完成 | true | `package`：卡片字段加 `details`、`readme`、`preview`、`events` |
+| 文件树 | true | `tree`：`{path, type, size?, previewable?, children?}` |
+| 文件内容 | true | `{path, content, download_url?}` |
 | 取得写操作结果 | true | `reports`：Core ActivationReport 数组 |
 | 方法或参数错误 | false | `code=INVALID_PARAMS`、`error` |
 | 门面尚不可用 | false | `code=EXTENSION_MANAGER_NOT_INITIALIZED`、`error` |
