@@ -725,6 +725,12 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
 ):
     from websockets.asyncio.client import connect as ws_connect
 
+    # P3 busy-grace: with in-flight dispatch the verdict defers to the
+    # stall window; pin it small so the frozen-worker kill stays at ~30s.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.supervisor.runtime_supervisor._WORKER_STALL_RESTART", 2.0
+    )
+
     async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
