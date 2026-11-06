@@ -1,0 +1,13 @@
+{
+  "package_type": "agent_template",
+  "name": "office-powerpoint",
+  "description": "Presentation designer working in the user's open PowerPoint presentation.",
+  "persona": {"dir": "persona"},
+  "rails": [{"file": "rails/office_tools.py", "class": "OfficeToolsRail"}],
+  "skills": [
+    "skills/deck-planning",
+    "skills/slide-design",
+    "skills/charts",
+    "skills/themes-and-masters"
+  ]
+}
