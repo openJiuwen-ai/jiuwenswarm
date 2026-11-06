@@ -3,8 +3,8 @@
 """spawn_fallback 权限挂起保全与 interrupt 结果识别的回归测试。
 
 - ``_suspend_subagent_permission_rails`` 挂起时只应翻转 enabled，不得清空
-  tools/file_guard（agent-core update_config 是整体替换语义）；不再改
-  ``get_permissions_snapshot``（判定路径已不走 snapshot 刷新）。
+  tools/file_guard（agent-core update_config 是整体替换语义）；并同步替换
+  ``host.get_permissions_snapshot``，避免 resolve_interrupt 用旧快照刷回。
 - interrupt result（``result_type == "interrupt"``）无 output 字段，
   ``spawn_fallback`` 应显式报错而非吞成空输出。
 """
@@ -72,8 +72,8 @@ def test_suspend_preserves_full_config_only_flips_enabled() -> None:
     assert rail.engine_config["file_guard"] == {"workspace": {"read": "allow"}}
 
 
-def test_suspend_does_not_patch_host_snapshot() -> None:
-    """挂起只走 update_config(enabled=False)，不改 host.get_permissions_snapshot。"""
+def test_suspend_patches_host_snapshot_to_disabled_full_config() -> None:
+    """挂起同步替换 host.get_permissions_snapshot，避免 resolve_interrupt 用旧快照刷回。"""
     rail = PermissionInterruptRail(
         {
             "enabled": True,
@@ -82,15 +82,23 @@ def test_suspend_does_not_patch_host_snapshot() -> None:
         }
     )
     subagent = _FakeSubagent([rail])
+    original_snapshot = rail._host.get_permissions_snapshot
 
     restore = _suspend_subagent_permission_rails(subagent)
 
     assert rail.engine_config["enabled"] is False
+    assert rail._host.get_permissions_snapshot() == {
+        "enabled": False,
+        "tools": {"web_search": "allow"},
+        "file_guard": {"workspace": {"read": "allow"}},
+    }
+    restore()
+    assert rail._host.get_permissions_snapshot is original_snapshot
     assert rail._host.get_permissions_snapshot() == {"enabled": True}
 
 
 def test_suspend_restore_returns_original_config() -> None:
-    """恢复后：引擎配置回到挂起前的原值；host snapshot 本就未改。"""
+    """恢复后：引擎配置与 host snapshot 都回到挂起前。"""
     original = {
         "enabled": True,
         "tools": {"web_search": "allow"},
@@ -120,7 +128,7 @@ def test_suspend_includes_flash_permission_rail() -> None:
     rail = FlashPermissionRail({"enabled": True, "tools": {"cron_flash": "ask"}})
     subagent = _FakeSubagent([rail])
 
-    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+    restore = _suspend_subagent_permission_rails(subagent)
 
     assert rail.engine_config["enabled"] is False
     assert rail.engine_config["tools"] == {"cron_flash": "ask"}

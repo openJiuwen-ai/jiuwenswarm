@@ -78,7 +78,9 @@ def test_full_grant_active_state_and_adapter_eviction(stores, manifest):
     set_skill_grant_store(b)
     skill_active_state.clear_session_skill_state("session", local_only=True)
     assert skill_active_state.get_session_active_skill("session") == manifest.skill_name
-    assert set(vars(a)) == {"sessions_root", "data_root"}
+    # File-backed roots must remain; SkillGrantStore.__init__ also installs
+    # in-memory maps / _permission_listeners that FileSkillGrantStore does not use.
+    assert {"sessions_root", "data_root"} <= set(vars(a))
     assert not hasattr(skill_active_state, "_sessions")
 
 

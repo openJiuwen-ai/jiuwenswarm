@@ -1,5 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Session isolation and lifecycle publication, with no configuration read at decision time."""
+"""User/agent-level permission publication after session Manager keys were retired.
+
+Session publish/acquire/retain are no-ops. Skill overlays are composed as
+temporary ``config=`` at check time, not as derived Manager keys.
+"""
 
 import copy
 
@@ -16,6 +20,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
 from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import (
     PublishedPermissionScopes,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+    SkillAuthorizationPermissionRail,
+)
 
 
 @pytest.fixture
@@ -31,8 +38,6 @@ def publisher():
     publisher = PublishedPermissionScopes(
         "w3-published-test", base_config=config, store=store
     )
-    publisher.publish_session("session-one", config)
-    publisher.publish_session("session-two", config)
     yield publisher, store, config
     publisher.close()
 
@@ -51,47 +56,60 @@ def activate(store, session, scope="main"):
     store.activate_pending(session, scope, manifest.skill_name, manifest)
 
 
-@pytest.mark.asyncio
-async def test_activation_publishes_key_and_revoke_removes_it(publisher, monkeypatch):
-    scopes, store, _ = publisher
+def test_session_publish_apis_are_noop(publisher):
+    scopes, _, config = publisher
     manager = get_permission_manager()
-    baseline_key = scopes.key_for("session-one")
-    activate(store, "session-one")
-    skill_key = scopes.key_for("session-one")
-    assert skill_key != baseline_key
-    assert scopes.key_for("session-two") != skill_key
-    monkeypatch.setattr(
-        manager, "get_config", lambda *a: pytest.fail("decision read config")
-    )
-    assert (
-        await manager.check_permission("get_current_user", {}, skill_key)
-    ).permission.value == "allow"
-    assert (
-        await manager.check_permission(
-            "get_current_user", {}, scopes.key_for("session-two")
-        )
-    ).permission.value == "ask"
-    store.invalidate_scope("session-one", "main", reason="test")
-    assert not manager.has_config(skill_key)
-    assert scopes.key_for("session-one") == baseline_key
-    assert (
-        await manager.check_permission("get_current_user", {}, baseline_key)
-    ).permission.value == "ask"
-
-
-def test_session_and_agent_cleanup_remove_derived_keys(publisher):
-    scopes, store, _ = publisher
-    activate(store, "session-one", "child")
-    key = scopes.key_for("session-one", "child")
-    baseline = scopes.key_for("session-one", "")
-    store.clear_session("session-one")
-    assert not get_permission_manager().has_config(key)
-    assert not get_permission_manager().has_config(baseline)
+    before = set(manager.keys())
+    scopes.publish_session("session-one", config)
+    scopes.publish_session("session-two", config)
+    assert scopes.session_ids() == []
+    assert set(manager.keys()) == before
     with pytest.raises(KeyError):
         scopes.key_for("session-one")
-    remaining = scopes.key_for("session-two")
+
+
+@pytest.mark.asyncio
+async def test_activation_uses_temp_config_not_manager_skill_key(publisher):
+    """Skill activation no longer registers a derived Manager key."""
+    from types import SimpleNamespace
+    from openjiuwen.harness.security.skill_authorization import get_skill_grant_store
+
+    _, _, config = publisher
+    manager = get_permission_manager()
+    store = get_skill_grant_store()
+    before = set(manager.keys())
+    rail = SkillAuthorizationPermissionRail(config=config)
+    try:
+        activate(store, "session-one")
+        rail.set_skill_scope_resolver(lambda _: ("session-one", "main"))
+        assert set(manager.keys()) == before | {rail.permission_key}
+        ctx = SimpleNamespace(
+            agent=object(), session=SimpleNamespace(session_id="session-one")
+        )
+        temp = rail._temp_permission_config_for_check(ctx)
+        assert temp is not None
+        assert temp["tools"]["get_current_user"] == "allow"
+        assert (
+            await manager.check_permission("get_current_user", {}, config=temp)
+        ).permission.value == "allow"
+        assert (
+            await manager.check_permission(
+                "get_current_user", {}, rail.permission_key
+            )
+        ).permission.value == "ask"
+        store.invalidate_scope("session-one", "main", reason="test")
+        assert set(manager.keys()) == before | {rail.permission_key}
+    finally:
+        store.clear_session("session-one")
+        rail.uninit(None)
+
+
+def test_session_and_agent_cleanup_do_not_require_session_keys(publisher):
+    scopes, store, _ = publisher
+    activate(store, "session-one", "child")
+    store.clear_session("session-one")
     scopes.close()
-    assert not get_permission_manager().has_config(remaining)
+    assert scopes.session_ids() == []
 
 
 def test_unknown_scope_does_not_register_empty_config(publisher):
@@ -101,17 +119,17 @@ def test_unknown_scope_does_not_register_empty_config(publisher):
     assert not get_permission_manager().has_config("missing-session")
 
 
-def test_refresh_replaces_stable_skill_key_without_removing_it(publisher, monkeypatch):
+def test_publish_session_refresh_is_noop_without_manager_churn(publisher, monkeypatch):
     from unittest.mock import Mock
 
     scopes, store, config = publisher
     activate(store, "session-one")
-    key = scopes.key_for("session-one")
     manager = get_permission_manager()
     remove = Mock(wraps=manager.remove_config)
     monkeypatch.setattr(manager, "remove_config", remove)
+    before = set(manager.keys())
     scopes.publish_session("session-one", config)
-    assert scopes.key_for("session-one") == key
+    assert set(manager.keys()) == before
     remove.assert_not_called()
 
 
@@ -145,24 +163,22 @@ def test_netguard_session_delta_merges_and_reverts_without_mutating_base():
     assert base == original
 
 
-def test_session_policy_write_updates_only_its_published_key(publisher, monkeypatch):
+def test_session_policy_write_updates_memory_overlay_only(publisher, monkeypatch):
     scopes, _, config = publisher
     monkeypatch.setattr(config_loader, "is_enterprise", lambda: True)
     monkeypatch.setattr(config_loader, "get_base_permissions_config", lambda: config)
+    manager = get_permission_manager()
+    before = set(manager.keys())
     try:
         config_loader.persist_permissions_mutate(
-            lambda config: config["net_guard"].update(
-                {"urls": {"blocked.test": "deny"}}
-            ),
+            lambda cfg: cfg["net_guard"].update({"urls": {"blocked.test": "deny"}}),
             session_id="session-one",
         )
-        manager = get_permission_manager()
-        assert manager.get_config(scopes.key_for("session-one"))["net_guard"][
-            "urls"
-        ] == {"blocked.test": "deny"}
-        assert (
-            "urls" not in manager.get_config(scopes.key_for("session-two"))["net_guard"]
-        )
+        assert config_loader.has_session_permissions_overlay("session-one")
+        overlay = config_loader._session_overlays["session-one"]
+        assert overlay["net_guard"]["urls"] == {"blocked.test": "deny"}
+        assert set(manager.keys()) == before
+        assert scopes.session_ids() == []
     finally:
         config_loader.clear_session_permissions_overlay("session-one")
 
@@ -235,7 +251,7 @@ async def test_native_tool_execution_carries_key_and_resets_after_exception_and_
     assert observed == [key, key, key]
 
 
-def test_file_store_activation_and_already_deleted_session_remove_keys(
+def test_file_store_activation_does_not_publish_session_manager_keys(
     tmp_path, monkeypatch
 ):
     from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
@@ -254,19 +270,17 @@ def test_file_store_activation_and_already_deleted_session_remove_keys(
     scopes = PublishedPermissionScopes(
         "w3-file-publisher", base_config=config, store=store
     )
+    manager = get_permission_manager()
+    before = set(manager.keys())
     try:
         scopes.publish_session("session", config)
-        baseline = scopes.baseline_key_for("session")
         activate(store, "session")
-        key = scopes.key_for("session")
-        assert key != baseline
-        assert get_permission_manager().has_config(key)
+        assert set(manager.keys()) == before
         monkeypatch.setattr(
             store, "session_directory", lambda _: tmp_path / "already-deleted"
         )
         store.clear_session("session")
-        assert not get_permission_manager().has_config(key)
-        assert not get_permission_manager().has_config(baseline)
+        assert set(manager.keys()) == before
     finally:
         scopes.close()
 

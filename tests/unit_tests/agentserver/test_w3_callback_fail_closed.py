@@ -76,16 +76,45 @@ async def test_native_ordinary_tool_never_executes_without_complete_permission_v
 
 
 @pytest.mark.asyncio
-async def test_unpublished_active_skill_stops_native_tool():
-    config = {"enabled": True, "tools": {"permission_probe": "allow"}}
+async def test_active_skill_overlay_deny_stops_native_tool():
+    """Skill overlay is applied via temp config=; deny must stop the tool body."""
+    from openjiuwen.harness.security.skill_authorization import (
+        GrantDecision,
+        SkillManifest,
+        SkillTrustLevel,
+        get_skill_grant_store,
+    )
+
+    config = {
+        "enabled": True,
+        "tools": {"permission_probe": "allow"},
+        "skill_authorization": {"enabled": True},
+    }
     rail = SkillAuthorizationPermissionRail(config=config)
-    rail.set_skill_scope_resolver(lambda _: ("unpublished-session", "main"))
-    rail._published_scopes.has_active_grant = Mock(return_value=True)
-    body, tool, session, call = _probe()
-    async with sdk_tools(rail, session, [tool]) as (manager, ctx):
-        result = await manager.execute(ctx, call, session)
-        assert "Permission validation failed" in str(result)
-    body.assert_not_awaited()
+    store = get_skill_grant_store()
+    sid = "overlay-deny-session"
+    try:
+        manifest = SkillManifest(
+            "fixture",
+            "test",
+            None,
+            SkillTrustLevel.OTHER,
+            "hash",
+            skill_md_hash="markdown-hash",
+            overlay={"tools": {"permission_probe": "deny"}},
+        )
+        store.create_pending_grant(sid, "main", manifest, decision=GrantDecision.LOCAL)
+        store.activate_pending(sid, "main", manifest.skill_name, manifest)
+        rail.set_skill_scope_resolver(lambda _: (sid, "main"))
+        body, tool, session, call = _probe()
+        session.session_id = sid
+        async with sdk_tools(rail, session, [tool]) as (manager, ctx):
+            result = await manager.execute(ctx, call, session)
+            assert "PERMISSION_DENIED" in str(result)
+        body.assert_not_awaited()
+    finally:
+        store.clear_session(sid)
+        rail.uninit(None)
 
 
 @pytest.mark.asyncio

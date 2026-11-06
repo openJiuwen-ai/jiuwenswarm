@@ -442,6 +442,7 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
             "PermissionInterruptRail",
             "SkillAuthorizationPermissionRail",
             "SkillTurboPermissionRail",
+            "FlashPermissionRail",
         ):
             continue
         try:

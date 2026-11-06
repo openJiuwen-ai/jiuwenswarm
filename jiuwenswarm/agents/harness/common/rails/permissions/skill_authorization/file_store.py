@@ -74,6 +74,9 @@ class _TransactionStore(SkillGrantStore):
             doc["active_skill"], dict
         ):
             raise TypeError("Invalid active Skill state")
+        # Fulfill SkillGrantStore listener contract (CI core accesses the attr
+        # directly); then replace in-memory maps with this transaction snapshot.
+        super().__init__()
         self._lock = threading.RLock()
         self._grants = {}
         self._skill_executions = {
@@ -298,6 +301,9 @@ class FileSkillGrantStore(SkillGrantStore):
         sessions_root: Callable[[], Path] | None = None,
         data_root: Callable[[], Path] | None = None,
     ) -> None:
+        # Parent installs _permission_listeners; this subclass keeps file-backed
+        # grant state and does not use the in-memory maps from SkillGrantStore.
+        super().__init__()
         self.sessions_root = sessions_root or _session_files_root
         self.data_root = data_root or get_user_workspace_dir
 

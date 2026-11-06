@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import weakref
 
 import pytest
-from agent_shield.tool_permission import PermissionManager, get_permission_manager
+from agent_shield.tool_permission import get_permission_manager, new_permission_manager
 from openjiuwen.harness.security.skill_authorization import SkillGrantStore
 
 from jiuwenswarm.agents.harness.common.rails.permissions import (
@@ -46,7 +46,8 @@ async def test_enterprise_instances_with_same_routing_key_own_distinct_configs()
 
 @pytest.fixture
 def bounded_manager(monkeypatch):
-    manager = PermissionManager(max_keys=3)
+    # f37922e: PermissionManager is process-wide; tests use isolated factory.
+    manager = new_permission_manager(max_keys=3)
     monkeypatch.setattr(scopes_module, "_publishers", weakref.WeakValueDictionary())
     monkeypatch.setattr(scopes_module, "_idle_sessions", OrderedDict())
     monkeypatch.setattr(scopes_module, "MAX_IDLE_PERMISSION_SESSIONS", 2)

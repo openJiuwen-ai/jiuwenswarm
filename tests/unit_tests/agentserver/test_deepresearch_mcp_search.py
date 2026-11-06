@@ -79,6 +79,9 @@ async def test_adapter_provider_requires_current_request_and_permission():
     assert await read(adapter) == []
     adapter._current_request_route["request_id"] = "req-1"
     adapter._resolve_permission_config_for_agent = lambda **kwargs: {"enabled": True}
+    # enabled=True 走 Manager(default)；xdist 同 worker 可能残留 allow 策略，先清空。
+    from agent_shield.tool_permission import get_permission_manager
+    get_permission_manager().update_config({}, "default")
     assert await read(adapter) == []
 
 

@@ -167,18 +167,19 @@ async def test_cron_actions_native_sdk_backend_counts(
     permission_adapter, action, legacy, args, policy, record_property, monkeypatch
 ):
     from flash_sdk import sdk_tools
-    from agent_shield.tool_permission import PermissionEngine
+    from agent_shield.tool_permission import get_permission_manager
 
     from jiuwenswarm.agents.harness.flash.tools.cron_flash import build_cron_flash_tool
 
     observed_args = {}
-    original_check = PermissionEngine.check_permission
+    manager = get_permission_manager()
+    original_check = manager.check_permission
 
-    async def observe(self, tool_name, tool_args):
+    async def observe(tool_name, tool_args, key=None, *, config=None):
         observed_args[tool_name] = dict(tool_args)
-        return await original_check(self, tool_name, tool_args)
+        return await original_check(tool_name, tool_args, key, config=config)
 
-    monkeypatch.setattr(PermissionEngine, "check_permission", observe)
+    monkeypatch.setattr(manager, "check_permission", observe)
 
     methods = {
         name: AsyncMock(return_value={"job_count": 0})

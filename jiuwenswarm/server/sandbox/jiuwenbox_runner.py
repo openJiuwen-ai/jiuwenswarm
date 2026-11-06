@@ -62,7 +62,11 @@ def _win_hidden_kwargs() -> dict:
     if sys.platform != "win32":
         return {}
     import subprocess
-    startupinfo = subprocess.STARTUPINFO()
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is None:
+        # Linux CI may monkeypatch platform=win32 without Windows subprocess APIs.
+        return {}
+    startupinfo = startupinfo_cls()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0  # SW_HIDE
     return {
