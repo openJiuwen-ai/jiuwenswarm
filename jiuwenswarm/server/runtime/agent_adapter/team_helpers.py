@@ -404,6 +404,9 @@ def _team_hide_teammate_enabled() -> bool:
     return os.environ.get(_HIDE_TEAMMATE_ENV_KEY, "").strip().lower() == "true"
 
 _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
+    "conversation_mode_mismatch": (
+        "Team conversation mode cannot change within a session; start a new meeting conversation"
+    ),
     "not_active": "Team is initializing, please try again later",
     "session_mismatch": "Session state mismatch, please refresh and retry",
     "gate_closed": "Team is shutting down, please try again later",

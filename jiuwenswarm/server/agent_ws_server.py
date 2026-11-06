@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
+from openjiuwen.core.common.exception.errors import ValidationError as SDKValidationError
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
@@ -49,6 +50,8 @@ from agent_gateway.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.agents.harness.team.team_manager import get_team_manager
+from jiuwenswarm.extensions.meeting.meeting_manager import close_server_meeting_manager, get_server_meeting_manager
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
@@ -1365,6 +1368,7 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
+        get_server_meeting_manager(get_team_manager(), emit=self.send_push)
         self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
         self._adapter_registry = AdapterRegistry()
         for adapter in (
@@ -2360,6 +2364,7 @@ class AgentWebSocketServer:
             await self._server.wait_closed()
             self._server = None
 
+        await close_server_meeting_manager()
         closing_runtime = self._runtime
         runtime_close_completed = False
         runtime_close_error: BaseException | None = None
@@ -3558,6 +3563,15 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.TEAM_SESSION_BIND:
                 await self._handle_team_session_bind(ws, request, send_lock)
+                return
+            if request.req_method in {
+                ReqMethod.MEETING_START, ReqMethod.MEETING_STATUS, ReqMethod.MEETING_END,
+                ReqMethod.MEETING_RELEASE,
+                ReqMethod.MEETING_PLAYBACK_READY, ReqMethod.MEETING_SPEECH_GET,
+                ReqMethod.MEETING_PLAYBACK_RESULT, ReqMethod.MEETING_PLAYBACK_STOPPED,
+                ReqMethod.MEETING_INPUT_PREPARE, ReqMethod.MEETING_INPUT_ADMITTED,
+            }:
+                await self._handle_meeting_lifecycle(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.TEAM_DELETE:
                 await self._handle_team_delete(ws, request, send_lock)
@@ -6534,6 +6548,81 @@ class AgentWebSocketServer:
                 metadata=request.metadata,
             )
 
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_meeting_lifecycle(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Run meeting controls in the AgentServer that owns the Team runtime."""
+
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(request.session_id or "").strip()
+        owner_id = str(params.get("_meeting_owner_id") or "").strip()
+        startup_id = str(params.get("startup_id") or "").strip() or None
+        try:
+            if not is_valid_session_id(session_id) or session_id == "new" or not (get_agent_sessions_dir() / session_id).is_dir():
+                raise ValueError("Meeting session not found")
+            manager = get_server_meeting_manager()
+            playback_payload = None
+            if request.req_method == ReqMethod.MEETING_START:
+                await manager.request_start(session_id, owner_id, startup_id)
+            elif request.req_method == ReqMethod.MEETING_PLAYBACK_READY:
+                async def emit(payload):
+                    return await self.send_push({
+                        "request_id": request.request_id, "channel_id": request.channel_id,
+                        "session_id": session_id, "payload": payload,
+                    })
+
+                playback_payload = await manager.prepare_browser_playback(
+                    session_id, str(params.get("meeting_id") or ""), owner_id=owner_id,
+                    startup_id=startup_id or "", route_id=str(params.get("_meeting_route_id") or ""),
+                    model=str(params.get("_tts_model") or ""),
+                    config_revision=str(params.get("_tts_revision") or ""),
+                    default_voice=str(params.get("_tts_default_voice") or ""), emit=emit,
+                )
+            elif request.req_method == ReqMethod.MEETING_INPUT_PREPARE:
+                playback_payload = await manager.prepare_human_input(
+                    session_id, str(params.get("meeting_id") or ""), owner_id, params.get("transcript"),
+                )
+            elif request.req_method == ReqMethod.MEETING_INPUT_ADMITTED:
+                playback_payload = await manager.human_input_admitted(
+                    session_id, str(params.get("meeting_id") or ""), owner_id,
+                    str(params.get("interruption_id") or ""),
+                )
+            elif request.req_method in {ReqMethod.MEETING_SPEECH_GET, ReqMethod.MEETING_PLAYBACK_RESULT, ReqMethod.MEETING_PLAYBACK_STOPPED}:
+                consumer = await manager.browser_playback(
+                    session_id, str(params.get("meeting_id") or ""), owner_id,
+                    closing=request.req_method != ReqMethod.MEETING_SPEECH_GET,
+                )
+                if request.req_method == ReqMethod.MEETING_SPEECH_GET:
+                    playback_payload = await consumer.resolve_chunk(params)
+                elif request.req_method == ReqMethod.MEETING_PLAYBACK_RESULT:
+                    playback_payload = await consumer.result(params)
+                else:
+                    playback_payload = consumer.confirm_stop(str(params.get("stop_id") or ""))
+            elif request.req_method == ReqMethod.MEETING_RELEASE:
+                if not await manager.release(
+                    session_id, owner_id, startup_id, transport_loss=params.get("_meeting_transport_loss"),
+                ):
+                    raise ValueError("Meeting is not owned by this connection")
+            elif request.req_method == ReqMethod.MEETING_END:
+                meeting_id = str(params.get("meeting_id") or "").strip()
+                ended = await manager.end(session_id, meeting_id, owner_id=owner_id)
+                if not ended:
+                    raise ValueError("Meeting is not owned by this connection or no longer active")
+            payload = playback_payload if playback_payload is not None else await manager.lifecycle_status(session_id, startup_id)
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=payload, metadata=request.metadata,
+            )
+        except (ValueError, RuntimeError, SDKValidationError) as exc:
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"error": str(exc), "code": "BAD_REQUEST"},
+                metadata=request.metadata,
+            )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)

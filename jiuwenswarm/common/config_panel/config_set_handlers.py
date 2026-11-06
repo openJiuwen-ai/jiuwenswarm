@@ -81,6 +81,7 @@ from jiuwenswarm.common.config import (
     update_swarmflow_enabled_in_config,
     update_symphony_in_config,
     update_task_full_duplex_in_config,
+    update_team_meeting_in_config,
     update_team_organization_ui_in_config,
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
@@ -408,6 +409,8 @@ CONFIG_YAML_KEYS = frozenset({
     "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
+    "team_meeting_enabled",
+    "team_meeting_default_enabled",
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "task_asr_enabled",
@@ -451,6 +454,8 @@ RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
 })
 WEB_UI_YAML_KEYS = frozenset({
     "task_full_duplex_enabled",
+    "team_meeting_enabled",
+    "team_meeting_default_enabled",
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "setup_guide_enabled",
@@ -1704,6 +1709,8 @@ def apply_config_payload(
                 update_progressive_tool_optimize_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
+            elif param_key in {"team_meeting_enabled", "team_meeting_default_enabled"}:
+                update_team_meeting_in_config(parsed, default_for_new_teams=param_key == "team_meeting_default_enabled")
             elif param_key == "team_organization_ui_enabled":
                 update_team_organization_ui_in_config(parsed)
             elif param_key == "comfyui_workflow_enabled":
@@ -1948,6 +1955,8 @@ async def config_get_handler(
         payload["task_full_duplex_enabled"] = (
             "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
         )
+        for key in ("team_meeting_enabled", "team_meeting_default_enabled"):
+            payload[key] = "true" if experimental_cfg.get(key, False) else "false"
         payload["task_asr_enabled"] = (
             "true" if experimental_cfg.get("task_asr_enabled", False) else "false"
         )
@@ -2002,6 +2011,8 @@ async def config_get_handler(
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("team_meeting_enabled", "false")
+        payload.setdefault("team_meeting_default_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
