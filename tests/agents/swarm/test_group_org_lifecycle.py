@@ -120,12 +120,45 @@ async def test_owner_cannot_skip_claim_and_start_before_private_work(organizatio
 
 
 @pytest.mark.asyncio
-async def test_owner_creates_every_child_before_private_work(organization):
+@pytest.mark.parametrize("tool_name", ["create_task", "claim_task", "swarmflow"])
+async def test_owner_can_start_before_downstream_expert_tasks_exist(organization, tool_name):
     state = organization
     assert (await _call(state.rail, OrgCreateTaskTool(state.pool, "finance", "leader"), _child(state, "finance"))).success
-    ctx = _context("create_task", {"tasks": []})
+    ctx = _context(tool_name, {})
     await state.rail.before_tool_call(ctx)
-    assert ctx.extra["_skip_tool"] and "ops, brand" in ctx.inputs.tool_msg.content
+    assert ctx.extra["_skip_tool"] and "org_claim_task" in ctx.inputs.tool_msg.content
+    assert (await state.pool.claim_task(task_id="ot-finance", team_id="finance")).ok
+    ctx = _context(tool_name, {})
+    await state.rail.before_tool_call(ctx)
+    assert ctx.extra["_skip_tool"]
+    assert (await state.pool.start_task(task_id="ot-finance", team_id="finance")).ok
+    ctx = _context(tool_name, {})
+    await state.rail.before_tool_call(ctx)
+    assert not ctx.extra.get("_skip_tool")
+    assert await state.pool.get_task("ot-ops") is None
+    assert await state.pool.get_task("ot-brand") is None
+    assert (await OrgUpdateTaskTool(state.pool, "finance", "leader").invoke(
+        {"task_id": "ot-finance", "action": "complete", "output_abstract": "Upstream analysis"},
+    )).success
+    result = await _call(state.rail, OrgCreateTaskTool(state.pool, "finance", "leader"), _child(state, "brand"))
+    assert result.success, result.error
+    assert (await state.pool.get_task("ot-brand")).parent_task_id == state.root_id
+
+
+@pytest.mark.asyncio
+async def test_accepted_current_stage_does_not_enable_final_integration_with_missing_experts(organization):
+    state = organization
+    assert (await _call(state.rail, OrgCreateTaskTool(state.pool, "finance", "leader"), _child(state, "finance"))).success
+    await _complete(state, "finance")
+    assert (await OrgReviewTaskTool(state.pool, "finance", "leader").invoke(
+        {"task_id": "ot-finance", "review_status": "ACCEPTED"},
+    )).success
+    ctx = _context("create_task", {})
+    await state.rail.before_tool_call(ctx)
+    assert ctx.extra["_skip_tool"]
+    builder = SystemPromptBuilder()
+    await state.rail.before_model_call(SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder)))
+    assert "including tasks not yet created" in builder.build()
 
 
 @pytest.mark.asyncio
@@ -253,7 +286,7 @@ async def test_started_descendant_allows_private_work_after_direct_child_finishe
 
 
 @pytest.mark.asyncio
-async def test_nested_work_does_not_replace_required_direct_expert_children(organization):
+async def test_owner_work_does_not_require_other_experts_to_have_direct_children(organization):
     state = organization
     create = OrgCreateTaskTool(state.pool, "finance", "leader")
     assert (await _call(state.rail, create, _child(state, "finance"))).success
@@ -264,7 +297,7 @@ async def test_nested_work_does_not_replace_required_direct_expert_children(orga
         assert result.success, result.error
     ctx = _context("create_task", {})
     await state.rail.before_tool_call(ctx)
-    assert ctx.extra["_skip_tool"] and "Missing: ops, brand" in ctx.inputs.tool_msg.content
+    assert not ctx.extra.get("_skip_tool")
 
 
 @pytest.mark.asyncio

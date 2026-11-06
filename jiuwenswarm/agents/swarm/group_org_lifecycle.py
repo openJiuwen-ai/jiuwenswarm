@@ -95,6 +95,9 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         )
         if plan.get("owner_member") == self.member_name:
             content += (
+                "Create expert tasks in dependency order; downstream tasks may be created after upstream outputs "
+                "are ready. Before final aggregation, check the full request and every mentioned expert's work, "
+                "including tasks not yet created. Accepted existing children alone do not mean the request is complete. "
                 "Review COMPLETED children whose review is PENDING using org_review_task and their "
                 "organization IDs. Read their outputs with org_view_child_tasks and explicitly choose "
                 "ACCEPTED, NEEDS_REVISION, or REJECTED based on the requirements; private-team review does not count. "
@@ -158,16 +161,11 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
 
     async def _work_error(self, plan: dict, pool: Any, root: Any, rows: list[dict]) -> str | None:
         owner = plan.get("owner_member") == self.member_name
-        if owner:
-            missing = [member for member in plan["members"] if not any(
+        if owner and _covered(rows) and all(
+            any(
                 row.get("required_capabilities") == [f"group-member:{member}"] for row in rows
-            )]
-            if missing:
-                return (
-                    "Create an organization child for every mentioned expert before private work. Missing: "
-                    + ", ".join(missing)
-                )
-        if owner and _covered(rows):
+            ) for member in plan["members"]
+        ):
             return None  # The Owner may delegate final integration to its own team.
         capability = f"group-member:{self.member_name}"
         own = [row for row in rows if row.get("required_capabilities") == [capability]]
@@ -175,7 +173,7 @@ class GroupOrganizationLifecycleRail(DeepAgentRail):
         if any(row["status"] == "IN_PROGRESS" and (row.get("assignment") or {}).get("team_id") == team_id
                for row in own):
             return None
-        # Direct children still define decomposition and source acceptance above.
+        # Direct children still define the final-integration exception above.
         # Only work authorization falls back to descendants, using Core's uncapped
         # child query so deeper or larger trees are not silently truncated.
         own_ids = [row["task_id"] for row in own]
