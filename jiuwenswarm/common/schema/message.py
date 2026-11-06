@@ -143,6 +143,7 @@ _ensure_req_method("CLIENT_ATTACH", "client.attach")
 _ensure_req_method("CLIENT_RENEW", "client.renew")
 _ensure_req_method("CLIENT_LIST", "client.list")
 _ensure_req_method("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages")
+_ensure_req_method("CLIENT_CONVERSATIONS", "client.conversations")
 _ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachments_changed")
 
 _ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")

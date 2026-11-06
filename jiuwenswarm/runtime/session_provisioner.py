@@ -139,8 +139,16 @@ class SessionCreateInput:
     model_selection: dict[str, Any] | None = None
     moa_enabled: bool | None = None
     cron_id: str = ""
+    client_app: str = ""
 
     def __post_init__(self) -> None:
+        if self.client_app:
+            # A client app creates its conversations with its id as ``client_app``.
+            from jiuwenswarm.server.client_attachments.registry import client_apps
+            if self.client_app not in client_apps():
+                raise SessionProvisionError(
+                    f"client_app {self.client_app} is not a registered client app", code="BAD_REQUEST"
+                )
         _require_bool("persist_session", self.persist_session)
         _require_bool("persist_session_supplied", self.persist_session_supplied)
         _require_bool("is_swarm", self.is_swarm)
@@ -801,6 +809,9 @@ class RuntimeSessionProvisioner:
                 not is_swarm
                 and not (provision_input.cron_id and channel_id == "web")
                 and not moa_enabled
+                # A pooled agent is built before its conversation exists;
+                # a client app's conversation is built for its app.
+                and not provision_input.client_app
                 and canonical_mode
                 in {
                     "agent",
@@ -890,6 +901,7 @@ class RuntimeSessionProvisioner:
                     moa_enabled=moa_enabled,
                     cron_id=str(provision_input.cron_id or "").strip(),
                     channel_metadata=channel_metadata,
+                    client_app=provision_input.client_app,
                 )
                 if not explicit_tui_session:
                     self._agent_manager.activate_session_prewarm(session_id)
