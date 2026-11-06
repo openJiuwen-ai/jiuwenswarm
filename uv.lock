@@ -67,7 +67,7 @@ dependencies = [
 [[package]]
 name = "agent-ssas"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=f37922ec5a07eb8a0be4d9c3dc2205833868d50f#f37922ec5a07eb8a0be4d9c3dc2205833868d50f" }
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=9da4824e3224bd2a9d3b5abb44acd94537347a91#9da4824e3224bd2a9d3b5abb44acd94537347a91" }
 dependencies = [
     { name = "pyyaml" },
 ]
@@ -6153,7 +6153,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
-    { name = "agent-ssas", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=f37922ec5a07eb8a0be4d9c3dc2205833868d50f" },
+    { name = "agent-ssas", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=9da4824e3224bd2a9d3b5abb44acd94537347a91" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
