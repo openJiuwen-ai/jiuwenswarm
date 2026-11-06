@@ -11,10 +11,12 @@ result resumes the turn and ``complete`` makes it the tool output.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.foundation.tool import (
     ClientTool,
     ClientToolContext,
@@ -27,6 +29,15 @@ from openjiuwen.core.foundation.tool import (
 
 from jiuwenswarm.office.assets import OfficeAssetStore, referenced_handles
 from jiuwenswarm.office.contract import POWERPOINT_PACKAGE, load_contract
+from jiuwenswarm.office.review import (
+    REVIEW_RENDER_WIDTH,
+    ReviewFailed,
+    geometry_summary,
+    review_slide,
+    verifier_error,
+    verifier_result,
+    vision_client_config,
+)
 from jiuwenswarm.office.runtime import image_attachment
 
 _VISION_TOOL_HINT = (
@@ -39,9 +50,10 @@ _VISION_TOOL_HINT = (
 class PowerPointTool(ClientTool):
     """A contract tool, sent to the task pane of the presentation attached to the call's conversation."""
 
-    def __init__(self, card: ToolCard, *, native_images: Callable[[], bool], store: OfficeAssetStore) -> None:
+    def __init__(self, card: ToolCard, *, native_image_model: Callable[[], Model | None],
+                 store: OfficeAssetStore) -> None:
         super().__init__(card)
-        self._native_images = native_images
+        self._native_image_model = native_image_model
         self._store = store
 
     def build_request(self, arguments: dict[str, Any], context: ClientToolContext) -> dict[str, Any]:
@@ -80,7 +92,7 @@ class PowerPointTool(ClientTool):
         images = (output.data or {}).get("multimodal")
         if not output.success or not images:
             return output
-        if self._native_images():
+        if self._native_image_model() is not None:
             for image in images:
                 image["keep_in_context"] = False
             return output
@@ -96,12 +108,72 @@ class PowerPointTool(ClientTool):
         return output.model_copy(update={"data": data})
 
 
+class VerifySlideVisualTool(PowerPointTool):
+    """``verify_slide_visual``: the task pane captures one slide, a model that saw nothing else reviews it.
+
+    One pause: the task pane answers with the slide's render and geometry, and
+    ``complete`` runs the review, by this conversation's model when it takes
+    images, else by ``models.vision``. The author gets the verdict with the
+    same render, which reaches it as any other contract tool's image does.
+    """
+
+    def build_request(self, arguments: dict[str, Any], context: ClientToolContext) -> dict[str, Any]:
+        request = super().build_request(arguments, context)
+        if self._native_image_model() is None and vision_client_config() is None:
+            raise ClientToolUnavailable(
+                "verify_slide_visual needs a model that can see images: this conversation's model cannot, "
+                "and the vision model (models.vision) is not configured and enabled")
+        return {**request, "render": {"width": REVIEW_RENDER_WIDTH}}
+
+    def complete(self, arguments: dict[str, Any], result: ClientToolResult,
+                 context: ClientToolContext) -> ToolOutput | Awaitable[ToolOutput]:
+        if result.failed:
+            return super().complete(arguments, result, context)
+        return self._reviewed(arguments, result, context)
+
+    async def _reviewed(self, arguments: dict[str, Any], result: ClientToolResult,
+                        context: ClientToolContext) -> ToolOutput:
+        slide_id = arguments["slide_id"]
+        try:
+            render, geometry = _slide_capture(result, slide_id)
+        except ValueError as exc:
+            return ToolOutput(success=False, error=f"verify_slide_visual: {exc}")
+        try:
+            review = await review_slide(self._native_image_model(), render, geometry_summary(geometry),
+                                        arguments.get("expected_changes"))
+        except ReviewFailed as exc:
+            text = verifier_error(slide_id, str(exc))
+        else:
+            text = verifier_result(slide_id, review)
+        reviewed = ClientToolResult(content=[{"type": "text", "text": text}, {"type": "image", "data_url": render}])
+        return super().complete(arguments, reviewed, context)
+
+
+_TOOL_CLASSES: dict[str, type[PowerPointTool]] = {"verify_slide_visual": VerifySlideVisualTool}
+
+
 def build_powerpoint_tools(
-    native_images: Callable[[], bool], store: OfficeAssetStore, package_dir: Path = POWERPOINT_PACKAGE,
+    native_image_model: Callable[[], Model | None], store: OfficeAssetStore, package_dir: Path = POWERPOINT_PACKAGE,
 ) -> list[PowerPointTool]:
     """One tool per contract tool, for one agent."""
-    return [PowerPointTool(tool.card(), native_images=native_images, store=store)
-            for tool in load_contract(package_dir)]
+    return [_TOOL_CLASSES.get(tool.name, PowerPointTool)(
+        tool.card(), native_image_model=native_image_model, store=store) for tool in load_contract(package_dir)]
+
+
+def _slide_capture(result: ClientToolResult, slide_id: str) -> tuple[str, Any]:
+    """The render (an image data URL) and the geometry of the slide the task pane captured for review."""
+    output = default_client_output(result)
+    images = output.data.get("multimodal") or []
+    if len(images) != 1:
+        raise ValueError(f"the task pane returned {len(images)} images instead of one slide render")
+    try:
+        capture = json.loads(output.data["content"])
+    except json.JSONDecodeError as exc:
+        raise ValueError("the task pane did not describe the captured slide") from exc
+    captured = capture.get("slide_id") if isinstance(capture, dict) else None
+    if captured != slide_id:
+        raise ValueError(f"the task pane captured slide {captured!r} instead of {slide_id!r}")
+    return images[0]["data_url"], capture.get("geometry")
 
 
 def _stored_image(session_id: str, data_url: str) -> dict[str, Any]:
