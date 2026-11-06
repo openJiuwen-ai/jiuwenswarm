@@ -80,7 +80,7 @@ _AGENTOS_ENV_CLEANUP = (
     "TOOL_SANDBOX_TYPE", "TOOL_SANDBOX_ENABLE", "TOOL_SANDBOX_IMAGE", "TOOL_SANDBOX_EXECUTOR",
     "TOOL_SANDBOX_USER", "TOOL_SANDBOX_GROUP", "BIND_IP",
     "WEB_STATIC_HOST", "WEB_STATIC_PORT",
-    "ADX_GATEWAY_TOKEN",
+    "ADX_GATEWAY_TOKEN", "JIUWENSWARM_ADX_API_TOKEN",
 )
 _TOOL_ENV_SETTINGS = (
     ("TOOL_SANDBOX_CPU", "cpu", "cpu_limit"),
@@ -129,6 +129,22 @@ def gateway_config(config, settings):
         "runtime_class": runtime.get("agent_runtime", "supervisor"), "builtin_process_from_image": True,
         "workspace_target": "/home/agentos",
     })
+    if runtime.get("agent_runtime") == "runsc":
+        mounts = runtime.get("python_mounts", [])
+        if isinstance(mounts, str):
+            mounts = json.loads(mounts)
+        mounts = [*mounts, {"type": "bind", "host_path": settings["ca_file"], "target": settings["ca_file"], "options": ["ro"]}]
+        gateway["adx"]["builtin_process_from_image"] = False
+        gateway["adx"]["builtin_launch"] = {
+            "process": {"commands": [[settings["python"], "-m", "jiuwenswarm.server.app_agentserver", "--port", "18092"]], "cwd": "/home/agentos"},
+            "mounts": [*mounts, {"type": "bind", "host_path": "/etc/agentos/sandboxd/node-context.json",
+                "target": "/run/agentos/node.json", "options": ["ro"]}],
+            "env": {"HOME": "/home/agentos", "JIUWENSWARM_HOME": "/home/agentos", "AGENT_SERVER_HOST": "0.0.0.0",
+                "PATH": str(Path(settings["python"]).parent) + ":/usr/local/bin:/usr/bin:/bin",
+                "PYTHONDONTWRITEBYTECODE": "1", "SSL_CERT_FILE": settings["ca_file"], "JIUWENSWARM_ADX_NODE_CONTEXT_FILE": "/run/agentos/node.json"},
+            "network": {"ingress_url": runtime["node_ingress_url"],
+                "ingress_policy_peer": settings.get("network", {}).get("ingress_policy_peer"),
+                "allowed_internal_origins": settings.get("network", {}).get("allowed_internal_origins", [])}}
     gateway.setdefault("agentos", {})["workspace_root"] = settings["workspace_root"]
     account = pwd.getpwnam(runtime["user"]) if runtime.get("user") else pwd.getpwuid(os.getuid())
     from jiuwenswarm.common.adx_config import managed_adx_sandbox
@@ -139,6 +155,17 @@ def gateway_config(config, settings):
         "idle_timeout": 60, "user": str(account.pw_uid), "group": str(account.pw_gid),
         "connection": {"verify_tls": True},
     }
+    if defaults["runtime"] == "runsc":
+        python_mounts = runtime.get("python_mounts", [])
+        defaults["mounts"] = json.loads(python_mounts) if isinstance(python_mounts, str) else copy.deepcopy(python_mounts)
+        defaults["mounts"].append({"type": "bind", "host_path": settings["ca_file"], "target": settings["ca_file"], "options": ["ro"]})
+        defaults["env"] = {"PATH": str(Path(settings["python"]).parent) + ":/usr/local/bin:/usr/bin:/bin", "SSL_CERT_FILE": settings["ca_file"]}
+        defaults["runtime_identity"] = {"user": str(account.pw_uid), "group": str(account.pw_gid), "name": account.pw_name}
+    if runtime.get("tool_runtime") == "runsc" and "network" in settings:
+        from jiuwenswarm.extensions.adx.network import tool_policy
+        defaults["network"] = tool_policy(settings["network"].get("tool_origins", []))
+    if runtime.get("tool_network") is not None:
+        defaults["network"] = copy.deepcopy(runtime["tool_network"])
     if settings.get("profile", "standalone") != "agentos":
         defaults["url"] = "${JIUWENSWARM_ADX_NODE_INGRESS_URL}"
     config["sandbox"] = managed_adx_sandbox(config.get("sandbox"), defaults)
@@ -164,8 +191,8 @@ def check_components():
     from adx_environment import Environment  # noqa: F401
     from openjiuwen.extensions.sys_operation.sandbox.providers.adx_environment import _AdxEnvironmentBackend  # noqa: F401
     from jiuwenswarm.extensions.adx.config import AdxRouterConfig
-    if "builtin_process_from_image" not in AdxRouterConfig.__dataclass_fields__:
-        raise ValueError("Swarm needs the builtin_process_from_image compatibility patch")
+    if not {"builtin_process_from_image", "builtin_launch"}.issubset(AdxRouterConfig.__dataclass_fields__):
+        raise ValueError("Swarm needs managed AgentServer launch support")
 
 
 
@@ -193,11 +220,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def ready(settings, timeout=60):
     """Check authenticated ADX API access, not a legacy frontend TCP socket."""
     url = settings["ingress_url"].rstrip("/")
-    if not url.startswith("https://"):
-        raise ValueError("ADX ingress must use HTTPS")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("ADX ingress must be an HTTP(S) origin")
     token = Path(settings["token_file"]).read_text().strip()
-    context = ssl.create_default_context(cafile=settings["ca_file"])
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context), NoRedirect())
+    handlers = [urllib.request.ProxyHandler({}), NoRedirect()]
+    if parsed.scheme == "https":
+        context = ssl.create_default_context(cafile=settings["ca_file"])
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(*handlers)
     request = urllib.request.Request(url + "/api/instances?pageSize=1", headers={"Authorization": "Bearer " + token})
     deadline = time.monotonic() + timeout
     last = "unavailable"
@@ -220,6 +252,38 @@ def ready(settings, timeout=60):
         time.sleep(1)
 
 
+def validate_user_configs(settings):
+    """Validate managed overlays without changing user files or service state."""
+    workspace = Path(settings["workspace_root"])
+    if not workspace.is_dir():
+        raise ValueError("workspace_root is unavailable; prepare the shared workspace directory first")
+    user_updates = []
+    for user in workspace.iterdir():
+        user_config = user / ".jiuwenswarm/config/config.yaml"
+        if user_config.is_file():
+            try:
+                updated = migrate_tool_environment(
+                    gateway_config(read_yaml(user_config), settings), user_config.with_name(".env"))
+                if settings["runtime"].get("agent_runtime") == "runsc":
+                    from jiuwenswarm.extensions.adx.network import agent_policy, workspace_model_origins
+                    agent_policy({"ingress_url": settings["runtime"]["node_ingress_url"],
+                        "ingress_policy_peer": settings.get("network", {}).get("ingress_policy_peer")},
+                        workspace_model_origins(str(user)), settings.get("network", {}).get("allowed_internal_origins", []))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Cannot migrate {user_config}: {exc}") from None
+            user_updates.append((user_config, updated))
+    return user_updates
+
+
+def preflight(settings):
+    """Fail before runtime cutover if retained configuration cannot be used."""
+    check_business(settings)
+    validate_user_configs(settings)
+    config = data_directory(settings) / "config/config.yaml"
+    if config.is_file():
+        migrate_tool_environment(gateway_config(read_yaml(config), settings), config.with_name(".env"))
+
+
 def configure(settings):
     check_business(settings)
     workspace = Path(settings["workspace_root"])
@@ -232,23 +296,13 @@ def configure(settings):
     environment = dict(os.environ, JIUWENSWARM_HOME=str(home))
     if options.get("instance_name"):
         environment["JIUWENSWARM_DATA_DIR"] = str(data)
+    user_updates = validate_user_configs(settings)
     fresh = not config.exists()
     if fresh:
         subprocess.run([settings["python"], "-m", "jiuwenswarm.init_workspace"],
                        env=environment, stdin=subprocess.DEVNULL, check=True)
         if options.get("base_config"):
             write_yaml(config, read_yaml(options["base_config"]))
-    # Validate every historical configuration before changing existing files.
-    user_updates = []
-    for user in workspace.iterdir() if settings.get("update_user_configs", False) else ():
-        user_config = user / ".jiuwenswarm/config/config.yaml"
-        if user_config.is_file():
-            try:
-                updated = migrate_tool_environment(
-                    gateway_config(read_yaml(user_config), settings), user_config.with_name(".env"))
-            except ValueError as exc:
-                raise ValueError(f"Cannot migrate {user_config}: {exc}") from None
-            user_updates.append((user_config, updated))
     env_file = data / "config/.env"
     custom = Path(settings.get("business_env_file") or Path(__file__).with_name(".env.custom"))
     value = migrate_tool_environment(gateway_config(read_yaml(config), settings),
@@ -267,7 +321,8 @@ def configure(settings):
     update_environment(env_file, settings, service=True)
     # Existing users retain model/IAM/session configuration and all data files.
     for user_config, updated in user_updates:
-        write_yaml(user_config, updated)
+        if settings.get("update_user_configs", False):
+            write_yaml(user_config, updated)
         update_environment(user_config.with_name(".env"), settings, user_config.stat())
     return env_file
 
@@ -280,7 +335,13 @@ def update_environment(path, settings, owner=None, *, service=False):
             os.chown(path, owner.st_uid, owner.st_gid)
     owner = path.stat()
     token = Path(settings["token_file"]).read_text().strip()
-    values = {"ADX_TOKEN": token, "SSL_CERT_FILE": settings["ca_file"]}
+    values = {"SSL_CERT_FILE": settings["ca_file"]}
+    if service or settings.get("profile", "standalone") != "agentos":
+        values["ADX_TOKEN"] = token
+    else:
+        for name in ("ADX_TOKEN", "ADX_GATEWAY_TOKEN"):
+            if name in dotenv_values(path, interpolate=False):
+                unset_key(str(path), name)
     node_ingress_key = "JIUWENSWARM_ADX_NODE_INGRESS_URL"
     if (settings.get("profile", "standalone") != "agentos"
             and (service or settings.get("persist_user_node_ingress_url", True))):
@@ -306,7 +367,8 @@ def update_environment(path, settings, owner=None, *, service=False):
         set_key(str(path), key, str(setting))
     existing = dotenv_values(path, interpolate=False)
     if settings.get("profile", "standalone") == "agentos":
-        for key in (*_AGENTOS_ENV_CLEANUP, *(item[0] for item in _TOOL_ENV_SETTINGS)):
+        resource_keys = tuple(item[0] for item in _TOOL_ENV_SETTINGS) if service or settings.get("update_user_configs", False) else ()
+        for key in (*_AGENTOS_ENV_CLEANUP, *resource_keys):
             if key in existing:
                 unset_key(str(path), key)
     os.chown(path, owner.st_uid, owner.st_gid)
@@ -414,7 +476,7 @@ def shell_identity(settings):
 
 def main():
     parser = argparse.ArgumentParser(description="Configure Swarm on an existing ADX cluster")
-    parser.add_argument("action", choices=("configure", "variables", "identity", "ready", "components"))
+    parser.add_argument("action", choices=("configure", "preflight", "variables", "identity", "ready", "components"))
     parser.add_argument("--settings", type=Path, default=Path(__file__).with_name("settings.yaml"))
     parser.add_argument("--bindings", type=Path)
     args = parser.parse_args()
@@ -427,6 +489,8 @@ def main():
     settings = load_settings(args.settings, args.bindings)
     if args.action == "configure":
         configure(settings)
+    elif args.action == "preflight":
+        preflight(settings)
     elif args.action == "variables":
         shell_gateway_variables(settings)
     else:

@@ -7,7 +7,7 @@ parse_args() {
 
     while [ $i -lt ${#args[@]} ]; do
         case "${args[$i]}" in
-            install|configure|up|down|restart|status|uninstall)
+            install|configure|preflight|up|down|restart|status|uninstall)
                 CMD="${args[$i]}"
                 i=$((i+1))
                 ;;
@@ -40,7 +40,7 @@ parse_args() {
 
 print_help() {
     cat << EOF
-Usage: ./deploy.sh install|configure|up|down|restart|status|uninstall [gateway|web]
+Usage: ./deploy.sh install|configure|preflight|up|down|restart|status|uninstall [gateway|web]
 Deploy Gateway/Web on this node using SWARM_SETTINGS.
 Prepare ADX and install the application dependencies before up. An active service is preserved;
 use down/up or restart to apply configuration changes.

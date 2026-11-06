@@ -274,7 +274,16 @@ def get_config():
                 if section == "sandbox" and defaults.get("type") == "adx-environment":
                     from jiuwenswarm.common.adx_config import managed_adx_sandbox
                     defaults = resolve_env_vars(defaults)
-                    node_ingress = os.getenv("JIUWENSWARM_ADX_NODE_INGRESS_URL", "").strip()
+                    context_file = os.getenv("JIUWENSWARM_ADX_NODE_CONTEXT_FILE", "").strip()
+                    if context_file:
+                        with open(context_file, encoding="utf-8") as stream:
+                            node = json.load(stream)
+                        node_ingress = node.get("ingress_url")
+                        if not isinstance(node_ingress, str) or not node_ingress:
+                            raise ValueError("ADX node context requires an ingress_url")
+                        defaults["endpoint_file"] = context_file
+                    else:
+                        node_ingress = os.getenv("JIUWENSWARM_ADX_NODE_INGRESS_URL", "").strip()
                     if not node_ingress:
                         raise ValueError("Managed ADX tools require launcher-injected JIUWENSWARM_ADX_NODE_INGRESS_URL")
                     defaults["url"] = node_ingress
@@ -4224,7 +4233,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     if sandbox_type == "adx-environment":
         for key in ("image", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
                     "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
-                    "schedule_timeout"):
+                    "schedule_timeout", "endpoint_file"):
             if key in sandbox:
                 result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":

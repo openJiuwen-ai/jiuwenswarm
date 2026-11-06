@@ -18,6 +18,7 @@ swarm_config() {
 }
 
 process_configure() { gateway_gen_config; }
+process_preflight() { swarm_config preflight; }
 
 process_install() {
     local -a core swarm

@@ -175,3 +175,34 @@ def test_management_resource_override_keeps_retained_limits_valid(monkeypatch, t
     assert result["cpu"] == result["cpu_limit"] == 2000
     assert result["memory"] == 4096
     assert result["mem_limit"] == 8192
+
+
+def test_shared_parent_keeps_explicit_adx_team_mounts(monkeypatch):
+    from types import SimpleNamespace
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.core.sys_operation.config import SandboxGatewayConfig, PreDeployLauncherConfig
+    from jiuwenswarm.agents.swarm import assembly
+
+    def operation(name, backend, target):
+        return SysOperationSpec(id=name, mode=OperationMode.SANDBOX,
+            gateway_config=SandboxGatewayConfig(launcher_config=PreDeployLauncherConfig(
+                base_url='http://node:8080', sandbox_type=backend,
+                extra_params={'mounts': [{'host_path':target,'target':target,'options':['rw']}]})))
+
+    parent = operation('parent', 'adx-environment', '/workspace')
+    team = operation('adx_team_a', 'adx-environment', '/team-workspace')
+    class Member:
+        def __init__(self, sys_operation):self.sys_operation=sys_operation
+        def model_copy(self, *, update):return Member(update['sys_operation'])
+    spec = SimpleNamespace(agents={'teammate':Member(team), 'fallback':Member(None)},reviewer_agent=Member(team))
+    monkeypatch.setattr(assembly, '_shared_sandbox_sys_operation_spec', lambda _:parent)
+    assembly.assign_shared_sandbox_sys_operation(spec, object())
+    assert spec.agents['teammate'].sys_operation is team
+    assert spec.reviewer_agent.sys_operation is team
+    assert spec.agents['fallback'].sys_operation is parent
+    # The upstream sharing rule remains in place for other backends.
+    parent = operation('parent-conch', 'jiuwenbox-conch', '/workspace')
+    assembly.assign_shared_sandbox_sys_operation(spec, object())
+    assert spec.agents['teammate'].sys_operation is parent
+    assert spec.reviewer_agent.sys_operation is parent

@@ -132,7 +132,7 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
         preserved_keys += DESKTOP_BROWSER_PRESERVED_ENV_KEYS
     if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() == "agentos":
         preserved_keys += (
-            "JIUWENSWARM_ADX_NODE_INGRESS_URL", "JIUWENSWARM_RUNTIME_PROFILE",
+            "JIUWENSWARM_ADX_NODE_INGRESS_URL", "JIUWENSWARM_ADX_NODE_CONTEXT_FILE", "JIUWENSWARM_RUNTIME_PROFILE",
             "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG", "JIUWENSWARM_USER_DIRECTORY",
             "SSL_CERT_FILE", "ADX_TOKEN",
             "GATEWAY_HOST", "GATEWAY_PORT", "WEB_HOST", "WEB_PORT",
@@ -146,6 +146,20 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
         # Prefer remapped AGENT_SERVER_PORT over any URL from .env/parent env.
         os.environ.pop("AGENT_SERVER_URL", None)
     return loaded
+
+
+def load_agentos_api_credential() -> None:
+    """Move the launch-only AgentOS credential into the SDK environment.
+
+    Call before loading workspace dotenv. ADX reserves its own environment
+    prefix in create requests; the application consumes its dedicated key.
+    """
+    if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        token = os.environ.pop("JIUWENSWARM_ADX_API_TOKEN", None)
+        if token is not None:
+            if not token.strip():
+                raise ValueError("AgentOS launch credential is empty")
+            os.environ["ADX_TOKEN"] = token
 
 
 def parse_dotenv_early(component_name: str = "jiuwenswarm") -> Path | None:

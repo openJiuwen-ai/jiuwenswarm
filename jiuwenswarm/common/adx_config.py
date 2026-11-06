@@ -5,13 +5,14 @@ from __future__ import annotations
 import copy
 import logging
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 ADX_TOOL_KEYS = (
     "image", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
     "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
-    "schedule_timeout",
+    "schedule_timeout", "endpoint_file",
 )
 
 
@@ -67,12 +68,17 @@ def managed_adx_sandbox(local: dict | None, deployment: dict) -> dict:
     for key in ADX_TOOL_KEYS:
         if key in local and not (legacy and key in ("image", "runtime", "connection")):
             result[key] = copy.deepcopy(local[key])
+    replaced_managed_image = (deployment.get("runtime") == "runsc"
+                              and local.get("image") == "agentos-tools:v1"
+                              and deployment.get("image") != local.get("image"))
+    if replaced_managed_image:
+        result["image"] = deployment["image"]
     for request, limit in (("cpu", "cpu_limit"), ("memory", "mem_limit")):
         if request in local and limit not in local:
             result[limit] = local[request]
     replaced = tuple(sorted(key for key in ("executor", "template_name", "conch", "token", "use_random_token")
                             if local.get(key)))
-    if legacy and local.get("image"):
+    if (legacy and local.get("image")) or replaced_managed_image:
         replaced += ("image",)
     if replaced:
         _warn_legacy_fields(replaced)
@@ -97,7 +103,7 @@ def managed_adx_sandbox(local: dict | None, deployment: dict) -> dict:
             raise ValueError("sandbox.user conflicts with sandbox.group")
         result.update(user=user, group=group)
     mounts = []
-    for entries in (local.get("mounts"), rootfs.get("mounts")):
+    for entries in (deployment.get("mounts"), local.get("mounts"), rootfs.get("mounts")):
         if entries is None:
             continue
         if not isinstance(entries, list):
@@ -108,16 +114,43 @@ def managed_adx_sandbox(local: dict | None, deployment: dict) -> dict:
                 raise ValueError("sandbox.mounts contain conflicting entries for the same target")
             if native not in mounts:
                 mounts.append(native)
-    if "mounts" in local or "mounts" in rootfs:
+    if "mounts" in deployment or "mounts" in local or "mounts" in rootfs:
         result["mounts"] = mounts
-    # User YAML cannot redirect tools to an old node or disable deployment TLS.
+    # Routing, protocol and runtime come from the current deployment.
+    if deployment.get("runtime"):
+        result["runtime"] = deployment["runtime"]
+    identity = deployment.get("runtime_identity")
+    if result.get("runtime") == "runsc" and identity and local.get("conch"):
+        raise ValueError("sandbox.conch requires explicit migration to the runsc network and OCI configuration")
+    if result.get("runtime") == "runsc" and identity:
+        result["runtime_identity"] = copy.deepcopy(identity)
+        if "network" in result:
+            from jiuwenswarm.extensions.adx.network import managed_tool_policy
+            result["network"] = managed_tool_policy(result["network"])
+        for key in ("user", "group"):
+            value = result.pop(key, None)
+            if value is not None and str(value) not in (str(identity[key]), identity.get("name")):
+                raise ValueError(f"sandbox.{key} differs from the deployed runsc OCI identity; migrate explicitly")
+    # Deployment policy is a mandatory starting point; requests remain subject
+    # to the node ceiling. Portable user restrictions must not be discarded.
+    if deployment.get("endpoint_file"):
+        result["endpoint_file"] = deployment["endpoint_file"]
+    if isinstance(result.get("env"), dict):
+        result["env"] = {key: value for key, value in result["env"].items()
+                         if key not in ("ADX_TOKEN", "ADX_GATEWAY_TOKEN", "JIUWENSWARM_ADX_API_TOKEN")}
     connection = result.get("connection") or {}
     if not isinstance(connection, dict):
         raise ValueError("sandbox.connection must be a mapping")
     connection = {key: value for key, value in connection.items()
                   if key not in ("server_address", "gateway_address", "token", "token_provider", "use_tls", "gateway_use_tls", "verify_tls")}
     connection.update(deployment.get("connection") or {})
-    connection["verify_tls"] = True
+    scheme = urlsplit(deployment.get("url") or "").scheme
+    if scheme and scheme not in ("http", "https"):
+        raise ValueError("managed ADX ingress must be an HTTP(S) origin")
+    use_tls = scheme != "http" if scheme else connection.get("use_tls", True)
+    connection["verify_tls"] = bool(use_tls)
+    if not use_tls or "use_tls" in connection:
+        connection["use_tls"] = bool(use_tls)
     result.update(type="adx-environment", enabled=True, connection=connection)
     if deployment.get("url"):
         result["url"] = deployment["url"]

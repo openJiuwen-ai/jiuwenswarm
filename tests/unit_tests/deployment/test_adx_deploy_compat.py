@@ -78,9 +78,15 @@ class DeploymentTests(unittest.TestCase):
     def test_redirect_cannot_forward_tenant_credential(self):
         self.assertIsNone(deploy.NoRedirect().redirect_request(None, None, 302, "found", {}, "https://other.example"))
 
-    def test_plain_http_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "HTTPS"):
-            deploy.ready(dict(self.settings, ingress_url="http://adx.example"))
+    def test_explicit_http_readiness_keeps_authentication_without_loading_certificates(self):
+        opener = Mock()
+        opener.open.return_value = self.response()
+        with patch.object(deploy.ssl, "create_default_context") as context, patch.object(deploy.urllib.request, "build_opener", return_value=opener):
+            deploy.ready(dict(self.settings, ingress_url="http://127.0.0.1:8080"), timeout=0)
+        context.assert_not_called()
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:8080/api/instances?pageSize=1")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-only-fixture")
 
     def test_existing_model_iam_session_and_workspace_are_preserved(self):
         config = self.root / "home/.jiuwenswarm/config/config.yaml"
@@ -111,11 +117,57 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn("MODEL_NAME='original'", env_text)
             self.assertNotIn("TOOL_SANDBOX_CPU=", env_text)
             self.assertNotIn("TOOL_SANDBOX_MEMORY=", env_text)
-            self.assertIn("ADX_TOKEN=", path.with_name(".env").read_text())
+            self.assertEqual("ADX_TOKEN=" in path.with_name(".env").read_text(), path == config)
             self.assertEqual(path.with_name(".env").stat().st_mode & 0o777, 0o600)
         self.assertEqual(sentinel.read_bytes(), b"retained-session-fixture")
         self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
         self.assertNotIn("JIUWENSWARM_ADX_NODE_INGRESS_URL=", environment.read_text())
+
+    def test_managed_overlay_validates_without_rewriting_user_yaml_or_persisting_token(self):
+        self.settings["update_user_configs"] = False
+        global_config = self.root / "home/.jiuwenswarm/config/config.yaml"
+        user = self.root / "users/alice/.jiuwenswarm/config/config.yaml"
+        for path in (global_config, user):
+            deploy.write_yaml(path, {"models": [{"name": "keep"}], "sandbox": {"type": "yuanrong", "cpu": 1200}})
+            path.with_name(".env").write_text("MODEL_KEY=keep\nADX_TOKEN=old-secret\nADX_GATEWAY_TOKEN=old-secret\n")
+        original = user.read_bytes()
+        with patch.object(deploy, "check_business"):
+            deploy.configure(self.settings)
+        self.assertEqual(user.read_bytes(), original)
+        text = user.with_name(".env").read_text()
+        self.assertIn("MODEL_KEY=keep", text)
+        self.assertNotIn("ADX_TOKEN", text)
+        self.assertNotIn("ADX_GATEWAY_TOKEN", text)
+
+    def test_retained_yaml_keeps_legacy_resource_environment_until_explicit_migration(self):
+        self.settings["update_user_configs"] = False
+        config = self.root / "home/.jiuwenswarm/config/config.yaml"
+        user = self.root / "users/alice/.jiuwenswarm/config/config.yaml"
+        for path in (config, user):
+            deploy.write_yaml(path, {"sandbox": {"type": "yuanrong", "cpu": 500}})
+            path.with_name(".env").write_text("TOOL_SANDBOX_CPU=750\nTOOL_SANDBOX_MEMORY=1024\n")
+        before = user.read_bytes()
+        with patch.object(deploy, "check_business"):
+            deploy.configure(self.settings)
+        self.assertEqual(user.read_bytes(), before)
+        from dotenv import dotenv_values
+        self.assertEqual(dotenv_values(user.with_name(".env"))["TOOL_SANDBOX_CPU"], "750")
+        self.assertNotIn("TOOL_SANDBOX_CPU", dotenv_values(config.with_name(".env")))
+        self.assertEqual(deploy.read_yaml(config)["sandbox"]["cpu"], 750)
+
+    def test_preflight_rejects_bad_retained_config_without_writing_or_initializing(self):
+        user = self.root / "users/alice/.jiuwenswarm/config/config.yaml"
+        deploy.write_yaml(user, {"sandbox": {"type": "yuanrong"}})
+        env = user.with_name(".env")
+        env.write_text("TOOL_SANDBOX_CPU=invalid\n")
+        before = {path: path.read_bytes() for path in (user, env)}
+        with patch.object(deploy, "check_business"), patch.object(deploy.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "Cannot migrate.*TOOL_SANDBOX_CPU"):
+                deploy.preflight(self.settings)
+        run.assert_not_called()
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertFalse((self.root / "home/.jiuwenswarm").exists())
 
     def test_regeneration_preserves_supported_customization_and_removes_noops(self):
         self.settings["shared_workspace_sqlite"] = True

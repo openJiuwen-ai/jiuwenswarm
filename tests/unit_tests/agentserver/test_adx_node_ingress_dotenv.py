@@ -37,6 +37,7 @@ def test_agentos_shared_dotenv_cannot_replace_injected_tool_identity(monkeypatch
         "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
         "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG": '{"type":"adx-environment"}',
         "JIUWENSWARM_USER_DIRECTORY": "/shared/alice",
+        "JIUWENSWARM_ADX_NODE_CONTEXT_FILE": "/run/agentos/node.json",
         "SSL_CERT_FILE": "/etc/agentos/trust.pem",
         "ADX_TOKEN": "injected-fixture-token",
     }
@@ -62,3 +63,25 @@ def test_agentos_launcher_ports_win_while_cli_can_load_generated_ports(monkeypat
     assert os.environ["GATEWAY_PORT"] == "29001"
     assert os.environ["FRONTEND_HOST"] == "0.0.0.0"
     assert os.environ["FRONTEND_PORT"] == "25173"
+
+
+def test_agentos_launch_credential_reaches_sdk_and_survives_user_dotenv(monkeypatch, tmp_path):
+    from jiuwenswarm.dotenv_early import load_agentos_api_credential
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    monkeypatch.setenv("JIUWENSWARM_ADX_API_TOKEN", "launch-secret")
+    monkeypatch.setenv("ADX_TOKEN", "old")
+    load_agentos_api_credential()
+    assert "JIUWENSWARM_ADX_API_TOKEN" not in os.environ
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("ADX_TOKEN=stale\n")
+    load_dotenv_runtime(dotenv)
+    assert os.environ["ADX_TOKEN"] == "launch-secret"
+
+
+def test_other_backends_do_not_consume_agentos_credential(monkeypatch):
+    from jiuwenswarm.dotenv_early import load_agentos_api_credential
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "standalone")
+    monkeypatch.setenv("JIUWENSWARM_ADX_API_TOKEN", "unused")
+    monkeypatch.delenv("ADX_TOKEN", raising=False)
+    load_agentos_api_credential()
+    assert "ADX_TOKEN" not in os.environ

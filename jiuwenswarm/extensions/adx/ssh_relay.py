@@ -77,8 +77,10 @@ class AdxSshRelay(YuanrongSshRelay):
         asyncssh = _import_asyncssh()
         keys = self._resolve_client_keys(user_id)
         origin = urlsplit(self._adx.ingress_url)
-        reader, writer = await asyncio.open_connection(origin.hostname, origin.port or 443,
-            ssl=ssl.create_default_context(), server_hostname=origin.hostname)
+        tls = origin.scheme == 'https'
+        reader, writer = await asyncio.open_connection(origin.hostname, origin.port or (443 if tls else 80),
+            ssl=ssl.create_default_context() if tls else None,
+            server_hostname=origin.hostname if tls else None)
         peer_writer = None
         client_socket = None
         bridge_socket = None

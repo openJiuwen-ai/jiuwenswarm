@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import uuid
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -42,6 +43,7 @@ class AdxControlClient:
         self.agent_namespace = config.router.agent_namespace
         self.frontend_endpoint = config.ingress_url
         self.server_ready = False
+        self.agent_idle_timeout_seconds = config.router.sandbox_idle_timeout_seconds
         self.http = httpx.AsyncClient(
             timeout=config.connect_timeout_seconds, follow_redirects=False, transport=transport,
         )
@@ -49,6 +51,9 @@ class AdxControlClient:
         self._confirmed_creates: set[str] = set()
         self._terminal_creates: set[str] = set()
         self._deletes: dict[str, str] = {}
+        self._network_locks: dict[str, asyncio.Lock] = {}
+        self._network_applied: dict[str, str] = {}
+        self._network_pending: dict[str, tuple[str, str, dict]] = {}
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -67,17 +72,19 @@ class AdxControlClient:
         del config, env
 
     async def _request(self, method: str, path: str, *, body: dict | None = None,
-                       request_id: str | None = None, params: dict | None = None,
+                       request_id: str | None = None, operation_id: str | None = None, params: dict | None = None,
                        missing_ok: bool = False) -> Any:
         headers = {'Authorization': 'Bearer ' + self.config.token}
         if request_id:
             headers['X-Request-Id'] = request_id
+        if operation_id:
+            headers['X-ADX-Request-ID'] = operation_id
         try:
             response = await self.http.request(method, urljoin(self.config.ingress_url, path),
                                                headers=headers, json=body, params=params)
         except httpx.RequestError as exc:
             error = AdxCreateTimeout if method == 'POST' and path.endswith('/environments') else AdxControlError
-            raise error('ADX operation outcome is unknown; reuse the same instance') from exc
+            raise error('ADX operation outcome is unknown; reuse the same instance', outcome='unknown') from exc
         if missing_ok and response.status_code == 404:
             return None
         try:
@@ -157,6 +164,14 @@ class AdxControlClient:
                 'env': dict(env_vars or {}),
                 'mounts': [{'type': 'bind', 'host_path': workspace, 'target': self.config.workspace_target,
                             'options': ['rbind', 'rw']}]}
+        if self.config.runtime_class == 'runsc':
+            timeout = self.agent_idle_timeout_seconds
+            if not math.isfinite(timeout):
+                raise ValueError('Agent idle timeout must be finite')
+            seconds = math.ceil(max(0, timeout))
+            if seconds >= 1 << 64:
+                raise ValueError('Agent idle timeout exceeds uint64')
+            body['idleTimeoutSeconds'] = seconds
         if self.config.restart_policy is not None:
             body['restartPolicy'] = dict(self.config.restart_policy)
         process = {}
@@ -198,7 +213,50 @@ class AdxControlClient:
                 if action and 'port' in action:
                     ports.append(str(action['port']))
         body['ports'] = sorted(set(ports))
+        if builtin and self.config.builtin_launch:
+            launch = self.config.builtin_launch
+            body['process'] = copy.deepcopy(launch['process'])
+            body['mounts'].extend(copy.deepcopy(launch.get('mounts', [])))
+            body['env'].update(copy.deepcopy(launch.get('env', {})))
+            # Only the AgentServer receives the deployment API credential.
+            body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+            if 'network' in launch:
+                from jiuwenswarm.extensions.adx.network import agent_policy, public_policy, workspace_model_origins
+                network = launch['network']
+                body['network'] = public_policy(agent_policy({'ingress_url': network['ingress_url'], 'ingress_policy_peer': network.get('ingress_policy_peer')},
+                    workspace_model_origins(workspace), network.get('allowed_internal_origins', [])))
         return body
+
+    async def ensure_builtin_network(self, instance: str, workspace: str) -> None:
+        launch = self.config.builtin_launch or {}
+        if 'network' not in launch:
+            return
+        from jiuwenswarm.extensions.adx.network import agent_policy, public_policy, workspace_model_origins
+        network = launch['network']
+        desired = public_policy(agent_policy({'ingress_url': network['ingress_url'], 'ingress_policy_peer': network.get('ingress_policy_peer')},
+            workspace_model_origins(workspace), network.get('allowed_internal_origins', [])))
+        digest = hashlib.sha256(json.dumps(desired, sort_keys=True).encode()).hexdigest()
+        async with self._network_locks.setdefault(instance, asyncio.Lock()):
+            # Reconcile an ambiguous previous replacement before submitting a
+            # different policy. A model switch must not reorder old mutations.
+            if instance in self._network_pending:
+                await self._apply_pending_network(instance)
+            if self._network_applied.get(instance) == digest:
+                return
+            self._network_pending[instance] = (digest, 'network-' + uuid.uuid4().hex, desired)
+            await self._apply_pending_network(instance)
+
+    async def _apply_pending_network(self, instance: str) -> None:
+        digest, operation, policy = self._network_pending[instance]
+        try:
+            await self._request('PUT', f'/api/environment/v1/environments/{quote(instance, safe="")}/network',
+                                body=policy, request_id=operation, operation_id=operation)
+        except AdxControlError as error:
+            if error.outcome in ('terminal', 'not_started') or error.code in ('INVALID_ARGUMENT', 'PERMISSION_DENIED', 'NOT_FOUND'):
+                self._network_pending.pop(instance, None)
+            raise
+        self._network_applied[instance] = digest
+        self._network_pending.pop(instance, None)
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
@@ -242,16 +300,20 @@ class AdxControlClient:
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         del trace_id
-        operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
-        await self._request(
-            'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
-            request_id=operation, missing_ok=True,
-        )
-        logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
-        self._deletes.pop(sandbox_id, None)
-        self._creates.pop(sandbox_id, None)
-        self._confirmed_creates.discard(sandbox_id)
-        self._terminal_creates.discard(sandbox_id)
+        # Keep policy results from repopulating the cache after deletion.
+        async with self._network_locks.setdefault(sandbox_id, asyncio.Lock()):
+            operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
+            await self._request(
+                'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
+                request_id=operation, missing_ok=True,
+            )
+            self._network_applied.pop(sandbox_id, None)
+            self._network_pending.pop(sandbox_id, None)
+            logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
+            self._deletes.pop(sandbox_id, None)
+            self._creates.pop(sandbox_id, None)
+            self._confirmed_creates.discard(sandbox_id)
+            self._terminal_creates.discard(sandbox_id)
 
     async def invoke(self, environment: str, action: str, args: dict) -> dict:
         rid = 'invoke-' + uuid.uuid4().hex

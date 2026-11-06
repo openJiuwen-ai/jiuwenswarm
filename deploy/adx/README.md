@@ -79,20 +79,13 @@ The generated `sandbox` block contains only ADX tool settings. ADX manages tool
 lifecycle, so `startup_mode` is unnecessary; old `internal`/`external` values are
 accepted and ADX always uses external lifecycle management.
 
-In the AgentOS runtime profile, tool ingress comes only from the selected node's
-launcher-injected `JIUWENSWARM_ADX_NODE_INGRESS_URL`. Templates omit `sandbox.url`,
-Gateway sandbox JSON omits the address, and application/user dotenv files do not
-persist it. Runtime resolves the injected value into the SDK's effective URL;
-missing injection is an error. Deployment owns the backend, enabled state and TLS
-verification. Historical
-user `url` and `connection.server_address/gateway_address/token/use_tls` values
-cannot override that route. Credentials continue to come from the deployment's
-ADX environment settings. Personal/non-ADX profiles keep their existing merge
-behavior.
+In the AgentOS runtime profile, a deployment may inject `JIUWENSWARM_ADX_NODE_CONTEXT_FILE` pointing to a read-only JSON file with `ingress_url` and `node_id`. Runtime reads the target node's file and passes `endpoint_file` to Core. Core refreshes the SDK connection scope before obtaining a tool environment, including when nodes share the same bridge address. Missing or invalid configured files fail closed. Existing launcher-injected `JIUWENSWARM_ADX_NODE_INGRESS_URL` remains supported when no context file is configured.
+
+Deployment owns routing, protocol and runtime. HTTP/WS is explicitly supported for trusted loopback/bridge endpoints; HTTPS/WSS continues to verify TLS. Historical user URL, token and connection transport fields cannot redirect or downgrade a managed endpoint. Personal/non-ADX profiles keep their existing merge behavior.
 
 Repeated configuration preserves models, IAM, sessions, supported ADX options,
 SSH known-hosts settings and connection timeout. Portable legacy CPU/memory,
-UID/GID, workdir and absolute local mounts are retained. A legacy mount's
+workdir and absolute local mounts are retained; identity is checked against the selected runtime. A legacy mount's
 `source/target/readonly` becomes ADX `host_path/target/options`; omitted target
 means source and omitted readonly means writable, matching the previous mapping.
 `rootfs.workdir/mounts/user` are also supported. Identical platform workspace
@@ -100,12 +93,11 @@ mounts are deduplicated, while conflicting mounts are rejected.
 
 Legacy Docker image/executor and Jiuwenbox template selectors are replaced by
 the deployment's registered ADX image/runtime, with a warning containing field
-names only. A custom Docker image must be registered as an ADX image binding and
+names only. A custom image must be supported by the selected ADX backend and
 configured explicitly with `type: adx-environment`. Nonlocal legacy mount
 sources, other rootfs fields, file policies and excluded commands require explicit
 migration; configuration reports an error instead of dropping these settings.
-The deploy command updates existing user YAML and connection environment files;
-workspace content, model settings and session databases are retained.
+The deploy command validates existing user configurations. AgentOS can set `update_user_configs: false` to retain user YAML byte-for-byte and apply the deployment overlay in memory. User dotenv cleanup removes deployment API credentials while retaining model and business values. Workspace content, model settings and session databases are retained.
 
 Unused `checkpoint.sqlite_journal_mode`, `workspace_sqlite.journal_mode` and
 legacy SSH `user_template` are no longer generated. Team SQLite's `db_enable_wal`
@@ -122,11 +114,11 @@ A higher user limit is retained.
 
 Persisted ADX tool resources live in `config.yaml::sandbox`. Deployment first
 migrates effective legacy `TOOL_SANDBOX_CPU/MEMORY/IDLE_TIMEOUT` dotenv values to
-YAML, then removes the duplicates and retired YuanRong installer variables.
+YAML, then removes the duplicates and retired YuanRong installer variables. When user YAML is retained, its legacy resource environment overrides remain until an explicit migration.
 Invalid resource values fail before writing existing files. Management-plane
 process overrides retain their existing priority and dynamic update behavior.
 
-Gateway and tool SDK authentication share `ADX_TOKEN`; the generated
+Gateway and the tool SDK inside AgentServer share `ADX_TOKEN`; tools do not inherit it; the generated
 `gateway.adx.token_env` selects it. The identical `ADX_GATEWAY_TOKEN` duplicate is
 removed. Model credentials and unknown application variables are retained.
 Gateway/Web listen addresses and ports come from deployment settings and are
@@ -134,8 +126,18 @@ also written to application dotenv for CLI, Web and upgrade readers. AgentOS
 launcher values take precedence when present. Legacy input cleanup is scoped to
 the managed AgentOS profile; standalone retains existing inputs and token aliases. Builtin Agent resource
 environment variables and CA settings remain active inputs. Node ingress is
-supplied only by the runtime launcher.
+supplied by the selected node context or legacy runtime launcher.
 
 ADX's `deployment.env` expands native deployment YAML into component JSON; some
 Ingress settings are also consumed directly from its process environment. These
 bindings and generated outputs are separate stages of the same configuration.
+
+### Runsc AgentServer and tools
+
+AgentOS selects AgentServer and tool runtimes independently in deployment settings. For `agent_runtime: runsc`, the deploy helper generates `gateway.adx.builtin_launch` with an explicit Python command, read-only Python/library/CA mounts, a target-node context file, and network settings. Only the builtin AgentServer receives the Gateway's API credential as `JIUWENSWARM_ADX_API_TOKEN`; its entrypoint consumes that key into the SDK's `ADX_TOKEN` before loading user dotenv. ADX's reserved environment prefix remains protected. Tool SDK calls authenticate inside AgentServer; tools do not inherit that credential or its context-file mount. Host Python and mount layouts must match across eligible nodes.
+
+AgentServer egress selects model origins from the user's model configuration and dotenv fallback; it does not copy API keys into policies. Private model origins need explicit deployment permission. Tools default to deny traffic and DNS, with optional `network.tool_origins`. Node policy is a mandatory permission ceiling. Runsc identity is defined by the deployed OCI spec: incompatible historical user/group or Conch-specific settings require migration, while legacy network denials are retained. Portable resource, mount and directory settings remain supported. Network isolation does not provide per-user authorization with a shared deployment token.
+
+The generated AgentServer traffic policy can select `network.ingress_policy_peer`; Enterprise maps that peer to each node bridge in the optional ADX baseline. Restored requests retain the logical peer while the endpoint file supplies the actual target-node URL. Model policy refresh sends the lifecycle `X-ADX-Request-ID` separately from correlation headers. An unconfigured model grants no model network access. Workspace model resolution does not inherit model endpoints from the Gateway process. The managed `agentos-tools:v1` Conch binding follows the deployment image when selecting runsc; other explicitly configured OCI images remain unchanged.
+
+For runsc AgentServers, ADX owns the Environment's idle deletion and checkpoint retention. Gateway copies its configured Agent idle timeout into `idleTimeoutSeconds` when creating the Environment. Later timeout changes apply to new Environments. Gateway's idle/disconnect cleanup releases local routing state and closes Relay activity; it does not delete the native Environment. A business transport error also retains Running, Pausing, Paused, Resuming and retrying executions. Confirmed terminal failures can use the existing cleanup path. Explicit user deletion still retires the Environment and its checkpoints. The tool idle timeout remains independent.

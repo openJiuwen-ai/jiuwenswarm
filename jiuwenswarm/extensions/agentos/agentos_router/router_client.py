@@ -3379,8 +3379,11 @@ class AgentOSRouterClient(AgentServerClient):
                     deployment.pop("url", None)
                     deployment.pop("startup_mode", None)
                     deployment.update(_pick_keys(sandbox_config, (
-                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network",
+                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network", "runtime_identity", "mounts", "env",
                     )))
+                    if isinstance(deployment.get("env"), dict):
+                        deployment["env"] = {key: value for key, value in deployment["env"].items() if key not in (
+                            "ADX_TOKEN", "ADX_GATEWAY_TOKEN", "JIUWENSWARM_ADX_API_TOKEN", "JIUWENSWARM_ADX_NODE_CONTEXT_FILE", "JIUWENSWARM_ADX_NODE_INGRESS_URL")}
                 conch = sandbox_config.get("conch")
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (

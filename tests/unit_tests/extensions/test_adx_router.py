@@ -33,6 +33,15 @@ def _config(monkeypatch, *, sandbox=None, **overrides):
     }, 'sandbox': sandbox})
 
 
+def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monkeypatch):
+    config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080')
+    router = AdxRouterClient(config)
+    assert urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'ws'
+    assert urlsplit(router._agent_http_url('test-alice+jiuwenswarm', 18092)).scheme == 'http'
+    secure = AdxRouterClient(_config(monkeypatch))
+    assert urlsplit(secure._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'wss'
+
+
 class EnvironmentAPI:
     def __init__(self, tenant='appliance'):
         self.tenant = tenant
@@ -278,7 +287,7 @@ async def test_terminal_environment_is_cleaned_and_next_request_recreates(monkey
         await router.shutdown()
 
 
-@pytest.mark.parametrize('url', ['http://adx.example', 'https://user:secret@adx.example', 'https://adx.example/path',
+@pytest.mark.parametrize('url', ['ftp://adx.example', 'https://user:secret@adx.example', 'https://adx.example/path',
                                   'https://adx.example?token=x', 'https://adx.example/#fragment'])
 def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
     with pytest.raises(ValueError):
@@ -414,6 +423,8 @@ async def test_adx_gateway_does_not_broadcast_its_tool_ingress_to_another_node(m
     router.set_or_update_server_config(config={"sandbox": {
         "enabled": True, "type": "adx-environment", "url": "https://master:8443",
         "startup_mode": "external", "image": "tools:v1", "runtime": "conch",
+        "mounts": [{"host_path": "/opt/python", "target": "/opt/python", "options": ["ro"]}],
+        "env": {"PATH": "/opt/python/bin:/usr/bin", "ADX_TOKEN": "not-for-tools", "JIUWENSWARM_ADX_NODE_CONTEXT_FILE": "/private-node.json"},
     }})
     await router.connect("")
     try:
@@ -424,5 +435,78 @@ async def test_adx_gateway_does_not_broadcast_its_tool_ingress_to_another_node(m
         assert "startup_mode" not in deployment
         assert "JIUWENSWARM_ADX_NODE_INGRESS_URL" not in env
         assert deployment["image"] == "tools:v1"
+        assert deployment["mounts"][0]["host_path"] == "/opt/python"
+        assert deployment["env"] == {"PATH": "/opt/python/bin:/usr/bin"}
+    finally:
+        await router.shutdown()
+
+
+def test_managed_builtin_launch_uses_deployed_process_and_agent_only_token(monkeypatch):
+    launch = {"process": {"commands": [["/opt/python/bin/python", "-m", "jiuwenswarm.server.app_agentserver"]]},
+              "env": {"JIUWENSWARM_ADX_NODE_CONTEXT_FILE": "/run/agentos/node.json"},
+              "mounts": [{"type": "bind", "host_path": "/opt/python", "target": "/opt/python", "options": ["ro"]}]}
+    control = AdxControlClient(_config(monkeypatch, builtin_launch=launch))
+    spec = {"rootfs": {"imageurl": "jiuwenswarm-agent-runtime:latest", "user": "agentos"}}
+    agent = control._creation_body("adx", "alice+jiuwenswarm", "/users/alice", spec, {}, [])
+    assert agent["process"] == launch["process"]
+    assert agent["env"]["JIUWENSWARM_ADX_API_TOKEN"] == "platform-secret"
+    assert not any(key.startswith("ADX_") for key in agent["env"])
+    third = control._creation_body("adx", "other", "/users/alice", spec, {}, [])
+    assert "ADX_TOKEN" not in third["env"]
+    assert "JIUWENSWARM_ADX_API_TOKEN" not in third["env"]
+    assert not any(m["target"] == "/run/agentos/node.json" for m in third["mounts"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state,restart_pending', [('running',False),('pausing',False),('paused',False),('resuming',False),('failed',True)])
+async def test_transport_failure_keeps_adx_lifecycle_and_checkpoint(monkeypatch, state, restart_pending):
+    router, clients = _router(_config(monkeypatch, runtime_class='runsc'))
+    await router.connect('')
+    try:
+        await router.send_request(_request())
+        runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        row = router.test_api.environments[runtime.info.sandbox_id]
+        row.update(status=state, restart_pending=restart_pending)
+        await router._run_network_failure_delete(runtime, reason='connection_closed')
+        assert runtime.info.sandbox_id in router.test_api.environments
+        assert not any(r.method == 'DELETE' for r in router.test_api.requests)
+        clients[0].disconnect.assert_awaited()
+        assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is not None
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_lifecycle_observation_does_not_delete(monkeypatch):
+    from jiuwenswarm.extensions.adx.control_client import AdxControlError
+    router, _ = _router(_config(monkeypatch, runtime_class='runsc'))
+    await router.connect('')
+    try:
+        await router.send_request(_request())
+        runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        monkeypatch.setattr(router._control, 'get_agent_info', AsyncMock(side_effect=AdxControlError('lookup timed out', outcome='unknown')))
+        await router._run_network_failure_delete(runtime, reason='timeout')
+        assert not any(r.method == 'DELETE' for r in router.test_api.requests)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runsc_idle_releases_routing_without_deleting_native_environment(monkeypatch):
+    router, clients = _router(_config(monkeypatch, runtime_class='runsc'))
+    await router.connect('')
+    try:
+        await router.send_request(_request())
+        runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        router._agent_manager._runtimes[runtime.key].last_active_at = 0
+        assert router.test_api.creates[0]['idleTimeoutSeconds'] == 600
+        assert await router._delete_idle_agent('alice', 'jiuwenswarm', key_values={}, idle_timeout_seconds=60)
+        assert runtime.info.sandbox_id in router.test_api.environments
+        assert not any(r.method == 'DELETE' for r in router.test_api.requests)
+        clients[0].disconnect.assert_awaited()
+        await router.send_request(_request(rid='resume-idle-route'))
+        assert len(router.test_api.creates) == 1
+        await router.delete_agent('alice', 'jiuwenswarm')
+        assert any(r.method == 'DELETE' for r in router.test_api.requests)
     finally:
         await router.shutdown()

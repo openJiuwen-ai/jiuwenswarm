@@ -23,25 +23,23 @@ AgentOS 模式由 Enterprise 显式传入 IAM、Registry、共享存储及凭据
 生成的 `sandbox` 仅保留 ADX 工具配置。ADX 负责工具环境生命周期，无需配置
 `startup_mode`；旧的 `internal/external` 值仍可读取，ADX 统一使用外部生命周期。
 
-AgentOS profile 的工具入口只由节点启动器注入的
-`JIUWENSWARM_ADX_NODE_INGRESS_URL` 决定。模板不保存 `sandbox.url`，Gateway
-下发的 sandbox JSON 不携带地址，应用与用户 `.env` 均不持久化节点入口。
-运行时才把注入值解析成传给 SDK 的 `sandbox.url`；缺失注入会明确报错。
-部署控制后端类型、启用状态和 TLS 校验；用户历史 YAML 的 `url`、
-`connection.server_address/gateway_address/token/use_tls` 不再覆盖当前节点连接。
-凭据继续来自部署的 ADX 环境配置。个人版及其他后端沿用原来的合并方式。
+AgentOS 可通过 `JIUWENSWARM_ADX_NODE_CONTEXT_FILE` 指定只读节点上下文；未配置文件时
+沿用启动器注入的 `JIUWENSWARM_ADX_NODE_INGRESS_URL`。共享 `.env` 不保存节点入口。
+运行时读取目标节点的有效地址，部署控制后端、运行时、协议及凭据，旧用户 URL 和
+连接配置不能覆盖。文件或注入值缺失会明确报错。个人版及其他后端沿用原来的合并方式。
 
 重复部署保留模型、IAM、会话、有效的 ADX 参数、SSH known-hosts 和连接超时。
-旧 CPU/内存、UID/GID、工作目录和绝对路径本地挂载继续使用。
+旧 CPU/内存、工作目录和绝对路径本地挂载继续使用；身份按部署运行时检查。
 `source/target/readonly` 转为 ADX 的 `host_path/target/options`；未写 target 时沿用
 source，未写 readonly 时为可写，与原转换逻辑一致。
 `rootfs.workdir/mounts/user` 同样可迁移。与平台一致的工作区挂载会去重，冲突会报错。
 
 旧 Docker 镜像/executor、Jiuwenbox 模板选择器改用部署注册的 ADX 镜像与运行时，
-日志仅提示字段名。自定义 Docker 镜像需先注册 ADX image binding，再显式配置
+日志仅提示字段名。自定义镜像须为所选 ADX 后端支持的镜像，并显式配置
 `type: adx-environment`。旧远程挂载源、其他 rootfs 字段、文件策略和命令黑名单
-无法直接等价转换，会明确报错，要求迁移后再部署。部署会更新已有用户 YAML 与
-连接环境文件，保留 workspace 内容、模型配置和会话数据库。
+无法直接等价转换，会明确报错。AgentOS 可设置 `update_user_configs: false`，校验并保留
+用户 YAML 原文件，通过内存叠加部署配置生效，仅清理用户环境文件中的部署凭据。
+workspace 内容、模型配置和会话数据库保留。
 
 不再生成没有读取方的 `checkpoint.sqlite_journal_mode`、
 `workspace_sqlite.journal_mode` 和旧 SSH `user_template`。
@@ -57,11 +55,11 @@ AgentOS 不向应用或用户 `.env` 持久化节点地址；旧的
 
 ADX 部署的持久化工具参数以 `config.yaml::sandbox` 为准。升级时先把旧 `.env`
 中实际生效的 `TOOL_SANDBOX_CPU/MEMORY/IDLE_TIMEOUT` 转存到 YAML，再删除这些
-重复变量；低于 request 的已有非零 limit 同步抬高。非法值会在写文件前报错。
+重复变量；保留用户 YAML 时也保留其旧资源环境覆盖值，直到显式迁移。低于 request 的已有非零 limit 同步抬高。非法值会在写文件前报错。
 管理面在进程启动或运行时注入的 `TOOL_SANDBOX_*` 仍可覆盖 YAML，原有动态调整
 语义保留。旧 YuanRong 的工具类型、镜像、executor、MGR_* 等变量不再保留。
 
-Gateway 和工具 SDK 统一读取 `ADX_TOKEN`；`gateway.adx.token_env` 指向该变量，
+Gateway 和 AgentServer 内的工具 SDK 读取 `ADX_TOKEN`；工具沙箱不继承该变量。`gateway.adx.token_env` 指向该变量，
 不再生成值相同的 `ADX_GATEWAY_TOKEN`。旧 Gateway 配置在部署时同步更新。
 模型与嵌入模型凭据继续保留在 `.env`，未知业务变量保留。
 
@@ -70,8 +68,22 @@ Web 和升级入口读取。AgentOS 启动器已注入的端口优先于 `.env`�
 当前部署选择；这些变量本身仍有效。旧变量清理仅作用于 AgentOS 托管配置，
 standalone 保留已有环境输入与凭据别名。`AGENTOS_BUILTIN_AGENT_CPU/MEMORY`
 仍由部署 settings 转换成进程变量，因为 Gateway 的资源读取方需要这些变量。
-CA 和 `ADX_TOKEN` 继续保留在 `.env`。节点地址只保留启动器的运行时注入。
+CA 设置保留；`ADX_TOKEN` 仅保留在 Gateway 服务 `.env`，用户共享 `.env` 不保存部署凭据。节点地址只保留启动器的运行时注入。
 
 `/opt/adx/config/deployment.env` 则属于 ADX 部署绑定文件：它展开原生部署 YAML，
-生成组件实际读取的 JSON；Ingress 的 HTTPS 监听和证书还直接读取组件环境变量。
+生成组件实际读取的 JSON；Ingress 的监听协议和证书由组件环境配置决定。
 这些输入和生成结果相同不属于两份独立可编辑配置，不能简单删掉绑定变量。
+
+### runsc AgentServer 与工具环境
+
+AgentOS 分别配置 AgentServer 和工具运行时。选择 `agent_runtime: runsc` 时，部署生成 `gateway.adx.builtin_launch`，明确 Python 启动命令、宿主 Python/动态库/CA 的只读挂载及节点上下文文件。跨节点须保证 Python 和挂载布局一致。
+
+配置 `JIUWENSWARM_ADX_NODE_CONTEXT_FILE` 后，运行时从只读 JSON 中读取 `ingress_url`、`node_id`；Core 每次获取工具环境前重新读取，节点变化时重建 SDK 连接作用域。文件缺失或无效时报错。未配置该文件时仍支持原启动器注入的节点 URL。部署可显式使用可信回环/网桥 HTTP 与 WS；HTTPS 与 WSS 继续校验证书。历史 URL、token、连接协议及运行时不能覆盖受管部署值。
+
+部署 token 仅保留在 Gateway 服务配置，通过 `JIUWENSWARM_ADX_API_TOKEN` 注入 AgentServer，由入口在读取用户 dotenv 前转换为 SDK 的 `ADX_TOKEN`；不写入用户共享 `.env`，也不注入工具沙箱。AgentServer 按有效用户模型配置及 `.env` 回退提取目标地址；内网模型须显式允许。工具默认拒绝流量和 DNS，可通过 `network.tool_origins` 指定联网目标；请求仍受节点网络权限上限限制。
+
+AgentOS 可设置 `update_user_configs: false`：校验旧配置，保留用户 YAML 原文件，通过内存叠加生效；仅清理用户 `.env` 中的部署凭据。runsc 的身份来自 OCI 配置，不兼容的旧 user/group 或 Conch 专属配置须明确迁移。旧网络拒绝规则转换保留，资源、目录和可转换挂载继续沿用。共享部署 token 不提供逐用户资源授权。
+
+`network.ingress_policy_peer` 对应 ADX 节点基线中的逻辑 peer，由各目标节点映射到本机网桥；恢复请求保留该 peer，连接地址继续从目标节点上下文文件读取。模型策略更新使用生命周期操作头 `X-ADX-Request-ID`。未配置模型时不授予模型网络权限，也不继承 Gateway 自身的模型地址。旧 `agentos-tools:v1` 是托管 Conch 绑定，切换 runsc 时跟随部署镜像；其他显式 OCI 自定义镜像继续保留。
+
+runsc AgentServer 的 Environment 空闲删除和 checkpoint 保留由 ADX 管理。Gateway 在创建时将 Agent 空闲超时写入 `idleTimeoutSeconds`；后续超时配置变更对新建 Environment 生效。Gateway 的空闲/断连清理只释放本地路由状态并关闭 Relay 活动，不删除原生 Environment。业务传输异常也保留 Running、Pausing、Paused、Resuming 及等待重试的执行；确认终态失败后仍可使用原清理流程。用户显式删除继续回收 Environment 及其 checkpoint。工具沙箱的空闲超时独立配置。
