@@ -176,7 +176,7 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
     wanted_settings: set[str] = set()
     for node in nodes:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-        if str(cfg.get("role") or "") not in {"clip"}:
+        if node_pipeline(node) != "clip":
             continue
         for key in ("character_ids", "on_screen", "visible_cast_ids", "featured_cast_ids", "compose_cast_ids"):
             for cid in cfg.get(key) or []:
@@ -192,12 +192,12 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
     keep: set[str] = set()
     for node in nodes:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-        role = str(cfg.get("role") or "")
-        if role == "character":
+        pipeline = node_pipeline(node)
+        if pipeline == "character":
             ids = {str(c) for c in (cfg.get("character_ids") or []) if str(c or "").strip()}
             if ids & wanted_chars:
                 keep.add(str(node.get("id")))
-        elif role == "scene":
+        elif pipeline == "scene":
             setting = str(cfg.get("setting_id") or "").strip()
             if setting and setting in wanted_settings:
                 keep.add(str(node.get("id")))
