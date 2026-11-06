@@ -39,7 +39,10 @@ import {
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
-import { shouldKeepLocalCronProcessing } from './features/cron/cronProcessingGuard';
+import {
+  markCronOptimisticProcessing,
+  shouldKeepLocalCronProcessing,
+} from './features/cron/cronProcessingGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -2070,16 +2073,26 @@ function AppContent({
       // 继续按发送顺序推进状态机。
       //
       // 企业版 cron 执行态走 /sessions/{id}/live，不写进 web channel 的 busy 表，
-      // metadata 常误报 false。若本地已因「立即执行」/live 标成执行中，不要被盖掉，
-      // 否则对话里的「任务执行 Xs」提示会消失。
+      // metadata 常误报 false。乐观宽限期内挡住误报；权威 idle / 宽限过期必须放行。
       if (typeof session.is_processing === 'boolean') {
         const localProcessing = Boolean(
           useChatStore.getState().getRuntime(targetSessionId)?.isProcessing,
+        );
+        const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
+          targetSessionId,
         );
         if (!shouldKeepLocalCronProcessing(
           targetSessionId,
           session.is_processing,
           localProcessing,
+          {
+            // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
+            hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
+            // 组织负责人停止是权威空闲，不能被守卫吞掉
+            authoritativeIdle:
+              session.organization_owner_stopped === true
+              || isOrganizationOwnerStopped(targetSessionId),
+          },
         )) {
           setProcessing(targetSessionId, session.is_processing);
           if (!session.is_processing) {
@@ -4035,7 +4048,9 @@ function AppContent({
       // 企业版 live 不推「正在执行中」占位气泡；普通发消息会乐观标 processing，
       // 「立即执行」跳进会话时同样立刻标上，对话里才会马上出现「任务执行 Xs」提示。
       // 必须放在上面 ensureRuntime 默认 setProcessing(false) 之后，否则会被盖掉。
+      // mark 开启宽限期：挡住紧随其后的 metadata 误报，超时后仍放行以免永久卡住。
       if (seedUserMessage?.trim()) {
+        markCronOptimisticProcessing(targetSessionId);
         setProcessing(targetSessionId, true);
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
