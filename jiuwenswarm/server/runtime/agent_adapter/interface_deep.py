@@ -124,11 +124,14 @@ from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 # AgentSSAS: 可选导入 AgentSSASSecurityRail(fail-open,未安装时降级为不注册)
 # 注: try/except 条件导入块整体对 E402 豁免, _SSAS_AVAILABLE 赋值必须
 # 放在块内(而非 try 之前的裸赋值), 否则后续导入全部触发 E402
+# 捕获 Exception 而非仅 ImportError: agent-ssas 安装损坏(依赖的二进制
+# 模块异常/配置解析错误等任意导入期异常)同样降级为不注册, 可选组件的
+# 导入失败不得拖垮宿主模块; 异常细节进告警日志保持可观测
 try:
     from agent_ssas.core.framework.config.settings import AgentSSASConfig
     from agent_ssas.backend_client.openjiuwen.agent_ssas_security_rail import AgentSSASSecurityRail
     _SSAS_AVAILABLE = True
-except ImportError as _ssas_import_exc:
+except Exception as _ssas_import_exc:
     AgentSSASSecurityRail = None  # type: ignore[assignment,misc]
     _SSAS_AVAILABLE = False
     # 模块级 logger 尚未定义,此处必须内联获取,确保 fail-open 不因日志而崩溃
@@ -784,8 +787,10 @@ logger = logging.getLogger(__name__)
 # done callback 负责: 1) 从集合移除已完成 Task  2) 记录初始化异常(否则异常静默丢失)
 _SSAS_INIT_TASKS: "set[asyncio.Task[None]]" = set()
 # 集合可能被不同线程的事件循环并发增删(实例创建/team member 装配等路径),
-# 遍历前须持锁快照, 避免 "Set changed size during iteration"
-_SSAS_INIT_TASKS_LOCK = threading.Lock()
+# 遍历前须持锁快照, 避免 "Set changed size during iteration"。
+# 用 RLock: 竞态落败路径在临界区内调用 _close_ssas_backend_in_background,
+# 后者需再入同一线程的锁登记 close Task, 非重入锁会自锁死
+_SSAS_INIT_TASKS_LOCK = threading.RLock()
 # 收口等待上界(秒): 初始化含检测模块加载与一次启动 TTL 清理, 留足余量;
 # 超时告警后放行(fail-open), 后续事件由 backend 的 _ensure_initialized 兜底
 _SSAS_INIT_WAIT_TIMEOUT: float = 30.0
@@ -793,35 +798,70 @@ _SSAS_INIT_WAIT_TIMEOUT: float = 30.0
 # 条目, 让下次装配重建 backend 并重试(自愈), 而非永远复用未就绪实例;
 # 与 _SSAS_INIT_TASKS 同锁保护, done callback 中随 Task 一并清理
 _SSAS_INIT_TASK_KEYS: "dict[asyncio.Task[None], tuple[tuple[Any, str], Any]]" = {}
-# 竞态落败 backend 的后台 close Task 强引用集(防 GC 中途销毁);
-# done callback 中自动移出, 与 _SSAS_INIT_TASKS 同锁保护
+# 竞态落败/初始化失败/收口超时剔除 backend 的后台 close Task 强引用集
+# (防 GC 中途销毁); done callback 中自动移出, 与 _SSAS_INIT_TASKS 同锁保护
 _SSAS_CLOSE_TASKS: "set[asyncio.Task[None]]" = set()
 
 
 def _log_ssas_close_result(task: "asyncio.Task[None]") -> None:
-    """竞态落败 backend 的后台 close 完成回调: 移除引用并记录异常."""
+    """被剔除/落败 backend 的后台 close 完成回调: 移除引用并记录异常."""
     with _SSAS_INIT_TASKS_LOCK:
         _SSAS_CLOSE_TASKS.discard(task)
     if task.cancelled():
         return
     exc = task.exception()
     if exc is not None:
-        logger.warning("[JiuWenSwarmDeepAdapter] redundant AgentSSAS backend close failed: %s", exc)
+        logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend background close failed: %s", exc)
+
+
+def _close_ssas_backend_in_background(
+    backend: Any, loop: asyncio.AbstractEventLoop
+) -> None:
+    """后台关闭被剔除/落败的 backend, 防 SQLite 连接等资源泄漏.
+
+    backend 构造期即建立 SQLite 连接等同步资源, 初始化失败/收口超时剔除
+    或双检锁竞态落败后不再被缓存与任何 rail 持有, 不关闭的话重复失败
+    装配会持续累积泄漏, 故统一经本通道关闭: close Task 强引用存入
+    _SSAS_CLOSE_TASKS(防 GC 中途销毁), done callback(_log_ssas_close_result)
+    记录异常并移出。close 经 getattr 防御获取, backend 无 close 入口或其
+    所属循环已关闭时静默放弃——后者资源随循环销毁整体回收, 由装配期的
+    已关闭循环清扫兜底。
+    """
+    if backend is None or loop.is_closed():
+        return
+    close = getattr(backend, "close", None)
+    if close is None:
+        return
+    try:
+        close_task = loop.create_task(close())
+    except RuntimeError:
+        return
+    with _SSAS_INIT_TASKS_LOCK:
+        _SSAS_CLOSE_TASKS.add(close_task)
+    close_task.add_done_callback(_log_ssas_close_result)
 
 
 def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
     """AgentSSAS backend 初始化 Task 完成回调: 移除引用并记录异常."""
+    evicted: "tuple[tuple[Any, str], Any] | None" = None
     with _SSAS_INIT_TASKS_LOCK:
         _SSAS_INIT_TASKS.discard(task)
         entry = _SSAS_INIT_TASK_KEYS.pop(task, None)
         if task.cancelled():
             logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
             _evict_ssas_backend_locked(entry)
+            evicted = entry
         else:
             exc = task.exception()
             if exc is not None:
                 logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init failed: %s", exc)
                 _evict_ssas_backend_locked(entry)
+                evicted = entry
+    # 初始化失败/被取消的 backend 已被剔除出缓存, 后台关闭其构造期建立的
+    # SQLite 连接等资源(重复失败装配不累积泄漏); 收口超时路径先行 pop
+    # 反查表, 此处 entry 为 None, 不会二次关闭
+    if evicted is not None:
+        _close_ssas_backend_in_background(evicted[1], task.get_loop())
 
 
 def _evict_ssas_backend_locked(
@@ -857,7 +897,9 @@ async def _await_ssas_init_tasks() -> None:
       跨循环等待会抛 RuntimeError 且各循环路径由自己的收口点负责;
     - asyncio.wait 带超时上界, 避免初始化挂死无限阻塞实例创建;
       超时仅告警并放行, 后续首个事件仍由 backend report_event 入口的
-      _ensure_initialized 兜底等待(等待而非丢弃)。
+      _ensure_initialized 兜底等待(等待而非丢弃);
+    - 超时剔除的 backend 经 _close_ssas_backend_in_background 后台关闭,
+      防止其构造期建立的资源随重复失败装配持续累积泄漏。
     """
     loop = asyncio.get_running_loop()
     with _SSAS_INIT_TASKS_LOCK:
@@ -884,11 +926,20 @@ async def _await_ssas_init_tasks() -> None:
         # 剔除缓存后, 下次装配重建 backend 并重新初始化(自愈); 已装配
         # rail 的事件由 _ensure_initialized 兜底。取消触发 done callback
         # (cancelled 分支), 其中 discard/pop 均为幂等空操作, 安全。
+        evicted_backends: list[Any] = []
         with _SSAS_INIT_TASKS_LOCK:
             for task in still_pending:
                 _SSAS_INIT_TASKS.discard(task)
-                _evict_ssas_backend_locked(_SSAS_INIT_TASK_KEYS.pop(task, None))
+                entry = _SSAS_INIT_TASK_KEYS.pop(task, None)
+                _evict_ssas_backend_locked(entry)
+                if entry is not None:
+                    evicted_backends.append(entry[1])
                 task.cancel()
+        # 先取消后关闭: close Task 排在取消投递之后调度, 挂死的初始化协程
+        # 先处理取消再由 close 释放资源; 反查表条目已被本分支独占 pop,
+        # done callback 不会二次关闭同一 backend
+        for backend in evicted_backends:
+            _close_ssas_backend_in_background(backend, loop)
 
 
 # AgentSSAS backend 进程级复用缓存: create_instance 会被 reload/权限隔离/
@@ -10514,9 +10565,7 @@ class JiuWenSwarmDeepAdapter:
                     else:
                         # 竞态落败: 保留赢家, 后台关闭多余 candidate 防
                         # SQLite 连接等资源泄漏(close Task 强引用防 GC)
-                        close_task = loop.create_task(candidate.close())
-                        _SSAS_CLOSE_TASKS.add(close_task)
-                        close_task.add_done_callback(_log_ssas_close_result)
+                        _close_ssas_backend_in_background(candidate, loop)
             backend: Any = shared_backend
             if backend_created:
                 # initialize() 是 async: builder 链路(_create_instance ->

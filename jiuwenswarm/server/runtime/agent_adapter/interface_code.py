@@ -1180,7 +1180,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._instance.ability_manager.set_owner_id(tool_owner_id)
         self._code_spec_rails = list(self._instance.configured_rails())
         # AgentSSAS backend 初始化 Task 收口: spec 构建期间派发的初始化 Task
-        # 在 rail 生效前统一等待完成(异常已由 done callback 告警, fail-open)
+        # 在 rail 生效前统一等待完成(异常已由 done callback 告警, fail-open)。
+        # await 为协作式挂起: 等待期间主事件循环保持可调度, esc/cancel 及
+        # 其它会话 IO 照常处理; 下方 ensure_initialized 走 executor 针对的是
+        # "同步阻塞段占住主循环线程", 本收口不含同步阻塞段, 不适用该契约
         await _await_ssas_init_tasks()
         # Reloads never sync a caller-supplied Spec's tools, so the multimodal
         # config refresh must not track and rewrite them either.
