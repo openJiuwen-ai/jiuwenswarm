@@ -49,6 +49,12 @@ from jiuwenswarm.common.symphony_config import symphony_config_from_dict
 from jiuwenswarm.runtime.symphony.experience import (
     _build_graph_evolution_rail,
 )
+from jiuwenswarm.runtime.symphony.skillpack_candidates import (
+    CandidateEvidenceScope,
+    CandidateScopeStore,
+    candidate_request_id,
+    member_snapshot,
+)
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
 from jiuwenswarm.runtime.symphony.service import (
     SwarmSymphonyService,
@@ -103,7 +109,7 @@ def _enable_evolution_config(monkeypatch, tmp_path: Path):
     config = symphony_config_from_dict(
         {
             "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
+            "paths": {"graph_dir": str(tmp_path / "graph"), "skills_root": str(tmp_path / "skills")},
             "evolution": {"enabled": True},
         }
     )
@@ -114,10 +120,33 @@ def _enable_evolution_config(monkeypatch, tmp_path: Path):
 
 
 def _install_service(monkeypatch, flow):
+    from jiuwenswarm.runtime.symphony.service import load_symphony_config
+
+    config = load_symphony_config()
+    _write_member_skills(config.paths.skills_root.parent)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.trusted_session_user", lambda _session: "")
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: [])
+    scope = CandidateEvidenceScope.resolve("session-1", "", "current_session", None)
+    reviewed = flow.review_and_prepare_install.return_value.package or {}
+    CandidateScopeStore(flow.store.root).grant(_scoped_request_id(), {
+        "session_id": "session-1", "members": ["search", "writer"],
+        "package_id": reviewed.get("package_id", "server-package"),
+        "integrity": reviewed.get("integrity", "sha256:server"),
+        "member_snapshot": member_snapshot(config.paths.skills_root, ["search", "writer"], []),
+        "evidence_scope": scope.to_dict(), "evidence_scope_key": scope.key,
+        "evidence_trace_ids": ["server-trace"],
+    })
     service = SwarmSymphonyService()
     service._runtime = SimpleNamespace(flow_engine=flow)
     monkeypatch.setattr(service, "runtime", lambda: service._runtime)
+    monkeypatch.setattr(service, "_runtime_for", lambda _config: service._runtime)
+    monkeypatch.setattr(service, "_skillpack_candidate_flow", AsyncMock(return_value=flow))
     return service
+
+
+def _scoped_request_id():
+    scope = CandidateEvidenceScope.resolve("session-1", "", "current_session", None)
+    return candidate_request_id("recipe-1", 2, "session-1", scope.key)
 
 
 def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
@@ -127,10 +156,12 @@ def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
     return SimpleNamespace(
         store=SimpleNamespace(
             root=tmp_path,
+            contains_evidence=lambda _traces: True,
             artifact_dir=lambda package_id, target_kind: (
                 tmp_path / "packages" / package_id / target_kind
             ),
         ),
+        start=AsyncMock(return_value=()),
         review_and_prepare_install=AsyncMock(
             return_value=SimpleNamespace(
                 verdict=verdict,
@@ -782,10 +813,8 @@ async def test_partial_run_does_not_deliver_recovered_candidate(
     finally:
         restore_runtime_push_handler(push, previous)
 
-    assert len(pushes) == 1
-    assert pushes[0]["payload"]["request_id"] == experience_request_id(
-        candidate.recipe_id, candidate.version
-    )
+    # Recovery alone does not establish ownership for this successful session.
+    assert pushes == []
     assert service._recovered_candidates == ()
 
 
@@ -879,7 +908,7 @@ async def test_deferred_candidate_is_offered_by_a_later_successful_run(
 
 
 @pytest.mark.asyncio
-async def test_deferred_candidate_can_be_listed_and_requested_again(
+async def test_legacy_candidate_endpoints_require_scoped_confirmation(
     monkeypatch, tmp_path: Path
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
@@ -920,9 +949,10 @@ async def test_deferred_candidate_can_be_listed_and_requested_again(
     finally:
         restore_runtime_push_handler(push, previous)
 
-    assert listed["candidates"][0]["recipe_id"] == "recipe-1"
-    assert requested["success"] is True
-    assert pushes[0]["payload"]["event_type"] == "chat.ask_user_question"
+    assert listed["reason"] == "scoped_skillpack_tool_required"
+    assert listed["candidates"] == []
+    assert requested["reason"] == "scoped_skillpack_tool_required"
+    assert pushes == []
 
 
 @pytest.mark.asyncio
@@ -1028,11 +1058,12 @@ async def test_install_requires_approved_server_artifact(
             calls.append(Path(artifact_dir))
             return {"success": True, "skill": {"name": "combo"}}
 
-    request_id = experience_request_id("recipe-1", 2)
+    request_id = _scoped_request_id()
     receipt = await service.install_candidate(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=Manager(),
@@ -1041,6 +1072,7 @@ async def test_install_requires_approved_server_artifact(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id="cap-123",
         integrity="sha256:value",
         skill_manager=Manager(),
@@ -1062,6 +1094,7 @@ async def test_install_requires_approved_server_artifact(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id="cap-123",
         integrity="sha256:value",
         skill_manager=Manager(),
@@ -1089,13 +1122,14 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
         "_save_install_receipt",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("receipt crash")),
     )
-    request_id = experience_request_id("recipe-1", 2)
+    request_id = _scoped_request_id()
 
     with pytest.raises(OSError, match="receipt crash"):
         await first.install_candidate(
             request_id=request_id,
             recipe_id="recipe-1",
             recipe_version=2,
+            session_id="session-1",
             package_id=None,
             integrity=None,
             skill_manager=manager,
@@ -1114,6 +1148,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=restarted_manager,
@@ -1137,17 +1172,19 @@ async def test_non_approved_review_can_be_retried(
     manager = _reject_install_manager("non-approved package must not be installed")
 
     result = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
     )
     duplicate = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1156,9 +1193,10 @@ async def test_non_approved_review_can_be_retried(
     restarted_flow = _review_flow(tmp_path, verdict=verdict)
     restarted = _install_service(monkeypatch, restarted_flow)
     persisted = await restarted.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1180,7 +1218,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
     package = _server_package(monkeypatch, "cap-retry")
     flow = _review_flow(tmp_path, package=package)
     service = _install_service(monkeypatch, flow)
-    request_id = experience_request_id("recipe-1", 2)
+    request_id = _scoped_request_id()
     receipt_dir = tmp_path / "install_receipts"
     receipt_dir.mkdir()
     (receipt_dir / f"{request_id}.json").write_text(
@@ -1199,6 +1237,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1213,7 +1252,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
 
 
 @pytest.mark.asyncio
-async def test_client_package_credentials_must_match_server_package(
+async def test_saved_package_credentials_must_match_server_package(
     monkeypatch, tmp_path: Path
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
@@ -1225,10 +1264,16 @@ async def test_client_package_credentials_must_match_server_package(
         monkeypatch, _review_flow(tmp_path, package=package, artifact=artifact)
     )
 
+    store = CandidateScopeStore(tmp_path)
+    approval = store.approval(_scoped_request_id())
+    approval["package_id"] = "changed-after-confirmation"
+    store.grant(_scoped_request_id(), approval)
+
     result = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id="client-package",
         integrity="sha256:client",
         skill_manager=_reject_install_manager(
@@ -1325,9 +1370,10 @@ async def test_install_candidate_reports_missing_member_as_not_installable(
     manager = SkillManager(workspace_dir=str(workspace))
 
     result = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,

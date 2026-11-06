@@ -52,10 +52,17 @@ def _router(*packs: dict[str, Any]) -> tuple[SkillPackRouter, dict[str, Any]]:
     return router, snapshot
 
 
-async def _active(selected: list[str] | None = None):
+def _config(enabled: bool = True):
+    return {"symphony": {"evolution": {"flow": {"enabled": enabled}}}}
+
+
+async def _active(
+    selected: list[str] | None = None, *, enabled: bool = True, automatic_skillpack_enabled=None,
+):
     router, snapshot = _router()
     rail = SymphonyOrchestrationRail(
-        config_base={"skillpack": {"direct_route_mode": "confirm"}}, skillpack_router=router,
+        config_base=_config(enabled), skillpack_router=router,
+        automatic_skillpack_enabled=automatic_skillpack_enabled,
     )
     outer = _outer_ctx("Write release notes and check risk", run_context=RunContext(extra={
         "capture_mode": "agent", "member_id": "owner-1", "skills": selected or [],
@@ -84,11 +91,198 @@ def _tool_ctx(outer, name: str, args: dict[str, Any]):
     )
 
 
-def test_route_mode_defaults_off_and_invalid_off(monkeypatch):
-    monkeypatch.delenv("SKILLPACK_DIRECT_ROUTE_MODE", raising=False)
+@pytest.mark.parametrize("legacy_mode", ["off", "confirm", "shadow", "invalid"])
+def test_route_mode_uses_discovery_setting_not_legacy_env(monkeypatch, legacy_mode):
+    monkeypatch.setenv("SKILLPACK_DIRECT_ROUTE_MODE", legacy_mode)
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "false")
     assert direct_route_mode(None) == "off"
-    monkeypatch.setenv("SKILLPACK_DIRECT_ROUTE_MODE", "invalid")
+    assert direct_route_mode(_config()) == "confirm"
+    assert direct_route_mode(_config(False)) == "off"
     assert direct_route_mode({"skillpack": {"direct_route_mode": "confirm"}}) == "off"
+
+
+@pytest.mark.asyncio
+async def test_disabled_discovery_keeps_manual_safe_direct_route():
+    rail, router, _, outer, model = await _active(["weekly-release-pack"], enabled=False)
+    route = rail._outer_states[id(outer)].pack_route
+    assert route.token.source == "explicit_picker"
+    router.judge.assert_not_called()
+    assert not any("symphony" in tool["name"] for tool in model.inputs.tools)
+    member = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(member)
+    assert member.inputs.tool_result["reason"] == "skillpack_root_required"
+
+
+@pytest.mark.asyncio
+async def test_disabled_discovery_does_not_search_or_judge():
+    router, _ = _router()
+    router.snapshot = AsyncMock(side_effect=AssertionError("automatic discovery must be off"))
+    assert await router.choose("task", [], mode="off") is None
+    router.snapshot.assert_not_called()
+    router.judge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discovery_disabled_during_match_does_not_offer_confirmation():
+    router, _ = _router()
+    config = _config()
+
+    async def judge(query, candidates, **kwargs):
+        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        return candidates
+
+    router.judge = judge
+    rail = SymphonyOrchestrationRail(config_base=lambda: config, skillpack_router=router)
+    outer = _outer_ctx("Write release notes and check risk", run_context=RunContext(extra={
+        "capture_mode": "agent", "member_id": "owner-1",
+    }))
+    await rail.before_invoke(outer)
+    model = _model_ctx(outer)
+    await rail.before_model_call(model)
+    assert rail._outer_states[id(outer)].pack_route is None
+    assert any(tool["name"] == "symphony_compose_graph" for tool in model.inputs.tools)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_manual_unhealthy_pack_is_not_silently_recomposed(enabled):
+    pack = _pack()
+    pack["blocked_members"] = ["risk-check"]
+    router, _ = _router(pack)
+    route = await router.choose("task", [pack["id"]], mode=direct_route_mode(_config(enabled)))
+    assert route.blocked
+    assert route.token is None
+
+
+@pytest.mark.asyncio
+async def test_confirmed_execution_survives_discovery_switch_off():
+    rail, _, _, outer, _ = await _active(["weekly-release-pack"])
+    rail._config_base = _config(False)
+    root = _tool_ctx(outer, "skill_tool", {"skill_name": "weekly-release-pack"})
+    await rail.before_tool_call(root)
+    assert root.inputs.tool_result is None
+    root.inputs.tool_result = {"success": True}
+    await rail.after_tool_call(root)
+    member = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(member)
+    assert member.inputs.tool_result is None
+    compose = _tool_ctx(outer, "symphony_compose_graph", {})
+    await rail.before_tool_call(compose)
+    assert compose.inputs.tool_result["reason"] == "skillpack_recomposition_forbidden"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True])
+async def test_pending_choice_checks_switch_except_manual_picker(manual):
+    selected = ["weekly-release-pack", "other"] if manual else []
+    rail, _, _, outer, _ = await _active(selected)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    rail._config_base = _config(False)
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: "使用 weekly-release-pack"}}})
+    if manual:
+        assert state.pack_route.token.source == "explicit_picker"
+    else:
+        assert state.pack_route is route
+        assert route.blocked
+        assert route.token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [False, True])
+@pytest.mark.parametrize("manual", [False, True])
+async def test_live_switch_blocks_pending_auto_choice_but_not_manual_with_stale_config(manual, read_error):
+    persisted_enabled = True
+
+    def read_switch():
+        if not persisted_enabled and read_error:
+            raise OSError("settings temporarily unavailable")
+        return persisted_enabled
+
+    selected = ["weekly-release-pack", "other"] if manual else []
+    rail, _, _, outer, _ = await _active(selected, automatic_skillpack_enabled=read_switch)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    persisted_enabled = False
+    assert direct_route_mode(rail._resolve_config_base()) == "confirm"
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: "使用 weekly-release-pack"}}})
+    if manual:
+        assert route.token.source == "explicit_picker"
+    else:
+        assert route.blocked and route.token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [False, True])
+async def test_live_switch_read_failure_or_off_keeps_confirmed_execution(read_error):
+    persisted_enabled = True
+
+    def read_switch():
+        if not persisted_enabled and read_error:
+            raise OSError("settings temporarily unavailable")
+        return persisted_enabled
+
+    rail, _, _, outer, _ = await _active(automatic_skillpack_enabled=read_switch)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: "使用 weekly-release-pack"}}})
+    assert route.token.source == "confirmed_query_match"
+    persisted_enabled = False
+    root = _tool_ctx(outer, "skill_tool", {"skill_name": "weekly-release-pack"})
+    await rail.before_tool_call(root)
+    assert root.inputs.tool_result is None
+    root.inputs.tool_result = {"success": True}
+    await rail.after_tool_call(root)
+    member = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(member)
+    assert member.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True])
+async def test_live_switch_read_error_disables_only_automatic_discovery(manual):
+    def read_switch():
+        raise OSError("settings temporarily unavailable")
+
+    selected = ["weekly-release-pack"] if manual else []
+    rail, router, _, outer, _ = await _active(selected, automatic_skillpack_enabled=read_switch)
+    route = rail._outer_states[id(outer)].pack_route
+    if manual:
+        assert route.token.source == "explicit_picker"
+    else:
+        assert route is None
+    router.judge.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["model", "tool"])
+async def test_disabling_before_prompt_blocks_new_automatic_confirmation(boundary):
+    rail, _, _, outer, _ = await _active()
+    rail._config_base = _config(False)
+    if boundary == "model":
+        model = _model_ctx(outer)
+        await rail.before_model_call(model)
+        assert model.inputs.tools == []
+    else:
+        ask = _tool_ctx(outer, "ask_user", {"query": "choose"})
+        await rail.before_tool_call(ask)
+        assert ask.inputs.tool_result["reason"] == "skillpack_state_changed"
+    assert rail._outer_states[id(outer)].pack_route.blocked
+
+
+@pytest.mark.asyncio
+async def test_pending_automatic_offer_can_still_decline_after_switch_off():
+    rail, _, _, outer, _ = await _active()
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    rail._config_base = _config(False)
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: COMPOSE_CHOICE}}})
+    assert route.declined
+    assert state.pack_route is None
 
 
 @pytest.mark.asyncio
@@ -519,7 +713,7 @@ async def test_real_agent_confirmed_route_never_calls_composer(addressed_by):
         AssistantMessage(content="done", usage_metadata=UsageMetadata(model_name="symphony-test")),
     ])
     rail = SymphonyOrchestrationRail(
-        config_base={"skillpack": {"direct_route_mode": "confirm"}}, skillpack_router=router,
+        config_base=_config(), skillpack_router=router,
     )
     agent = create_deep_agent(
         model=_RuntimeModel(client), tools=[_tool("symphony_compose_graph", compose), _tool("skill_tool", skill)],
@@ -563,7 +757,7 @@ async def test_real_agent_checkpoint_blocks_resume_after_rail_state_is_lost():
         AssistantMessage(content="Please select the Pack again", usage_metadata=UsageMetadata(model_name="symphony-test")),
     ])
     rail = SymphonyOrchestrationRail(
-        config_base={"skillpack": {"direct_route_mode": "confirm"}}, skillpack_router=router,
+        config_base=_config(), skillpack_router=router,
     )
     agent = create_deep_agent(
         model=_RuntimeModel(client), tools=[_tool("symphony_compose_graph", compose), _tool("skill_tool", skill)],

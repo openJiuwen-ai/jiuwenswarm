@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,11 +18,10 @@ COMPOSE_CHOICE = "继续智能编排"
 
 
 def direct_route_mode(config: dict[str, Any] | None) -> str:
-    """Resolve the opt-in mode; invalid configuration disables routing."""
-    options = (config or {}).get("skillpack", {})
-    configured = options.get("direct_route_mode", "off") if isinstance(options, dict) else "off"
-    mode = os.getenv("SKILLPACK_DIRECT_ROUTE_MODE", str(configured)).strip().lower()
-    return mode if mode in {"off", "shadow", "confirm"} else "off"
+    """Enable automatic confirmed reuse through the persisted discovery switch."""
+    from jiuwenswarm.common.config import get_symphony_evolution_enabled
+
+    return "confirm" if get_symphony_evolution_enabled(config) else "off"
 
 
 @dataclass(frozen=True)
@@ -50,6 +48,7 @@ class PackRoute:
     blocked: bool = False
     question: str = ""
     confirmation_call_id: str = ""
+    source: str = "confirmed_query_match"
 
     def ask_args(self) -> dict[str, Any]:
         """Build the exact existing ask_user contract for this selection."""
@@ -120,7 +119,7 @@ class SkillPackRouter:
         self, query: str, selected: list[str], *, mode: str, model_reference: str = "",
     ) -> PackRoute | None:
         """Return complete matches only; discovery/model failures fail open to compose."""
-        if mode == "off" or not query:
+        if not query or (mode == "off" and not selected):
             return None
         try:
             snapshot = await self.snapshot()
@@ -128,12 +127,24 @@ class SkillPackRouter:
             if not revision:
                 return None
             eligible = self.eligible(snapshot)
+            selected_pack_ids = {
+                item.get("id") for item in snapshot.get("skills", [])
+                if isinstance(item, dict) and item.get("skill_type") == "skillpack"
+                and isinstance(item.get("id"), str) and item["id"] in selected
+            }
+            if selected_pack_ids - eligible.keys():
+                return PackRoute(blocked=True, source="explicit_picker")
             selected_packs = [eligible[name] for name in selected if name in eligible]
             if selected_packs:
-                route = PackRoute(candidates=selected_packs, inventory_revision=revision)
-                if len(selected) == 1 and mode == "confirm":
-                    await self.confirm(route, selected[0], source="explicit_picker")
-                return route if mode == "confirm" else None
+                route = PackRoute(
+                    candidates=selected_packs, inventory_revision=revision, source="explicit_picker",
+                )
+                if len(selected) == 1 and mode != "shadow":
+                    try:
+                        await self.confirm(route, selected[0], source="explicit_picker")
+                    except Exception:
+                        route.blocked = True
+                return route if mode != "shadow" else None
             if selected:
                 return None
             toolkit = self.toolkit()
