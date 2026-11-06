@@ -8,11 +8,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
-MANIFEST_NAME = "manifest.yaml"
-DOMAIN_AGENT = "agent"
-DOMAIN_GATEWAY = "gateway"
+from jiuwenswarm.gateway.extensions_v2.manifest import (
+    DOMAIN_AGENT_SERVER,
+    has_manifest,
+    package_domain,
+    read_manifest_document,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,11 +29,10 @@ class InstalledPackage:
 def read_domain(root: Path) -> str:
     """Return the manifest ``domain``; a missing or invalid value means agent."""
 
-    raw = _read(root)
-    domain = raw.get("domain")
-    if isinstance(domain, str) and domain.strip().lower() == DOMAIN_GATEWAY:
-        return DOMAIN_GATEWAY
-    return DOMAIN_AGENT
+    try:
+        return package_domain(read_manifest_document(Path(root)))
+    except (OSError, UnicodeError, ValueError):
+        return DOMAIN_AGENT_SERVER
 
 
 def list_installed(install_dir: Path) -> list[InstalledPackage]:
@@ -48,32 +48,20 @@ def list_installed(install_dir: Path) -> list[InstalledPackage]:
         for version_dir in sorted(package_dir.iterdir()):
             if not version_dir.is_dir() or version_dir.name.startswith("."):
                 continue
-            if not (version_dir / MANIFEST_NAME).is_file():
+            if not has_manifest(version_dir):
                 continue
-            raw = _read(version_dir)
+            try:
+                document = read_manifest_document(version_dir)
+            except (OSError, UnicodeError, ValueError):
+                document = {}
+            package = document.get("package")
+            package = package if isinstance(package, Mapping) else {}
             found.append(
                 InstalledPackage(
-                    package_id=str(raw.get("package_id") or package_dir.name),
-                    version=str(raw.get("version") or version_dir.name),
-                    domain=read_domain(version_dir),
+                    package_id=str(package.get("id") or package_dir.name),
+                    version=str(package.get("version") or version_dir.name),
+                    domain=package_domain(document),
                     root=version_dir.resolve(),
                 )
             )
     return found
-
-
-def _read(root: Path) -> Mapping[str, object]:
-    try:
-        raw = yaml.safe_load((Path(root) / MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError):
-        return {}
-    if not isinstance(raw, Mapping):
-        return {}
-    package = raw.get("package")
-    if not isinstance(package, Mapping):
-        return {}
-    return {
-        "package_id": package.get("id"),
-        "version": package.get("version"),
-        "domain": raw.get("domain"),
-    }

@@ -162,8 +162,11 @@ async def test_gateway_proxies_preserve_method_and_request_fields(monkeypatch: p
     monkeypatch.setattr(proxy_module, "proxy_unary_request", proxy)
     proxy_module.register_extension_package_handlers(channel, lambda: client)
 
-    assert set(handlers) == PackageManagementAdapter.methods
+    gateway_only = {ReqMethod.EXTENSIONS_V2_IMPORT.value}
+    assert set(handlers) == PackageManagementAdapter.methods | gateway_only
     for method, handler in handlers.items():
+        if method in gateway_only:
+            continue
         params = {"package_id": "test.pkg"}
         await handler("socket", "req-1", params, "session-1", user_id="user-1")
         call = proxy.await_args.kwargs
@@ -196,7 +199,7 @@ async def test_install_returns_actual_store_path_without_extra_query(
         "install_path": str((manager.install_dir / "test.pkg" / "1.0.0").resolve()),
     }]
     assert Path(installed[0]["install_path"]).is_absolute()
-    assert (Path(installed[0]["install_path"]) / "manifest.yaml").is_file()
+    assert (Path(installed[0]["install_path"]) / "manifest.json").is_file()
     assert installed[0]["install_path"] != str(source)
     query.assert_not_awaited()
     json.dumps(response.payload)
@@ -285,11 +288,20 @@ class Extension:
 def create_extension():
     return Extension()
 ''')
-    manifest = source / "manifest.yaml"
-    with manifest.open("a", encoding="utf-8") as stream:
-        stream.write("\nui:\n  apiVersion: 1\n  items:\n"
-                     "  - type: web.slot.contribution\n    id: panel\n    slot: conversation.input.below\n"
-                     "    renderer:\n      kind: webui-tree\n")
+    manifest = source / "manifest.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["ui"] = {
+        "apiVersion": 1,
+        "items": [
+            {
+                "type": "web.slot.contribution",
+                "id": "panel",
+                "slot": "conversation.input.below",
+                "renderer": {"kind": "webui-tree"},
+            }
+        ],
+    }
+    manifest.write_text(json.dumps(document, indent=2), encoding="utf-8")
     manager = ExtensionManager(
         tmp_path / "installed",
         report_path=tmp_path / "report.yaml",
@@ -491,3 +503,70 @@ async def test_query_includes_ids_for_installed_but_inactive_packages(
     assert response.payload["state"]["installed_packages"] == [{
         "package_id": "inactive.pkg", "version": "1.0.0", "install_path": str(installed),
     }]
+
+
+async def test_file_preview_serves_both_domains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    package = examples / "gateway-demo"
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "extension",
+                "schemaVersion": 1,
+                "domain": "gateway",
+                "package": {"id": "gw.pkg", "version": "1.0.0"},
+                "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (package / "extension.py").write_text("def create_extension():\n    return None\n", encoding="utf-8")
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    adapter = PackageManagementAdapter()
+
+    tree = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_FILE_LIST, {"package_id": "gw.pkg"}))
+
+    assert tree.ok
+    assert "manifest.json" in [node["path"] for node in tree.payload["tree"]]
+
+    content = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_FILE_READ, {"package_id": "gw.pkg", "path": "manifest.json"})
+    )
+    assert content.ok
+    assert content.payload["path"] == "manifest.json"
+
+
+async def test_file_preview_resolves_an_installed_package_outside_examples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    installed = manager.install_dir / "gw.uploaded" / "1.0.0"
+    installed.mkdir(parents=True)
+    (installed / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "extension",
+                "schemaVersion": 1,
+                "domain": "gateway",
+                "package": {"id": "gw.uploaded", "version": "1.0.0"},
+                "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (installed / "extension.py").write_text("def create_extension():\n    return None\n", encoding="utf-8")
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_FILE_LIST, {"package_id": "gw.uploaded"})
+    )
+
+    assert response.ok
+    assert {node["path"] for node in response.payload["tree"]} == {"manifest.json", "extension.py"}

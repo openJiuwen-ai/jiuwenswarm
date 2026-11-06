@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 DEFAULT_INSTALL_DIR = "extension_pkgs"
+BUNDLED_EXAMPLES = Path("extensions_v2") / "examples"
 DEFAULT_HTTP_TIMEOUT_MS = 3000
 DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024
 MAX_HTTP_TIMEOUT_MS = 5000
@@ -138,6 +139,17 @@ def _resolve_dir(raw: str) -> Path:
 
         path = get_user_workspace_dir() / path
     return path.resolve()
+
+
+def resolve_examples_dir(config: Mapping[str, Any] | None = None) -> Path:
+    """Resolve ``extensions.examples_dir``, defaulting to the bundled presets."""
+
+    source = config if config is not None else _read_config()
+    extensions = source.get("extensions")
+    raw = extensions.get("examples_dir") if isinstance(extensions, Mapping) else None
+    if isinstance(raw, str) and raw.strip():
+        return _resolve_dir(raw.strip())
+    return (Path(__file__).resolve().parents[2] / BUNDLED_EXAMPLES).resolve()
 
 
 def _read_config() -> Mapping[str, Any]:

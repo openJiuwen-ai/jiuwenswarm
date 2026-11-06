@@ -23,8 +23,8 @@ from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.package_manager import PackageManager
 
 from jiuwenswarm.gateway.extensions_v2.loader import load_gateway_package
+from jiuwenswarm.gateway.extensions_v2.manifest import DOMAIN_GATEWAY
 from jiuwenswarm.gateway.extensions_v2.management.manifest_source import (
-    DOMAIN_GATEWAY,
     InstalledPackage,
     list_installed,
     read_domain,
@@ -34,6 +34,9 @@ if TYPE_CHECKING:
     from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
 
 logger = logging.getLogger(__name__)
+
+_DELETE_ATTEMPTS = 3
+_DELETE_BACKOFF_SECONDS = 0.2
 
 
 class GatewayPackageManager:
@@ -74,14 +77,19 @@ class GatewayPackageManager:
 
         return any(package.package_id == package_id for package in self.gateway_installed(package_id))
 
-    def owns_source(self, path: Path) -> bool:
-        """Read a zip or directory manifest without installing it."""
+    def source_domain(self, path: Path) -> str | None:
+        """Read the host declared by a zip or directory source; None when it is not a package."""
 
         try:
             with self._store.open_source(Path(path)) as opened:
-                return read_domain(opened.root) == DOMAIN_GATEWAY
+                return read_domain(opened.root)
         except ExtensionFailure:
-            return False
+            return None
+
+    def owns_source(self, path: Path) -> bool:
+        """True when the source declares an installable Gateway package."""
+
+        return self.source_domain(path) == DOMAIN_GATEWAY
 
     def query(self, package_id: str | None = None) -> dict[str, Any]:
         """Return Gateway package facts in the AgentServer query shape."""
@@ -166,7 +174,7 @@ class GatewayPackageManager:
             failure: OperationError | None = None
             for package in versions:
                 try:
-                    self._store.remove_installed(package.package_id, package.version)
+                    await _remove_installed(self._store, package)
                 except ExtensionFailure as exc:
                     failure = exc.as_error()
                     logger.warning("[GatewayExtensions] cannot delete %s: %s", package.root, exc)
@@ -236,6 +244,19 @@ def _success(package_id: str, operation: str) -> ActivationReport:
         previous_generation=None,
         current_generation=1,
     )
+
+
+async def _remove_installed(store: PackageManager, package: InstalledPackage) -> None:
+    """Delete one copy, retrying transient file locks held by other processes."""
+
+    for attempt in range(1, _DELETE_ATTEMPTS + 1):
+        try:
+            store.remove_installed(package.package_id, package.version)
+            return
+        except ExtensionFailure:
+            if attempt == _DELETE_ATTEMPTS:
+                raise
+            await asyncio.sleep(_DELETE_BACKOFF_SECONDS * attempt)
 
 
 def _failure(package_id: str, operation: str, error: OperationError) -> ActivationReport:

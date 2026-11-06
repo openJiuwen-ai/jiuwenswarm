@@ -12,7 +12,7 @@ from typing import Any
 from openjiuwen.core.extension.errors import ExtensionFailure
 from openjiuwen.core.extension.manifest import MANIFEST_NAME, parse_manifest_mapping
 
-DOMAIN_AGENT = "agent"
+DOMAIN_AGENT_SERVER = "agentserver"
 DOMAIN_GATEWAY = "gateway"
 
 
@@ -23,12 +23,13 @@ def has_manifest(root: Path) -> bool:
 
 
 def package_domain(document: Mapping[str, Any]) -> str:
-    """Return the manifest ``domain``; a missing or unknown value means agent."""
+    """Return ``package.domain``; a missing value means AgentServer."""
 
-    raw = document.get("domain")
-    if isinstance(raw, str) and raw.strip().lower() == DOMAIN_GATEWAY:
-        return DOMAIN_GATEWAY
-    return DOMAIN_AGENT
+    package = document.get("package")
+    raw = package.get("domain") if isinstance(package, Mapping) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    return DOMAIN_AGENT_SERVER
 
 
 def read_manifest_document(root: Path) -> dict[str, Any]:
