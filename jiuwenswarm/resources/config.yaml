@@ -1070,7 +1070,8 @@ ssas:
   # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
   mode: inprocess
   # HTTP 模式配置 (默认 mode=inprocess 不启用; 切换 mode=http 时需显式取消注释并配置,
-  # http_host 默认仅监听本机回环地址, http_token 为空时 http 模式不应对外提供服务)
+  # 注意: http_host 未配置时配置类默认为 0.0.0.0(监听全部网卡), 启用 http 模式前
+  # 必须显式配置 127.0.0.1 或内网地址, 并同时配置 http_token, 避免无鉴权端点对外暴露)
   # http_endpoint: "http://127.0.0.1:8443"
   # http_timeout: 5.0
   # http_token:
