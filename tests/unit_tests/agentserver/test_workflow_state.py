@@ -2181,11 +2181,12 @@ def test_workflow_started_stamps_executor():
 
 
 def test_workflow_started_without_executor_is_none():
-    """Legacy events carry no executor — the run stays None (no badge)."""
+    """Legacy events carry no executor — the run stays None (no badge) and the
+    delta omits the key so the frontend's merge keeps any known value."""
     state = WorkflowRunState()
     delta = state.apply(_make_progress("workflow_started", workflow_name="t"))
     assert state.executor is None
-    assert delta["executor"] is None
+    assert "executor" not in delta
 
 
 def test_snapshot_carries_executor():
@@ -2235,10 +2236,13 @@ def test_relaunch_without_executor_keeps_prior():
     assert delta["executor"] == "alice"
 
 
-def test_phase_delta_omits_executor():
-    """Only the top-level (started/paused) delta carries the executor; phase
-    deltas omit it and the frontend's merge keeps the previously stored value."""
+def test_missed_started_latches_executor_from_later_event():
+    """An observer that never saw workflow_started (recovered / re-attached
+    mid-run) still learns the host from any later progress event, and the
+    delta carries it so a consumer joining mid-run self-heals."""
     state = WorkflowRunState()
-    state.apply(_make_progress("workflow_started", workflow_name="t", executor="alice"))
-    delta = state.apply(_make_progress("agent_started", phase="p", label="x", agent_id="a1"))
-    assert "executor" not in delta
+    delta = state.apply(_make_progress(
+        "agent_started", phase="p", label="x", agent_id="a1", executor="team-leader",
+    ))
+    assert state.executor == "team-leader"
+    assert delta["executor"] == "team-leader"

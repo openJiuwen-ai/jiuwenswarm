@@ -26,6 +26,8 @@ from tests.unit_tests.runtime.test_client_tool_control_resume import (
     _paused,
 )
 from tests.unit_tests.agentserver.client_attachments_support import (  # noqa: F401 - the fixture
+    CLIENT_APP,
+    RESOURCE,
     Socket,
     answer_async,
     answered,
@@ -71,6 +73,9 @@ def test_agent_server_answers_the_attach_methods_and_a_new_gateway_link_leaves_t
         await server.dispatch_parsed_request(new_link, renew(attachment_id), asyncio.Lock())
         assert new_link.sent[-1]["ok"] is True
         assert [c.attachment_id for c in get_attachment_directory().connections()] == [attachment_id]
+        conversations = request(ReqMethod.CLIENT_CONVERSATIONS, client_app=CLIENT_APP, resource_key=RESOURCE["key"])
+        await server.dispatch_parsed_request(new_link, conversations, asyncio.Lock())
+        assert [c["session_id"] for c in new_link.sent[-1]["payload"]["conversations"]] == ["session-1"]
 
     asyncio.run(scenario())
 

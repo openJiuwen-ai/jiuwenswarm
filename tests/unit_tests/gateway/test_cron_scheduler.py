@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import ReqMethod
+from openjiuwen_protocol.message import EventType, ReqMethod
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
@@ -483,7 +483,7 @@ class FakeMessageHandler:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["agent", "team"])
-async def test_web_cron_stream_uses_one_web_session_without_result_broadcast(tmp_path, mode):
+async def test_web_cron_stream_broadcasts_final_result(tmp_path, mode):
     store = CronJobStore(path=tmp_path / "jobs.json")
     job = await _create_one_job(store, targets="web", user_id="owner", mode=mode)
     job.group_id = "group"
@@ -515,9 +515,63 @@ async def test_web_cron_stream_uses_one_web_session_without_result_broadcast(tmp
     for _, _, event in list(scheduler.events):
         if event.kind == "push_update":
             await scheduler.handle_event(event)
-    assert len([msg for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.final"]) == 1
+    # The settled run adds one result broadcast on top of the session-stream
+    # final: chat.final with an empty session_id and payload.cron routing,
+    # which WebChannel fans out to browser clients (the personal WS edition's
+    # only delivery path for scheduled-task results).
+    broadcasts = [
+        msg for msg in handler.published
+        if msg.event_type == EventType.CHAT_FINAL and str(msg.id or "").startswith("cron-push-")
+    ]
+    assert len(broadcasts) == 1
+    broadcast = broadcasts[0]
+    assert broadcast.session_id is None
+    assert broadcast.channel_id == "web"
+    assert broadcast.payload["content"] == "team result"
+    assert broadcast.payload["user_id"] == "owner"
+    cron_meta = broadcast.payload["cron"]
+    assert cron_meta["job_id"] == job.id
+    assert cron_meta["exec_session_id"] == scheduler.runs[run_id].exec_session_id
+    assert cron_meta["status"] == "succeeded"
+    assert cron_meta["is_placeholder"] is False
+    assert "cron_session_stream" not in broadcast.payload
+    # Run-status notifications stay disabled (!9498): the broadcast itself is
+    # the settle signal, no cron.run.updated is published on top of it.
     notices = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
     assert notices == []
+
+
+@pytest.mark.asyncio
+async def test_web_cron_placeholder_stays_silent(tmp_path):
+    """A web run without a result yet must not broadcast the running hint."""
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets="web", user_id="owner", mode="agent")
+    handler = FakeMessageHandler()
+    scheduler = _make_scheduler(store, handler=handler, agent_client=FakeAgentClient())
+    await scheduler.reload()
+    run_id = f"{job.id}:1234"
+    scheduler.runs[run_id] = CronRunState(
+        run_id=run_id,
+        job_id=job.id,
+        wake_at_iso="2026-11-05T18:22:00+08:00",
+        push_at_iso="2026-11-05T18:22:30+08:00",
+        job_name=job.name,
+        targets=job.targets,
+        session_id=None,
+        chat_type=None,
+        timezone=job.timezone,
+        status="running",
+    )
+    event = cron_scheduler_module._Event(
+        at_ts=time.time(), seq=1, kind="push", job_id=job.id, run_id=run_id,
+    )
+    await scheduler.handle_event(event)
+    broadcasts = [
+        msg for msg in handler.published
+        if msg.event_type == EventType.CHAT_FINAL and str(msg.id or "").startswith("cron-push-")
+    ]
+    assert broadcasts == []
+    assert scheduler.runs[run_id].placeholder_sent is True
 
 
 @pytest.mark.asyncio
@@ -1179,7 +1233,7 @@ class TestHandleEventStoreValidation:
         assert content == "result: 9am now"
 
     @pytest.mark.asyncio
-    async def test_web_push_update_stays_silent(self, tmp_path):
+    async def test_web_push_update_broadcasts_result(self, tmp_path):
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)
         job = await _create_one_job(store, targets="web")
@@ -1197,9 +1251,16 @@ class TestHandleEventStoreValidation:
         ev = _Event(at_ts=time.time(), seq=1, kind="push_update", job_id=job.id, run_id=run_id)
         await svc.handle_event(ev)
 
-        # Run-status notifications are disabled: web runs deliver results
-        # through the execution session only, so push_update stays silent.
-        assert handler.published == []
+        # Web push_update broadcasts the final result (chat.final with an
+        # empty session_id and payload.cron routing) instead of staying
+        # silent: the personal WS edition has no other delivery path.
+        assert len(handler.published) == 1
+        broadcast = handler.published[0]
+        assert broadcast.event_type == EventType.CHAT_FINAL
+        assert broadcast.session_id is None
+        assert broadcast.payload["content"] == "web result"
+        assert broadcast.payload["cron"]["status"] == "succeeded"
+        assert broadcast.payload["cron"]["job_id"] == job.id
 
     @pytest.mark.asyncio
     async def test_wake_executes_normally_when_job_present(self, tmp_path):

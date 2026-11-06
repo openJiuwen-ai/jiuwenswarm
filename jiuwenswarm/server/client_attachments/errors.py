@@ -14,11 +14,14 @@ class ClientAttachErrorCode(StrEnum):
     BAD_REQUEST = "BAD_REQUEST"
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     NOT_FOUND_OR_FORBIDDEN = "NOT_FOUND_OR_FORBIDDEN"
-    # The conversation is attached to another resource or belongs to another application.
+    # The conversation is attached to another resource or was not created by a client app.
     CONFLICT = "CONFLICT"
     # A renew found no attachment of that socket, id and conversation: the client attaches again.
     NOT_ATTACHED = "NOT_ATTACHED"
-    PLUGIN_UNAVAILABLE = "PLUGIN_UNAVAILABLE"
+    # A renew found its socket holding no attachment and another socket holding the one it names: the client
+    # stops renewing, as attaching again would take the resource from the other client.
+    DISPLACED = "DISPLACED"
+    APP_UNAVAILABLE = "APP_UNAVAILABLE"
     UNAVAILABLE = "UNAVAILABLE"
 
 

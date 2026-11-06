@@ -13,6 +13,7 @@ import { isEnterprise } from './edition';
 import type { SettingsRequest } from './features/settings/services/settingsContract'
 import { dispatchA2UIAction } from './features/a2ui/actionBridge';
 import { installDesktopLocalFilesBridge } from './features/workspace/localFilePicker';
+import { applySavedAppearancePreferences } from './features/settings/modules/appearance/appearancePreferences';
 import './styles/foundation.css'
 import './styles/themes/default/light.css'
 import './index.css'
@@ -20,6 +21,9 @@ import './features/a2ui/a2ui.css'
 
 // Durable desktop drop bridge — must exist before ChatPanel mounts / effect cleanup.
 installDesktopLocalFilesBridge();
+
+// Apply saved appearance preferences (interface/code font, font size) before first render to avoid font flash.
+applySavedAppearancePreferences();
 
 function flagA2UIIconFontAvailability() {
   if (typeof document === 'undefined' || !('fonts' in document)) {
