@@ -338,11 +338,14 @@ execution_guard:
 # 同机部署的 leader/teammate 若共享同一数据目录（ssas_home 留空时按
 # SSAS_HOME -> JIUWENSWARM_DATA_DIR -> JIUWENSWARM_HOME -> ~/.jiuwenswarm 顺序
 # 自动解析，二者会解析到同一 ssas_core.db），并发写入可能触发 SQLite 文件锁
-# 冲突、安全事件混库，此时须为各角色显式配置不同的 ssas_home；如需集中统一
+# 冲突、安全事件混库——为避免默认落入该已知冲突配置，分布式模板默认关闭
+# （enabled: false）。启用步骤：为各角色显式配置不同的 ssas_home（或按角色
+# 设置 SSAS_HOME 环境变量隔离数据目录）后置 enabled: true；如需集中统一
 # 感知可切换 mode=http 指向同一 AgentSSAS HTTP 服务）
 ssas:
-  # 总开关. 关闭后不注册 AgentSSASSecurityRail
-  enabled: true
+  # 总开关. 关闭后不注册 AgentSSASSecurityRail. 分布式模板默认关闭, 原因与
+  # 启用步骤见上方注释(同机部署须先消除同库并发写冲突再启用)
+  enabled: false
   # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
   mode: inprocess
   # HTTP 模式配置 (默认 mode=inprocess 不启用; 切换 mode=http 时需显式取消注释并配置,
