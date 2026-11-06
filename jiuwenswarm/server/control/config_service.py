@@ -455,6 +455,12 @@ def get_panel() -> dict[str, Any]:
             trajectory_cfg.get("diagnosis_enabled"), False
         )
         experimental_cfg = raw.get("experimental") or {}
+        payload["task_full_duplex_enabled"] = _bool_text(
+            experimental_cfg.get("task_full_duplex_enabled"), False
+        )
+        payload["task_asr_enabled"] = _bool_text(
+            experimental_cfg.get("task_asr_enabled"), False
+        )
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
@@ -518,6 +524,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("task_asr_enabled", "false")
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")

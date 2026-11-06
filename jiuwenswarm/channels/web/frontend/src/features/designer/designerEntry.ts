@@ -7,7 +7,7 @@ import { buildConversationModelPayload } from '../../multi-session/state/convers
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
-import { findDesignModelsProblem } from './designPromptReadiness';
+import { findDesignModelsProblem } from './designModelsReadiness';
 import {
   mediaItemsToBootstrapReferences,
   type DesignerBootstrapReference,
@@ -222,7 +222,7 @@ export async function composeDesignerSession(params: {
   try {
     // Same design landing gate as ``submitDesignComposer``: the first message
     // on an empty canvas must fail before the director builds the graph.
-    const modelProblem = await findDesignModelsProblem(params.sessionId);
+    const modelProblem = await findDesignModelsProblem();
     if (modelProblem) {
       throw new Error(modelProblem);
     }
