@@ -282,16 +282,19 @@ class FlashTodoRail(DeepAgentRail):
             await self._close_gate.finish(ctx.session, dropped=dropped)
             await self._refusal_scrub.finish(ctx.session, dropped=False)
         response = getattr(ctx.inputs, "response", None)
-        if (not dropped and ctx.session is not None
-                and int(getattr(ctx.inputs, "react_iteration", 0) or 0) > 0
-                and self._unfinished_todos and response is not None
-                and not getattr(response, "tool_calls", None)
-                and getattr(response, "finish_reason", None) != "length"
-                and str(getattr(response, "content", "") or "").strip()):
-            remaining = ", ".join(f"{todo_id} ({meta['status']})" for todo_id, meta in self._unfinished_todos)
-            suffix = f"\n\n本轮仍未完成的待办：{remaining}。这些待办尚未确认完成，本轮执行已结束。"
-            response.content += suffix
-            await self._write_control(ctx.session, "llm_output", {"content": suffix, "result_type": "answer"})
+        if dropped or ctx.session is None:
+            return
+        if int(getattr(ctx.inputs, "react_iteration", 0) or 0) <= 0 or not self._unfinished_todos:
+            return
+        if response is None or getattr(response, "tool_calls", None):
+            return
+        if (getattr(response, "finish_reason", None) == "length"
+                or not str(getattr(response, "content", "") or "").strip()):
+            return
+        remaining = ", ".join(f"{todo_id} ({meta['status']})" for todo_id, meta in self._unfinished_todos)
+        suffix = f"\n\n本轮仍未完成的待办：{remaining}。这些待办尚未确认完成，本轮执行已结束。"
+        response.content += suffix
+        await self._write_control(ctx.session, "llm_output", {"content": suffix, "result_type": "answer"})
 
     async def before_tool_call(self, ctx) -> None:
         bind_todo_batch(ctx, self.engines.get("modify"))
