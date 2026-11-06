@@ -68,6 +68,7 @@ _MANIFEST = """
 schemaVersion: 1
 package:
   id: demo.app-home
+  domain: agentserver
   version: 1.0.0
   displayName: App Home
 extensions:
@@ -213,7 +214,7 @@ async def test_render_uses_the_caller_connection_and_rejects_a_mismatch(tmp_path
             return True
 
     bus = ExtensionEventBus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     transport = FakeTransport()
     runtime = WebUIRuntime(
         bus=bus,
@@ -239,6 +240,7 @@ async def test_render_uses_the_caller_connection_and_rejects_a_mismatch(tmp_path
 async def test_dispatch_renders_each_socket_and_refuses_other_channels(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    monkeypatch.setattr(assembly, "resolve_install_report_path", lambda: tmp_path / "report.yaml")
     server = _Push()
     installed = await assembly.install_extensions(server)
     assert installed is not None
@@ -334,6 +336,7 @@ async def test_gateway_forwards_the_socket_id(monkeypatch) -> None:
 async def test_workbench_example_entry_renders_avatar_and_clears_on_close(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    monkeypatch.setattr(assembly, "resolve_install_report_path", lambda: tmp_path / "report.yaml")
     server = _Push()
     installed = await assembly.install_extensions(server)
     assert installed is not None
@@ -411,6 +414,7 @@ async def test_workbench_example_entry_renders_avatar_and_clears_on_close(tmp_pa
 async def test_workbench_example_sidebar_footer_renders_user_menu(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    monkeypatch.setattr(assembly, "resolve_install_report_path", lambda: tmp_path / "report.yaml")
     server = _Push()
     installed = await assembly.install_extensions(server)
     assert installed is not None

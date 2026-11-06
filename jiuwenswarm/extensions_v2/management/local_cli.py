@@ -9,7 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.extension_cli import LocalControl, source_domain
+from openjiuwen.core.extension import ExtensionFailure, PackageManager
+from jiuwenswarm.common.extension_cli import LocalControl
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter, _parse_params
@@ -32,7 +33,7 @@ async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
     try:
         paths, package_id = _parse_params(method.value, params)
         for path in paths:
-            if await asyncio.to_thread(source_domain, path) != "agent":
+            if await asyncio.to_thread(_package_domain, path) != "agentserver":
                 return _error("DOMAIN_MISMATCH", "该 ZIP 属于 Gateway，请使用对应宿主的管理入口。")
         if package_id and action in {"reload", "uninstall"}:
             from jiuwenswarm.extensions_v2.assembly import get_extension_manager
@@ -41,9 +42,9 @@ async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
             if manager is not None and manager.initialized:
                 state = await manager.query(package_id)
                 for path in state.installed:
-                    if await asyncio.to_thread(source_domain, Path(path)) != "agent":
+                    if await asyncio.to_thread(_package_domain, Path(path)) != "agentserver":
                         return _error("DOMAIN_MISMATCH", "该安装副本属于 Gateway。")
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, ExtensionFailure):
         return _error("INVALID_PARAMS", "包管理参数或 ZIP manifest 无效。")
     request = AgentRequest(
         request_id=f"extension-cli-{uuid.uuid4().hex}", channel_id="local-extension-cli",
@@ -51,6 +52,12 @@ async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
     )
     response = await PackageManagementAdapter().handle(request)
     return {"ok": response.ok, "payload": response.payload}
+
+
+def _package_domain(path: Path) -> str:
+    manager = PackageManager(Path.cwd(), allowed_domains=("agentserver", "gateway"))
+    with manager.open_source(path) as source:
+        return source.manifest.domain
 
 
 def _error(code: str, message: str) -> dict[str, Any]:

@@ -33,6 +33,7 @@ class StateCounter:
     def __init__(self) -> None:
         self._increment_lock = asyncio.Lock()
         self._completed: deque[tuple[str, str]] = deque(maxlen=256)
+        self._ready_sessions: set[str] = set()
 
     def register(self, registrar: ExtensionRegistrar) -> None:
         registrar.register_event_handler("ui.ready", self.on_ready, {"target.slot_id": SLOT}, "user")
@@ -49,10 +50,9 @@ class StateCounter:
             initialized = await ops.state.set(COUNT, 0, expected_version=snapshot.version)
             if not initialized.is_set and initialized.reason != "version_conflict":
                 return UiActionOutput(False, initialized.reason or "initialize_failed")
-        target = RenderTarget(ops.session_context.session_id, SLOT, PACKAGE_ID, INSTANCE)
-        output = await ops.ui.render(UiRenderInput(target))
-        if output is None or output.status is not RenderStatus.DELIVERED:
+        if not await self._render(ops):
             return UiActionOutput(False, "render_failed")
+        self._ready_sessions.add(ops.session_context.session_id)
         return receipt
 
     async def on_render(self, event: Event, ops: EventHandlerOps, next_handler: EventNext) -> object:
@@ -63,7 +63,7 @@ class StateCounter:
         count = snapshot.value if snapshot.exists else 0
         tree = RenderNode("Box", {"direction": "row", "gap": "sm"}, children=(
             RenderNode("Text", {"value": f"Count: {count} (state version {snapshot.version})"}),
-            RenderNode("Button", {"label": "+1"}, events={"ui.click": {"id": "increment", "args": {}}}),
+            RenderNode("Button", {"value": "+1"}, events={"ui.click": {"id": "increment", "args": {}}}),
         ))
         return await next_handler(Event("ui.render", replace(request, root=tree)))
 
@@ -73,7 +73,11 @@ class StateCounter:
             return receipt
         async with self._increment_lock:
             result = await self._increment(ops)
-        return receipt if result.is_set else UiActionOutput(False, result.reason or "save_failed")
+            if not result.is_set:
+                return UiActionOutput(False, result.reason or "save_failed")
+            if not await self._render(ops):
+                return UiActionOutput(False, "render_failed")
+        return receipt
 
     async def on_round_completed(self, event: Event, ops: EventHandlerOps, next_handler: EventNext) -> object:
         receipt = await next_handler(event)
@@ -89,9 +93,19 @@ class StateCounter:
             result = await self._increment(ops)
             if result.is_set:
                 self._completed.append(identity)
+                if update.session_id in self._ready_sessions and not await self._render(ops):
+                    logger.warning("[state-counter] completed round was saved but rendering failed")
             else:
                 logger.warning("[state-counter] completed round state update failed: %s", result.reason)
         return receipt
+
+    @staticmethod
+    async def _render(ops: EventHandlerOps) -> bool:
+        if ops.session_context is None:
+            return False
+        target = RenderTarget(ops.session_context.session_id, SLOT, PACKAGE_ID, INSTANCE)
+        output = await ops.ui.render(UiRenderInput(target))
+        return output is not None and output.status is RenderStatus.DELIVERED
 
     @staticmethod
     async def _increment(ops: EventHandlerOps) -> StateSetResult:

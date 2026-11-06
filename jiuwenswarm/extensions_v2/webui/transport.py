@@ -72,12 +72,12 @@ class RenderTransport:
             logger.warning("[WebUI] failed to send %s: %s", event_type, exc)
             return False
 
-    async def notify_packages_installed(
+    async def notify_packages_changed(
         self, connection_id: str, session_id: str, package_ids: list[str],
     ) -> bool:
         """Notify exactly the browser that previously declared ready ownership."""
         message = {
-            "request_id": f"extension-installed-{uuid.uuid4().hex[:12]}",
+            "request_id": f"extension-changed-{uuid.uuid4().hex[:12]}",
             "channel_id": self._channel_id,
             "session_id": session_id,
             "metadata": {"ws_id": connection_id},

@@ -2,7 +2,7 @@
 
 [English](README_EN.md)
 
-示例源码集中在 `jiuwenswarm/extensions_v2/examples/auth_login_demo`；`manifest.yaml` 中的 `domain: gateway` 决定其运行宿主。
+示例源码集中在 `jiuwenswarm/extensions_v2/examples/auth_login_demo`；`manifest.yaml` 中的 `package.domain: gateway` 决定其运行宿主。
 
 `webui.login-demo` 是 Gateway 扩展包。全屏登录/注册页、表单规则、左右或居中布局、
 渐变背景、WorkSwarm 宣传图、左下角头像菜单及退出登录均由本包声明。
@@ -52,7 +52,7 @@ ZIP 根包含 manifest.yaml、settings.json、auth_login_demo/、assets/ 和中�
 
 通过已有 `/extension install /tmp/webui-login-demo.zip` 安装，或使用 GatewayPackageManager.install。
 启用包之后需要登录，安装管理操作请在启动加载之前完成。
-Gateway 与 AgentServer 是不同宿主，本包声明 domain: gateway。
+Gateway 与 AgentServer 是不同宿主，本包在 package 下声明 domain: gateway。
 渲染调用正式 ops.ui.render(UiRenderInput(...))，使用 Form.Item 节点；头像菜单使用 ui.select，登录按钮使用 ui.click。
 本包自行校验每个业务请求；Gateway 内置门禁与异常处理沿用已合入的后端策略。
 

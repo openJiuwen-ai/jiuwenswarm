@@ -48,7 +48,11 @@ def _archive(tmp_path: Path, source: Path = EXAMPLE) -> Path:
 async def _manager(tmp_path: Path):
     bus = make_bus()
     register_context_usage_events(bus)
-    manager = ExtensionManager(tmp_path / "installed", store_dir=tmp_path / "data")
+    manager = ExtensionManager(
+        tmp_path / "installed",
+        store_dir=tmp_path / "data",
+        report_path=tmp_path / "report.yaml",
+    )
     await manager.init(bus)
     return manager, bus
 
@@ -113,7 +117,11 @@ async def test_cleanup_failure_retains_store_and_can_retry(tmp_path) -> None:
 
     bus = make_bus()
     register_context_usage_events(bus)
-    manager = ExtensionManager(tmp_path / "installed", store_dir=tmp_path / "data")
+    manager = ExtensionManager(
+        tmp_path / "installed",
+        store_dir=tmp_path / "data",
+        report_path=tmp_path / "report.yaml",
+    )
     await manager.init(bus, cleanup_callbacks=(cleanup,))
     assert (await manager.install([_archive(tmp_path)]))[0].status == "SUCCESS"
     await _trigger(bus, "first")

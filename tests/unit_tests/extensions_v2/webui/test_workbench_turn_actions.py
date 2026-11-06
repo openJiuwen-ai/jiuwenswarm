@@ -292,7 +292,11 @@ async def test_workbench_refresh_reads_stored_usage_and_rejects_mismatched_notif
 @pytest.mark.asyncio
 async def test_installed_workbench_persists_round_usage_and_recovers_after_reload(tmp_path: Path) -> None:
     bus = ExtensionEventBus()
-    manager = ExtensionManager(tmp_path / "store", store_dir=tmp_path / "package-data")
+    manager = ExtensionManager(
+        tmp_path / "store",
+        store_dir=tmp_path / "package-data",
+        report_path=tmp_path / "report.yaml",
+    )
     transport = SimpleNamespace(
         send_frame=AsyncMock(return_value=True), send_clear=AsyncMock(return_value=True),
         send_error=AsyncMock(return_value=True),

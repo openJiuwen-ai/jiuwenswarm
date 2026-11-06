@@ -118,6 +118,7 @@ def write_package(
         "schemaVersion": 1,
         "package": {
             "id": package_id,
+            "domain": "agentserver",
             "version": version,
             "displayName": package_id,
         },

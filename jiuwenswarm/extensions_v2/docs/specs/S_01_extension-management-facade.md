@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / extension-management-facade` |
 | 关联特性 | [F_03](../features/F_03_registry-facade.md) |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py` |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-06 |
 | 方案状态 | 当前实现契约 |
 
 ## 1. 范围与责任
@@ -28,7 +28,8 @@
 | 安装副本与版本目录 | agent-core `PackageManager` |
 | 生效包与 generation | agent-core `Runtime` |
 | Handler 登记与包身份 | agent-core `Runtime.publish` |
-| 安装目录路径、启动选版、停机顺序 | `ExtensionManager` |
+| 安装目录、报告路径与等待配置、停机顺序 | `ExtensionManager` |
+| 根目录发现、启动选版和跨域保护 | Core `PackageInstallReport` 与 `selection` |
 
 门面不缓存上述事实，也不提供同义数据结构。
 
@@ -72,6 +73,7 @@
 | `installed` | `tuple[Path, ...]` | 安装目录中的版本目录 |
 | `inflight` | `dict[str, int]` | 每个生效包的在途调用数 |
 | `published` | `dict[str, tuple[HandlerId, ...]]` | 每个生效包登记的 Handler id |
+| `packages` | `tuple[PackageInstallState, ...]` | 共享报告中经过存活判断的包状态 |
 
 ### 4.3 `ActivePackageRecord`
 
@@ -82,6 +84,7 @@
 | `root` | `Path` | 生效副本根目录 |
 | `generation` | `int` | 当前代号 |
 | `requires_packages` | `tuple[PackageDependency, ...]` | 声明的包依赖 |
+| `domain` | `str \| None` | 运行域 |
 
 ## 5. 接口契约
 
@@ -91,12 +94,16 @@
 ExtensionManager(
     install_dir: Path,
     *,
+    report_path: Path,
+    poll_interval: float = 0.5,
+    dependency_timeout: float = 300.0,
+    lock_timeout: float = 5.0,
     store_dir: Path | None = None,
     state_dir: Path | None = None,
 )
 ```
 
-`install_dir` 立即展开为绝对路径，不要求目录已存在。
+`install_dir` 和 `report_path` 展开为绝对路径。报告路径必传，三个时间参数使用秒。AgentServer 固定向 Core 传 `domain="agentserver"`、`allowed_domains=("gateway", "agentserver")`。实现目录仍为 `jiuwenswarm/extensions_v2`，启动入口不变。
 传入 `store_dir` 时，构造 `openjiuwen.core.extension.data.JsonStore` 并在初始化时注入；不传则不装配 store。
 传入 `state_dir` 时，构造 `openjiuwen.core.extension.data.JsonState` 并在初始化时注入；不传则不装配 state。
 AgentServer 始终传入 `resolve_store_dir()` 与 `resolve_state_dir()`；二者读取
@@ -117,7 +124,7 @@ async def init(
 ```
 
 - 已初始化时直接返回。
-- 先调用 `Registry.init`，再调用 `open_install_dir`。
+- 先调用 `Registry.init`，再 await `open_install_dir` 登记报告与运行锁；不返回包路径列表。
 - `host_event_types` 只注册事件类型与 CORE Handler；`host_handlers` 只注册产品 Handler。
 - 任一步失败：若 Registry 已绑定则解除上下文，重建空 Registry，并抛出原异常。
 - cleanup_callbacks 交给 Core；宿主回调按顺序在 store 删除前执行，失败不能吞掉。
@@ -131,7 +138,7 @@ async def install(paths: Sequence[Path]) -> list[ActivationReport]
 
 - 一次触发 `package.install`，`paths` 作为同一批来源。
 - 返回顺序与 agent-core 报告顺序一致，不保证与输入顺序一一对应。
-- 本批新增且结果为 `FAILED` 的副本由门面删除；已被 agent-core 删除的副本跳过。
+- 报告占用、依赖等待、复制和失败清理由 Core 处理；门面不做全目录差集删除。
 
 ### 5.4 启动激活
 
@@ -139,9 +146,9 @@ async def install(paths: Sequence[Path]) -> list[ActivationReport]
 async def load_installed() -> list[ActivationReport]
 ```
 
-- 读取 `PackageManager.list_installed()`，按 `package_id` 选择最高版本。
-- 已生效包跳过；无有效 manifest 的目录记录告警后忽略。
-- 无候选时返回空列表，不触发事件。
+- 只委托 Core.load_installed；Core 从安装根目录完整发现，选择最高合法版本、检查依赖环并稳定排序，最后选择 `agentserver` 的包。
+- 已在本地生效的包跳过；非法声明返回失败报告，独立包继续。全部队列为空时返回空列表。
+- 同 ID 跨域拒绝；另一域依赖未就绪时按配置等待。
 
 ### 5.5 卸载
 
@@ -168,7 +175,7 @@ async def reload(package_id: str) -> ActivationReport
 async def query(package_id: str | None = None) -> QueryResult
 ```
 
-触发 `package.query`。指定 `package_id` 时只返回该包的 `active` 与 `installed`。
+触发 `package.query`。active/installed 是本地事实，packages 是共享报告快照；指定 ID 时只返回该包，误送其它域会拒绝。无参数时适配器把全部有效成功包 ID 编码为 state.package_ids。
 
 ### 5.8 生效包快照
 
@@ -184,12 +191,12 @@ def active_packages() -> tuple[ActivePackageRecord, ...]
 async def shutdown() -> None
 ```
 
-- 按依赖方在前的顺序检查 Core 的 `uninstall_decision` 并调用公开 `Runtime.unpublish`。
+- 先调用 Registry.begin_shutdown，登记 stopping，拒绝新写入并结束管理任务。随后按依赖方在前的顺序检查并撤销本地 Handler。
 - 撤销时保留记录，等待 `cleanup_package_resources(..., reason="shutdown")`，然后移除记录。
 - 不删除安装副本或 store 数据。
 - 单个包失败记录日志后继续处理独立包；只为成功撤销的包发送退出通知。
 - 仍有失败包时抛出 `ExtensionFailure` 并保留门面及上下文，允许查询和再次关闭。
-- 全部成功后解除 Core 上下文，门面回到未初始化状态；重新装配使用新 Bus。
+- 全部成功后 Registry.close 释放报告运行锁，再解除 Core 上下文；重新装配使用新 Bus。
 
 store 宿主集成说明与验证见 [F_03](../features/F_03_registry-facade.md#91-store-宿主集成)。
 
@@ -212,11 +219,11 @@ store 宿主集成说明与验证见 [F_03](../features/F_03_registry-facade.md#
 
 ## 7. 并发与部署限制
 
-- 同一门面的初始化、启动加载、安装、卸载、重载和停机串行执行；查询不占用写锁。
-- 包退出通知在写锁外执行。排队期间取消的请求不进入 Core；已开始操作的取消不表示副作用撤销。
+- 门面锁用于初始化、卸载和停机。安装、启动、重载直接委托 Core，等待依赖时不占门面锁。
+- Core 报告登记包操作及目标依赖，重复操作返回忙碌；实际文件提交和发现共用短期报告锁。包退出通知在门面锁外。
 - 一个 EventBus 只能绑定一个 Registry；同一进程可以有多个独立 EventBus。
-- 安装目录不提供跨进程锁，多 AgentServer 部署需外部串行化。
-- agent-core 的 `begin_calls/end_calls` 尚未接入事件调用路径，`inflight` 当前恒为 0。
+- 同主机不同域共用根目录与报告；同域重复执行者拒绝启动。Core 已对发布 Handler 的调用计数。
+- 报告格式、默认路径及故障边界见 [F_32](../features/F_32_domain-install-report.md)。
 
 ## 8. 验证索引
 

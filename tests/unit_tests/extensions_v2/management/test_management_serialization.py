@@ -24,10 +24,10 @@ def _report(operation: str) -> ActivationReport:
     return ActivationReport("test-plan", "test.pkg", operation, "SUCCESS", 1, 2)
 
 
-async def test_writes_wait_for_install_but_queries_do_not(
+async def test_install_wait_does_not_hold_host_management_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -47,8 +47,8 @@ async def test_writes_wait_for_install_but_queries_do_not(
     third = asyncio.create_task(manager.uninstall("test.pkg"))
     try:
         await asyncio.sleep(0)
-        reload.assert_not_awaited()
-        uninstall.assert_not_awaited()
+        reload.assert_awaited_once()
+        uninstall.assert_awaited_once()
         assert (await asyncio.wait_for(manager.query(), 2)).active == ()
     finally:
         release.set()
@@ -57,40 +57,35 @@ async def test_writes_wait_for_install_but_queries_do_not(
     uninstall.assert_awaited_once()
 
 
-async def test_cancelled_waiter_never_calls_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+async def test_cancelled_install_wait_propagates_and_other_commands_continue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered = asyncio.Event()
 
-    async def blocking_install(paths: list[Path]) -> tuple[ActivationReport, ...]:
+    async def waiting_install(paths):
         entered.set()
-        await release.wait()
-        return ()
+        await asyncio.Event().wait()
 
-    monkeypatch.setattr(manager.registry, "install", blocking_install)
+    monkeypatch.setattr(manager.registry, "install", waiting_install)
     reload = AsyncMock(return_value=_report("reload"))
     monkeypatch.setattr(manager.registry, "reload", reload)
-    first = asyncio.create_task(manager.install([]))
+    task = asyncio.create_task(manager.install([]))
     await entered.wait()
-    waiter = asyncio.create_task(manager.reload("cancelled.pkg"))
-    await asyncio.sleep(0)
-    waiter.cancel()
-    try:
-        with pytest.raises(asyncio.CancelledError):
-            await waiter
-        reload.assert_not_awaited()
-    finally:
-        release.set()
-        await first
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
     await manager.reload("test.pkg")
     reload.assert_awaited_once_with("test.pkg")
+    await manager.shutdown()
 
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_failed_or_cancelled_writer_releases_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool,
 ) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     error = asyncio.CancelledError if cancel else RuntimeError
     monkeypatch.setattr(manager.registry, "install", AsyncMock(side_effect=error))
@@ -104,7 +99,7 @@ async def test_failed_or_cancelled_writer_releases_lock(
 
 
 async def test_inactive_callback_can_query_and_install_again(tmp_path: Path) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     await manager.install([write_package(tmp_path / "first")])
     replacement = write_package(tmp_path / "second", package_id="test.after")
@@ -124,7 +119,7 @@ async def test_inactive_callback_can_query_and_install_again(tmp_path: Path) -> 
 async def test_concurrent_init_only_initializes_core_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     bus = make_bus()
     entered, release = asyncio.Event(), asyncio.Event()
     initialize = manager.registry.init
@@ -158,7 +153,7 @@ async def test_concurrent_init_only_initializes_core_once(
 
 
 async def test_cancelled_initialization_releases_bound_core_context(tmp_path: Path) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     bus = make_bus()
     entered = asyncio.Event()
 

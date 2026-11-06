@@ -71,7 +71,7 @@ def test_webui_render_frames_preserve_complete_payload(
 
 
 @pytest.mark.parametrize("session_id", ["", "webui-session"])
-async def test_install_notification_preserves_package_ids_on_web_downlink(session_id: str) -> None:
+async def test_package_change_notification_preserves_package_ids_on_web_downlink(session_id: str) -> None:
     channel = object.__new__(WebChannel)
     socket = object()
     channel._session_busy = {}

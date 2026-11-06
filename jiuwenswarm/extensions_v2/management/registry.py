@@ -3,7 +3,7 @@
 """JiuwenSwarm facade over the agent-core extension ``Registry``.
 
 The facade keeps only host concerns: install-directory configuration, startup
-selection, the inactive callback and shutdown. Package parsing, planning,
+report configuration, the inactive callback and shutdown. Package parsing, planning,
 publication and active records stay in agent-core.
 """
 
@@ -14,7 +14,6 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 
-import yaml
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
@@ -29,14 +28,12 @@ from openjiuwen.core.extension import (
 )
 from openjiuwen.core.extension.data import JsonState, JsonStore
 from openjiuwen.core.extension.errors import OperationError, operation_error
-from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.management import (
     PACKAGE_QUERY_EVENT,
     QueryRequest,
     QueryResult,
     unbind_context,
 )
-from openjiuwen.core.extension.versions import Version, parse_version
 
 from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
@@ -45,21 +42,6 @@ from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface
 logger = logging.getLogger(__name__)
 
 CODE_MANAGER_NOT_INITIALIZED = "EXTENSION_MANAGER_NOT_INITIALIZED"
-DOMAIN_AGENT = "agent"
-MANIFEST_NAME = "manifest.yaml"
-
-
-def _manifest_domain(root: Path) -> str:
-    """Read the host split from the raw manifest; Core does not model it."""
-
-    try:
-        raw = yaml.safe_load((root / MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError):
-        return DOMAIN_AGENT
-    if not isinstance(raw, Mapping):
-        return DOMAIN_AGENT
-    domain = raw.get("domain")
-    return domain.strip().lower() if isinstance(domain, str) else DOMAIN_AGENT
 
 
 class ExtensionManager:
@@ -69,10 +51,18 @@ class ExtensionManager:
         self,
         install_dir: Path,
         *,
+        report_path: Path,
+        poll_interval: float = 0.5,
+        dependency_timeout: float = 300.0,
+        lock_timeout: float = 5.0,
         store_dir: Path | None = None,
         state_dir: Path | None = None,
     ) -> None:
         self.install_dir = Path(install_dir).expanduser().resolve()
+        self.report_path = Path(report_path).expanduser().resolve()
+        self._poll_interval = poll_interval
+        self._dependency_timeout = dependency_timeout
+        self._lock_timeout = lock_timeout
         self._store = JsonStore(store_dir) if store_dir is not None else None
         self._states = JsonState(state_dir) if state_dir is not None else None
         self._registry = Registry()
@@ -116,7 +106,12 @@ class ExtensionManager:
                     states=self._states,
                     cleanup_callbacks=cleanup_callbacks,
                 )
-                self._registry.open_install_dir(self.install_dir, host_version=host_version)
+                await self._registry.open_install_dir(
+                    self.install_dir, report_path=self.report_path, host_version=host_version,
+                    domain="agentserver", allowed_domains=("gateway", "agentserver"),
+                    poll_interval=self._poll_interval, dependency_timeout=self._dependency_timeout,
+                    lock_timeout=self._lock_timeout,
+                )
             except asyncio.CancelledError:
                 unconfigure_state(event_bus)
                 unconfigure_store(event_bus)
@@ -151,30 +146,14 @@ class ExtensionManager:
                                          is_interactive=is_interactive, surface=surface)
 
     async def install(self, paths: Sequence[Path]) -> list[ActivationReport]:
-        """Install each source through ``package.install``.
-
-        Gateway packages share the install store but never activate here; they
-        are reported as failed so the caller does not create an orphan copy.
-        """
-
-        async with self._operation_lock:
-            self._require_ready()
-            package_manager = self._registry.package_manager
-            before = set(package_manager.list_installed())
-            accepted, rejected = self._reject_foreign(paths)
-            reports = list(await self._registry.install(list(accepted)))
-            self._remove_failed_copies(reports, set(package_manager.list_installed()) - before)
-            return rejected + reports
+        """Delegate package admission, waiting, installation and cleanup to Core."""
+        self._require_ready()
+        return list(await self._registry.install(paths))
 
     async def load_installed(self) -> list[ActivationReport]:
-        """Activate the highest installed version of every inactive package."""
-
-        async with self._operation_lock:
-            self._require_ready()
-            roots = self._pending_roots()
-            if not roots:
-                return []
-            return list(await self._registry.install(roots))
+        """Pass only the configured root; Core owns discovery and stable ordering."""
+        self._require_ready()
+        return list(await self._registry.load_installed())
 
     async def uninstall(self, package_id: str) -> ActivationReport:
         """Delegate active and installed-only package removal to Core."""
@@ -189,9 +168,8 @@ class ExtensionManager:
     async def reload(self, package_id: str) -> ActivationReport:
         """Hot-switch an active package from its installed copy."""
 
-        async with self._operation_lock:
-            self._require_ready()
-            return await self._registry.reload(package_id)
+        self._require_ready()
+        return await self._registry.reload(package_id)
 
     async def query(self, package_id: str | None = None) -> QueryResult:
         """Return the facts agent-core can confirm for this process."""
@@ -228,6 +206,7 @@ class ExtensionManager:
             if self._bus is None:
                 return
             bus = self._bus
+            await self._registry.begin_shutdown()
             runtime = self._registry.runtime
             active = {record.package_id: record for record in runtime.active_packages()}
             remaining = set(active)
@@ -264,6 +243,7 @@ class ExtensionManager:
                     finally:
                         remaining.discard(package_id)
             if not failed:
+                await self._registry.close()
                 unconfigure_state(bus)
                 unconfigure_store(bus)
                 unbind_context(bus)
@@ -278,76 +258,6 @@ class ExtensionManager:
                 StatusCode.EXTENSION_LOAD_FAILED,
                 reason=f"shutdown could not release packages: {', '.join(failed)}",
             )
-
-    def _pending_roots(self) -> list[Path]:
-        active = {record.package_id for record in self._registry.runtime.active_packages()}
-        highest: dict[str, tuple[Version, Path]] = {}
-        for root in self._registry.package_manager.list_installed():
-            if _manifest_domain(root) != DOMAIN_AGENT:
-                continue
-            try:
-                manifest = load_manifest(root)
-                version = parse_version(manifest.version)
-            except (ExtensionFailure, ValueError) as exc:
-                logger.warning("[ExtensionsV2] skipping invalid installed package %s: %s", root, exc)
-                continue
-            if manifest.package_id in active:
-                continue
-            current = highest.get(manifest.package_id)
-            if current is None or version > current[0]:
-                highest[manifest.package_id] = (version, root)
-        return [root for _, root in highest.values()]
-
-    def _reject_foreign(
-        self,
-        paths: Sequence[Path],
-    ) -> tuple[list[Path], list[ActivationReport]]:
-        """Keep agent packages; report gateway packages without copying them."""
-
-        package_manager = self._registry.package_manager
-        accepted: list[Path] = []
-        rejected: list[ActivationReport] = []
-        for path in paths:
-            try:
-                with package_manager.open_source(Path(path)) as opened:
-                    domain = _manifest_domain(opened.root)
-                    package_id = opened.manifest.package_id
-            except Exception:  # noqa: BLE001 - let the Core installer report the real error
-                accepted.append(path)
-                continue
-            if domain == DOMAIN_AGENT:
-                accepted.append(path)
-                continue
-            rejected.append(
-                _failure(
-                    package_id,
-                    "install",
-                    operation_error(
-                        StatusCode.EXTENSION_SOURCE_INVALID,
-                        reason=f"{package_id} is a {domain} package; it is not an AgentServer package",
-                    ),
-                )
-            )
-        return accepted, rejected
-
-    def _remove_failed_copies(
-        self,
-        reports: Sequence[ActivationReport],
-        created: set[Path],
-    ) -> None:
-        failed = {report.package_id for report in reports if report.status == "FAILED"}
-        if not failed:
-            return
-        manager = self._registry.package_manager
-        for root in sorted(created):
-            if root.parent.name not in failed:
-                continue
-            if not root.is_dir():
-                continue
-            try:
-                manager.remove_installed(root.parent.name, root.name)
-            except ExtensionFailure:
-                logger.exception("[ExtensionsV2] failed to remove rejected copy %s", root)
 
     async def _notify_inactive(self, package_id: str) -> None:
         callback = self._inactive_callback

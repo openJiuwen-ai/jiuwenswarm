@@ -21,7 +21,7 @@ async def test_shutdown_releases_dependents_before_dependencies_and_unbinds_cont
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     roots = [
         write_package(tmp_path / "a", package_id="test.a"),
@@ -51,7 +51,7 @@ async def test_shutdown_releases_dependents_before_dependencies_and_unbinds_cont
 
 async def test_busy_package_and_its_dependency_remain_usable_until_retry(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     roots = [
         write_package(tmp_path / "dep", package_id="test.dep"),
@@ -90,7 +90,7 @@ async def test_release_exception_retains_context_and_does_not_notify(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     await manager.install([write_package(tmp_path / "source", module_source=METADATA_EXTENSION)])
     notify = AsyncMock()
@@ -113,7 +113,7 @@ async def test_release_exception_retains_context_and_does_not_notify(
 
 
 async def test_empty_shutdown_is_idempotent_and_unbinds_context(tmp_path: Path) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     bus = make_bus()
     await manager.init(bus)
     await manager.shutdown()

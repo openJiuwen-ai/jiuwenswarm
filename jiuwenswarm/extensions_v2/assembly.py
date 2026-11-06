@@ -15,7 +15,10 @@ from openjiuwen.core.events import ExtensionEventBus
 from jiuwenswarm.extensions_v2 import bootstrap
 from jiuwenswarm.extensions_v2.session_authorization.service import AuthorizationCaller, SessionAuthorizationService
 from jiuwenswarm.extensions_v2.session_compaction.service import SessionCompactionService
-from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_state_dir, resolve_store_dir
+from jiuwenswarm.extensions_v2.config import (
+    resolve_install_dir, resolve_state_dir, resolve_store_dir,
+    resolve_install_report_path, resolve_install_report_settings,
+)
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartEventBus
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
@@ -59,6 +62,8 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
                 if reason == "shutdown":
                     return
                 await assembly.webui.drop_package(package_id)
+                if reason == "reload":
+                    await assembly.webui.notify_packages_changed([package_id])
 
             async def cleanup_package_authorization(package_id: str, generation: int, reason: str) -> None:
                 del reason
@@ -152,8 +157,13 @@ def _wire_team_extension_bus(bus: ExtensionEventBus) -> None:
 
 def _build_assembly(server: Any) -> ExtensionAssembly:
     bus = SessionStartEventBus()
+    settings = resolve_install_report_settings()
     manager = ExtensionManager(
         resolve_install_dir(),
+        report_path=resolve_install_report_path(),
+        poll_interval=settings.poll_interval,
+        dependency_timeout=settings.dependency_timeout,
+        lock_timeout=settings.lock_timeout,
         store_dir=resolve_store_dir(),
         state_dir=resolve_state_dir(),
     )

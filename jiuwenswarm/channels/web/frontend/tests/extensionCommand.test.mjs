@@ -106,7 +106,7 @@ for (const language of ['zh', 'en']) {
       `install "${windowsPath}"`, 'session-1', stub.request, translate(language),
     );
     assert.deepEqual(stub.calls, [[
-      'extensions.v2.install', { session_id: 'session-1', paths: [windowsPath] }, { timeoutMs: 130000 },
+      'extensions.v2.install', { session_id: 'session-1', paths: [windowsPath] }, { timeoutMs: 330000 },
     ]]);
     assert.ok(output.includes(installedPath));
     assert.match(output, /package_id[：:]\s*demo.pkg/);
@@ -150,8 +150,8 @@ test('query supports all packages and one package, with active and inactive dire
     assert.match(output, /package_id：demo.pkg/);
     assert.match(output, /package_id：inactive.pkg/);
     assert.match(output, /版本：2.0.0/);
-    assert.match(output, /状态：已生效/);
-    assert.match(output, /状态：已安装，未生效/);
+    assert.match(output, /运行状态：已生效/);
+    assert.match(output, /运行状态：已安装，未生效/);
     assert.match(output, /安装目录：\/store\/inactive.pkg\/2.0.0/);
     assert.doesNotMatch(output, /AgentServer|代次|generation/);
     assert.equal(output.split(installedPath).length - 1, 1);
@@ -437,4 +437,42 @@ test('a newline after the main command cannot become a management request after 
   }
   assert.equal(messages.length, 1);
   assert.match(messages[0].commandOutput, /one extension command per line/);
+});
+
+
+test('query without id displays report details from both domains', async () => {
+  const stub = requestStub({ state: {
+    active: [{ package_id: 'server.demo', version: '2.0.0', root: installedPath, generation: 2 }],
+    installed: [installedPath],
+    package_ids: ['gateway.demo', 'server.demo'],
+    packages: [
+      { package_id: 'server.demo', domain: 'agentserver', status: 'success', active_version: '2.0.0' },
+      { package_id: 'gateway.demo', domain: 'gateway', status: 'failed', active_version: null },
+    ],
+  } });
+  const output = await runExtensionCommand('query', 'session-1', stub.request, translate());
+  assert.ok(output.includes('gateway.demo'));
+  assert.ok(output.includes('server.demo'));
+  assert.match(output, /域：gateway/);
+  assert.match(output, /域：agentserver/);
+  assert.match(output, /当前生效版本：2.0.0/);
+  assert.match(output, /运行状态：已生效/);
+  assert.ok(output.includes(installedPath));
+  assert.doesNotMatch(output, /报告状态|当前进程运行状态/);
+  assert.equal(output.split('当前生效版本：2.0.0').length - 1, 1);
+});
+
+test('query with id merges the report and local facts into one package block', async () => {
+  const stub = requestStub({ state: {
+    active: [{ package_id: 'demo.pkg', version: '2.3.4', root: installedPath }],
+    installed: [installedPath],
+    package_ids: ['demo.pkg'],
+    packages: [{ package_id: 'demo.pkg', domain: 'agentserver', active_version: '2.3.4' }],
+  } });
+  const output = await runExtensionCommand('query demo.pkg', 'session-1', stub.request, translate());
+  assert.ok(output.includes('2.3.4'));
+  assert.ok(output.includes(installedPath));
+  assert.match(output, /域：agentserver/);
+  assert.match(output, /运行状态：已生效/);
+  assert.equal(output.split('package_id：demo.pkg').length - 1, 1);
 });

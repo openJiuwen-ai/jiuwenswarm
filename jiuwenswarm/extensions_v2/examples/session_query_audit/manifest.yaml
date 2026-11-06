@@ -1,5 +1,6 @@
 schemaVersion: 1
 package:
+  domain: agentserver
   id: example.session-query-audit
   version: 1.0.0
   displayName: Session Query Audit
