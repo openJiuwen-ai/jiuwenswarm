@@ -1,0 +1,42 @@
+.task-meeting-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+.chat-input-btn.task-meeting-action.is-active {
+  color: var(--color-feedback-success);
+  background: var(--color-feedback-success-subtle);
+}
+.chat-input-btn.task-meeting-action {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+.chat-input-btn.task-meeting-action.is-starting,
+.chat-input-btn.task-meeting-action.is-closing,
+.chat-input-btn.task-meeting-action.is-cleanup_failed {
+  color: var(--color-feedback-warning);
+  background: var(--color-feedback-warning-subtle);
+}
+.chat-input-btn.task-meeting-action.is-failed {
+  color: var(--color-feedback-danger);
+  background: var(--color-feedback-danger-subtle);
+}
+.chat-input-btn.task-meeting-action:disabled {
+  cursor: wait;
+}
+.task-meeting-spinner {
+  animation: task-meeting-spin 1s linear infinite;
+}
+@keyframes task-meeting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-meeting-spinner {
+    animation: none;
+  }
+}

@@ -123,6 +123,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
+import { isTaskInputBlocked, useTaskInputBlocked } from '../../applicationPlugins/taskInputReadiness';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import {
@@ -980,7 +981,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // prompt is a one-shot compose: no abort, and no second prompt while it runs.
   const isDesignLanding = workMode === 'design' && activeSessionId === NEW_CONVERSATION_ID;
   const designLandingSubmitting = isDesignLanding && isProcessing;
+  const applicationInputBlocked = useTaskInputBlocked(activeSessionId);
   const composerDisabled =
+    applicationInputBlocked ||
     agentGroupUnavailable ||
     organizationTeamUnavailable ||
     isCompactRunning ||
@@ -2811,7 +2814,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const handleSubmit = useCallback(() => {
-    if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
+    if (composerDisabled || isTaskInputBlocked(activeSessionId) || isListening || isTranscribing || modelGroupSendBlocked) return;
 
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();

@@ -9,6 +9,8 @@ import { parseModelSelection } from '../features/settings/modules/models/modelGr
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
 import { defaultGroupChatInput } from '../features/groupChatInput';
+import { hasMeetingAudioOwner } from '../features/teamMeeting/playbackOwnership';
+import { prepareMeetingInput } from '../features/teamMeeting/input';
 import { isEnterprise } from '../edition';
 import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
@@ -1299,6 +1301,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const handleTtsPlayback = useCallback(
     (sessionId: string, messageId: string, content: string) => {
+      if (hasMeetingAudioOwner(sessionId)) return;
       const sanitized = sanitizeTtsText(content);
       if (!sanitized || sanitized.startsWith('[任务已中断]')) {
         return;
@@ -1325,7 +1328,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           audioMime: response.audio_mime,
         });
 
-        if (versionAtStart !== userInputVersionRef.current) {
+        if (versionAtStart !== userInputVersionRef.current || hasMeetingAudioOwner(sessionId)) {
           return;
         }
 
@@ -2200,7 +2203,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       resetContextCompressionTurn(sessionId);
       userInputVersionRef.current += 1;
-      stopAllTts();
+      if (!hasMeetingAudioOwner(sessionId)) stopAllTts();
 
       // A new query supersedes an unanswered inline question for this same session.
       if (useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0]) {
@@ -2415,6 +2418,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           : undefined;
         const sessionRt = useSessionStore.getState().getRuntime(sessionId);
+        const meetingInput = await prepareMeetingInput(sessionId, outgoingContent);
         await request('chat.send', {
           session_id: sessionId,
           content: outgoingContent,
@@ -2454,6 +2458,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? { team_bootstrap_mode: sessionRt.teamBootstrapMode }
             : {}),
         }, {
+          awaitRuntimeAccepted: !!meetingInput,
           // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
           // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。
           onRequestId: (requestId) => {
@@ -2468,6 +2473,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             registry.set(requestId, { sessionId, messageId: userMessageId });
           },
         });
+        // Text is already accepted. A failed barrier acknowledgement must not invite resending it.
+        if (meetingInput) {
+          try {
+            await meetingInput.admitted();
+          } catch {
+            onErrorRef.current?.(t('meeting.errors.inputBarrierFailed'));
+          }
+        }
         clearConnectionPresentationForUserAction(sessionId);
         setOrganizationOwnerStopped(sessionId, false);
         if (sessionMetadata) {

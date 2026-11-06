@@ -1,4 +1,82 @@
 {
+  "meeting": {
+    "panel": {
+      "title": "Meeting",
+      "addressedAgents": "Agents currently addressed by the meeting",
+      "noAddressedAgents": "No agents currently addressed",
+      "speechRoute": "Your speech goes to",
+      "microphone": "Microphone",
+      "pauseMicrophone": "Pause microphone",
+      "microphoneStates": {
+        "ready": "Paused",
+        "recording": "Listening",
+        "transcribing": "Transcribing…"
+      },
+      "playback": "Agent speech",
+      "noSpeaker": "No agent is speaking",
+      "transcript": "Latest recognized speech",
+      "waitingForSpeech": "Waiting for your speech…",
+      "empty": "Create a Team to use meeting controls. New Teams follow the global meeting default in Experimental settings.",
+      "states": {
+        "failed": "Meeting activation failed",
+        "idle": "No active meeting",
+        "starting": "Starting",
+        "active": "Active",
+        "closing": "Disabling meeting…",
+        "cleanup_failed": "Cleanup needs attention"
+      }
+    },
+    "routing": {
+      "title": "Meeting input routing",
+      "description": "Leader: meeting host. None: no recipient. Applies to the next meeting.",
+      "leader": "Leader",
+      "none": "None"
+    },
+    "playback": {
+      "loading": "Preparing {{speaker}} ({{voice}})…",
+      "playing": "{{speaker}} speaking ({{voice}})",
+      "paused": "Speech paused. End this meeting to start again.",
+      "failed": "Speech failed. Read the transcript, then end this meeting."
+    },
+    "task": {
+      "enable": "Enable meeting",
+      "enabled": "Meeting enabled",
+      "enabling": "Enabling meeting…",
+      "disabling": "Disabling meeting…",
+      "retryEnable": "Retry enabling meeting",
+      "closing": "Disabling meeting…",
+      "retryCleanup": "Retry disabling meeting",
+      "stop": "Disable meeting"
+    },
+    "title": "Team meetings",
+    "stopPlayback": "Stop audio",
+    "leader": "Leader",
+    "record": {
+      "ready": "Resume microphone",
+      "recording": "Pause microphone (finishes current utterance)",
+      "transcribing": "Transcribing…"
+    },
+    "errors": {
+      "playbackUnavailable": "Meeting audio could not be prepared. Check the Qwen configuration and try again.",
+      "cleanupFailed": "Meeting cleanup was not confirmed. Retry disabling meeting.",
+      "inputStreamFailed": "Microphone streaming stopped because the connection could not keep up. Start a new meeting.",
+      "unsupported": "Voice recording requires a supported browser and a secure connection.",
+      "microphoneFailed": "Could not access your microphone. Check browser permissions and try again.",
+      "meetingStartFailed": "Could not enable the Team meeting. Please try again.",
+      "meetingBusy": "This Team meeting is already open in another tab.",
+      "microphoneEnded": "The microphone was disconnected.",
+      "disconnected": "Connection lost. Start a new meeting after reconnecting.",
+      "recordingTooLarge": "The recording is too large. Please record a shorter message.",
+      "recordingFailed": "Could not record audio. Please try again.",
+      "transcriptionFailed": "Could not transcribe the recording. Please try again.",
+      "emptyTranscript": "No clear speech was detected. Please record again.",
+      "deliveryFailed": "Your message could not be delivered. Please try again.",
+      "playbackFailed": "Could not play the agent reply. The full text is still available.",
+      "playbackSkipped": "Audio failed. Skipping this speech and continuing the queue; the full text is still available.",
+      "playbackOverloaded": "Too much speech is queued. Read the full reply in the transcript.",
+      "inputBarrierFailed": "Your message was accepted, but meeting playback could not resume. End the meeting and start it again."
+    }
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
     "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
@@ -1237,6 +1315,14 @@
         "title": "Default TTS voice",
         "description": "Leader voice. Other members receive stable voices from the same model. Restart the meeting after changing settings.",
         "placeholder": "Anna"
+      },
+      "team_meeting_enabled": {
+        "title": "Team meetings",
+        "description": "Enable spoken replies in Team conversations. Voice streaming has its own chat control."
+      },
+      "team_meeting_default_enabled": {
+        "title": "Enable meetings for new Teams",
+        "description": "Automatically enable a meeting after a new Team is created. Existing Teams keep their current meeting state."
       },
       "meeting_vad_start_threshold": {
         "title": "Meeting speech-start confidence",

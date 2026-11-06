@@ -1,7 +1,13 @@
-import type { ReactNode } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import type { FileDownloadItem, ToolCall, ToolResult } from '../types';
 
 export type ApplicationPluginNavKey = `app:${string}`;
+
+export interface ApplicationPluginTeamPanel {
+  id: ApplicationPluginNavKey;
+  titleI18nKey: string;
+  Component: ComponentType<{ sessionId: string | null }>;
+}
 
 export interface ApplicationPluginContribution {
   plugin_id: string;

@@ -20,6 +20,14 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
+      id: 'team-meeting',
+      titleKey: 'meeting.title',
+      items: [
+        { id: 'team-meeting-enabled', component: 'switch', key: 'team_meeting_enabled' },
+        { id: 'team-meeting-default-enabled', component: 'switch', key: 'team_meeting_default_enabled' },
+      ],
+    },
+    {
       id: 'tts',
       titleKey: 'settingsPanel.experimental.tts',
       exclusiveEditing: true,

@@ -63,6 +63,7 @@ import {
 import { groupByWorkflowRun, type WorkflowRunGroup } from './runGrouping';
 import { isWorkflowRunEnded, type WorkflowStatus } from './workflowTypes';
 import { RunGroupHeader } from './RunGroupHeader';
+import { applicationPluginTeamPanels } from '../../applicationPlugins/ApplicationPluginOutlet';
 
 type TeamMembersPanelProps = {
   variant: 'compact' | 'expanded';
@@ -156,6 +157,7 @@ export function TeamMembersPanel({
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
+  const pluginPanel = applicationPluginTeamPanels().find((panel) => panel.id === activeDetailTab);
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
   const teamTaskTimeline = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskTimeline ?? EMPTY_TIMELINE);
@@ -270,7 +272,14 @@ export function TeamMembersPanel({
         </div>
 
         <div className="space-y-3 px-[24px] py-4" data-testid="team-area-members-sidebar-list">
-          {activeDetailTab === 'group' ? (
+          {pluginPanel ? (
+            <div
+              className="rounded-md bg-[var(--color-tool-tab-active-bg)] px-3 py-3 text-sm font-semibold text-text"
+              data-testid="team-area-plugin-panel-name"
+            >
+              {t(pluginPanel.titleI18nKey)}
+            </div>
+          ) : activeDetailTab === 'group' ? (
             <div
               className="flex w-full items-center gap-3 rounded-md border border-transparent bg-[var(--color-tool-tab-active-bg)] px-[8px] py-[9px] text-left"
               data-testid="team-area-member-item"
@@ -320,7 +329,9 @@ export function TeamMembersPanel({
         </div>
       </aside>
 
-      {activeDetailTab === 'group' ? (
+      {pluginPanel ? (
+        <pluginPanel.Component sessionId={activeSessionId} />
+      ) : activeDetailTab === 'group' ? (
         <GroupChatDetail items={groupItems} taskTitles={taskTitles} />
       ) : visibleSelectedMember ? (
         <MemberTaskDetail
@@ -372,6 +383,19 @@ function DetailTabSwitch({
       >
         {t('team.detailTabs.group')}
       </button>
+      {applicationPluginTeamPanels().map((panel) => (
+        <button
+          key={panel.id}
+          type="button"
+          data-testid="team-area-detail-tab-plugin"
+          data-variant={panel.id}
+          aria-pressed={activeTab === panel.id}
+          className={`col-span-2 mt-1 h-8 rounded text-center font-semibold ${activeTab === panel.id ? 'bg-card text-text shadow-sm' : 'text-text-secondary hover:text-text'}`}
+          onClick={() => onChange?.(panel.id)}
+        >
+          {t(panel.titleI18nKey)}
+        </button>
+      ))}
     </div>
   );
 }

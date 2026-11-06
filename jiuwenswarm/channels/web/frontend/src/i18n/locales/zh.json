@@ -1,4 +1,82 @@
 {
+  "meeting": {
+    "panel": {
+      "title": "会议",
+      "addressedAgents": "会议当前提及的智能体",
+      "noAddressedAgents": "当前未提及智能体",
+      "speechRoute": "您的语音发送给",
+      "microphone": "麦克风",
+      "pauseMicrophone": "暂停麦克风",
+      "microphoneStates": {
+        "ready": "已暂停",
+        "recording": "正在聆听",
+        "transcribing": "正在转写…"
+      },
+      "playback": "智能体发言",
+      "noSpeaker": "暂无智能体发言",
+      "transcript": "最近识别的语音",
+      "waitingForSpeech": "正在等待您的语音…",
+      "empty": "创建团队后可使用会议控制，新团队遵循实验性设置中的全局会议默认值。",
+      "states": {
+        "failed": "会议启用失败",
+        "idle": "无进行中的会议",
+        "starting": "正在启动",
+        "active": "进行中",
+        "closing": "正在停用会议…",
+        "cleanup_failed": "需要重试清理"
+      }
+    },
+    "routing": {
+      "title": "会议输入路由",
+      "description": "Leader：会议主持人；None：不指定接收者。下次会议生效。",
+      "leader": "Leader",
+      "none": "None"
+    },
+    "playback": {
+      "loading": "正在准备 {{speaker}}（{{voice}}）…",
+      "playing": "{{speaker}} 正在发言（{{voice}}）",
+      "paused": "语音已暂停。请结束会议后重新开始。",
+      "failed": "语音播放失败。请阅读文字记录后结束会议。"
+    },
+    "task": {
+      "enable": "启用会议",
+      "enabled": "会议已启用",
+      "enabling": "正在启用会议…",
+      "disabling": "正在停用会议…",
+      "retryEnable": "重试启用会议",
+      "closing": "正在停用会议…",
+      "retryCleanup": "重试停用会议",
+      "stop": "停用会议"
+    },
+    "title": "团队会议",
+    "stopPlayback": "停止语音",
+    "leader": "主持人",
+    "record": {
+      "ready": "恢复麦克风",
+      "recording": "暂停麦克风（发送当前语句）",
+      "transcribing": "正在转写…"
+    },
+    "errors": {
+      "playbackUnavailable": "无法准备会议语音。请检查 Qwen 配置后重试。",
+      "cleanupFailed": "尚未确认会议清理完成，请重试停用会议。",
+      "inputStreamFailed": "麦克风推流因连接异常已停止，请重新开始会议。",
+      "unsupported": "语音录制需要支持的浏览器和安全连接。",
+      "microphoneFailed": "无法访问麦克风，请检查浏览器权限后重试。",
+      "meetingStartFailed": "无法启用团队会议，请重试。",
+      "meetingBusy": "此团队会议已在另一个标签页中打开。",
+      "microphoneEnded": "麦克风已断开。",
+      "disconnected": "连接已断开，请在重连后重新开始会议。",
+      "recordingTooLarge": "录音过大，请录制更短的消息。",
+      "recordingFailed": "无法录制音频，请重试。",
+      "transcriptionFailed": "无法转写录音，请重试。",
+      "emptyTranscript": "未检测到清晰语音，请重新录制。",
+      "deliveryFailed": "消息投递失败，请重试。",
+      "playbackFailed": "无法播放智能体回复，完整文字仍然可用。",
+      "playbackSkipped": "语音播放失败。已跳过本段语音并继续处理队列，完整文字仍然可用。",
+      "playbackOverloaded": "待播放语音过多，请在会议记录中阅读完整回复。",
+      "inputBarrierFailed": "消息已接收，但会议播放无法恢复。请结束会议后重新开启。"
+    }
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
     "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
@@ -1237,6 +1315,14 @@
         "title": "默认语音合成音色",
         "description": "Leader 的默认音色，其他成员会分配同一模型的稳定音色。更改后请重新开始会议。",
         "placeholder": "Anna"
+      },
+      "team_meeting_enabled": {
+        "title": "团队会议",
+        "description": "在团队对话中启用语音回复，语音流式输入使用独立的聊天控件。"
+      },
+      "team_meeting_default_enabled": {
+        "title": "为新团队默认启用会议",
+        "description": "新团队创建成功后自动启用会议，现有团队保持当前会议状态。"
       },
       "meeting_vad_start_threshold": {
         "title": "会议语音起始置信度",

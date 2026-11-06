@@ -5,6 +5,7 @@ import type {
   ApplicationPluginSettingsProps,
   ApplicationPluginTaskInputActionProps,
   ApplicationPluginTaskRuntimeProps,
+  ApplicationPluginTeamPanel,
 } from './types';
 import './applicationPlugins.css';
 
@@ -14,6 +15,7 @@ type BundledPluginModule = {
   applicationPluginSettings?: ComponentType<ApplicationPluginSettingsProps>;
   applicationPluginTaskInputAction?: ComponentType<ApplicationPluginTaskInputActionProps>;
   applicationPluginTaskRuntime?: ComponentType<ApplicationPluginTaskRuntimeProps>;
+  applicationPluginTeamPanel?: ApplicationPluginTeamPanel;
   default?: ComponentType;
 };
 
@@ -29,6 +31,7 @@ const bundledComponents = new Map<string, ComponentType>();
 const bundledSettingsComponents = new Map<string, ComponentType<ApplicationPluginSettingsProps>>();
 const bundledTaskInputActions: ComponentType<ApplicationPluginTaskInputActionProps>[] = [];
 const bundledTaskRuntimes: ComponentType<ApplicationPluginTaskRuntimeProps>[] = [];
+const bundledTeamPanels: ApplicationPluginTeamPanel[] = [];
 for (const module of Object.values(bundledModules)) {
   if (module.applicationPluginId && module.default) {
     bundledComponents.set(module.applicationPluginId, module.default);
@@ -42,6 +45,13 @@ for (const module of Object.values(bundledModules)) {
   if (module.applicationPluginTaskRuntime) {
     bundledTaskRuntimes.push(module.applicationPluginTaskRuntime);
   }
+  if (module.applicationPluginTeamPanel) {
+    bundledTeamPanels.push(module.applicationPluginTeamPanel);
+  }
+}
+
+export function applicationPluginTeamPanels(): readonly ApplicationPluginTeamPanel[] {
+  return bundledTeamPanels;
 }
 
 export function applicationPluginSettingsComponent(
