@@ -4,13 +4,15 @@
 |---|---|
 | Spec ID | S_03 |
 | 状态 | 当前实现的真实描述 |
-| 修订日期 | 2026-10-28 |
+| 修订日期 | 2026-11-06 |
 | 关联模块 | `jiuwenswarm/agents/harness/common/rails/task_execution_rail.py`（与 [[S_02]] 同文件的另一机制面：`_todo_close_nudge_message` / `_attach_todo_close_nudge` / `_arm/_finish/_retry/_mark/_write_todo_close_control` / `_reject_todo_close_nudge` / `_is_last_react_iteration` / `_started_in_progress_tasks`）<br>`jiuwenswarm/server/runtime/agent_adapter/todo_close_text_hold.py`（117 行，adapter 侧缓冲状态机）<br>消费点：`jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` stream() 主循环（实例创建 ~21056、first_chunk 判定 ~21121、decide 分派 ~21206、buffer push ~21298、`_parse_stream_chunk` 剔除 ~22402）<br>配合面（不展开）：`skill_turbo/rails/skill_prompt_rail.py` 的 guide 文本与 `_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT`、`JiuSwarmStreamEventRail` 对 nudge 的静默处理 |
 | 装配点 | rail 侧随 [[S_02]]（config `enable_task_execution_rail`，默认 False）一并装配，无独立开关；adapter 侧在每条用户请求的 stream() 循环内新建 `TodoCloseTextHold()` 实例（per-request 生命周期） |
 
 ## 1. 范围与边界
 
 本 spec 管 **"纯文本收尾时已开始的 todo 仍未收口的拦截与缓冲"**——为什么与怎么做：
+
+第 2—9 节描述普通 `TaskExecutionRail` 的原收口流程；Flash 的执行续接边界见第 10 节。
 
 - 约束链：ReAct loop 把"无 tool_calls 的响应"当最终答案 → `task.complete` 只在 todo_modify 后发出 → 纯文本收尾会把停止解释留在前端仍开放的任务段里
 - 机制一（rail 侧）：`after_model_call` 把一次纯文本结尾**替换**为内部 close nudge 假 ToolCall，逼模型先 todo_modify 再重写正文
@@ -187,5 +189,18 @@ attach 成功时 `response.content = ""` 且 `response.tool_calls = [nudge]`—�
 - **[[S_01]]**：nudge 迫使模型调用的 todo_modify 是 S_01 工具链的普通消费者；`generation_token` 语义（N12 的 stamped 判定）以 S_01 N5 为准
 - **[[S_04]]**（计划审批）/ **[[S_06]]**（deepresearch 落盘）：审批流与 deepresearch 的收尾不走 close nudge（force_finish 路径，见 P5）
 - **[[S_05]]**（profile 变体）：flash/code 的 todo 工具卡变体不改变收口流控协议
+
+## 10. Flash 本轮未完成工作的有界续接
+
+`FlashTodoRail` 复用 `TodoCloseGate` 及既有三帧协议，不修改普通模式的收口条件。
+
+- 只在本轮成功的 `todo(create/modify)` 后维护未完成执行项。成功提交快照优先；旧结果沿已有读路径刷新。仅 list/get、失败修改或历史残留不会自行启动续接。
+- 未完成执行项包括 `pending/in_progress`，排除持久提醒。`in_progress` 仍单独用于原拒答取消和任务段收口；催办本身不修改文件、不自动启动或完成任务。
+- 真正的工具调用照常执行。纯文本且仍有未完成执行项时，在剩余轮数足够的条件下最多附加一次内部 todo 催办，要求实际执行，或明确说明需要用户信息及阻塞；不要求把全部条目改为完成。
+- 已有中断状态、异常和 force-finish 请求不触发催办或补充说明。`finish_reason=length` 沿用原截断处理。没有可信轮数时不附加工具调用，循环外模型调用不追加未完成说明。
+- 催办预算用尽或剩余轮数不足而正常文本收尾时，沿现有 `llm_output` 补充剩余待办的状态，并同步模型响应正文；不增加事件类型，不把待办状态等同于产物验收结论。
+- 每次 invoke 重置状态和一次预算。自然语言中的“等待用户”无法可靠分类；无结构化中断时，模型可在一次催办后明确回复等待原因并保留待办。
+
+回归入口：`test_flash_todo_close_nudge.py`、`test_todo_close_text_hold.py`，普通模式兼容入口为 `rails/test_task_execution_todo_close_nudge.py`。故障与验证边界见 [B_05](../bugfix/B_05_flash-todo-pending-completion.md)。
 - `server/runtime/skill_turbo/AGENTS.md`：guide 文本与 PPT 交付 hint 的"先单独 todo_modify"是 prompt 层配合，减少 nudge 触发概率；机制本体在本 spec
 - `server/runtime/agent_adapter/AGENTS.md`：`TodoCloseTextHold` 的消费循环、first_chunk 排除、parse 剔除落在 adapter 侧（接缝登记处）

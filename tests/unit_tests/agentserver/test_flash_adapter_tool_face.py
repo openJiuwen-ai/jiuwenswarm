@@ -352,6 +352,27 @@ async def test_unified_todo_get_requires_id() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("todos", [None, {"id": "env", "status": "completed"}])
+async def test_unified_todo_update_requires_array_before_invoking_engine(todos) -> None:
+    engine = _StubTodoEngine()
+    tool = UnifiedTodoTool({"modify": engine}, language="cn")
+    result = await tool.invoke({"action": "modify", "modify_action": "update", "todos": todos,
+                                "id": "env", "status": "completed"}, session="s1")
+    assert result.success is False
+    assert '"todos":[{"id":"env","status":"completed"}]' in result.error
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unified_todo_valid_batch_keeps_existing_payload_and_session() -> None:
+    engine = _StubTodoEngine()
+    tool = UnifiedTodoTool({"modify": engine}, language="en")
+    rows = [{"id": "env", "status": "completed"}, {"id": "build", "status": "in_progress"}]
+    await tool.invoke({"action": "modify", "modify_action": "update", "todos": rows}, session="s1")
+    assert engine.calls == [({"action": "update", "todos": rows}, {"session": "s1"})]
+
+
+@pytest.mark.asyncio
 async def test_unified_todo_unsupported_action_returns_error() -> None:
     tool = UnifiedTodoTool({}, language="cn")
 
