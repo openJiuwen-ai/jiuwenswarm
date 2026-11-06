@@ -14,7 +14,7 @@ files:
   - jiuwenswarm/extensions/app_market/app_market/process_supervisor.py
   - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx
 designs: []
-design_note: 修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-stop-and-page-lifecycle.md。
+design_note: 修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md。
 ---
 
 # 应用市场停止强杀跳过应用清理与页面关闭无感知修复记录
@@ -30,7 +30,7 @@ design_note: 修复依据既有契约（app-builder SKILL.md 的"应用负责优
 
 ## 关联设计与当前契约
 
-无独立 D。依据：app-builder SKILL.md 第"会话与请求规范"节——"应用负责优雅退出和会话清理，市场只终止进程；在停止脚本或进程退出处理里中断、删除并确认"；扩展 README 的运行描述。修复后契约固化于 [S_02_app-stop-and-page-lifecycle](../../../../specs/jiuwenswarm/extensions/app_market/S_02_app-stop-and-page-lifecycle.md)。
+无独立 D。依据：app-builder SKILL.md 第"会话与请求规范"节——"应用负责优雅退出和会话清理，市场只终止进程；在停止脚本或进程退出处理里中断、删除并确认"；扩展 README 的运行描述。修复后契约固化于 [S_02_app-market-stop-and-page-lifecycle](../../../../specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md)。
 
 ## 根因与修复决策
 
@@ -71,7 +71,7 @@ design_note: 修复依据既有契约（app-builder SKILL.md 的"应用负责优
 
 ### Rebase 到独立应用容器（2026-11-05）
 
-目标基线 `feat/app-market` 的 `bb2d61992` 已实施 [S_01_app-market-windows](../../../../specs/jiuwenswarm/channels/desktop/S_01_app-market-windows.md)：Web 内嵌 iframe、Electron 独立窗口，手动关闭页面继续运行服务。此次 rebase 保留该当前契约，移除本记录前述共享聊天 browser 页签关联、自动停止模块与对应旧用例；共享页签方案及其两次前端验证仅保留为历史事实。后端优雅请求、静态服务端点、整树回收及其回归用例继续有效。停止/删除仍使用目标基线按 app_id 关闭容器的实现，不依赖聊天页签。
+目标基线 `feat/app-market` 的 `bb2d61992` 已实施 [S_01_app-market-browser-containers](../../../../specs/jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md)：Web 内嵌 iframe、Electron 独立窗口，手动关闭页面继续运行服务。此次 rebase 保留该当前契约，移除本记录前述共享聊天 browser 页签关联、自动停止模块与对应旧用例；共享页签方案及其两次前端验证仅保留为历史事实。后端优雅请求、静态服务端点、整树回收及其回归用例继续有效。停止/删除仍使用目标基线按 app_id 关闭容器的实现，不依赖聊天页签。
 
 Rebase 工作区验证：`npm run test:app-market` 22 通过（含两个应用并存时停止/删除隔离，以及聊天 browser 页签事件不触发应用停止）；`node --test tests/electron/app_market_windows.test.cjs` 13 通过。后端实现与 `59d0bb77d` 完全相同，复用上述 5 个定向用例证据，不重复执行。未进行真实 Electron UI 或 macOS/Linux 实机验证。
 

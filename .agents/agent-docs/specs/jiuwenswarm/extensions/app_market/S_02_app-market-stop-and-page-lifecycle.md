@@ -1,5 +1,5 @@
 ---
-id: S_02_app-stop-and-page-lifecycle
+id: S_02_app-market-stop-and-page-lifecycle
 title: 应用停止协议与页面联动
 type: S
 author: kdgmpw
@@ -34,7 +34,7 @@ files:
 
 ## 页面联动
 
-页面容器遵循 [S_01_app-market-windows](../../channels/desktop/S_01_app-market-windows.md)：普通 Web 使用按 `app_id` 复用的 iframe，Electron 使用同一原生页面在独立窗口与编辑侧栏间移动。
+页面容器遵循 [S_01_app-market-browser-containers](../../channels/desktop/S_01_app-market-browser-containers.md)：普通 Web 使用按 `app_id` 复用的 iframe，Electron 使用同一原生页面在独立窗口与编辑侧栏间移动。
 
 - 关闭、隐藏应用窗口或页面不停止服务；聊天 browser 页签关闭不控制应用实例。编辑入口只在前端记录会话与应用预览的展示关联，不将聊天会话或其自动化 browser 页签作为应用进程的生命周期所有者。
 - 停止或删除 RPC 成功后只关闭该 `app_id` 的容器，不关闭或停止其他应用。失败时保留容器；停止成功后的窗口清理异常不回滚已停止的服务状态。

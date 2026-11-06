@@ -12,7 +12,7 @@ files:
   - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx
   - jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md
 designs: []
-design_note: 依据页面容器契约（specs/jiuwenswarm/channels/desktop/S_01_app-market-windows.md 与 specs/jiuwenswarm/extensions/app_market/S_02_app-stop-and-page-lifecycle.md）；缓存约束已补入 S_02 不变量与应用开发技能，无独立 D。
+design_note: 依据页面容器契约（specs/jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md 与 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md）；缓存约束已补入 S_02 不变量与应用开发技能，无独立 D。
 ---
 
 # 端口复用后启动新应用显示上一个应用的缓存页面修复记录
@@ -23,7 +23,7 @@ design_note: 依据页面容器契约（specs/jiuwenswarm/channels/desktop/S_01_
 
 ## 关联设计与当前契约
 
-无独立 D。容器契约见 specs/jiuwenswarm/channels/desktop/S_01_app-market-windows.md；本修复新增的缓存约束已写入 S_02 不变量与应用开发技能接口表。
+无独立 D。容器契约见 specs/jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md；本修复新增的缓存约束已写入 S_02 不变量与应用开发技能接口表。
 
 ## 根因与修复决策
 
@@ -57,6 +57,6 @@ design_note: 依据页面容器契约（specs/jiuwenswarm/channels/desktop/S_01_
 
 ## 检视后修订（2026-11-05）
 
-`04e7cacf7` 增加的 `no-store` 只能作用于新响应。修订后，Web 端通过 `web_url` 使用每个应用专属的 `*.localhost` 来源。即使端口和入口路径复用，HTML 和同源子资源也不会命中其他应用的缓存。入口查询参数只能隔离入口 HTML，因此采用独立来源。旧来源的浏览器存储不会自动迁移。现行契约见 `S_02_app-stop-and-page-lifecycle`。
+`04e7cacf7` 增加的 `no-store` 只能作用于新响应。修订后，Web 端通过 `web_url` 使用每个应用专属的 `*.localhost` 来源。即使端口和入口路径复用，HTML 和同源子资源也不会命中其他应用的缓存。入口查询参数只能隔离入口 HTML，因此采用独立来源。旧来源的浏览器存储不会自动迁移。现行契约见 `S_02_app-market-stop-and-page-lifecycle`。
 
 Windows 上以仓库 `.venv` 驱动 Chrome 156 的独立浏览器配置，使用两个应用的实际 URL 生成逻辑和一个可切换应用响应的 loopback 服务。用 iframe 预热 A 的入口 HTML 和同源 JS 后，在同一端口切换到 B。旧地址仍渲染 A 的 HTML 和 JS，而 B 的独立地址渲染 B 的 HTML 和 JS。后端 `test_static_app_start_open_stop_and_restart` 通过，验证启动与轮询返回同一 Web 入口，原服务地址仍能访问。

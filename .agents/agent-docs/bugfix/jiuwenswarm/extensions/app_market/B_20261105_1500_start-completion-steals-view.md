@@ -10,7 +10,7 @@ files:
   - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx
   - jiuwenswarm/channels/web/frontend/tests/appMarketPanel.test.mjs
 designs: []
-design_note: 依据 S_01_app-market-windows 与 S_02_app-stop-and-page-lifecycle 的“按稳定 app_id 复用页面、失败/停止不误关其他页面”契约；本次修复补充用户意图排序，无独立 D。
+design_note: 依据 S_01_app-market-browser-containers 与 S_02_app-market-stop-and-page-lifecycle 的“按稳定 app_id 复用页面、失败/停止不误关其他页面”契约；本次修复补充用户意图排序，无独立 D。
 ---
 
 # 应用启动完成抢走用户后来切换的页面

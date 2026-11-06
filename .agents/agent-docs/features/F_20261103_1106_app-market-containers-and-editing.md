@@ -1,6 +1,6 @@
 ---
-id: F_20261103_1106_app-market-electron
-title: 应用市场分端浏览器容器
+id: F_20261103_1106_app-market-containers-and-editing
+title: 应用市场浏览器容器与编辑会话
 type: F
 author: default
 author_email: default
@@ -10,7 +10,7 @@ designs: []
 design_note: 用户明确授权初步本地实现，无独立设计文档。
 ---
 
-# 应用市场分端浏览器容器
+# 应用市场浏览器容器与编辑会话
 
 应用市场原入口复用聊天文件预览逻辑，受会话布局和 headless 设置影响。改为应用专属容器，避免将应用页面生命周期绑定到聊天会话。
 
@@ -22,7 +22,7 @@ design_note: 用户明确授权初步本地实现，无独立设计文档。
 - 入口缓存与页面跳转分离，导航代次保护并发取消/完成；保留原生 POST 及弹出页正文、Content-Type/boundary 和 referrer。
 - 浏览器容器不负责游戏存档或 NPC session 生命周期。Web 与 Electron 存储不合并；同源规则和服务端口变化限制见当前契约。
 
-当前接口与不变量见 [S_01_app-market-windows](../specs/jiuwenswarm/channels/desktop/S_01_app-market-windows.md)。未新增依赖或服务端生命周期。
+当前接口与不变量见 [S_01_app-market-browser-containers](../specs/jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md)。未新增依赖或服务端生命周期。
 
 ## 验证
 

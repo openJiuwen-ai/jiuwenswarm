@@ -31,7 +31,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_app-market-windows](jiuwenswarm/channels/desktop/S_01_app-market-windows.md) | S | 应用市场分端展示契约 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs | — |
+| [S_01_app-market-browser-containers](jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md) | S | 应用市场分端展示契约 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs | — |
 
 <a id="module-2"></a>
 
@@ -39,7 +39,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_02_app-stop-and-page-lifecycle](jiuwenswarm/extensions/app_market/S_02_app-stop-and-page-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/app_market/app_market/static_server.py, jiuwenswarm/extensions/app_market/app_market/status_manager.py, jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/extensions/app_market/app_market/process_supervisor.py, jiuwenswarm/extensions/app_market/manager.py, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/appMarketViews.ts, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
+| [S_02_app-market-stop-and-page-lifecycle](jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/app_market/app_market/static_server.py, jiuwenswarm/extensions/app_market/app_market/status_manager.py, jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/extensions/app_market/app_market/process_supervisor.py, jiuwenswarm/extensions/app_market/manager.py, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/appMarketViews.ts, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
 
 <a id="module-3"></a>
 
@@ -47,7 +47,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_app-market-windows](jiuwenswarm/channels/desktop/S_01_app-market-windows.md) | S | 应用市场分端展示契约 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs | — |
+| [S_01_app-market-browser-containers](jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md) | S | 应用市场分端展示契约 | default | jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel | jiuwenswarm/channels/desktop/electron/app_market_windows.cjs | — |
 
 <a id="module-4"></a>
 
@@ -64,7 +64,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_01_app-session-project](jiuwenswarm/extensions/app_market/S_01_app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin | jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
-| [S_02_app-stop-and-page-lifecycle](jiuwenswarm/extensions/app_market/S_02_app-stop-and-page-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/app_market/app_market/static_server.py, jiuwenswarm/extensions/app_market/app_market/status_manager.py, jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/extensions/app_market/app_market/process_supervisor.py, jiuwenswarm/extensions/app_market/manager.py, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/appMarketViews.ts, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
+| [S_02_app-market-stop-and-page-lifecycle](jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | jiuwenswarm/extensions/app_market, jiuwenswarm/channels/web/frontend | jiuwenswarm/extensions/app_market/app_market/static_server.py, jiuwenswarm/extensions/app_market/app_market/status_manager.py, jiuwenswarm/extensions/app_market/app_market/market_service.py, jiuwenswarm/extensions/app_market/app_market/process_supervisor.py, jiuwenswarm/extensions/app_market/manager.py, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/appMarketViews.ts, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md | — |
 
 <a id="module-6"></a>
 
