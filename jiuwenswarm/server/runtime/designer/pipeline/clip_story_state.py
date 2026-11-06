@@ -47,28 +47,6 @@ _LOCK_MARKERS = (
     "COMPOSED SCENE MASTER",
 )
 
-_EXIT_RE = re.compile(
-    r"\b(?:walk(?:s|ed|ing)?\s+away|leave(?:s|ing)?|left|exit(?:s|ed|ing)?|"
-    r"depart(?:s|ed|ing)?|gone)\b",
-    re.I,
-)
-_ONSET_RE = re.compile(
-    r"\b(?:start(?:s|ed|ing)?|begin(?:s|ning)?)\s+(?:to\s+)?\w+",
-    re.I,
-)
-# Domain-agnostic finished beats: gaze / turn / reach / check / speak onset, etc.
-_BEAT_RE = re.compile(
-    r"\b(?:"
-    r"turn(?:s|ed|ing)?|look(?:s|ed|ing)?|gaze(?:s|d)?|glance(?:s|d)?|"
-    r"face(?:s|d|ing)?|check(?:s|ed|ing)?|reach(?:es|ed|ing)?|"
-    r"pick(?:s|ed|ing)?\s+up|open(?:s|ed|ing)?|grab(?:s|bed|bing)?|"
-    r"point(?:s|ed|ing)?|nod(?:s|ded|ding)?|stand(?:s|ing)?\s+up|"
-    r"sit(?:s|ting)?\s+down|arrive(?:s|d|ing)?|enter(?:s|ed|ing)?"
-    r")\b",
-    re.I,
-)
-
-
 def _tri_state(value: Any) -> bool | None:
     """Agent-declared presence; ``None`` means the agent did not decide."""
     if isinstance(value, bool):
@@ -89,17 +67,21 @@ def extract_finished_events(
     characters: list[dict[str, Any]] | None = None,
     on_screen: list[str] | None = None,
     clip_index: int | None = None,
+    source: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    """Typed already-done events from prior Wan/storyboard text (domain-agnostic).
+    """Already-done events the storyboard agent declared for the prior shot.
 
-    Only exit + motion-onset — never sit/stand or genre-specific pose rules.
-    Placement continuity comes from seat_anchors / storyboard, not hardcodes.
+    The storyboard already writes ``end_state {pose, seats, facing, exited,
+    speech_done}`` and ``exiting_character_ids`` per shot, so prior exits and
+    completed beats are structured facts. Nothing is inferred from the prose any
+    more: the old ``_EXIT_RE`` / ``_ONSET_RE`` / ``_BEAT_RE`` scans only matched
+    English wording, so a Chinese storyboard never produced any event (#10377).
+
+    ``text`` is accepted for call-site compatibility and is intentionally unused.
     """
-    blob = str(text or "").strip()
-    if not blob:
-        return []
+    state = source if isinstance(source, dict) else {}
+    ended = state.get("end_state") if isinstance(state.get("end_state"), dict) else {}
     names = character_name_map(characters)
-    present = [str(x) for x in (on_screen or []) if str(x).strip()] or list(names)
     prefix = f"shot {clip_index}: " if clip_index else ""
     events: list[dict[str, str]] = []
 
@@ -112,43 +94,35 @@ def extract_finished_events(
             }
         )
 
-    matched_exit = False
-    sentences = [s.strip() for s in re.split(r"[.\n;]+", blob) if s.strip()]
-    for cid in present:
-        who = names.get(cid, cid)
-        token = str(who or "").strip()
-        if not token or len(token) < 2:
-            continue
-        hits = [s for s in sentences if token.lower() in s.lower()]
-        if not hits:
-            continue
-        local = " ".join(hits)
-        if _EXIT_RE.search(local):
-            add(
-                "exit",
-                f"{who} left this setting — omit from later same-setting prompts until storyboard returns them",
-                cid,
-            )
-            matched_exit = True
-        if _ONSET_RE.search(local) or _BEAT_RE.search(local):
-            # Prefer a concrete clause from the prior sentence over a generic onset note.
-            clause = hits[0].rstrip(".")
-            add(
-                "beat",
-                f"{who} already finished: {clause} — open this shot already past that beat",
-                cid,
-            )
-    if _EXIT_RE.search(blob) and not matched_exit:
-        add("exit", "exit already happened — omit that cast from later same-setting prompts until returned")
-    if _BEAT_RE.search(blob) and not any(e["type"] == "beat" for e in events):
-        # Generic beat without a matched name — still block restage.
-        clause = next(
-            (s.rstrip(".") for s in sentences if _BEAT_RE.search(s)),
-            "prior beat",
+    # Merge every declared source: an `or` chain would let a truthy non-list
+    # (a bare "char_1, char_2" string) win and silently drop the other two.
+    exited_ids = list(
+        dict.fromkeys(
+            _norm_ids(ended.get("exited"))
+            + _norm_ids(state.get("exiting_character_ids"))
+            + _norm_ids(state.get("exited_ids"))
         )
-        add("beat", f"already finished: {clause} — open this shot past that beat")
-    elif _ONSET_RE.search(blob) and not any(e["type"] in {"onset", "beat"} for e in events):
-        add("onset", "onset already happened — continue without restarting that motion")
+    )
+    for cid in exited_ids:
+        who = names.get(cid, cid)
+        add(
+            "exit",
+            f"{who} left this setting in the prior shot — omit until the storyboard returns them",
+            cid,
+        )
+
+    speech_done = str(ended.get("speech_done") or state.get("speech_done") or "").strip()
+    if speech_done and speech_done.lower() not in {"false", "none", "no"}:
+        add("beat", f"already said: {speech_done[:160]} — do not replay that line")
+
+    pose = str(ended.get("pose") or "").strip()
+    if pose:
+        add("beat", f"prior shot ended in pose: {pose[:160]} — open already in that pose")
+
+    for note in state.get("already_done") or []:
+        text_note = str(note or "").strip()
+        if text_note:
+            add("beat", text_note[:200])
 
     out: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -162,7 +136,10 @@ def extract_finished_events(
 
 
 def _norm_ids(raw: Any) -> list[str]:
-    if not isinstance(raw, (list, tuple)):
+    """Normalize an id list, tolerating a bare id or a comma-separated string."""
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[,;、\s]+", raw) if part]
+    if not isinstance(raw, (list, tuple, set)):
         return []
     return [str(x).strip() for x in raw if str(x).strip()]
 
@@ -412,6 +389,7 @@ def apply_story_state_to_next_cfg(
         characters=characters,
         on_screen=src_on,
         clip_index=from_clip_index,
+        source=src,
     )
     done = [str(x).strip() for x in (cfg.get("already_done") or []) if str(x).strip()]
     for item in events:

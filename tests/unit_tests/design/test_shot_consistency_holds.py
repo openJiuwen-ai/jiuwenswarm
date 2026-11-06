@@ -4,22 +4,31 @@
 from __future__ import annotations
 
 
-def test_extract_finished_events_catches_turn_and_crowd_exit() -> None:
+def test_extract_finished_events_catches_declared_exit() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
         extract_finished_events,
     )
 
-    text = (
-        "Alex turns from his desk to look at the wall calendar. "
-        "Colleagues walk away toward the exit."
+    # Exits and beats are declared by the storyboard agent on end_state; the
+    # prose is not scanned, so a bare sentence yields nothing.
+    assert (
+        extract_finished_events(
+            "Alex turns from his desk. Colleagues walk away toward the exit.",
+            characters=[{"id": "char_alex", "name": "Alex"}],
+            on_screen=["char_alex"],
+            clip_index=1,
+        )
+        == []
     )
     events = extract_finished_events(
-        text,
+        "",
         characters=[{"id": "char_alex", "name": "Alex"}],
         on_screen=["char_alex"],
         clip_index=1,
+        source={"end_state": {"exited": ["char_alex"], "pose": "standing by the desk"}},
     )
     kinds = {e["type"] for e in events}
+    assert "exit" in kinds
     assert "beat" in kinds
     # Crowd exits are no longer inferred from prose; the storyboard agent
     # declares them, so only character-level exits remain text-derived here.
@@ -38,6 +47,7 @@ def test_pose_holds_and_crowd_state_stamped() -> None:
         "clip_index": 1,
         "on_screen": ["char_alex"],
         "clip_action": "Alex turns to look at the calendar",
+        "end_state": {"exited": ["char_alex"], "pose": "turned toward the calendar"},
         "last_wan_prompt": (
             "Alex from Image 1 turns from his desk to look at the wall calendar. "
             "Colleagues leave through the door."
