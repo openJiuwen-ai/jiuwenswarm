@@ -3618,6 +3618,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
         _kv_store=SimpleNamespace(engine=SimpleNamespace(dispose=dispose))
     )
     replacement_checkpointer = object()
+    monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
 
