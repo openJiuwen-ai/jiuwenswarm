@@ -265,10 +265,84 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
     # 资源, 不随循环销毁释放——清扫必须经独立线程的全新事件循环后台执行
     # close(条目所属循环已关闭, 无法派发), 与初始化失败/收口超时两条剔除
     # 路径的"后台关闭"契约一致(evicted.closed is True), 三条路径的释放
-    # 契约由本用例与另两用例分别显式锁定; gather 确定性等待清扫派发的
-    # 全部 close Task 完成(to_thread 线程内 asyncio.run 退出即 close 落定)
-    await asyncio.gather(*pending_close, return_exceptions=True)
+    # 契约由本用例与另两用例分别显式锁定; wait_for+gather 确定性等待清扫
+    # 派发的全部 close Task 完成(to_thread 线程内 asyncio.run 退出即 close
+    # 落定), 超时上限与同文件其余三处一致(5s)防用例悬挂
+    await asyncio.wait_for(
+        asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
+    )
     assert stale_backend.closed is True
+    await rail._backend._ssas_backend.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_loop_close_degrades_on_dead_loop_object(tmp_path, caplog):
+    """清扫触发的 fresh-loop close 触达死循环绑定对象时降级告警收敛.
+
+    复刻真实 backend 的已知限制: close() 首行取消绑定在已关闭循环上的
+    周期清理 Task, 若该 Task 已挂起, cancel 经已关闭循环的 call_soon
+    调度回调抛 RuntimeError, 阻断后续存储释放——替身以已关闭循环的
+    call_soon 直接触达等价复刻该异常路径(同一 RuntimeError: 死循环
+    调度访问, 且不遗留 pending Task 触发 GC 告警), 验证降级契约:
+    close Task 在超时上限内收敛(不悬挂)、异常不冒泡为泛化失败、
+    告警明确指向等待上游 agent-ssas 同步释放入口 close_nowait。
+    """
+    other_loop = asyncio.new_event_loop()
+    other_loop.close()  # 从未运行的循环直接关闭: 充当"已关闭循环"替身
+
+    class _DeadLoopBackend:
+        """替身: close 内触达已关闭循环绑定对象复刻真实 backend 行为.
+
+        真实 backend 的清理 Task.cancel 经 __schedule_callbacks 走已关闭
+        循环的 call_soon 抛 RuntimeError; 替身直接调用同一入口等价复刻,
+        异常后 self.closed 赋值不可达, 模拟存储释放被阻断的降级路径。
+        """
+
+        def __init__(self, loop):
+            self._loop = loop
+            self.closed = False
+
+        async def close(self):
+            self._loop.call_soon(lambda: None)  # RuntimeError: loop is closed
+            self.closed = True
+
+    dead_backend = _DeadLoopBackend(other_loop)
+    stale_key = (other_loop, "fp_dead_loop_probe")
+    with m._SSAS_INIT_TASKS_LOCK:
+        m._SSAS_BACKEND_CACHE[stale_key] = dead_backend
+
+    import logging
+
+    # setup_logger 对 jiuwenswarm.* logger 设 propagate=False(应用日志直挂
+    # 自身 handler), caplog 的捕获 handler 挂在 root 收不到——显式将
+    # caplog.handler 挂接到 interface_deep logger, 用毕移除
+    m.logger.addHandler(caplog.handler)
+    try:
+        caplog.at_level(logging.WARNING, logger=m.logger.name)
+        rail = m.JiuWenSwarmDeepAdapter._build_ssas_rail(_cfg(tmp_path))
+        assert rail is not None
+        await m._await_ssas_init_tasks()
+        with m._SSAS_INIT_TASKS_LOCK:
+            assert stale_key not in m._SSAS_BACKEND_CACHE
+            pending_close = [
+                task for task in m._SSAS_CLOSE_TASKS if not task.done()
+            ]
+        # close Task 可能在 _await_ssas_init_tasks() 期间已完成(不在
+        # pending_close 中), gather 空集立即返回; 未完成则确定性等待
+        # 其收敛, 超时上限与同文件其余三处一致(5s)防用例悬挂
+        await asyncio.wait_for(
+            asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
+        )
+        # 协程完成与 done callback 移出集合相差一个循环节拍, 补一拍后断言
+        await asyncio.sleep(0)
+    finally:
+        m.logger.removeHandler(caplog.handler)
+    # 降级契约: backend 未被实际释放(存储释放被死循环对象阻断), 但
+    # close Task 收敛、不再冒泡泛化异常, 且告警明确指向等待上游 close_nowait
+    assert dead_backend.closed is False
+    with m._SSAS_INIT_TASKS_LOCK:
+        assert len(m._SSAS_CLOSE_TASKS) == 0
+    assert any("close_nowait" in r.getMessage() for r in caplog.records)
     await rail._backend._ssas_backend.close()
 
 
