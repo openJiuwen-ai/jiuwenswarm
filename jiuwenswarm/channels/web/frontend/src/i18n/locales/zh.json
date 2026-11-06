@@ -1286,6 +1286,7 @@
           "vote": "Review 投票",
           "revision": "要求返工",
           "verified": "验收通过",
+          "completed": "任务完成",
           "cancelled": "任务取消",
           "escalated": "验收升级",
           "anomaly": "调度异常",
