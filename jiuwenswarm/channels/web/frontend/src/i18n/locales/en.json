@@ -486,6 +486,7 @@
     "skills": "Skills",
     "swarmSkills": "Team skills",
     "skillsToggle": "View installed skills",
+    "skillsToggleTeam": "View installed skills",
     "noInstalledSkills": "No installed skills",
     "noInstalledSwarmSkills": "No installed team skills",
     "skillsSearchPlaceholder": "Search skill name or description",
@@ -512,8 +513,8 @@
       "swarmForbidden": "This session already has a bound team, so team skills are blocked; switch teams here, or open a new session for a team skill.",
       "swarmMultiple": "At most one team skill per message."
     },
-    "skillsToggleTeamBound": "View ordinary skills",
-    "skillsToggleTeamUnbound": "View skills / team skills",
+    "skillsToggleTeamBound": "View installed skills",
+    "skillsToggleTeamUnbound": "View installed skills",
     "noInstalledSkillsTeamBound": "No installed ordinary skills",
     "skillGroupOrdinary": "Ordinary skills",
     "skillGroupSwarm": "Team skills (playbooks)",

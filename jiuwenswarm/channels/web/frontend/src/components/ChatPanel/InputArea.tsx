@@ -3619,7 +3619,7 @@ function SkillSelector({
     onNavigateToSkills?.();
   }, [onNavigateToSkills]);
 
-  // 点击技能项：已选则移除，未选则追加；无团至多 1 个 Swarm
+  // 点击技能项：已选则移除；点另一项则以当前选择为准（Swarm 单选替换，不必先点取消）。
   const handleToggleSkill = useCallback((skillName: string) => {
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
@@ -3632,11 +3632,14 @@ function SkillSelector({
     const skillMeta = skills.find((item) => item.name === skillName);
     if (skillMeta && isSwarmSkillItem(skillMeta)) {
       if (boundTeamName) return;
-      const alreadyHasSwarm = selectedSkills.some((name) => {
+      // 无团至多 1 个 Swarm：新选中的替换已选 Swarm，无需先点旧项取消。
+      for (const name of selectedSkills) {
         const meta = skills.find((item) => item.name === name);
-        return meta ? isSwarmSkillItem(meta) : false;
-      });
-      if (alreadyHasSwarm) return;
+        if (meta && isSwarmSkillItem(meta)) {
+          store.removeSelectedSkill(sid, name);
+          onRemoveSkill?.(name);
+        }
+      }
     }
     store.addSelectedSkill(sid, skillName);
     onInsertSkill?.(skillName);
@@ -3653,11 +3656,7 @@ function SkillSelector({
         onClick={() => setIsOpen((open) => !open)}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        title={t(
-          isTeamMode
-            ? (boundTeamName ? 'chat.skillsToggleTeamBound' : 'chat.skillsToggleTeamUnbound')
-            : 'chat.skillsToggle',
-        )}
+        title={t(isTeamMode ? 'chat.skillsToggleTeam' : 'chat.skillsToggle')}
         data-testid="chat-skills-trigger"
       >
         <span className="chat-mode-select__value">
@@ -3665,11 +3664,7 @@ function SkillSelector({
             <span className="chat-config-icon chat-config-icon--skill" />
           </span>
           <span className="chat-mode-select__label">
-            {t(
-              isTeamMode
-                ? (boundTeamName ? 'chat.skills' : 'chat.swarmSkills')
-                : 'chat.skills',
-            )}
+            {t('chat.skills')}
           </span>
         </span>
         <svg className="chat-mode-select__chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">

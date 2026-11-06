@@ -487,6 +487,7 @@
     "skills": "技能",
     "swarmSkills": "团队技能",
     "skillsToggle": "查看已安装技能",
+    "skillsToggleTeam": "查看已安装技能",
     "noInstalledSkills": "暂无已安装技能",
     "noInstalledSwarmSkills": "暂无已安装团队技能",
     "skillsSearchPlaceholder": "搜索技能名称或描述",
@@ -513,8 +514,8 @@
       "swarmForbidden": "当前会话已绑定团队，不能再选团队技能；可切换其他专家团，或新开会话使用团队技能。",
       "swarmMultiple": "每条消息最多选择一个团队技能。"
     },
-    "skillsToggleTeamBound": "查看普通技能",
-    "skillsToggleTeamUnbound": "查看技能 / 团队技能",
+    "skillsToggleTeamBound": "查看已安装技能",
+    "skillsToggleTeamUnbound": "查看已安装技能",
     "noInstalledSkillsTeamBound": "暂无已安装普通技能",
     "skillGroupOrdinary": "普通技能",
     "skillGroupSwarm": "团队技能（协作剧本）",
