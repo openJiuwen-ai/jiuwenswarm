@@ -122,7 +122,7 @@ function SimpleSettingItem({
   }, [editingSubItems.size, item.component, item.id, onEditingChange, pendingSelection]);
 
   const saving = source.savingKeys.has(item.key);
-  const controlDisabled = disabled || !isConnected || saving;
+  const controlDisabled = disabled || (source.requiresConnection !== false && !isConnected) || saving;
   const title = t(settingFieldKey(item.key, 'title'));
   const description = t(settingFieldKey(item.key, 'description'));
   let control;

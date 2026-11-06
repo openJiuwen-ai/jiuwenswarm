@@ -36,6 +36,9 @@ from typing import Any
 from openjiuwen.core.foundation.llm import ProviderType
 
 from jiuwenswarm.common.permission_mode import is_auto_permission_mode
+from jiuwenswarm.common.meeting_speech_detection import (
+    SPEECH_START_ENV, speech_start_settings, validate_speech_start_setting,
+)
 from jiuwenswarm.common.voice.config import tts_panel_defaults, validate_tts_update
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
@@ -194,6 +197,7 @@ MULTIMODAL_RELOAD_ENV_KEYS = {
     "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
 }
 ASR_ENV_KEYS = {
+    *SPEECH_START_ENV.values(),
     "ASR_API_BASE",
     "ASR_API_KEY",
     "ASR_MODEL_NAME",
@@ -367,6 +371,7 @@ CONFIG_SET_ENV_MAP = {
     "asr_api_base": "ASR_API_BASE",
     "asr_api_key": "ASR_API_KEY",
     "asr_model": "ASR_MODEL_NAME",
+    **SPEECH_START_ENV,
     "tts_api_base": "TTS_API_BASE",
     "tts_api_key": "TTS_API_KEY",
     "tts_model": "TTS_MODEL_NAME",
@@ -1490,6 +1495,12 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
+    params = dict(params)
+    for key in SPEECH_START_ENV.keys() & params.keys():
+        try:
+            params[key] = validate_speech_start_setting(key, params[key])
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
     if any(key.startswith("tts_") for key in params):
         try:
             validate_tts_update(params)
@@ -1871,6 +1882,9 @@ async def config_get_handler(
         for param_key, env_key in CONFIG_SET_ENV_MAP.items()
     }
     payload.update(tts_panel_defaults())
+    speech_start = speech_start_settings()
+    payload["meeting_vad_start_threshold"] = str(speech_start["startThreshold"])
+    payload["meeting_vad_start_frames"] = str(speech_start["startFrames"])
     payload["app_version"] = get_runtime_version()
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform

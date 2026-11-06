@@ -28,6 +28,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.voice.config import tts_panel_defaults
+from jiuwenswarm.common.meeting_speech_detection import SPEECH_START_ENV, speech_start_settings
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.common.symphony_config import (
@@ -38,6 +39,7 @@ from jiuwenswarm.common.symphony_config import (
 logger = logging.getLogger(__name__)
 
 _CONFIG_SET_ENV_MAP = {
+    **SPEECH_START_ENV,
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
     "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
@@ -421,6 +423,9 @@ def get_panel() -> dict[str, Any]:
         if crypto is not None:
             payload["tts_api_key"] = crypto.decrypt(payload["tts_api_key"])
     payload.update(tts_panel_defaults(environment))
+    speech_start = speech_start_settings(environment)
+    payload["meeting_vad_start_threshold"] = str(speech_start["startThreshold"])
+    payload["meeting_vad_start_frames"] = str(speech_start["startFrames"])
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"

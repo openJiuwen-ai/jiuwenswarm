@@ -189,6 +189,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('tts_model', 'experimental', 'text', 'TTS_MODEL_NAME'),
   envField('tts_voice', 'experimental', 'text', 'TTS_VOICE'),
   envField('tts_provider', 'experimental', 'text', 'TTS_PROVIDER'),
+  envField('meeting_vad_start_threshold', 'experimental', 'text', 'MEETING_VAD_START_THRESHOLD'),
+  envField('meeting_vad_start_frames', 'experimental', 'text', 'MEETING_VAD_START_FRAMES'),
   yamlField(
     'kv_cache_affinity_enabled',
     'experimental',

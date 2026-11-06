@@ -32,6 +32,8 @@ export interface ApplicationPluginSettingsProps {
 export interface ApplicationPluginTaskInputActionProps {
   fallback: ReactNode;
   eligible: boolean;
+  microphoneBusy?: boolean;
+  onMicrophoneActiveChange?: (active: boolean) => void;
   hasTextDraft?: boolean;
   sessionId: string | null;
   ensureSession: (initialTitle?: string) => Promise<string | null>;

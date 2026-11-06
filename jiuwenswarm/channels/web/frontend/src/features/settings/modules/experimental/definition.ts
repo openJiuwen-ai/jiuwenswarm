@@ -35,7 +35,15 @@ export const experimentalModule: SettingsModuleDefinition = {
     {
       id: 'asr',
       titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
+      items: [
+        { id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting },
+        { id: 'voice-input-routing', component: 'select', source: 'local', key: 'voice_input_routing', options: [
+          { value: 'leader', labelKey: 'voiceStreaming.routing.leader' },
+          { value: 'none', labelKey: 'voiceStreaming.routing.none' },
+        ] },
+        { id: 'meeting-vad-start-threshold', component: 'input', key: 'meeting_vad_start_threshold' },
+        { id: 'meeting-vad-start-frames', component: 'input', key: 'meeting_vad_start_frames' },
+      ],
     },
     {
       id: 'task-full-duplex',

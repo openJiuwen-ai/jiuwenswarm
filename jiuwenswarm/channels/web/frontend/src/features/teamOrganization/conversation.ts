@@ -57,6 +57,7 @@ export async function sendExpertMessage(
   sessionId: string,
   mediaItems: MediaItem[] = [],
   attachments: Record<string, unknown> = {},
+  onRequestId?: (requestId: string) => void,
 ): Promise<boolean | null> {
   const teamId = selectedExpertTeamId(sessionId);
   if (!teamId) return null;
@@ -86,6 +87,7 @@ export async function sendExpertMessage(
       },
       {
         onRequestId: (id) => {
+          onRequestId?.(id);
           startExpertRequest(key, id);
           finishExpertRequest(key, requestId);
           requestId = id;

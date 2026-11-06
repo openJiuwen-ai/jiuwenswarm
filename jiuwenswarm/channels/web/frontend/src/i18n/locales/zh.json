@@ -1237,6 +1237,20 @@
         "title": "默认语音合成音色",
         "description": "Leader 的默认音色，其他成员会分配同一模型的稳定音色。更改后请重新开始会议。",
         "placeholder": "Anna"
+      },
+      "meeting_vad_start_threshold": {
+        "title": "会议语音起始置信度",
+        "description": "范围 0–1，默认 0.5。越低越灵敏，重启会议生效。",
+        "placeholder": "0.5"
+      },
+      "meeting_vad_start_frames": {
+        "title": "会议起始确认帧数",
+        "description": "范围 1–10，默认 5。帧数越少响应越快，重启会议生效。",
+        "placeholder": "5"
+      },
+      "voice_input_routing": {
+        "title": "语音输入路由",
+        "description": "为群聊语音输入选择 Leader 或不指定接收者，下次语音流生效。普通团队输入沿用正常聊天路由。"
       }
     },
     "validation": {
@@ -6753,6 +6767,34 @@
       "in_progress": "执行中",
       "blocked": "等待中",
       "stopped": "已停止"
+    }
+  },
+  "voiceStreaming": {
+    "routing": {
+      "title": "语音输入路由",
+      "description": "为群聊语音输入选择 Leader 或不指定接收者，下次语音流生效。普通团队输入沿用正常聊天路由。",
+      "leader": "Leader",
+      "none": "None"
+    },
+    "start": "开始语音流式输入",
+    "stop": "停止语音流式输入",
+    "pause": "暂停麦克风并发送当前语句",
+    "resume": "恢复麦克风",
+    "states": {
+      "starting": "正在启动语音输入…",
+      "listening": "正在聆听语音输入",
+      "paused": "麦克风已暂停"
+    },
+    "errors": {
+      "unsupported": "语音流式输入需要支持的浏览器和安全连接。",
+      "microphoneFailed": "无法访问麦克风，请检查浏览器权限。",
+      "microphoneEnded": "麦克风已断开。",
+      "disconnected": "连接已断开，语音输入已停止。",
+      "inputStreamFailed": "连接无法继续处理语音流，请重新开始。",
+      "recordingFailed": "无法采集麦克风音频。",
+      "transcriptionFailed": "无法转写当前语句。",
+      "deliveryFailed": "无法提交语音转写内容，请查看聊天中的错误信息。",
+      "deliveryBacklog": "等待发送的语音转写过多，请重新开始语音输入。"
     }
   }
 }

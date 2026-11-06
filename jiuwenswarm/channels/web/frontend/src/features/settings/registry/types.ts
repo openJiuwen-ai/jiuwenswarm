@@ -5,7 +5,7 @@ export type SettingsModuleId =
   'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
-export type SettingsSource = 'config' | 'browser' | 'locale';
+export type SettingsSource = 'config' | 'browser' | 'locale' | 'local';
 export type SettingValue = string | number | boolean;
 export type SettingsAccessNode =
   | { kind: 'module'; moduleId: string }

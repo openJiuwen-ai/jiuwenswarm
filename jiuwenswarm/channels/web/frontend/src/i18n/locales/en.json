@@ -1237,6 +1237,20 @@
         "title": "Default TTS voice",
         "description": "Leader voice. Other members receive stable voices from the same model. Restart the meeting after changing settings.",
         "placeholder": "Anna"
+      },
+      "meeting_vad_start_threshold": {
+        "title": "Meeting speech-start confidence",
+        "description": "0–1, default 0.5. Lower is more sensitive. Restart the meeting to apply.",
+        "placeholder": "0.5"
+      },
+      "meeting_vad_start_frames": {
+        "title": "Meeting start confirmation frames",
+        "description": "1–10, default 5. Fewer frames respond faster. Restart the meeting to apply.",
+        "placeholder": "5"
+      },
+      "voice_input_routing": {
+        "title": "Voice input routing",
+        "description": "Choose Leader or no recipient for group-chat voice input. Applies to the next voice stream. Ordinary Team input uses normal chat routing."
       }
     },
     "validation": {
@@ -6756,6 +6770,34 @@
       "in_progress": "In progress",
       "blocked": "Waiting",
       "stopped": "Stopped"
+    }
+  },
+  "voiceStreaming": {
+    "routing": {
+      "title": "Voice input routing",
+      "description": "Choose Leader or no recipient for group-chat voice input. Applies to the next voice stream. Ordinary Team input uses normal chat routing.",
+      "leader": "Leader",
+      "none": "None"
+    },
+    "start": "Start voice streaming",
+    "stop": "Stop voice streaming",
+    "pause": "Pause microphone and finish the current utterance",
+    "resume": "Resume microphone",
+    "states": {
+      "starting": "Starting voice input…",
+      "listening": "Voice input listening",
+      "paused": "Microphone paused"
+    },
+    "errors": {
+      "unsupported": "Voice streaming requires a supported browser and a secure connection.",
+      "microphoneFailed": "Could not access the microphone. Check browser permissions.",
+      "microphoneEnded": "The microphone was disconnected.",
+      "disconnected": "Voice input stopped because the connection was lost.",
+      "inputStreamFailed": "Voice input could not keep up with the connection. Start it again.",
+      "recordingFailed": "Could not capture microphone audio.",
+      "transcriptionFailed": "Could not transcribe this utterance.",
+      "deliveryFailed": "Could not submit the transcript. Check the chat for details.",
+      "deliveryBacklog": "Too many transcripts are waiting for delivery. Start voice input again."
     }
   }
 }

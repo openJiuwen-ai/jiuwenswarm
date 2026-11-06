@@ -209,9 +209,16 @@ export interface Message {
   crossSession?: CrossSessionMessageMetadata;
 }
 
-/** Selected queued message sent by the existing non-interrupting send button. */
+/** Optional routing for queued input and explicit public group-chat messages. */
 export interface ChatSendOptions {
-  queuedTaskId: string;
+  queuedTaskId?: string;
+  onRequestId?: (id: string) => void;
+  groupChat?: {
+    sessionId: string;
+    clientMessageId: string;
+    mentions: string[];
+    onRequestId?: (id: string) => void;
+  } | null;
 }
 
 export interface MessageForkPoint {

@@ -8,6 +8,7 @@ import { isConversationModelGroupBlocked } from '../multi-session/state/conversa
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
+import { defaultGroupChatInput } from '../features/groupChatInput';
 import { isEnterprise } from '../edition';
 import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
@@ -2103,7 +2104,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         assistance_origin: 'none',
       },
     ): Promise<boolean> => {
-      if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
+      if (!options?.queuedTaskId && !options?.groupChat && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
           const attachments: Record<string, unknown> = {};
@@ -2118,7 +2119,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             attachments.files = { ...persisted.files, ...documents.files };
             query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
           }
-          return (await sendExpertMessage(query, sessionId, mediaItems, attachments)) ?? false;
+          return (await sendExpertMessage(query, sessionId, mediaItems, attachments, options?.onRequestId)) ?? false;
         } catch (error) {
           onErrorRef.current?.((error as WebError).message || t('network.sendMessageFailed'));
           return false;
@@ -2181,6 +2182,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (!stripUploadDocumentBlocks(content).trim() && !hasMedia) return false;
 
       const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+      const groupChat = options?.groupChat === null
+        ? undefined
+        : (options?.groupChat ?? (isTeamAgentMode(currentMode)
+          ? defaultGroupChatInput(sessionId, useSessionStore.getState().getRuntime(sessionId)?.teamLeaderMemberIds[0] || 'team_leader')
+          : undefined));
       const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent');
       if (unsupportedEvolutionMode) {
         useChatStore.getState().addMessage(sessionId, {
@@ -2249,21 +2255,23 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // pruneEnabledExtensions）兜底重新核对一遍"我的插件/我的MCP里已连接的"，避免把早就失效的
       // 名字发给后端；被摘掉的项同步从 sessionStore 里移除，让"+"扩展面板的开关同步变回关闭。
       const extensionPayload = buildExtensionSendPayload(sessionId);
-      const userMessageId = prefixedMessageId('user-');
+      const userMessageId = groupChat ? `user-group-${groupChat.clientMessageId}` : prefixedMessageId('user-');
       const displayedContent =
         stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content;
-      useChatStore.getState().addMessage(sessionId, {
-        id: userMessageId,
-        role: 'user',
-        content: displayedContent,
-        mediaItems,
-        timestamp: new Date().toISOString(),
-        // runtime.accepted 到达前标记未确认：@成员「待回复」占位气泡等服务端确认后再弹
-        // （backfillOptimisticBubbleTimestamp 里一并清掉）。
-        isAcceptedPending: true,
-        ...(waitForInputTimestamp ? { isTimestampPending: true } : {}),
-        ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
-      });
+      if (!groupChat || !useChatStore.getState().getRuntime(sessionId)?.messages.some((item) => item.id === userMessageId)) {
+        useChatStore.getState().addMessage(sessionId, {
+          id: userMessageId,
+          role: 'user',
+          content: displayedContent,
+          mediaItems,
+          timestamp: new Date().toISOString(),
+          // runtime.accepted 到达前标记未确认：@成员「待回复」占位气泡等服务端确认后再弹
+          // （backfillOptimisticBubbleTimestamp 里一并清掉）。
+          isAcceptedPending: true,
+          ...(waitForInputTimestamp ? { isTimestampPending: true } : {}),
+          ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
+        });
+      }
       // 发送后清空输入栏已选技能（一次性语义）；插件/MCP 是会话期间持续启用，不在这里清
       if (selectedSkills.length > 0) {
         useSessionStore.getState().clearSelectedSkills(sessionId);
@@ -2410,6 +2418,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         await request('chat.send', {
           session_id: sessionId,
           content: outgoingContent,
+          ...(groupChat ? {
+            type: 'group_chat', body: outgoingContent,
+            client_message_id: groupChat.clientMessageId, mentions: groupChat.mentions,
+          } : {}),
           ...(outgoingMediaItems ? { media_items: outgoingMediaItems } : {}),
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
@@ -2445,6 +2457,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
           // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。
           onRequestId: (requestId) => {
+            options?.onRequestId?.(requestId);
+            options?.groupChat?.onRequestId?.(requestId);
             const registry = optimisticUserBubblesRef.current;
             // 兜底清理：accepted 丢失（发送失败/断连）时登记项不会被消费，限制驻留规模
             if (registry.size >= 64) {

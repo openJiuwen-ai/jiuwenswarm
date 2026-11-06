@@ -50,10 +50,17 @@ export function TaskFullDuplexAction({
   ensureSession,
   labels,
   hasTextDraft = false,
+  microphoneBusy = false,
+  onMicrophoneActiveChange,
 }: ApplicationPluginTaskInputActionProps) {
   const enabled = useTaskFullDuplexEnabled();
   const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
   const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
+  useEffect(() => {
+    const active = runtimeState !== 'idle';
+    onMicrophoneActiveChange?.(active);
+    return () => onMicrophoneActiveChange?.(false);
+  }, [runtimeState, onMicrophoneActiveChange]);
   // Full duplex only runs on models the user configured; login free models hide the button.
   const freeModel = useSessionStore((store) => {
     const runtime = store.runtimes[sessionId ?? ''];
@@ -121,7 +128,7 @@ export function TaskFullDuplexAction({
         <button
           type="button"
           onClick={() => void handleClick()}
-          disabled={!sessionId}
+          disabled={!sessionId || (state === 'idle' && microphoneBusy)}
           className={`chat-input-btn chat-input-btn--send task-full-duplex-action is-${state}`}
           title={title}
           aria-label={title}
