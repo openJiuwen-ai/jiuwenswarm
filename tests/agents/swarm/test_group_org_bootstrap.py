@@ -1787,9 +1787,13 @@ async def test_unstarted_round_closes_and_live_rounds_stay(monkeypatch):
     )
     bootstrap.note_organization_turn_started(SESSION, "business", "retry")
     bootstrap.note_organization_run_attempt(SESSION, "business", "retry")
+    # An attempt protects a live turn, but does not promise a future retry.
+    assert not bootstrap._unstarted_plan_can_close(SESSION, "retry")
     await bootstrap.finish_organization_member_turn(SESSION, "business")
+    assert not bootstrap._plan_has_run_attempt(SESSION, "retry")
+    # Earlier live/queued plans still block this request independently of attempts.
+    await bootstrap.fail_unstarted_organization_round(SESSION, "retry")
     assert bootstrap._plan_record(SESSION, "retry")["status"] == "pending"
-    assert "retry" in bootstrap._member_turns[(SESSION, "business")]
 
 
 @pytest.mark.asyncio
@@ -4146,3 +4150,127 @@ async def test_organization_record_uses_a_short_name_and_reads_back(tmp_path):
         assert saved["organization_id"] == "org-1"
     finally:
         reset_task_openjiuwen_home(home)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempted", [False, True])
+async def test_question_keeps_org_turn_until_answered(monkeypatch, attempted):
+    from jiuwenswarm.agents.swarm import group_execution as policy
+    from jiuwenswarm.server.runtime import group_questions
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    group = _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    monkeypatch.setattr(policy, "read_group", lambda _: group.state)
+    monkeypatch.setattr(policy, "GroupExecutions", lambda _: SimpleNamespace(active=lambda _: None))
+    waiting = {"business"}
+    monkeypatch.setattr(group_questions, "GroupQuestions", lambda _: SimpleNamespace(
+        pending=lambda name: ["question"] if name in waiting else [],
+    ))
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "question"},
+    )
+    for name in ["business", "insight"]:
+        bootstrap.note_organization_turn_started(SESSION, name, "question")
+    if attempted:
+        bootstrap.note_organization_run_attempt(SESSION, "business", "question")
+    rail = policy.GroupTaskPolicyRail(SimpleNamespace(session_id=SESSION, member_name="business"))
+    await rail.after_invoke(SimpleNamespace())
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, "question")["status"] == "pending"
+    assert bootstrap._plan_has_open_turn(SESSION, "question")
+    assert bootstrap.peek_member_turn(SESSION, "business") == "question"
+    waiting.clear()
+    await rail.after_invoke(SimpleNamespace())
+    assert bootstrap._plan_record(SESSION, "question")["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert not bootstrap._plan_has_run_attempt(SESSION, "question")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("members", [("business", "insight"), ("insight", "business")])
+async def test_failed_attempts_close_after_last_turn_without_stranded_bindings(monkeypatch, members):
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    await _record_group_organization_plan(
+        SESSION, {"mentions": list(members), "body": "Task", "client_message_id": "failed"},
+    )
+    for name in members:
+        bootstrap.note_organization_turn_started(SESSION, name, "failed")
+        bootstrap.note_organization_run_attempt(SESSION, name, "failed")
+        bootstrap.claim_organization_plan(SESSION, "failed", name)
+        bootstrap.release_organization_plan_claim(SESSION, "failed", name)
+    await bootstrap.finish_organization_member_turn(SESSION, members[0])
+    assert bootstrap._plan_record(SESSION, "failed")["status"] == "pending"
+    assert bootstrap.peek_member_turn(SESSION, members[0]) is None
+    await bootstrap.finish_organization_member_turn(SESSION, members[1])
+    assert bootstrap._plan_record(SESSION, "failed")["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert not bootstrap._plan_has_run_attempt(SESSION, "failed")
+    assert bootstrap.peek_member_turn(SESSION, members[1]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protection", [None, "accepted", "open", "queued"])
+async def test_cancel_during_initial_card_publish_cleans_only_unstarted_plan(monkeypatch, tmp_path, protection):
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+
+    _MemoryGroup(monkeypatch)
+    monkeypatch.setattr(group_execution, "group_path", lambda _: tmp_path / "group.json")
+    store = group_execution.GroupExecutions(SESSION)
+    records = {}
+    monkeypatch.setattr(store, "read", lambda: dict(records))
+    monkeypatch.setattr(store, "save", lambda value: records.update(value))
+    monkeypatch.setattr(group_execution, "GroupExecutions", lambda _: store)
+    publishing = asyncio.Event()
+    events = []
+
+    async def publish(snapshot, event):
+        if event == "created":
+            publishing.set()
+            await asyncio.Event().wait()
+        events.append((snapshot, event))
+
+    monkeypatch.setattr(store, "publish", publish)
+    recorded = None
+
+    async def record():
+        nonlocal recorded
+        recorded = await team_helpers._record_group_organization_plan(
+            SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "cancel"},
+        )
+
+    task = asyncio.create_task(record())
+    queued = None
+    try:
+        await asyncio.wait_for(publishing.wait(), 5)
+        if protection == "accepted":
+            bootstrap.claim_organization_plan(SESSION, "cancel", "business")
+        elif protection == "open":
+            bootstrap.note_organization_turn_started(SESSION, "business", "cancel")
+        elif protection == "queued":
+            queued = asyncio.create_task(asyncio.Event().wait())
+            bootstrap._queued_plans[(SESSION, "cancel", "business")] = queued
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.gather(*list(team_helpers._organization_close_tasks))
+        assert recorded is None
+        card = records[bootstrap.organization_execution_id(SESSION, "cancel")]
+        if protection is None:
+            assert bootstrap._plan_record(SESSION, "cancel")["status"] == "failed"
+            assert card["status"] == "failed" and card["organization_stage"] is None
+            assert events[-1][0]["status"] == "failed"
+            assert all(bootstrap.peek_member_turn(SESSION, name) is None for name in ["business", "insight"])
+        else:
+            assert bootstrap._plan_record(SESSION, "cancel")["status"] == "pending"
+            assert card["status"] == "running"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if queued is not None:
+            queued.cancel()
+            await asyncio.gather(queued, return_exceptions=True)
+            bootstrap._queued_plans.pop((SESSION, "cancel", "business"), None)

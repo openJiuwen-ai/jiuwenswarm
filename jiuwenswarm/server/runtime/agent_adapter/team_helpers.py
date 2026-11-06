@@ -1576,6 +1576,7 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
 
 async def _record_group_organization_plan(session_id: str, group_input: dict) -> str | None:
     """Record coordination state without changing the message or its mentions."""
+    plan = None
     try:
         from jiuwenswarm.agents.swarm.group_org_bootstrap import (
             publish_pending_organization_card,
@@ -1600,6 +1601,12 @@ async def _record_group_organization_plan(session_id: str, group_input: dict) ->
         if plan is None:
             return None
         return str(plan.get("plan_id") or "") or None
+    except asyncio.CancelledError:
+        # The caller does not own the plan ID until this coroutine returns.
+        # Cover cancellation after persistence but before card publication ends.
+        if plan is not None:
+            _schedule_unstarted_organization_close(session_id, str(plan.get("plan_id") or ""))
+        raise
     except Exception:
         logger.exception(
             "[TeamHelpers] group organization plan failed session_id=%s",
@@ -1624,6 +1631,9 @@ async def _abandon_unstarted_organization_plan(session_id: str, plan_id: str | N
         )
 
 
+_organization_close_tasks: set[asyncio.Task] = set()
+
+
 def _schedule_unstarted_organization_close(session_id: str, plan_id: str | None) -> None:
     """Keep cancellation from dropping the close of a plan that never started."""
     if not plan_id:
@@ -1632,7 +1642,9 @@ def _schedule_unstarted_organization_close(session_id: str, plan_id: str | None)
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(_abandon_unstarted_organization_plan(session_id, plan_id))
+    task = loop.create_task(_abandon_unstarted_organization_plan(session_id, plan_id))
+    _organization_close_tasks.add(task)
+    task.add_done_callback(_organization_close_tasks.discard)
 
 
 def _deliverable(turn: UserTurn, text: Any) -> Any:

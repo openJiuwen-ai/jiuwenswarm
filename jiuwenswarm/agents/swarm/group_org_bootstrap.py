@@ -901,7 +901,7 @@ def _plan_must_keep_binding(session_id: str, plan_id: str) -> bool:
     plan = _plan_record(session_id, plan_id)
     if plan is None or str(plan.get("status") or "") not in {"pending", "running"}:
         return False
-    if _plan_has_acceptance(session_id, plan_id) or _plan_has_run_attempt(session_id, plan_id):
+    if _plan_has_acceptance(session_id, plan_id):
         return True
     if (
         _owner_run_active(session_id, plan_id)
@@ -942,7 +942,7 @@ async def _close_unstarted_organization_plan(session_id: str, plan_id: str) -> N
     if _member_still_bound(session_id, plan_id) or not _unstarted_plan_can_close(session_id, plan_id):
         return
     _fail_open_organization_plan(
-        session_id, plan_id, "organization round ended before run_team"
+        session_id, plan_id, "organization round ended without an accepted run_team"
     )
     target = (session_id, str(plan_id))
     for key in [item for item in _organization_run_attempts if item[:2] == target]:
@@ -969,10 +969,11 @@ async def finish_organization_member_turn(session_id: str, member_name: str) -> 
     for plan_id in finished:
         key = _acceptance_key(session_id, plan_id, member)
         _open_organization_turns.discard(key)
-        attempted = key in _organization_run_attempts
+        # Retries belong to the live turn. Historical attempts must not keep
+        # an unaccepted plan alive after that turn has actually ended.
+        _organization_run_attempts.discard(key)
         if (
-            not attempted
-            and not organization_plan_accepted(session_id, plan_id, member)
+            not organization_plan_accepted(session_id, plan_id, member)
             and not _plan_must_keep_binding(session_id, plan_id)
         ):
             release_member_turn(session_id, member, plan_id)

@@ -484,6 +484,12 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
     async def after_invoke(self, ctx):
         from jiuwenswarm.agents.swarm.group_org_bootstrap import finish_organization_member_turn
+        from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+        if read_group(self.context.session_id) is None:
+            return
+        if GroupQuestions(self.context.session_id).pending(self.context.member_name):
+            return
 
         try:
             await finish_organization_member_turn(self.context.session_id, self.context.member_name)
@@ -493,14 +499,8 @@ class GroupTaskPolicyRail(DeepAgentRail):
                 self.context.session_id,
                 self.context.member_name,
             )
-        if read_group(self.context.session_id) is None:
-            return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)
-        from jiuwenswarm.server.runtime.group_questions import GroupQuestions
-
-        if GroupQuestions(self.context.session_id).pending(self.context.member_name):
-            return
         if active is not None and active["phase"] != "publishing" and not active.get("background"):
             await store.update(active["execution_id"], status="interrupted", phase="result_not_submitted")
 
