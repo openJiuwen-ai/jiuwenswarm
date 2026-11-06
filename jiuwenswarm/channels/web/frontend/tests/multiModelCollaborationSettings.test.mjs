@@ -22,7 +22,7 @@ await build({
   stdin: {
     contents: [
       'import { createElement } from "react";',
-      'import { SettingsSourceProvider } from "./src/features/settings/services/SettingsSourceProvider";',
+      'import { SettingsSourceProvider, SettingsSourceVisibility } from "./src/features/settings/services/SettingsSourceProvider";',
       'import { SettingItemRenderer } from "./src/features/settings/components/SettingItemRenderer";',
       'import { experimentalModule } from "./src/features/settings/modules/experimental/definition";',
       'import { useSettingsConfig } from "./src/features/settings/services/useSettingsConfig";',
@@ -32,7 +32,7 @@ await build({
       'export * from "./src/features/settings/modules/experimental/multiModelCollaborationSettingsState";',
       'export * from "./src/features/multiModelCollaboration/featureConfig";',
       'export const experimentalSectionIds = experimentalModule.sections.map(section => section.id);',
-      'export const SettingsFixture = () => createElement(SettingsSourceProvider, {source:"config"}, createElement(SettingItemRenderer, {item:experimentalModule.sections.find(section => section.id === "multi-model-collaboration").items[0], disabled:globalThis.collaborationFixture.disabled}));',
+      'export const SettingsFixture = () => { const section = experimentalModule.sections.find(section => section.id === (globalThis.collaborationFixture.section ?? "multi-model-collaboration")); return createElement(SettingsSourceProvider, {source:"config"}, createElement(SettingsSourceVisibility, {when:section.visibleWhen}, createElement(SettingItemRenderer, {item:section.items[0], disabled:globalThis.collaborationFixture.disabled}))); };',
     ].join('\n'),
     resolveDir: process.cwd(),
     loader: 'ts',
@@ -165,7 +165,7 @@ async function mount(options, run) {
       throw new Error(`Unexpected RPC: ${method}`);
     },
   };
-  globalThis.collaborationFixture = { services, disabled: options.disabled ?? false };
+  globalThis.collaborationFixture = { services, disabled: options.disabled ?? false, section: options.section };
   setMultiModelCollaborationEnabled(false);
   const root = createRoot(document.getElementById('root'));
   const render = () => act(async () => root.render(createElement(options.probe ? ConfigFixture : SettingsFixture)));
@@ -229,6 +229,29 @@ const configured = {
   jev_typesafe_api_key: 'shared-synthetic-key',
 };
 
+for (const available of [undefined, 'false', false, 'true', true]) {
+  test(`computer control visibility follows backend availability: ${available}`, async () => {
+    await mount(
+      { section: 'computer-control', config: { cua_backend_available: available, cua_agent_enabled: 'true' } },
+      async ({ get, saves, config, click }) => {
+        const toggle = get('settings-switch', 'cua-agent-enabled');
+        if (available !== true && available !== 'true') {
+          assert.equal(toggle, null);
+          assert.equal(config().cua_agent_enabled, 'true');
+          assert.deepEqual(saves, []);
+          return;
+        }
+        assert.equal(toggle.getAttribute('aria-checked'), 'true');
+        await click('settings-switch', 'cua-agent-enabled');
+        assert.equal(toggle.getAttribute('aria-checked'), 'false');
+        await click('settings-switch', 'cua-agent-enabled');
+        assert.equal(toggle.getAttribute('aria-checked'), 'true');
+        assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }, { cua_agent_enabled: 'true' }]);
+      },
+    );
+  });
+}
+
 test('feature flag defaults off and accepts backend booleans', () => {
   setMultiModelCollaborationEnabled(undefined);
   assert.equal(isMultiModelCollaborationEnabled(), false);
@@ -238,8 +261,10 @@ test('feature flag defaults off and accepts backend booleans', () => {
   assert.equal(isMultiModelCollaborationEnabled(), false);
 });
 
-test('collaboration is the last experimental section and other sections retain their order', () => {
+test('computer control is the last experimental section and other sections retain their order', () => {
   assert.deepEqual(experimentalSectionIds, [
+    'asr',
+    'task-full-duplex',
     'external-cli-custom-agents',
     'rsi',
     'a2ui',
@@ -252,7 +277,9 @@ test('collaboration is the last experimental section and other sections retain t
     'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
+    'computer-control',
     'design-mode',
+    'computer-control',
   ]);
 });
 

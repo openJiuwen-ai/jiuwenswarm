@@ -1,3 +1,4 @@
+import type { ChatRuntime } from '../../stores/chatStore';
 import { isDesignerPreviewGraph } from './designerBootstrapGraph';
 import { allNodesCompleted } from './designerLayerRun';
 import { DESIGNER_TERMINAL_RUN_STATUSES, isActiveDesignerRun } from './designerRunView';
@@ -9,10 +10,23 @@ import {
 } from './executionGraphTypes';
 
 /**
+ * The leader's round is not over while it streams, while it waits for the
+ * user to answer an ask_user question, or while it is paused: the next send
+ * resumes the paused round against the same graph. `isProcessing` alone is
+ * false in the last two.
+ */
+export function isDesignerLeaderBusy(
+  runtime: Pick<ChatRuntime, 'isProcessing' | 'isPaused' | 'pendingQuestions'> | undefined,
+): boolean {
+  if (!runtime) return false;
+  return runtime.isProcessing || runtime.isPaused || runtime.pendingQuestions.length > 0;
+}
+
+/**
  * The workflow stays read-only from the moment a prompt is sent until its
- * first run finishes. While the design leader is still answering, the graph
- * it is about to fill may be empty or only partly built, so that keeps the
- * lock too. A run that is still going (including a pause between layers)
+ * first run finishes. While the design leader's round is open
+ * (`isDesignerLeaderBusy`), the graph it is about to fill may be empty or only
+ * partly built, so that keeps the lock too. A run that is still going (including a pause between layers)
  * keeps the lock. Any finished run (completed, failed or cancelled) unlocks:
  * a single-node or cascade rerun completes without touching the rest of the
  * graph, so nodes an earlier run left failed, cancelled or unrun must not

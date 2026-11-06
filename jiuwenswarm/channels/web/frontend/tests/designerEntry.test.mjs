@@ -46,6 +46,7 @@ function fixture() {
     useChatStore: { getState: () => chat }, useSessionStore: { getState: () => sessions },
     useWorkspaceStore: { getState: () => workspace },
     resolveChatModelSelection: (_models, name, fallback) => ({ model_name: name || fallback }),
+    flushApplicationConversationHistory: async () => {},
     mediaItemsToBootstrapReferences: () => ({ refs: [] }), findDesignModelsProblem: async () => null,
     designerWorkspaceClient: {
       async createSession() { return { session: { session_id: 'design-session' } }; },

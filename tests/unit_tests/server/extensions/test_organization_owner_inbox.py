@@ -163,6 +163,7 @@ async def test_receipt_storage_errors_preserve_turn_terminal_and_history(environ
             results, "queue_owner_notification", AsyncMock(side_effect=[None, OSError("storage failed")]),
         )
     assert await launcher.run_organization_turn(team, "session", inputs)
+    runtime.activate.return_value.session.post_run.assert_awaited_once()
     launcher._flush_expert_history.assert_awaited_once()
     events = [call.args[0]["event_type"] for call in launcher.push_expert_payload.call_args_list]
     assert "org.turn_completed" in events

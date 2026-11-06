@@ -29,6 +29,7 @@ interface MarketplaceViewProps {
   renderHubSkillAction: (skill: MarketplacePluginItem) => PageCardActionProps;
   onCategoryChange: (nextCategory: (typeof MARKETPLACE_CATEGORIES)[number]) => void;
   onOpenMore: (kind: 'swarmskill' | 'skill') => void;
+  onOpenPacks: () => void;
   onBackFromMore: () => void;
 }
 
@@ -48,16 +49,19 @@ export function MarketplaceView({
   renderHubSkillAction,
   onCategoryChange,
   onOpenMore,
+  onOpenPacks,
   onBackFromMore,
 }: MarketplaceViewProps) {
   const { t } = useTranslation();
 
-  if (!searchKeyword && (marketplaceSubView === 'team' || marketplaceSubView === 'skill')) {
-    const moreItems = marketplaceSubView === 'team' ? hubTeamMore : hubSkillMore;
+  const skillPacks = featuredSkills.filter(skill => skill.skill_type === 'skillpack' || skill.plugin_type === 'skillpack');
+  const packPage = marketplaceSubView === 'packs';
+  if (!searchKeyword && (packPage || marketplaceSubView === 'team' || marketplaceSubView === 'skill')) {
+    const moreItems = packPage ? skillPacks : marketplaceSubView === 'team' ? hubTeamMore : hubSkillMore;
     return (
       <div
         data-testid={
-          marketplaceSubView === 'team' ? 'skill-panel-team-skills-page' : 'skill-panel-featured-skills-page'
+          packPage ? 'skill-panel-all-packs-page' : marketplaceSubView === 'team' ? 'skill-panel-team-skills-page' : 'skill-panel-featured-skills-page'
         }
         className="mt-4 flex-1 flex flex-col min-h-0"
       >
@@ -71,7 +75,7 @@ export function MarketplaceView({
             className="font-bold text-text-strong"
             style={{ fontSize: '16px' }}
           >
-            {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
+            {packPage ? t('skills.allSkillPacks') : marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
           </span>
           <button
             type="button"
@@ -204,6 +208,11 @@ export function MarketplaceView({
                 <span className="font-bold text-text-strong" style={{ fontSize: '16px' }}>
                   {t('skills.featuredSkills')}
                 </span>
+                {skillPacks.length > 3 && (
+                  <button type="button" onClick={onOpenPacks} className="ml-auto mr-3 text-sm text-text" data-testid="skill-panel-all-packs-btn">
+                    {t('skills.allSkillPacks')}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onOpenMore('skill')}
@@ -231,4 +240,3 @@ export function MarketplaceView({
     </div>
   );
 }
-

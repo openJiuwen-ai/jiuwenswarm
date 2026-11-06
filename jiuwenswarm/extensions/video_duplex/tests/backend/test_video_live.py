@@ -13,9 +13,6 @@ import struct
 from types import SimpleNamespace
 import wave
 
-from agent_gateway.channel_manager.web.media.normalizer import (
-    normalize_chat_media_attachments,
-)
 import openai
 import pytest
 import websockets
@@ -24,6 +21,10 @@ from agent_gateway.channel_manager.web.media.normalizer import (
 )
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
+
+from agent_gateway.channel_manager.web.media.normalizer import (
+    normalize_chat_media_attachments,
+)
 
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
@@ -1917,7 +1918,8 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch):
+@pytest.mark.parametrize("error_source", ["management", "model"])
+async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch, error_source):
     from unittest.mock import AsyncMock
 
     channel = _video_channel()
@@ -1925,16 +1927,20 @@ async def test_joyai_queue_manager_failure_withholds_original_success_claim(monk
         "delegation", response="已全部调整成功。",
         delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "调整顺序"}}),
     )))
-    managed = AsyncMock(return_value={"state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}]})
+    managed = AsyncMock(return_value={
+        "state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}],
+        "error_source": error_source, "error": "service unavailable",
+    })
     monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     await channel.handlers["video.joyai.frame"](None, "failed-manager", {
         "instruction": "调整顺序", "request_kind": "user", "reply_language": "en",
     }, "scope")
     payload = channel.responses[-1][1]["payload"]
-    assert payload["response"] == (
+    expected = (
         "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
     )
+    assert payload["response"] == expected + (" service unavailable" if error_source == "model" else "")
     assert payload["queue_management"]["receipts"]
     assert managed.call_args.kwargs == {"allow_answers": False, "reply_language": "en"}
 
@@ -3487,6 +3493,21 @@ async def test_core_agent_full_answer_follows_tool_language(monkeypatch) -> None
     assert "Speak to the user in English" in prompt
 
 
+def test_file_revision_prompt_uses_delivered_file_receipt():
+    context = video_search._delegation_context_text([{
+        "question": "Save the introduction as a PDF",
+        "query": "Save the introduction as a PDF",
+        "files": [{"name": "intro.pdf", "path": "/work/intro.pdf"}],
+        "result": "The file is ready.",
+    }])
+    prompt = video_search.build_execution_prompt(
+        "Where was the PDF saved?", "Where was the PDF saved?", "", context,
+    )
+    assert "/work/intro.pdf" in prompt
+    assert "send_file_to_user" in prompt
+    assert "Never invent a location or claim delivery without a file receipt" in prompt
+
+
 @pytest.mark.parametrize("answer", [
     "图已经生成，视频正在后台执行，最终文件尚未生成。" * 8,
     "构图已保存，但续跑被拒绝，因为上一轮还在运行。" * 8,
@@ -3869,6 +3890,7 @@ def _scoped_channel(monkeypatch, card_live=True):
 
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    channel.dispatched = []
 
     async def dispatch(ws, method, params):
         channel.dispatched.append((method, params))

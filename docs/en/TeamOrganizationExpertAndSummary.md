@@ -149,6 +149,8 @@ Both modes require explicit acceptance of child results. For an Organization chi
 
 Chat messages, timeline headers and tool groups resolve the Leader identity within the selected Team's conversation. Without a saved identity, they use that Team's roster or display name. Runtime Teams such as Summary do not inherit the Owner's name or avatar, and this display resolution does not change AgentGroup bindings.
 
+Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. A passive `attach_only` subscription does not keep the session busy; real execution and requests waiting for user input still do. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
+
 The organization panel can also use the session's saved AgentGroup identity for the Owner's name and avatar. The server restores this identity only when it matches the Owner's current AgentGroup binding, so a saved snapshot remains usable when the AgentGroup catalog fails to load. Other Teams do not inherit the Owner's identity.
 
 The Owner's background Organization output affects Organization execution status without starting foreground processing. Ending that background turn does not clear a concurrent user request.

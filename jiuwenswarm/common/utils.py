@@ -2714,6 +2714,32 @@ def _mask_named_sensitive_kv(text: str) -> str:
     return "".join(chunks)
 
 
+def _has_possible_json_container_prefix(text: str, start: int) -> bool:
+    """Reject SDK/Python repr prefixes without constructing JSONDecodeError.
+
+    Failed decoding computes line/column information over the entire prefix,
+    which is expensive for many fragments in a large log. Only reject starts
+    that cannot be JSON; let the decoder validate everything else. Bound the
+    nested-container lookahead so deeply nested input stays the decoder's job.
+    """
+    position = start
+    for _ in range(64):
+        container = text[position]
+        position += 1
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position == len(text):
+            return False
+        token = text[position]
+        if container == "{":
+            return token in '"}'
+        if token in "[{":
+            continue
+        # JSONDecoder also accepts the nonstandard NaN/Infinity constants.
+        return token in '"]-0123456789tfnNI'
+    return True
+
+
 def _sanitize_log_text(text: str) -> str:
     """Redact JSON by value, preserving numbers and valid serialization.
 
@@ -2736,6 +2762,8 @@ def _sanitize_log_text(text: str) -> str:
         start = match.start()
         search_from = start + 1
         candidates += 1
+        if not _has_possible_json_container_prefix(text, start):
+            continue
         try:
             value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):
@@ -2976,6 +3004,9 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+_RECORD_BYTE_LIMIT = 64 * 1024
+
+
 def _sanitize_record_text(text: str) -> str:
     """Bound regex/JSON work per log record without truncating a credential.
 
@@ -2984,14 +3015,18 @@ def _sanitize_record_text(text: str) -> str:
     a partial credential at a truncation boundary. Public mask_sensitive keeps
     its full-text behavior.
     """
-    if len(text) > 64 * 1024:
+    # Short-circuit on characters to avoid encoding unbounded input.
+    if len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    ):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
                 "original_characters": len(text),
-                "character_limit": 64 * 1024,
+                "character_limit": _RECORD_BYTE_LIMIT,  # Retain the previous summary field.
+                "byte_limit": _RECORD_BYTE_LIMIT,
             }, separators=(",", ":"))
-        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+        return f"[log payload omitted: exceeds {_RECORD_BYTE_LIMIT} UTF-8 bytes]"
     return _sanitize_log_text(text)
 
 

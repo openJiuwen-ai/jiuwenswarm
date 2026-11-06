@@ -52,6 +52,7 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
+      errorDisplay?: 'inline';
       subItems?: SettingSubItems;
       configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })
@@ -71,6 +72,8 @@ export type SettingItemDefinition =
     });
 export interface SettingsSectionDefinition {
   id: string;
+  /** A read-only boolean from the module source; absent/unknown means hidden. */
+  visibleWhen?: string;
   titleKey?: I18nKey;
   descriptionKey?: I18nKey;
   separatedRows?: boolean;

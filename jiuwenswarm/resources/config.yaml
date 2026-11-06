@@ -735,12 +735,14 @@ react:
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
     # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
     cua_agent:
-      enabled: false
+      enabled: null # null follows the release default (currently off); user changes persist true/false.
       # max_iterations: 100
       # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
       # snapshot_keep_last_k: 3
       # 用户接管屏幕（检测到鼠标/键盘输入）时暂停桌面操作，空闲后自动继续（Windows 与 Linux X11 支持探测）。
       pause_on_user_input: false
+      # 委派桌面任务前是否弹出确认卡片。在卡片上选择“永久记住”会写入 false；改回 true 可恢复询问。
+      # require_approval: true
   # 常驻 subagent 运行时。开启后 task_tool 被 subagent_spawn/wait/list/
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
@@ -1070,6 +1072,8 @@ channels:
       - name: 飞书默认应用
       # 飞书应用配置
         app_id:
+        # 新版 JiuwenMate 可填 JM-02 同事 ID；留空时保持个人版消息路由
+        agent_id:
         app_secret:
         encrypt_key:
         verification_token:
@@ -1087,6 +1091,7 @@ channels:
     # 企业飞书多 Bot 配置（每个 bot 会注册为独立 channel: feishu_enterprise:<app_id>）
     # bot_a:
     #   app_id:
+    #   agent_id:  # 可选：绑定到一个 JM-02 新版同事
     #   app_secret:
     #   encrypt_key:
     #   verification_token:
@@ -1094,6 +1099,15 @@ channels:
     #   enable_streaming: true
     #   chat_id:
     #   enabled: false
+  welink:
+    # 一个 AI 同事绑定一个 WeLink 账号。登录凭证写在 credential_dir，由办公室扫码写入。
+    enabled: false
+    account:
+    persistent_agent_id:
+    cli_path: welink-cli
+    env: pro
+    credential_dir:
+    poll_interval_seconds: 5
   xiaoyi:
     # 小艺渠道不做文件回传：send_file_to_user 不注册给模型，
     # 相关提示词也不再要求它发文件（见 file_delivery_policy / TeamWorkspaceReportPathRail）。

@@ -1,5 +1,6 @@
 
-import { isEnterprise } from '../../edition';import {
+import { isEnterprise } from '../../edition';
+import {
   useState,
   useRef,
   useCallback,

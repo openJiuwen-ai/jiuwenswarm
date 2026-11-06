@@ -87,10 +87,11 @@ def transcript(records):
         if role == "assistant" and event != "chat.final":
             continue
         identity = f"{record.get('id') or record.get('request_id') or 'turn'}:{index}"
-        fingerprint = (role, text.strip())
-        if fingerprint in seen:
+        record_id = record.get("id")
+        if record_id and record_id in seen:
             continue
-        seen.add(fingerprint)
+        if record_id:
+            seen.add(record_id)
         turns.append({
             "source_id": identity, "role": role,
             "origin": "core_report" if record.get("presentation") == "tool_result" else "conversation",

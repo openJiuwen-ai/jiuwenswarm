@@ -466,6 +466,8 @@ function devWsTrafficLogger(): Plugin {
 }
 
 const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
+const DESIGNER_VIDEO_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
+const DESIGNER_UPLOAD_REQUEST_MAX_BYTES = DESIGNER_VIDEO_UPLOAD_MAX_BYTES + 64 * 1024
 
 interface MultipartFilePart {
   filename: string
@@ -516,6 +518,10 @@ function devFileContentApi(): Plugin {
   const workspaceRootDir = path.resolve(projectRootDir, 'agent')
   const sessionsRootDir = path.resolve(workspaceRootDir, 'sessions')
   const agentTeamsRootDir = path.resolve(projectRootDir, '.agent_teams')
+  // Team-organization summaries live here, outside .agent_teams. A group
+  // attachment points at this tree; rejecting it makes the chat card call an
+  // existing file expired.
+  const organizationsRootDir = path.resolve(projectRootDir, '.organizations')
   const webLogsRootDir = path.resolve(workspaceRootDir, '.logs')
   const autoHarnessDir = path.resolve(projectRootDir, 'auto-harness')
   // Projectless tasks (no bound project_dir) write generated media under
@@ -678,10 +684,12 @@ function devFileContentApi(): Plugin {
     const inWebLogs = !relativeLogsPath.startsWith('..') && !path.isAbsolute(relativeLogsPath)
     const relativeAutoHarnessPath = path.relative(autoHarnessDir, targetPath)
     const inAutoHarness = !relativeAutoHarnessPath.startsWith('..') && !path.isAbsolute(relativeAutoHarnessPath)
+    const relativeOrganizationsPath = path.relative(organizationsRootDir, targetPath)
+    const inOrganizations = !relativeOrganizationsPath.startsWith('..') && !path.isAbsolute(relativeOrganizationsPath)
     const relativeProjectlessTasksPath = path.relative(projectlessTasksDir, targetPath)
     const inProjectlessTasks =
       !relativeProjectlessTasksPath.startsWith('..') && !path.isAbsolute(relativeProjectlessTasksPath)
-    return inWorkspace || inAgentTeams || inWebLogs || inAutoHarness || inProjectlessTasks
+    return inWorkspace || inAgentTeams || inWebLogs || inAutoHarness || inOrganizations || inProjectlessTasks
       || registeredProjectDirs().some((dir) => isInsideRoot(dir, targetPath))
   }
 
@@ -1584,15 +1592,20 @@ function devFileContentApi(): Plugin {
         req.on('end', () => {
           try {
             const body = Buffer.concat(chunks)
-            if (body.length > DESIGNER_UPLOAD_MAX_BYTES) {
+            const requestTooLarge = body.length > DESIGNER_UPLOAD_REQUEST_MAX_BYTES
+            const parts = !requestTooLarge && contentType.includes('multipart/form-data')
+              ? parseMultipartFiles(contentType, body)
+              : []
+            const partLimit = (part: MultipartFilePart) => (
+              part.mimeType.startsWith('video/') ? DESIGNER_VIDEO_UPLOAD_MAX_BYTES : DESIGNER_UPLOAD_MAX_BYTES
+            )
+            const tooLarge = requestTooLarge || parts.some((part) => part.data.length > partLimit(part))
+            if (tooLarge) {
               res.statusCode = 413
               res.setHeader('content-type', 'application/json; charset=utf-8')
               res.end(JSON.stringify({ error: 'file_too_large', files: [], errors: [{ error: 'file_too_large' }] }))
               return
             }
-            const parts = contentType.includes('multipart/form-data')
-              ? parseMultipartFiles(contentType, body)
-              : []
             if (parts.length === 0) {
               res.statusCode = 400
               res.setHeader('content-type', 'application/json; charset=utf-8')

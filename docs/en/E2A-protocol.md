@@ -39,7 +39,8 @@ URI and authentication headers. `server_ready=false` describes the current
 transport; it does not prevent a subsequent request from reconnecting. The unary
 proxy, including `fetch_agent_unary`, allows a client that completed connection
 setup to reconnect before sending. Initial connection and startup retries stay
-with the startup flow; the proxy does not initiate a concurrent connection. Concurrent requests wait for the same reconnect handshake.
+with the startup flow; the proxy does not initiate a concurrent connection.
+Concurrent requests wait for the same reconnect handshake.
 Connection failures and request timeouts return the existing errors, and later
 requests can retry. A request timeout during the handshake closes the partial
 connection. Explicit `disconnect()` clears the reconnect configuration.

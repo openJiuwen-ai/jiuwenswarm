@@ -608,10 +608,10 @@ test('General ignores legacy chat models and opens the connection form without a
     const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');
     assert.ok(dialog);
     assert.equal(dialog.querySelector('[data-variant="api_key"] input').placeholder.includes('saved'), false);
-    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name']) {
+    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name', 'context_window_tokens']) {
       assert.ok(dialog.querySelector(`[data-testid="settings-agent-media-config-dialog-field"][data-variant="${field}"]`));
     }
-    for (const field of ['alias', 'reasoning_level', 'context_window_tokens']) {
+    for (const field of ['alias', 'reasoning_level']) {
       assert.equal(dialog.querySelector(`[data-variant="${field}"]`), null);
     }
     assert.equal(requests.includes('models.list'), false);

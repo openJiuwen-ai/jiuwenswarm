@@ -1150,11 +1150,13 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
     [
+      'cua_agent_enabled',
       'moa_jev_enabled',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',
       'kv_cache_affinity_enabled',
       'comfyui_workflow_enabled',
+      'cua_agent_enabled',
       'team_organization_ui_enabled',
       'team_scheduled_dispatch_enabled',
       'team_task_verification_enabled',
@@ -1170,6 +1172,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_key',
     'asr_model',
     'comfyui_workflow_enabled',
+    'cua_agent_enabled',
     'external_cli_agent_claude_cli_path',
     'external_cli_agent_claude_enabled',
     'external_cli_agent_claude_path_histories',
@@ -1227,7 +1230,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'name',
       'is_default',
     ],
-    buildDingtalkFormPayload: ['enabled', 'client_id', 'client_secret', 'allow_from'],
+    buildDingtalkApp: ['name', 'enabled', 'client_id', 'client_secret', 'robot_code', 'allow_from'],
     buildTelegramFormPayload: ['enabled', 'bot_token', 'allow_from', 'parse_mode', 'group_chat_mode'],
     buildDiscordFormPayload: [
       'enabled',
@@ -1680,7 +1683,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
   assert.doesNotMatch(modelsDefinition, /id: 'limited-free-models'|id: 'free-models'/);
-  assert.match(modelsSettings, /<FreeModelsSettings\s*\/>/);
+  assert.match(modelsSettings, /<FreeModelsSettings\b/);
   assert.match(modelsSettings, /settingsPanel\.models\.customModels/);
   assert.ok(
     modelsSettings.indexOf('<FreeModelsSettings') < modelsSettings.indexOf("settingsPanel.models.customModels"),
