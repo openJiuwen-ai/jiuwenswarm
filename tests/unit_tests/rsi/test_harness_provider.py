@@ -356,6 +356,11 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
     ]}), encoding="utf-8")
     refs_path = Path(request.harness_refs_path)
     refs_path.parent.mkdir()
+    baseline_package = refs_path.parent / "baseline"
+    baseline_package.mkdir()
+    (baseline_package / "harness_config.yaml").write_text(
+        "schema_version: '1.0'\nid: baseline\nname: Baseline\n", encoding="utf-8"
+    )
     refs_path.write_text("harness_refs:\n  solver: baseline\n", encoding="utf-8")
     projector = RsiProjector(tmp_path)
     projector.register_root(request.task_id)
@@ -369,13 +374,13 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
 
     consumer.bind_push(on_progress=on_progress)
     baseline_calls = []
+    analysis_calls: list[Any] = []
 
     class Evaluator:
         async def evaluate_batch(self, **kwargs):
             output = Path(kwargs["output_dir"])
-            if output.name != "frozen_baseline":
-                assert provider.read_state(request.task_id).baseline == baseline_score
-                raise RuntimeError("optimization-batch-reached")
+            # Matching source evidence is reused from the frozen baseline.
+            assert output.name == "frozen_baseline"
             baseline_calls.append(kwargs)
             assert [case["case_id"] for case in kwargs["cases"]] == ["one", "two"]
             assert provider.read_state(request.task_id).baseline is None
@@ -384,14 +389,34 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
             assert len(nodes) == 1 and nodes[0]["node_id"] == "ROOT"
             assert nodes[0]["extra"]["stage"]["total_cases"] == 2
             output.mkdir(parents=True, exist_ok=True)
-            result = output / "result.json"
-            result.write_text("{}", encoding="utf-8")
-            cases = [{"case_id": name, "score": score, "status": "passed" if score == 1 else "failed",
-                      "result_path": str(result), "trace_path": str(result)}
-                     for name, score in (("one", baseline_score * 2), ("two", 0.0))]
+            cases = []
+            for name, score in (("one", baseline_score * 2), ("two", 0.0)):
+                case_dir = output / "cases" / name
+                case_dir.mkdir(parents=True)
+                status = "passed" if score == 1 else "failed"
+                result = case_dir / "result.json"
+                result.write_text(json.dumps({
+                    "case_id": name,
+                    "status": status,
+                    "score": score,
+                    "evaluation": {"method": "script_based", "passed": score == 1},
+                }), encoding="utf-8")
+                trace = case_dir / "trace.json"
+                trace.write_text(json.dumps({"case_id": name, "status": status}), encoding="utf-8")
+                cases.append({
+                    "case_id": name, "score": score, "status": status,
+                    "result_path": str(result), "trace_path": str(trace),
+                })
             eval_ref = output / "eval_ref.yaml"
             eval_ref.write_text(yaml.safe_dump({"harness_refs_path": str(refs_path), "cases": cases}), encoding="utf-8")
             return str(eval_ref)
+
+    class Analyzer:
+        async def analyze(self, invocation: Any) -> str:
+            assert provider.read_state(request.task_id).baseline == baseline_score
+            assert invocation.source_stage == "single_harness_batch"
+            analysis_calls.append(invocation)
+            raise RuntimeError("optimization-batch-reached")
 
     # Historical epoch tasks retain their original policy after an SDK upgrade.
     orchestrator = SingleHarnessIterativeOptimizationOrchestrator(
@@ -401,12 +426,13 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
             "data_loader": {"batch_size": 1},
             "scheduling": {"promotion_policy": "epoch_full_evaluation"},
         }),
-        evaluator=Evaluator(), analyzer=object(), member_optimizer=object(),
+        evaluator=Evaluator(), analyzer=Analyzer(), member_optimizer=object(),
     )
     provider = HarnessProvider(tmp_path, orchestrator=orchestrator)
     with pytest.raises(RuntimeError, match="optimization-batch-reached"):
         asyncio.run(provider.run(request, on_event=consumer.on_engine_event))
     assert len(baseline_calls) == 1
+    assert len(analysis_calls) == 1
     assert pushes[-1]["progress"]["baseline"] == baseline_score
     assert pushes[-1]["progress"]["iteration"] == 0
     assert pushes[-1]["progress"]["total_iterations"] == 3
@@ -424,6 +450,7 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
     with pytest.raises(RuntimeError, match="optimization-batch-reached"):
         asyncio.run(provider.resume(request, on_event=consumer.on_engine_event))
     assert len(baseline_calls) == 1
+    assert len(analysis_calls) == 2
     assert provider.read_state(request.task_id).baseline == baseline_score
 
 

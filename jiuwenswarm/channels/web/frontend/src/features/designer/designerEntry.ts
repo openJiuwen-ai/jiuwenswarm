@@ -1,12 +1,13 @@
 import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
+import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { webClient } from '../../services/webClient';
 import { buildConversationModelPayload } from '../../multi-session/state/conversationModelSelection';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
-import { findDesignModelsProblem } from './designModelsReadiness';
+import { findDesignModelsProblem } from './designPromptReadiness';
 import {
   mediaItemsToBootstrapReferences,
   type DesignerBootstrapReference,
@@ -111,6 +112,7 @@ export async function sendDesignerLeaderMessage(params: {
   chat.setThinking(sessionId, true);
   try {
     await useDesignerStore.getState().flushSave();
+    await flushApplicationConversationHistory(sessionId);
     await webClient.request('chat.send', {
       session_id: sessionId,
       query: prompt,
@@ -148,6 +150,18 @@ export function resolveDesignComposerProjectId(): string {
   }
   return projects.find((project) => project.is_default || project.project_id === DEFAULT_DESIGN_PROJECT_ID)?.project_id
     || DEFAULT_DESIGN_PROJECT_ID;
+}
+
+/** Create a saved canvas before starting media, without inventing a user prompt. */
+export async function createDesignerConversation(title = ''): Promise<{ projectId: string; sessionId: string }> {
+  const projectId = resolveDesignComposerProjectId();
+  const workspace = await designerWorkspaceClient.createSession({ projectId, title });
+  const sessionId = String(workspace.session?.session_id || '').trim();
+  if (!sessionId || workspace.graph.metadata?.session_id !== sessionId) throw new Error('missing design session');
+  useDesignerStore.getState().applyGraph(workspace.graph);
+  useDesignerChatStore.getState().replaceMessages(workspace.graph.graph_id, workspace.messages);
+  bindDesignerChatSession(sessionId);
+  return { projectId, sessionId };
 }
 
 /** New design task from the shared composer. No directory selection uses the default project. */
@@ -208,7 +222,7 @@ export async function composeDesignerSession(params: {
   try {
     // Same design landing gate as ``submitDesignComposer``: the first message
     // on an empty canvas must fail before the director builds the graph.
-    const modelProblem = await findDesignModelsProblem();
+    const modelProblem = await findDesignModelsProblem(params.sessionId);
     if (modelProblem) {
       throw new Error(modelProblem);
     }

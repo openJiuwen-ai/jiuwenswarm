@@ -326,7 +326,7 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 
 ## 9. 已知遗留（按优先级）
 
-1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。正式 macOS Release 只发布一个 ARM64 Electron DMG；x86_64 仅用于本地验证，不上传至正式 Release。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
+1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。当前 macOS 仅提供 ARM64 Electron DMG，不支持 Intel（x86_64）Mac 包，也不提供 Universal 包；构建和验收使用 Apple Silicon Mac 的原生 arm64 环境。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
    旧 pywebview 的 macOS helper 整体替换 App，不依赖新 App 的 UI 框架。需分别用实际支持的旧客户端验收 pywebview → Electron，以及 Electron → Electron；签名、公证、ARM64、BrowserAgent 和完整升级仍需产物验收。
 2. **CDP 无认证**：已声明为已接受风险（§5）。
 3. **Windows 强杀关闭**：与 Python 桌面一致；gateway 单例锁需依赖 PID 存活检查自愈。

@@ -43,6 +43,7 @@ import {
   UsageSummary,
   FileDownloadItem,
   ContextCompressionRuntime,
+  MoaStatusPayload,
   ContextCompressionSummary,
   WsEvent,
   GoalRecord,
@@ -121,6 +122,11 @@ import {
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
 import { buildExtensionSendPayload } from '../utils/enabledExtensions';
+import {
+  clearMemberCompressionEntriesForSession,
+  memberCompressionKey,
+  nextMemberCompressionSummary,
+} from '../utils/contextCompression';
 import { makeEventDedupKey } from '../utils/wsEventDedup';
 import {
   normalizeToolCallPayload,
@@ -1169,6 +1175,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const lastGoalGetAttemptAtRef = useRef<Map<string, number>>(new Map());
   const wasConnectedRef = useRef(false);
   const contextCompressionSummaryRef = useRef<Map<string, ContextCompressionSummary>>(new Map());
+  // 成员「本 turn 压缩完成汇总」的累加基数（count 与详情列表同步起算）。
+  // 成员的 store summary 兼任展示（完成徽标与汇总详情），不能当基数用——
+  // finish 后展示保留到下一条消息，若 completed 继续以它续接，成员条会
+  // 跨 turn 越滚越大（CR-002）。基数与展示分离：基数在这里按 turn 清零，
+  // store 里保留的 summary 只是下一条消息前的展示快照。
+  const memberCompressionSummaryRef = useRef<Map<string, ContextCompressionSummary>>(new Map());
   const pendingContextCompressionStartRef =
     useRef<Map<string, PendingContextCompressionStart>>(new Map());
   const pendingTeamMemberContextCompressionStartRef =
@@ -1259,12 +1271,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const acceptedIso =
       timestampMsToIso(parseTimestampToMs(payload.input_timestamp)) ||
       timestampMsToIso(parseTimestampToMs(payload.timestamp));
-    if (!acceptedIso) return;
     const chatStore = useChatStore.getState();
-    chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
-      timestamp: acceptedIso,
-      isTimestampPending: false,
-    });
+    // 服务端确认输入：无论新旧后端是否带时间戳，都解除 @成员「待回复」占位的等待
+    // （见 sendMessage 登记处 isAcceptedPending 注释）。时间戳回填仍按原条件走。
+    if (acceptedIso) {
+      chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
+        timestamp: acceptedIso,
+        isTimestampPending: false,
+        isAcceptedPending: false,
+      });
+    } else {
+      chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
+        isAcceptedPending: false,
+      });
+    }
+    if (!acceptedIso) return;
     // 图片提示可先于 ACK/phase 到达；旧后端不带时间戳，提示会盖浏览器钟。
     // 将早于用户边界的同单提示移到边界上，避免落入上一轮；同刻按消息插入顺序排序。
     const noticeId = `notice-image_tool_fallback-${requestId}`;
@@ -1563,18 +1584,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, []);
 
-  const getTeamMemberContextCompressionKey = useCallback(
-    (sessionId: string, memberId: string) => `${sessionId}\u0000${memberId}`,
-    []
-  );
-
   const clearPendingTeamMemberContextCompressionStart = useCallback((sessionId: string, memberId: string) => {
-    const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+    const key = memberCompressionKey(sessionId, memberId);
     const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
     if (!pending) return;
     window.clearTimeout(pending.timer);
     pendingTeamMemberContextCompressionStartRef.current.delete(key);
-  }, [getTeamMemberContextCompressionKey]);
+  }, []);
 
   const clearAllPendingTeamMemberContextCompressionStarts = useCallback(() => {
     for (const pending of pendingTeamMemberContextCompressionStartRef.current.values()) {
@@ -1587,13 +1603,54 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     clearPendingContextCompressionStart(sessionId);
     contextCompressionSummaryRef.current.delete(sessionId);
     useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
-  }, [clearPendingContextCompressionStart]);
+    // 防御性对称：流未正常收尾（断连等）就发新消息时，reset 是唯一的 turn
+    // 边界——成员的基数按会话前缀清（含 turn 内被 X 关闭、store 已无记录
+    // 的成员），展示记录随 store 一并清，不让上一 turn 泄漏进来。
+    clearMemberCompressionEntriesForSession(memberCompressionSummaryRef.current, sessionId);
+    const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
+    for (const memberId of Object.keys(memberStates ?? {})) {
+      setTeamMemberContextCompressionStatus(sessionId, memberId, undefined, undefined);
+    }
+  }, [clearPendingContextCompressionStart, setTeamMemberContextCompressionStatus]);
 
   const finishContextCompressionTurn = useCallback((sessionId: string) => {
     clearPendingContextCompressionStart(sessionId);
+    // 本轮以暂停/取消收尾时不展示完成徽标：压缩运行行已经是中性中断文案
+    // （cancelled/paused 分支设置），"完成 N 次"会在其后把它覆盖，观感像
+    // 暂停没有生效。本轮内真实完成的压缩成果仍在上下文里，下一条消息的
+    // context.usage 会体现窗口变小，这里只是不庆祝。
+    const runtime = useChatStore.getState().getRuntime(sessionId)?.contextCompressionRuntime;
+    const interrupted = runtime?.status === 'cancelled' || runtime?.status === 'paused';
     const summary = contextCompressionSummaryRef.current.get(sessionId);
-    useChatStore.getState().setContextCompressionStatus(sessionId, undefined, summary && summary.count > 0 ? summary : undefined);
-  }, [clearPendingContextCompressionStart]);
+    useChatStore.getState().setContextCompressionStatus(
+      sessionId,
+      undefined,
+      !interrupted && summary && summary.count > 0 ? summary : undefined,
+    );
+    // turn 收尾即清计数（展示与否都已终局）：ref 的语义是"本 turn 累计"，
+    // 不清会把本 turn 的计数泄漏进下一个 turn 的徽标。
+    contextCompressionSummaryRef.current.delete(sessionId);
+
+    // 成员侧对齐同一 turn 边界：turn 级汇总按会话前缀无条件清（含 turn 内
+    // 被 X 关闭、store 已无记录的成员——按 store 枚举会漏掉它们），新 turn
+    // 从 0 重新累计；展示（完成汇总详情）按中断抑制保留到下一条消息——与
+    // 主会话的 ref.delete + summary 展示位完全对称。基数在 ref、展示在
+    // store，二者分离后 store 里保留的 summary 不会再被当作下一 turn 的累加起点。
+    clearMemberCompressionEntriesForSession(memberCompressionSummaryRef.current, sessionId);
+    const memberStates = useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression;
+    for (const memberId of Object.keys(memberStates ?? {})) {
+      const memberRuntime = memberStates?.[memberId]?.runtime;
+      const memberInterrupted =
+        memberRuntime?.status === 'cancelled' || memberRuntime?.status === 'paused';
+      const memberSummary = memberStates?.[memberId]?.summary;
+      setTeamMemberContextCompressionStatus(
+        sessionId,
+        memberId,
+        undefined,
+        !memberInterrupted && memberSummary && memberSummary.count > 0 ? memberSummary : undefined,
+      );
+    }
+  }, [clearPendingContextCompressionStart, setTeamMemberContextCompressionStatus]);
 
   const buildContextCompressionRuntimeState = useCallback(
     (payload: ContextCompressionStatePayload): Omit<ContextCompressionRuntime, 'status'> | null => {
@@ -1635,6 +1692,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'started' || status === 'running') {
         clearPendingContextCompressionStart(sessionId);
+        // 计数不清：contextCompressionSummaryRef 的语义是「本 turn 内累计完成的
+        // 压缩次数」，同一 turn 里 Leader/成员会连续多轮压缩，每轮 started 清零
+        // 会让徽标只显示最后一轮的次数。取消轮的误标由
+        // finishContextCompressionTurn 按 runtime 的 cancelled/paused 抑制，
+        // 与计数解耦。
         const pending: PendingContextCompressionStart = {
           // 记下这一轮压缩的起始时刻：界面在 300ms 后才显示提示，但计时要从
           // 真正开始压缩算起；每轮 started 都会覆盖，因此计时自动从头开始。
@@ -1670,6 +1732,23 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         return;
       }
 
+      if (status === 'cancelled' || status === 'paused') {
+        const pending = pendingContextCompressionStartRef.current.get(sessionId);
+        if (pending && !pending.shown) {
+          // 压缩提示尚未亮出（started 后 300ms 内就收到终态，或事件乱序）：
+          // 静默丢弃，与 noop/skipped 分支对称——用户没见过的"压缩中"不该
+          // 凭空闪成一条"已取消"。
+          clearPendingContextCompressionStart(sessionId);
+          return;
+        }
+        clearPendingContextCompressionStart(sessionId);
+        useChatStore.getState().setContextCompressionStatus(sessionId, {
+          ...runtimeState,
+          status,
+        });
+        return;
+      }
+
       if (status === 'failed' || status === 'error') {
         clearPendingContextCompressionStart(sessionId);
         useChatStore.getState().setContextCompressionStatus(sessionId, {
@@ -1701,12 +1780,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'completed') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
-        const current =
-          useSessionStore.getState().getRuntime(sessionId)?.teamMemberContextCompression[memberId]?.summary;
-        const nextSummary = {
-          count: (current?.count || 0) + 1,
-          summaries: [...(current?.summaries || []), runtimeState.summary],
-        };
+        const key = memberCompressionKey(sessionId, memberId);
+        // 基数取 turn 级 ref 而非 store summary：store summary 在 turn 收尾后
+        // 会保留展示（与主会话徽标对称），若以它续接，成员计数与详情跨 turn
+        // 越滚越大（CR-002）。count 与详情列表同步从 ref 起算，ref 在
+        // finishContextCompressionTurn 按会话前缀清零。
+        const nextSummary = nextMemberCompressionSummary(
+          memberCompressionSummaryRef.current.get(key),
+          runtimeState.summary,
+        );
+        memberCompressionSummaryRef.current.set(key, nextSummary);
         setTeamMemberContextCompressionStatus(sessionId, memberId, {
           ...runtimeState,
           status: 'completed',
@@ -1716,7 +1799,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'started' || status === 'running') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
-        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        // 计数保留：成员的「完成 N 次」与主会话同理按 turn 累计，
+        // started 不清（理由同主会话分支）；中断轮由收尾抑制负责。
+        const key = memberCompressionKey(sessionId, memberId);
         const pending: PendingContextCompressionStart = {
           // 成员压缩与 leader 压缩各自独立计时，同样每轮 started 重新开始。
           runtimeState: { ...runtimeState, startedAt: Date.now() },
@@ -1735,7 +1820,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       if (status === 'noop' || status === 'skipped') {
-        const key = getTeamMemberContextCompressionKey(sessionId, memberId);
+        const key = memberCompressionKey(sessionId, memberId);
         const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
         if (pending && !pending.shown) {
           clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
@@ -1751,6 +1836,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         return;
       }
 
+      if (status === 'cancelled' || status === 'paused') {
+        const key = memberCompressionKey(sessionId, memberId);
+        const pending = pendingTeamMemberContextCompressionStartRef.current.get(key);
+        if (pending && !pending.shown) {
+          // 与主会话分支对称：提示未亮出就收到终态时静默丢弃。
+          clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
+          return;
+        }
+        clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
+        setTeamMemberContextCompressionStatus(sessionId, memberId, {
+          ...runtimeState,
+          status,
+        });
+        return;
+      }
+
       if (status === 'failed' || status === 'error') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
         setTeamMemberContextCompressionStatus(sessionId, memberId, {
@@ -1762,7 +1863,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     [
       buildContextCompressionRuntimeState,
       clearPendingTeamMemberContextCompressionStart,
-      getTeamMemberContextCompressionKey,
       setTeamMemberContextCompressionStatus,
     ]
   );
@@ -1774,6 +1874,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       });
       pendingContextCompressionStartRef.current.clear();
       clearAllPendingTeamMemberContextCompressionStarts();
+      // hook 卸载（页面级）时 turn 级基数一并作废；残留条目只占内存，不会
+      // 再被读（成员 read 点都伴随同 key 的 delete/set）。
+      memberCompressionSummaryRef.current.clear();
+      contextCompressionSummaryRef.current.clear();
     };
   }, [clearAllPendingTeamMemberContextCompressionStarts]);
 
@@ -2154,6 +2258,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
+        // runtime.accepted 到达前标记未确认：@成员「待回复」占位气泡等服务端确认后再弹
+        // （backfillOptimisticBubbleTimestamp 里一并清掉）。
+        isAcceptedPending: true,
         ...(waitForInputTimestamp ? { isTimestampPending: true } : {}),
         ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
       });
@@ -2769,8 +2876,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             answers[0]?.custom_input?.trim()
             || answers[0]?.selected_options.join(', ').trim()
             || '';
-          // 取消/跳过：不发送 reply，仅关闭对话框（prompt 在后端仍 pending）
+          // 取消/跳过：发显式 skip，后端立即把该轮按"未回答"跳过，
+          // 而不是让问题悬着等人超时；然后再关闭对话框。
           if (!answerText || answerText.includes('已跳过') || answerText.includes('已取消')) {
+            try {
+              await request('chat.swarmflow_reply', {
+                session_id: sessionId,
+                run_id: meta?.run_id ?? '',
+                correlation_id: meta?.correlation_id ?? '',
+                skip: true,
+              });
+            } catch (err) {
+              console.error('[swarmflow_human] chat.swarmflow_reply skip failed:', err);
+            }
             if (pendingQuestion) {
               useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
             }
@@ -3037,6 +3155,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     (payload: Record<string, unknown>): boolean =>
       typeof payload.source === 'string' && payload.source === 'proactive_recommendation',
     []
+  );
+
+  const restoreForegroundProcessing = useCallback(
+    (sessionId: string, payload: Record<string, unknown>): void => {
+      // Organization output is rendered here, but its request lifecycle belongs
+      // to useOrganizationEvents. Never turn that output into foreground work.
+      if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+        payload.source !== 'org_expert_direct' && payload.team_id) return;
+      const runtime = useChatStore.getState().getRuntime(sessionId);
+      if (!isProactiveRecommendationPayload(payload) &&
+        !runtime?.isProcessing && !runtime?.isLoadingHistory && !runtime?.isPaused) {
+        useChatStore.getState().setProcessing(sessionId, true);
+      }
+    },
+    [isProactiveRecommendationPayload],
   );
 
   const clearThinkingForVisibleOutput = useCallback((sessionId: string) => {
@@ -3323,13 +3456,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (!sessionId) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !isProactiveRecommendationPayload(payload) &&
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-        ) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
 
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         const agentTemplateName =
@@ -3532,10 +3659,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (isProactiveRecommendationPayload(payload)) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (!activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
 
         const agentTemplateName =
           !isProactiveRecommendationPayload(payload)
@@ -4453,13 +4577,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
-        const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !isProactiveRecommendationPayload(payload) &&
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-        ) {
-          useChatStore.getState().setProcessing(sessionId, true);
-        }
+        restoreForegroundProcessing(sessionId, payload);
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         if (!isProactiveRecommendationPayload(payload)) {
           clearThinkingForVisibleOutput(sessionId);
@@ -4703,6 +4821,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('execution.error', ({ payload }) => {
+        const failedSessionId = getPayloadSessionId(payload);
+        if (failedSessionId && !expertTeamId(payload, failedSessionId)) {
+          const runtime = useChatStore.getState().getRuntime(failedSessionId);
+          if (!payload.execution_id || !runtime?.activeExecutionId || payload.execution_id === runtime.activeExecutionId) {
+            useChatStore.getState().clearMoaStatus(failedSessionId);
+          }
+        }
         const goal = payload.goal;
         if (goal !== undefined) {
           applyGoalSnapshot(payload);
@@ -4742,6 +4867,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('context.usage', ({ payload }) => {
         receiveContextUsage(payload);
+      }),
+      webClient.on<MoaStatusPayload>('chat.moa_status', ({ payload }) => {
+        const sessionId = getPayloadSessionId(payload);
+        if (!sessionId || expertTeamId(payload, sessionId)) return;
+        // These transient events must never replace the current execution with a late frame's ID.
+        useChatStore.getState().updateMoaStatus(sessionId, payload);
       }),
       webClient.on<ContextCompressionStatePayload>(
         'context.compression_state',
@@ -4943,6 +5074,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
           useChatStore.getState().stopStreaming(sessionId);
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
+          // 压缩提示收尾兜底：team pause 的流以 processing_status(false) 收尾
+          // 而不是 chat.final，这里对齐"任务真正结束"信号收掉压缩行/展示徽标
+          // （finish 内部对 cancelled/paused 运行态不展示完成徽标）。
+          finishContextCompressionTurn(sessionId);
 
           // §8 步骤5：Heartbeat 自动轮结束时，把对应 assistant 消息的 streaming 关掉
           // （chat.delta 可能因丢帧未收到 final；这里兜底收尾），并静默刷新 Heartbeat
@@ -5093,6 +5228,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           void reconcileAgentGroupBinding(sessionId);
         }
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
+        useChatStore.getState().clearMoaStatus(sessionId);
         useChatStore.getState().setThinking(sessionId, false);
         // 任何 chat.error 都应解除历史加载态：faas 侧 history.get 流超时
         // （旧 session runtime 过 TTL 被回收、init 超时）只回发 chat.error
@@ -5279,6 +5415,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // has_active_task 为 false 表示没有活跃任务（任务已完成）
         const hasActiveTask = resultPayload.has_active_task !== false;
 
+        // 压缩提示兜底：后端已确认暂停/取消，若压缩行仍处于 running（SDK 的
+        // cancelled/paused 终态事件未到或丢失），先收掉运行行，避免界面停在
+        // "压缩中"；随后到达的终态事件会以中性文案重新呈现。
+        if (resultPayload.success && (resultPayload.intent === 'pause' || resultPayload.intent === 'cancel')) {
+          const compressionRuntime =
+            useChatStore.getState().getRuntime(sessionId)?.contextCompressionRuntime;
+          if (compressionRuntime?.status === 'running') {
+            clearPendingContextCompressionStart(sessionId);
+            useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
+          }
+        }
+
         if (resultPayload.intent === 'pause') {
           if (resultPayload.success) {
             useChatStore.getState().setPaused(
@@ -5441,6 +5589,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        // Transport replay (runtime_resume after:0) re-delivers a question the
+        // queue already holds or the user already answered; the dedup key is
+        // request_id-based, so the same popup replayed within the window drops.
+        if (shouldDropDuplicatedEvent('chat.ask_user_question', payload)) {
+          return;
+        }
         const questionPayload = payload as Record<string, unknown>;
         const evolutionMeta =
           questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'
@@ -5982,6 +6136,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     drainTaskQueueIfIdle,
     isProactiveRecommendationPayload,
     clearPendingTeamConnectionMember,
+    clearPendingContextCompressionStart,
     clearPendingTeamMemberContextCompressionStart,
     clearTeamMemberContextCompressionStatus,
     markTeamConnectionStateChanged,
@@ -5999,6 +6154,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     reconcileAgentGroupBinding,
     updateSession,
     resolveEventSessionId,
+    restoreForegroundProcessing,
     backfillOptimisticBubbleTimestamp,
     shouldDropDuplicatedEvent,
     t,

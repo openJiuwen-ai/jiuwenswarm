@@ -48,13 +48,9 @@ USER_INTERACTION_EVENTS = frozenset({
 PROMPT_VERSION = "prompt-suggestion-fork-v13"
 # A turn shows one next input.
 MAX_SUGGESTIONS = 1
-# src-raw skips a fork that would pay afresh for more than this. Ark caches a prompt prefix as the
-# call is served, so the fork sent right after it reads the call's whole prompt from the cache
-# (36,736 of 36,893 prompt tokens in a probe) and pays afresh only for the call's answer: the bound
-# is on the answer's output tokens.
-MAX_FORK_ANSWER_TOKENS = 10_000
 # Nothing of the parent call is overridden, its reasoning setting included, as in src-raw: a
 # parameter that differs from the parent's breaks the prompt-cache key.
+# A long parent answer still forks: the suggestion is worth the extra completion tokens.
 SUGGESTION_PROMPT = (
     "This is an app-generated request for a suggested next user message. "
     "The user did not write this message.\n\n"
@@ -80,45 +76,13 @@ SUGGESTION_PROMPT = (
 )
 
 
-# src-raw lets these single words through: each is a whole command the user types.
-_SINGLE_WORDS = frozenset({
-    "yes", "yeah", "yep", "yea", "yup", "sure", "ok", "okay",
-    "push", "commit", "deploy", "stop", "continue", "check", "exit", "quit", "no",
-    "是的", "当然", "好", "好的", "推送", "提交", "部署", "停止", "继续", "检查", "退出", "不", "不要",
-    "继续吧", "试试看",
-})
-_MIN_CHINESE_CHARS = 4
-_MAX_SUGGESTION_CHARS = 240
-_CJK_RE = re.compile(r"[㐀-鿿]")
-# The model spelling out the prompt's "stay silent" instead of staying silent.
-_META_TEXT_RE = re.compile(
-    r"^nothing found\.?$|^(?:nothing to suggest|no suggestion)|\bsilence is\b|\bstay(?:s|ing)? silent\b"
-    r"|^\W*silence\W*$|^\W*(?:不出|无|无建议|没有建议|沉默)\W*$|保持沉默"
-    r"|^(?:什么[都也])?(?:无输出|不输出)\W*$|^(?:本轮)?不预测(?:下一句)?\W*$",
-    re.I,
-)
-# src-raw's meta_wrapped, error_message and prefixed_label.
-_META_WRAPPED_RE = re.compile(r"^\(.*\)$|^\[.*\]$|^（.*）$")
-_ERROR_MESSAGE_RE = re.compile(
-    r"^(?:api error:|prompt is too long|request timed out|invalid api key|image was too large)", re.I,
-)
-_PREFIXED_LABEL_RE = re.compile(r"^\w+:\s", re.A)
-_CHINESE_LABEL_RE = re.compile(r"^(?:建议|用户|下一句|回复|预测)\s*[:：]")
-_SENTENCE_END_RE = re.compile(r"[。！？!?]|[.](?=\s*(?:[A-Z]|$))")
-_FORMATTING_RE = re.compile(r"[\n*]|```|^\s*(?:[-•]|\d+[.)])\s")
-_LINE_PREFIX_RE = re.compile(r"^(?:[-•*]|\d+[.)、])\s*")
-_EVALUATIVE_RE = re.compile(
-    r"thanks|thank you|looks good|sounds good|that works|that worked|that's all|nice|great|perfect"
-    r"|makes sense|awesome|excellent|谢谢|感谢|多谢|不错(?!过)|很好|完美|明白了|有道理|很有帮助",
-    re.I,
-)
-_CLAUDE_VOICE_RE = re.compile(
-    r"^(?:let me|i'll|i've|i'm|i can|i would|i think|i notice|here's|here is|here are|that's|this is"
-    r"|this will|you can|you should|you could|sure,|of course|certainly)"
-    # The assistant offering to act for 你. 我来 keeps the readings where 我 is the object of the
-    # verb before it (对我来说 / 帮我来) or starts 我来自.
-    r"|(?<![对帮给让替和跟同])我来(?!自)|我(?:可以|会|能|来|将|这就)?(?:帮|替|为)[你您]|^(?:以下是|下面是)",
-    re.I,
+# List markers stripped from a plain-text reply line before it is shown.
+# Require whitespace after the marker so Markdown emphasis like **bold** is kept.
+_LINE_PREFIX_RE = re.compile(r"^(?:[-•*]|\d+[.)、])\s+")
+# Models often wrap the JSON contract in a markdown fence; the fence is not part of the value.
+_FENCED_BLOCK_RE = re.compile(
+    r"^```(?:json)?\s*\r?\n?(.*?)\r?\n?```\s*$",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -146,11 +110,21 @@ def _suggestion_line(raw: str) -> str:
     return _LINE_PREFIX_RE.sub("", raw.strip().strip("「」\"'“”")).strip()
 
 
+def _strip_markdown_fence(text: str) -> str:
+    """Inner body of a single fenced block, or ``text`` unchanged."""
+
+    match = _FENCED_BLOCK_RE.fullmatch(text.strip())
+    return match.group(1).strip() if match else text.strip()
+
+
 def _json_suggestion(text: str) -> str | None:
-    """The ``suggestion`` value of a JSON reply, ``""`` for null, or None when not that shape."""
+    """The ``suggestion`` value of a JSON reply, ``""`` for null, or None when not that shape.
+
+    Accepts a bare object or the same object wrapped in a markdown ``json`` fence.
+    """
 
     try:
-        value = json.loads(text)
+        value = json.loads(_strip_markdown_fence(text))
     except (TypeError, ValueError):
         return None
     if not isinstance(value, dict) or set(value) != {"suggestion"}:
@@ -164,8 +138,8 @@ def _json_suggestion(text: str) -> str | None:
 def select_suggestions(text: str) -> tuple[list[str], str, str | None]:
     """The suggestion to show, the ledger outcome when there is none, and why.
 
-    One reply line is one suggestion; the first line that passes the filters is
-    shown. A reply with no passing line keeps the failing line's filter reason.
+    Host-side content filters are not applied: a non-empty null-contract reply is
+    shown as-is (JSON ``suggestion`` unwrapped, else the first non-empty line).
     """
     text = text.strip()
     if text.lower() in {"null", "none"}:
@@ -175,6 +149,8 @@ def select_suggestions(text: str) -> tuple[list[str], str, str | None]:
         text = json_suggestion
         if not text:
             return [], "suppressed", "empty"
+    else:
+        text = _strip_markdown_fence(text)
     lines = []
     for raw in text.splitlines():
         suggestion = _suggestion_line(raw)
@@ -182,50 +158,14 @@ def select_suggestions(text: str) -> tuple[list[str], str, str | None]:
             lines.append(suggestion)
     if not lines:
         return [], "suppressed", "empty"
-    if len(lines) == 1:
-        reason = filter_suggestion(lines[0])
-        return ([], "filtered", reason) if reason else ([lines[0]], "candidate", None)
-    kept: list[str] = []
-    first_reason: str | None = None
-    for line in lines:
-        reason = filter_suggestion(line)
-        if reason:
-            first_reason = first_reason or reason
-            continue
-        if line not in kept:
-            kept.append(line)
-        if len(kept) == MAX_SUGGESTIONS:
-            break
-    if not kept:
-        return [], "filtered", first_reason
-    return kept, "candidate", None
+    return lines[:MAX_SUGGESTIONS], "candidate", None
 
 
 def filter_suggestion(text: str) -> str | None:
-    """Return why the model's reply is not a suggestion to show, or ``None`` to show it."""
+    """Compatibility no-op: content filters were removed; always show the reply."""
 
-    lower = text.lower()
-    chinese = bool(_CJK_RE.search(text))
-    words = len(text.split())
-    characters = sum(not character.isspace() for character in text)
-    sentence_ends = [match.start() for match in _SENTENCE_END_RE.finditer(text)]
-    checks = (
-        ("done", lambda: lower == "done"),
-        ("meta_text", lambda: bool(_META_TEXT_RE.search(text))),
-        ("meta_wrapped", lambda: bool(_META_WRAPPED_RE.search(text))),
-        ("nonspecific", lambda: bool(re.fullmatch(r"继续下一步[，。！？；：、,.!?;:…]*", text))),
-        ("error_message", lambda: bool(_ERROR_MESSAGE_RE.search(text))),
-        ("prefixed_label", lambda: bool(_PREFIXED_LABEL_RE.search(text) or _CHINESE_LABEL_RE.search(text))),
-        ("too_few_words", lambda: lower not in _SINGLE_WORDS
-         and (characters < _MIN_CHINESE_CHARS if chinese else words < 2 and not text.startswith("/"))),
-        ("too_long", lambda: len(text) > _MAX_SUGGESTION_CHARS),
-        ("multiple_sentences", lambda: len(sentence_ends) > 1
-         or any(index < len(text) - 1 for index in sentence_ends)),
-        ("has_formatting", lambda: bool(_FORMATTING_RE.search(text))),
-        ("evaluative", lambda: bool(_EVALUATIVE_RE.search(text))),
-        ("claude_voice", lambda: bool(_CLAUDE_VOICE_RE.search(text))),
-    )
-    return next((reason for reason, check in checks if check()), None)
+    del text
+    return None
 
 
 @dataclass(frozen=True)
@@ -399,8 +339,6 @@ class PromptSuggestionForks:
             reason = "plan_mode"
         elif getattr(call.answer, "tool_calls", None):
             reason = "unanswered_tool_call"
-        elif answer is not None and answer > MAX_FORK_ANSWER_TOKENS:
-            reason = "cache_cold"
         else:
             task = asyncio.create_task(self._fork(epoch, session_id, request_id, call, completion))
             self._tasks[session_id] = task
@@ -581,6 +519,34 @@ def _latest_completed_request(session_id: str) -> str | None:
         later = {later_row.get("request_id") for later_row in records[index + 1:]}
         return request_id if row.get("status") == "success" and later <= {request_id} else None
     return None
+
+
+def current_suggestions(store: TopicStarterStore, session_id: str) -> dict[str, Any]:
+    """Recover unconsumed suggestions for the session's latest successful answer."""
+    epoch = consent_epoch()
+    if epoch is None:
+        return {"enabled": False, "suggestions": []}
+    request_id = _latest_completed_request(session_id)
+    if not request_id:
+        return {"enabled": True, "suggestions": []}
+    suggestions = []
+    rows = store.query_events(
+        event_type="prompt_suggestion_generation", policy_id=POLICY_ID,
+        slate_id=f"prompt-suggestion:{request_id}", limit=2,
+    )
+    for row in rows:
+        payload = row["payload"]
+        if row["session_id"] != session_id or row["created_at"] < epoch or payload.get("outcome") != "candidate":
+            continue
+        consumed = any(store.query_events(
+            event_type=f"prompt_suggestion_{outcome}", policy_id=POLICY_ID,
+            topic_id=row["topic_id"], limit=1,
+        ) for outcome in ("accepted", "ignored", "suppressed"))
+        if not consumed:
+            suggestions.append({key: payload[key] for key in ("session_id", "request_id", "suggestion_id", "text")})
+    if consent_epoch() != epoch or _latest_completed_request(session_id) != request_id:
+        return {"enabled": consent_epoch() is not None, "suggestions": []}
+    return {"enabled": True, "suggestions": suggestions}
 
 
 def record_page_outcome(store: TopicStarterStore, params: dict[str, Any]) -> bool | None:

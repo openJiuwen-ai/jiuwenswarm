@@ -44,6 +44,13 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import SkillUseRail
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_CODE_NORMAL,
+    NEW_TEAM_CODE_PLAN,
+    NEW_TEAM_DESIGN,
+    TEAM_PLAN_CODE_MODE,
+    is_team_plan_mode,
+)
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
@@ -58,6 +65,7 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.kv_cache_affinity_config import (
     build_kv_cache_affinity_config,
     get_kv_cache_control_model_client_config,
@@ -69,13 +77,6 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from gateway.common.mode_matrix import (
-    NEW_TEAM_CODE_NORMAL,
-    NEW_TEAM_CODE_PLAN,
-    NEW_TEAM_DESIGN,
-    TEAM_PLAN_CODE_MODE,
-    is_team_plan_mode,
-)
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset(
@@ -1007,9 +1008,9 @@ def build_member_subagent_specs(
         )
 
     # cua_agent drives the host desktop, which is not a code-profile concern,
-    # so it is offered in every mode when the operator opts in explicitly.
-    if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
-        subagents_cfg.get("cua_agent")
+    # so every mode uses the same release default and explicit user preference.
+    if is_cua_agent_enabled(
+        subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
     ):
         specs.append(
             _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)

@@ -587,7 +587,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
                 {
                     "selected_options": [selected_option],
                     "custom_input": "",
-                    "card_id": "tool-invocation-17",
+                    "card_id": "tool-call-17",
                 }
             ],
             "source": "permission_interrupt",
@@ -598,7 +598,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
 
     assert isinstance(inputs["query"], InteractiveInput)
     assert inputs["query"].user_inputs == {
-        "tool-invocation-17": expected_payload
+        "tool-call-17": expected_payload
     }
 
 
@@ -2869,8 +2869,8 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
     )
 
     assert isinstance(rail, FakeTTSERail)
-    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "bank.json")
-    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "bank.json")
+    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "work" / "bank.json")
+    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "work" / "bank.json")
     assert captured["config"]["evolve_enabled"] is False
     assert captured["config"]["inject_enabled"] is True
     assert "trajectory_export_enabled" not in captured["config"]
@@ -2879,6 +2879,9 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
     assert captured["config"]["dream_interval"] == 50
     assert captured["config"]["dream_min_hours"] == 24.0
     assert captured["config"]["dream_ttl_days"] == 90
+    induce_policy = captured["config"]["induce_llm_policy"]
+    assert induce_policy.attempt_timeout_secs == 300.0
+    assert induce_policy.total_budget_secs == 300.0
     assert captured["rail"]["model"] == "test-model"
     assert captured["rail"]["trajectory_span_processor"] is fake_processor
 

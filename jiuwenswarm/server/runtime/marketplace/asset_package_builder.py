@@ -308,7 +308,7 @@ def build_asset_package(
         entries = {}
         for path in normalized:
             rel = path.relative_to(snapshot).as_posix()
-            entries[f"{name}/{name}/{rel}" if identity.kind == "skill" else rel] = path
+            entries[f"{name}/{name}/{rel}" if identity.kind in {"skill", "skillpack"} else rel] = path
         wrapper = details.get("wrapper")
         if wrapper:
             entries[f"{name}/plugin.yaml"] = yaml.safe_dump(

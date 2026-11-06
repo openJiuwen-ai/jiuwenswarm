@@ -8,17 +8,17 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from gateway.extensions.agentos.agentos_router.agent_manager import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentManager,
     AgentRuntime,
 )
-from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
-from gateway.extensions.yuanrong_frontend_client import (
+from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from agent_gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
+from agent_gateway.extensions.yuanrong_frontend_client import (
     AgentFileDownloadChunk,
     SandboxInfo,
 )

@@ -29,6 +29,9 @@ from tests.agents.swarm.agent_group_fixtures import _minimal_group
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
+    from jiuwenswarm.agents.swarm import group_chat
+
+    monkeypatch.setattr(group_chat, "enabled_group_cli_kinds", lambda: {"claude", "codex"})
     from jiuwenswarm.server.runtime import extension_package_manager as packages
 
     monkeypatch.setattr(gs, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
@@ -140,10 +143,10 @@ async def test_create_retry_conflict_and_invalid_definition(service):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["expert", "expert_team"])
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group"])
 async def test_add_offline_and_restore_compiled_capabilities(service, kind):
     group = await create(service)
-    member = dict(kind=kind, definition_id="group", member_name="research")
+    member = dict(kind=kind, id="group", member_name="research")
     args = dict(user_id="owner", channel_id="web", request_id="add-1")
     result = await service.add_member(group["group_id"], {"member": member}, **args)
     assert result["event_type"] == "group.member.added"
@@ -161,7 +164,7 @@ async def test_add_offline_and_restore_compiled_capabilities(service, kind):
             for t in compiled["template"]["tools"]
             if t["type"] == "swarm.group_run_team"
         ]
-    ) == (kind == "expert_team")
+    ) == (kind == "agent_group")
     rail = GroupMemberTemplateRail(
         SimpleNamespace(session_id=group["group_id"], member_name="research"), set()
     )
@@ -213,7 +216,7 @@ async def test_live_add_registers_and_notifies_once_without_mutating_spec(servic
     group = await create(service)
     backend = live_backend()
     service.backend_resolver.return_value = backend
-    member = dict(kind="expert_team", definition_id="group", member_name="research")
+    member = dict(kind="agent_group", id="group", member_name="research")
     original = backend.group_chat_spec
     for _ in range(2):
         await service.add_member(
@@ -245,7 +248,7 @@ async def test_proxy_template_binds_real_run_team_tool_before_first_model_call(s
         group["group_id"],
         {
             "member": dict(
-                kind="expert_team", definition_id="group", member_name="research"
+                kind="agent_group", id="group", member_name="research"
             )
         },
         user_id="owner",
@@ -258,9 +261,15 @@ async def test_proxy_template_binds_real_run_team_tool_before_first_model_call(s
     agent = DeepAgent(AgentCard(id="group-proxy-binding-test", name="Proxy")).configure(
         DeepAgentConfig()
     )
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskTool
+
+    task_tool = GroupTaskTool(backend, context)
+    agent.ability_manager.add_ability(task_tool.card, task_tool)
     rail = GroupMemberTemplateRail(context, set())
     await rail.before_invoke(SimpleNamespace(agent=agent))
     assert "run_team" in [tool.name for tool in agent.deep_config.tools]
+    assert agent.ability_manager.get("start_group_task") is task_tool.card
+    assert rail.loaded
 
 
 @pytest.mark.asyncio
@@ -273,7 +282,7 @@ async def test_failed_live_registration_can_be_repaired_with_same_request(servic
     ]
     service.backend_resolver.return_value = backend
     params = {
-        "member": dict(kind="expert", definition_id="one", member_name="research")
+        "member": dict(kind="agent_template", id="one", member_name="research")
     }
     with pytest.raises(gs.GroupError, match="transient"):
         await service.add_member(
@@ -302,7 +311,7 @@ async def test_parallel_additions_do_not_lose_roster_entries(service):
     async def add(name):
         return await service.add_member(
             group["group_id"],
-            {"member": dict(kind="expert", definition_id="one", member_name=name)},
+            {"member": dict(kind="agent_template", id="one", member_name=name)},
             user_id="owner",
             channel_id="web",
             request_id=name,
@@ -315,10 +324,7 @@ async def test_parallel_additions_do_not_lose_roster_entries(service):
     }
 
 
-@pytest.mark.asyncio
-async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
-    service, tmp_path, monkeypatch
-):
+def _codex_expert(tmp_path, monkeypatch, config):
     from jiuwenswarm.server.runtime import extension_package_manager as packages
 
     package = _minimal_group(tmp_path)
@@ -327,18 +333,31 @@ async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
     manifest["runtime"] = {
         "provider_name": "codex",
         "provider_version": "0.1.0",
-        "config": {"skill_conflict": "replace"},
+        "config": config,
     }
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(
         packages, "resolve_agent_template_dir", lambda _: manifest_path.parent
     )
-    group = await create(service)
-    member = dict(kind="expert", definition_id="cli-expert", member_name="coding")
+    return dict(kind="agent_template", id="cli-expert", member_name="coding")
+
+
+def _cli_backend(kind_config):
     backend = live_backend()
-    backend.external_cli_config = Mock(return_value=None)
-    service.backend_resolver.return_value = backend
-    with pytest.raises(gs.GroupError, match="CLI configuration"):
+    backend.external_cli_config = Mock(return_value=kind_config)
+    backend.group_chat_spec.predefined_members = []
+    backend.spawn_external_cli_agent = AsyncMock(return_value=MemberOpResult.success())
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
+    service, tmp_path, monkeypatch
+):
+    member = _codex_expert(tmp_path, monkeypatch, {"skill_conflict": "replace"})
+    group = await create(service)
+    service.backend_resolver.return_value = _cli_backend(None)
+    with pytest.raises(gs.GroupError, match="CLI kind 'codex' is not declared"):
         await service.add_member(
             group["group_id"],
             {"member": member},
@@ -358,6 +377,82 @@ async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
     raw = gs.read_group(group["group_id"])["compiled"]["coding"]["member"]
     assert raw["role_type"] == "external_cli"
     assert raw["external_cli"]["skill_conflict"] == "replace"
+
+
+@pytest.mark.asyncio
+async def test_live_cli_expert_joins_declared_kind_despite_member_only_fields(
+    service, tmp_path, monkeypatch
+):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+
+    member = _codex_expert(tmp_path, monkeypatch, {"skill_conflict": "replace"})
+    group = await create(service)
+    backend = _cli_backend(ExternalCliAgentSpec(cli_agent="codex", skill_conflict="append"))
+    service.backend_resolver.return_value = backend
+    result = await service.add_member(
+        group["group_id"],
+        {"member": member},
+        user_id="owner",
+        channel_id="web",
+        request_id="cli",
+    )
+    assert result["status"] == "registered"
+    backend.spawn_external_cli_agent.assert_awaited_once()
+    assert backend.spawn_external_cli_agent.await_args.kwargs["cli_agent"] == "codex"
+    assert [m["member_name"] for m in gs.read_group(group["group_id"])["members"]] == ["coding"]
+
+
+@pytest.mark.asyncio
+async def test_live_cli_expert_with_different_launch_config_requires_recovery(
+    service, tmp_path, monkeypatch
+):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+
+    member = _codex_expert(tmp_path, monkeypatch, {"codex_turn_idle_timeout_s": 30})
+    group = await create(service)
+    backend = _cli_backend(ExternalCliAgentSpec(cli_agent="codex", skill_conflict="append"))
+    service.backend_resolver.return_value = backend
+    with pytest.raises(gs.GroupError, match="cannot replace a running CLI configuration"):
+        await service.add_member(
+            group["group_id"],
+            {"member": member},
+            user_id="owner",
+            channel_id="web",
+            request_id="cli",
+        )
+    backend.spawn_external_cli_agent.assert_not_awaited()
+    assert gs.read_group(group["group_id"])["members"] == []
+
+
+def test_group_assembly_declares_installed_cli_kinds_without_overriding_host(monkeypatch):
+    from openjiuwen.agent_teams.external.cli_agent import backends
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+    from jiuwenswarm.agents.swarm.group_chat import declare_group_cli_kinds
+
+    from jiuwenswarm.agents.swarm import group_chat
+
+    enabled = {"claude", "codex"}
+    monkeypatch.setattr(group_chat, "enabled_group_cli_kinds", lambda: enabled)
+    missing = {"codex": object()}
+    monkeypatch.setattr(backends, "missing_sdk_requirement", lambda kind: missing.get(kind))
+    host = ExternalCliAgentSpec(cli_agent="claude", cwd="/host/workspace")
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec(), "teammate": DeepAgentSpec()},
+        team_name="team-cli",
+        leader=LeaderSpec(member_name="host"),
+        external_cli_agents=[host],
+    )
+    declare_group_cli_kinds(spec)
+    assert spec.external_cli_agents == [host]
+    missing.clear()
+    enabled.remove("codex")
+    declare_group_cli_kinds(spec)
+    assert spec.external_cli_agents == [host]
+    enabled.add("codex")
+    declare_group_cli_kinds(spec)
+    declare_group_cli_kinds(spec)
+    assert [config.cli_agent for config in spec.external_cli_agents] == ["claude", "codex"]
+    assert spec.external_cli_agents[1].skill_conflict == "append"
 
 
 @pytest.mark.asyncio
@@ -390,7 +485,7 @@ async def test_added_proxy_can_be_mentioned_in_real_group_database(service):
             group["group_id"],
             {
                 "member": dict(
-                    kind="expert_team", definition_id="group", member_name="research"
+                    kind="agent_group", id="group", member_name="research"
                 )
             },
             user_id="owner",
@@ -440,6 +535,43 @@ async def test_history_restores_public_messages_without_starting_runtime(service
             group["group_id"], {"offset": 2}, user_id="owner", channel_id="web"
         )
     )["next_offset"] is None
+
+
+@pytest.mark.asyncio
+async def test_history_waits_for_live_backend_database_initialization(
+    service, monkeypatch
+):
+    group = await create(service)
+    calls = []
+    backend = SimpleNamespace(
+        db=SimpleNamespace(
+            initialize=AsyncMock(side_effect=lambda: calls.append("initialize"))
+        ),
+        group_conversation=AsyncMock(return_value=object()),
+        message_manager=object(),
+    )
+
+    async def sync_history(conversation, message_manager):
+        calls.append("sync")
+        return []
+
+    monkeypatch.setattr(gs, "sync_history", sync_history)
+    service.backend_resolver.return_value = backend
+
+    result = await service.history(
+        group["group_id"], {}, user_id="owner", channel_id="web"
+    )
+
+    assert result == {
+        "group_id": group["group_id"],
+        "messages": [],
+        "total": 0,
+        "limit": 50,
+        "offset": 0,
+        "next_offset": None,
+    }
+    assert calls == ["initialize", "sync"]
+    backend.group_conversation.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -507,3 +639,409 @@ async def test_corrupt_group_does_not_break_group_list(service):
 async def test_invalid_group_ids_cannot_access_files(service, group_id):
     with pytest.raises(ValueError):
         service.get(group_id, user_id="owner", channel_id="web")
+
+
+@pytest.mark.asyncio
+async def test_group_creation_marks_persistent_session_type(service):
+    await create(service)
+    assert gs.update_session_metadata.call_args.kwargs["conversation_type"] == "group_chat"
+
+
+@pytest.mark.asyncio
+async def test_create_ignores_model_project_and_reads_legacy_member_id(service):
+    member = dict(kind="agent_template", id="one", member_name="advisor")
+    group = await create(
+        service,
+        members=[member],
+        model_name="ignored-model",
+        project_id="ignored-project",
+        project_dir="/ignored-project",
+    )
+    provision_input = service.runtime.prepare_session_create.await_args.args[0]
+    assert provision_input.model_name == ""
+    assert provision_input.project_id == ""
+    assert provision_input.project_dir == ""
+    assert group["members"] == [member]
+
+    path = gs.group_path(group["group_id"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    legacy_member = dict(kind="expert", definition_id="one", member_name="advisor")
+    state["members"] = [legacy_member]
+    state["receipts"] = {"add-one": legacy_member}
+    path.write_text(json.dumps(state), encoding="utf-8")
+    restored = gs.read_group(group["group_id"])
+    assert restored["members"] == [member]
+    assert restored["receipts"]["add-one"] == member
+    assert await create(service, members=[member]) == group
+
+
+@pytest.mark.asyncio
+async def test_create_configs_persist_and_participate_in_retry(service):
+    configs = {"feature": True, "options": {"labels": ["one"]}}
+    group = await create(service, configs=configs)
+    assert group["configs"] == configs
+    assert await create(service, configs=configs) == group
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["configs"] == configs
+    page = service.list({}, user_id="owner", channel_id="web")
+    assert page["groups"][0]["configs"] == configs
+    configs["options"]["labels"].append("two")
+    assert gs.read_group(group["group_id"])["configs"]["options"]["labels"] == ["one"]
+    with pytest.raises(gs.GroupError, match="different group"):
+        await create(service, configs=configs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configs", [None, [], "invalid", 1])
+async def test_create_rejects_non_object_configs(service, configs):
+    with pytest.raises(gs.GroupError, match="configs must be an object"):
+        await create(service, configs=configs)
+    service.runtime.prepare_session_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_group_defaults_configs_to_empty(service):
+    group = await create(service)
+    assert group["configs"] == {}
+    path = gs.group_path(group["group_id"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    del state["configs"]
+    del state["avatar"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["configs"] == {}
+    assert await create(service) == group
+
+
+@pytest.mark.asyncio
+async def test_group_avatar_create_update_clear_and_retry(service):
+    avatar = "https://example.com/avatar.png"
+    group = await create(service, avatar=avatar)
+    assert group["avatar"] == avatar
+    assert await create(service, avatar=avatar) == group
+    with pytest.raises(gs.GroupError, match="different group"):
+        await create(service, avatar="https://example.com/other.png")
+    assert service.list({}, user_id="owner", channel_id="web")["groups"][0]["avatar"] == avatar
+    updated = await service.update(
+        group["group_id"], {"avatar": "https://example.com/new.png"}, user_id="owner", channel_id="web"
+    )
+    assert updated["avatar"] == "https://example.com/new.png"
+    cleared = await service.update(
+        group["group_id"], {"avatar": ""}, user_id="owner", channel_id="web"
+    )
+    assert cleared["avatar"] == ""
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["avatar"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("avatar", [None, [], 42, "x" * 4097])
+async def test_group_rejects_invalid_avatar(service, avatar):
+    with pytest.raises(gs.GroupError, match="invalid avatar"):
+        await create(service, avatar=avatar)
+    group = await create(service)
+    with pytest.raises(gs.GroupError, match="invalid avatar"):
+        await service.update(group["group_id"], {"avatar": avatar}, user_id="owner", channel_id="web")
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["avatar"] == ""
+
+
+@pytest.mark.asyncio
+async def test_create_and_add_members_without_count_limit(service):
+    members = [
+        {"kind": "agent_template", "id": "group", "member_name": f"expert-{index}"}
+        for index in range(101)
+    ]
+    group = await create(service, members=members)
+    assert len(group["members"]) == 101
+    await service.add_member(
+        group["group_id"],
+        {"member": {"kind": "agent_template", "id": "group", "member_name": "another"}},
+        user_id="owner",
+        channel_id="web",
+        request_id="add-over-limit",
+    )
+    assert len(service.get(group["group_id"], user_id="owner", channel_id="web")["members"]) == 102
+
+
+def _publish_file(group, path, *, name="report.md"):
+    log = GroupConversationLog(group["team_name"], group["group_id"])
+    log.sync([
+        ConversationMessage(
+            message_id="file-message",
+            team_name=group["team_name"],
+            session_id=group["group_id"],
+            client_message_id="file-message",
+            sender="expert",
+            sender_name="Expert",
+            content=f"see {path}",
+            timestamp=1,
+            mentions=[],
+            attachments=[{"name": name, "path": str(path)}],
+        )
+    ])
+
+
+async def _attachments(service, group):
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    return history["messages"][0]["attachments"]
+
+
+@pytest.mark.asyncio
+async def test_file_rename_changes_display_name_without_touching_disk(service):
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "outputs" / "report.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("draft", encoding="utf-8")
+    _publish_file(group, path)
+    result = await service.file_rename(
+        group["group_id"], {"path": str(path), "name": "  final.md "}, user_id="owner", channel_id="web"
+    )
+    assert result["name"] == "final.md"
+    assert await _attachments(service, group) == [{"name": "final.md", "path": str(path)}]
+    assert path.read_text(encoding="utf-8") == "draft"
+    assert gs.read_group(group["group_id"])["file_overrides"][str(path)]["name"] == "final.md"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["", "   ", "a/b.md", "a\\b.md", "..", "x" * 256, "bad\nname", 3])
+async def test_file_rename_rejects_unsafe_names(service, name):
+    group = await create(service)
+    _publish_file(group, "/tmp/report.md")
+    with pytest.raises(ValueError):
+        await service.file_rename(
+            group["group_id"], {"path": "/tmp/report.md", "name": name}, user_id="owner", channel_id="web"
+        )
+
+
+@pytest.mark.asyncio
+async def test_file_operations_only_accept_this_groups_attachments(service, tmp_path):
+    group = await create(service)
+    other = await create(service, token="two")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("keep", encoding="utf-8")
+    _publish_file(other, outside)
+    for call in (
+        service.file_delete(group["group_id"], {"path": str(outside)}, user_id="owner", channel_id="web"),
+        service.file_rename(
+            group["group_id"], {"path": str(outside), "name": "x.txt"}, user_id="owner", channel_id="web"
+        ),
+    ):
+        with pytest.raises(gs.GroupError) as error:
+            await call
+        assert error.value.code == "NOT_FOUND"
+    with pytest.raises(gs.GroupError):
+        await service.file_delete(other["group_id"], {"path": str(outside)}, user_id="intruder", channel_id="web")
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_file_delete_removes_workspace_file_and_hides_attachment(service):
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "outputs" / "report.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("draft", encoding="utf-8")
+    _publish_file(group, path)
+    result = await service.file_delete(group["group_id"], {"path": str(path)}, user_id="owner", channel_id="web")
+    assert result["deleted"] is True and result["file_removed"] is True
+    assert not path.exists()
+    assert await _attachments(service, group) == []
+    # The attachment is still recorded, so a retry stays idempotent.
+    retry = await service.file_delete(group["group_id"], {"path": str(path)}, user_id="owner", channel_id="web")
+    assert retry["file_removed"] is False
+
+
+@pytest.mark.asyncio
+async def test_file_delete_outside_team_workspace_only_hides_attachment(service, tmp_path):
+    group = await create(service)
+    project_file = tmp_path / "project" / "main.py"
+    project_file.parent.mkdir()
+    project_file.write_text("print(1)", encoding="utf-8")
+    _publish_file(group, project_file, name="main.py")
+    result = await service.file_delete(
+        group["group_id"], {"path": str(project_file)}, user_id="owner", channel_id="web"
+    )
+    assert result["file_removed"] is False
+    assert project_file.read_text(encoding="utf-8") == "print(1)"
+    assert await _attachments(service, group) == []
+
+
+@pytest.mark.asyncio
+async def test_file_delete_does_not_follow_symlinks_out_of_workspace(service, tmp_path):
+    group = await create(service)
+    target = tmp_path / "target.txt"
+    target.write_text("keep", encoding="utf-8")
+    link = gs.group_files.team_home(group["team_name"]) / "outputs" / "link.txt"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target)
+    _publish_file(group, link, name="link.txt")
+    result = await service.file_delete(group["group_id"], {"path": str(link)}, user_id="owner", channel_id="web")
+    assert result["file_removed"] is False
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_deleted_attachment_reappears_when_rewritten_later(tmp_path):
+    path = tmp_path / "report.md"
+    path.write_text("new", encoding="utf-8")
+    item = {"name": "report.md", "path": str(path)}
+    old = {str(path): {"deleted_at": path.stat().st_mtime - 10}}
+    assert gs.group_files.apply_file_overrides([item], old) == [item]
+    current = {str(path): {"deleted_at": path.stat().st_mtime + 10}}
+    assert gs.group_files.apply_file_overrides([item], current) == []
+    missing = {str(tmp_path / "gone.md"): {"deleted_at": 1, "name": "x"}}
+    assert gs.group_files.apply_file_overrides([{"path": str(tmp_path / "gone.md")}], missing) == []
+
+
+@pytest.mark.asyncio
+async def test_execution_snapshots_apply_file_overrides(service, monkeypatch):
+    from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "outputs" / "plan.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("plan", encoding="utf-8")
+    GroupExecutions(group["group_id"]).path.write_text(json.dumps({"exec-one": {
+        "execution_id": "exec-one", "execution_kind": "agent", "created_at": 1, "status": "completed",
+        "attachments": [{"name": "plan.md", "path": str(path)}],
+    }}), encoding="utf-8")
+    monkeypatch.setattr(GroupExecutions, "reconcile", AsyncMock())
+    await service.file_rename(
+        group["group_id"], {"path": str(path), "name": "trip.md"}, user_id="owner", channel_id="web"
+    )
+    listed = await service.execution_list(group["group_id"], {}, user_id="owner", channel_id="web")
+    fetched = await service.execution_get(
+        group["group_id"], {"execution_id": "exec-one"}, user_id="owner", channel_id="web"
+    )
+    assert listed["executions"][0]["attachments"][0]["name"] == "trip.md"
+    assert fetched["attachments"][0]["name"] == "trip.md"
+
+
+@pytest.mark.asyncio
+async def test_clear_history_hides_earlier_messages_and_finished_cards(service, monkeypatch):
+    from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+    group = await create(service)
+    log = GroupConversationLog(group["team_name"], group["group_id"])
+
+    def message(message_id, at):
+        return ConversationMessage(
+            message_id=message_id, team_name=group["team_name"], session_id=group["group_id"],
+            client_message_id=message_id, sender="user", sender_name="User", content=message_id,
+            timestamp=at, mentions=[], attachments=[],
+        )
+
+    clock = 1_800_000_000.0
+    monkeypatch.setattr(gs, "time", SimpleNamespace(time=lambda: clock))
+    log.sync([message("before", int((clock - 5) * 1000))])
+    GroupExecutions(group["group_id"]).path.write_text(json.dumps({
+        "done": {"execution_id": "done", "execution_kind": "agent", "created_at": clock - 5, "status": "completed"},
+        "busy": {"execution_id": "busy", "execution_kind": "agent", "created_at": clock - 5, "status": "running"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(GroupExecutions, "reconcile", AsyncMock())
+    result = await service.clear_history(group["group_id"], user_id="owner", channel_id="web")
+    assert result["cleared"] is True and result["history_cleared_at"] == clock
+    log.sync([message("before", int((clock - 5) * 1000)), message("after", int((clock + 5) * 1000))])
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    assert [item["message_id"] for item in history["messages"]] == ["after"] and history["total"] == 1
+    executions = await service.execution_list(group["group_id"], {}, user_id="owner", channel_id="web")
+    assert [item["execution_id"] for item in executions["executions"]] == ["busy"]
+    with pytest.raises(gs.GroupError):
+        await service.execution_get(group["group_id"], {"execution_id": "done"}, user_id="owner", channel_id="web")
+    with pytest.raises(gs.GroupError):
+        await service.clear_history(group["group_id"], user_id="intruder", channel_id="web")
+
+
+def test_agent_attachment_aliases_support_preview_and_file_operations():
+    from jiuwenswarm.server.runtime.group_execution import public_execution
+
+    attachment = {"file_path": "/team/report.md", "file_name": "report.md", "content_type": "text/markdown"}
+    expected = {**attachment, "path": "/team/report.md", "name": "report.md"}
+    assert gs.group_files.apply_file_overrides([attachment], {}) == [expected]
+    assert "path" not in attachment
+    assert public_execution({"attachments": [attachment]})["attachments"] == [expected]
+    assert gs._with_file_overrides({"attachments": [attachment]}, {})["attachments"] == [expected]
+    assert gs.group_files.group_attachment_paths([{"attachments": [attachment]}], []) == {"/team/report.md"}
+    renamed = gs.group_files.apply_file_overrides([attachment], {"/team/report.md": {"name": "new.md"}})
+    assert renamed[0]["name"] == "new.md"
+    canonical = {**attachment, "path": "/team/other.md", "name": "other.md"}
+    assert gs.group_files.apply_file_overrides([canonical], {}) == [canonical]
+
+
+@pytest.mark.parametrize("cli_agent", ["claude", "codex"])
+@pytest.mark.asyncio
+async def test_public_group_member_exposes_cli_provider_without_runtime_secrets(service, cli_agent):
+    group = await create(service)
+    state = gs.read_group(group["group_id"])
+    member = {"kind": "agent_template", "id": "external", "member_name": "cli", "display_name": "11"}
+    state["members"] = [member]
+    state["compiled"] = {"cli": {"member": {
+        "role_type": "external_cli", "external_cli": {"cli_agent": cli_agent, "env": {"TOKEN": "secret"}},
+    }}}
+    public = gs._public(state)
+    assert public["members"] == [{**member, "cli_agent": cli_agent}]
+    assert "cli_agent" not in state["members"][0]
+    assert "compiled" not in public
+
+
+@pytest.mark.parametrize("configured", [[], ["claude"], [{"cli_agent": "codex"}]])
+def test_group_cli_kinds_follow_current_config_switches(monkeypatch, configured):
+    from jiuwenswarm.common import config
+    from jiuwenswarm.agents.swarm.group_chat import enabled_group_cli_kinds
+
+    monkeypatch.setattr(config, "get_config", lambda: {
+        "modes": {"team": {"jiuwen_team": {"external_cli_agents": configured}}},
+    })
+    expected = {item if isinstance(item, str) else item["cli_agent"] for item in configured}
+    assert enabled_group_cli_kinds() == expected
+
+
+@pytest.mark.asyncio
+async def test_disabled_cli_cannot_join_even_when_live_backend_declares_it(service, tmp_path, monkeypatch):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+    from jiuwenswarm.agents.swarm import group_chat
+
+    member = _codex_expert(tmp_path, monkeypatch, {})
+    group = await create(service)
+    backend = _cli_backend(ExternalCliAgentSpec(cli_agent="codex", skill_conflict="append"))
+    service.backend_resolver.return_value = backend
+    monkeypatch.setattr(group_chat, "enabled_group_cli_kinds", lambda: set())
+    with pytest.raises(gs.GroupError) as error:
+        await service.add_member(
+            group["group_id"], {"member": member}, user_id="owner", channel_id="web", request_id="disabled",
+        )
+    assert error.value.code == "EXTERNAL_CLI_DISABLED"
+    assert str(error.value) == "codex"
+    assert gs.read_group(group["group_id"])["members"] == []
+    backend.spawn_external_cli_agent.assert_not_awaited()
+    with pytest.raises(gs.GroupError) as create_error:
+        await create(service, token="disabled-create", members=[member])
+    assert create_error.value.code == "EXTERNAL_CLI_DISABLED"
+
+
+def test_empty_group_does_not_declare_disabled_installed_clis(monkeypatch):
+    from openjiuwen.agent_teams.external.cli_agent import backends
+    from jiuwenswarm.common import config
+
+    monkeypatch.setattr(config, "get_config", lambda: {})
+    monkeypatch.setattr(backends, "missing_sdk_requirement", lambda _: None)
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec(), "teammate": DeepAgentSpec()},
+        team_name="empty-group", leader=LeaderSpec(member_name="host"),
+    )
+    assemble_group_members(spec, [])
+    assert spec.external_cli_agents == []
+
+
+@pytest.mark.asyncio
+async def test_delete_cleans_runs_kept_under_the_outer_team_home(service, monkeypatch):
+    from jiuwenswarm.agents.swarm.group_chat import group_runs_dir
+
+    group = await create(service)
+    runs = group_runs_dir(group["team_name"])
+    runs.mkdir(parents=True)
+    (runs / "one.json").write_text(
+        json.dumps({"team_name": "group-expert-one", "session_id": "group-run-one"})
+    )
+    (runs / "one").mkdir()
+    remove = AsyncMock(return_value=True)
+    monkeypatch.setattr(gs.Runner, "delete_agent_team", remove)
+    service.runtime.delete_session.return_value = SimpleNamespace(ok=True)
+    await service.delete(group["group_id"], user_id="owner", channel_id="web")
+    assert remove.await_args.kwargs["team_name"] == "group-expert-one"
+    assert not runs.exists()

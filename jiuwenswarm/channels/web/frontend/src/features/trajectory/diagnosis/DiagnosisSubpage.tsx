@@ -681,7 +681,14 @@ function AgentLine({ labels }: { labels: readonly string[] }) {
       <span className={css.lineLabel}>{t('trajectory.diagnosis.objectAgents')}</span>
       <span className={css.chips}>
         {labels.map(label => (
-          <span className={css.chip} key={label} data-testid="trajectory-diagnosis-object-agent">{label}</span>
+          <span
+            className={css.chip}
+            key={label}
+            title={label}
+            data-testid="trajectory-diagnosis-object-agent"
+          >
+            {label}
+          </span>
         ))}
       </span>
     </p>

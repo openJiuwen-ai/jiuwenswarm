@@ -15,6 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
+import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { TrajectoryExplorer, type TrajectoryViewState } from './client/TrajectoryExplorer';
 import { IconQuestionOutline14 } from './primitives/icons';
@@ -97,7 +98,10 @@ import {
   MAIN_TRAJECTORY_SUBJECT_ID,
   subjectAppearsOnTeamLanes,
 } from './trajectorySubjects';
-import { buildTeamControlModel } from './teamControlTimeline';
+import {
+  buildTeamControlModel,
+  shouldUseScheduledTeamControl,
+} from './teamControlTimeline';
 import {
   countTurns,
   unrecordedTurnRanges,
@@ -359,6 +363,8 @@ const EMPTY_PUBLISHED_WINDOW: PublishedTrajectoryWindow = {
   checkpoints: EMPTY_TRAJECTORY_CHECKPOINTS,
 };
 
+const EMPTY_WORKFLOW_RUNS: readonly never[] = [];
+
 /**
  * Tool-panel visibility and other App chrome state must not rebuild the
  * session projection. The panel owns its own transport updates; parent-only
@@ -387,8 +393,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const sessionTeamMode = mode === 'team';
+  // Swarmflow run summaries (task names) for the workflow lane grouping; runs
+  // absent from the store fall back to the short run id inside the grouping.
+  const workflowRuns = useSessionStore(
+    (s) => s.runtimes[sessionId]?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
+  );
   const sessionTeamDispatchMode = useSessionStore(
     state => state.runtimes[sessionId]?.teamDispatchMode,
+  );
+  const sessionIsProcessing = useChatStore(
+    state => Boolean(state.runtimes[sessionId]?.isProcessing),
   );
   // The panel is not remounted when the session or its mode changes, so the
   // stable callbacks below read the mode through a ref instead of closing
@@ -1249,9 +1263,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const scheduledTeamControlModel = teamControlModel !== null && teamControlModel.tasks.length > 0
     ? teamControlModel
     : null;
-  const scheduledTeamMode = teamMode
-    && scheduledTeamControlModel !== null
-    && (sessionTeamDispatchMode === undefined || sessionTeamDispatchMode === 'scheduled');
+  const scheduledTeamMode = shouldUseScheduledTeamControl(
+    teamMode,
+    sessionTeamDispatchMode,
+    scheduledTeamControlModel,
+  );
   const reviewRunCount = subjectGroups.groups.filter(group => (
     group.subject.id.startsWith('team-reviewer:')
   )).length;
@@ -1849,6 +1865,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         active={active}
         groups={subjectGroups}
         messages={copy.toolbar}
+        workflowRuns={workflowRuns}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}
@@ -1861,6 +1878,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
               ...(timeAxis.mapSharedTime === undefined
                 ? {}
                 : { mapTime: timeAxis.mapSharedTime }),
+              live: active && replayArchive === null && sessionIsProcessing,
             },
           }
           : {})}

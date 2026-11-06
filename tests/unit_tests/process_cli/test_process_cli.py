@@ -9,6 +9,7 @@ import importlib
 import io
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -616,6 +617,9 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
     mode: str,
 ) -> None:
     monkeypatch.setattr(app, "InProcessRuntimeClient", PersistentTeamClient)
+    # The fake Runtime has no writes; persistence barriers have separate tests.
+    flush_writes = AsyncMock()
+    monkeypatch.setattr(app, "flush_session_writes", flush_writes)
     stdout = io.StringIO()
 
     result = await asyncio.wait_for(
@@ -644,6 +648,7 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
         "cleanup:process_cli:runtime-session",
         "close",
     ]
+    flush_writes.assert_awaited_once_with(timeout_seconds=app.SHUTDOWN_STEP_TIMEOUT_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -1732,7 +1737,7 @@ def test_process_cli_has_no_server_or_transport_dependencies() -> None:
 
     def _forbidden(module: str) -> bool:
         # gateway.common 是无状态纯组件的唯一真源，进程内 CLI 允许引用。
-        if module == "gateway.common" or module.startswith("gateway.common."):
+        if module == "agent_gateway.common" or module.startswith("agent_gateway.common."):
             return False
         return module.startswith(forbidden)
 

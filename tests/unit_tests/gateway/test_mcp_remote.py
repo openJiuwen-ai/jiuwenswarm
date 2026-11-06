@@ -10,14 +10,14 @@ from typing import Any
 
 import pytest
 
-from gateway.routing import mcp_remote
-from gateway.routing.mcp_remote import (
+from agent_gateway.routing import mcp_remote
+from agent_gateway.routing.mcp_remote import (
     McpRegistryRemoteProvider,
     bind_agent_client,
     install,
 )
-from gateway.common import external_providers
-from gateway.common.external_providers import provider
+from agent_gateway.common import external_providers
+from agent_gateway.common.external_providers import provider
 
 
 class _FakeUnary:
@@ -75,7 +75,7 @@ async def test_remote_callback_returns_result_and_shapes_request(fake_unary) -> 
 )
 async def test_remote_callback_raises_on_failure(fake_unary, result) -> None:
     """服务端失败文案经 McpOAuthError 透传——回调页据此给 400 落地而非假成功。"""
-    from gateway.common.mcp_oauth import McpOAuthError
+    from agent_gateway.common.mcp_oauth import McpOAuthError
 
     fake_unary.result = result
 
@@ -99,7 +99,7 @@ async def test_mcp_oauth_layer_raises_on_uncompleted(monkeypatch) -> None:
     """complete_oauth_flow_async 对 False 结果抛 McpOAuthError——handler 不检查返回值。"""
     from types import SimpleNamespace as NS
 
-    from gateway.common import external_providers, mcp_oauth
+    from agent_gateway.common import external_providers, mcp_oauth
 
     saved = dict(external_providers._providers)
     external_providers._providers["mcp_registry"] = NS(
@@ -125,7 +125,7 @@ def test_remote_sync_entry_degrades_to_false() -> None:
         def emit(self, record: logging.LogRecord) -> None:
             records.append(record.getMessage())
 
-    module_logger = logging.getLogger("gateway.routing.mcp_remote")
+    module_logger = logging.getLogger("agent_gateway.routing.mcp_remote")
     handler = _Capture()
     module_logger.addHandler(handler)
     try:

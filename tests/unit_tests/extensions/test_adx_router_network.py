@@ -22,8 +22,8 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 from websockets.legacy.server import serve
 
-from gateway.extensions.adx.control_client import AdxControlClient
-from gateway.extensions.adx.router_client import AdxRouterClient
+from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.router_client import AdxRouterClient
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
@@ -56,7 +56,7 @@ def _certificate(tmp_path):
 @asynccontextmanager
 async def _network(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        'gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
+        'agent_gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
     )
     tls, ca_path = _certificate(tmp_path)
     monkeypatch.setenv("SSL_CERT_FILE", ca_path)
@@ -187,7 +187,7 @@ async def test_tls_or_ingress_auth_failure_never_sends_business_requests(tmp_pat
         if failure == "untrusted_ca":
             monkeypatch.delenv("SSL_CERT_FILE")
             monkeypatch.setattr(
-                'gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 0.1,
+                'agent_gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 0.1,
             )
         config = router._config if failure == "untrusted_ca" else replace(router._config, token="wrong-key")
         api = EnvironmentAPI(config.tenant)

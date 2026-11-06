@@ -23,3 +23,5 @@ export { MemberToolEventProjector } from '../../src/features/teamOrganization/me
 export { restoreOrganizationGroupHistory } from '../../src/features/teamOrganization/groupHistory';
 export { loadTeamHistoryPanelState } from '../../src/features/teamHistoryPanelRestore';
 export { mergeUniqueMessages, toOwnerTeamMessage } from '../../src/components/ChatPanel/teamEventUtils';
+
+export { readComposerText } from '../../src/components/ChatPanel/composerDraftHydrate';

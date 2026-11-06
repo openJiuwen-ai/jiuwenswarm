@@ -57,6 +57,10 @@ For Volcengine, the image and video generation dropdowns fetch the complete matc
 
 Image and video generation run through tools and do not use the conversation context window, so these two configuration dialogs omit the context window option.
 
+The default model can use either the OpenAI or the Anthropic protocol. When Design calls the default model (writing the brief, breaking down shots, building the execution graph, and so on), thinking is turned off; if the model cannot turn thinking off, Design uses the lowest thinking level the model supports, so thinking does not use up the output length and truncate the result. The system picks each provider's parameter format for this from the endpoint.
+
+> 💡 **Tip:** When the service address is an IP, `localhost`, or a host name without dots (such as `http://gpu-box:8000/v1`), Design turns thinking off the way self-hosted vLLM / SGLang services expect, with no extra setup. If such an address points to a different kind of service, or your self-hosted service uses a dotted internal domain, register the host and its format under the top-level `endpoint_profile_overrides` in `config.yaml`, for example `"llm.corp.internal": "vllm"` (use `vllm` for SGLang services too). A registered value takes precedence.
+
 > ⚠️ **Note:** If a model is not configured, the corresponding node fails immediately during execution with a message like "Video generation is not configured". Fix the configuration, then click "Regenerate" on the node.
 
 For the meaning of each model configuration field, see [Configuration](Configuration.md).

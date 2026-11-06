@@ -33,7 +33,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
     NEWS_PREFERRED_WINDOW_HOURS,
     HotListEntry,
     HotListPull,
-    search_page_url,
+    hot_list_open_url,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_retrieval import (
     NEWS_FRESHNESS_CLASS,
@@ -4043,6 +4043,18 @@ def _valid_pool_composition(
     return bool(cards and len(cards) <= limit and set(actual).issubset(expected))
 
 
+def _violates_project_composition_gate(
+    context_scope: str,
+    manifest: dict[str, Any],
+    cards: list[dict[str, Any]],
+) -> bool:
+    """Cold-start stand-in uses global corpus categories on any scope; the
+    project_continuation composition gate only applies to personalized project pools."""
+    if context_scope == GLOBAL_NEW_CHAT_SCOPE or is_cold_start_manifest(manifest):
+        return False
+    return not _valid_pool_composition(context_scope, cards)
+
+
 def _short_delta_interest_id(manifest: dict[str, Any]) -> str | None:
     selection = manifest.get("rid_interest_selection")
     if not isinstance(selection, dict):
@@ -4399,13 +4411,13 @@ def _valid_cold_start_pool(
     manifest: Mapping[str, Any],
     cards: list[dict[str, Any]],
 ) -> bool:
-    """Host-written generic/hot-list cards, before any conversation exists."""
+    """Host-written generic/hot-list cards used as a stand-in slate."""
 
     if not is_cold_start_manifest(manifest):
         return False
-    if manifest.get("context_scope") != GLOBAL_NEW_CHAT_SCOPE:
-        return False
-    if manifest.get("project_id") is not None:
+    context_scope = manifest.get("context_scope")
+    project_id = manifest.get("project_id")
+    if not _valid_scope(context_scope, project_id):
         return False
     if not cards:
         return False
@@ -4419,7 +4431,8 @@ def _valid_cold_start_pool(
         and _nonempty(card.get("card_revision_id"))
         and _nonempty(card.get("title"))
         and _nonempty(card.get("prompt"))
-        and card.get("context_scope") == GLOBAL_NEW_CHAT_SCOPE
+        and card.get("context_scope") == context_scope
+        and card.get("project_id") == project_id
         for card in cards
     )
 
@@ -4777,14 +4790,16 @@ def _cold_start_corpus_card(
     document_revision_id = f"corpus:{starter.corpus_version}:{starter.starter_id}"
     snapshot_id = str(trigger_key.get("input_revision_receipt", {}).get("receipt_id") or "")
     input_snapshot_id = snapshot_id or f"v6-cold-start:{trigger_key['local_date']}"
+    context_scope = str(trigger_key["context_scope"])
+    project_id = trigger_key.get("project_id")
     return {
         "card_id": candidate_id,
         "card_revision_id": f"v6-revision-{uuid.uuid4().hex}",
         "generation_batch_id": batch_id,
         "selector_rank": rank,
         "category": _corpus_category(str(starter.topic)),
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "project_id": None,
+        "context_scope": context_scope,
+        "project_id": project_id,
         "interest_summary_id": None,
         "source_starter_id": starter.starter_id,
         "intent": title,
@@ -4869,14 +4884,16 @@ def _cold_start_hot_list_card(
     snapshot_id = str(trigger_key.get("input_revision_receipt", {}).get("receipt_id") or "")
     input_snapshot_id = snapshot_id or f"v6-cold-start:{trigger_key['local_date']}"
     list_host = (urlparse(pull.list_url).hostname or "").removeprefix("www.")
+    context_scope = str(trigger_key["context_scope"])
+    project_id = trigger_key.get("project_id")
     return {
         "card_id": candidate_id,
         "card_revision_id": f"v6-revision-{uuid.uuid4().hex}",
         "generation_batch_id": batch_id,
         "selector_rank": rank,
         "category": "profile_recent_progress",
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "project_id": None,
+        "context_scope": context_scope,
+        "project_id": project_id,
         "interest_summary_id": None,
         "source_starter_id": None,
         "intent": f"弄清热搜「{entry.word}」说的是什么事",
@@ -4888,8 +4905,8 @@ def _cold_start_hot_list_card(
         "evidence_bundle": {
             "candidate_id": candidate_id,
             "fetch_status": "success",
-            "source_url": search_page_url(entry.word),
-            "search_url": search_page_url(entry.word),
+            "source_url": hot_list_open_url(entry, pull),
+            "search_url": hot_list_open_url(entry, pull),
             "source_kind": HOT_LIST_SOURCE_KIND,
             "publisher": list_host,
             "document_revision_id": document_revision_id,
@@ -5046,14 +5063,16 @@ def write_cold_start_pool(
     batch_id = str(cards[0]["generation_batch_id"])
     manifest_id = f"v6-manifest-{uuid.uuid4().hex}"
     snapshot_id = str(cards[0].get("generation_input_snapshot_id") or "")
+    context_scope = str(trigger_key["context_scope"])
+    project_id = trigger_key.get("project_id")
     manifest = {
         "manifest_id": manifest_id,
         "generation_batch_id": batch_id,
         "card_revision_ids": [card["card_revision_id"] for card in cards],
         "trigger_origin": "lazy_seed",
         "local_date": trigger_key["local_date"],
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "project_id": None,
+        "context_scope": context_scope,
+        "project_id": project_id,
         "generation_trigger_key": dict(trigger_key),
         "generation_input_snapshot_id": snapshot_id,
         "serving_compatibility_key": build_serving_compatibility_key(dict(trigger_key)),
@@ -6584,9 +6603,8 @@ def read_terminal_pool(
         shown_before=last_shown,
         retained_card_ids=retained_card_ids,
     )
-    if not exposed or (
-        context_scope != GLOBAL_NEW_CHAT_SCOPE
-        and not _valid_pool_composition(context_scope, exposed)
+    if not exposed or _violates_project_composition_gate(
+        context_scope, manifest, exposed
     ):
         return _static_read(context_scope, project_id)
     personalized = sum(bool(card.get("interest_summary_id")) for card in exposed)
@@ -6669,8 +6687,12 @@ def record_terminal_exposure(
         return False
     if any(not _project_sources_still_belong(manifest, by_revision[revision_id]) for revision_id in revision_ids):
         return False
-    if scope != GLOBAL_NEW_CHAT_SCOPE and not _valid_pool_composition(
-        str(scope), [by_revision[revision_id] for revision_id in revision_ids]
+    if (
+        scope != GLOBAL_NEW_CHAT_SCOPE
+        and not is_cold_start_manifest(manifest)
+        and not _valid_pool_composition(
+            str(scope), [by_revision[revision_id] for revision_id in revision_ids]
+        )
     ):
         return False
     provider_response_ids_by_card_revision = {

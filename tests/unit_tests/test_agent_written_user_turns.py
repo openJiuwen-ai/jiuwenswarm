@@ -7,10 +7,10 @@ The session is written by the production writers: the user rows carry exactly th
 from __future__ import annotations
 
 import pytest
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.agents.harness.common.recommendation import topic_controls
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import rescan_history
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.server.runtime.agent_adapter.interface import _history_user_extra
 from jiuwenswarm.server.runtime.session import session_history, session_metadata
 

@@ -1,7 +1,7 @@
 """测试 credential_authenticator.py 的数据模型和抽象基类"""
 import pytest
 
-from gateway.extensions.auth.credential_authenticator import (
+from agent_gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,

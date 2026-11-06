@@ -5,22 +5,41 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
 import mimetypes
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
+from urllib.parse import unquote, urlparse
 
-from jiuwenswarm.common.config import get_config, get_model_names, resolve_env_vars
+from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.reasoning_config import (
+    SUPPORTED_REASONING_LEVELS,
+    effective_endpoint_profile,
+    reasoning_config_for_level,
+    reasoning_level_options,
+    resolve_endpoint_profile_override,
+    resolve_sampling_override,
+)
+
+if TYPE_CHECKING:
+    from openjiuwen.core.foundation.llm import AssistantMessage, Model
 
 logger = logging.getLogger(__name__)
 
 # DeepSeek/Ark allow very large completions; keep a high practical ceiling so
 # storyboard/plan JSON is not truncated mid-object (truncation → parse retry → slow).
-# Thinking mode shares this budget with final content — we disable thinking below.
+# Thinking mode shares this budget with final content — calls run at the
+# model's lowest reasoning setting (see ``_minimal_reasoning``).
 _DESIGNER_MAX_TOKENS_CAP = 65536
 _DESIGNER_DEFAULT_MAX_TOKENS = 16384
+# Large plans need more wall time than a chat turn.
+_DESIGNER_REQUEST_TIMEOUT_SEC = 1200.0
+# Profiles that name no dialect; core treats them as "infer from api_base".
+_GENERIC_ENDPOINT_PROFILES = frozenset({"", "openai", "openai-compatible", "openai_compatible"})
 _preferred_designer_model: ContextVar[str | None] = ContextVar(
     "preferred_designer_model",
     default=None,
@@ -48,37 +67,103 @@ def _clamp_max_tokens(value: int | None) -> int:
     return max(256, min(_DESIGNER_MAX_TOKENS_CAP, n))
 
 
-def _thinking_disabled_extra_body() -> dict[str, Any]:
-    """Provider-neutral knobs so reasoning does not eat the output budget."""
-    return {
-        "thinking": {"type": "disabled"},
-        "reasoning": {"enabled": False},
-        "enable_thinking": False,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }
+def _self_hosted_endpoint_profile(client_config: dict[str, Any]) -> str | None:
+    """``vllm`` for an OpenAI-protocol endpoint addressed by IP, localhost or a dotless host.
+
+    Core infers a dialect only from official vendor hosts; self-hosted vLLM /
+    SGLang gateways need ``chat_template_kwargs`` to switch thinking off and
+    the Settings UI has no field to declare them. An explicit endpoint_profile
+    or an ``endpoint_profile_overrides`` entry always wins.
+    """
+    if str(client_config.get("client_provider") or "").strip().lower() == "anthropic":
+        return None
+    explicit = str(client_config.get("endpoint_profile") or "").strip().lower()
+    if explicit not in _GENERIC_ENDPOINT_PROFILES:
+        return None
+    api_base = str(client_config.get("api_base") or "").strip()
+    if not api_base or resolve_endpoint_profile_override(api_base):
+        return None
+    host = (urlparse(api_base if "://" in api_base else f"http://{api_base}").hostname or "").lower()
+    if not host:
+        return None
+    if host == "localhost" or "." not in host:
+        return "vllm"
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return "vllm"
 
 
-def _message_text(msg: Any) -> str:
+def _minimal_reasoning(client_config: dict[str, Any], model_name: str) -> dict[str, str] | None:
+    """Lowest reasoning setting the model accepts, as core's provider-neutral config.
+
+    Reasoning shares ``max_tokens`` with the visible reply, so Designer calls
+    turn it off where the model allows and otherwise pick the lowest level
+    core lists for it. Core owns the capability table and the per-endpoint
+    wire format; ``None`` means the model exposes no control at all.
+    """
+    from openjiuwen.core.foundation.llm import get_reasoning_capability
+
+    provider = str(client_config.get("client_provider") or "OpenAI")
+    api_base = str(client_config.get("api_base") or "")
+    capability = get_reasoning_capability(
+        provider=provider,
+        model=model_name,
+        protocol="anthropic" if provider.strip().lower() == "anthropic" else "openai",
+        api_base=api_base,
+        endpoint_profile=effective_endpoint_profile(api_base, client_config.get("endpoint_profile")),
+    )
+    options = set(reasoning_level_options(capability))
+    for level in SUPPORTED_REASONING_LEVELS:
+        # A bare "on" is a toggle without a lower setting to choose.
+        if level != "on" and level in options:
+            return reasoning_config_for_level(level)
+    return None
+
+
+def _message_text(msg: AssistantMessage) -> str:
     """Prefer visible content; fall back to reasoning_content if content is empty."""
-    if msg is None:
-        return ""
-    text = str(getattr(msg, "content", None) or "").strip()
+    content = msg.content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+        content = "".join(parts)
+    text = str(content or "").strip()
     if text:
         return text
-    text = str(getattr(msg, "refusal", None) or "").strip()
-    if text:
-        return text
-    # DeepSeek thinking models may put usable text only in reasoning_content
-    # when the visible budget was exhausted — better than a total soft-fail.
-    text = str(getattr(msg, "reasoning_content", None) or "").strip()
-    if text:
-        return text
-    extra = getattr(msg, "model_extra", None)
-    if isinstance(extra, dict):
-        text = str(extra.get("reasoning_content") or "").strip()
-        if text:
-            return text
-    return ""
+    # Thinking models that cannot be switched off may put usable text only in
+    # reasoning_content when the visible budget was exhausted — better than a
+    # total soft-fail.
+    return str(msg.reasoning_content or "").strip()
+
+
+def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _http_status(detail: object) -> int | None:
+    """HTTP status of a provider error, looking through core's wrapping exceptions."""
+    candidates = _exception_chain(detail) if isinstance(detail, BaseException) else iter([detail])
+    for item in candidates:
+        code = getattr(item, "status_code", None)
+        if code is None:
+            resp = getattr(item, "response", None)
+            code = getattr(resp, "status_code", None) if resp is not None else None
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 # Process-wide latch: a 402 / insufficient-balance reply means later model
@@ -142,15 +227,8 @@ class DesignerLlmError(RuntimeError):
 
 def is_chat_payment_block(detail: object) -> bool:
     """True for HTTP 402 / insufficient balance on the chat model (not image or video)."""
-    code = getattr(detail, "status_code", None)
-    if code is None:
-        resp = getattr(detail, "response", None)
-        code = getattr(resp, "status_code", None) if resp is not None else None
-    try:
-        if int(code) == 402:
-            return True
-    except (TypeError, ValueError):
-        pass
+    if _http_status(detail) == 402:
+        return True
     low = str(detail or "").lower()
     return (
         "insufficient balance" in low
@@ -203,6 +281,21 @@ def llm_available() -> bool:
     """
     if _chat_billing_block:
         return False
+    _load_runtime_env()
+    try:
+        models = list_configured_models()
+    except Exception:  # noqa: BLE001
+        return False
+    for m in models:
+        if not str(m.get("id") or m.get("model_name") or "").strip():
+            continue
+        if _has_credentials(_client_config_for(m)):
+            return True
+    return bool(_env_api_key() and _env_api_base())
+
+
+def _load_runtime_env() -> None:
+    """Ensure ~/.jiuwenswarm/config/.env is loaded (API_KEY / API_BASE)."""
     try:
         from jiuwenswarm.common.utils import get_env_file
         from jiuwenswarm.dotenv_early import load_dotenv_runtime
@@ -210,27 +303,48 @@ def llm_available() -> bool:
         load_dotenv_runtime(dotenv_path=get_env_file(), override=False)
     except Exception:  # noqa: BLE001
         pass
-    try:
-        models = list_configured_models()
-    except Exception:  # noqa: BLE001
-        return False
-    import os
 
-    env_key = (os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
-    env_base = (os.environ.get("API_BASE") or os.environ.get("OPENAI_API_BASE") or "").strip()
-    for m in models:
-        if not isinstance(m, dict):
-            continue
-        if not str(m.get("id") or m.get("model_name") or "").strip():
-            continue
-        base = resolve_env_vars(str(m.get("api_base") or env_base or "")).strip()
-        # Key may live only in env; list_configured_models does not always expose it.
-        key = env_key
-        if key and base and not base.startswith("https://example.com"):
-            return True
-        if base and not base.startswith("https://example.com") and env_key:
-            return True
-    return bool(env_key and env_base)
+
+def _env_api_key() -> str:
+    return (os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+
+
+def _env_api_base() -> str:
+    return (os.environ.get("API_BASE") or os.environ.get("OPENAI_API_BASE") or "").strip()
+
+
+def _model_entries() -> list[dict[str, Any]]:
+    """Settings chat-model entries with decrypted credentials (``get_default_models``)."""
+    return [entry for entry in get_default_models(get_config() or {}) if isinstance(entry, dict)]
+
+
+def _entry_configs(chosen: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(model_client_config, model_config_obj)`` of a listed model.
+
+    The key / base fall back to API_KEY / API_BASE so env-only setups keep working.
+    """
+    entries = _model_entries()
+    idx = int(chosen.get("index") or 0)
+    entry = entries[idx] if 0 <= idx < len(entries) else {}
+    mcc = entry.get("model_client_config")
+    mco = entry.get("model_config_obj")
+    client = dict(mcc) if isinstance(mcc, dict) else {}
+    if not str(client.get("api_key") or "").strip():
+        client["api_key"] = _env_api_key()
+    if not str(client.get("api_base") or "").strip():
+        client["api_base"] = str(chosen.get("api_base") or "").strip() or _env_api_base()
+    return client, dict(mco) if isinstance(mco, dict) else {}
+
+
+def _client_config_for(chosen: dict[str, Any]) -> dict[str, Any]:
+    return _entry_configs(chosen)[0]
+
+
+def _has_credentials(client_config: dict[str, Any]) -> bool:
+    api_base = str(client_config.get("api_base") or "").strip()
+    if not api_base or api_base.startswith("https://example.com"):
+        return False
+    return bool(str(client_config.get("api_key") or "").strip() or client_config.get("custom_headers"))
 
 
 def require_llm() -> None:
@@ -293,47 +407,32 @@ def model_text_or_raise(result: dict[str, Any] | None) -> str:
 
 
 def list_configured_models() -> list[dict[str, Any]]:
-    """Return models from Settings / config.yaml for agent tool use."""
-    cfg = get_config() or {}
-    models = cfg.get("models") or {}
-    defaults = models.get("defaults")
+    """Return models from Settings / config.yaml for agent tool use.
+
+    Entries come from ``get_default_models`` (``models.defaults``, the legacy
+    single default or the env fallback, plus AgentOS backups); ``index``
+    addresses that list. Credentials are never exposed here.
+    """
     out: list[dict[str, Any]] = []
-    if isinstance(defaults, list):
-        for idx, entry in enumerate(defaults):
-            if not isinstance(entry, dict):
-                continue
-            mcc = entry.get("model_client_config") or {}
-            if not isinstance(mcc, dict):
-                continue
-            name = resolve_env_vars(str(mcc.get("model_name") or "")).strip()
-            alias = resolve_env_vars(str(entry.get("alias") or "")).strip()
-            if not name and not alias:
-                continue
-            out.append(
-                {
-                    "id": alias or name,
-                    "model_name": name,
-                    "alias": alias,
-                    "api_base": resolve_env_vars(str(mcc.get("api_base") or "")),
-                    "client_provider": str(mcc.get("client_provider") or "OpenAI"),
-                    "is_default": bool(entry.get("is_default")),
-                    "index": idx,
-                }
-            )
-    if not out:
-        # Fallback to env-backed default entry names.
-        for name in get_model_names():
-            out.append(
-                {
-                    "id": name,
-                    "model_name": name,
-                    "alias": "",
-                    "api_base": "",
-                    "client_provider": "OpenAI",
-                    "is_default": False,
-                    "index": 0,
-                }
-            )
+    for idx, entry in enumerate(_model_entries()):
+        mcc = entry.get("model_client_config")
+        if not isinstance(mcc, dict):
+            continue
+        name = str(mcc.get("model_name") or "").strip()
+        alias = str(entry.get("alias") or "").strip()
+        if not name and not alias:
+            continue
+        out.append(
+            {
+                "id": alias or name,
+                "model_name": name,
+                "alias": alias,
+                "api_base": str(mcc.get("api_base") or ""),
+                "client_provider": str(mcc.get("client_provider") or "OpenAI"),
+                "is_default": bool(entry.get("is_default")),
+                "index": idx,
+            }
+        )
     return out
 
 
@@ -382,8 +481,6 @@ def _image_data_uri(raw: str) -> str | None:
         return value
     path = Path(value)
     if value.startswith("file:"):
-        from urllib.parse import unquote, urlparse
-
         parsed = urlparse(value)
         pathname = unquote(parsed.path)
         if len(pathname) >= 3 and pathname[0] == "/" and pathname[2] == ":":
@@ -412,7 +509,13 @@ async def call_model_tool(
     max_tokens: int = _DESIGNER_DEFAULT_MAX_TOKENS,
     images: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Call a configured chat model (OpenAI-compatible) as an agent tool."""
+    """Call the Settings chat model through openjiuwen core as an agent tool.
+
+    Core owns the wire protocol (OpenAI / Anthropic) and every endpoint's
+    reasoning dialect. This layer keeps the Designer call policy: lowest
+    reasoning setting, clamped ``max_tokens``, one retry on an empty reply,
+    the 402 latch, and fail-closed result dicts (see ``model_text_or_raise``).
+    """
     global _chat_confirmed
     if _chat_billing_block:
         return {
@@ -423,14 +526,7 @@ async def call_model_tool(
             "model": None,
             "text": "",
         }
-    # Ensure ~/.jiuwenswarm/config/.env is loaded (API_KEY / API_BASE).
-    try:
-        from jiuwenswarm.common.utils import get_env_file
-        from jiuwenswarm.dotenv_early import load_dotenv_runtime
-
-        load_dotenv_runtime(dotenv_path=get_env_file(), override=False)
-    except Exception:  # noqa: BLE001
-        pass
+    _load_runtime_env()
 
     max_tokens = _clamp_max_tokens(max_tokens)
     preferred_model = preferred_model or _preferred_designer_model.get()
@@ -453,34 +549,15 @@ async def call_model_tool(
             "text": "",
         }
 
-    # Resolve credentials from defaults entry / env
-    cfg = get_config() or {}
-    defaults = (cfg.get("models") or {}).get("defaults") or []
-    api_key = ""
-    api_base = str(chosen.get("api_base") or "")
-    model_name = str(chosen.get("model_name") or chosen.get("id") or "")
-    if isinstance(defaults, list) and defaults:
-        idx = int(chosen.get("index") or 0)
-        if 0 <= idx < len(defaults) and isinstance(defaults[idx], dict):
-            mcc = defaults[idx].get("model_client_config") or {}
-            api_key = resolve_env_vars(str(mcc.get("api_key") or ""))
-            if not api_base:
-                api_base = resolve_env_vars(str(mcc.get("api_base") or ""))
-            if not model_name:
-                model_name = resolve_env_vars(str(mcc.get("model_name") or ""))
-    if not api_key:
-        import os
-
-        api_key = (os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not api_base:
-        import os
-
-        api_base = (os.environ.get("API_BASE") or os.environ.get("OPENAI_API_BASE") or "").strip()
-    api_base = resolve_env_vars(api_base)
-    api_key = resolve_env_vars(api_key)
-    model_name = resolve_env_vars(model_name)
-
-    if not api_key or not api_base or api_base.startswith("https://example.com"):
+    client_config, request_config = _entry_configs(chosen)
+    model_name = str(
+        chosen.get("model_name") or chosen.get("id") or client_config.get("model_name") or ""
+    )
+    client_config["model_name"] = model_name
+    self_hosted_profile = _self_hosted_endpoint_profile(client_config)
+    if self_hosted_profile:
+        client_config["endpoint_profile"] = self_hosted_profile
+    if not _has_credentials(client_config):
         return {
             "ok": False,
             "fallback": False,
@@ -494,77 +571,92 @@ async def call_model_tool(
             "text": "",
         }
 
+    messages: list[dict[str, Any]] = []
+    if str(system or "").strip():
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": vision_user_content(prompt, images)})
+    # Endpoints with mandated sampling (Kimi) reject any other temperature;
+    # the model's request config already carries the required values.
+    fixed_sampling = resolve_sampling_override(client_config.get("api_base"), model_name) is not None
+
     try:
-        from openai import AsyncOpenAI
+        model = _build_chat_model(client_config, request_config)
+        reasoning = _minimal_reasoning(client_config, model_name)
 
         async def _once(*, temperature: float, attempt: int) -> dict[str, Any]:
-            # Large plans need more wall time than the old 90s default.
-            client = AsyncOpenAI(api_key=api_key, base_url=api_base, timeout=1200.0)
-            try:
-                user_content = vision_user_content(prompt, images)
-                request_input = {
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "extra_body": _thinking_disabled_extra_body(),
-                }
-                from jiuwenswarm.server.runtime.designer.trajectory import (
-                    current_trajectory_span,
-                )
+            nonlocal reasoning
+            request: dict[str, Any] = {
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "timeout": _DESIGNER_REQUEST_TIMEOUT_SEC,
+            }
+            if not fixed_sampling:
+                request["temperature"] = temperature
+            if reasoning is not None:
+                request["reasoning"] = reasoning
+            from jiuwenswarm.server.runtime.designer.trajectory import (
+                current_trajectory_span,
+            )
 
-                with current_trajectory_span(
-                    action="agent_call",
-                    phase="inference",
-                    detail={
-                        "agent_type": "chat_model",
-                        "attempt": attempt,
-                        "prompt": prompt,
-                        "system_prompt": system,
-                        "input": request_input,
-                    },
-                ) as span_payload:
-                    resp = await client.chat.completions.create(**request_input)
-                    choice = resp.choices[0] if resp.choices else None
-                    msg = choice.message if choice is not None else None
-                    text = _message_text(msg)
-                    finish = str(getattr(choice, "finish_reason", None) or "")
-                    span_payload["output"] = text
-                    span_payload["finish_reason"] = finish or None
-                    span_payload["response_model"] = resp.model
-                    if resp.usage is not None:
-                        span_payload["usage"] = {
-                            "input_tokens": resp.usage.prompt_tokens,
-                            "output_tokens": resp.usage.completion_tokens,
-                        }
-                if not text:
-                    return {
-                        "ok": False,
-                        "fallback": False,
-                        "error": "empty_model_response",
-                        "model": chosen.get("id"),
-                        "model_name": model_name,
-                        "text": "",
-                        "finish_reason": finish or None,
-                        "max_tokens": max_tokens,
+            with current_trajectory_span(
+                action="agent_call",
+                phase="inference",
+                detail={
+                    "agent_type": "chat_model",
+                    "attempt": attempt,
+                    "prompt": prompt,
+                    "system_prompt": system,
+                    "input": {"model": model_name, **request},
+                },
+            ) as span_payload:
+                try:
+                    msg = await model.invoke(**request)
+                except Exception as exc:
+                    if reasoning is None or _http_status(exc) != 400:
+                        raise
+                    # Unknown self-hosted gateways need an explicit
+                    # endpoint_profile for core to pick their dialect.
+                    logger.warning(
+                        "call_model_tool: endpoint rejected reasoning=%s for model=%s (%s); "
+                        "retrying without it. Set endpoint_profile on self-hosted gateways.",
+                        reasoning,
+                        model_name,
+                        exc,
+                    )
+                    reasoning = None
+                    request.pop("reasoning", None)
+                    span_payload["reasoning_dropped"] = True
+                    msg = await model.invoke(**request)
+                text = _message_text(msg)
+                finish = "" if msg.finish_reason in (None, "", "null") else str(msg.finish_reason)
+                span_payload["output"] = text
+                span_payload["finish_reason"] = finish or None
+                span_payload["response_model"] = msg.response_model
+                if msg.usage_metadata is not None:
+                    span_payload["usage"] = {
+                        "input_tokens": msg.usage_metadata.input_tokens,
+                        "output_tokens": msg.usage_metadata.output_tokens,
                     }
+            if not text:
                 return {
-                    "ok": True,
+                    "ok": False,
                     "fallback": False,
+                    "error": "empty_model_response",
                     "model": chosen.get("id"),
                     "model_name": model_name,
-                    "text": text,
+                    "text": "",
                     "finish_reason": finish or None,
                     "max_tokens": max_tokens,
                 }
-            finally:
-                try:
-                    await client.close()
-                except Exception:  # noqa: BLE001
-                    pass
+            return {
+                "ok": True,
+                "fallback": False,
+                "model": chosen.get("id"),
+                "model_name": model_name,
+                "text": text,
+                "finish_reason": finish or None,
+                "max_tokens": max_tokens,
+            }
 
         first = await _once(
             temperature=0.4,
@@ -600,3 +692,10 @@ async def call_model_tool(
             "model_name": model_name,
             "text": "",
         }
+
+
+def _build_chat_model(client_config: dict[str, Any], request_config: dict[str, Any]) -> Model:
+    """Build the chat model with the same rule as every other Settings model path."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import build_model_from_entry
+
+    return build_model_from_entry(client_config, request_config)

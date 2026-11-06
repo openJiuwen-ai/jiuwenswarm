@@ -12,7 +12,7 @@ import asyncio
 import sys
 
 async def main():
-    from gateway.enterprise.db.database import Database
+    from agent_gateway.enterprise.db.database import Database
     if sys.argv[1] == 'read':
         from jiuwenswarm.enterprise.config.config_provider import DefaultConfigProvider, AgentConfigContext
         from jiuwenswarm.agents.harness.common.memory import config as memory
@@ -22,11 +22,11 @@ async def main():
         assert result.config['memory']['mode'] == ('cloud' if expected else 'local'), result.config
         assert memory.get_task_memory_config()['enabled'] is expected, memory.get_task_memory_config()
     else:
-        from gateway.storage_assembly.setup import _create_persistent, create_memory_config_repository, create_enterprise_record_repositories
-        from gateway.config.memory.access import set_memory_config_repository
-        from gateway.config.enterprise.access import set_enterprise_record_repositories
-        from gateway.enterprise.config.manager_config.core.application_config.memory_config import MemoryConfigService
-        from gateway.enterprise.config.manager_config.core.application_config.task_memory_config import TaskMemoryConfigService
+        from agent_gateway.storage_assembly.setup import _create_persistent, create_memory_config_repository, create_enterprise_record_repositories
+        from agent_gateway.config.memory.access import set_memory_config_repository
+        from agent_gateway.config.enterprise.access import set_enterprise_record_repositories
+        from agent_gateway.enterprise.config.manager_config.core.application_config.memory_config import MemoryConfigService
+        from agent_gateway.enterprise.config.manager_config.core.application_config.task_memory_config import TaskMemoryConfigService
         store = _create_persistent()
         set_memory_config_repository(create_memory_config_repository(store))
         set_enterprise_record_repositories(create_enterprise_record_repositories(store))

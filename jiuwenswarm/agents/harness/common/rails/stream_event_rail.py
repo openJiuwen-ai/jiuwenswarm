@@ -79,9 +79,16 @@ from jiuwenswarm.common.tool_display import (
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+from jiuwenswarm.server.wire_truncate import _json_wire_size
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
 _TERMINAL_PROJECTION_STATE_ATTRIBUTE = "_jiuwenswarm_terminal_projection_v1"
+# Text fields of a tool_result event are cut to this many characters.
+_TOOL_RESULT_TEXT_LIMIT = 60000
+# raw_output above this size is trimmed so the event stays well inside the
+# AgentServer WebSocket send budget (6 MiB, gateway/common/ws_limits.py);
+# an oversized frame is replaced by a response_too_large error.
+_RAW_OUTPUT_WIRE_BUDGET_BYTES = 2**20
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -91,6 +98,34 @@ def _structured_tool_result_payload(result: Any) -> Any | None:
     if isinstance(result, (dict, list)):
         return result
     return None
+
+
+def _cut_long_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:_TOOL_RESULT_TEXT_LIMIT]
+    if isinstance(value, dict):
+        return {key: _cut_long_strings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_cut_long_strings(item) for item in value]
+    return value
+
+
+def _bounded_raw_output(raw_output: Any) -> tuple[Any, bool]:
+    """Return ``raw_output`` sized for the wire, and whether it was trimmed.
+
+    Long strings are cut to the same limit as ``result``; if that is still too
+    large, only the ``mcp_app`` block is kept. ``mcp_app`` is never trimmed:
+    MCP Apps parse it as data (see ``wire_truncate._restore_mcp_app_block``).
+    """
+    if _json_wire_size(raw_output) <= _RAW_OUTPUT_WIRE_BUDGET_BYTES:
+        return raw_output, False
+    mcp_app = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+    trimmed = _cut_long_strings(raw_output)
+    if mcp_app is not None:
+        trimmed["mcp_app"] = mcp_app
+    if _json_wire_size(trimmed) > _RAW_OUTPUT_WIRE_BUDGET_BYTES:
+        trimmed = {} if mcp_app is None else {"mcp_app": mcp_app}
+    return trimmed, True
 
 
 def _extract_tool_interrupt(value: Any) -> Any | None:
@@ -149,6 +184,13 @@ def _infer_tool_result_error(value: Any) -> bool | None:
             exit_failed = _nonzero_exit(value.get(key))
             if exit_failed is not None:
                 return exit_failed
+        # ``sdd_advance`` and the shipped skill scripts state a failure as
+        # ``ok`` with ``error`` beside it. This reads last, so a payload that
+        # also states one of the keys above is still classified by that key.
+        if _boolish_false(value.get("ok")):
+            return True
+        if _boolish_true(value.get("ok")):
+            return False
         for key in ("data", "raw_output", "rawOutput", "result"):
             nested = value.get(key)
             if isinstance(nested, (dict, list)):
@@ -1394,16 +1436,24 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             tool_result_payload = {
                 "tool_name": getattr(tool_call, "name", "") if tool_call else "",
                 "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
-                "result": str(result)[:60000] if result is not None else "",
+                "result": str(result)[:_TOOL_RESULT_TEXT_LIMIT] if result is not None else "",
             }
             if rendered_result is not None:
-                tool_result_payload["rendered_result"] = rendered_result[:60000]
+                tool_result_payload["rendered_result"] = rendered_result[:_TOOL_RESULT_TEXT_LIMIT]
             if raw_output is not None:
-                tool_result_payload["raw_output"] = raw_output
+                wire_raw_output, trimmed = _bounded_raw_output(raw_output)
+                tool_result_payload["raw_output"] = wire_raw_output
+                if trimmed:
+                    tool_result_payload["raw_output_truncated"] = True
+                    logger.warning(
+                        "[StreamEventRail] tool_result raw_output trimmed for the wire: tool=%s bytes=%d",
+                        tool_result_payload["tool_name"],
+                        _json_wire_size(raw_output),
+                    )
                 self._symphony_stream_handler.enrich_result_payload(
                     tool_call,
                     tool_result_payload,
-                    raw_output,
+                    wire_raw_output,
                 )
             tool_name = str(tool_result_payload["tool_name"] or "").strip().lower()
             if tool_name == "ttse_consult" and isinstance(result, str):

@@ -25,6 +25,8 @@ export interface ScheduledControlTimelineProps {
   compact?: boolean;
   /** Changes whenever another row receives focus, so compact mode closes again. */
   compactKey?: string | null;
+  /** Extend active task bars to the current wall clock. */
+  live?: boolean;
 }
 
 interface VisibleWindow {
@@ -35,9 +37,17 @@ interface VisibleWindow {
 function visibleWindow(
   domain: WallClockDomain | null,
   viewport: TrajectoryTimeRange | null,
+  mapTime?: (wallMs: number) => number,
+  extendToWallMs?: number,
 ): VisibleWindow | null {
   const start = viewport?.start ?? domain?.startMs;
-  const end = viewport?.end ?? domain?.endMs;
+  const baseEnd = viewport?.end ?? domain?.endMs;
+  const mappedNow = extendToWallMs === undefined
+    ? undefined
+    : (mapTime === undefined ? extendToWallMs : mapTime(extendToWallMs));
+  const end = viewport === null && baseEnd !== undefined && mappedNow !== undefined
+    ? Math.max(baseEnd, mappedNow)
+    : baseEnd;
   return start === undefined || end === undefined || end <= start ? null : { start, end };
 }
 
@@ -50,15 +60,28 @@ function fractionAt(
   return Math.min(1, Math.max(0, (mapped - window.start) / (window.end - window.start)));
 }
 
-function taskInterval(task: ScheduledTask): { startMs: number; endMs: number } | null {
+function taskCanElapse(task: ScheduledTask): boolean {
+  return task.phase === 'pending'
+    || task.phase === 'blocked'
+    || task.phase === 'running'
+    || task.phase === 'in_review'
+    || task.phase === 'rework'
+    || task.phase === 'escalated';
+}
+
+function taskInterval(
+  task: ScheduledTask,
+  live: boolean,
+  nowMs: number,
+): { startMs: number; endMs: number } | null {
   const startMs = task.createdAtMs ?? task.events[0]?.timestampMs;
-  const endMs = task.completedAtMs
+  if (startMs === undefined) return null;
+  const recordedEndMs = task.completedAtMs
     ?? task.updatedAtMs
     ?? task.events[task.events.length - 1]?.timestampMs
     ?? startMs;
-  return startMs === undefined || endMs === undefined
-    ? null
-    : { startMs, endMs: Math.max(startMs, endMs) };
+  const endMs = live && taskCanElapse(task) ? Math.max(recordedEndMs, nowMs) : recordedEndMs;
+  return { startMs, endMs: Math.max(startMs, endMs) };
 }
 
 function overlaps(
@@ -91,6 +114,7 @@ function eventText(event: ScheduledControlEvent, t: TFunction): string {
 
 function markerClass(event: ScheduledControlEvent): string {
   if (event.kind === 'revision') return css.markerRevision;
+  if (event.kind === 'verified') return css.markerVerified;
   if (event.kind !== 'vote') return css.markerEvent;
   if (event.decision?.kind === 'pass') return css.markerPass;
   if (event.decision?.kind === 'fail') return css.markerFail;
@@ -150,48 +174,49 @@ function TaskDetail({
         </div>
       </div>
 
-      <div className={css.rounds}>
-        {rounds.length === 0 ? (
-          <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
-        ) : rounds.map(([round, reviews]) => (
-          <div
-            className={css.round}
-            key={round}
-            data-testid="team-trajectory-control-round"
-            data-variant={`${task.taskId}:r${round}`}
-          >
-            <span className={css.roundLabel}>R{round}</span>
-            <div className={css.reviewList}>
-              {reviews.map(review => (
-                <span
-                  className={css.review}
-                  key={review.key}
-                  data-decision={review.decision.kind}
-                  data-testid="team-trajectory-control-review"
-                  data-variant={`${task.taskId}:${round}:${review.reviewer}`}
-                >
-                  <span>{review.reviewer}</span>
-                  <strong>{decisionText(review.decision, t)}</strong>
-                </span>
-              ))}
+      <div className={css.detailScroll}>
+        <div className={css.rounds}>
+          {rounds.length === 0 ? (
+            <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
+          ) : rounds.map(([round, reviews]) => (
+            <div
+              className={css.round}
+              key={round}
+              data-testid="team-trajectory-control-round"
+              data-variant={`${task.taskId}:r${round}`}
+            >
+              <span className={css.roundLabel}>R{round}</span>
+              <div className={css.reviewList}>
+                {reviews.map(review => (
+                  <span
+                    className={css.review}
+                    key={review.key}
+                    data-decision={review.decision.kind}
+                    data-testid="team-trajectory-control-review"
+                    data-variant={`${task.taskId}:${round}:${review.reviewer}`}
+                  >
+                    <span>{review.reviewer}</span>
+                    <strong>{decisionText(review.decision, t)}</strong>
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      <div className={css.events} data-testid="team-trajectory-control-event-list">
-        {events.map(event => (
-          <div
-            className={css.eventRow}
-            key={event.eventId}
-            data-kind={event.kind}
-            data-testid="team-trajectory-control-event"
-            data-variant={`${event.kind}:${event.recordId}`}
-          >
-            <time>{formatAxisClock(event.timestampMs)}</time>
-            <span>{eventText(event, t)}</span>
-          </div>
-        ))}
+          ))}
+        </div>
+        <div className={css.events} data-testid="team-trajectory-control-event-list">
+          {events.map(event => (
+            <div
+              className={css.eventRow}
+              key={event.eventId}
+              data-kind={event.kind}
+              data-testid="team-trajectory-control-event"
+              data-variant={`${event.kind}:${event.recordId}`}
+            >
+              <time>{formatAxisClock(event.timestampMs)}</time>
+              <span>{eventText(event, t)}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -206,9 +231,15 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
   memberDisplayName,
   compact = false,
   compactKey = null,
+  live = false,
 }: ScheduledControlTimelineProps) {
   const { t } = useTranslation();
-  const window = visibleWindow(domain, viewport);
+  const hasLiveTasks = live && model.tasks.some(taskCanElapse);
+  const hasBlockedHistory = model.tasks.some(task => (
+    task.phase === 'blocked' || task.events.some(event => event.phase === 'blocked')
+  ));
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const window = visibleWindow(domain, viewport, mapTime, hasLiveTasks ? nowMs : undefined);
   const [collapsed, setCollapsed] = useState(false);
   const [compactExpanded, setCompactExpanded] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -218,6 +249,13 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
   useEffect(() => {
     setCompactExpanded(false);
   }, [compact, compactKey]);
+
+  useEffect(() => {
+    if (!hasLiveTasks) return undefined;
+    setNowMs(Date.now());
+    const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => globalThis.clearInterval(timer);
+  }, [hasLiveTasks]);
 
   if (model.tasks.length === 0) return null;
 
@@ -264,9 +302,16 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
             reworks: model.reworkCount,
           })}
         </span>
-        <span className={css.controlCount}>
-          {t('trajectory.team.schedule.controlRecords', { count: model.controlRecordCount })}
-        </span>
+        {hasBlockedHistory ? (
+          <span
+            className={css.blockedLegend}
+            title={t('trajectory.team.schedule.blockedLegendHint')}
+            data-testid="team-trajectory-control-blocked-legend"
+          >
+            <span className={css.blockedLegendSwatch} aria-hidden />
+            {t('trajectory.team.schedule.blockedLegend')}
+          </span>
+        ) : null}
         {model.anomalies.length === 0 ? null : (
           <span className={css.anomalySummary} data-testid="team-trajectory-control-anomaly-summary">
             <AlertTriangle size={13} strokeWidth={2} aria-hidden />
@@ -280,13 +325,13 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
           <div className={css.taskColumn}>
             <div className={css.taskList} role="list" data-testid="team-trajectory-control-task-list">
           {model.tasks.map((task, index) => {
-            const interval = taskInterval(task);
+            const interval = taskInterval(task, hasLiveTasks, nowMs);
             if (interval === null || !overlaps(interval, window, mapTime)) return null;
+            const selected = task.taskId === selectedTaskId;
             const start = fractionAt(interval.startMs, window, mapTime);
             const end = fractionAt(interval.endMs, window, mapTime);
             const left = Math.min(start, end);
             const width = Math.max(0.006, Math.abs(end - start));
-            const selected = task.taskId === selectedTaskId;
             const barStyle = {
               '--control-task-left': `${left * 100}%`,
               '--control-task-width': `${width * 100}%`,
@@ -313,6 +358,8 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
                     <span
                       key={event.eventId}
                       className={`${css.marker} ${markerClass(event)}`}
+                      data-kind={event.kind}
+                      data-decision={event.decision?.kind}
                       style={{ left: `${fractionAt(event.timestampMs, window, mapTime) * 100}%` }}
                       title={`${formatAxisClock(event.timestampMs)} · ${eventText(event, t)}`}
                       aria-hidden

@@ -2,7 +2,7 @@
 """ComfyUI nodes execute handlers through the live coordinator backend."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -60,9 +60,46 @@ async def test_handler_failure_is_reported_without_retrying_an_agent(monkeypatch
     assert run["node_states"]["n_comfy"]["error"] == "vLLM service unavailable"
 
 
+@pytest.mark.parametrize("kind", ["image", "video"])
+@pytest.mark.parametrize("outcome", ["none", "empty", "wrong_family", "text_stub"])
+async def test_handler_invalid_media_fails_without_publishing_or_retrying(monkeypatch, tmp_path, kind, outcome):
+    node = {"id": "n_comfy", "type": kind, "config": {"delegate": "handler", "is_comfyui": True, "role": kind}}
+    graph = {"graph_id": "g_handler", "nodes": [node], "edges": []}
+    run = {"run_id": "run_handler", "node_states": {}}
+    bridge = DesignEventBridge(run, None, graph=graph)
+    publish_result = Mock(wraps=bridge.on_node_result)
+    monkeypatch.setattr(bridge, "on_node_result", publish_result)
+    inner = SimpleNamespace(run=AsyncMock(side_effect=AssertionError("agent must not run")))
+    output = None
+    if outcome == "empty":
+        output = NodeResult(message="generation returned no media")
+    elif outcome in {"wrong_family", "text_stub"}:
+        output_kind = ("video" if kind == "image" else "image") if outcome == "wrong_family" else kind
+        suffix = ("mp4" if output_kind == "video" else "png") if outcome == "wrong_family" else "md"
+        path = tmp_path / f"output.{suffix}"
+        path.write_bytes(b"media" * 256)
+        output = NodeResult(output_ref={"kind": output_kind, "uri": path.as_uri()})
+    handler = SimpleNamespace(execute=AsyncMock(return_value=output))
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.get_node_handler", lambda _: handler)
+    backend = MediaGuaranteeBackend(inner, graph=graph, run=run, bridge=bridge, media_root=tmp_path)
+
+    result = await backend.run("prompt", {"label": "n_comfy"}, {"type": "object"})
+
+    assert result.skipped is True
+    state = run["node_states"]["n_comfy"]
+    assert state["status"] == "failed"
+    assert "handler did not produce required media" in state["error"]
+    assert bridge.produced_for("n_comfy") is None
+    publish_result.assert_not_called()
+    handler.execute.assert_awaited_once()
+    inner.run.assert_not_called()
+
+
 async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.workflow.engine.backends import MockBackend
+
     from jiuwenswarm.common.schema.designer_graph import normalize_execution_graph
-    from jiuwenswarm.server.runtime.design import run_coordinator, team_worker
+    from jiuwenswarm.server.runtime.design import run_coordinator
     from jiuwenswarm.server.runtime.designer import graph_store
     from jiuwenswarm.server.runtime.designer.handlers import comfyui_nodes
 
@@ -95,8 +132,10 @@ async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node
         run_coordinator, "get_design_context_registry",
         lambda: SimpleNamespace(for_graph=lambda _: bound),
     )
-    worker = SimpleNamespace(run=AsyncMock(side_effect=AssertionError("agent must not run")))
-    monkeypatch.setattr(team_worker, "build_worker_backend", lambda **kwargs: worker)
+    worker = MockBackend()
+    monkeypatch.setattr(worker, "run", AsyncMock(side_effect=AssertionError("agent must not run")))
+    build_worker = Mock(return_value=worker)
+    monkeypatch.setattr(run_coordinator, "_build_team_worker", build_worker)
     calls = []
 
     def generate(prompt, **kwargs):
@@ -139,4 +178,5 @@ async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node
     assert state["history"][-1]["output_ref"]["uri"].endswith("generated-1.png")
     assert len(calls) == 2
     assert all(call[1]["api_base"] == "http://omni.test/v1" for call in calls)
+    assert build_worker.call_count == 2
     worker.run.assert_not_called()

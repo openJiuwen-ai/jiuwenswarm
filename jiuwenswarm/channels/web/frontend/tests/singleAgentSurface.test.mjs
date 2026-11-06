@@ -87,7 +87,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(panelSource, /active=\{active && selected\}/);
   assert.match(panelSource, /deferredPublishRef\.current = true/);
   assert.match(panelSource, /setPublishedWindow\(\{/);
-  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
+  assert.match(panelSource, /headerItems\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
   assert.match(panelSource, /role="progressbar"/);
   assert.match(panelSource, /initialLoadProgress\.loaded \/ initialLoadProgress\.total/);
   assert.match(panelSource, /error\.code === 'UNSUPPORTED_SESSION_MODE'/);
@@ -114,6 +114,15 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(teamWorkspaceStyles, /border-radius: 0\.5rem/);
   assert.match(teamWorkspaceStyles, /\.lanes[\s\S]*?overflow-y: auto/);
   assert.match(teamWorkspaceStyles, /\.laneRowExpanded[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceSource,
+    /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
+  );
+  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceStyles,
+    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+  );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(
@@ -727,6 +736,18 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   );
   assert.match(workspaceSource, /showIncludeToggle === true && onToggleIncluded !== undefined/);
   assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
+});
+
+test('scheduled team lanes retain swarmflow grouping for regular members', () => {
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /const workflowGroupingLanes = laneSections === null \? flatLanes : standaloneMembers;/);
+  assert.match(
+    workspaceSource,
+    /data-testid="team-trajectory-member-group"[\s\S]*?ungrouped\.map\(renderLane\)[\s\S]*?workflowGroups\.map\(renderWorkflowGroup\)/,
+  );
 });
 
 test('diagnosis sub-page folds finished stages and offers record management', () => {

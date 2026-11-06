@@ -14,10 +14,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.auth import model_catalog as _model_catalog
-from gateway.auth.model_catalog import LoginModel
-from gateway.cron.controller import CronController
-from gateway.cron.store import CronJobStore
+from agent_gateway.auth import model_catalog as _model_catalog
+from agent_gateway.auth.model_catalog import LoginModel
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.store import CronJobStore
 
 _LOGIN_REF = "0123456789abcdef0123456789abcdef"
 _AUTH_SESSION = "auth-session-1"
@@ -56,17 +56,17 @@ def _patch_model_sources(
             return entries.get(name)
 
         monkeypatch.setattr(
-            "gateway.common.config.get_model_config", fake_get_model_config
+            "agent_gateway.common.config.get_model_config", fake_get_model_config
         )
         monkeypatch.setattr(
-            "gateway.common.config.get_model_names", lambda: list(config_models)
+            "agent_gateway.common.config.get_model_names", lambda: list(config_models)
         )
     else:
         monkeypatch.setattr(
-            "gateway.common.config.get_model_config",
+            "agent_gateway.common.config.get_model_config",
             lambda name, index=None: None,
         )
-        monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
+        monkeypatch.setattr("agent_gateway.common.config.get_model_names", lambda: [])
 
 
 def _patch_login_session(
@@ -76,7 +76,7 @@ def _patch_login_session(
     user_id: str = "openid-1",
 ) -> None:
     """服务端登录会话（华为账号，与路由 user_id 独立）的内存桩。"""
-    from gateway.auth.service import ModelAuthRequired
+    from agent_gateway.auth.service import ModelAuthRequired
 
     def fake_live_session(session_id, allow_refresh=True):
         if not logged_in or not session_id:
@@ -84,10 +84,10 @@ def _patch_login_session(
         return SimpleNamespace(user_id=user_id)
 
     monkeypatch.setattr(
-        "gateway.auth.service.live_session", fake_live_session
+        "agent_gateway.auth.service.live_session", fake_live_session
     )
     monkeypatch.setattr(
-        "gateway.auth.login_credentials.credential_ref_for_user",
+        "agent_gateway.auth.login_credentials.credential_ref_for_user",
         lambda uid: _LOGIN_REF,
     )
 

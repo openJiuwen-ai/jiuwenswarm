@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.channel_manager import ChannelManager
 
 
 class _MessageHandler:

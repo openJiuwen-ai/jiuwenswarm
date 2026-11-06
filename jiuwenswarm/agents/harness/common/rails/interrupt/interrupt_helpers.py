@@ -19,7 +19,7 @@ from copy import deepcopy
 
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 
-from gateway.common.interrupt_resume import answers_paused_calls
+from agent_gateway.common.interrupt_resume import answers_paused_calls
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
@@ -29,6 +29,10 @@ from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail imp
     extract_plan_approval_content,
     is_plan_approval_message,
     strip_inline_plan_approval_choices,
+)
+from jiuwenswarm.agents.harness.common.rails.cua_delegation_approval_rail import (
+    CUA_SUBAGENT_TYPE,
+    is_cua_delegation_approval_message,
 )
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
@@ -1105,6 +1109,8 @@ def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
         return True
+    if is_cua_delegation_approval_message(message):
+        return False
     if tool_name and tool_name not in _CONFIRM_INTERRUPT_TOOLS:
         return True
     if normalized in {"", "Please approve or reject?"}:
@@ -1827,6 +1833,10 @@ def _format_question_from_interaction(
     if plan_approval_options:
         header = "Exit Plan and Execute"
         question = strip_inline_plan_approval_choices(message)
+    elif source == "confirm_interrupt" and is_cua_delegation_approval_message(message):
+        # Name the agent that will act, not the internal task_tool it rides on.
+        header = f"操作确认: {CUA_SUBAGENT_TYPE}"
+        question = message
     elif source == "confirm_interrupt":
         header = f"操作确认: {tool_name}" if tool_name else "操作确认"
         question = message
@@ -1854,7 +1864,9 @@ def _format_question_from_interaction(
             if isinstance(matched_rule, str) and matched_rule.strip():
                 question_data["matched_rule"] = redact_secret_values(matched_rule)
         if invocation_record is not None:
-            question_data["card_id"] = invocation_record.key.invocation_id
+            # Deprecated compatibility alias; use request_id for new identity logic.
+            # Existing clients must echo this value until the alias is retired.
+            question_data["card_id"] = invocation_record.key.tool_call_id
         if reviewer_metadata:
             question_data["reviewer_metadata"] = reviewer_metadata
         if isinstance(tool_args, dict):

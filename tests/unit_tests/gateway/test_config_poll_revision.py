@@ -8,18 +8,18 @@ from pathlib import Path
 
 import pytest
 
+import agent_gateway
+
 # 包入口会加载 scheduler。这里只取快照函数，避免把调度依赖带进来。
-_db_path = (
-    Path(__file__).resolve().parents[3] / "gateway/config_poll/db.py"
-)
+_db_path = Path(agent_gateway.__file__).resolve().parent / "config_poll/db.py"
 _spec = importlib.util.spec_from_file_location("config_poll_db_under_test", _db_path)
 assert _spec is not None and _spec.loader is not None
 _db = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_db)
 row_snapshot = _db.row_snapshot
-from gateway.storage.backends.db.persistent_store import DbPersistentBackend
-from gateway.storage.revision import RevisionConflictError
-from gateway.storage.registry.store_registry import (
+from agent_gateway.storage.backends.db.persistent_store import DbPersistentBackend
+from agent_gateway.storage.revision import RevisionConflictError
+from agent_gateway.storage.registry.store_registry import (
     DbLayout,
     StoreLayout,
     StoreRegistry,
@@ -200,8 +200,8 @@ async def test_unchanged_update_still_returns_the_row(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_channel_merge_creates_missing_row_then_keeps_other_fields(tmp_path) -> None:
-    from gateway.config.channel.codec import DbRowChannelCodec
-    from gateway.config.channel.repository import ChannelConfigRepository
+    from agent_gateway.config.channel.codec import DbRowChannelCodec
+    from agent_gateway.config.channel.repository import ChannelConfigRepository
 
     handler = SQLiteHandler(str(tmp_path / "channel.db"))
     await handler.init_database()
@@ -265,11 +265,11 @@ class _HideFirstList:
 
 @pytest.mark.asyncio
 async def test_logging_merge_retries_when_row_appears_before_update(tmp_path) -> None:
-    from gateway.config.logging.repository import (
+    from agent_gateway.config.logging.repository import (
         LOGGING_LEVEL_FIELDS,
         LoggingConfigRepository,
     )
-    from gateway.config.section import DbFlatSectionCodec
+    from agent_gateway.config.section import DbFlatSectionCodec
 
     handler = SQLiteHandler(str(tmp_path / "logging-race.db"))
     await handler.init_database()

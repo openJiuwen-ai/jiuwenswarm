@@ -148,3 +148,29 @@ def test_prefixed_asset_conditional_request(static_server: str) -> None:
     assert status == 304
     assert body == b""
     assert headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+@pytest.mark.parametrize("path", ["/chat/logo.svg", "/design/project/session/logo.svg"])
+def test_public_file_prefix_uses_static_root(static_server: str, path: str) -> None:
+    status, headers, body = _request(static_server, path)
+    assert status == 200
+    assert body == b"<svg/>"
+    assert headers["content-type"].startswith("image/svg+xml")
+    assert headers["cache-control"] == "no-cache"
+
+
+@pytest.mark.parametrize("suffix", ["wasm", "onnx"])
+def test_prefixed_binary_assets_remain_in_assets(static_server: str, tmp_path: Path, suffix: str) -> None:
+    (tmp_path / "assets" / f"model-01234567.{suffix}").write_bytes(b"binary-model")
+    status, _, body = _request(static_server, f"/chat/assets/model-01234567.{suffix}")
+    assert status == 200
+    assert body == b"binary-model"
+
+
+def test_public_fallback_does_not_escape_static_root(static_server: str, tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.svg"
+    outside.write_text("outside", encoding="utf-8")
+    (tmp_path / "escape.svg").symlink_to(outside)
+    status, _, body = _request(static_server, "/chat/escape.svg")
+    assert status == 404
+    assert body != b"outside"

@@ -58,6 +58,13 @@ def test_skill_preserves_body_roles_and_returns_compatible_wrapper(tmp_path):
     assert result["wrapper"]["metadata"] == {"author": "unknown", "tags": ["one"]}
 
 
+@pytest.mark.parametrize("tags,expected", [(None, ["teamskills"]), ([], []), (["office"], ["office"])])
+def test_ordinary_skill_keeps_existing_default_tags(tmp_path, tags, expected):
+    (tmp_path / "SKILL.md").write_text("---\nname: demo\ndescription: Ordinary\n---\nDo work.")
+    result = run(tmp_path, "skill", {} if tags is None else {"tags": tags})
+    assert result["wrapper"]["metadata"]["tags"] == expected
+
+
 @pytest.mark.parametrize(
     "header", ["name: x", "name: x\ndescription: d\nkind: team-skill\nroles: [{id: a}]"]
 )
@@ -356,6 +363,28 @@ def test_mcp_rejects_partial_placeholders_and_machine_paths(tmp_path, server):
 def test_skill_rejects_missing_relative_markdown_reference(tmp_path):
     (tmp_path / "SKILL.md").write_text(
         "---\nname: demo\ndescription: d\n---\nRead [guide](docs/missing.md)."
+    )
+    with pytest.raises(PublishValidationError) as error:
+        run(tmp_path, "skill")
+    assert error.value.code == "MISSING_REFERENCE"
+
+
+
+def test_skill_accepts_existing_directory_markdown_reference(tmp_path):
+    """AI-generated skills commonly link a folder, e.g. ``[templates/](templates/)``."""
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "SKILL.md.template").write_text("# template")
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\n"
+        "Files live in [templates/](templates/) and [one](templates/SKILL.md.template)."
+    )
+
+    run(tmp_path, "skill")
+
+
+def test_skill_rejects_missing_directory_markdown_reference(tmp_path):
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\nFiles live in [templates/](templates/)."
     )
     with pytest.raises(PublishValidationError) as error:
         run(tmp_path, "skill")

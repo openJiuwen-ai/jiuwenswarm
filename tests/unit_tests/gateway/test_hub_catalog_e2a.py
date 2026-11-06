@@ -4,17 +4,16 @@
 
 import subprocess
 import sys
-
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 from fastapi import FastAPI
-
-from gateway.enterprise.config.manager_config.routers.application_config_routers import application_config_router
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import application_config_router
 from openjiuwen_protocol.message import ReqMethod
+
+from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import HttpSseAgentServerClient
 from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client import RuntimeRoutedAgentClient
 from jiuwenswarm.server.agent_http_routes import build_http_app

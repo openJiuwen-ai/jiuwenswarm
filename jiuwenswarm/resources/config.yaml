@@ -735,12 +735,14 @@ react:
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
     # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
     cua_agent:
-      enabled: false
+      enabled: null # null follows the release default (currently off); user changes persist true/false.
       # max_iterations: 100
       # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
       # snapshot_keep_last_k: 3
       # 用户接管屏幕（检测到鼠标/键盘输入）时暂停桌面操作，空闲后自动继续（Windows 与 Linux X11 支持探测）。
       pause_on_user_input: false
+      # 委派桌面任务前是否弹出确认卡片。在卡片上选择“永久记住”会写入 false；改回 true 可恢复询问。
+      # require_approval: true
   # 常驻 subagent 运行时。开启后 task_tool 被 subagent_spawn/wait/list/
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
@@ -825,11 +827,12 @@ react:
     auto_save: false           # true = 自演进审批无需用户点击自动通过
     review_feedback_min_confidence: 0.7
   # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
-  # 默认关闭；设 enabled: true 后 agent 模式挂载 TTSERail。dream_interval /
+  # 默认关闭；enabled 只控制 agent/work 的内置 TTSE；code 只通过会话插件挂载。
+  # dream_interval /
   # dream_min_hours / dream_ttl_days 由实现固定（50 / 24.0 / 90），不对用户开放。
   # enabled=true 时 Host 会自动拉起 agent_observability（轨迹采集依赖 LLM/工具 span）。
   ttse:
-    enabled: false           # 默认关闭；true 才挂载 TTSERail（仅 agent 模式）
+    enabled: false           # 仅控制 agent/work 内置 TTSE，不在 code 注入 Rail
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
@@ -1069,6 +1072,8 @@ channels:
       - name: 飞书默认应用
       # 飞书应用配置
         app_id:
+        # 新版 JiuwenMate 可填 JM-02 同事 ID；留空时保持个人版消息路由
+        agent_id:
         app_secret:
         encrypt_key:
         verification_token:
@@ -1086,6 +1091,7 @@ channels:
     # 企业飞书多 Bot 配置（每个 bot 会注册为独立 channel: feishu_enterprise:<app_id>）
     # bot_a:
     #   app_id:
+    #   agent_id:  # 可选：绑定到一个 JM-02 新版同事
     #   app_secret:
     #   encrypt_key:
     #   verification_token:
@@ -1093,6 +1099,15 @@ channels:
     #   enable_streaming: true
     #   chat_id:
     #   enabled: false
+  welink:
+    # 一个 AI 同事绑定一个 WeLink 账号。登录凭证写在 credential_dir，由办公室扫码写入。
+    enabled: false
+    account:
+    persistent_agent_id:
+    cli_path: welink-cli
+    env: pro
+    credential_dir:
+    poll_interval_seconds: 5
   xiaoyi:
     # 小艺渠道不做文件回传：send_file_to_user 不注册给模型，
     # 相关提示词也不再要求它发文件（见 file_delivery_policy / TeamWorkspaceReportPathRail）。
@@ -1673,6 +1688,8 @@ modes:
     #   AgentModeRail, StructuredAskUserRail, ConfirmInterruptRail, ContextProcessorRail
     # 注意：ProjectMemoryRail, CodingMemoryRail 受 memory.enabled 开关控制，
     #       开关关闭时不加载，开关开启时固定挂载。
+    #       TTSERail 受 react.ttse.enabled 控制（与 agent 模式同一开关），
+    #       开启后挂载 FACT/TIP 双轨自演进；不要放进下方动态 rails 列表。
     rails:
       - SkillUseRail
       - WorktreeRail
@@ -1879,5 +1896,5 @@ recommendation:
   topic_enabled: null
   prompt_enabled: null
   # 话题推荐模型：models 中某个模型的 model_id。
-  # follow_main 只留给还没选过的旧配置，读取时按列表第一项解析，设置页不再提供这个选项。
-  model: follow_main
+  # 未配置时为空，不自动使用聊天模型。
+  model: ""

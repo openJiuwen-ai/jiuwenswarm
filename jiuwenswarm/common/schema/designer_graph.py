@@ -676,7 +676,7 @@ def normalize_node(raw: Any) -> DesignerGraphNode:
     config = normalize_node_config(raw.get("config"))
     if not str(config.get(CONFIG_KEY_PIPELINE) or "").strip():
         inferred = infer_pipeline_from_id(node_id)
-        if inferred:
+        if inferred and PIPELINE_TO_TYPE[inferred] == node_type:
             config[CONFIG_KEY_PIPELINE] = inferred
     if not str(config.get(CONFIG_KEY_ROLE) or "").strip():
         config[CONFIG_KEY_ROLE] = node_type
@@ -1543,7 +1543,8 @@ def node_pipeline(node: DesignerGraphNode) -> str:
     role = str(config.get(CONFIG_KEY_ROLE) or "").strip()
     if role in PIPELINES:
         return role
-    return infer_pipeline_from_id(str(node.get("id") or ""))
+    inferred = infer_pipeline_from_id(str(node.get("id") or ""))
+    return inferred if inferred and PIPELINE_TO_TYPE[inferred] == node.get("type") else ""
 
 
 def node_delegate(node: DesignerGraphNode) -> str:
@@ -1595,7 +1596,11 @@ def _merge_node_patch(existing: dict[str, Any], patch: dict[str, Any]) -> dict[s
 
 
 def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExecutionGraph:
-    """Merge upserts/removals into a domain graph, then re-normalize."""
+    """Merge same-type node edits; a type change replaces the whole node.
+
+    Config/layout objects merge recursively, so an empty object is a no-op.
+    Explicit nulls and arrays retain their replacement semantics.
+    """
     if patch is None:
         patch = {}
     if not isinstance(patch, dict):
@@ -1617,11 +1622,13 @@ def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExec
         if isinstance(item, dict):
             existing = nodes_by_id.get(str(item.get("id") or "").strip())
             if existing is not None:
-                merged = {**existing, **item}
-                for field in ("config", "layout"):
-                    if isinstance(existing.get(field), dict) and isinstance(item.get(field), dict):
-                        merged[field] = _merge_node_patch(existing[field], item[field])
-                item = merged
+                patch_type = item.get("type", existing["type"])
+                if isinstance(patch_type, str) and patch_type.strip() == existing["type"]:
+                    merged = {**existing, **item}
+                    for field in ("config", "layout"):
+                        if isinstance(existing.get(field), dict) and isinstance(item.get(field), dict):
+                            merged[field] = _merge_node_patch(existing[field], item[field])
+                    item = merged
         node = normalize_node(item)
         nodes_by_id[node["id"]] = node
     remove_node_ids = patch.get("remove_node_ids") or []

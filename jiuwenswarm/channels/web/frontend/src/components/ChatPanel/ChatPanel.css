@@ -1354,6 +1354,114 @@
   max-width: 200px;
 }
 
+/* 用户气泡内 @成员 提及 chip（与 skill chip 同族、更强调：实线描边 + 加粗） */
+.chat-message-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  margin: 0 2px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--color-chat-accent);
+  background: var(--color-chat-accent-subtle);
+  color: var(--color-chat-accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  user-select: none;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.chat-message-mention-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+/* @成员「已接收待回复」占位气泡：挂在用户气泡下方左侧，与成员消息同列对齐 */
+.mention-reply-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  width: min(100%, 920px);
+}
+
+.mention-reply-pending__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.mention-reply-pending__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.mention-reply-pending__bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--color-border-default);
+  background: rgba(var(--color-action-secondary-rgb), 0.72);
+  padding: 6px 12px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.mention-reply-pending__dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.mention-reply-pending__dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-chat-accent);
+  animation: mention-reply-dot-bounce 1.1s ease-in-out infinite;
+}
+
+.mention-reply-pending__dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.mention-reply-pending__dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes mention-reply-dot-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.55;
+  }
+
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mention-reply-pending__dots i {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 /* 输入栏内已选技能 chips（与 textarea 同行） */
 .chat-input-row {
   display: flex;
@@ -4224,7 +4332,7 @@
 .chat-welcome__composer {
   position: relative;
   width: min(100%, 768px);
-  margin-bottom: 1.25rem;
+  margin-bottom: 24px;
 }
 
 .chat-welcome__banner {
@@ -4391,7 +4499,7 @@
 
 .chat-welcome__composer {
   width: min(100%, 768px);
-  margin-bottom: 1.25rem;
+  margin-bottom: 24px;
 }
 
 /* 4.9 专家团「通过聊天创建」欢迎态：只由专家团入口挂载，普通新会话保留原首页。 */
@@ -4493,30 +4601,36 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.5rem;
+  gap: 10px;
   width: min(100%, 768px);
   /* Below the composer, which already keeps its own bottom margin. */
   margin-top: 0;
   margin-bottom: 0;
 }
 
+.chat-suggestions__title {
+  margin: 0 0 0.25rem 0.875rem;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
 .chat-suggestion-card {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 0.25rem;
-  width: min(100%, 440px);
+  width: 100%;
   max-width: 100%;
   padding: 0;
   border-radius: 10px;
-  border: 1px solid var(--color-border-default);
-  background: var(--color-surface-card);
+  border: 0;
+  background: transparent;
   box-shadow: none;
   color: var(--color-text-primary);
-  transition:
-    border-color 160ms ease,
-    background-color 160ms ease;
+  transition: background-color 160ms ease;
 }
 
 .chat-suggestion-card__main {
@@ -4525,8 +4639,8 @@
   gap: 0.75rem;
   min-width: 0;
   flex: 1;
-  min-height: 44px;
-  padding: 0.625rem 0.875rem;
+  min-height: 30px;
+  padding: 5px 0.875rem;
   border: 0;
   background: transparent;
   color: inherit;
@@ -4534,103 +4648,18 @@
   cursor: pointer;
 }
 
-.chat-suggestion-card:hover {
-  border-color: var(--color-action-primary);
-  background: var(--color-chat-suggestion-hover);
-}
-
+.chat-suggestion-card:hover,
 .chat-suggestion-card:focus-within {
-  border-color: var(--color-action-primary);
-  outline: 2px solid var(--color-action-primary-subtle);
-  outline-offset: 2px;
+  background: var(--color-surface-hover);
 }
 
 .chat-suggestion-card__text {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: var(--font-size-sm);
+  font-size: 14px;
   font-weight: 400;
-  line-height: 1.4;
-}
-
-/* The next-input suggestion follows the latest assistant reply as a chip; clicking it sends it. */
-.chat-prompt-suggestion-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  margin-top: 8px;
-}
-
-.chat-prompt-suggestion-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 2px 4px 2px 12px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 999px;
-  background: var(--color-action-primary-subtle);
-  color: var(--color-text-primary);
-}
-
-.chat-prompt-suggestion-chip:hover {
-  border-color: var(--color-border-strong);
-}
-
-.chat-prompt-suggestion-chip__send {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 4px 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: var(--font-size-sm);
-  line-height: 1.4;
-  text-align: left;
-  cursor: pointer;
-}
-
-.chat-prompt-suggestion-chip__label {
-  flex: 0 0 auto;
-  color: var(--color-text-secondary);
-}
-
-.chat-prompt-suggestion-chip__text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.chat-prompt-suggestion-chip__dismiss {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.chat-prompt-suggestion-chip__dismiss:hover {
-  background: var(--color-icon-btn-hover-surface);
-  color: var(--color-text-primary);
-}
-
-.chat-prompt-suggestion-chip__send:focus-visible,
-.chat-prompt-suggestion-chip__dismiss:focus-visible {
-  outline: 2px solid var(--color-border-strong);
-  outline-offset: 1px;
+  line-height: 22px;
 }
 
 .chat-suggestion-card__arrow {
@@ -4647,47 +4676,9 @@
   transform: translateX(2px);
 }
 
-.chat-suggestion-card__dismiss {
-  grid-column: 2;
-  grid-row: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 160ms ease,
-    background-color 160ms ease,
-    color 160ms ease;
-}
-
-.chat-suggestion-card:hover .chat-suggestion-card__dismiss,
-.chat-suggestion-card:focus-within .chat-suggestion-card__dismiss {
-  opacity: 1;
-}
-
-.chat-suggestion-card__dismiss:hover {
-  background: var(--color-surface-panel-strong);
-  color: var(--color-text-primary);
-}
-
-@media (hover: none) {
-  .chat-suggestion-card__dismiss {
-    opacity: 1;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .chat-suggestion-card,
-  .chat-suggestion-card__arrow,
-  .chat-suggestion-card__dismiss {
+  .chat-suggestion-card__arrow {
     transition: none;
   }
 }
@@ -5315,10 +5306,6 @@
   grid-row: 2;
   min-height: 0;
   padding-top: 0.125rem;
-}
-
-.chat-suggestion-card--hot-list .chat-suggestion-card__dismiss {
-  align-self: start;
 }
 
 .chat-suggestion-card--hot-list summary {

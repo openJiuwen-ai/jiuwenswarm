@@ -41,8 +41,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
     HotListFeed,
     HotListPull,
     hot_event_key,
+    hot_list_open_url,
     normalize_news_query,
-    search_page_url,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
     RIDUserContextSnapshot,
@@ -168,11 +168,13 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     SessionSummaryArtifact,
     distill_trigger_interests,
     eligible_natural_revisit_summaries,
+    is_user_revisit_eligible,
 )
 from jiuwenswarm.server.runtime.session.project_store import list_projects
 from jiuwenswarm.server.runtime.session.session_history import (
     SESSION_REQUEST_COMPLETED_EVENT,
     CompletedSessionPrefix,
+    SessionCompletionBoundary,
     project_completed_session_prefix,
     project_completed_session_records,
 )
@@ -1454,8 +1456,8 @@ def _hot_list_plan(plan: Mapping[str, Any], *, input_snapshot_id: str) -> dict[s
         "hot_list_evidence": {
             "candidate_id": candidate_id,
             "fetch_status": "success",
-            "source_url": search_page_url(entry.word),
-            "search_url": search_page_url(str(plan["primary_query"])),
+            "source_url": hot_list_open_url(entry, pull),
+            "search_url": hot_list_open_url(entry, pull),
             "source_kind": HOT_LIST_SOURCE_KIND,
             "publisher": (urlparse(pull.list_url).hostname or "").removeprefix("www."),
             "document_revision_id": document_revision_id,
@@ -2493,9 +2495,7 @@ class V6SourceMessage:
 
     @property
     def natural(self) -> bool:
-        return (
-            self.input_origin == "manual_free_text" and self.assistance_origin == "none"
-        )
+        return is_user_revisit_eligible(self.input_origin, self.assistance_origin)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2716,13 +2716,17 @@ def _session_summary_materialization_receipt(
 ) -> dict[str, Any]:
     summary_ids = [summary.session_summary_id for summary in summaries]
     generated = list(generated_summary_ids)
+    generated_set = set(generated)
+    # Reused summaries keep the provenance of the call that wrote them; only
+    # summaries minted in this run must carry the current config version.
     _rejected3 = (
-        len(generated) != len(set(generated))
-        or not set(generated).issubset(summary_ids)
+        len(generated) != len(generated_set)
+        or not generated_set.issubset(summary_ids)
         or not summary_config_version
         or any(
             summary.summary_config_version != summary_config_version
             for summary in summaries
+            if summary.session_summary_id in generated_set
         )
     )
     if (
@@ -2731,7 +2735,6 @@ def _session_summary_materialization_receipt(
         raise TerminalGenerationRejection(
             "session_summary_materialization_contract_failed"
         )
-    generated_set = set(generated)
     return {
         "schema_version": SESSION_SUMMARY_MATERIALIZATION_RECEIPT_VERSION,
         "input_snapshot_id": snapshot.input_snapshot_id,
@@ -3010,11 +3013,10 @@ def _latest_session_summaries(
 ) -> dict[str, Mapping[str, Any]]:
     """The newest stored summary in a scope of each of the given sessions.
 
-    A summary configuration upgrade rewrites a session at the same completion
-    boundary, and a turn that completes while the shared state is prepared
-    leaves a summary of that boundary without it; at such a tie the summary
-    written under the current configuration version, then the one covering
-    more turns, is read.
+    Summaries are content-keyed: a model or prompt-config change does not force
+    a rewrite. When several rows share a completion boundary (legacy digests),
+    prefer the one whose config version matches the current schema prefix, then
+    the one covering more turns.
     """
 
     latest: dict[str, Mapping[str, Any]] = {}
@@ -3413,6 +3415,16 @@ def _summary_origins(
     assistance_origins = tuple(
         dict.fromkeys(item.assistance_origin for item in messages)
     )
+    # Hand-typed and prompt-suggestion turns are equivalent for RID. When a
+    # session mixes only those, project a single eligible pair instead of
+    # "mixed" so natural_revisit_eligible stays true.
+    if messages and all(
+        is_user_revisit_eligible(item.input_origin, item.assistance_origin)
+        for item in messages
+    ):
+        if len(input_origins) == 1 and len(assistance_origins) == 1:
+            return input_origins[0], assistance_origins[0]
+        return "manual_free_text", "none"
     return (
         input_origins[0] if len(input_origins) == 1 else "mixed",
         assistance_origins[0] if len(assistance_origins) == 1 else "mixed",
@@ -3500,6 +3512,60 @@ def _session_identity_payload(
             for message, content, answer in selected
         ],
     }
+
+
+def _session_summary_content_identity(
+    *,
+    context_scope: str,
+    session_payload: Mapping[str, Any],
+    source_event_ids: Sequence[str],
+    source_locators: Sequence[SessionSourceLocator],
+    completion_boundary: SessionCompletionBoundary,
+) -> dict[str, Any]:
+    """Content-only identity: conversation coverage, not summarizer model/config."""
+
+    return {
+        "context_scope": context_scope,
+        "session": session_payload,
+        "source_event_ids": list(source_event_ids),
+        "source_locators": [item.as_payload() for item in source_locators],
+        "completion_boundary": completion_boundary.as_payload(),
+    }
+
+
+def _session_summary_content_digest(identity: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _session_summary_content_matches(
+    artifact: SessionSummaryArtifact,
+    *,
+    session_id: str,
+    context_scope: str,
+    input_origin: str,
+    assistance_origin: str,
+    source_event_ids: Sequence[str],
+    source_locators: Sequence[SessionSourceLocator],
+    completion_boundary: SessionCompletionBoundary,
+    completed_at: float,
+) -> bool:
+    return (
+        artifact.session_id == session_id
+        and artifact.context_scope == context_scope
+        and artifact.input_origin == input_origin
+        and artifact.assistance_origin == assistance_origin
+        and artifact.source_event_ids == tuple(source_event_ids)
+        and artifact.source_locators == tuple(source_locators)
+        and artifact.completion_boundary == completion_boundary
+        and float(artifact.completed_at) == float(completed_at)
+    )
 
 
 def _clip_summary_text(value: str | None, limit: int) -> str | None:
@@ -3725,9 +3791,15 @@ def _recent_rid_summaries(
 def _rid_request_estimate_payload(rid_inputs: Mapping[str, Any]) -> str:
     """The serialized RID request, for its context-window preflight."""
 
+    binding = rid_inputs["binding"]
+    binding_payload = (
+        binding.as_provenance()
+        if hasattr(binding, "as_provenance")
+        else binding
+    )
     return json.dumps(
         {
-            "binding": rid_inputs["binding"].as_provenance(),
+            "binding": binding_payload,
             "input_snapshot_id": rid_inputs["input_snapshot_id"],
             "user_profile": rid_inputs["user_profile"],
             "long_term_profile_interests": [
@@ -3748,6 +3820,138 @@ def _rid_request_estimate_payload(rid_inputs: Mapping[str, Any]) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _fit_rid_inputs_to_budget(
+    rid_inputs: dict[str, Any],
+    *,
+    counter: history.StageTokenCounter,
+    limit: int,
+    required_summary_ids: Iterable[str] = (),
+) -> bool:
+    """Drop oldest optional RID inputs until the one call fits.
+
+    Short-delta summaries stay until every optional summary is gone, then the
+    oldest required summary, then the oldest long-term profile interest. Returns
+    False only when the fixed envelope itself still exceeds ``limit``.
+    """
+
+    required = {str(item) for item in required_summary_ids}
+
+    def estimate() -> int:
+        return counter.estimate_stage_tokens(
+            _RID_API_SYSTEM_PROMPT,
+            _rid_request_estimate_payload(rid_inputs),
+            _RID_RESERVED_OUTPUT_TOKENS,
+        )
+
+    while True:
+        if estimate() <= limit:
+            return True
+        summaries = list(rid_inputs.get("session_summaries") or ())
+        droppable = sorted(
+            (
+                summary
+                for summary in summaries
+                if str(summary.session_summary_id) not in required
+            ),
+            key=lambda item: (float(item.completed_at), str(item.session_summary_id)),
+        )
+        if droppable:
+            drop_id = droppable[0].session_summary_id
+            rid_inputs["session_summaries"] = tuple(
+                summary
+                for summary in summaries
+                if summary.session_summary_id != drop_id
+            )
+            continue
+        if summaries:
+            oldest = min(
+                summaries,
+                key=lambda item: (float(item.completed_at), str(item.session_summary_id)),
+            )
+            rid_inputs["session_summaries"] = tuple(
+                summary
+                for summary in summaries
+                if summary.session_summary_id != oldest.session_summary_id
+            )
+            continue
+        interests = list(rid_inputs.get("long_term_profile_interests") or ())
+        if interests:
+            oldest_interest = min(
+                interests,
+                key=lambda item: (
+                    int(getattr(item, "profile_semantic_version", 0) or 0),
+                    str(item.interest_summary_id),
+                ),
+            )
+            rid_inputs["long_term_profile_interests"] = tuple(
+                interest
+                for interest in interests
+                if interest.interest_summary_id != oldest_interest.interest_summary_id
+            )
+            continue
+        return False
+
+
+def _recent_finalizer_estimate_payload(
+    *,
+    input_snapshot_id: str,
+    discussion_coverage: Any,
+    previously_offered: Any,
+    candidates: Sequence[Mapping[str, Any]],
+) -> str:
+    return json.dumps(
+        {
+            "input_snapshot_id": input_snapshot_id,
+            "discussion_coverage": discussion_coverage,
+            "previously_offered": previously_offered,
+            "candidates": list(candidates),
+            "request_id": f"v6-finalize-{'0' * 32}",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _fit_recent_finalizer_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    counter: history.StageTokenCounter,
+    limit: int,
+    input_snapshot_id: str,
+    discussion_coverage: Any,
+    previously_offered: Any,
+    reserved_output: int = 4096,
+) -> list[dict[str, Any]] | None:
+    """Drop trailing documents, then trailing candidates, until the call fits."""
+
+    fitted = [dict(item) for item in candidates]
+    for item in fitted:
+        item["documents"] = list(item.get("documents") or [])
+
+    def estimate(current: Sequence[Mapping[str, Any]]) -> int:
+        return counter.estimate_stage_tokens(
+            _RECENT_FINALIZER_PROMPT,
+            _recent_finalizer_estimate_payload(
+                input_snapshot_id=input_snapshot_id,
+                discussion_coverage=discussion_coverage,
+                previously_offered=previously_offered,
+                candidates=current,
+            ),
+            reserved_output,
+        )
+
+    while fitted:
+        if estimate(fitted) <= limit:
+            return fitted
+        last = fitted[-1]
+        documents = list(last.get("documents") or [])
+        if len(documents) > 1:
+            # Keep the first document as the lead; drop older extras from the tail.
+            last["documents"] = documents[:-1]
+            continue
+        fitted.pop()
+    return None
 
 
 def _completed_answers(
@@ -4658,12 +4862,10 @@ class TopicPipeline:
                 input_origin = str(
                     record.get("input_origin") or "pasted_or_unknown"
                 )
-                if input_origin != "manual_free_text":
-                    continue
                 assistance_origin = str(
                     record.get("assistance_origin") or "unknown"
                 )
-                if assistance_origin != "none":
+                if not is_user_revisit_eligible(input_origin, assistance_origin):
                     continue
                 witness_items.append(
                     (
@@ -5411,11 +5613,13 @@ class TopicPipeline:
         return counter, int(config.context_window_tokens)
 
     @staticmethod
-    def _preflight_rid_inputs(
+    def _fit_rid_inputs(
         config: ArkBackgroundConfig,
-        rid_inputs: Mapping[str, Any],
+        rid_inputs: dict[str, Any],
+        *,
+        required_summary_ids: Iterable[str] = (),
     ) -> None:
-        """Bound the one RID call by the provider's context window (fail closed)."""
+        """Shrink the one RID call to the provider window by dropping oldest inputs."""
 
         if config.context_window_tokens is None:
             raise TerminalGenerationRejection("rid_context_limit_unverified")
@@ -5425,18 +5629,85 @@ class TopicPipeline:
             raise TerminalGenerationRejection(
                 "rid_context_limit_unverified"
             ) from exc
-        preflight = history.preflight_stage(
-            counter,
-            history.ContextLimitInfo(
-                value=int(config.context_window_tokens),
-                source="ARK_CONTEXT_WINDOW_TOKENS",
-            ),
-            _RID_API_SYSTEM_PROMPT,
-            _rid_request_estimate_payload(rid_inputs),
-            _RID_RESERVED_OUTPUT_TOKENS,
-        )
-        if preflight.status != "fit":
+        try:
+            fitted = _fit_rid_inputs_to_budget(
+                rid_inputs,
+                counter=counter,
+                limit=int(config.context_window_tokens),
+                required_summary_ids=required_summary_ids,
+            )
+        except history.ContextCountingUnverified as exc:
+            raise TerminalGenerationRejection(
+                "rid_context_limit_unverified"
+            ) from exc
+        if not fitted:
             raise TerminalGenerationRejection("rid_context_limit")
+
+    def _load_reusable_session_summary(
+        self,
+        *,
+        summary_id: str,
+        session_id: str,
+        context_scope: str,
+        input_origin: str,
+        assistance_origin: str,
+        source_event_ids: Sequence[str],
+        source_locators: Sequence[SessionSourceLocator],
+        completion_boundary: SessionCompletionBoundary,
+        completed_at: float,
+    ) -> SessionSummaryArtifact | None:
+        """Return a stored summary for the same conversation content, if any.
+
+        Exact content digests hit first. Legacy rows whose id still embedded
+        summarizer model/config are reused when turns and completion boundary
+        match, so a model switch does not rewrite history.
+        """
+
+        rows = self.store.query_events(
+            event_type="session_summary",
+            topic_id=summary_id,
+            policy_id=POLICY_ID,
+            limit=2,
+            newest_first=True,
+        )
+        payload: Mapping[str, Any] | None = None
+        if rows:
+            if len(rows) != 1 or not isinstance(rows[0].get("payload"), dict):
+                raise TerminalGenerationRejection(
+                    "session_summary_persistence_conflict"
+                )
+            payload = rows[0]["payload"]
+        else:
+            latest = _latest_session_summaries(
+                self.store, context_scope, {session_id},
+            ).get(session_id)
+            if isinstance(latest, Mapping):
+                payload = latest
+        if payload is None:
+            return None
+        try:
+            cached = SessionSummaryArtifact.from_payload(payload)
+        except ValueError as exc:
+            raise TerminalGenerationRejection(
+                "session_summary_persistence_conflict"
+            ) from exc
+        if not _session_summary_content_matches(
+            cached,
+            session_id=session_id,
+            context_scope=context_scope,
+            input_origin=input_origin,
+            assistance_origin=assistance_origin,
+            source_event_ids=source_event_ids,
+            source_locators=source_locators,
+            completion_boundary=completion_boundary,
+            completed_at=completed_at,
+        ):
+            if rows:
+                raise TerminalGenerationRejection(
+                    "session_summary_persistence_conflict"
+                )
+            return None
+        return cached
 
     async def _summarize_sessions(
         self,
@@ -5512,25 +5783,17 @@ class TopicPipeline:
                 )
                 for item in covered
             )
-            semantic_identity = {
-                "context_scope": snapshot.context_scope,
-                "session": session_payload,
-                "source_event_ids": list(source_event_ids),
-                "source_locators": [item.as_payload() for item in source_locators],
-                "completion_boundary": boundary.as_payload(),
-                "summary_provider_id": "ark",
-                "summary_provider_version": provider_version,
-                "summary_config_version": summary_config_version,
-            }
-            semantic_digest = hashlib.sha256(
-                json.dumps(
-                    semantic_identity,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-            ).hexdigest()
-            summary_id = f"summary:{session_id}:{semantic_digest}"
+            content_identity = _session_summary_content_identity(
+                context_scope=snapshot.context_scope,
+                session_payload=session_payload,
+                source_event_ids=source_event_ids,
+                source_locators=source_locators,
+                completion_boundary=boundary,
+            )
+            summary_id = (
+                f"summary:{session_id}:"
+                f"{_session_summary_content_digest(content_identity)}"
+            )
             metadata = {
                 "session_summary_id": summary_id,
                 "session_id": session_id,
@@ -5545,31 +5808,18 @@ class TopicPipeline:
                 "summary_provider_version": provider_version,
                 "summary_config_version": summary_config_version,
             }
-            rows = self.store.query_events(
-                event_type="session_summary",
-                topic_id=summary_id,
-                policy_id=POLICY_ID,
-                limit=2,
-                newest_first=True,
+            cached = self._load_reusable_session_summary(
+                summary_id=summary_id,
+                session_id=session_id,
+                context_scope=snapshot.context_scope,
+                input_origin=input_origin,
+                assistance_origin=assistance_origin,
+                source_event_ids=source_event_ids,
+                source_locators=source_locators,
+                completion_boundary=boundary,
+                completed_at=boundary.completed_at,
             )
-            if rows:
-                if len(rows) != 1 or not isinstance(rows[0].get("payload"), dict):
-                    raise TerminalGenerationRejection(
-                        "session_summary_persistence_conflict"
-                    )
-                try:
-                    cached = SessionSummaryArtifact.from_payload(rows[0]["payload"])
-                except ValueError as exc:
-                    raise TerminalGenerationRejection(
-                        "session_summary_persistence_conflict"
-                    ) from exc
-                if any(
-                    getattr(cached, field) != value
-                    for field, value in metadata.items()
-                ):
-                    raise TerminalGenerationRejection(
-                        "session_summary_persistence_conflict"
-                    )
+            if cached is not None:
                 artifacts_by_session[session_id] = cached
                 continue
             pending_sessions.append(_session_model_payload(session_id, messages))
@@ -5744,9 +5994,10 @@ class TopicPipeline:
         waits for it and reuses its summaries. A conversation is summarized
         again once a completed turn of it is missing from its latest summary.
         Only the summaries are written: no coverage receipt, as no generation
-        consumed them. A summary configuration upgrade, and a scope with more
-        than ``_PREPARED_SUMMARY_LIMIT`` such conversations (a first
-        preparation with history), are left to that scope's own generation.
+        consumed them. A scope with more than ``_PREPARED_SUMMARY_LIMIT`` such
+        conversations (a first preparation with history) is left to that
+        scope's own generation. Model or summarizer-config changes reuse
+        content-matched summaries instead of rewriting them.
         """
 
         try:
@@ -6060,7 +6311,13 @@ class TopicPipeline:
         )
         if reused is not None:
             return reused
-        self._preflight_rid_inputs(config, rid_inputs)
+        self._fit_rid_inputs(
+            config,
+            rid_inputs,
+            required_summary_ids=_short_delta_summary_ids(
+                snapshot, eligible_summaries
+            ),
+        )
         frozen_request: dict[str, Any] = {}
         rid_response: Any = None
 
@@ -6263,7 +6520,7 @@ class TopicPipeline:
         for entry in pulled:
             if card_copy_rejection_reason(_hot_list_title(entry.word)) is not None:
                 continue
-            if feedback.blocks_news(search_page_url(entry.word)):
+            if feedback.blocks_news(hot_list_open_url(entry, pull)):
                 continue
             if feedback.blocks_news_event(hot_event_key(entry.word)):
                 continue
@@ -8060,6 +8317,29 @@ class TopicPipeline:
         ]
         if not candidates:
             return {}
+        if config.context_window_tokens is None:
+            raise TerminalGenerationRejection("recent_finalization_context_limit")
+        try:
+            counter = history.StageTokenCounter(config.model)
+            fitted_candidates = _fit_recent_finalizer_candidates(
+                candidates,
+                counter=counter,
+                limit=int(config.context_window_tokens),
+                input_snapshot_id=snapshot.input_snapshot_id,
+                discussion_coverage=plans[0].get("discussion_coverage", []),
+                previously_offered=plans[0].get("previously_offered", []),
+            )
+        except history.ContextCountingUnverified as exc:
+            raise TerminalGenerationRejection(
+                "recent_finalization_context_limit"
+            ) from exc
+        if not fitted_candidates:
+            raise TerminalGenerationRejection("recent_finalization_context_limit")
+        candidates = fitted_candidates
+        kept_ids = {str(item["candidate_id"]) for item in candidates}
+        finalized = [
+            plan for plan in finalized if str(plan["candidate_id"]) in kept_ids
+        ]
         payload = json.dumps({
             "input_snapshot_id": snapshot.input_snapshot_id,
             "discussion_coverage": plans[0].get("discussion_coverage", []),
@@ -8067,11 +8347,6 @@ class TopicPipeline:
             "candidates": candidates,
             "request_id": f"v6-finalize-{uuid.uuid4().hex}",
         }, ensure_ascii=False)
-        counter = history.StageTokenCounter(config.model)
-        if config.context_window_tokens is None or counter.estimate_stage_tokens(
-            _RECENT_FINALIZER_PROMPT, payload, 4096
-        ) > config.context_window_tokens:
-            raise TerminalGenerationRejection("recent_finalization_context_limit")
         response = await lanes.within(
             lambda: invoke_stage("v6_recent_finalizer", _RECENT_FINALIZER_PROMPT, payload),
             *{_optional_lane(plan) for plan in finalized},

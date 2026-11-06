@@ -22,6 +22,7 @@ import pytest
 from jiuwenswarm.server.ipc.client import connect
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.ipc.stream import PipeConnection
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
@@ -69,6 +70,158 @@ async def _saturated_default_pool():
     finally:
         release.set()
         await asyncio.gather(*blockers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first_close", [False, True])
+async def test_pipe_close_waits_for_native_poll_completion(cancel_first_close: bool) -> None:
+    """Keep an in-flight native read alive until its owner has collected it."""
+    entered = threading.Event()
+    release = threading.Event()
+    in_flight = threading.Event()
+    closed = threading.Event()
+    closed_while_reading = []
+
+    class NativePipe:
+        def poll(self, _timeout):
+            in_flight.set()
+            entered.set()
+            try:
+                assert release.wait(2)
+                return False
+            finally:
+                in_flight.clear()
+
+        def close(self):
+            closed_while_reading.append(in_flight.is_set())
+            closed.set()
+
+    connection = PipeConnection(NativePipe())
+    read = asyncio.create_task(connection.recv())
+    first_close = None
+    try:
+        async with asyncio.timeout(1):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        first_close = asyncio.create_task(connection.close())
+        await asyncio.sleep(0.02)
+        assert not first_close.done()
+        assert not closed.is_set()
+        if cancel_first_close:
+            first_close.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_close
+        release.set()
+        await asyncio.wait_for(connection.close(), 1)
+        assert closed.is_set()
+        assert closed_while_reading == [False]
+        with pytest.raises(ConnectionError):
+            await read
+    finally:
+        release.set()
+        await connection.close()
+        await asyncio.gather(read, *([first_close] if first_close is not None else []), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_listener_close_preserves_accepted_connection_for_shutdown_ack() -> None:
+    async with _pair() as (client, peer, server):
+        await asyncio.wait_for(server.stop_accepting(), 1)
+        await peer.send({"kind": "shutdown.done", "ok": True})
+        assert await asyncio.wait_for(client.recv(), 1) == {
+            "kind": "shutdown.done", "ok": True,
+        }
+        await peer.close()
+        await client.close()
+        await asyncio.wait_for(server.close(), 1)
+
+
+@pytest.mark.asyncio
+async def test_closed_listener_does_not_unlink_a_replacement_endpoint() -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        await server.close()
+        replacement = Path(server.path)
+        replacement.write_text("replacement owner", encoding="utf-8")
+        try:
+            await server.close()
+            assert replacement.read_text(encoding="utf-8") == "replacement owner"
+        finally:
+            replacement.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix endpoint ownership across concurrent close")
+async def test_concurrent_listener_close_does_not_unlink_a_new_owner(monkeypatch) -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        waiting = asyncio.Event()
+        releases = [asyncio.Event(), asyncio.Event()]
+        entered = 0
+        wait_closed = server._unix.wait_closed
+
+        async def controlled_wait_closed():
+            nonlocal entered
+            index = entered
+            entered += 1
+            if entered == 2:
+                waiting.set()
+            await wait_closed()
+            await releases[index].wait()
+
+        monkeypatch.setattr(server._unix, "wait_closed", controlled_wait_closed)
+        first = asyncio.create_task(server.close())
+        second = asyncio.create_task(server.close())
+        replacement = IpcServer(server.path)
+        try:
+            await asyncio.wait_for(waiting.wait(), 1)
+            releases[0].set()
+            await asyncio.wait_for(first, 1)
+            await replacement.start()
+            releases[1].set()
+            await asyncio.wait_for(second, 1)
+            assert Path(replacement.path).exists()
+        finally:
+            for release in releases:
+                release.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+            await replacement.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix listener cancellation and queued stream cleanup")
+async def test_cancelled_listener_stop_can_resume_draining_connections() -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        closing = asyncio.Event()
+        drained = asyncio.Event()
+
+        async def blocked_close():
+            closing.set()
+            await asyncio.Event().wait()
+
+        async def remaining_close():
+            drained.set()
+
+        await server._queue.put(SimpleNamespace(close=blocked_close))
+        await server._queue.put(SimpleNamespace(close=remaining_close))
+        stopping = asyncio.create_task(server.stop_accepting())
+        try:
+            await asyncio.wait_for(closing.wait(), 1)
+            stopping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stopping
+            assert not server._unix.is_serving()
+            await asyncio.wait_for(server.close(), 1)
+            assert drained.is_set()
+        finally:
+            stopping.cancel()
+            await asyncio.gather(stopping, return_exceptions=True)
+            if server._unix is not None:
+                server._unix.close()
 
 
 @pytest.mark.asyncio
@@ -206,15 +359,20 @@ def _capture_logs(caplog):
 async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
     root = Path(__file__).resolve().parents[3]
-    python_paths = [str(root)]
+    bootstrap = tmp_path / "diagnostic-bootstrap"
+    bootstrap.mkdir()
+    (bootstrap / "sitecustomize.py").write_text(
+        "import os, sys\n"
+        "if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):\n"
+        "    from diagnostic_worker import configure\n"
+        "    configure(os.environ['JIUWENSWARM_DIAGNOSTIC_WORKER_MODE'])\n",
+        encoding="utf-8",
+    )
+    python_paths = [str(bootstrap), str(fixture.parent), str(root)]
     if os.environ.get("PYTHONPATH"):
         python_paths.append(os.environ["PYTHONPATH"])
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(python_paths))
-
-    def command(socket_path, **options):
-        return [sys.executable, str(fixture), "--mode", mode, "--socket", socket_path]
-
-    monkeypatch.setattr(process_module, "build_worker_command", command)
+    monkeypatch.setenv("JIUWENSWARM_DIAGNOSTIC_WORKER_MODE", mode)
     endpoint = (
         str(tmp_path / "worker.pipe")
         if os.name == "nt"

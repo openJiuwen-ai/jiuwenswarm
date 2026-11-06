@@ -726,7 +726,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /setAvailableModels\(parsed\.models, parsed\.activeModel\)/);
   assert.match(page, /const reloadModels = useCallback[\s\S]*await loadModels\(\)/);
   assert.match(page, /title=\{t\('settingsPanel\.models\.customModels'\)\}/);
-  assert.match(page, /<FreeModelsSettings\s*\/>/);
+  assert.match(page, /<FreeModelsSettings\b/);
   assert.match(page, /data-testid="settings-models-add-btn"/);
   assert.match(page, /<SettingsTabLayout/);
   assert.match(page, /testIdPrefix="settings-models"/);

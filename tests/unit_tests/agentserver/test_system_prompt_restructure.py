@@ -1,6 +1,7 @@
 import asyncio
+import builtins
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -1094,8 +1095,12 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "## Current Channel" in prompt
 
     items = await agent.prompt_attachment_manager.collect_for_session("sess1")
-    assert [item.id for item in items] == ["session.sess1.runtime.setting"]
+    assert [item.id for item in items] == [
+        "session.sess1.runtime.current_media",
+        "session.sess1.runtime.setting",
+    ]
     rendered = agent.prompt_attachment_manager.render(items)
+    assert "No screen or camera image is attached to this turn." in rendered
     assert "model-x" in rendered
     assert "Current channel: web" in rendered
     assert "Always respond in English" not in prompt
@@ -1430,6 +1435,11 @@ async def test_runtime_attachment_tracks_request_mode_change(tmp_path, monkeypat
 async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     rail = BrowserTaskPromptRail()
     assert rail is not None
+    assert rail._channel is None
+    rail.set_channel(" a2a ")
+    assert rail._channel == "a2a"
+    rail.set_channel(None)
+    assert rail._channel is None
     rail.tools = [object()]
     rail.system_prompt_builder = SystemPromptBuilder(language="en")
 
@@ -1457,13 +1467,25 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
     assert "Preserve the original goal, budget, dates and object constraints" in task_section.content["en"]
-    assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
-    assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
+    assert "available AI/knowledge/weather answers with attribution" in task_section.content["en"]
+    assert "A preference is not a requirement" in task_section.content["en"]
+    assert "site, natural-result and detail-visit constraints" in task_section.content["en"]
+    assert "greater than (>) must not become at least (>=)" in task_section.content["en"]
+    assert "opening its details does not approve its business button" in task_section.content["en"]
+    assert "a sort ACK cannot substitute for comparing content" in task_section.content["en"]
+    assert "Consult retained source text/recall_handle first" in task_section.content["en"]
+    assert "resume within the original deadline only for missing work" in task_section.content["en"]
+    assert "without replaying ACKed actions" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
     assert "派发描述保留原始目标、预算、时间和对象约束" in build_browser_task_prompt("cn")
-    assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
+    assert "用户明确限定站点、自然结果或要求进入详情时仍须遵守" in build_browser_task_prompt("cn")
+    assert "高于（>）不能改成至少（>=）" in build_browser_task_prompt("cn")
+    assert "候选详情页不代表已批准执行该页业务按钮" in build_browser_task_prompt("cn")
+    assert "不用翻页成功或排序点击替代内容比较" in build_browser_task_prompt("cn")
+    assert "先用已有原文/recall_handle" in build_browser_task_prompt("cn")
+    assert "确有缺失才在原 deadline 内续跑，不重新执行已 ACK 的动作" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -1479,7 +1501,9 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
 
 
 @pytest.mark.asyncio
-async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
+@pytest.mark.parametrize("language", ["cn", "en"])
+@pytest.mark.parametrize("inner_context", [False, True])
+async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime(language, inner_context):
     browser_agent = SubAgentConfig(
         agent_card=AgentCard(name="browser_agent", description="browser"),
         system_prompt="browser",
@@ -1488,7 +1512,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
         agent_card=AgentCard(name="research_agent", description="research"),
         system_prompt="research",
     )
-    builder = SystemPromptBuilder(language="en")
+    builder = SystemPromptBuilder(language=language)
     agent = SimpleNamespace(
         card=AgentCard(name="main", description="main"),
         deep_config=SimpleNamespace(subagents=[browser_agent, research_agent]),
@@ -1500,7 +1524,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     rail.init(agent)
     await rail.before_model_call(
         AgentCallbackContext(
-            agent=agent,
+            agent=SimpleNamespace() if inner_context else agent,
             inputs=None,
             session=_FakeSession(),
             extra={},
@@ -1520,9 +1544,9 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     runtime_section = builder.get_section("subagent_tools")
     assert task_section is not None
     assert runtime_section is not None
-    assert "Browser Capability Routing Rules" in task_section.content["en"]
-    assert "Adding to a cart is reversible" in task_section.content["en"]
-    assert "Browser Capability Routing Rules" not in runtime_section.content["en"]
+    browser_prompt = build_browser_task_prompt(language)
+    assert task_section.content[language].count(browser_prompt) == 1
+    assert browser_prompt not in runtime_section.content[language]
 
 
 def test_task_planning_tools_remain_enabled_without_todo_prompt_section():
@@ -2522,7 +2546,9 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         sys_operation=None,
         language="cn",
         max_iterations=7,
+        rails=[ANY],
     )
+    assert isinstance(mock_browser.call_args.kwargs["rails"][0], interface_module.SubagentToolActivityRail)
 
 
 def test_deep_adapter_subagents_omits_research_without_explicit_enable():
@@ -2559,7 +2585,9 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         sys_operation=None,
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+        rails=[ANY],
     )
+    assert isinstance(mock_browser.call_args.kwargs["rails"][0], interface_module.SubagentToolActivityRail)
 
 
 @pytest.mark.asyncio
@@ -2633,3 +2661,54 @@ async def test_a4p_prompt_injection_observation(monkeypatch, case, reason, injec
         assert len(attachment.content) < 4000
     else:
         assert not items
+
+
+_POLICY_MODULE = "jiuwenswarm.extensions.video_duplex.backend.session_receipts"
+
+
+@pytest.mark.parametrize("with_builder", [True, False])
+def test_missing_voice_policy_clears_stale_section(monkeypatch, with_builder):
+    original_import = builtins.__import__
+
+    def import_without_policy(name, *args, **kwargs):
+        if name == _POLICY_MODULE:
+            raise ModuleNotFoundError(name, name=name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_policy)
+    rail = RuntimePromptRail()
+    builder = Mock() if with_builder else None
+    rail.system_prompt_builder = builder
+    rail._apply_voice_summary_policy(SimpleNamespace())
+    if builder is not None:
+        builder.remove_section.assert_called_once_with("video_duplex.voice_receipt")
+
+
+def test_voice_policy_internal_import_failure_is_not_hidden(monkeypatch):
+    original_import = builtins.__import__
+
+    def import_broken_policy(name, *args, **kwargs):
+        if name == _POLICY_MODULE:
+            raise ModuleNotFoundError("missing dependency", name="receipt_dependency")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_broken_policy)
+    with pytest.raises(ModuleNotFoundError, match="missing dependency"):
+        RuntimePromptRail()._apply_voice_summary_policy(SimpleNamespace())
+
+
+def test_installed_voice_policy_receives_runtime_context(monkeypatch):
+    original_import = builtins.__import__
+    policy = Mock()
+
+    def import_with_policy(name, *args, **kwargs):
+        if name == _POLICY_MODULE:
+            return SimpleNamespace(apply_summary_policy=policy)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_policy)
+    rail = RuntimePromptRail()
+    rail.system_prompt_builder = Mock()
+    ctx = SimpleNamespace()
+    rail._apply_voice_summary_policy(ctx)
+    policy.assert_called_once_with(rail.system_prompt_builder, rail._session_id, ctx)

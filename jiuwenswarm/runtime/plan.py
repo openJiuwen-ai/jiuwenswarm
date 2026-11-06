@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from weakref import WeakValueDictionary
 
-from gateway.common.mode_matrix import is_plan_mode
+from agent_gateway.common.mode_matrix import is_plan_mode
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,

@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import test, { before, after, describe } from 'node:test';
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
-import { act, createElement } from 'react';
+import registerTest from 'node:test';
 import { JSDOM } from 'jsdom';
-import i18next from 'i18next';
+
+// Register only after all asynchronous UI imports finish; --test-force-exit can otherwise
+// terminate the worker after the early pure tests, before the UI tests have been registered.
+const cases = [];
+const test = (...args) => cases.push(args);
 
 import {
   buildTopicStarterRequest,
@@ -18,7 +17,6 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   topicStarterShowsProviderRefusal,
-  topicStarterShowsRetryAction,
   topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
@@ -73,25 +71,23 @@ const dynamicSlate = {
   topics: [topic(1), topic(2)],
 };
 
-test('collapses homepage recommendation status into three jobs', () => {
+test('collapses homepage recommendation status into two copy jobs', () => {
   assert.equal(topicStarterShowsStatus('ready', false), false);
   assert.equal(topicStarterShowsStatus('preparing', false), true);
+  assert.equal(topicStarterShowsStatus('preparing', true), true);
+  assert.equal(topicStarterShowsStatus('failed', false), false);
+  assert.equal(topicStarterShowsStatus('no_content', false), false);
+  assert.equal(topicStarterShowsStatus('waiting_for_input', false), false);
   assert.equal(topicStarterStatusMessageKey('preparing', false), 'chat.topicStarter.statusPreparing');
-  assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparingWithCards');
+  assert.equal(topicStarterStatusMessageKey('preparing', true), 'chat.topicStarter.statusPreparing');
   assert.equal(topicStarterShowsSettingsAction('preparing'), false);
   assert.equal(topicStarterShowsStatus('disabled', true), true);
   assert.equal(topicStarterStatusMessageKey('disabled', true), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('disabled', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('missing_configuration', false), 'chat.topicStarter.statusNeedsSettings');
   assert.equal(topicStarterStatusMessageKey('provider_unavailable', false), 'chat.topicStarter.statusNeedsSettings');
-  assert.equal(topicStarterStatusMessageKey('waiting_for_input', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('no_content', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('failed', false), 'chat.topicStarter.statusNoCards');
-  assert.equal(topicStarterStatusMessageKey('failed', true), 'chat.topicStarter.statusUpdateIncomplete');
   assert.equal(topicStarterShowsSettingsAction('disabled'), true);
   assert.equal(topicStarterShowsSettingsAction('failed'), false);
-  assert.equal(topicStarterShowsRetryAction('waiting_for_input'), true);
-  assert.equal(topicStarterShowsRetryAction('disabled'), false);
   assert.equal(topicStarterShowsProviderRefusal('provider_unavailable'), true);
   assert.equal(topicStarterShowsProviderRefusal('failed'), false);
 });
@@ -162,289 +158,6 @@ test('keeps the exposure position after another card is dismissed', () => {
   assert.equal(click.position, 1);
 });
 
-describe('recommendation settings page', () => {
-  let createRoot;
-  let I18nextProvider;
-  let SettingsServicesProvider;
-  let RecommendationSettings;
-  let agentModule;
-  let recommendationModule;
-  let modelsModule;
-  let dom;
-  const previousGlobals = new Map();
-  const i18n = i18next.createInstance();
-
-  const READY_STATUS = Object.freeze({
-    provider: 'ark',
-    model: 'deepseek-v4-1-flash-260910',
-    context_window_tokens: 131072,
-    configured: true,
-    missing_fields: [],
-    native_search: { ddg: true, bing: true },
-    native_search_missing: [],
-    status: 'ready',
-    last_failure: null,
-    provider_refused: false,
-    enabled: false,
-    selected_model: 'mdl_flash',
-    model_options: [
-      { model_id: 'mdl_flash', name: 'deepseek-v4-1-flash-260910', disabled_reason: null },
-      { model_id: 'mdl_pro', name: 'deepseek-v4-1-pro', disabled_reason: null },
-      { model_id: 'mdl_messages', name: 'messages-model', disabled_reason: 'incompatible' },
-      { model_id: 'mdl_account', name: 'account-model', disabled_reason: 'login_required' },
-      { model_id: '', name: 'login-model', disabled_reason: 'free' },
-    ],
-  });
-
-  const svgStubPlugin = {
-    name: 'recommendation-settings-test-stubs',
-    setup(builder) {
-      builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'svg-react-stub' }));
-      builder.onLoad({ filter: /.*/, namespace: 'svg-react-stub' }, () => ({
-        contents: 'export default function SvgStub() { return null; }',
-        loader: 'js',
-      }));
-      // The section talks to the gateway through webRequest; the test answers in its place.
-      builder.onResolve({ filter: /\/services\/webClient$/ }, ({ path, importer }) =>
-        importer.endsWith('RecommendationSettings.tsx') ? { path, namespace: 'web-client-stub' } : undefined);
-      builder.onLoad({ filter: /.*/, namespace: 'web-client-stub' }, () => ({
-        contents: 'export const webRequest = (method, params) => globalThis.__recommendationRequest(method, params);',
-        loader: 'js',
-      }));
-      builder.onResolve({ filter: /SettingsSourceProvider$/ }, ({ path, importer }) =>
-        importer.endsWith('RecommendationSettings.tsx') ? { path, namespace: 'settings-source-stub' } : undefined);
-      builder.onLoad({ filter: /.*/, namespace: 'settings-source-stub' }, () => ({
-        contents: 'export function useSettingsSource() { return { values: {}, savingKeys: new Set(), save: async () => {}, patchLocal() {} }; }',
-        loader: 'js',
-      }));
-    },
-  };
-
-  before(async () => {
-    dom = new JSDOM('<!doctype html><div id="root"></div>', { pretendToBeVisual: true });
-    for (const [name, value] of Object.entries({
-      window: dom.window,
-      document: dom.window.document,
-      navigator: dom.window.navigator,
-      HTMLElement: dom.window.HTMLElement,
-      Node: dom.window.Node,
-      IS_REACT_ACT_ENVIRONMENT: true,
-    })) {
-      previousGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-      Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
-    }
-    // jsdom lacks native dialog opening/closing and scrolling; the dialogs themselves still render.
-    dom.window.HTMLDialogElement.prototype.showModal = function () {
-      this.open = true;
-    };
-    dom.window.HTMLDialogElement.prototype.close = function () {
-      this.open = false;
-    };
-    ({ createRoot } = await import('react-dom/client'));
-    const result = await build({
-      stdin: {
-        contents: `
-          export { RecommendationTopicSettings as RecommendationSettings } from './src/features/settings/modules/recommendation/RecommendationSettings';
-          export { recommendationModule } from './src/features/settings/modules/recommendation';
-          export { agentModule } from './src/features/settings/modules/agent';
-          export { modelsModule } from './src/features/settings/modules/models';
-          export { SettingsServicesProvider } from './src/features/settings/services/SettingsServicesProvider';
-        `,
-        resolveDir: fileURLToPath(new URL('../', import.meta.url)),
-        loader: 'ts',
-      },
-      bundle: true,
-      write: false,
-      platform: 'node',
-      format: 'cjs',
-      packages: 'external',
-      loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
-      define: { 'import.meta.glob': 'testAssetGlob', 'import.meta.env.DEV': 'false' },
-      banner: { js: 'const testAssetGlob = () => ({});' },
-      plugins: [svgStubPlugin],
-    });
-    const compiled = { exports: {} };
-    const require = createRequire(import.meta.url);
-    new Function('require', 'module', 'exports', result.outputFiles[0].text)(require, compiled, compiled.exports);
-    ({ RecommendationSettings, agentModule, recommendationModule, modelsModule, SettingsServicesProvider } = compiled.exports);
-    ({ I18nextProvider } = require('react-i18next'));
-    await i18n.init({
-      lng: 'zh',
-      showSupportNotice: false,
-      resources: {
-        zh: { translation: JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8')) },
-      },
-    });
-  });
-
-  after(() => {
-    delete globalThis.__recommendationRequest;
-    dom?.window.close();
-    for (const [name, descriptor] of previousGlobals) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
-  });
-
-  async function settle() {
-    await act(async () => {
-      for (let index = 0; index < 5; index += 1) await Promise.resolve();
-    });
-  }
-
-  async function mount(t, {
-    status = READY_STATUS, statusFails = false, profile = { units: [], permanent_directions: [] }, restoredProfile = null,
-    focus = null,
-  } = {}) {
-    const requests = [];
-    const corrections = [];
-    let current = { ...status };
-    globalThis.__recommendationRequest = async (method, params) => {
-      requests.push({ method, params });
-      if (method === 'topic_starters.status') {
-        if (statusFails) throw new Error('offline');
-        return current;
-      }
-      if (method === 'topic_starters.control') {
-        current = { ...current, enabled: params.action === 'enable' };
-        return current;
-      }
-      if (method === 'topic_starters.select_model') {
-        current = { ...current, selected_model: params.model };
-        return current;
-      }
-      if (method === 'topic_starters.profile') return profile;
-      if (method === 'topic_starters.get') return { available: false, reason: 'v6_pool_miss', policy_id: 'topic-starter-mvp-v6' };
-      if (method === 'topic_starters.restore_direction' && restoredProfile) return restoredProfile;
-      throw new Error(`Unexpected request: ${method}`);
-    };
-    const root = createRoot(document.getElementById('root'));
-    t.after(async () => {
-      await act(async () => root.unmount());
-    });
-    await act(async () =>
-      root.render(
-        createElement(
-          I18nextProvider,
-          { i18n },
-          createElement(
-            SettingsServicesProvider,
-            {
-              isConnected: true,
-              connectionState: 'connected',
-              request: async () => ({}),
-              recommendationFocus: focus,
-              onCorrectRecommendation: (text) => corrections.push(text),
-            },
-            createElement('section', null, createElement(RecommendationSettings, { disabled: false })),
-          ),
-        ),
-      ),
-    );
-    await settle();
-    return {
-      requests,
-      corrections,
-      controls: () => requests.filter(({ method }) => method === 'topic_starters.control'),
-      selections: () => requests.filter(({ method }) => method === 'topic_starters.select_model').map(({ params }) => params),
-    };
-  }
-
-  const rowTitles = () => [...document.querySelectorAll('.setting-row__title')].map((node) => node.textContent);
-  const openDialogs = () => [...document.querySelectorAll('dialog')].filter((dialog) => dialog.open);
-  const alerts = () => [...document.querySelectorAll('[role="alert"]')].map((node) => node.textContent);
-  const modelSelect = () => document.querySelector('[aria-label="话题推荐模型"]');
-  const modelOptions = () => [...document.querySelectorAll('[role="option"]')];
-
-  function buttonIn(container, label) {
-    const button = [...container.querySelectorAll('button')].find((node) => node.textContent.trim() === label);
-    assert.equal(button === undefined, false, `Button not found: ${label}`);
-    return button;
-  }
-
-  async function click(element) {
-    await act(async () => element.click());
-    await settle();
-  }
-
-  async function type(element, value) {
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value').set.call(element, value);
-      element.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    });
-  }
-
-  test('recommendation is its own page after knowledge, and agent and models do not host it', () => {
-    const definition = readFileSync(new URL('../src/features/settings/registry/openSourceDefinition.ts', import.meta.url), 'utf8');
-    assert.match(definition, /personalContextSettingsModule,\s*recommendationModule,/);
-    assert.equal(recommendationModule.id, 'recommendation');
-    assert.equal(recommendationModule.titleKey, 'settingsPanel.categories.recommendation');
-    assert.equal(recommendationModule.sections.length, 1);
-    assert.equal(recommendationModule.sections[0].separatedRows, true);
-    const items = recommendationModule.sections[0].items;
-    assert.equal(items[0].component, 'switch');
-    assert.equal(items[0].key, 'topic_recommendation_enabled');
-    assert.equal(items[1].component, 'switch');
-    assert.equal(items[1].key, 'prompt_suggestion_enabled');
-    assert.equal(items[2].component, 'custom');
-    assert.equal(items[2].render === RecommendationSettings, true);
-    assert.equal(agentModule.sections.some((section) => section.id === 'recommendation'), false);
-    const modelItems = modelsModule.sections.flatMap((section) => section.items.map((item) => item.id));
-    assert.equal(modelItems.some((id) => id.includes('recommendation')), false);
-  });
-
-  test('choosing a model sends only its ID and shows it as chosen', async (t) => {
-    const ui = await mount(t);
-    await click(modelSelect());
-    await click(modelOptions()[1]);
-    assert.deepEqual(ui.selections(), [{ model: 'mdl_pro' }]);
-    assert.equal(modelSelect()?.textContent, 'deepseek-v4-1-pro');
-
-    await click(modelSelect());
-    await click(modelOptions()[2]);
-    assert.equal(ui.selections().length, 1);
-  });
-
-  test('viewing the data opens the profile with its sources and correction', async (t) => {
-    const ui = await mount(t, {
-      status: { ...READY_STATUS, enabled: true },
-      profile: {
-        units: [{
-          unit_id: 'unit-1',
-          summary: '想学国际象棋残局',
-          sources: [{ session_id: 's1', ordinal: 0, content: '车兵残局总是赢不下来' }],
-        }],
-      },
-    });
-    assert.equal(ui.requests.some(({ method }) => method === 'topic_starters.profile'), false);
-    await click(buttonIn(document, '查看'));
-    assert.equal(ui.requests.filter(({ method }) => method === 'topic_starters.profile').length, 1);
-    assert.equal(document.body.textContent.includes('想学国际象棋残局'), true);
-    assert.equal(document.body.textContent.includes('车兵残局总是赢不下来'), true);
-    await type(document.querySelector('textarea'), '不再推荐残局');
-    await click(buttonIn(document, '在新对话中纠正'));
-    assert.deepEqual(ui.corrections, ['不再推荐残局']);
-    await click(buttonIn(document, '收起'));
-    assert.equal(document.body.textContent.includes('想学国际象棋残局'), false);
-  });
-
-  test('deleting the data asks for confirmation and then clears it', async (t) => {
-    const ui = await mount(t, { status: { ...READY_STATUS, enabled: true } });
-    const dataRow = [...document.querySelectorAll('.setting-row')].find(
-      (row) => row.querySelector('.setting-row__title').textContent === '推荐数据',
-    );
-    await click(buttonIn(dataRow, '删除'));
-    assert.equal(openDialogs().length, 1);
-    const [dialog] = openDialogs();
-    assert.equal(dialog.textContent.includes('原始聊天保留'), true);
-    assert.equal(ui.controls().length, 0);
-    await click(buttonIn(dialog, '删除'));
-    assert.deepEqual(ui.controls().map(({ params }) => params.action), ['delete']);
-    assert.equal(openDialogs().length, 0);
-  });
-
-});
-
 // ChatPanel: welcome cards and in-conversation suggestion chips.
 const CACHE = '../node_modules/.cache/topic-starter-model-handoff';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
@@ -455,6 +168,8 @@ const SUGGESTION = '把第 5 段写成 4 分钟的结尾逐字稿';
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost:5173/',
 });
+dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
 // The page is in the foreground unless a test sends it to the background.
 let pageVisibility = 'visible';
 Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => pageVisibility });
@@ -490,7 +205,11 @@ class FakeWebSocket {
     const frame = JSON.parse(data);
     sent.push(frame);
 
-    if (frame.method === 'prompt_suggestion.event') {
+    if (frame.method === 'prompt_suggestion.get') {
+      queueMicrotask(() => this.reply(frame.id, {
+        enabled: recommendationEnabled, suggestions: recoveredPromptSuggestions.get(frame.params.session_id) ?? [],
+      }));
+    } else if (frame.method === 'prompt_suggestion.event') {
       queueMicrotask(() => this.reply(frame.id, { recorded: true }));
     } else if (frame.method === 'topic_starters.status' || frame.method === 'topic_starters.control') {
       if (frame.method === 'topic_starters.control') recommendationEnabled = frame.params.action === 'enable';
@@ -599,6 +318,8 @@ const { ensureSessionRuntimes, resolveEffectiveModel, useChatStore, useSessionSt
 
 const { A2UIProvider } = await import('@a2ui/react');
 const { webClient } = await import(`${CACHE}/services/webClient.js`);
+const { SettingsPage } = await import(`${CACHE}/features/settings/SettingsPage.js`);
+const { openSourceSettingsPageDefinition } = await import(`${CACHE}/features/settings/registry/openSourceDefinition.js`);
 
 const PANEL_PROPS = {
   onSendMessage: () => {},
@@ -659,7 +380,7 @@ function dynamicSlateResponse(sessionId, tag, count = 4, projectId = null) {
 
 async function mountWelcome(
   sessionId,
-  { holdResponses = false, staleAlias = null, onSendMessage = () => {}, topicStarterProjectId = null, isConnected = true, visibility = 'visible', onRender = null } = {},
+  { holdResponses = false, staleAlias = null, onSendMessage = () => {}, topicStarterProjectId = null, isConnected = true, visibility = 'visible', onRender = null, onOpenGeneralSettings = () => {} } = {},
 ) {
   pageVisibility = visibility;
   sent.length = 0;
@@ -678,6 +399,7 @@ async function mountWelcome(
   const renderProps = {
     ...PANEL_PROPS,
     onSendMessage,
+    onOpenGeneralSettings,
     topicStarterProjectId,
     isConnected,
   };
@@ -736,6 +458,239 @@ test('a pool that answers at once is shown without a static entrance first', asy
     assert.deepEqual(visibleSuggestionTitles(), ['QUICK-title-0', 'QUICK-title-1', 'QUICK-title-2', 'QUICK-title-3']);
   } finally {
     await panel.unmount();
+  }
+});
+
+test('General renders and persists the topic switch through config while keeping language on its locale source', async () => {
+  assert.equal(openSourceSettingsPageDefinition.modules.some(module => module.id === 'recommendation'), false);
+  const requests = [];
+  let storedValue = 'false';
+  let rejectSave = false;
+  let modelConfig = {};
+  const reasoning = { protocol_defaults: { openai: { options: [], recommended: null }, anthropic: { options: [], recommended: null } }, model_fallbacks: [] };
+  const definition = {
+    ...openSourceSettingsPageDefinition,
+    modules: openSourceSettingsPageDefinition.modules.filter(module => module.id === 'general'),
+  };
+  const request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'config.get') return { topic_recommendation_enabled: storedValue };
+    if (method === 'config.save_all') {
+      if (rejectSave) throw new Error('save rejected');
+      storedValue = params.config.topic_recommendation_enabled;
+      return { updated_env_keys: ['topic_recommendation_enabled'] };
+    }
+    if (method === 'locale.set_conf') return {};
+    if (method === 'topic_starters.status') return {
+      model_config: params?.include_api_key ? { ...modelConfig, api_key: 'saved-topic-key' } : modelConfig,
+    };
+    if (method === 'vendors.list') return { vendors: { reasoning, token_plan: [], coding_plan: [], custom_api: [] } };
+    if (method === 'topic_starters.select_model') {
+      if (params.configuration) modelConfig = { ...params.configuration, has_api_key: true };
+      else { modelConfig = {}; storedValue = 'false'; }
+      return {};
+    }
+    throw new Error(`Unexpected settings request: ${method}`);
+  };
+  const root = createRoot(document.getElementById('root'));
+  let settingsPageRevision = 0;
+  const render = async (connected = true) => {
+    await react.act(async () => root.render(react.createElement(SettingsPage, {
+      key: settingsPageRevision,
+      definition, request, isConnected: connected, connectionState: connected ? 'ready' : 'disconnected',
+    })));
+    await react.act(settle);
+  };
+  const topicSwitch = () => document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]');
+  try {
+    await render();
+    assert.ok(document.querySelector('[data-testid="settings-select"][data-variant="preferred-language"]'));
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'false');
+    assert.equal(requests.some(request => request.method === 'locale.set_conf'), false);
+    assert.equal(requests.some(request => request.method === 'models.list'), false);
+    await react.act(async () => topicSwitch().click());
+    await react.act(settle);
+    assert.equal(storedValue, 'false', 'opening configuration must not enable recommendations');
+    assert.ok(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'));
+    await react.act(async () => document.querySelector('[data-testid="settings-agent-media-config-dialog-cancel-btn"]').click());
+    assert.equal(storedValue, 'false', 'cancelling must leave recommendations disabled');
+    modelConfig = { model: 'topic-chat', provider: 'OpenAI', api_base: 'https://example.test/v1', has_api_key: true };
+    rejectSave = true;
+    await react.act(async () => topicSwitch().click());
+    await react.act(settle);
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'false', 'failed enable must keep the switch off');
+    assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    rejectSave = false;
+    await react.act(async () => [...document.querySelectorAll('.settings-confirm-dialog')]
+      .find(dialog => dialog.querySelector('.settings-confirm-dialog__message').textContent === 'save rejected')
+      .querySelector('.settings-confirm-dialog__footer button:last-child').click());
+    await react.act(settle);
+    assert.equal(storedValue, 'true');
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'true');
+    assert.equal(document.querySelector('[data-testid="settings-topic-model-name"]').textContent, 'topic-chat');
+    assert.equal(requests.some(request => request.method === 'topic_starters.select_model'), false);
+    assert.equal(requests.filter(request => request.method === 'config.save_all').length, 2);
+    assert.equal(requests.some(request => request.method === 'models.upsert'), false);
+    assert.deepEqual(requests.find(request => request.method === 'config.save_all').params.config,
+      { topic_recommendation_enabled: 'true' });
+    rejectSave = true;
+    await react.act(async () => topicSwitch().click());
+    await react.act(settle);
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'true', 'failed saves must roll back the visible switch');
+    rejectSave = false;
+    await react.act(async () => topicSwitch().click());
+    await react.act(settle);
+    assert.equal(storedValue, 'false');
+    await react.act(async () => topicSwitch().click());
+    await react.act(settle);
+    assert.equal(storedValue, 'true', 'reenabling a saved model must save the switch directly');
+    assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
+    await react.act(settle);
+    assert.ok(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'));
+    const savedKeyInput = document.querySelector('[data-testid="settings-agent-media-config-dialog-field"][data-variant="api_key"] input');
+    assert.equal(savedKeyInput.value, 'saved-topic-key');
+    assert.equal(savedKeyInput.type, 'password');
+    assert.equal(requests.some(request => request.method === 'topic_starters.reveal_model_key'), false);
+    assert.ok(requests.some(request => request.method === 'topic_starters.status' && request.params?.include_api_key === true));
+    await react.act(async () => document.querySelector('[data-testid="settings-agent-media-config-dialog-save-btn"]').click());
+    await react.act(settle);
+    const savedModel = requests.findLast(request => request.method === 'topic_starters.select_model');
+    assert.equal(savedModel.params.configuration.api_key, 'saved-topic-key');
+    assert.equal(savedModel.params.configuration.model, 'topic-chat');
+    assert.ok(Number(savedModel.params.configuration.context_window_tokens) > 0);
+    assert.equal('model' in savedModel.params, false, 'configuration saves must not also carry a clear-model sentinel');
+    assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
+    await react.act(settle);
+    await render(false);
+    const disconnectedDialog = [...document.querySelectorAll('.settings-confirm-dialog')]
+      .find(dialog => dialog.textContent.includes('Disconnected. Reconnect and try again.'));
+    assert.ok(disconnectedDialog, 'disconnect must replace loading with a closable error');
+    await react.act(async () => disconnectedDialog.querySelector('.settings-confirm-dialog__close').click());
+    await render(true);
+    await react.act(async () => document.querySelector('[data-testid="settings-topic-model-delete"]').click());
+    await react.act(async () => document.querySelector('.settings-confirm-dialog__footer button:last-child').click());
+    await react.act(settle);
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'false');
+    assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    assert.equal(requests.some(request => request.method === 'models.delete'), false, 'unlinking recommendations must preserve the shared model');
+    settingsPageRevision += 1;
+    await render();
+    assert.equal(storedValue, 'false', 'model deletion must persist the disabled switch on the backend');
+    assert.equal(topicSwitch().getAttribute('aria-checked'), 'false', 'a fresh settings page must read the persisted disabled switch');
+    assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+  } finally {
+    await react.act(async () => root.unmount());
+  }
+});
+
+test('General ignores legacy chat models and opens the connection form without add-model fields', async () => {
+  const requests = [];
+  const root = createRoot(document.getElementById('root'));
+  const request = async (method) => {
+    requests.push(method);
+    if (method === 'config.get') return { topic_recommendation_enabled: 'false' };
+    if (method === 'topic_starters.status') return { selected_model: 'GLM-5.1', configured_model: 'GLM-5.1' };
+    if (method === 'vendors.list') throw new Error('catalog offline');
+    throw new Error(`Unexpected request ${method}`);
+  };
+  try {
+    await react.act(async () => root.render(react.createElement(SettingsPage, {
+      definition: { ...openSourceSettingsPageDefinition,
+        modules: openSourceSettingsPageDefinition.modules.filter(module => module.id === 'general') },
+      request, isConnected: true, connectionState: 'ready',
+    })));
+    await react.act(settle);
+    assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]').click());
+    await react.act(settle);
+    const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');
+    assert.ok(dialog);
+    assert.equal(dialog.querySelector('[data-variant="api_key"] input').placeholder.includes('saved'), false);
+    for (const field of ['vendor_selection', 'protocol', 'api_key', 'model_name', 'context_window_tokens']) {
+      assert.ok(dialog.querySelector(`[data-testid="settings-agent-media-config-dialog-field"][data-variant="${field}"]`));
+    }
+    for (const field of ['alias', 'reasoning_level']) {
+      assert.equal(dialog.querySelector(`[data-variant="${field}"]`), null);
+    }
+    assert.equal(requests.includes('models.list'), false);
+  } finally {
+    await react.act(async () => root.unmount());
+  }
+});
+
+test('disabled homepage keeps preset cards and links to General; enabling refreshes toward personalized cards', async () => {
+  let settingsOpens = 0;
+  const panel = await mountWelcome('sess-topic-switch', {
+    holdResponses: true, onOpenGeneralSettings: () => { settingsOpens += 1; },
+  });
+  try {
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, dynamicSlateResponse('sess-topic-switch', 'ON')));
+    await react.act(settle);
+    assert.equal(visibleSuggestionTitles().length, 4);
+    await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
+      type: 'event', event: 'topic_starters.control_changed', payload: { enabled: false },
+    }) }));
+    assert.equal(visibleSuggestionTitles().length, 4, 'preset/cached cards stay while recommendation is off');
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+    await react.act(async () => document.querySelector('[data-testid="chat-panel-welcome-suggestion"]').dispatchEvent(
+      new window.MouseEvent('mouseover', { bubbles: true }),
+    ));
+    assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
+    await react.act(async () => document.querySelector('[data-testid="chat-panel-topic-general-settings"]').click());
+    assert.equal(settingsOpens, 1);
+    await react.act(settle);
+    await react.act(async () => liveSocket.reply(
+      starterRequests().at(-1).id,
+      { ...dynamicSlateResponse('sess-topic-switch', 'PRESET'), preparation_state: 'disabled' },
+    ));
+    await react.act(settle);
+    assert.equal(visibleSuggestionTitles().length, 4);
+    assert.ok(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'));
+    const disabledHint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
+    assert.ok(disabledHint.textContent.includes('Settings - General'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-welcome-banner-bubble"]').contains(disabledHint));
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]').className, 'chat-welcome__campaign-claim');
+    await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
+      type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
+    }) }));
+    await react.act(settle);
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null, 'enabled must not show the disabled hint');
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, dynamicSlateResponse('sess-topic-switch', 'BACK')));
+    await react.act(settle);
+    assert.equal(visibleSuggestionTitles().length, 4);
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('enabled recommendations show a shared unavailable hint with settings recovery', async () => {
+  for (const state of ['missing_configuration', 'provider_unavailable']) {
+    let settingsOpens = 0;
+    const panel = await mountWelcome(`sess-enabled-${state}`, {
+      holdResponses: true, onOpenGeneralSettings: () => { settingsOpens += 1; },
+    });
+    try {
+      await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
+        available: false, preparation_state: state, reason: state,
+      }));
+      await react.act(settle);
+      assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+      const status = document.querySelector('[role="status"]');
+      assert.ok(status);
+      assert.ok(status.textContent.includes('unavailable'));
+      assert.ok(status.classList.contains('chat-suggestions__title'));
+      const settingsButton = document.querySelector('[data-testid="chat-panel-topic-settings"]');
+      assert.ok(settingsButton);
+      await react.act(async () => settingsButton.click());
+      assert.equal(settingsOpens, 1);
+      assert.equal(document.querySelector('[data-testid="chat-panel-topic-general-settings"]'), null);
+      assert.equal(document.body.textContent.includes('For topics that understand you better'), false);
+    } finally {
+      await panel.unmount();
+    }
   }
 });
 
@@ -827,86 +782,15 @@ test('clicking a v6 card keeps the session effective model for the normal answer
   }
 });
 
-test('not interested keeps the card until the server confirms it was recorded', async () => {
-  const panel = await mountWelcome('sess-dislike', { holdResponses: true });
+test('topic recommendations show no dismiss button', async () => {
+  const panel = await mountWelcome('sess-without-dismiss', { holdResponses: true });
   try {
-    await react.act(async () => {
-      liveSocket.reply(starterRequests()[0].id, dynamicSlateResponse('sess-dislike', 'DISLIKE', 4));
-    });
-    await react.act(settle);
-    starterEventResponses.set('not_interested', null);
-
-    const dismissButton = dom.window.document.querySelector('.chat-suggestion-card__dismiss');
-    assert.ok(dismissButton);
-    await react.act(async () => {
-      dismissButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    });
+    await react.act(async () => liveSocket.reply(starterRequests()[0].id,
+      dynamicSlateResponse('sess-without-dismiss', 'TOPIC', 4)));
     await react.act(settle);
     assert.equal(visibleSuggestionTitles().length, 4);
-    await react.act(async () => {
-      dismissButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    });
-    await react.act(settle);
-    assert.equal(starterEvents('not_interested').filter(frame => frame.params.slate_id === 'slate-DISLIKE').length, 1);
-
-    const rejectedEvent = starterEvents('not_interested').at(-1);
-    assert.ok(rejectedEvent);
-    await react.act(async () => {
-      liveSocket.reply(rejectedEvent.id, { recorded: false });
-    });
-    await react.act(settle);
-    assert.equal(visibleSuggestionTitles().length, 4);
-    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]'), null);
-
-    starterEventResponses.set('not_interested', true);
-    await react.act(async () => {
-      dismissButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    });
-    await react.act(settle);
-    assert.equal(visibleSuggestionTitles().length, 3);
-
-    const remainingCardButton = dom.window.document.querySelector('.chat-suggestion-card__main');
-    assert.ok(remainingCardButton);
-    await react.act(async () => {
-      remainingCardButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    });
-    await react.act(settle);
-    assert.equal(starterEvents('dynamic_exposure').filter(frame => frame.params.slate_id === 'slate-DISLIKE').length, 1);
-  } finally {
-    await panel.unmount();
-  }
-});
-
-test('a confirmed dismissal keeps the remaining cards on screen while the pool backfills', async () => {
-  const panel = await mountWelcome('sess-backfill', { holdResponses: true });
-  try {
-    await react.act(async () => {
-      liveSocket.reply(starterRequests()[0].id, dynamicSlateResponse('sess-backfill', 'BACKFILL', 4));
-    });
-    await react.act(settle);
-    starterEventResponses.set('not_interested', { recorded: true });
-
-    const dismissButton = dom.window.document.querySelector('.chat-suggestion-card__dismiss');
-    assert.ok(dismissButton);
-    assert.equal(['Skip for now', '先跳过'].includes(dismissButton.getAttribute('title')), true);
-    await react.act(async () => {
-      dismissButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    });
-    await react.act(settle);
-
-    // The page re-reads the pool after the dismissal; until it answers the other three stay.
-    assert.equal(starterRequests().length, 2);
-    assert.deepEqual(visibleSuggestionTitles(), ['BACKFILL-title-1', 'BACKFILL-title-2', 'BACKFILL-title-3']);
-    // A dismissal no longer opens an undo or interest-pause notice.
-    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]'), null);
-
-    await react.act(async () => {
-      liveSocket.reply(starterRequests()[1].id, dynamicSlateResponse('sess-backfill', 'REFILL', 4));
-    });
-    await react.act(settle);
-    assert.deepEqual(visibleSuggestionTitles(), ['REFILL-title-0', 'REFILL-title-1', 'REFILL-title-2', 'REFILL-title-3']);
-    assert.equal(starterEvents('dynamic_exposure').filter(frame => frame.params.slate_id === 'slate-REFILL').length, 1);
-    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]'), null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-dismiss"]'), null);
+    assert.equal(document.querySelectorAll('.chat-suggestion-card button').length, 4);
   } finally {
     await panel.unmount();
   }
@@ -941,7 +825,10 @@ function ConversationPage({ pageActive, panelProps }) {
 }
 
 // A conversation page whose last answer has completed. ``sends`` collects what the panel hands to App.
+const recoveredPromptSuggestions = new Map();
+
 async function mountConversation({ onSendMessage, completeInitial = true } = {}) {
+  recoveredPromptSuggestions.clear();
   sent.length = 0;
   chipOutOfView = false;
   recommendationEnabled = true;
@@ -1138,21 +1025,92 @@ test('disabling recommendation in settings discards suggestions that have never 
   }
 });
 
-test('clicking the chip sends the suggestion with its provenance and leaves the composer empty', async () => {
+test('next question appears only in the composer without a label; Tab fills without sending', async () => {
   const panel = await mountConversation();
   try {
     const id = await pushSuggestion();
-    await clickTestId('chat-panel-prompt-suggestion-chip-send');
+    assert.equal(box(), null);
+    assert.equal(editor().getAttribute('data-placeholder').startsWith(SUGGESTION), true);
+    assert.ok(editor().getAttribute('data-placeholder').includes(SUGGESTION));
     assert.equal(useChatStore.getState().runtimes[SESSION].inputValue, '');
-    assert.equal(box() === null, true);
+    assert.equal(await pressInComposer('Tab'), true);
+    assert.equal(useChatStore.getState().runtimes[SESSION].inputValue, SUGGESTION);
+    assert.deepEqual(panel.sends, []);
+    await send();
     assert.deepEqual(panel.sends, [
       { content: SUGGESTION, provenance: { ...ACCEPTED_ORIGIN, prompt_suggestion: { suggestion_id: id, edited: false } } },
     ]);
-    const [shown, accepted] = sent.filter(frame => frame.method === 'prompt_suggestion.event').map(frame => frame.params);
-    assert.deepEqual([shown.event_type, accepted.event_type, accepted.suggestion_id, accepted.session_id, accepted.method],
-      ['shown', 'accepted', id, SESSION, 'click']);
-    assert.equal(Number.isInteger(accepted.time_to_accept_ms) && accepted.time_to_accept_ms >= 0, true);
-    assert.equal(sent.some(frame => frame.method === 'prompt_suggestion.event' && frame.params.event_type === 'input_changed'), false);
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('returning to a conversation recovers a missed suggestion in the composer', async () => {
+  const panel = await mountConversation();
+  try {
+    recoveredPromptSuggestions.set(SESSION, [{ session_id: SESSION,
+      request_id: completedRequests.get(SESSION), suggestion_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      text: 'Recover the next question from the backend' }]);
+    await panel.navigate(OTHER_SESSION);
+    await panel.navigate(SESSION);
+    assert.ok(editor().getAttribute('data-placeholder').includes('Recover the next question from the backend'));
+    assert.equal(await pressInComposer('Tab'), true);
+    assert.equal(useChatStore.getState().runtimes[SESSION].inputValue, 'Recover the next question from the backend');
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('a pushed suggestion refreshes a stale disabled switch before displaying', async () => {
+  const panel = await mountConversation();
+  try {
+    await panel.setPageActive(false);
+    await clickTestId('settings-prompt-suggestion-enabled');
+    recoveredPromptSuggestions.set(SESSION, [{ session_id: SESSION,
+      request_id: completedRequests.get(SESSION), suggestion_id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      text: 'The server enabled suggestions in another connection' }]);
+    await pushSuggestion({ text: 'The server enabled suggestions in another connection' });
+    await panel.setPageActive(true);
+    assert.ok(editor().getAttribute('data-placeholder').includes('The server enabled suggestions in another connection'));
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('a new completed answer replaces the composer next-question suggestion', async () => {
+  const panel = await mountConversation();
+  try {
+    await pushSuggestion();
+    await startRequest(SESSION);
+    assert.equal(editor().getAttribute('data-placeholder').includes(SUGGESTION), false);
+    await answer();
+    await pushSuggestion({ text: 'Compare the options in a table' });
+    assert.ok(editor().getAttribute('data-placeholder').includes('Compare the options in a table'));
+    await setComposer(SESSION, 'My own question');
+    assert.equal(editor().getAttribute('data-placeholder').includes('Compare the options in a table'), false);
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('clearing a Tab-filled suggestion restores the original placeholder after browser line-break remnants', async () => {
+  const panel = await mountConversation();
+  try {
+    const originalPlaceholder = editor().getAttribute('data-placeholder');
+    await pushSuggestion();
+    assert.equal(await pressInComposer('Tab'), true);
+    assert.equal(useChatStore.getState().runtimes[SESSION].inputValue, SUGGESTION);
+    for (const remnants of ['<br>', '<div><br></div>']) {
+      await react.act(async () => {
+        editor().innerHTML = remnants;
+        editor().dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        await settle();
+      });
+      assert.equal(editor().childNodes.length, 0, 'the editor must match :empty for its placeholder');
+      assert.equal(editor().getAttribute('data-placeholder'), originalPlaceholder);
+      assert.equal(useChatStore.getState().runtimes[SESSION].inputValue, '');
+    }
+    assert.equal(await pressInComposer('Tab'), false, 'clearing must not restore an already accepted suggestion');
   } finally {
     await panel.unmount();
   }
@@ -1182,31 +1140,19 @@ async function answer() {
 }
 
 
-test('two suggestions for the same reply show together and sending one ignores the other', async () => {
+test('only the first suggestion is shown in the composer and no reply chip is rendered', async () => {
   const panel = await mountConversation();
   try {
-    const first = await pushSuggestion({ text: '买ETF，长期配置' });
-    const second = await pushSuggestion({ text: '对比一下金条和ETF的费用' });
-    const chips = [...dom.window.document.querySelectorAll('[data-testid="chat-panel-prompt-suggestion-chip-send"]')];
-    assert.deepEqual(chips.map(chip => chip.getAttribute('data-variant')), [first, second]);
-    assert.equal(chips[0].textContent.includes('买ETF，长期配置'), true);
-    assert.equal(chips[1].textContent.includes('对比一下金条和ETF的费用'), true);
-    assert.equal(dom.window.document.querySelectorAll('[data-testid="chat-panel-prompt-suggestion-chip-dismiss"]').length, 2);
-    await react.act(async () => {
-      chips[1].click();
-      await settle();
-    });
-    assert.equal(box() === null, true);
-    assert.deepEqual(panel.sends, [
-      { content: '对比一下金条和ETF的费用', provenance: { ...ACCEPTED_ORIGIN, prompt_suggestion: { suggestion_id: second, edited: false } } },
-    ]);
-    assert.deepEqual(outcomes(), [
-      ['shown', first, null],
-      ['shown', second, null],
-      ['accepted', second, 'click'],
-      ['ignored', first, 'sent_other'],
-    ]);
+    const first = await pushSuggestion({ text: 'Compare the options' });
+    await pushSuggestion({ text: 'Explain the costs' });
+    assert.equal(box(), null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-prompt-suggestion-chip-send"]'), null);
+    assert.ok(editor().getAttribute('data-placeholder').startsWith('Compare the options'));
+    assert.equal(await pressInComposer('Tab'), true);
+    assert.deepEqual(outcomes(), [['shown', first, null], ['accepted', first, 'tab']]);
   } finally {
     await panel.unmount();
   }
 });
+
+for (const args of cases) registerTest(...args);

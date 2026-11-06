@@ -37,6 +37,25 @@ class LaunchedExpertTeam:
         return data
 
 
+def _is_group_organization_owner(session_id: str, team_id: str) -> bool:
+    if not str(team_id or "").strip():
+        return False
+    try:
+        from jiuwenswarm.server.runtime.group_service import (
+            group_organization_owner_team_ids,
+        )
+
+        return team_id in group_organization_owner_team_ids(session_id)
+    except Exception:
+        logger.debug(
+            "[ExpertTeamLauncher] group owner lookup failed session=%s team=%s",
+            session_id,
+            team_id,
+            exc_info=True,
+        )
+        return False
+
+
 def _leader_id_from_agent(agent: Any, team_id: str) -> str:
     backend = getattr(agent, "team_backend", None)
     for attr in ("leader_member_name", "member_name"):
@@ -673,7 +692,11 @@ class JiuwenExpertTeamLauncher:
             _tag_team_output_origin,
         )
 
-        parsed = dict(payload)
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        parsed = await project_group_stream_event(session_id, dict(payload))
+        if parsed is None:
+            return True
         parsed["rid"] = round_id
         # WebGateway preserves request_id, not rid. Keep the browser turn
         # stable while the outer push ID remains unique for each frame.
@@ -684,6 +707,8 @@ class JiuwenExpertTeamLauncher:
         # They still need the same team identity as the corresponding output.
         parsed["team_id"] = team_id
         parsed["team_name"] = team_id
+        if _is_group_organization_owner(session_id, team_id):
+            parsed["swarm_group_owner"] = True
         await self._persist_expert_history(
             parsed,
             team_id=team_id,
@@ -763,6 +788,7 @@ class JiuwenExpertTeamLauncher:
                     "member_name": member_name,
                     "request_id": round_id,
                     "rid": round_id,
+                    **({"swarm_group_owner": True} if payload.get("swarm_group_owner") else {}),
                 },
             )
             self._history_writers[key] = writer
@@ -832,6 +858,10 @@ class JiuwenExpertTeamLauncher:
         display_name: str | None,
         channel_id: str | None = None,
         shared_db: Any | None = None,
+        enable_organization: bool | None = None,
+        leader_tools: list[Any] | None = None,
+        leader_prompt_suffix: str = "",
+        extra_capabilities: list[str] | None = None,
     ) -> Any:
         """Base Team Spec from config, then AgentGroup overlay via assembly."""
         from jiuwenswarm.agents.harness.team.team_manager import TeamManager
@@ -866,8 +896,34 @@ class JiuwenExpertTeamLauncher:
             agent_group_name=agent_group_name,
             agent_group_package=agent_group_package,
         )
+        metadata = dict(getattr(spec, "metadata", None) or {})
+        metadata["capabilities"] = list(
+            dict.fromkeys(
+                [
+                    *metadata.get("capabilities", []),
+                    *(extra_capabilities or []),
+                ]
+            )
+        )
+        spec.metadata = metadata
         if shared_db is not None:
             _align_spec_storage(spec, shared_db)
+        if (
+            enable_organization is not None
+            and "enable_organization" in type(spec).model_fields
+        ):
+            spec.enable_organization = enable_organization
+        if leader_tools:
+            leader_agent = spec.agents["leader"]
+            leader_agent.tools = [*(leader_agent.tools or []), *leader_tools]
+        if leader_prompt_suffix:
+            spec.leader = spec.leader.model_copy(
+                update={
+                    "prompt": (spec.leader.prompt or "")
+                    + "\n"
+                    + leader_prompt_suffix
+                }
+            )
         return spec
 
     async def _materialize_expert_team_in_db(
@@ -1030,6 +1086,11 @@ class JiuwenExpertTeamLauncher:
         display_name: str | None = None,
         channel_id: str | None = None,
         share_db_from_team_id: str | None = None,
+        team_id: str | None = None,
+        enable_organization: bool | None = None,
+        leader_tools: list[Any] | None = None,
+        leader_prompt_suffix: str = "",
+        extra_capabilities: list[str] | None = None,
     ) -> LaunchedExpertTeam:
         group_name = str(agent_group_name or "").strip()
         if not group_name:
@@ -1053,7 +1114,7 @@ class JiuwenExpertTeamLauncher:
         agent_group_package = load_agent_group_package_bundle(
             resolve_agent_group_dir(group_name)
         )
-        team_id = await self._allocate_team_id()
+        team_id = str(team_id or "").strip() or await self._allocate_team_id()
         runtime = self._get_runtime()
         resolved_channel = _resolve_launch_channel_id(channel_id, session_id)
         logger.info(
@@ -1081,6 +1142,10 @@ class JiuwenExpertTeamLauncher:
                 display_name=display_name,
                 channel_id=resolved_channel,
                 shared_db=shared_db,
+                enable_organization=enable_organization,
+                leader_tools=leader_tools,
+                leader_prompt_suffix=leader_prompt_suffix,
+                extra_capabilities=extra_capabilities,
             )
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)

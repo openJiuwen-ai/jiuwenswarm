@@ -67,15 +67,26 @@
   border-radius: 8px;
 }
 
-.summary,
-.controlCount {
+.summary {
   min-width: 0;
   color: var(--dsw-alias-label-secondary);
 }
 
-.controlCount {
-  margin-left: auto;
+.blockedLegend {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--dsw-alias-label-secondary);
   white-space: nowrap;
+}
+
+.blockedLegendSwatch {
+  width: 14px;
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--dsw-alias-label-secondary) 17%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-label-secondary) 48%, transparent);
 }
 
 .anomalySummary {
@@ -108,13 +119,15 @@
 }
 
 .bodyWithDetail .taskColumn {
-  flex: 0 0 clamp(180px, 34%, 320px);
+  flex: 1 1 auto;
   max-height: 210px;
 }
 
 .taskList {
   display: flex;
+  min-height: 0;
   max-height: 224px;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 1px;
   padding: 4px 8px 6px;
@@ -178,40 +191,63 @@
   border-radius: 2px;
   background: var(--dsw-alias-label-secondary);
   opacity: 0.55;
+  animation: none;
+  transition: none;
 }
 
 .taskBar[data-phase='running'],
-.taskBar[data-phase='in_review'] {
-  background: var(--dsw-alias-state-business-primary);
-}
-
+.taskBar[data-phase='in_review'],
 .taskBar[data-phase='rework'],
 .taskBar[data-phase='escalated'] {
-  background: var(--dsw-alias-state-warn-label);
+  background: var(--dsw-alias-state-business-primary);
+  opacity: 0.9;
 }
 
 .taskBar[data-phase='completed'] {
   background: var(--dsw-alias-state-success-primary);
+  opacity: 0.9;
 }
 
 .taskBar[data-phase='cancelled'] {
   background: var(--dsw-alias-label-caption);
+  opacity: 0.9;
+}
+
+.taskBar[data-phase='pending'] {
+  background: color-mix(in srgb, var(--dsw-alias-label-caption) 28%, transparent);
+  opacity: 1;
+}
+
+.taskBar[data-phase='blocked'] {
+  background: color-mix(in srgb, var(--dsw-alias-label-secondary) 17%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-label-secondary) 48%, transparent);
+  opacity: 1;
 }
 
 .marker {
   position: absolute;
   z-index: 1;
-  top: 6px;
-  width: 6px;
-  height: 6px;
+  top: 5.5px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--dsw-alias-label-secondary);
   box-shadow: 0 0 0 1px var(--dsw-alias-bg-layer-1);
   transform: translateX(-50%);
+  animation: none;
+  transition: none;
+}
+
+.marker::before {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  content: '';
 }
 
 .markerPass {
   background: var(--dsw-alias-state-success-primary);
+  box-shadow: 0 0 0 1px var(--dsw-alias-bg-layer-1);
 }
 
 .markerFail {
@@ -231,10 +267,16 @@
 }
 
 .markerEvent {
-  top: 7px;
-  width: 4px;
-  height: 4px;
+  top: 6.5px;
+  width: 5px;
+  height: 5px;
   background: var(--dsw-alias-label-secondary);
+}
+
+.markerVerified {
+  width: 7px;
+  height: 7px;
+  background: var(--dsw-alias-state-success-primary);
 }
 
 .rowChevron {
@@ -252,11 +294,14 @@
 }
 
 .detail {
-  flex: 1 1 auto;
-  min-width: min(220px, 50%);
+  display: flex;
+  flex: 0 1 clamp(280px, 40%, 520px);
+  flex-direction: column;
+  min-width: min(260px, 44%);
+  max-width: 52%;
   max-height: 210px;
   padding: 8px;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   border-left: 1px solid var(--dsw-alias-border-l1);
   background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 72%, transparent);
@@ -272,6 +317,7 @@
 }
 
 .detailHeader {
+  flex: none;
   justify-content: space-between;
 }
 
@@ -287,12 +333,23 @@
   font: var(--dsw-font-xxxs-11);
 }
 
+.detailScroll {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .phase {
   border-radius: 3px;
   padding: 1px 5px;
   background: var(--dsw-alias-bg-layer-3);
   color: var(--dsw-alias-label-secondary);
   font: var(--dsw-font-xxxs-11);
+  animation: none;
+  transition: none;
 }
 
 .phase[data-phase='completed'] {
@@ -300,17 +357,15 @@
 }
 
 .phase[data-phase='running'],
-.phase[data-phase='in_review'] {
-  color: var(--dsw-alias-state-business-primary);
-}
-
+.phase[data-phase='in_review'],
 .phase[data-phase='rework'],
 .phase[data-phase='escalated'] {
-  color: var(--dsw-alias-state-warn-label);
+  color: var(--dsw-alias-state-business-primary);
 }
 
 .rounds {
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 4px;
   margin-top: 8px;
@@ -364,12 +419,12 @@
 
 .events {
   display: flex;
-  max-height: 180px;
+  max-height: none;
   flex-direction: column;
   gap: 2px;
   margin-top: 8px;
   padding-top: 6px;
-  overflow-y: auto;
+  overflow: visible;
   border-top: 1px solid var(--dsw-alias-border-l1);
 }
 
@@ -426,18 +481,17 @@
     flex-wrap: wrap;
   }
 
-  .controlCount {
-    margin-left: 0;
-  }
-
   .detail {
     min-width: 0;
+    width: 100%;
+    max-width: none;
     max-height: 160px;
     border-top: 1px solid var(--dsw-alias-border-l1);
     border-left: 0;
   }
 
   .bodyWithDetail {
+    max-height: none;
     flex-direction: column;
   }
 

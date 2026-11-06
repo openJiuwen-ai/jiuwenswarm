@@ -26,9 +26,22 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_clip_index,
     video_concat_source_ids,
 )
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
+    ENCODE_TIMEOUT_S,
+    PROBE_TIMEOUT_S,
+    run_ffmpeg,
+    run_off_loop,
+)
 from jiuwenswarm.server.runtime.designer.handlers import common as handler_io
+from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
+    is_silent_music_placeholder,
+)
 from jiuwenswarm.server.runtime.designer.handlers.common import role_output_text
-from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
+from jiuwenswarm.server.runtime.designer.handlers.types import (
+    NodeExecutionContext,
+    NodeResult,
+    thread_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +50,6 @@ _STREAM_SIZE = re.compile(r"Stream #0:\d+.*.*?Video:.*?(\d{2,5})x(\d{2,5})")
 _MEDIA_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _VIDEO_STREAM = re.compile(r"Video:\s*(\w+).*?(\d{2,5}x\d{2,5}).*?(\d+(?:\.\d+)?) fps")
 _AUDIO_STREAM = re.compile(r"Audio:\s*(\w+)")
-_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 def _find_ffmpeg() -> str:
@@ -58,17 +70,16 @@ def _find_ffmpeg() -> str:
     raise RuntimeError("未找到 ffmpeg，无法合并视频片段。请安装 ffmpeg 或 imageio-ffmpeg。")
 
 
-def _run_ffmpeg(ffmpeg: str, args: list[str]) -> subprocess.CompletedProcess[str]:
-    kwargs: dict[str, object] = {
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "check": False,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = _CREATE_NO_WINDOW
-    return subprocess.run([ffmpeg, *args], **kwargs)
+def _run_ffmpeg(
+    ffmpeg: str, args: list[str], *, timeout: float = ENCODE_TIMEOUT_S
+) -> subprocess.CompletedProcess[str]:
+    return run_ffmpeg([ffmpeg, *args], timeout=timeout)
+
+
+def _probe_text(ffmpeg: str, path: Path) -> str:
+    """``ffmpeg -i`` stream report for ``path`` (ffmpeg prints it on stderr)."""
+    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())], timeout=PROBE_TIMEOUT_S)
+    return f"{probed.stderr or ''}\n{probed.stdout or ''}"
 
 
 def _concat_file_line(path: Path) -> str:
@@ -77,8 +88,7 @@ def _concat_file_line(path: Path) -> str:
 
 
 def _video_size(ffmpeg: str, path: Path) -> tuple[int, int] | None:
-    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
-    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
+    text = _probe_text(ffmpeg, path)
     match = _STREAM_SIZE.search(text)
     if match is None:
         return None
@@ -122,9 +132,7 @@ def _clip_video_usable(path: Path, *, ffmpeg: str | None = None) -> bool:
 
 
 def _probe_has_audio(ffmpeg: str, path: Path) -> bool:
-    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
-    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
-    return "Audio:" in text
+    return "Audio:" in _probe_text(ffmpeg, path)
 
 
 def _try_concat_copy(ffmpeg: str, paths: list[Path], dest: Path) -> bool:
@@ -260,8 +268,7 @@ def concatenate_clip_videos(paths: list[Path], dest: Path) -> Path:
 
 def _stream_signature(ffmpeg: str, path: Path) -> tuple[str, str, str, str] | None:
     """Video codec / size / fps and audio codec, as printed by ``ffmpeg -i``; None when unreadable."""
-    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
-    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
+    text = _probe_text(ffmpeg, path)
     video = _VIDEO_STREAM.search(text)
     audio = _AUDIO_STREAM.search(text)
     if video is None:
@@ -404,6 +411,15 @@ def compose_predecessor_media_ready(
     return _video_from_state(state, require_completed=True) is not None
 
 
+def compose_predecessors_missing_media(
+    graph: dict,
+    run: dict,
+    member_ids: list[str],
+) -> list[str]:
+    """The ``member_ids`` that still have no real media file on disk (blocking probes)."""
+    return [nid for nid in member_ids if not compose_predecessor_media_ready(graph, run, nid)]
+
+
 def collect_clip_video_paths(ctx: NodeExecutionContext) -> list[Path]:
     """Collect every shot clip mp4 in storyboard order — all must feed the final film."""
     states = (ctx.run or {}).get("node_states") or {}
@@ -496,6 +512,109 @@ def _collect_role_audio_paths(ctx: NodeExecutionContext, roles: set[str]) -> lis
                 found.append(path)
                 break
     return found
+
+
+def _film_has_supplied_music(ctx: NodeExecutionContext) -> bool:
+    """True when compose scores the film with real music: a wired music node or the user's audio upload."""
+    if any(
+        not is_silent_music_placeholder(path)
+        for path in _collect_role_audio_paths(ctx, {"music", NODE_TYPE_AUDIO})
+    ):
+        return True
+    # Any wired track (speech, or the music placeholder) stops the upload fallback in mix_compose_soundtrack.
+    if _collect_role_audio_paths(ctx, {"speech", "music", NODE_TYPE_AUDIO}):
+        return False
+    from jiuwenswarm.server.runtime.designer.user_references import (
+        user_reference_audio_path,
+    )
+
+    user_audio = user_reference_audio_path(ctx.graph)
+    return user_audio is not None and user_audio.is_file()
+
+
+def _clip_audio_requests(ctx: NodeExecutionContext) -> dict[Path, bool]:
+    """Each clip file, and whether its shot asked the video model for dialogue audio."""
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        resolve_video_audio_request,
+    )
+
+    graph = ctx.graph if isinstance(ctx.graph, dict) else {}
+    meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
+    states = (ctx.run or {}).get("node_states") or {}
+    found: dict[Path, bool] = {}
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict) or node_pipeline(node) != NODE_ROLE_CLIP:
+            continue
+        state = states.get(str(node.get("id") or ""))
+        path = _video_from_state(state) if isinstance(state, dict) else None
+        if path is None:
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        found[path] = resolve_video_audio_request(cfg, meta)[0]
+    return found
+
+
+_DROP_AUDIO_ARGS = ("-an",)
+_SPEECH_BAND_ARGS = (
+    "-map",
+    "0:a:0",
+    "-af",
+    "highpass=f=150,lowpass=f=4000",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+)
+
+
+def _rewrite_clip_audio(
+    ffmpeg: str, path: Path, dest: Path, audio_args: tuple[str, ...]
+) -> Path:
+    """Copy of ``path`` with the same video and rewritten audio; ``path`` itself when ffmpeg fails."""
+    rewritten = _run_ffmpeg(
+        ffmpeg,
+        ["-y", "-i", str(path.resolve()), "-map", "0:v:0", "-c:v", "copy", *audio_args, str(dest)],
+    )
+    if rewritten.returncode != 0 or not _output_ok(dest):
+        logger.warning(
+            "compose could not rewrite clip audio: %s",
+            (rewritten.stderr or rewritten.stdout or "")[:800],
+        )
+        dest.unlink(missing_ok=True)
+        return path
+    return dest.resolve()
+
+
+def _clips_for_supplied_music(
+    ctx: NodeExecutionContext, paths: list[Path], scratch: Path
+) -> list[Path]:
+    """Under a supplied score, a clip only keeps the dialogue it asked for.
+
+    Video models add their own music to clips (MiniMax always returns audio), which
+    would otherwise play on top of the user's track. A clip without dialogue loses
+    its audio; a dialogue clip keeps only the speech band, because its dialogue and
+    the model's music share one track. Other videos wired into compose are untouched.
+    """
+    if not _film_has_supplied_music(ctx):
+        return paths
+    requests = _clip_audio_requests(ctx)
+    if not requests:
+        return paths
+    try:
+        ffmpeg = _find_ffmpeg()
+    except RuntimeError:
+        return paths
+    inputs: list[Path] = []
+    for index, path in enumerate(paths):
+        if path in requests and _probe_has_audio(ffmpeg, path):
+            path = _rewrite_clip_audio(
+                ffmpeg,
+                path,
+                scratch / f"clip_{index}{path.suffix}",
+                _SPEECH_BAND_ARGS if requests[path] else _DROP_AUDIO_ARGS,
+            )
+        inputs.append(path)
+    return inputs
 
 
 def _mix_audio_tracks(
@@ -624,9 +743,7 @@ def mix_compose_bgm(video: Path, dest: Path, brief: str = "") -> Path:
 
 
 def _media_duration_seconds(ffmpeg: str, path: Path) -> float | None:
-    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
-    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
-    match = _MEDIA_DURATION.search(text)
+    match = _MEDIA_DURATION.search(_probe_text(ffmpeg, path))
     if match is None:
         return None
     hours, minutes, seconds = (
@@ -759,6 +876,55 @@ def _mux_overlay_audio(ffmpeg: str, video: Path, audio: Path, dest: Path) -> boo
     return True
 
 
+def _probe_clip_inputs(ctx: NodeExecutionContext, expected: int) -> tuple[list[Path], list[str]]:
+    """Shot clip files in film order, plus the ones that are empty/0:00 stubs (blocking probes)."""
+    paths = collect_clip_video_paths(ctx)
+    if expected and len(paths) < expected:
+        return paths, []
+    return paths, [str(p) for p in paths if not _clip_video_usable(p)]
+
+
+def _assemble_film(
+    ctx: NodeExecutionContext, paths: list[Path], dest: Path, stem: str, brief: str
+) -> Path:
+    """Concatenate ``paths`` into ``dest`` and lay the soundtrack on (blocking ffmpeg)."""
+    with tempfile.TemporaryDirectory(
+        prefix="designer_compose_", ignore_cleanup_errors=True
+    ) as scratch:
+        inputs = _clips_for_supplied_music(ctx, paths, Path(scratch))
+        merged = concatenate_clip_videos(inputs, dest)
+    scored = Path(
+        mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+    )
+    # The prepared clips gave up their own audio for the supplied score; without the score, keep it.
+    if inputs != paths and scored.resolve() == Path(merged).resolve():
+        logger.warning("compose could not lay the supplied music on; keeping the clips' own audio")
+        merged = concatenate_clip_videos(paths, dest)
+        scored = Path(
+            mix_compose_soundtrack(merged, dest.parent / f"{stem}_bgm.mp4", ctx=ctx, brief=brief)
+        )
+    if (
+        not scored.is_file()
+        or scored.suffix.lower() != ".mp4"
+        or scored.stat().st_size < 512
+    ):
+        raise RuntimeError(
+            f"Compose failed to produce a real mp4 film (got {scored})"
+        )
+    try:
+        ffmpeg = _find_ffmpeg()
+        film_dur = _media_duration_seconds(ffmpeg, scored)
+        if film_dur is not None and film_dur < _MIN_CLIP_DURATION_SEC:
+            raise RuntimeError(
+                f"Compose produced empty/0:00 film ({film_dur:.3f}s) — clips not ready"
+            )
+    except RuntimeError:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.debug("compose duration probe skipped", exc_info=True)
+    return scored
+
+
 class ComposeNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         paths: list[Path] = []
@@ -792,13 +958,13 @@ class ComposeNodeHandler:
                         "compose waiting for all clips to complete: "
                         + ", ".join(not_ready[:8])
                     )
-                paths = collect_clip_video_paths(ctx)
+                paths, bad = await run_off_loop(
+                    _probe_clip_inputs, thread_snapshot(ctx), len(expected_clips)
+                )
                 if expected_clips and len(paths) < len(expected_clips):
                     raise RuntimeError(
                         f"compose waiting for all clips: have {len(paths)}/{len(expected_clips)}"
                     )
-                # Re-validate duration so we never concat 0:00 stubs.
-                bad = [str(p) for p in paths if not _clip_video_usable(p)]
                 if bad:
                     raise RuntimeError(
                         "compose waiting for usable clip media (empty/0:00 rejected): "
@@ -827,33 +993,10 @@ class ComposeNodeHandler:
         dest = handler_io.canvas_output_dir(
             ctx.graph if isinstance(ctx.graph, dict) else None
         ) / f"{stem}.mp4"
-        merged = concatenate_clip_videos(paths, dest)
-        scored = mix_compose_soundtrack(
-            merged,
-            dest.parent / f"{stem}_bgm.mp4",
-            ctx=ctx,
-            brief=role_output_text(ctx, NODE_ROLE_BRIEF) or "",
+        brief = role_output_text(ctx, NODE_ROLE_BRIEF) or ""
+        scored = await run_off_loop(
+            _assemble_film, thread_snapshot(ctx), paths, dest, stem, brief
         )
-        scored = Path(scored)
-        if (
-            not scored.is_file()
-            or scored.suffix.lower() != ".mp4"
-            or scored.stat().st_size < 512
-        ):
-            raise RuntimeError(
-                f"Compose failed to produce a real mp4 film (got {scored})"
-            )
-        try:
-            ffmpeg = _find_ffmpeg()
-            film_dur = _media_duration_seconds(ffmpeg, scored)
-            if film_dur is not None and film_dur < _MIN_CLIP_DURATION_SEC:
-                raise RuntimeError(
-                    f"Compose produced empty/0:00 film ({film_dur:.3f}s) — clips not ready"
-                )
-        except RuntimeError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.debug("compose duration probe skipped", exc_info=True)
         output_ref: AssetRef = {
             "kind": NODE_TYPE_VIDEO,
             "uri": scored.resolve().as_uri(),

@@ -13,6 +13,8 @@ export interface WorkflowRunGroup<T> {
   name: string;
   shortId: string;
   status: string;
+  /** Member currently hosting the run; null = no team context (no badge). */
+  executor?: string | null;
   items: T[];
 }
 
@@ -51,6 +53,7 @@ export function groupByWorkflowRun<T extends { workflow_run_id?: string }>(
         name: run?.name ?? runId,
         shortId: shortRunId(runId),
         status: run?.status ?? '',
+        executor: run?.executor ?? null,
         items: [],
       };
       groupByRunId.set(runId, group);
@@ -60,4 +63,29 @@ export function groupByWorkflowRun<T extends { workflow_run_id?: string }>(
   }
 
   return { ungrouped, groups };
+}
+
+/**
+ * Cluster items of the same run together (run first-appearance order);
+ * items without a run stay in place.
+ *
+ * Board columns bucket tasks by status and carry no group headers; this sort
+ * keeps a run's mirrored worker cards adjacent inside a column when multiple
+ * runs coexist.
+ */
+export function clusterByWorkflowRun<T extends { workflow_run_id?: string }>(
+  items: T[],
+): T[] {
+  const firstIndex = new Map<string, number>();
+  items.forEach((item, idx) => {
+    const runId = item.workflow_run_id;
+    if (runId && !firstIndex.has(runId)) firstIndex.set(runId, idx);
+  });
+  return items
+    .map((item, idx) => ({
+      item,
+      key: (item.workflow_run_id ? firstIndex.get(item.workflow_run_id) : undefined) ?? idx,
+    }))
+    .sort((a, b) => a.key - b.key)
+    .map(({ item }) => item);
 }

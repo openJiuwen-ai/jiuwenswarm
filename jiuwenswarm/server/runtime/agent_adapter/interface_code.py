@@ -45,7 +45,6 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     WorkspaceSpec,
 )
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
-from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -55,6 +54,7 @@ from openjiuwen.harness.tools import (
     is_paid_search_enabled,
 )
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
+from agent_gateway.common.mode_matrix import supports_single_agent_permission_profile
 
 from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
@@ -69,6 +69,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_kv_cache_affinity_config,
     parse_int,
     resolve_cron_execution_flag,
+)
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    apply_discovery_metadata,
 )
 from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
     apply_discovery_metadata,
@@ -98,6 +101,7 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
     cua_model_rejects_images,
     resolve_cua_factory_options,
 )
+from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -113,6 +117,9 @@ from jiuwenswarm.agents.harness.common.rails import (
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
 )
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
+)
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
@@ -120,6 +127,7 @@ from jiuwenswarm.agents.harness.common.tools import (
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import MULTIMODAL_TOOL_NAMES
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.tool_ownership import (
     mark_stateless,
     register_tool,
@@ -135,7 +143,6 @@ from jiuwenswarm.common.task_loop_config import (
 from jiuwenswarm.common.runtime_workspace import (
     resolve_runtime_workspace_paths, resolve_bound_runtime_workspace_paths,
 )
-from gateway.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PermissionRailGroup,
 )
@@ -545,6 +552,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     """
 
     _subagent_runtime_supported = True
+    _PLUGIN_RUNTIME_PROFILE = "code"
+    _TTSE_BANK_PROFILE = "code"
 
     # 固定 Rails 名字集合 — 用于动态 Rails 去重
     _FIXED_RAIL_NAMES = frozenset({
@@ -553,6 +562,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "PermissionInterruptRail",
         "ContextProcessorRail",
         "SysOperationRail", "LspRail", "ProjectMemoryRail", "CodingMemoryRail",
+        "TTSERail",  # Reserved: TTSE in code mode is provided by a plugin only.
         "MemoryForbiddenRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
         "FileSystemRail",  # 别名
@@ -683,6 +693,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if raw == "zh":
             raw = "cn"
         return resolve_language(raw)
+
+    def _resolve_cua_card_language(self) -> str:
+        """The cua approval card is read by the user, so it follows the UI
+        language rather than the English code-mode prompt language."""
+        return self._resolve_output_language()
 
     def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Propagate an explicit Spec through lazy root and session builds."""
@@ -953,6 +968,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 build_context=build_context, agent_definition=agent_definition,
             )
         except BaseException:
+            await self.close_moa_runtime(suppress_errors=True)
             if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
                 await self._isolate_permission_instance()
             raise
@@ -1086,11 +1102,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             mode=self._session_instance_mode,
             is_cron=self._is_cron_execution_session(self._parent_session_id),
         ):
-            model = self._prepare_moa_for_build(config_base)
+            model = await self._prepare_moa_for_build(config_base)
         else:
             self._moa_enabled = False
-            self._moa_runtime = None
-            self._moa_fingerprint = None
+            await self.close_moa_runtime()
             if spec is None or spec.model is None:
                 model = self._create_model(config_base)
 
@@ -1205,8 +1220,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 主事件循环 await 这个 future 时保持响应，期间能读取并处理 esc 的 cancel。
         # 跑完后回主 loop 继续后续代码，时序与语义不变；唯一变化是初始化期间主 loop 活。
         #
-        # 安全性：ensure_initialized 操作的是 self._pending_rails、workspace 文件等实例自己的资源，
-        # 不碰全局 asyncio 原语，不跨 loop 访问主 loop 对象，不会死锁。
+        # This initialization also registers rails in Runner's shared callback
+        # framework. The resident Worker forwards registry access to its business
+        # loop; filesystem and rail init work remain in this thread. That guard
+        # is installed only by Worker startup. Standalone Runtime/SDK callers
+        # must provide a consistent loop owner for shared async resources.
         if agent_definition is not None and agent_definition.get("tools") != "*":
             from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
 
@@ -1916,6 +1934,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 self._build_subagent_rail,
                 {"config_base": config_base},
             ),
+            _RailBuildInfo(
+                "_cua_delegation_approval_rail",
+                self._build_cua_delegation_approval_rail,
+            ),
         ]
 
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
@@ -2211,6 +2233,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] LspRail create failed: [unknown] %s", exc)
             lsp_rail = None
         return lsp_rail
+
+    def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
+        """Code TTSE is constructed exclusively by the plugin context factory."""
+        return None
+
+    def _ttse_bank_root(self) -> Path:
+        """Code 的 ``_workspace_dir`` 常为 project_dir；经验库固定落在 agent 数据区。"""
+        agent_ws = getattr(self, "_agent_workspace_dir", None)
+        return Path(agent_ws) if agent_ws else get_agent_workspace_dir()
 
     def _build_coding_memory_rail(self) -> CodingMemoryRail | None:
         """构建 CodingMemoryRail（主 Agent 和 code_agent subagent 共用）.
@@ -2602,6 +2633,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         browser_agent_cfg.get("max_iterations") if isinstance(browser_agent_cfg, dict) else None,
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
+                    # Feeds the Web subagent panel's tool activity (issue #8637).
+                    rails=[SubagentToolActivityRail()],
                 )
                 from jiuwenswarm.common.browser_config import (
                     apply_browser_decision_config,
@@ -2628,12 +2661,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             # cua_agent (desktop automation via screenshots + real input) — 按配置启用
             cua_agent_cfg = subagents_cfg.get("cua_agent")
-            if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
+            cua_agent_cfg = cua_agent_cfg if isinstance(cua_agent_cfg, dict) else {}
+            if is_cua_agent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
                 logger.warning(
                     "[JiuwenSwarmCodeAdapter] cua_agent skipped: the model rejects image input "
                     "and cua_agent sees the screen only through screenshots"
                 )
-            elif self._is_subagent_enabled(cua_agent_cfg):
+            elif is_cua_agent_enabled(cua_agent_cfg):
                 cua_spec = build_cua_agent_config(
                     model,
                     card=build_cua_agent_card(resolved_language),
@@ -2644,6 +2678,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         cua_agent_cfg.get("max_iterations"),
                         DEFAULT_CUA_AGENT_MAX_ITERATIONS,
                     ),
+                    rails=[SubagentToolActivityRail()],
                     **resolve_cua_factory_options(cua_agent_cfg),
                 )
                 cua_spec.factory_kwargs["auto_create_workspace"] = False
@@ -2717,6 +2752,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+        # Refresh declared plugin tool exposure after a mode switch.
+        runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+        if runtime_manager is not None:
+            runtime_manager.refresh_tool_exposure()
 
         self._last_mode = mode
         await self._sync_personal_context_rail(mode)

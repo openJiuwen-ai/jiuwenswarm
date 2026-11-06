@@ -588,7 +588,7 @@ def test_concatenate_clip_videos_concats_shot1_then_shot2(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"concatenated"
@@ -637,7 +637,7 @@ def test_concatenate_clip_videos_falls_back_to_filter_concat(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"reencoded"
@@ -678,7 +678,7 @@ def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     compose_mod.concatenate_clip_videos([shot, upload], dest)
 
     assert not any("-f" in cmd and "concat" in cmd for cmd in calls)

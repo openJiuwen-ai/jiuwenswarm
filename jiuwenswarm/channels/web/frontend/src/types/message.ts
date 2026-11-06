@@ -78,7 +78,7 @@ export interface AutoReviewerMetadata {
 }
 
 export interface ContextCompressionRuntime {
-  status: 'running' | 'completed' | 'unchanged' | 'failed';
+  status: 'running' | 'completed' | 'unchanged' | 'failed' | 'cancelled' | 'paused';
   summary: string;
   operationId: string;
   phase?: string;
@@ -96,6 +96,21 @@ export interface ContextCompressionSummary {
   summaries: string[];
 }
 
+export type MoaPhase = 'reference' | 'verification';
+
+export interface MoaStatusPayload extends Record<string, unknown> {
+  operation_id: string;
+  phase: MoaPhase;
+  status: 'started' | 'completed' | 'failed' | 'cancelled';
+  execution_id?: string;
+}
+
+export interface MoaOperation {
+  phase: MoaPhase;
+  status: MoaStatusPayload['status'];
+  executionId?: string;
+}
+
 export interface TeamMemberContextCompressionState {
   runtime?: ContextCompressionRuntime;
   summary?: ContextCompressionSummary;
@@ -108,6 +123,8 @@ export interface Message {
   timestamp: string;
   /** True until the server confirms this optimistic input's timestamp. */
   isTimestampPending?: boolean;
+  /** True until runtime.accepted confirms the server received this optimistic input. */
+  isAcceptedPending?: boolean;
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;

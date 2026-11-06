@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from agent_gateway.channel_manager.web.enterprise_files import register_enterprise_file_routes
 
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.web.enterprise_files import register_enterprise_file_routes
 from jiuwenswarm.server.runtime.attachments.upload_storage import (
     UPLOAD_READ_CHUNK_BYTES, read_session_upload_chunk,
 )
@@ -48,7 +48,7 @@ def test_upload_reader_rejects_paths_outside_exact_session(upload, tmp_path, cas
     candidates = {
         "other_session": upload.directory.parent.parent / "other" / "uploads" / upload.path.name,
         "other_tenant": tmp_path / "other-tenant" / upload.path.name,
-        "workspace": upload.root / "agent" / "jiuwenclaw_workspace" / upload.path.name,
+        "workspace": upload.root / "agent" / "workspace" / upload.path.name,
         "nested": upload.directory / "subdir" / upload.path.name,
         "relative": upload.path.name,
         "traversal": str(upload.directory) + "/../uploads/" + upload.path.name,
@@ -113,7 +113,7 @@ def test_upload_reader_rejects_linked_or_special_files(upload, tmp_path, kind):
 
 @pytest.mark.asyncio
 async def test_enterprise_raw_file_reuses_tenant_rpc_and_streaming(upload, monkeypatch):
-    from gateway.routing import e2a_proxy
+    from agent_gateway.routing import e2a_proxy
 
     calls = []
 
@@ -159,7 +159,7 @@ async def test_enterprise_raw_file_reuses_tenant_rpc_and_streaming(upload, monke
 
 @pytest.mark.asyncio
 async def test_raw_file_returns_unavailable_without_local_fallback(upload, monkeypatch):
-    from gateway.routing import e2a_proxy
+    from agent_gateway.routing import e2a_proxy
 
     async def unavailable(**kwargs):
         return False, {"code": "SERVICE_UNAVAILABLE"}

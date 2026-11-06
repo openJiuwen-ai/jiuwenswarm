@@ -875,19 +875,21 @@ print(resp.json())
 
 接口：`PUT /api/v1/policies/{sandbox_id}`
 
-用途：动态更新指定沙箱的 `network.egress` / `network.ingress`。
-请求体字段与创建沙箱一致（`policy` + `policy_mode`）。
-本期仅支持改 ingress/egress；`network.mode` / `uplink` 以及其它 policy 段会返回 400。
-对 `network.mode: isolated` 且正在运行的沙箱会热更新 netns 内 iptables；已停止的沙箱只落盘，下次 start 生效。`host` 模式返回 400。
+用途：按沙箱运行时动态更新网络 ingress / egress。请求体为 `policy` + `policy_mode`。
+只改方向规则，其它 policy 段返回 400。
+
+- 进程沙箱（`runtime` 为 `process`）只接受 `policy.network`，且 `egress` / `ingress` 至少提供一个。`network.mode`、`uplink` 以及 `network` 以外的字段返回 400。方向规则字段与创建沙箱相同，可含域名、IP 和端口。`network.mode: isolated` 且正在运行时热更新 netns 内 iptables；已停止的沙箱只落盘，下次 start 生效。`host` 模式返回 400。
+- Conch 沙箱只接受 `policy.conch.network`，且 `egress` / `ingress` 至少提供一个。`conch` 下除 `network` 以外的字段（如 `template_name`、`vcpu_*`、`ram_mb`、`filesystem_policy`、`env`、`run_as_*`）返回 400。方向规则只有 `default`（`allow` / `deny`）、`allowed_ips`、`blocked_ips`，仅 IPv4 地址或 CIDR，不含域名和端口。四个列表合计目的地址不超过 1024 条。正在运行时调用 Conch `update_network` 热更新，成功后再落盘；落盘失败会把运行时规则回滚到更新前。已停止的沙箱只落盘，下次 start 生效。
+- 运行时与字段不匹配时返回 400。例如对 Conch 沙箱提交 `policy.network`，或对进程沙箱提交 `policy.conch.network`。
 
 请求字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `policy` | object | 是 | 本期须含 `network`，且 `egress` / `ingress` 至少提供一个 |
+| `policy` | object | 是 | 进程沙箱须含 `network`；Conch 沙箱须含 `conch.network`。对应方向里 `egress` / `ingress` 至少提供一个 |
 | `policy_mode` | string | 否 | `override`（默认）或 `append`，语义与创建沙箱相同 |
 
-Python 请求示例：
+进程沙箱示例：
 
 ```python
 import requests
@@ -916,19 +918,86 @@ print(resp.status_code)
 print(resp.json())
 ```
 
-成功时返回更新后的完整 `SecurityPolicy` JSON（与 `GET /policies/{sandbox_id}` 同形）。
+Conch 沙箱示例：
 
-### 批量更新所有沙箱网络策略
+```python
+import requests
+
+sandbox_id = "conch123"
+resp = requests.put(
+    f"http://127.0.0.1:8321/api/v1/policies/{sandbox_id}",
+    json={
+        "policy_mode": "override",
+        "policy": {
+            "conch": {
+                "network": {
+                    "egress": {
+                        "default": "deny",
+                        "allowed_ips": ["198.51.100.10/32"],
+                        "blocked_ips": [],
+                    },
+                    "ingress": {
+                        "default": "deny",
+                        "allowed_ips": ["192.0.2.10/32"],
+                    },
+                },
+            },
+        },
+    },
+    timeout=30,
+)
+print(resp.status_code)
+print(resp.json())
+```
+
+`append` 只合并请求里出现的列表，未出现的方向和 `default` 保持原值。例如在上面的 egress 上再追加：
+
+```python
+resp = requests.put(
+    f"http://127.0.0.1:8321/api/v1/policies/{sandbox_id}",
+    json={
+        "policy_mode": "append",
+        "policy": {
+            "conch": {
+                "network": {
+                    "egress": {
+                        "allowed_ips": ["198.51.100.11/32"],
+                        "blocked_ips": ["203.0.113.20/32"],
+                    },
+                },
+            },
+        },
+    },
+    timeout=30,
+)
+```
+
+成功时返回更新后的完整 `SecurityPolicy` JSON（与 `GET /policies/{sandbox_id}` 同形）。Conch 响应里生效结果在 `conch.network`。
+
+### 批量更新策略
 
 接口：`PUT /api/v1/policies`
 
-用途：对当前所有已注册沙箱应用与单沙箱接口相同的网络规则更新。
-不修改 server 默认 policy。请求体非法时整请求 400，不落任何沙箱。
-`host` 模式沙箱记入 `skipped`；单个沙箱热更新失败记入 `failed`，不阻断其余沙箱。
+用途：更新服务默认策略，和/或给当前已注册沙箱热更新网络规则。请求体非法时整请求 400，不落任何沙箱。单个沙箱失败记入 `failed`，不阻断其余沙箱。
 
-请求体与 `PUT /api/v1/policies/{sandbox_id}` 相同。
+已有沙箱只热更新网络方向，规则与单沙箱接口相同：
 
-Python 请求示例：
+- 请求含 `policy.network.egress` 或 `policy.network.ingress` 时，应用到进程沙箱。`network.mode: host` 记入 `skipped`，`reason` 为 `network.mode is host`。没有这段时，进程沙箱记入 `skipped`，`reason` 为 `no network fragment in request`。
+- 请求含 `policy.conch.network.egress` 或 `policy.conch.network.ingress` 时，应用到 Conch 沙箱。没有这段时，Conch 沙箱记入 `skipped`，`reason` 为 `no conch.network fragment in request`。
+- 同一次请求可以同时带上两段，分别作用于对应运行时。
+
+`update_default_policy: true` 时，把 `policy` 整段（不限网络字段）按 `policy_mode` 合并进服务默认策略，并覆盖写入 `update_policy.yaml`。其中 `inference_privacy_proxies` 会被忽略。`timeout` 发生变化时会重启空闲沙箱回收。该持久化需要 AgentOS profile，否则返回 400。默认策略更新不会把非网络字段热应用到已有沙箱。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `policy` | object | 是 | 热更新已有沙箱时读取其中的 `network` 与 `conch.network`；更新默认策略时按整段合并 |
+| `policy_mode` | string | 否 | `override`（默认）或 `append` |
+| `update_default_policy` | boolean | 否 | 是否合并并持久化服务默认策略，默认 `false` |
+| `update_existing_sandboxes` | boolean | 否 | 是否热更新已注册沙箱的网络规则，默认 `true` |
+
+只热更新已有沙箱：
 
 ```python
 import requests
@@ -943,6 +1012,13 @@ resp = requests.put(
                     "blocked_ips": ["203.0.113.50/32"],
                 },
             },
+            "conch": {
+                "network": {
+                    "egress": {
+                        "blocked_ips": ["203.0.113.50/32"],
+                    },
+                },
+            },
         },
     },
     timeout=30,
@@ -951,15 +1027,48 @@ print(resp.status_code)
 print(resp.json())
 ```
 
+只更新默认策略、不碰已有沙箱：
+
+```python
+resp = requests.put(
+    "http://127.0.0.1:8321/api/v1/policies",
+    json={
+        "update_default_policy": True,
+        "update_existing_sandboxes": False,
+        "policy_mode": "append",
+        "policy": {
+            "conch": {
+                "network": {
+                    "egress": {"blocked_ips": ["203.0.113.50/32"]},
+                },
+            },
+        },
+    },
+    timeout=30,
+)
+```
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `updated` | string[] | 网络规则已更新的沙箱 ID |
+| `skipped` | object[] | 未更新的沙箱，含 `sandbox_id` 与 `reason` |
+| `failed` | object[] | 更新失败的沙箱，含 `sandbox_id` 与 `error` |
+| `default_updated` | boolean | 本次是否写入了服务默认策略 |
+| `default_policy` | object/null | `default_updated` 为 true 时返回合并后的完整默认策略，否则为 `null` |
+
 响应示例：
 
 ```json
 {
-  "updated": ["sb-1", "sb-2"],
+  "updated": ["sb-1", "sb-conch"],
   "skipped": [
     {"sandbox_id": "sb-host", "reason": "network.mode is host"}
   ],
-  "failed": []
+  "failed": [],
+  "default_updated": false,
+  "default_policy": null
 }
 ```
 

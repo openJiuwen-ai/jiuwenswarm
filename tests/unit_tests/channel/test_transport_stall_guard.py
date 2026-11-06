@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gateway.channel_manager.web import transport_stall_guard as tsg
+import pytest
+
+from agent_gateway.channel_manager.web import transport_stall_guard as tsg
 
 
 class _FakeTimer:
@@ -158,6 +160,8 @@ def test_eof_respects_protocols_that_keep_the_transport_open():
     assert proto.loop.timers == []
 
 
+# This factory deliberately wraps the legacy protocol supplied by Gateway.
+@pytest.mark.filterwarnings("ignore:The `websockets` implementation is deprecated:UserWarning")
 def test_guarded_protocol_factories_compose_the_mixin():
     from uvicorn.protocols.http.auto import AutoHTTPProtocol
     from uvicorn.protocols.websockets.websockets_impl import (

@@ -19,8 +19,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gateway.common import external_providers
-from gateway.channel_manager.web import mcp_oauth_http
+from agent_gateway.common import external_providers
+from agent_gateway.channel_manager.web import mcp_oauth_http
 from jiuwenswarm.server.runtime.mcp import oauth_flow, registry
 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
 from jiuwenswarm.server.runtime.mcp.oauth_flow import OAuthFlowManager
@@ -175,10 +175,10 @@ def test_callback_uses_providers_registered_by_real_process_setup(tmp_path):
         "import sys\n"
         "from fastapi import FastAPI\n"
         "from fastapi.testclient import TestClient\n"
-        "from gateway.common.external_providers import registered_domains\n"
-        "from gateway.channel_manager.web.mcp_oauth_http import attach_mcp_oauth_routes\n"
+        "from agent_gateway.common.external_providers import registered_domains\n"
+        "from agent_gateway.channel_manager.web.mcp_oauth_http import attach_mcp_oauth_routes\n"
         "assert 'jiuwenswarm.server.runtime.mcp.oauth_flow' not in sys.modules\n"
-        "from gateway.routing.mcp_remote import install\n"
+        "from agent_gateway.routing.mcp_remote import install\n"
         "install()\n"
         "assert 'mcp_registry' in registered_domains()\n"
         "app = FastAPI()\n"

@@ -1,9 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Resident Worker service loop.
+"""Runtime Worker service loop.
 
 The process binds IPC first, then loads Agent Runtime. Supervisor disconnects
-do not unload OpenJiuwen; only an explicit shutdown does.
+do not unload OpenJiuwen in resident mode. A Front-attached source instead
+connects before loading Runtime and shuts down on its first session's EOF.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any
 
 from jiuwenswarm.server.ipc.protocol import IpcError, KIND_HELLO, KIND_SHUTDOWN_DONE, PROTOCOL_VERSION
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.ipc.session import IpcSessionSource
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
 from jiuwenswarm.server.worker.diagnostics import (
@@ -40,16 +42,17 @@ class WorkerForceExit(RuntimeError):
 
 
 async def serve_worker(socket_path: str, *, host: str, port: int,
-                       code_identity_value: str | None = None) -> None:
+                       code_identity_value: str | None = None,
+                       session_source: IpcSessionSource | None = None) -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
     beat = LoopBeat()
     dispatcher = WorkerDispatcher(bridge, beat=beat)
     signals = RuntimeSignalSink(holder, on_ready=dispatcher.mark_ready)
-    server = IpcServer(socket_path)
+    server = session_source if session_source is not None else IpcServer(socket_path)
     await server.start()
     signals.ipc_ready()
-    logger.info("[Worker] ipc listening: %s", socket_path)
+    logger.info("[Worker] ipc ready: %s", socket_path if session_source is None else "front_loopback")
     loaded: dict[str, Any] = {"runtime": None}
     runtime_task: asyncio.Task | None = None
     beat_task = asyncio.create_task(_beat_loop(beat), name="worker-loop-beat")
@@ -72,7 +75,9 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
         while True:
             conn = await server.accept()
             _install_heartbeat_fast_path(conn, beat)
-            generation = holder.open_session(conn)
+            generation = holder.open_session(
+                conn, generation=session_source.generation if session_source is not None else None,
+            )
             try:
                 await _send_hello(
                     conn,
@@ -84,6 +89,8 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
             except (OSError, RuntimeError):
                 await _retire_session(holder, dispatcher)
                 await conn.close()
+                if session_source is not None and not session_source.reconnectable:
+                    break
                 continue
             if runtime_task is None:
                 runtime_task = asyncio.create_task(
@@ -98,15 +105,21 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                 fatal = exc
                 break
             except (OSError, asyncio.IncompleteReadError, IpcError) as exc:
-                logger.info("[Worker] supervisor disconnected; runtime stays resident: %r", exc)
+                attached = session_source is not None and not session_source.reconnectable
+                logger.info("[Worker] supervisor disconnected; runtime %s: %r",
+                            "shutting down" if attached else "stays resident", exc)
                 await _retire_session(holder, dispatcher)
                 await conn.close()
+                if attached:
+                    break
                 continue
             await _retire_session(holder, dispatcher)
             if not keep_running or dispatcher.shutdown_requested:
                 shutdown_conn = conn
                 break
             await conn.close()
+            if session_source is not None and not session_source.reconnectable:
+                break
     except asyncio.CancelledError:
         logger.info("[Worker] stop requested")
     finally:
@@ -132,6 +145,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
         finally:
             if conn is not None:
                 await conn.close()
+            await server.close()
     if fatal is not None:
         raise fatal
 
@@ -226,7 +240,7 @@ async def _close_worker(
     server: Any,
     *,
     dispatch_timeout: float = _DISPATCH_SHUTDOWN_TIMEOUT,
-    load_timeout: float = _RUNTIME_LOAD_SHUTDOWN_TIMEOUT,
+    load_timeout: float | None = None,
     runtime_timeout: float = _RUNTIME_SHUTDOWN_TIMEOUT,
     total_timeout: float = SHUTDOWN_TIMEOUT,
 ) -> None:
@@ -246,10 +260,15 @@ async def _close_worker(
             "[Worker] dispatch still running after shutdown timeout; skipping runtime shutdown"
         )
         raise WorkerForceExit("dispatch still running")
-    runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=remaining(load_timeout))
+    # An interrupted cold import can need more than the old per-stage cap.
+    # Let it finish within the same total deadline before closing its Runtime.
+    load_limit = total_timeout if load_timeout is None else load_timeout
+    runtime = await _runtime_for_shutdown(runtime_task, loaded, timeout=remaining(load_limit))
     if runtime is not None:
         await _shutdown_runtime(runtime, timeout=remaining(runtime_timeout))
-    close = getattr(server, "close", None)
+    # Python 3.12+ Server.wait_closed waits for accepted transports too.
+    # Keep the session open for shutdown.done, then fully close in serve_worker.
+    close = getattr(server, "stop_accepting", None) or getattr(server, "close", None)
     if callable(close):
         await close()
 
@@ -324,7 +343,8 @@ async def _send_hello(
     instance: str,
     code_identity_value: str | None = None,
 ) -> None:
-    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    import psutil
     identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
     await conn.send(
         {
@@ -336,6 +356,9 @@ async def _send_hello(
             "runtime_loaded": runtime_loaded,
             "generation": generation,
             "data_scope": data_scope(),
+            "deployment_scope": deployment_scope(),
+            "shutdown_ack": True,
+            "process_created": psutil.Process().create_time(),
             "code_identity": identity,
         }
     )

@@ -2,7 +2,8 @@
 
 """Async byte stream for one IPC connection.
 
-POSIX uses a Unix domain socket. Windows uses a named pipe via the stdlib
+Resident POSIX uses a Unix domain socket; Front-attached mode uses loopback
+TCP on every platform. Windows resident mode uses a named pipe via the stdlib
 ``multiprocessing.connection`` transport, bridged onto the event loop.
 """
 
@@ -175,7 +176,9 @@ class PipeConnection(IpcConnection):
         # The reader thread answers heartbeats while the loop is blocked, so
         # both directions must serialize raw writes through one mutex.
         self._send_mutex = threading.Lock()
+        self._read_native_lock = threading.Lock()
         self._closed = False
+        self._close_task: asyncio.Task | None = None
         # A blocking read must not occupy the thread needed to send, and
         # Runtime tools must not starve either direction in the default pool.
         self._reader_pool = ThreadPoolExecutor(
@@ -231,11 +234,14 @@ class PipeConnection(IpcConnection):
             while not self._closed:
                 # Closing a stdlib pipe does not cancel every pending native
                 # read. Bound idle waits so shutdown can join this executor.
-                if not self._conn.poll(0.1):
-                    continue
-                if self._closed:
-                    return
-                frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
+                with self._read_native_lock:
+                    if self._closed:
+                        return
+                    if not self._conn.poll(0.1):
+                        continue
+                    if self._closed:
+                        return
+                    frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
                 self._last_rx = time.monotonic()
                 message = self._decode_pipe_frame(frame)
                 responder = self._heartbeat_responder
@@ -342,19 +348,30 @@ class PipeConnection(IpcConnection):
             self._receiving_since = 0.0
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        with self._receive_mutex:
-            self._pending.clear()
-            self._pending_bytes = 0
-        self._notify_reader()
-        close = getattr(self._conn, "close", None)
+        if self._close_task is None:
+            self._closed = True
+            with self._receive_mutex:
+                self._pending.clear()
+                self._pending_bytes = 0
+            self._notify_reader()
+            self._close_task = asyncio.create_task(self._close_native_pipe())
+        # A cancelled caller must not abandon the native handle. Retrying close
+        # waits for this same cleanup instead of reporting an unfinished close.
+        await asyncio.shield(self._close_task)
+
+    async def _close_native_pipe(self) -> None:
         try:
-            if callable(close):
-                # CloseHandle cancels pending native I/O and does not need
-                # a default-pool thread (which may be entirely occupied).
-                close()
+            # poll() owns a Windows Overlapped read even on an idle pipe.
+            # Let its bounded wait collect completion before CloseHandle.
+            # The default executor can be occupied by Runtime tools.
+            while not self._read_native_lock.acquire(blocking=False):
+                await asyncio.sleep(0.005)
+            try:
+                close = getattr(self._conn, "close", None)
+                if callable(close):
+                    close()
+            finally:
+                self._read_native_lock.release()
         finally:
             self._reader_pool.shutdown(wait=False, cancel_futures=True)
             self._writer_pool.shutdown(wait=False, cancel_futures=True)

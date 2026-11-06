@@ -156,7 +156,7 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_repor
 
 
 @pytest.mark.asyncio
-async def test_after_model_call_persists_cumulative_usage_without_emitting_an_event(
+async def test_after_model_call_persists_cumulative_usage_without_duplicate_context_usage(
     monkeypatch,
     tmp_path,
 ):
@@ -216,8 +216,8 @@ async def test_after_model_call_persists_cumulative_usage_without_emitting_an_ev
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_build_context", [True, False])
-async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypatch, tmp_path, has_build_context):
+@pytest.mark.parametrize("context_field", ["_usage_build_context", "_build_context", None])
+async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypatch, tmp_path, context_field):
     from openjiuwen.core.single_agent.rail.base import bind_usage_invocation_id, reset_usage_invocation_id
     from openjiuwen.harness.deep_agent import DeepAgent
     from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
@@ -239,9 +239,9 @@ async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypa
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(DeepAgent, "create_subagent", lambda _self, *_args, **_kwargs: _Child())
     install_session_token_usage_subagent_hook()
-    parent = SimpleNamespace(
-        _build_context=SimpleNamespace(session_id="root_usage") if has_build_context else None,
-    )
+    parent = SimpleNamespace()
+    if context_field:
+        setattr(parent, context_field, SimpleNamespace(session_id="root_usage"))
     child = DeepAgent.create_subagent(parent, "general-purpose", "team/workflow/child")
     rail = child.rails[0]
     ctx = SimpleNamespace(
@@ -252,7 +252,7 @@ async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypa
     ctx.inputs = SimpleNamespace(
         context_usage_request_id="child-call",
         context_usage_attribution={
-            "product_session_id": "team/workflow" if has_build_context else "root_usage",
+            "product_session_id": "team/workflow" if context_field else "root_usage",
             "execution_session_id": "team/workflow/child",
             "invocation_id": "invoke-child",
         },

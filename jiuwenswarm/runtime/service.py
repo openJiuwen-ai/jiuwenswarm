@@ -19,14 +19,14 @@ from contextlib import aclosing, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
@@ -249,8 +249,8 @@ async def _acquire_process_runtime_extensions() -> bool:
 
     from openjiuwen.core.runner import Runner
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         try:
@@ -308,7 +308,7 @@ async def _release_process_runtime_extensions() -> None:
     global _PROCESS_RUNTIME_EXTENSION_REGISTRY
     global _PROCESS_RUNTIME_EXTENSION_USERS
 
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         if _PROCESS_RUNTIME_EXTENSION_USERS <= 0:
@@ -341,6 +341,10 @@ def _client_tool_answer_mismatch(request: AgentRequest) -> Iterator[None]:
         if not is_client_tool_resume(request.params):
             raise
         raise ClientToolAnswerMismatch("no paused execution waits on these client tool results") from exc
+
+
+def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
+    return bool(execution.waiting_control_ids) and not execution.state.terminal
 
 
 class AgentRuntime:
@@ -513,8 +517,38 @@ class AgentRuntime:
             or self._session_message_goal_busy(session_id)
         )
 
+    def _voice_task_card_refusal(self, request: AgentRequest) -> list[RuntimeEvent]:
+        """Refuse a new voice task while a chat turn waits on a card (#5487).
+
+        Any new chat execution supersedes one that waits for control input, so
+        the card could no longer be clicked; cards are click-only for voice.
+        The refusal is a ``chat.error`` so the voice task fails instead of
+        becoming unknown, which would hold the conversation's voice queue.
+        """
+        if request.channel_id != "video_tool" or str((request.params or {}).get("mode") or "").startswith("team."):
+            return []
+        snapshot = self._session_coordinator.snapshot_session(request.session_id or "default")
+        if snapshot is None or not any(
+            execution.state is SessionExecutionState.WAITING_FOR_CONTROL
+            for execution in snapshot.executions
+        ):
+            return []
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        return [RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={
+                "event_type": "chat.error",
+                "error": "当前对话有待处理的确认卡片，请先在界面上点击处理，再发起全双工工具任务。",
+            },
+            is_complete=True,
+            ok=False,
+        )]
+
     def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
-        from gateway.common.mode_matrix import is_plan_mode
+        from agent_gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
         if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
@@ -1065,6 +1099,14 @@ class AgentRuntime:
         """Read the authoritative execution state without attaching a consumer."""
         return self._session_coordinator.snapshot_session(session_id)
 
+    def sessions_awaiting_answers(self) -> tuple[str, ...]:
+        """The Sessions with an unfinished execution paused on interactions (questions, client tool calls)."""
+        return tuple(
+            snapshot.session_id
+            for snapshot in self._session_coordinator.snapshot_sessions()
+            if any(_awaits_answers(execution) for execution in snapshot.executions)
+        )
+
     def recoverable_control(
         self, session_id: str, request_id: str, execution_id: str,
     ) -> SessionExecutionSnapshot | None:
@@ -1236,7 +1278,7 @@ class AgentRuntime:
         work_mode: object = None,
     ) -> bool:
         """Return whether a mode uses the single-Agent Session Runtime."""
-        from gateway.common.mode_matrix import (
+        from agent_gateway.common.mode_matrix import (
             NEW_AGENT_CODE_NORMAL,
             NEW_AGENT_WORK_NORMAL,
         )
@@ -1724,6 +1766,9 @@ class AgentRuntime:
                         return await self._deliver_control(
                             request, on_control_event=on_control_event,
                         )
+                    refusal = self._voice_task_card_refusal(request)
+                    if refusal:
+                        return refusal
                     # Team work kinds require matching execution details (the
                     # coordinator rejects a Team execution without them); mirror
                     # the streaming path's classification for unary Team calls.
@@ -1769,7 +1814,12 @@ class AgentRuntime:
                     agent_execution=_agent_execution,
                 )
             finally:
-                reset_runtime_context(token)
+                from jiuwenswarm.extensions.video_duplex.backend.session_receipts import finish_request
+
+                try:
+                    finish_request(request)
+                finally:
+                    reset_runtime_context(token)
 
     async def _invoke_started(
         self,
@@ -1784,6 +1834,9 @@ class AgentRuntime:
         manager = await self._get_request_manager(request)
         if trigger_hook:
             await self._trigger_before_chat_request_hook(request)
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+        prepare_request(request)
         channel_id = request.channel_id or "default"
         foreground = request.req_method in self._chat_turn_methods()
         activity_participants = (
@@ -1964,6 +2017,11 @@ class AgentRuntime:
                 raise end_error
         if cancellation is not None:
             raise cancellation
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import publish_result, finish_request
+
+        for event in events:
+            await publish_result(request, event)
+        finish_request(request)
         return events
 
     async def answer_interaction(
@@ -2074,7 +2132,10 @@ class AgentRuntime:
             self._stream_with_runtime_context(stream, request=request)
         ) as events:
             async for event in events:
-                if execution_id is not None and isinstance(event.payload, dict):
+                if (
+                    execution_id is not None and isinstance(event.payload, dict)
+                    and event.event_type != "chat.moa_status"
+                ):
                     event.payload["execution_id"] = execution_id
                 yield event
 
@@ -2346,6 +2407,11 @@ class AgentRuntime:
                     expected_execution_id=request.params.get("expected_execution_id"),
                 )
             else:
+                refusal = self._voice_task_card_refusal(request)
+                if refusal:
+                    for event in refusal:
+                        yield event
+                    return
                 team_execution = work_kind in {
                     SessionWorkKind.TEAM_REQUEST,
                     SessionWorkKind.TEAM_CONTROL,
@@ -2448,8 +2514,14 @@ class AgentRuntime:
                             if execution.work_kind is SessionWorkKind.SESSION_INPUT
                             else execution.execution_id
                         )
-                if execution_id is not None and isinstance(event.payload, dict):
+                if (
+                    execution_id is not None and isinstance(event.payload, dict)
+                    and event.event_type != "chat.moa_status"
+                ):
                     event.payload["execution_id"] = execution_id
+                from jiuwenswarm.extensions.video_duplex.backend.session_receipts import publish_result
+
+                await publish_result(request, event)
                 yield event
         finally:
             token = set_runtime_context(self, manager)
@@ -2464,6 +2536,9 @@ class AgentRuntime:
                         cause=ExecutionCancelCause.CONSUMER_CLOSED,
                     )
                 await stream.aclose()
+                from jiuwenswarm.extensions.video_duplex.backend.session_receipts import finish_request
+
+                finish_request(request)
             finally:
                 reset_runtime_context(token)
 
@@ -2482,6 +2557,9 @@ class AgentRuntime:
         manager = await self._get_request_manager(request)
         if trigger_hook:
             await self._trigger_before_chat_request_hook(request)
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+        prepare_request(request)
         channel_id = request.channel_id or "default"
         is_chat_turn = request.req_method in self._chat_turn_methods()
         foreground = is_chat_turn and not background
@@ -2812,7 +2890,10 @@ class AgentRuntime:
             with _client_tool_answer_mismatch(request):
                 async with aclosing(stream):
                     async for event in stream:
-                        if execution_id is not None and isinstance(event.payload, dict):
+                        if (
+                            execution_id is not None and isinstance(event.payload, dict)
+                            and event.event_type != "chat.moa_status"
+                        ):
                             event.payload["execution_id"] = execution_id
                         if on_control_event is not None and self._is_permission_control_ack(request, event):
                             await on_control_event(event)
@@ -2868,7 +2949,10 @@ class AgentRuntime:
                     on_execution=remember_execution,
                 )
                 for event in events:
-                    if execution_id is not None and isinstance(event.payload, dict):
+                    if (
+                        execution_id is not None and isinstance(event.payload, dict)
+                        and event.event_type != "chat.moa_status"
+                    ):
                         event.payload["execution_id"] = execution_id
             if not heartbeat_control:
                 for event in events:
@@ -2884,6 +2968,52 @@ class AgentRuntime:
             if admitted:
                 await end_control(session_id)
 
+    def _moa_control_execution_id(self, request: AgentRequest) -> str | None:
+        """Resolve an admitted control's original execution for MoA notices."""
+        session_id = request.session_id or "default"
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None or snapshot.session_id != session_id:
+            return None
+        control_ids = self._control_ids(request)
+        candidates = []
+        for execution in snapshot.executions:
+            if execution.session_id != session_id or execution.generation != snapshot.generation:
+                continue
+            if (
+                execution.work_kind is not SessionWorkKind.CONTROL_INPUT
+                or execution.state is not SessionExecutionState.RUNNING
+            ):
+                continue
+            if execution.request_id in control_ids:
+                candidates.append(execution)
+        if len(candidates) != 1 or not candidates[0].parent_execution_id:
+            return None
+        execution = candidates[0]
+        by_id = {item.execution_id: item for item in snapshot.executions}
+        visited: set[str] = set()
+        while execution.parent_execution_id:
+            if execution.execution_id in visited:
+                return None
+            visited.add(execution.execution_id)
+            parent = by_id.get(execution.parent_execution_id)
+            if (
+                parent is None
+                or parent.session_id != session_id
+                or parent.generation != snapshot.generation
+            ):
+                return None
+            execution = parent
+        return execution.execution_id
+
+    @staticmethod
+    def _bind_moa_control_execution(event: RuntimeEvent, execution_id: str | None) -> None:
+        """Backfill only unbound MoA notices without changing other events."""
+        if event.event_type != "chat.moa_status" or execution_id is None:
+            return
+        current = event.payload.get("execution_id")
+        if not isinstance(current, str) or not current.strip():
+            event.payload["execution_id"] = execution_id
+
     async def _deliver_control_started(
         self,
         request: AgentRequest,
@@ -2896,6 +3026,7 @@ class AgentRuntime:
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
+        moa_execution_id = self._moa_control_execution_id(request)
         agent = self._control_agent(request, manager)
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
@@ -2912,6 +3043,7 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
+                self._bind_moa_control_execution(event, moa_execution_id)
                 if on_control_event is not None and self._is_permission_control_ack(request, event):
                     await on_control_event(event)
                 else:
@@ -2935,7 +3067,7 @@ class AgentRuntime:
         # actual handoff acknowledgement can settle the submitted answer.
         return (
             params.get("source") == "permission_interrupt"
-            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 128
+            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 512
             and event.event_type == "runtime.accepted"
             and event.request_id == request.request_id
             and event.session_id == request.session_id
@@ -2968,10 +3100,17 @@ class AgentRuntime:
     ) -> AsyncIterator[RuntimeEvent]:
         """Relay a delivered answer, then release the questions of its pause nobody waits on any more."""
         paused = self.resumed_interactions(request)
-        async with aclosing(stream):
-            async for event in stream:
-                yield event
-        await self._release_unawaited_interactions(request.session_id or "default", paused)
+        session_id = request.session_id or "default"
+        try:
+            async with aclosing(stream):
+                async for event in stream:
+                    yield event
+        except BaseException:
+            for control_id in self._control_ids(request):
+                if self._session_coordinator.has_control_target(session_id, control_id):
+                    await self._mark_pending_interaction_id(session_id, control_id)
+            raise
+        await self._release_unawaited_interactions(session_id, paused)
 
     async def _stream_control_started(
         self,
@@ -2983,6 +3122,7 @@ class AgentRuntime:
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
         session_id = request.session_id or "default"
+        moa_execution_id = self._moa_control_execution_id(request)
         agent = self._control_agent(request, manager)
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
@@ -2998,6 +3138,7 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
+                self._bind_moa_control_execution(event, moa_execution_id)
                 await self._mark_pending_interaction(event)
                 yield event
         except BaseException:
@@ -3648,6 +3789,7 @@ class AgentRuntime:
 
         return bool(
             event.ok
+            and event.event_type != "chat.moa_status"
             and event.event_type not in TERMINAL_ERROR_EVENT_TYPES
         )
 
@@ -3971,6 +4113,12 @@ class AgentRuntime:
         # WAITING_FOR_INPUT while the Session stays entered).
         if self._is_attach_only_request(request):
             return TeamWaiterKind.PERSISTENT
+        params = request.params or {}
+        if (request.channel_id == "video_tool" and params.get("mode") == "team.design"
+                and params.get("managed_task_binding")):
+            # A managed invocation must observe its own terminal receipt even
+            # when the Design page already owns a persistent response stream.
+            return TeamWaiterKind.REQUEST
         if background or self._team_session_message_id(request) is not None:
             return TeamWaiterKind.NONE
         from jiuwenswarm.agents.harness.team import get_team_manager

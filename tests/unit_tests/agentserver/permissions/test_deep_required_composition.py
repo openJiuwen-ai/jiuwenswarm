@@ -39,7 +39,8 @@ _build_runtime_prompt_rail _build_eternal_conversation_rail _build_response_prom
 _build_multimodal_image_rail
 _build_task_planning_rail _build_security_rail _build_heartbeat_rail
 _build_model_anomaly_detection_rail _build_circuit_breaker_rail _build_avatar_rail
-_build_memory_forbidden_rail _build_subagent_rail _build_structured_ask_user_rail
+_build_memory_forbidden_rail _build_subagent_rail _build_cua_delegation_approval_rail
+_build_structured_ask_user_rail
 _build_work_agent_mode_rail _build_work_plan_approval_rail
 """.split()
 
@@ -130,7 +131,7 @@ def test_parent_composition_preserves_order_and_wiring(
         "_stream_event_rail _task_planning_rail _security_rail "
         "_model_anomaly_detection_rail _heartbeat_rail _session_messaging_route_rail "
         "_circuit_breaker_rail _avatar_rail "
-        "_memory_forbidden_rail _subagent_rail _permission_rail "
+        "_memory_forbidden_rail _subagent_rail _cua_delegation_approval_rail _permission_rail "
         "_root_permission_completion_rail _context_processor_rail _eternal_conversation_rail "
         "_ask_user_rail _work_agent_mode_rail _work_plan_approval_rail"
     ).split()

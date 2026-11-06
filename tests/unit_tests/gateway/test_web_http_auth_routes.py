@@ -12,12 +12,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gateway.auth import account_kit
-from gateway.auth import service as service_mod
-from gateway.auth import session_store as store_mod
-from gateway.auth.account_kit import AccountKitFlow, OAuthConfig
-from gateway.auth.service import AuthService
-from gateway.channel_manager.web import web_http_auth
+from agent_gateway.auth import account_kit
+from agent_gateway.auth import service as service_mod
+from agent_gateway.auth import session_store as store_mod
+from agent_gateway.auth.account_kit import AccountKitFlow, OAuthConfig
+from agent_gateway.auth.service import AuthService
+from agent_gateway.channel_manager.web import web_http_auth
 
 ID_TOKEN_MARKER = "IDTOKEN-LEAK"
 REFRESH_TOKEN = "REFRESH-LEAK"
@@ -52,7 +52,7 @@ def token_endpoint(monkeypatch) -> FakeTokenEndpoint:
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",
             whitelist=None, blocklist=None, login=None, **apig_paths):
-    from gateway.auth import remote_config
+    from agent_gateway.auth import remote_config
 
     remote_config.set_config_for_test(remote_config.parse_config({
         "is_effective": effective,
@@ -195,7 +195,7 @@ def test_status_reports_the_campaign_state(client):
 
 
 def test_status_reports_a_finished_campaign(client):
-    from gateway.auth import remote_config
+    from agent_gateway.auth import remote_config
 
     remote_config.set_config_for_test(remote_config.parse_config({"is_effective": False}))
     body = client.get("/api/v1/auth/status").json()
@@ -326,7 +326,7 @@ def test_logout_clears_session_and_cookie(client):
 
 
 def test_logout_revokes_the_credential_held_by_agent_server(client, monkeypatch):
-    from gateway.channel_manager.web import web_http_auth
+    from agent_gateway.channel_manager.web import web_http_auth
 
     revoked: list[str] = []
 

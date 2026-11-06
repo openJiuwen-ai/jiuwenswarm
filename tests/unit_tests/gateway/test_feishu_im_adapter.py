@@ -4,7 +4,7 @@
 
 from unittest.mock import patch
 
-from gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
     FeishuIMPlatformAdapter,
 )
 
