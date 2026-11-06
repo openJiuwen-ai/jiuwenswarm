@@ -175,6 +175,7 @@ export interface JiuwenMateChatRequest {
   messageId: string;
   text: string;
   receivedAt: string;
+  updatedAt: string;
   status: 'queued' | 'dispatched' | 'ended';
   outcome: string | null;
   running: boolean;
@@ -613,6 +614,7 @@ export function toChatRequest(value: unknown): JiuwenMateChatRequest {
     messageId: text(wire.message_id),
     text: text(wire.text),
     receivedAt: text(wire.received_at),
+    updatedAt: text(wire.updated_at),
     status: status === 'queued' || status === 'ended' ? status : 'dispatched',
     outcome: typeof wire.outcome === 'string' ? wire.outcome : null,
     running: wire.running === true,
