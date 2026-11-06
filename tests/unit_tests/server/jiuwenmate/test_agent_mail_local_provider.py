@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.jiuwenmate.agent_mail_local_provider import LocalAgentMailRuntime
+from jiuwenswarm.server.jiuwenmate.agent_mail_local_provider import LocalAgentMailRuntime, _default_runner
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailScope
 
 
@@ -269,3 +271,14 @@ async def test_local_runtime_cleans_up_legacy_untracked_authorization(tmp_path, 
     assert killed
     assert runtime._current_operation(scope) is None
 
+
+
+def test_mail_cli_reads_utf8_message_subject_with_gbk_host_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, '_text_encoding', lambda: 'gbk')
+    expected = '{"subject":"中文邮件"}'
+    result = _default_runner(
+        [sys.executable, '-c', f'import sys; sys.stdout.buffer.write({expected.encode("utf-8")!r})'],
+        env=dict(os.environ), input_text=None, timeout=10, cwd=str(tmp_path),
+    )
+    assert result.returncode == 0
+    assert result.stdout == expected
