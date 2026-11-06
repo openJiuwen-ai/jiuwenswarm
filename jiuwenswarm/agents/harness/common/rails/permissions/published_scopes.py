@@ -186,82 +186,30 @@ class PublishedPermissionScopes:
         return f"{self.base_key}:session:{suffix}"
 
     def publish_session(self, session_id, config):
-        """请求/配置变更入口发布完整配置，再刷新当前 ACTIVE grants。"""
-        if not session_id:
-            return
-        with _publishers_lock, self._lock:
-            if self._closed:
-                raise RuntimeError("Permission scopes have been released")
-            manager = get_permission_manager()
-            self._generations.setdefault(session_id, uuid4().hex)
-            key = self._key(session_id)
-            _idle_sessions.pop((self.base_key, session_id), None)
-            try:
-                publish_with_key_budget(lambda: manager.update_config(config, key))
-                self._owned_keys.add(key)
-                self._sessions[session_id] = copy.deepcopy(config)
-                self._session_keys[session_id] = key
-                self._metadata[session_id] = _projection_metadata(config)
-                self._refresh(session_id)
-            except BaseException:
-                if session_id not in self._sessions:
-                    self._generations.pop(session_id, None)
-                raise
-            finally:
-                _cache_idle_session(self, session_id)
+        """会话级 Manager key 已停用；保留空实现兼容旧调用方。"""
+        _ = session_id, config
+        return
 
     def _lease(self, session_id):
-        if self._closed:
-            raise RuntimeError("Permission scopes have been released")
-        users = self._leases.setdefault(session_id, set())
-        token = object()
-        users.add(token)
-        _idle_sessions.pop((self.base_key, session_id), None)
-
-        def release():
-            with _publishers_lock, self._lock:
-                # Session deletion/republication creates another users set. An
-                # old release must never decrement or remove that new session.
-                if self._leases.get(session_id) is not users or token not in users:
-                    return
-                users.remove(token)
-                if not users:
-                    self.remove_session(session_id)
-
-        return release
+        """会话租约已停用；返回空释放回调。"""
+        _ = session_id
+        return lambda: None
 
     def acquire_session(self, session_id, config):
-        """Publish on request entry and retain until the returned release runs."""
-        if not session_id:
-            raise ValueError("Permission session id is required")
-        with _publishers_lock, self._lock:
-            release = self._lease(session_id)
-            try:
-                self.publish_session(session_id, config)
-            except BaseException:
-                release()
-                raise
-            return release
+        """会话级 Manager key 已停用；不发布、不租约。"""
+        _ = session_id, config
+        return lambda: None
 
     def retain_session(self, session_id):
-        """Retain an existing policy for a child; never compose/register on read."""
-        with _publishers_lock, self._lock:
-            if session_id not in self._sessions:
-                raise KeyError("Permission session is not published")
-            return self._lease(session_id)
+        """会话租约已停用；子 Agent 与主 Agent 共用用户级 key。"""
+        _ = session_id
+        return lambda: None
 
     def refresh_session_overlay(self, session_id, *, remove=False):
-        """Closed owners cannot block a replacement owner's configuration write."""
-        from .config_loader import merge_session_permissions_overlay
-
+        """会话不再发布到 Manager；remove 时仅清本地会话缓存（若有）。"""
         with _publishers_lock, self._lock:
             if remove or self._closed:
                 self.remove_session(session_id)
-            elif session_id in self._sessions:
-                self.publish_session(
-                    session_id,
-                    merge_session_permissions_overlay(self.base_config, session_id),
-                )
 
     def _refresh(self, session_id):
         manager = get_permission_manager()

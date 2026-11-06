@@ -542,6 +542,17 @@ def _extract_session_overlay(base: dict[str, Any], effective: dict[str, Any]) ->
     return overlay
 
 
+def has_session_permissions_overlay(session_id: str | None = None) -> bool:
+    """企业版当前会话是否有相对用户基线的内存 overlay。"""
+    if not is_enterprise():
+        return False
+    sid = _resolve_session_id(session_id)
+    if not sid:
+        return False
+    overlay = _session_overlays.get(sid)
+    return bool(overlay)
+
+
 def merge_session_permissions_overlay(
     base_config: dict[str, Any],
     session_id: str | None = None,

@@ -683,10 +683,9 @@ def build_permission_rail(
                     logger.warning("[InterruptHelpers] persist failed: permission rail missing")
                     return False
                 sid = get_permissions_session_id() if is_enterprise() else None
-                publish_session = getattr(rail, "update_session_config", None)
-                if is_enterprise() and (not sid or not callable(publish_session)):
+                if is_enterprise() and not sid:
                     logger.warning(
-                        "[InterruptHelpers] persist failed: missing session or scoped publisher key=%s session=%s",
+                        "[InterruptHelpers] persist failed: missing session key=%s session=%s",
                         rail.permission_key, sid,
                     )
                     return False
@@ -729,9 +728,8 @@ def build_permission_rail(
                         )
                     finally:
                         reset_permissions_agent_base(token)
-                    # Explicitly publish even if the request had no cached
-                    # session entry. Never replace the tenant/Agent baseline.
-                    publish_session(sid, effective)
+                    # 会话级记住只留内存 overlay，不再 publish / 热更 Manager。
+                    _ = effective
                 else:
                     persist_permissions_mutate(
                         mutate, persist_scope="base", persist_target_agent_id=persist_target,

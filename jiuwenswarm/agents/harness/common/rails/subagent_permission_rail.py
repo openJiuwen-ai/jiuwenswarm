@@ -348,18 +348,35 @@ class SubagentPermissionRail(ConfirmInterruptRail):
             return
 
         from openjiuwen.harness.security.permission_checks import check_tool_permission
-        from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import find_published_scopes
+        from agent_shield.tool_permission import get_permission_manager
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            has_session_permissions_overlay,
+            merge_session_permissions_overlay,
+        )
 
-        publisher = find_published_scopes(self._permission_key, session_id)
-        key = publisher.key_for(session_id, agent_scope_id)
+        # 无会话 Manager key：子 Agent 与主 Agent 共用用户级 key；
+        # 企业会话 overlay 用临时 config=。
+        key = self._permission_key or "default"
         normalized = TOOL_NAME_ALIASES.get(tool_name, tool_name)
-        result = await check_tool_permission(normalized, tool_args, key)
+        base_config = self._config_provider() if callable(self._config_provider) else {}
+        if not isinstance(base_config, dict):
+            base_config = {}
+        if has_session_permissions_overlay(session_id):
+            session_cfg = merge_session_permissions_overlay(
+                base_config, session_id=session_id
+            )
+            result = await get_permission_manager().check_permission(
+                normalized, tool_args, config=session_cfg
+            )
+            config = session_cfg
+        else:
+            result = await check_tool_permission(normalized, tool_args, key)
+            config = base_config
 
         # 与主 Agent 一致：owner_scopes 只能在引擎（含 Skill overlay）之后收紧。
         try:
             perm_ctx = TOOL_PERMISSION_CONTEXT.get()
             if perm_ctx is not None and perm_ctx.principal_user_id:
-                config = publisher.projection_config(session_id)
                 owner_scopes = config.get("owner_scopes", {}) if isinstance(config, dict) else {}
                 cid = perm_ctx.channel_id.strip()
                 uid = perm_ctx.principal_user_id.strip()
@@ -419,7 +436,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
 
         ctx.extra = dict(ctx.extra)
         ctx.extra.pop(OUTBOUND_PERMISSION_KEY, None)
-        if publisher.projection_config(session_id).get("net_guard", {}).get("enabled", False):
+        if isinstance(config, dict) and config.get("net_guard", {}).get("enabled", False):
             ctx.extra[OUTBOUND_PERMISSION_KEY] = key
 
     async def _resolve_ask(
