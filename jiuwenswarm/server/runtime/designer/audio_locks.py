@@ -285,7 +285,8 @@ def apply_default_speech_policy(audio: dict[str, Any], prompt: str = "") -> dict
     """Speech stays on unless the user asked for silence or mime.
 
     An already-silent policy is left silent so a stored silent film is not
-    reopened. Otherwise include_speech is true and a music bed stays underneath.
+    reopened. Music is opt-in: a film only carries a score when the user asked
+    for one, because no clip can render it and no music node exists.
     """
     out = dict(audio or {})
     if str(out.get("policy") or "") == "silent" or user_declined_speech(prompt):
@@ -299,7 +300,7 @@ def apply_default_speech_policy(audio: dict[str, Any], prompt: str = "") -> dict
         return out
     out["include_speech"] = True
     if "include_music" not in out:
-        out["include_music"] = True
+        out["include_music"] = False
     if out.get("include_music"):
         out["policy"] = "speech_and_music"
     else:
@@ -353,10 +354,21 @@ def ensure_audio_locks_on_analysis(
     )
     out["language_lock"] = lang
     audio["language_lock"] = lang
-    bgm = infer_bgm_lock(user, {**audio, "bgm_lock": out.get("bgm_lock") or audio.get("bgm_lock")})
+    audio = apply_default_speech_policy(audio, user)
+    # The user's request decides whether this film has a score; the analysis
+    # model does not. Music is opt-in, so no invented BGM lock can reach a clip.
+    request = detect_music_request(user)
+    if audio.get("policy") != "silent" and str(user).strip():
+        audio["include_music"] = bool(request["requested"])
+    if audio.get("include_music"):
+        bgm = infer_bgm_lock(
+            user, {**audio, "bgm_lock": out.get("bgm_lock") or audio.get("bgm_lock")}
+        )
+    else:
+        bgm = {}
     out["bgm_lock"] = bgm
     audio["bgm_lock"] = bgm
-    audio = apply_default_speech_policy(audio, user)
+    audio["music_requested"] = bool(request["requested"])
     characters = [c for c in (out.get("characters") or []) if isinstance(c, dict)]
     shots = []
     any_speech = False
@@ -390,6 +402,33 @@ def ensure_audio_locks_on_analysis(
     return out
 
 
+def detect_music_request(prompt: str) -> dict[str, bool]:
+    """Whether the user asked for a score, and whether they asked for none.
+
+    The user decides this, not the analysis model: a film only carries music
+    when the request names it.
+    """
+    text = (prompt or "").lower()
+    requested_markers = ("music", "bgm", "soundtrack", "score", "song", "配乐", "音乐", "b gm")
+    declined_markers = (
+        "no music",
+        "without music",
+        "no bgm",
+        "no soundtrack",
+        "no score",
+        "不要配乐",
+        "不要音乐",
+        "无配乐",
+        "无音乐",
+        "不需要配乐",
+        "不要背景音乐",
+        "没有配乐",
+    )
+    declined = any(m in text for m in declined_markers)
+    requested = any(m in text for m in requested_markers) and not declined
+    return {"requested": requested, "declined": declined}
+
+
 def audio_lock_prompt_block(
     *,
     language_lock: str = "",
@@ -399,8 +438,15 @@ def audio_lock_prompt_block(
     include_speech: bool = False,
     include_music: bool = False,
     clip_embedded: bool = False,
+    can_music: bool = False,
+    sfx: list[str] | None = None,
 ) -> str:
-    """Director / clip prompt clause for locked speech + BGM (+ video-model audio)."""
+    """Director / clip prompt clause for locked speech + sound (+ BGM status).
+
+    A clip only ever carries speech and diegetic sound. ``can_music`` says
+    whether this build can render a film score at all: when it cannot, the clip
+    must say so instead of describing a score that will never exist.
+    """
     lines: list[str] = []
     lang = _normalize_language(language_lock) if language_lock else ""
     if lang:
@@ -428,8 +474,17 @@ def audio_lock_prompt_block(
             )
     else:
         lines.append("SPEECH LOCK: intentional silence this shot — no invented dialogue.")
+    cues = [str(c).strip() for c in (sfx or []) if str(c).strip()][:3]
+    if cues:
+        lines.append(
+            "SOUND LOCK (diegetic only): " + "; ".join(cues) + ". Room tone and action sound, no score."
+        )
+    else:
+        lines.append(
+            "SOUND LOCK (diegetic only): natural room tone and action sound of this shot; no score."
+        )
     bgm = bgm_lock if isinstance(bgm_lock, dict) else {}
-    if include_music or bgm:
+    if include_music and can_music:
         lines.append(
             "BGM LOCK (film-wide, NOT in this clip): one score is mixed onto the "
             "concatenated film at compose. "
@@ -438,19 +493,25 @@ def audio_lock_prompt_block(
             f"instruments={bgm.get('instruments') or 'tasteful non-vocal'}. "
             "Do NOT generate music, underscore, or ambient bed inside this clip."
         )
+    elif include_music:
+        lines.append(
+            "BGM LOCK: a score was requested but this build has no music backend, so think "
+            "of the film as unscored — no music, no underscore, no ambient bed is rendered "
+            "here or at compose. Never synthesize music inside this clip."
+        )
     else:
-        lines.append("BGM LOCK: no underscore this film; clip stays dialogue-only or silent.")
+        lines.append(
+            "BGM LOCK: this film has no score — do NOT generate music, underscore, "
+            "or ambient bed inside this clip."
+        )
     has_speech = include_speech or by_char or speech_line
     if clip_embedded and has_speech:
         lines.append(
-            "AUDIO ROUTE: this clip may synthesize NATIVE DIALOGUE only "
-            "(video-model audio=true). No BGM in the clip — score is one track after concat."
+            "AUDIO ROUTE: this clip may synthesize NATIVE DIALOGUE and DIEGETIC SOUND only "
+            "(video-model audio=true). No BGM in the clip."
         )
     elif has_speech:
-        lines.append(
-            "AUDIO ROUTE: clip audio = spoken lines only. Film BGM is a separate "
-            "Music node mixed after concat."
-        )
+        lines.append("AUDIO ROUTE: clip audio = spoken lines and diegetic sound only. No BGM.")
     return "\n".join(lines).strip()
 
 
@@ -646,11 +707,11 @@ def stamp_audio_fields_on_clip_config(
     if not bgm:
         bgm = analysis.get("bgm_lock") if isinstance(analysis.get("bgm_lock"), dict) else None
     if not bgm:
-        bgm = audio.get("bgm_lock") if isinstance(audio.get("bgm_lock"), dict) else infer_bgm_lock("")
+        bgm = audio.get("bgm_lock") if isinstance(audio.get("bgm_lock"), dict) else None
     cfg["language_lock"] = _normalize_language(lang)
     cfg["speech_by_character"] = by_char
     cfg["speech_line"] = speech_line
-    cfg["bgm_lock"] = bgm
+    cfg["bgm_lock"] = bgm or {}
     include_speech = bool(audio.get("include_speech") or by_char or speech_line)
     include_music = bool(
         audio.get("include_music")
@@ -660,8 +721,15 @@ def stamp_audio_fields_on_clip_config(
     if str(audio.get("policy") or "") == "silent":
         include_speech = False
         include_music = False
+        by_char = {}
+        speech_line = ""
+        cfg["speech_by_character"] = {}
+        cfg["speech_line"] = ""
     cfg["include_speech"] = include_speech
     cfg["include_music"] = include_music
+    cues = shot.get("sfx") or shot.get("sound_cues") or cfg.get("sfx")
+    if isinstance(cues, (list, tuple)):
+        cfg["sfx"] = [str(c).strip()[:80] for c in cues if str(c).strip()][:4]
     # Clip-native audio is dialogue only. Missing music backends never fold BGM
     # into the clip — compose mixes one brief-derived score after concat.
     if include_speech and (
