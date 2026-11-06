@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import tempfile
+from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -17,6 +18,7 @@ from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.extensions.adx.config import load_router_config
 from jiuwenswarm.extensions.adx.control_client import AdxControlClient
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient
+from jiuwenswarm.extensions.agentos.agentos_router.registry_client import InstanceRecord
 
 
 def _config(monkeypatch, *, sandbox=None, **overrides):
@@ -116,6 +118,38 @@ def _router(config, *, auth_client=None):
     router.set_or_update_server_config(config={})
     router.test_api = api
     return router, clients
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('runtime,status,retained', [
+    ('runsc', 'running', True), ('runsc', 'paused', True),
+    ('supervisor', 'running', False), ('conch', 'running', False),
+])
+async def test_restart_preserves_native_lifecycle_and_keeps_legacy_startup_cleanup(
+    monkeypatch, runtime, status, retained,
+):
+    router, _ = _router(_config(monkeypatch, runtime_class=runtime))
+    instance = 'test-alice+jiuwenswarm'
+    router.test_api.environments[instance] = {'id': instance, 'status': status}
+    registry = SimpleNamespace(
+        enabled=True,
+        list_instances=AsyncMock(return_value=[InstanceRecord(
+            service_id='existing-service', instance_id=instance, user='alice', framework='jiuwenswarm',
+        )]),
+        unregister_instance=AsyncMock(return_value={'deleted': True}),
+        close=AsyncMock(),
+    )
+    router._registry = registry
+    try:
+        await router.connect('')
+        if router._stale_cleanup_task is not None:
+            await asyncio.wait_for(router._stale_cleanup_task, timeout=2)
+        assert (instance in router.test_api.environments) is retained
+        assert bool(registry.unregister_instance.await_count) is not retained
+        if retained:
+            registry.list_instances.assert_not_awaited()
+    finally:
+        await router.shutdown()
 
 
 def _request(user='alice', rid='same-id', **params):

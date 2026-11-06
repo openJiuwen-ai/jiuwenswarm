@@ -95,6 +95,14 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         await super().shutdown()
         await self._control.close()
 
+    def _ensure_stale_cleanup_task(self) -> None:
+        if self._config.runtime_class == 'runsc':
+            # An empty Gateway cache after restart says nothing about native
+            # Environment liveness. Native idle/recovery owns these resources.
+            logger.info('[ADX] native lifecycle retains registered Environments across Gateway restart')
+            return
+        super()._ensure_stale_cleanup_task()
+
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
         channel = channel_manager.get_channel(ChannelType.WEB)
