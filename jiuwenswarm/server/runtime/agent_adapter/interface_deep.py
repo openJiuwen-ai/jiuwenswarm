@@ -793,6 +793,20 @@ _SSAS_INIT_WAIT_TIMEOUT: float = 30.0
 # 条目, 让下次装配重建 backend 并重试(自愈), 而非永远复用未就绪实例;
 # 与 _SSAS_INIT_TASKS 同锁保护, done callback 中随 Task 一并清理
 _SSAS_INIT_TASK_KEYS: "dict[asyncio.Task[None], tuple[tuple[Any, str], Any]]" = {}
+# 竞态落败 backend 的后台 close Task 强引用集(防 GC 中途销毁);
+# done callback 中自动移出, 与 _SSAS_INIT_TASKS 同锁保护
+_SSAS_CLOSE_TASKS: "set[asyncio.Task[None]]" = set()
+
+
+def _log_ssas_close_result(task: "asyncio.Task[None]") -> None:
+    """竞态落败 backend 的后台 close 完成回调: 移除引用并记录异常."""
+    with _SSAS_INIT_TASKS_LOCK:
+        _SSAS_CLOSE_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("[JiuWenSwarmDeepAdapter] redundant AgentSSAS backend close failed: %s", exc)
 
 
 def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
@@ -864,14 +878,17 @@ async def _await_ssas_init_tasks() -> None:
             _SSAS_INIT_WAIT_TIMEOUT,
             len(still_pending),
         )
-        # 超时剔除: 挂死 Task 移出跟踪集并剔除对应缓存条目。不移出的话,
-        # 后续每次 create_instance 收口都会对同一挂死 Task 重复等满
-        # 30s(实例创建被反复拖慢); 剔除缓存后, 下次装配重建 backend 并
-        # 重新初始化(自愈); 已装配 rail 的事件由 _ensure_initialized 兜底。
+        # 超时剔除: 挂死 Task 移出跟踪集、取消执行并剔除对应缓存条目。
+        # 不移出的话, 后续每次 create_instance 收口都会对同一挂死 Task
+        # 重复等满 30s; 不取消的话, Task 与其 backend 引用会永久滞留(泄漏);
+        # 剔除缓存后, 下次装配重建 backend 并重新初始化(自愈); 已装配
+        # rail 的事件由 _ensure_initialized 兜底。取消触发 done callback
+        # (cancelled 分支), 其中 discard/pop 均为幂等空操作, 安全。
         with _SSAS_INIT_TASKS_LOCK:
             for task in still_pending:
                 _SSAS_INIT_TASKS.discard(task)
                 _evict_ssas_backend_locked(_SSAS_INIT_TASK_KEYS.pop(task, None))
+                task.cancel()
 
 
 # AgentSSAS backend 进程级复用缓存: create_instance 会被 reload/权限隔离/
@@ -890,13 +907,16 @@ _SSAS_BACKEND_CACHE_MAX = 16
 
 
 class _SharedSSASBackendProxy:
-    """共享 backend 代理: 全量委托目标 backend, close 拦截为 no-op。
+    """共享 backend 代理: 全量委托目标 backend, 资源释放入口拦截为 no-op。
 
-    AgentSSASSecurityRail.uninit/close 会释放 backend 持有的资源(SQLite
-    WAL 句柄、httpx 连接等); 共享 backend 不能随单个 rail 卸载关闭,
-    否则其余 rail 的事件会打到已关闭的 backend。代理拦截 close 使生命
-    周期提升到进程级(与 inprocess 模式"backend 与宿主同生命周期"的定位
-    一致), 其余属性/方法按需委托目标 backend。
+    AgentSSASSecurityRail 的全部释放入口最终都收敛到 backend.close():
+    - uninit(agent) -> ensure_future(self.close())(rail 源码 uninit 钩子);
+    - rail.close()  -> close = getattr(self._backend, "close", None) -> await close()。
+    rail 持有的 _backend 即本代理, getattr 命中下方 no-op close, 因此 rail
+    卸载(uninit/close 两条路径)均不会关闭共享 backend, 否则其余 rail 的事
+    件会打到已关闭的 backend; 生命周期由此提升到进程级(与 inprocess 模式
+    "backend 与宿主同生命周期"的定位一致)。其余属性/方法经 __getattr__ 按
+    需委托目标 backend, 不覆写任何具体方法, 不收窄上游签名。
     """
 
     def __init__(self, backend: Any) -> None:
@@ -904,9 +924,6 @@ class _SharedSSASBackendProxy:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._ssas_backend, name)
-
-    async def report_event(self, raw_event: dict[str, Any]) -> Any:
-        return await self._ssas_backend.report_event(raw_event)
 
     async def close(self) -> None:
         """no-op: 共享 backend 不随单个 rail 卸载关闭, 见类 docstring。"""
@@ -10462,23 +10479,44 @@ class JiuWenSwarmDeepAdapter:
             backend_key = (loop, _ssas_backend_fingerprint(ssas_cfg))
             with _SSAS_INIT_TASKS_LOCK:
                 # 缓存治理: 清理已关闭循环的条目(该循环上的 backend 不会再
-                # 被复用); 确需新建时若达上界则淘汰最旧条目, 保证多循环
-                # 进程有界增长(缓存命中时不淘汰)
+                # 被复用), 以及滞留的挂死 init Task/反查表条目(循环关闭后
+                # Task 永不再执行, 强引用滞留会阻止其 backend 被 GC);
+                # 确需新建时若达上界则淘汰最旧条目, 保证多循环进程有界增长
                 for stale_key in [
                     key for key in _SSAS_BACKEND_CACHE if key[0].is_closed()
                 ]:
                     _SSAS_BACKEND_CACHE.pop(stale_key, None)
+                for stale_task in [
+                    task
+                    for task in _SSAS_INIT_TASKS
+                    if task.get_loop().is_closed()
+                ]:
+                    _SSAS_INIT_TASKS.discard(stale_task)
+                    _SSAS_INIT_TASK_KEYS.pop(stale_task, None)
                 shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
-                backend_created = False
-                if shared_backend is None:
-                    while len(_SSAS_BACKEND_CACHE) >= _SSAS_BACKEND_CACHE_MAX:
-                        _SSAS_BACKEND_CACHE.pop(next(iter(_SSAS_BACKEND_CACHE)))
-                    if ssas_config.mode == AgentSSASMode.HTTP:
-                        shared_backend = AgentSSASRemoteBackend(ssas_config)
+            backend_created = False
+            if shared_backend is None:
+                # 构造移出锁外: AgentSSASBackend 构造含 mkdir/sqlite 建库等
+                # 同步 I/O, 持锁构造会阻塞其它事件循环线程的装配与 done
+                # callback; 完成后双检锁插入, 兜底并发装配竞态
+                if ssas_config.mode == AgentSSASMode.HTTP:
+                    candidate: Any = AgentSSASRemoteBackend(ssas_config)
+                else:
+                    candidate = AgentSSASBackend(ssas_config)
+                with _SSAS_INIT_TASKS_LOCK:
+                    shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
+                    if shared_backend is None:
+                        while len(_SSAS_BACKEND_CACHE) >= _SSAS_BACKEND_CACHE_MAX:
+                            _SSAS_BACKEND_CACHE.pop(next(iter(_SSAS_BACKEND_CACHE)))
+                        _SSAS_BACKEND_CACHE[backend_key] = candidate
+                        shared_backend = candidate
+                        backend_created = True
                     else:
-                        shared_backend = AgentSSASBackend(ssas_config)
-                    _SSAS_BACKEND_CACHE[backend_key] = shared_backend
-                    backend_created = True
+                        # 竞态落败: 保留赢家, 后台关闭多余 candidate 防
+                        # SQLite 连接等资源泄漏(close Task 强引用防 GC)
+                        close_task = loop.create_task(candidate.close())
+                        _SSAS_CLOSE_TASKS.add(close_task)
+                        close_task.add_done_callback(_log_ssas_close_result)
             backend: Any = shared_backend
             if backend_created:
                 # initialize() 是 async: builder 链路(_create_instance ->

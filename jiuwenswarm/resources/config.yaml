@@ -1001,8 +1001,9 @@ ssas:
   # http_token:
   # http_host: "127.0.0.1"
   # http_port: 8443
-  # 存储配置 (遵循 JIUWENSWARM_HOME 约定)
-  ssas_home:
+  # 存储配置 (遵循 JIUWENSWARM_HOME 约定; ssas_home 留空字符串时按
+  # SSAS_HOME -> JIUWENSWARM_DATA_DIR -> JIUWENSWARM_HOME -> ~/.jiuwenswarm 顺序自动解析)
+  ssas_home: ""
   storage_backend: sqlite
   event_ttl_days: 30
   alert_ttl_days: 90
