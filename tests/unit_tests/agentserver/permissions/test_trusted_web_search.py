@@ -239,6 +239,65 @@ async def test_adapter_matches_upstream_output_and_argument_normalization(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("assessment_status", ["ok", "unavailable"])
+async def test_adapter_preserves_quality_annotations_and_search_context(monkeypatch, assessment_status):
+    from openjiuwen.harness.tools.web import free_search
+
+    url = "https://release-notes.invalid/v1"
+    rows = [{
+        "title": "Provisional release notes",
+        "url": url,
+        "snippet": "Unverified summary",
+        "date": "2026-11-06",
+        "relevance": "uncertain",
+        "relevance_reason": "entity needs verification",
+        "assessment_status": assessment_status,
+    }]
+    callback = object()
+    model = object()
+    budget = SimpleNamespace(original_task="Check the release date")
+    requests = []
+
+    def get_budget(actual_callback):
+        assert actual_callback is callback
+        return budget
+
+    def get_model(actual_callback, configured_model):
+        assert actual_callback is callback
+        return model
+
+    async def search(request):
+        requests.append(request)
+        return "duckduckgo", rows
+
+    monkeypatch.setattr(free_search, "get_web_budget", get_budget)
+    monkeypatch.setattr(free_search, "resolve_search_model", get_model)
+    monkeypatch.setattr(WebFreeSearchTool, "_search_free", staticmethod(search))
+    inputs = {"query": "release", "provider": "duckduckgo"}
+    expected = await WebFreeSearchTool(agent_id="agent-1").invoke(
+        inputs, _tool_callback_context=callback,
+    )
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+
+    actual = await TrustedWebFreeSearchTool(agent_id="agent-1").invoke(
+        inputs, _tool_callback_context=callback,
+    )
+
+    assert actual == expected
+    assert "Content status: uncertain" in actual
+    assert "Search-reported date (unverified): 2026-11-06" in actual
+    assert ("Assessment status: unavailable" in actual) == (assessment_status == "unavailable")
+    assert ledger.contains(root_session_id="session-1", url=url)
+    assert len(requests) == 2
+    for request in requests:
+        assert request.provider == "duckduckgo"
+        assert request.budget is budget
+        assert request.model is model
+        assert request.original_task == budget.original_task
+
+
+@pytest.mark.asyncio
 async def test_root_queue_real_search_execution_records_fetch_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
