@@ -150,6 +150,38 @@ test('terminal task states cannot regress from late updates', () => {
   assert.equal(model.tasks[0].completedAtMs, 3_000);
 });
 
+test('direct task completion without a reviewer closes the task', () => {
+  const model = buildTeamControlModel([
+    record('0000000000000041', 'task.t5-direct.created', 1_000, {
+      task_id: 't5-direct',
+      status: 'pending',
+    }),
+    record('0000000000000042', 'event.task.started', 2_000, {
+      task_id: 't5-direct',
+      member_name: 'direct-writer',
+    }),
+    record('0000000000000043', 'task.t5-direct.completed', 3_000, {
+      task_id: 't5-direct',
+    }, [
+      attribute('agentteam.task.status', 'completed'),
+    ]),
+  ]);
+
+  assert.equal(model.tasks[0].phase, 'completed');
+  assert.equal(model.tasks[0].completedAtMs, 3_000);
+  assert.equal(model.completedTaskCount, 1);
+  assert.deepEqual(model.tasks[0].events.map(event => event.kind), [
+    'created',
+    'started',
+    'completed',
+  ]);
+  assert.deepEqual(model.tasks[0].events.map(event => event.phase), [
+    'pending',
+    'running',
+    'completed',
+  ]);
+});
+
 test('submissions without an explicit round follow the rework review cursor', () => {
   const model = buildTeamControlModel([
     record('0000000000000051', 'task.t6-rounds.created', 1_000, { status: 'pending' }),
