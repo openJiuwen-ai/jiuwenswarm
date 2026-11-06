@@ -4885,6 +4885,7 @@
       "statusInstalled": "Installed",
       "statusAvailable": "Not installed",
       "preview": "Preview",
+      "previewHint": "Click to enlarge",
       "ability": "Capabilities",
       "howItWorks": "How it works",
       "events": "Events",

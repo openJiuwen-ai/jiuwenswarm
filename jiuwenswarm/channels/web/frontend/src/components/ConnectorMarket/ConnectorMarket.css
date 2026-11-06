@@ -33,3 +33,7 @@
 .ui-dialog.system-plugin-readme-dialog {
   width: min(860px, calc(100vw - 32px));
 }
+
+.ui-dialog.system-plugin-preview-dialog {
+  width: min(1040px, calc(100vw - 32px));
+}

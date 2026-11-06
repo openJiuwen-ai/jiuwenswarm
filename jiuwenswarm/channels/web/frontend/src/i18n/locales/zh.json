@@ -4859,6 +4859,7 @@
       "statusInstalled": "已安装",
       "statusAvailable": "未安装",
       "preview": "预览",
+      "previewHint": "点击查看大图",
       "ability": "能力介绍",
       "howItWorks": "生效机制",
       "events": "依赖事件",

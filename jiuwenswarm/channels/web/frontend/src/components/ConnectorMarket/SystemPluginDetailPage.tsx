@@ -15,6 +15,7 @@ import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import './ConnectorMarket.css';
 
 const README_DIALOG_TITLE_ID = 'system-plugin-readme-dialog-title';
+const PREVIEW_DIALOG_TITLE_ID = 'system-plugin-preview-dialog-title';
 
 interface SystemPluginDetailPageProps {
   id: string;
@@ -48,6 +49,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const [fileContent, setFileContent] = useState<AgentFileContent | null>(null);
   const [fileStatus, setFileStatus] = useState<RequestStatus>('idle');
   const [fileError, setFileError] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [readmeOpen, setReadmeOpen] = useState(false);
   const [readmeClipped, setReadmeClipped] = useState(false);
   const readmeRef = useRef<HTMLDivElement>(null);
@@ -258,12 +260,21 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
             titleTestId="connector-market-system-plugin-detail-preview-title"
             title={t('connectorMarket.systemPlugin.preview')}
           >
-            <img
-              src={detail.preview}
-              alt={title}
-              className="mx-auto block max-h-[280px] max-w-full rounded-xl border border-border object-contain"
-              data-testid="connector-market-system-plugin-detail-preview-image"
-            />
+            <button
+              type="button"
+              className="group block w-full cursor-zoom-in rounded-xl border border-border p-2 transition-colors hover:border-accent"
+              onClick={() => setPreviewOpen(true)}
+              aria-label={t('connectorMarket.systemPlugin.previewHint')}
+              title={t('connectorMarket.systemPlugin.previewHint')}
+              data-testid="connector-market-system-plugin-detail-preview-open"
+            >
+              <img
+                src={detail.preview}
+                alt={title}
+                className="mx-auto block max-h-[320px] max-w-full rounded-lg object-contain transition-transform duration-200 group-hover:scale-[1.01]"
+                data-testid="connector-market-system-plugin-detail-preview-image"
+              />
+            </button>
           </DetailSection>
         )}
 
@@ -378,6 +389,38 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
           onCancel={() => setConfirmUninstall(false)}
           onConfirm={() => { void handleUninstall(); }}
         />
+      )}
+
+      {previewOpen && detail.preview && (
+        <Dialog
+          open
+          titleId={PREVIEW_DIALOG_TITLE_ID}
+          className="system-plugin-preview-dialog"
+          onCancel={() => setPreviewOpen(false)}
+          onBackdropClick={() => setPreviewOpen(false)}
+        >
+          <div className="flex max-h-[85vh] flex-col">
+            <div className="flex flex-none items-center justify-between gap-4 border-b border-border px-5 py-3">
+              <h2 id={PREVIEW_DIALOG_TITLE_ID} className="text-base font-semibold text-text">
+                {title}
+              </h2>
+              <CloseButton
+                onClick={() => setPreviewOpen(false)}
+                ariaLabel={t('common.close')}
+                title={t('common.close')}
+                testId="connector-market-system-plugin-preview-close"
+              />
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              <img
+                src={detail.preview}
+                alt={title}
+                className="mx-auto block max-h-[70vh] max-w-full rounded-lg object-contain"
+                data-testid="connector-market-system-plugin-detail-preview-large"
+              />
+            </div>
+          </div>
+        </Dialog>
       )}
 
       {readmeOpen && readme && (
