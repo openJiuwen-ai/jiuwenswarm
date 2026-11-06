@@ -581,7 +581,7 @@ def _ask_user_answer_resume_request(answers: list[dict] | None = None) -> AgentR
 
 
 @pytest.mark.asyncio
-async def test_deliver_control_input_binds_package_allowlist_for_resume(
+async def test_deliver_control_input_binds_expert_packages_for_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """企业版续聊不走 process_message，仍要看到当次请求带上的专家包名单。"""
@@ -622,7 +622,7 @@ async def test_deliver_control_input_binds_package_allowlist_for_resume(
             "mode": "agent",
         },
         metadata={
-            "package_allowlist": [{"kind": "agent_template", "id": "granted-expert"}],
+            "expert_packages": [{"kind": "agent_template", "id": "granted-expert"}],
         },
     )
     async for _ in claw.deliver_control_input(request):

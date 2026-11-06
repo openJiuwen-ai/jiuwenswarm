@@ -43,7 +43,9 @@ def test_team_personal_context_spec_survives_member_serialization(
     assert isinstance(first, PersonalContextRail)
     assert isinstance(second, PersonalContextRail)
     assert first is not second
-    assert first._home == tmp_path / ".jiuwenswarm" / ".personal_context"
+    assert first._home == (
+        tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
+    )
     assert second._home == first._home
 
 
@@ -55,7 +57,7 @@ async def test_team_existing_and_new_members_follow_shared_switch(
 
     register_swarm_providers()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    home = tmp_path / ".jiuwenswarm" / ".personal_context"
+    home = tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
     root = home / "workspace" / "context"
     root.mkdir(parents=True)
     (root / "description.md").write_text("# shared personal context", encoding="utf-8")
@@ -107,7 +109,7 @@ async def test_team_personal_context_keeps_tool_call_result_adjacency(
 ):
     register_swarm_providers()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    home = tmp_path / ".jiuwenswarm" / ".personal_context"
+    home = tmp_path / ".jiuwenswarm" / "domain" / ".personal_context"
     root = home / "workspace" / "context"
     root.mkdir(parents=True)
     (home / "personal_context.yaml").write_text("agent_use_enabled: true\n")
