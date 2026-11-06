@@ -200,13 +200,11 @@ export class WsClient {
         if (frame.ok) {
           setTimeout(() => pending.resolve(frame), 0);
         } else {
-          setTimeout(
-            () =>
-              pending.reject(
-                new Error(frame.error ?? `request failed: ${frame.code ?? "unknown"}`),
-              ),
-            0,
+          const error = Object.assign(
+            new Error(frame.error ?? `request failed: ${frame.code ?? "unknown"}`),
+            { code: frame.code },
           );
+          setTimeout(() => pending.reject(error), 0);
         }
         return;
       }

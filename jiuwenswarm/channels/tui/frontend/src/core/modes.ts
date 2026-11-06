@@ -58,7 +58,7 @@ const LEGACY_MODE_TO_NEW: Record<string, ClientMode> = {
  */
 export function normalizeToClientMode(value: string): ClientMode | undefined {
   if (isClientMode(value)) return value;
-  return LEGACY_MODE_TO_NEW[value];
+  return Object.hasOwn(LEGACY_MODE_TO_NEW, value) ? LEGACY_MODE_TO_NEW[value] : undefined;
 }
 
 export function isTeamMode(mode: ClientMode): boolean {

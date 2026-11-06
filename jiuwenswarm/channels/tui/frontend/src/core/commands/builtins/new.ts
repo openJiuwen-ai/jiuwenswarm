@@ -23,13 +23,20 @@ export function createNewCommand(): SlashCommand {
         return;
       }
       const persistSession = shouldPersistSessionFromArgs(args);
+      if (!persistSession) {
+        const draftId = ctx.enterDraftSession();
+        ctx.setSessionTitle("");
+        ctx.clearEntries();
+        ctx.addItem(makeItem(draftId, "info", "Started a new conversation", "i"));
+        return;
+      }
       const created = await ctx.request<{ session_id?: string; sessionId?: string }>(
         "session.create",
         {
           create_token: generateCreateToken(),
-          previous_session_id: ctx.sessionId,
+          previous_session_id: ctx.previousSessionId ?? ctx.sessionId,
           previous_mode: ctx.mode,
-          ...(persistSession ? { persist_session: true } : {}),
+          persist_session: true,
           mode: ctx.mode,
         },
       );

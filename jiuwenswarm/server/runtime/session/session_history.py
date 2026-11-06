@@ -14,6 +14,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from pathlib import Path
@@ -1450,6 +1451,24 @@ def _enqueue_history_item(
             )
 
 
+def append_session_mode_changed(
+    *, session_id: str, channel_id: str, previous_mode: str | None, mode: str,
+) -> None:
+    """Record a routing transition without creating a chat turn."""
+    _enqueue_history_item(
+        session_id,
+        {
+            "id": f"mode:{uuid.uuid4().hex}",
+            "event_type": "session.mode_changed",
+            "request_id": "",
+            "channel_id": channel_id,
+            "timestamp": time.time(),
+            "previous_mode": previous_mode,
+            "mode": mode,
+        },
+    )
+
+
 def resolve_final_record_timestamp(
     *,
     event_type: str,
@@ -1562,10 +1581,14 @@ def append_history_record(
             ),
             # 传入渠道元数据,首次写入时持久化
             channel_metadata=channel_metadata,
-            # A subagent record carries its own history mode, but it belongs
-            # to the parent product Session and must not replace that Session's
-            # routing mode with the internal ``subagent`` label.
-            mode=None if subagent_id else mode,
+            # ``mode`` 只是这条 transcript 记录的展示标签（见上方 item["mode"]，
+            # ``_is_team_relevant`` 依赖它过滤 team 历史），**不是**路由决策。
+            # 回写会话 metadata 会让迟到的写入复活一条已被 mode.set 提交过的
+            # 旧路由：team 监控收尾事件带 "team"、驻留 subagent 的 LLM 记录带
+            # 请求开始时的 mode，两者都在切换之后才落地。而
+            # ``_write_metadata_unfenced`` 的 revision 守卫拦不住它们——这类
+            # 写入读到的是提交后的 revision，比较结果为"不更旧"。
+            # 路由 mode 只由 mode.set / session create 提交。
             # 用户消息时刷新 last_user_message_at(用消息时间戳,比请求到达时刻更精确;
             # 与 AgentServer 的 _sync_chat_request_metadata 互补,覆盖所有记录用户消息的路径)
             last_user_message_at=(
