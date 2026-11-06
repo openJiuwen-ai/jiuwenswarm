@@ -18,6 +18,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
+import { formatTimestamp } from '../../../utils';
 import documentIcon from '../../../assets/jiuwenmate/icons/document.svg';
 import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
@@ -99,6 +100,13 @@ function LiveReply({ text, animate, streaming }: { text: string; animate: boolea
   const content = useProgressiveText(text, animate);
   return <MarkdownRenderer content={content} isStreaming={streaming || content !== text}
     className="chat-text chat-markdown jiuwenmate-chat-markdown" />;
+}
+
+/** 任务模式同款时间文本；解析不了的值（空串/异常格式）不渲染。 */
+function chatTimeText(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : formatTimestamp(value);
 }
 
 
@@ -681,9 +689,17 @@ export function ColleagueWorkspacePage({
               : null
             : t(`jiuwenmate.chat.status.${phase}`);
     const draft = isPending(request) && request.draft?.text ? request.draft.text : null;
+    const sentTime = chatTimeText(request.receivedAt);
+    const replyTime = !isPending(request) && (request.replies.length > 0 || request.files.length > 0)
+      ? chatTimeText(request.updatedAt)
+      : null;
     return (
       <li key={request.requestId} data-testid="jiuwenmate-chat-request" data-phase={phase}>
         <p className="jiuwenmate-chat-message jiuwenmate-chat-message--user">{request.text}</p>
+        {sentTime ? (
+          <time className="jiuwenmate-chat-time jiuwenmate-chat-time--sent" dateTime={request.receivedAt}
+            data-testid="jiuwenmate-chat-message-time">{sentTime}</time>
+        ) : null}
         {approval ? (
           <article className="jiuwenmate-chat-approval" data-testid="jiuwenmate-chat-permission-approval" data-status={approval.status}>
             <strong>{t('jiuwenmate.chat.approval.title')}</strong>
@@ -752,6 +768,10 @@ export function ColleagueWorkspacePage({
             {renderSharedFile(file)}
           </article>
         ))}
+        {replyTime ? (
+          <time className="jiuwenmate-chat-time jiuwenmate-chat-time--reply" dateTime={request.updatedAt}
+            data-testid="jiuwenmate-chat-reply-time">{replyTime}</time>
+        ) : null}
         {note ? (
           <small className="jiuwenmate-chat-status" data-phase={phase}>
             {request.reason ? `${note}：${request.reason}` : note}

@@ -284,6 +284,12 @@ test('a request shows its recorded outcome, or why it has none yet', () => {
   assert.equal(isPending(toChatRequest(wireRequest)), false);
 });
 
+test('a request keeps the timestamps of its message and its ending', () => {
+  const request = toChatRequest(wireRequest);
+  assert.equal(request.receivedAt, '2026-10-14T09:00:00+00:00');
+  assert.equal(request.updatedAt, '2026-10-14T09:00:05+00:00');
+});
+
 test('a newer request state replaces the old one in place', () => {
   const first = toChatRequest({ ...wireRequest, status: 'queued', outcome: null, replies: [] });
   const second = toChatRequest({ ...wireRequest, request_id: 'req-2' });

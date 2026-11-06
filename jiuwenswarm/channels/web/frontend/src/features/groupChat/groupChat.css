@@ -50,13 +50,18 @@
 .group-chat-message { margin: 0 0 36px; overflow-wrap: anywhere; line-height: 1.75; }
 .group-chat-message header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .group-chat-message header strong { font-weight: 600; }
-.group-chat-message time { font-size: 11px; color: var(--color-text-secondary); opacity: 0; transition: opacity .15s; }
-.group-chat-message:hover time, .group-chat-message:focus-within time { opacity: 1; }
+/* 消息时间常显（对齐任务模式聊天记录的时间展示） */
+.group-chat-message time { font-size: 11px; color: var(--color-text-secondary); }
 .group-chat-message.is-user {
-  padding: 14px 20px;
   margin-left: auto;
   width: fit-content;
   max-width: 80%;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+.group-chat-message__bubble {
+  padding: 14px 20px;
   border-radius: 24px;
   background: var(--color-surface-muted);
 }

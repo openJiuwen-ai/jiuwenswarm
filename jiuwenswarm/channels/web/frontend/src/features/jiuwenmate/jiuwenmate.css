@@ -2447,6 +2447,20 @@
   gap: 8px;
 }
 
+/* 任务模式同款消息时间：用户消息右侧、同事回复左侧的小字时间 */
+.jiuwenmate-chat-time {
+  font-size: 11px;
+  color: var(--jm-text-3);
+}
+
+.jiuwenmate-chat-time--sent {
+  justify-self: end;
+}
+
+.jiuwenmate-chat-time--reply {
+  justify-self: start;
+}
+
 .jiuwenmate-chat-markdown {
   flex: 1;
   min-width: 0;
