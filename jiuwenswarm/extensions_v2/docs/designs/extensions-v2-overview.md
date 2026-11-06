@@ -125,7 +125,7 @@ AgentServer、WebUI、Gateway 分别提供所属领域的服务与适配。增�
 
 系统有三条相互关联、触发时机不同的链路。
 
-**包管理链路：使扩展可用。** AgentServer 准备 EventBus，其上已有 core 内置事件及九类管理事件；随后把同一实例和产品登记回调交给 `ExtensionManager.init`。门面委托 `Registry.init` 先执行回调，登记 swarm 事件、BUILTIN Handler 和 Ops Build Handler，再触发一次 `ops.build`。门面用 `resolve_install_dir()` 解析安装目录，默认使用 `~/.jiuwenswarm/extension_pkgs`，并调用 core 的 `open_install_dir`。初始化返回后，AgentServer 调用 `manager.load_installed()`，由门面选取已安装版本并交给 core 安装；AgentServer 核对逐包 Report 后开放对应业务入口。
+**包管理链路：使扩展可用。** AgentServer 准备 EventBus，其上已有 core 内置事件及九类管理事件；随后把同一实例和产品登记回调交给 `ExtensionManager.init`。门面委托 `Registry.init` 先执行回调，登记 swarm 事件、BUILTIN Handler 和 Ops Build Handler，再触发一次 `ops.build`。门面用 `resolve_install_dir()` 解析安装目录，默认使用 `~/.jiuwenswarm/extension_pkgs`，并调用 core 的 `open_install_dir`。初始化返回后，AgentServer 调用 `manager.load_installed()`，由 Core 完整发现、选版和排序，再从排序结果中选择 `agentserver` 的包进行激活；AgentServer 核对逐包 Report 后开放对应业务入口。
 
 **业务调用链路：让扩展参与一次处理。** 业务逻辑在预定的扩展点调用 EventBus 触发事件，传入包含业务输入的 Event、根据服务端会话记录构造的 SessionContext，并保留原请求授权范围。EventBus 匹配本次 Handler，按 USER（个人扩展）、BUILTIN（平台内置）、CORE（Core Handler）层级推进；每次进入普通 Handler 前独立构建 Ops。Handler 可按契约调用 next 继续处理，也可直接返回；实际进入 Core Handler 时，由其调用所属服务执行默认动作。结果沿已进入的调用链返回触发事件的业务逻辑，不再补跑同一默认动作。例如，AgentServer 在回合准备步骤触发产品事件，处理继续到该事件的 Core Handler 时，再调用底层准备服务；具体类型由对应特性设计文档定义。
 
@@ -209,3 +209,7 @@ Web前端只呈现平台允许的组件、动作和样式。独立 Ops 不会自
 ## 2026-10-31 七项会话查询事件化
 
 已开放 cwd/root/model/repo/messages/turns/usage 采用 Ops→同名查询 Event→USER/BUILTIN/CORE 的路径，返回格式优先对齐 Claude。字段、兼容与逐项解释见 [S_08](../specs/S_08_session-query-events.md) 和 [查询协议与特性索引](../specs/S_08_session-query-events.md#7-特性与验收索引)。仅 Worker 持有 EventBus；验证返回参数，不介入原 Token Weather 渲染。
+
+## 按域安装与报告接入
+
+[F_32](../features/F_32_domain-install-report.md)记录按域加载、共享安装报告及其验证。AgentServer 的实现目录和启动入口保持不变。

@@ -1487,6 +1487,12 @@ extensions:
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
   # V2 扩展包安装目录；相对路径相对于用户工作目录（可由 JIUWENSWARM_DATA_DIR 改变）。
   install_dir: ${EXTENSION_INSTALL_DIR:-extension_pkgs}
+  # V2 extension runtime data; report filename is fixed by the host.
+  data_dir: ${EXTENSION_DATA_DIR:-extension}
+  install_report:
+    poll_interval_ms: 500
+    dependency_timeout_seconds: 300
+    lock_timeout_seconds: 5
   # 包级 JSON store；相对路径相对于用户工作目录。
   store_dir: ${EXTENSION_STORE_DIR:-extension/store}
   # 包级 durable state；相对路径相对于用户工作目录。

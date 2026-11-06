@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-08 前端槽位渲染与复杂面板 |
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-11-06 |
 | 方案状态 | 新链路已接入生产页面并承接全部 15 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
@@ -131,7 +131,8 @@ React 宿主接口：
 1. `WebUIHost` 挂载时调用 `mountSlot` 并立即 `notifyReady()`；卸载时 `release()`。
 2. 消费者释放时，只有仍被剩余消费者覆盖的实例保留：范围消费者覆盖整槽，实例消费者只覆盖自己的实例键；最后一个消费者退出时清理范围与残留实例。
 3. 连接断开后重新连接时，运行时按每个消费者上报过的就绪身份重发 `ui.ready`；范围消费者重发空实例键，实例消费者重发自己的实例键。
-4. 内容 `clear` 只删除实例与范围成员，不删除消费者的就绪身份；消费者释放前，重连仍以原实例键上报。
+4. 收到后端 `extensions.v2.installed` 时，只对指定包、当前 session 的仍挂载消费者重发 `ui.ready`。该通知由服务端在安装完成，或热重载 clear 完成后发送。
+5. 内容 `clear` 只删除实例与范围成员，不删除消费者的就绪身份；消费者释放前，重连仍以原实例键上报。
 
 接入顺序（应用级装配与槽位落位均已落地）：
 
@@ -182,8 +183,8 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 2. `notifyReady` 记录消费者就绪身份并立即上报；上报失败不影响挂载，断连重连后重发。
 3. `release` 从消费者与范围集合中移除本消费者，逐个检查范围实例是否仍被剩余消费者覆盖；未覆盖实例被删除并通知对应实例与范围。
 4. 范围没有剩余消费者时删除范围记录并通知范围；最后一个实例的本地状态不会自动保留给后来挂载的消费者。
-5. 连接状态由断开变为连接时，按消费者重发 `ui.ready`；就绪身份不因内容 `clear` 而删除。
-6. replace、clear、断连、渲染失败和所属消费者释放都会使旧节点绑定失效，重连后必须由当前视图重新绑定。
+5. 连接状态由断开变为连接时，按消费者重发 `ui.ready`；收到指定包的 `extensions.v2.installed` 时也按相同方式重发；就绪身份不因内容 `clear` 而删除。
+6. replace、clear、断连、渲染失败和所属消费者释放都会使旧节点绑定失效，重连或包变更后必须由当前视图重新绑定。
 
 ### 4.4 React 渲染、显示确认与错误隔离
 
@@ -285,12 +286,16 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地�
 | F-08-V-06 | 实例级消费者与范围消费者混合释放 | 运行时测试 | 只删除不再被剩余消费者覆盖的实例 |
 | F-08-V-07 | 内容 `clear` 后重连 | 运行时测试 | 按消费者原实例键重发 `ui.ready`，不变成空实例键 |
 | F-08-V-08 | Iframe 加载、非激活、错误及同源 URL | 组件 JSDOM 回归；浏览器另验证实际交互 | 加载提示不拦截鼠标；错误与非激活时卸载 iframe；相对与绝对同源地址均不开放同源权限 |
+| F-08-V-09 | 已挂载包热重载 | 运行时与传输测试 | 收到 clear 后的 `extensions.v2.installed`，只为该包重发 `ui.ready`，无需浏览器刷新 |
 
 ### 8.2 验证入口
 
 前端目录下执行 `npm run test:webui-protocol`、`npm run test:webui-runtime`、
 `npm run test:webui-events`、`npm run test:webui-transport`、`npm run test:webui-renderer`
 与 `npm run test:webui-components`。
+
+2026-11-06 补充包变更恢复验证：`npm run test:webui-runtime` 的 19 项和
+`npm run test:webui-transport` 的 9 项通过，分别覆盖指定包的 ready 重放和通知参数校验。
 
 ## 9. 风险与遗留
 

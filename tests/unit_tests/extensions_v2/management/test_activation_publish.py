@@ -26,7 +26,7 @@ async def test_install_publishes_handler_with_verified_package_metadata(
     tmp_path: Path,
 ) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
     await manager.install([source])
@@ -44,7 +44,7 @@ async def test_install_publishes_handler_with_verified_package_metadata(
 
 async def test_handler_is_invisible_before_install(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
 
     assert await bus.trigger(Event("test.event", {})) == ("core", {})
@@ -58,7 +58,7 @@ async def test_handler_is_invisible_before_install(tmp_path: Path) -> None:
 
 async def test_match_pattern_filters_package_handler(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     await manager.install([write_package(tmp_path / "source", module_source=PATTERN_EXTENSION)])
 
@@ -71,7 +71,7 @@ async def test_match_pattern_filters_package_handler(tmp_path: Path) -> None:
 
 async def test_core_level_registration_is_rejected(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source", module_source=CORE_LEVEL_EXTENSION)
 
@@ -85,7 +85,7 @@ async def test_core_level_registration_is_rejected(tmp_path: Path) -> None:
 
 async def test_publish_failure_rolls_back_earlier_handler(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source", module_source=TWO_HANDLERS_EXTENSION)
 
@@ -99,7 +99,7 @@ async def test_publish_failure_rolls_back_earlier_handler(tmp_path: Path) -> Non
 
 async def test_uninstall_removes_future_handler_visibility(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     await manager.install([
         write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
@@ -113,7 +113,7 @@ async def test_uninstall_removes_future_handler_visibility(tmp_path: Path) -> No
 
 async def test_runtime_inflight_count_blocks_uninstall(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     await manager.install([write_package(tmp_path / "source")])
     runtime = manager.registry.runtime

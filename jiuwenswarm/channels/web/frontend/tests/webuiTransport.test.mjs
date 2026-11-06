@@ -222,7 +222,7 @@ test('web client transport returns null for failures and malformed receipts', as
 });
 
 
-test('installation events are validated and the subscription is released', () => {
+test('package change events are validated and the subscription is released', () => {
   const client = createFakeClient();
   const transport = createWebClientTransport(client);
   const received = [];
@@ -231,7 +231,7 @@ test('installation events are validated and the subscription is released', () =>
     onClearFrame() {},
     onErrorFrame() {},
     onConnectionStateChange() {},
-    onPackagesInstalled: (ids, sessionId) => received.push([ids, sessionId]),
+    onPackagesChanged: (ids, sessionId) => received.push([ids, sessionId]),
   });
   client.emit('extensions.v2.installed', { package_ids: ['pkg.new'], session_id: 's1' });
   client.emit('extensions.v2.installed', { package_ids: [1] });
@@ -242,7 +242,7 @@ test('installation events are validated and the subscription is released', () =>
   assert.equal(received.length, 1);
 });
 
-test('installation subscription coexists with client capability validation and declarations', () => {
+test('package change subscription coexists with client capability validation and declarations', () => {
   const client = createFakeClient();
   const calls = [];
   const capabilities = {
@@ -256,7 +256,7 @@ test('installation subscription coexists with client capability validation and d
     onClearFrame() {},
     onErrorFrame() {},
     onConnectionStateChange() {},
-    onPackagesInstalled: (ids) => calls.push(['installed', ids]),
+    onPackagesChanged: (ids) => calls.push(['changed', ids]),
   });
   client.emit('client.declarations', { packages: [] });
   client.emit('extensions.v2.installed', { package_ids: ['pkg.new'] });
@@ -264,7 +264,7 @@ test('installation subscription coexists with client capability validation and d
   client.emit('webui.render', { revision: 1 });
   assert.deepEqual(calls, [
     ['configure', { packages: [] }],
-    ['installed', ['pkg.new']],
+    ['changed', ['pkg.new']],
     ['operation', { operation: 'example' }],
   ]);
   off();

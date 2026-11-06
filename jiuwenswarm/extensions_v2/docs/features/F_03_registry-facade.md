@@ -72,8 +72,8 @@ flowchart TB
 | 方法 | 签名 | 行为 |
 | --- | --- | --- |
 | `init` | 签名见 [S_01](../specs/S_01_extension-management-facade.md#52-初始化) | 注入宿主事件、Handler、store 和资源清理回调，随后 `open_install_dir`；重复调用直接返回 |
-| `install` | `async install(paths: Sequence[Path]) -> list[ActivationReport]` | 委托 `Registry.install`，补偿失败副本 |
-| `load_installed` | `async load_installed() -> list[ActivationReport]` | 每包选最高未生效版本，一次性批量安装 |
+| `install` | `async install(paths: Sequence[Path]) -> list[ActivationReport]` | 委托 Core 登记报告、等待依赖、安装并清理自己的失败副本 |
+| `load_installed` | `async load_installed() -> list[ActivationReport]` | 委托 Core 从根目录发现包、排序、按 domain 选择并安装 |
 | `uninstall` | `async uninstall(package_id) -> ActivationReport` | 活动包与未激活副本均委托 Core，成功后通知 |
 | `reload` | `async reload(package_id) -> ActivationReport` | 从安装副本热切换，generation 递增 |
 | `query` | `async query(package_id=None) -> QueryResult` | 触发 `package.query`，返回 agent-core 事实 |
@@ -97,22 +97,21 @@ flowchart TB
 
 1. `Registry.init` 绑定管理上下文，调用宿主 `host_event_types` 和 `host_handlers`。
 2. `Registry.init` 内部触发一次 `ops.build`；门面与装配层都不得再次触发。
-3. `open_install_dir` 记录安装目录和宿主版本，返回已有副本列表，不安装。
+3. `await open_install_dir` 绑定根目录、必传报告路径、固定域和宿主版本，登记运行锁；不安装、不返回路径列表。
 4. 任一步失败时，若 Registry 已绑定则解除上下文，重建空 Registry 并向上抛出。
 
 ### 5.2 启动激活
 
 ```mermaid
 flowchart TD
-    A["list_installed"] --> B["按 package_id 分组"]
-    B --> C{"已生效"}
-    C -->|"是"| D["跳过"]
-    C -->|"否"| E["保留最高版本"]
-    E --> F["Registry.install(roots)"]
-    F --> G["逐包 ActivationReport"]
+    A["Core.load_installed"] --> B["根目录完整发现和选版"]
+    B --> C["稳定排序并记录安装计划"]
+    C --> D["选择 agentserver 包"]
+    D --> E["逐包等待依赖后激活"]
+    E --> F["更新报告并返回结果"]
 ```
 
-manifest 不可读或版本非法的目录记录告警后忽略，不影响其他包。
+Core 返回非法声明和依赖拒绝的报告；独立包继续。报告与域规则见 [F_32](F_32_domain-install-report.md)。
 
 ### 5.3 卸载
 
@@ -128,7 +127,7 @@ manifest 不可读或版本非法的目录记录告警后忽略，不影响其�
 
 ## 6. 并发与状态边界
 
-- 同一门面的根写操作由宿主写锁串行，查询不占锁，包退出通知在锁外执行；补充方案见 [F_11](F_11_management-serialization.md)。
+- 管理并发由 Core 报告占用保护，等待不持门面锁；初始化、卸载、停机仍有本地锁。包退出通知在锁外；见 [F_11](F_11_management-serialization.md)。
 - `init` 幂等：同一门面重复调用不会重复注册事件或重复触发 `ops.build`。
 - `shutdown` 后门面回到未初始化状态；再次使用必须重新 `init`。
 - 生效包事实只来自 `Runtime`，门面不做缓存。

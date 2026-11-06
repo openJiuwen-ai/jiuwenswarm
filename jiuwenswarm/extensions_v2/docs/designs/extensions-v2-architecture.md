@@ -538,7 +538,7 @@ report = await manager.load_installed()
 
 #### 4.1.2 包来源配置与加载准入
 
-AgentServer 使用 `resolve_install_dir()` 解析 `extensions.install_dir`、环境变量或默认目录 `~/.jiuwenswarm/extension_pkgs`，创建管理门面。门面在 core `Registry.init` 成功后调用 `open_install_dir`；随后 AgentServer 调用 `manager.load_installed()`，由门面选择已安装版本并交给 core 安装。启动不再扫描或自动安装 `examples/`。外部安装请求只接受 ZIP 文件的绝对路径，在请求入口拒绝目录，再通过同一门面安装；安装目录中的解压副本仍由启动加载和热重载使用。来源解析、声明校验、依赖排序和计划执行归 agent-core。
+AgentServer 使用 `resolve_install_dir()` 解析 `extensions.install_dir`、环境变量或默认目录 `~/.jiuwenswarm/extension_pkgs`，创建管理门面。门面在 core `Registry.init` 成功后调用 `open_install_dir`；随后 AgentServer 调用 `manager.load_installed()`，由 Core 完整发现、选版和排序，再从排序结果中选择 `agentserver` 的包进行激活。启动不再扫描或自动安装 `examples/`。外部安装请求只接受 ZIP 文件的绝对路径，在请求入口拒绝目录，再通过同一门面安装；安装目录中的解压副本仍由启动加载和热重载使用。来源解析、声明校验、依赖排序和计划执行归 agent-core。
 
 | 配置主题 | 当前要求 | 待确定的来源与启动规则 |
 | --- | --- | --- |
@@ -1588,3 +1588,7 @@ V5 和 WebUI 方案是外部设计材料，下面以文件名标识，不要求�
 参考冲突按当前 core 规约处理：包入口采用 `manifest.yaml`；EventBus 初始化登记 core 内置事件及九类管理事件；`Registry.init` 执行 swarm 登记回调后触发一次 Build，AgentServer 不再单独 Build；包信息由 Runtime 发布时填入并由 EventBus 保存；重载采用 Handler 热切换。网络仍由 Front、Gateway 和 WebClient 适配。旧示例中的 `delivered`、`handler_error` 和简化 revision 键不直接成为产品契约，分别按第 6.3、8.1、6.2 节解释。
 
 概览维护整体说明，本架构维护模块协作；spec 维护定稿契约，feature 维护具体方案与证据，开发计划维护执行进度。包管理门面契约见[门面规约](../specs/S_01_extension-management-facade.md)，包管理与 WebUI 方案见[F_02](../features/F_02_control-plane.md)至[F_08](../features/F_08_frontend-render.md)，开发计划见[特性开发计划](extensions-v2-development-plan.md)；不复制完整公共模型、manifest Schema 或 WebUI 帧结构，也不为填满目录创建空文档。
+
+## 按域安装与报告接入
+
+[F_32](../features/F_32_domain-install-report.md)记录按域加载、共享安装报告及其验证。AgentServer 的实现目录和启动入口保持不变。

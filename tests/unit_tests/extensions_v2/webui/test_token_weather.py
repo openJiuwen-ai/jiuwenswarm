@@ -42,7 +42,7 @@ class FakeTransport:
 
 async def _runtime(tmp_path: Path, transport: FakeTransport) -> tuple[ExtensionEventBus, ExtensionManager, WebUIRuntime]:
     bus = ExtensionEventBus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     runtime = WebUIRuntime(
         bus=bus,
         transport=transport,

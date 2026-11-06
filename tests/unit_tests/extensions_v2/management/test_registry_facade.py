@@ -29,7 +29,7 @@ async def test_init_registers_host_once_and_triggers_ops_build(tmp_path: Path) -
         return builder
 
     bus.register_event_handler("ops.build", build, {}, HandlerLevel.BUILTIN)
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
 
     await manager.init(bus)
     await manager.init(bus)
@@ -40,7 +40,7 @@ async def test_init_registers_host_once_and_triggers_ops_build(tmp_path: Path) -
 
 async def test_install_query_reload_and_uninstall(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
 
@@ -71,7 +71,7 @@ async def test_install_query_reload_and_uninstall(tmp_path: Path) -> None:
 
 async def test_invalid_manifest_is_rejected_without_copy(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(
         tmp_path / "source",
@@ -88,7 +88,7 @@ async def test_invalid_manifest_is_rejected_without_copy(tmp_path: Path) -> None
 
 async def test_duplicate_package_id_rejects_whole_batch(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     first = write_package(tmp_path / "first")
     second = write_package(tmp_path / "second")
@@ -102,7 +102,7 @@ async def test_duplicate_package_id_rejects_whole_batch(tmp_path: Path) -> None:
 
 async def test_bad_source_does_not_block_independent_package(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     valid = write_package(tmp_path / "valid")
 
@@ -115,7 +115,7 @@ async def test_bad_source_does_not_block_independent_package(tmp_path: Path) -> 
 
 async def test_missing_dependency_is_reported_without_copy(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(
         tmp_path / "source",
@@ -131,7 +131,7 @@ async def test_missing_dependency_is_reported_without_copy(tmp_path: Path) -> No
 
 async def test_package_cycle_is_reported_without_copy(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     first = write_package(
         tmp_path / "first",
@@ -153,13 +153,13 @@ async def test_package_cycle_is_reported_without_copy(tmp_path: Path) -> None:
 
 async def test_existing_store_version_is_not_overwritten(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source")
     await manager.install([source])
     await manager.shutdown()
 
-    restarted = ExtensionManager(tmp_path / "store")
+    restarted = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await restarted.init(make_bus())
     report = (await restarted.install([source]))[0]
 
@@ -169,7 +169,7 @@ async def test_existing_store_version_is_not_overwritten(tmp_path: Path) -> None
 
 async def test_uninstall_rejects_dependent_package(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     dependency = write_package(tmp_path / "dependency", package_id="test.dep")
     application = write_package(
@@ -198,7 +198,7 @@ async def test_uninstall_rejects_dependent_package(tmp_path: Path) -> None:
 
 async def test_failed_reload_keeps_old_active_instance(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     await manager.install([write_package(tmp_path / "v1", module_source=METADATA_EXTENSION)])
     installed = manager.install_dir / "test.pkg" / "1.0.0" / "extension.py"
@@ -219,7 +219,7 @@ async def test_failed_reload_keeps_old_active_instance(tmp_path: Path) -> None:
 
 async def test_uninstall_inactive_installed_copy(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     source = write_package(tmp_path / "source")
     package_manager = PackageManager(manager.install_dir)
@@ -233,7 +233,7 @@ async def test_uninstall_inactive_installed_copy(tmp_path: Path) -> None:
 
 async def test_shutdown_releases_handlers_and_preserves_copy(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
     await manager.install([write_package(tmp_path / "source", module_source=METADATA_EXTENSION)])
     assert await bus.trigger(Event("test.event", {})) == (
@@ -251,17 +251,17 @@ async def test_shutdown_releases_handlers_and_preserves_copy(tmp_path: Path) -> 
 
 
 async def test_load_installed_uses_highest_version(tmp_path: Path) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     await manager.install([write_package(tmp_path / "v1", version="1.0.0")])
     await manager.shutdown()
 
-    newer = ExtensionManager(tmp_path / "store")
+    newer = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await newer.init(make_bus())
     await newer.install([write_package(tmp_path / "v2", version="2.0.0")])
     await newer.shutdown()
 
-    restarted = ExtensionManager(tmp_path / "store")
+    restarted = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await restarted.init(make_bus())
     reports = await restarted.load_installed()
 
@@ -273,7 +273,7 @@ async def test_load_installed_uses_highest_version(tmp_path: Path) -> None:
 
 
 async def test_load_installed_rejects_before_init(tmp_path: Path) -> None:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
 
     with pytest.raises(ExtensionFailure):
         await manager.load_installed()
@@ -281,7 +281,7 @@ async def test_load_installed_rejects_before_init(tmp_path: Path) -> None:
 
 async def test_inactive_callback_runs_after_uninstall(tmp_path: Path) -> None:
     bus = make_bus()
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     inactive: list[str] = []
 
     async def record_inactive(package_id: str) -> None:

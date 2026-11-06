@@ -38,7 +38,7 @@ def _request(method: ReqMethod, params: Any) -> AgentRequest:
 
 
 async def _manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ExtensionManager:
-    manager = ExtensionManager(tmp_path / "store")
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
     monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
     return manager
@@ -141,7 +141,12 @@ async def test_invalid_request_is_rejected_before_resolving_runtime(
 async def test_unavailable_manager_is_not_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uninitialized: bool,
 ) -> None:
-    manager = ExtensionManager(tmp_path) if uninitialized else None
+    manager = None
+    if uninitialized:
+        manager = ExtensionManager(
+            tmp_path,
+            report_path=tmp_path.parent / (tmp_path.name + "-report.yaml"),
+        )
     monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
     response = await PackageManagementAdapter().handle(_request(ReqMethod.EXTENSIONS_V2_QUERY, {}))
     assert not response.ok
@@ -203,7 +208,7 @@ async def test_install_paths_only_describe_successful_reports_from_this_request(
     manager = await _manager(tmp_path, monkeypatch)
     notify = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
-                        lambda: SimpleNamespace(notify_packages_installed=notify))
+                        lambda: SimpleNamespace(notify_packages_changed=notify))
     await manager.install([write_package(tmp_path / "old", package_id="existing.pkg")])
     good = write_package(tmp_path / "good", package_id="new.pkg")
     bad = write_package(tmp_path / "bad", package_id="broken.pkg", module_source='raise RuntimeError("broken")')
@@ -227,7 +232,7 @@ async def test_install_notification_failure_preserves_successful_activation(
 ) -> None:
     manager = await _manager(tmp_path, monkeypatch)
     notify = AsyncMock(return_value=False, side_effect=notification if isinstance(notification, OSError) else None)
-    runtime = None if notification is None else SimpleNamespace(notify_packages_installed=notify)
+    runtime = None if notification is None else SimpleNamespace(notify_packages_changed=notify)
     monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime", lambda: runtime)
     source = archive_package(write_package(tmp_path / "source"))
 
@@ -244,7 +249,7 @@ async def test_failed_install_does_not_notify_ready_clients(
     await _manager(tmp_path, monkeypatch)
     notify = AsyncMock(return_value=True)
     monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
-                        lambda: SimpleNamespace(notify_packages_installed=notify))
+                        lambda: SimpleNamespace(notify_packages_changed=notify))
     source = archive_package(write_package(tmp_path / "source", module_source='raise RuntimeError("broken")'))
 
     response = await PackageManagementAdapter().handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
@@ -285,7 +290,12 @@ def create_extension():
         stream.write("\nui:\n  apiVersion: 1\n  items:\n"
                      "  - type: web.slot.contribution\n    id: panel\n    slot: conversation.input.below\n"
                      "    renderer:\n      kind: webui-tree\n")
-    manager = ExtensionManager(tmp_path / "installed", store_dir=tmp_path / "data", state_dir=tmp_path / "state")
+    manager = ExtensionManager(
+        tmp_path / "installed",
+        report_path=tmp_path / "report.yaml",
+        store_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+    )
     bus = make_bus()
     push = SimpleNamespace(send_push=AsyncMock(return_value=True))
     runtime = WebUIRuntime(bus=bus, transport=RenderTransport(push=push), catalog=WebUICatalogService(manager.active_packages))

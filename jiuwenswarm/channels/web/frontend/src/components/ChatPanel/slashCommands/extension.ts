@@ -30,7 +30,21 @@ interface ActivePackage {
   generation: number;
 }
 
+interface ReportedPackage {
+  package_id: string;
+  domain: string | null;
+  active_version: string | null;
+}
+
+interface LocalPackageState {
+  version: string;
+  active: boolean;
+  installPath: string;
+}
+
 interface PackageState {
+  package_ids?: string[];
+  packages?: ReportedPackage[];
   active: ActivePackage[];
   installed: string[];
   installed_packages?: InstalledCopy[];
@@ -105,26 +119,82 @@ function queryHint(intent: ExtensionSlashIntent, t: ExtensionCommandTranslate): 
   return t('extensionCommand.queryHint', { command });
 }
 
-function formatState(state: PackageState, t: ExtensionCommandTranslate): string {
+function reportPackages(state: PackageState): ReportedPackage[] {
+  if (!Array.isArray(state.packages)) return [];
+  return state.packages
+    .filter((item): item is ReportedPackage => Boolean(
+      item
+      && typeof item.package_id === 'string'
+      && (typeof item.domain === 'string' || item.domain === null)
+      && (typeof item.active_version === 'string' || item.active_version === null),
+    ))
+    .sort((left, right) => left.package_id.localeCompare(right.package_id));
+}
+
+function localPackageStates(state: PackageState): {
+  byPackage: Map<string, LocalPackageState[]>;
+  unknownPaths: string[];
+} {
+  const byPackage = new Map<string, LocalPackageState[]>();
+  const add = (packageId: string, item: LocalPackageState): void => {
+    const entries = byPackage.get(packageId);
+    if (entries) entries.push(item);
+    else byPackage.set(packageId, [item]);
+  };
   const activeRoots = new Set(state.active.map((record) => record.root));
   const installedOnly = state.installed.filter((root) => !activeRoots.has(root));
-  const blocks = state.active.map((record) => {
-    const lines = [
-      t('extensionCommand.packageId', { packageId: record.package_id }),
-      t('extensionCommand.version', { version: record.version }),
-      t('extensionCommand.activeState'),
-      t('extensionCommand.installPath', { path: record.root }),
-    ];
-    return lines.join('\n');
-  });
+  for (const record of state.active) {
+    add(record.package_id, { version: record.version, active: true, installPath: record.root });
+  }
+  const unknownPaths: string[] = [];
   for (const path of installedOnly) {
     const record = state.installed_packages?.find((item) => item.install_path === path);
-    const lines = record ? [
-      t('extensionCommand.packageId', { packageId: record.package_id }),
-      t('extensionCommand.version', { version: record.version }),
-    ] : [t('extensionCommand.packageIdUnavailable')];
-    lines.push(t('extensionCommand.inactiveState'), t('extensionCommand.installPath', { path }));
+    if (record) add(record.package_id, { version: record.version, active: false, installPath: path });
+    else unknownPaths.push(path);
+  }
+  return { byPackage, unknownPaths };
+}
+
+function appendRuntimeState(
+  lines: string[],
+  records: readonly LocalPackageState[],
+  reportedVersion: string | null,
+  t: ExtensionCommandTranslate,
+): void {
+  for (const record of records) {
+    if (record.version !== reportedVersion) lines.push(t('extensionCommand.version', { version: record.version }));
+    lines.push(t(record.active ? 'extensionCommand.activeState' : 'extensionCommand.inactiveState'));
+    lines.push(t('extensionCommand.installPath', { path: record.installPath }));
+  }
+}
+
+function formatState(state: PackageState, t: ExtensionCommandTranslate): string {
+  const local = localPackageStates(state);
+  const blocks: string[] = [];
+  for (const report of reportPackages(state)) {
+    const lines = [
+      t('extensionCommand.packageId', { packageId: report.package_id }),
+      t('extensionCommand.domain', { domain: report.domain ?? '-' }),
+    ];
+    if (report.active_version) lines.push(t('extensionCommand.activeVersion', { version: report.active_version }));
+    appendRuntimeState(lines, local.byPackage.get(report.package_id) ?? [], report.active_version, t);
+    local.byPackage.delete(report.package_id);
     blocks.push(lines.join('\n'));
+  }
+  for (const [packageId, records] of [...local.byPackage.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const lines = [t('extensionCommand.packageId', { packageId })];
+    appendRuntimeState(lines, records, null, t);
+    blocks.push(lines.join('\n'));
+  }
+  for (const path of local.unknownPaths) {
+    blocks.push([
+      t('extensionCommand.packageIdUnavailable'),
+      t('extensionCommand.inactiveState'),
+      t('extensionCommand.installPath', { path }),
+    ].join('\n'));
+  }
+  if (!blocks.length && Array.isArray(state.package_ids)) {
+    blocks.push(...state.package_ids.map((packageId) => t('extensionCommand.packageId', { packageId })));
   }
   return blocks.length ? blocks.join('\n\n') : t('extensionCommand.empty');
 }
@@ -227,8 +297,8 @@ export async function runExtensionCommand(
   if (intent.action === 'install') params.paths = [intent.path];
   else if (intent.packageId) params.package_id = intent.packageId;
   try {
-    // Allow the Gateway's 120-second timeout to return its structured error first.
-    const result = await request(`extensions.v2.${intent.action}`, params, { timeoutMs: 130_000 });
+    // Default dependency wait is 300 seconds; leave time to return the operation result.
+    const result = await request(`extensions.v2.${intent.action}`, params, { timeoutMs: 330_000 });
     if (intent.action === 'query') {
       return validState(result?.state)
         ? formatState(result.state, t)
