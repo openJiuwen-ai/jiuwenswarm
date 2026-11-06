@@ -644,6 +644,7 @@ def _compose_workspace_skill_visibility(
         team = read_skill_visibility(team_path, scope=SCOPE_TEAM, entity_id=team_id)
     return compose_skill_visibility(member, team, load_execution_disabled_skills())
 
+
 class SkillManager:
     """Skill 管理器，对应 skills.* 请求方法."""
 

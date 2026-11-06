@@ -1,6 +1,5 @@
 import atexit
 import functools
-from jiuwenswarm.edition import is_enterprise
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """Path management for JiuWenSwarm.
@@ -55,6 +54,7 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.path_provider import (
     PathCategory,
     current_path_context,
