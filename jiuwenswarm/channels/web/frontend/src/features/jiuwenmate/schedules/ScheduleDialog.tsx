@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { buildCron, fromZonedInput, parseCron, toZonedInput, validateDraft, weekdayName } from './state';
@@ -118,12 +118,19 @@ export function ScheduleDialog({
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<FormState>(() => (plan ? formFromPlan(plan) : blankForm()));
+  const executorRef = useRef<HTMLSelectElement>(null);
   const [chosenExecutor, setChosenExecutor] = useState(executorId);
   const [error, setError] = useState('');
   if (!open) return null;
   const draft = toDraft(form, timezone);
   const save = () => {
     const reason = validateDraft(draft, chosenExecutor);
+    if (reason === 'executorRequired' && executorRef.current) {
+      setError('');
+      executorRef.current.focus();
+      executorRef.current.reportValidity();
+      return;
+    }
     if (reason) {
       setError(t(`jiuwenmate.schedule.error.${reason}`));
       return;
@@ -150,7 +157,7 @@ export function ScheduleDialog({
           {executors ? (
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.schedule.executor')}</span>
-              <select value={chosenExecutor} onChange={(event) => setChosenExecutor(event.target.value)} data-testid="jiuwenmate-schedule-executor">
+              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => setChosenExecutor(event.target.value)} data-testid="jiuwenmate-schedule-executor">
                 <option value="">{t('jiuwenmate.schedule.chooseExecutor')}</option>
                 {executors.map((item) => (
                   <option key={item.id} value={item.id}>{item.name}</option>

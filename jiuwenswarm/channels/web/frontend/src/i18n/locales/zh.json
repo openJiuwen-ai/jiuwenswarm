@@ -6101,6 +6101,7 @@
       "welinkCredentialDone": "完成",
       "welinkShowAssistantQr": "弹出助手码",
       "welinkRetry": "重试",
+      "welinkScanReminder": "绑定成功后页面会自动跳转，请勿关闭窗口或点击“取消”。",
       "welinkAssistantWaiting": "请用手机扫描确认",
       "welinkAssistantScan": "扫码创建",
       "welinkAssistantExisting": "填写已有 AK/SK",
