@@ -1523,7 +1523,13 @@ class AgentWebSocketServer:
         try:
             await self._stop_main_services()
         finally:
-            await self._stop_personal_context_best_effort()
+            try:
+                handlers = getattr(self, "_rsi_handlers", None)
+                if handlers is not None:
+                    await handlers.context.worker.aclose()
+                    self._rsi_handlers = None
+            finally:
+                await self._stop_personal_context_best_effort()
 
     async def _stop_main_services(self) -> None:
         """Stop shared execution and services before optional PersonalContext cleanup."""
@@ -2228,3 +2234,29 @@ class AgentWebSocketServer:
                 "[AgentServer] Built model cache with %d models, default=%s",
                 len(self._model_cache), first_name
             )
+
+    def _get_rsi_handlers(self):
+        handlers = getattr(self, "_rsi_handlers", None)
+        if handlers is not None:
+            return handlers
+        from jiuwenswarm.agents.harness.common.rsi.context import build_rsi_service_context
+        from jiuwenswarm.agents.harness.common.rsi.provider_factory import build_rsi_adapters
+        from jiuwenswarm.server.rsi import RsiAgentServerHandlers
+        mode = os.environ.get("RSI_PROVIDER_MODE", "real").strip().lower()
+        context = build_rsi_service_context(None, enable_harness_materialization=True,
+                                            allow_missing_harness=(mode == "mock"), agent_manager=self._agent_manager)
+        context.register_adapters(build_rsi_adapters(context.tasks_root, mode=mode,
+                                                     model_resolver=context.model_resolver))
+        self._rsi_handlers = RsiAgentServerHandlers(context, send_push=self.send_push,
+                                                   harness_refs_provider=self._rsi_harness_refs_provider)
+        return self._rsi_handlers
+
+    @staticmethod
+    def _rsi_harness_refs_provider(params=None):
+        from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore, resolve_native_harness_baseline
+        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
+        if params and (params.get("package_id") or params.get("harness_id")):
+            raise ValueError("This stable build selects the active RSI Harness")
+        store = RsiHarnessActivationStore(get_rsi_workspace_root() / "tasks")
+        return store.resolve_active_runtime_path() or str(resolve_native_harness_baseline())
+

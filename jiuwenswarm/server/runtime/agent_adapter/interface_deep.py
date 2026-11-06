@@ -9746,6 +9746,7 @@ class JiuWenSwarmDeepAdapter:
 
                 # 加载已激活的 packages（skills, rails, tools）
                 await self._load_active_packages()
+                await self._load_rsi_active_harness()
                 await asyncio.sleep(0)
 
                 self._sync_preinstance_runtime_tools_to_ability_manager()
@@ -20113,3 +20114,58 @@ class JiuWenSwarmDeepAdapter:
             self._dreaming_started = False
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] stop_dreaming failed: %s", exc)
+
+    async def _load_rsi_active_harness(self):
+        from jiuwenswarm.common.utils import get_user_workspace_dir
+        if not (get_user_workspace_dir() / "rsi" / "tasks" / "activation.json").is_file():
+            return
+        from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
+        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
+        try:
+            active = RsiHarnessActivationStore(get_rsi_workspace_root() / "tasks").get_active()
+            if active:
+                await self.apply_rsi_harness_install("activate", config_path=active["runtime_path"],
+                                                     installation_id=active["installation_id"])
+        except Exception:
+            logger.exception("Failed to restore the active RSI Harness; native agent remains available")
+
+    async def apply_rsi_harness_install(self, operation, *, config_path, installation_id):
+        from openjiuwen.rsi.harness_rsi.package_compat import load_plugin_package
+        from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return {"status": "SKIPPED", "resources": []}
+        current = getattr(self, "_rsi_harness_install_id", None)
+        if operation == "activate" and current == installation_id:
+            return {"status": "ACTIVE", "already_active": True, "resources": []}
+        previous = getattr(self, "_rsi_harness_config_path", None)
+        record = getattr(self, "_rsi_harness_load_record", None)
+        if operation not in {"activate", "deactivate"}:
+            raise ValueError("Unsupported RSI operation")
+        # Parse and validate before removing the currently active resources.
+        spec = load_plugin_package(config_path) if operation == "activate" else None
+        if record is not None:
+            await instance.unload_expert_harness(record)
+        self._rsi_harness_load_record = None
+        self._rsi_harness_install_id = None
+        self._rsi_harness_config_path = None
+        if spec is None:
+            return {"status": "INACTIVE", "resources": []}
+        try:
+            record = await instance.load_expert_harness_from_spec(spec)
+        except Exception as exc:
+            if previous:
+                try:
+                    self._rsi_harness_load_record = await instance.load_expert_harness_from_spec(load_plugin_package(previous))
+                    self._rsi_harness_install_id = current
+                    self._rsi_harness_config_path = previous
+                except Exception as restore:
+                    raise RsiHarnessInstallConflict("Harness load and restoration failed") from restore
+            raise exc
+        self._rsi_harness_load_record = record
+        self._rsi_harness_install_id = installation_id
+        self._rsi_harness_config_path = config_path
+        return {"status": "ACTIVE", "resources": record.refs}
+
+
+

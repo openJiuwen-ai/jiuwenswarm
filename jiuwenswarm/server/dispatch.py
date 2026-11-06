@@ -12,6 +12,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc 
     get_permissions_config_req_methods,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.handlers import rsi as rsi_handlers
 from jiuwenswarm.server.handlers import agents as agents_handlers
 from jiuwenswarm.server.handlers import bootstrap as bootstrap_handlers
 from jiuwenswarm.server.handlers import chat as chat_handlers
@@ -279,3 +280,7 @@ def _default_context(server: Any, ws: Any, send_lock: Any, request: Any) -> Any:
         connection_id=str(id(ws)),
         services=AgentServerServices(server),
     )
+
+for _method in ReqMethod:
+    if _method.value.startswith("rsi."):
+        HANDLERS[_method] = HandlerSpec(fn=rsi_handlers.handle_rsi)

@@ -1,9 +1,5 @@
 """生产 HarnessProvider：包装 agent-core 单 Harness 迭代优化编排器。
 
-⚠ 本构建的 openjiuwen 依赖面不包含 harness_rsi 引擎：引擎执行路径
-（``run/resume``、编排器/配置装配、``validate_input`` 真校验）已显式
-不可用；模块保留可导入，状态/报告/树读取逻辑保留以兼容旧任务快照。
-
 对应设计文档 ``rsi_zequ_jiuwenswarm_harness_completion_v1.md`` §2.1：
 
 - ``run/resume`` → ``SingleHarnessIterativeOptimizationOrchestrator.run``，
@@ -18,8 +14,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
+import tempfile
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -29,6 +27,16 @@ from threading import Lock
 from typing import Any
 
 import yaml
+from openjiuwen.rsi import (
+    AutoCoordinatingHarnessConfig,
+    IterativeSingleHarnessRequest,
+    SingleHarnessIterativeOptimizationOrchestrator,
+)
+from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
+    active_epoch_node_event,
+    epoch_node_event,
+    root_node_event,
+)
 from openjiuwen.rsi.schema import (
     ArtifactRef,
     EngineReport,
@@ -37,14 +45,21 @@ from openjiuwen.rsi.schema import (
     RsiTreeNode,
     TreeResponse,
 )
+from openjiuwen.rsi.usage import usage_snapshot
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
+    RsiBadRequest,
+    RsiDatasetInvalid,
     RsiNotReady,
     RsiPathInvalid,
     RsiPathNotAllowed,
     RsiResumeInputChanged,
+    RsiResumeMismatch,
 )
 from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineRequest
+from jiuwenswarm.agents.harness.common.rsi.validation_dataset import (
+    normalize_validation_suite,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,28 +71,91 @@ _DEFAULT_CONFIG_PATH = Path("config") / "harness_orchestrator.yaml"
 
 
 def engine_validate_input(dataset_path: str | None) -> Any:
-    """引擎 load_cases 真校验入口（web §5.2 / 设计 §2.2 的共享入口）。
+    """引擎 load_cases 真校验（web §5.2 / 设计 §2.2 的共享入口）。"""
+    if not dataset_path:
+        return {
+            "valid": False,
+            "sample_count": None,
+            "errors": [{"code": "DATASET_REQUIRED", "message": "input_file is required"}],
+        }
+    path = Path(str(dataset_path)).expanduser()
+    if not path.is_file():
+        return {
+            "valid": False,
+            "sample_count": None,
+            "errors": [{"code": "PATH_INVALID", "message": f"Dataset not found: {path}"}],
+        }
+    try:
+        normalized = normalize_validation_suite(path)
+        if normalized is None:
+            cases = _engine_load_cases([str(path.resolve())])
+        else:
+            with tempfile.TemporaryDirectory(prefix="rsi-dataset-") as temp_dir:
+                normalized_path = Path(temp_dir) / "cases.json"
+                normalized_path.write_text(
+                    json.dumps(normalized, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+                    copy_dataset_files,
+                )
 
-    openjiuwen harness_rsi 引擎未随本构建分发，显式返回不可用结果。
-    """
-    del dataset_path
-    return {
-        "valid": False,
-        "sample_count": None,
-        "errors": [
-            {
-                "code": "HARNESS_UNAVAILABLE",
-                "message": "harness optimization is not available in this build",
-            }
-        ],
-    }
+                copy_dataset_files(normalized["cases"], path.resolve(), normalized_path)
+                cases = _engine_load_cases([str(normalized_path)])
+        from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+            validate_case_fields,
+        )
+
+        for case in cases:
+            validate_case_fields(case)
+    except RsiDatasetInvalid as exc:
+        return {
+            "valid": False,
+            "sample_count": None,
+            "errors": [{"code": "DATASET_INVALID", "message": str(exc)}],
+        }
+    except FileNotFoundError as exc:
+        return {
+            "valid": False,
+            "sample_count": None,
+            "errors": [{"code": "PATH_INVALID", "message": str(exc)}],
+        }
+    except (ValueError, TypeError) as exc:
+        return {
+            "valid": False,
+            "sample_count": None,
+            "errors": [{"code": "DATASET_INVALID", "message": str(exc)}],
+        }
+    except Exception as exc:  # noqa: BLE001 - 引擎未归类错误统一映射 DATASET_INVALID
+        logger.warning("[RSI] harness validate_input 未归类异常: %s", exc)
+        return {
+            "valid": False,
+            "sample_count": None,
+            "errors": [{"code": "DATASET_INVALID", "message": str(exc)}],
+        }
+    return {"valid": True, "sample_count": len(cases), "errors": []}
+
+
+def _engine_load_cases(dataset_files: list[str]) -> list[dict[str, Any]]:
+    """调用引擎数据集校验/加载（新版本公开导出，旧版本回退私有实现）。"""
+    try:
+        from openjiuwen.rsi import load_cases as _load_cases  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - 兼容旧版 openjiuwen
+        from openjiuwen.rsi.harness_rsi.single_harness.iterative import (  # noqa: PLC0415
+            _load_cases,
+        )
+    return list(_load_cases(dataset_files))
+
+
+def _run_accepts_on_event(orchestrator: Any) -> bool:
+    try:
+        return "on_event" in inspect.signature(orchestrator.run).parameters
+    except (TypeError, ValueError):  # pragma: no cover - 签名不可读时保守不透传
+        return False
 
 
 class HarnessProvider:
     """HarnessProviderContract 的生产实现（包装 agent-core 编排器）。
-
-    ⚠ 本构建未随 openjiuwen 分发 harness_rsi 引擎，执行路径显式不可用；
-    构造函数与状态/报告/树读取保留，用于读取既有引擎落盘的快照。
 
     Args:
         tasks_root: ``.jiuwenswarm/rsi/tasks``，引擎 ``output_dir`` 与状态/报告读取根。
@@ -130,9 +208,39 @@ class HarnessProvider:
         on_event: Any,
         resume: bool,
     ) -> EngineResult:
-        del request, on_event, resume
-        # openjiuwen harness_rsi 编排器未随本构建分发。
-        raise NotImplementedError("harness optimization is not available in this build")
+        self._validate_materialized_paths(request)
+        self._verify_task_materials(request, resume=resume)
+        orchestrator = self._resolve_orchestrator(request)
+        # New tasks measure H0 first; resumes retain their original protocol.
+        previous_state = self._read_state_dict(request.task_id) if resume else {}
+        auto_full_baseline = (
+            bool(previous_state.get("fingerprint", {}).get("auto_full_baseline", False))
+            if previous_state else True
+        )
+        engine_request_kwargs: dict[str, Any] = {
+            "dataset_files": [str(item) for item in request.dataset_files],
+            "harness_refs_path": request.harness_refs_path,
+            "output_dir": str(Path(request.output_dir).expanduser()),
+            "dataset_id": request.dataset_id or "single_harness_benchmark",
+            "resume": resume,
+            "auto_full_baseline": auto_full_baseline,
+        }
+        if "task_id" in inspect.signature(IterativeSingleHarnessRequest).parameters:
+            engine_request_kwargs["task_id"] = request.task_id
+        engine_request = IterativeSingleHarnessRequest(**engine_request_kwargs)
+        kwargs: dict[str, Any] = {}
+        if on_event is not None and _run_accepts_on_event(orchestrator):
+            kwargs["on_event"] = on_event
+        elif on_event is not None:
+            logger.warning(
+                "[RSI] 引擎编排器不支持 on_event，事件流降级为空: task=%s", request.task_id
+            )
+        try:
+            await orchestrator.run(engine_request, **kwargs)
+        except ValueError as exc:
+            # 引擎侧 resume fingerprint/task_id 冲突以 ValueError 上抛，映射 4xx 语义。
+            raise RsiResumeMismatch(str(exc)) if resume else RsiBadRequest(str(exc)) from exc
+        return self._result_from_state(request.task_id)
 
     async def pause(self, task_id: str) -> EngineResult:
         raise RsiNotReady("harness 引擎暂不支持中途暂停")
@@ -157,7 +265,7 @@ class HarnessProvider:
             best_node_id=_best_node_id(state),
             score=_number(state.get("best_score")),
             baseline=baseline,
-            usage=None,  # usage_snapshot 依赖 openjiuwen.rsi.usage，本构建不可用
+            usage=usage_snapshot(state.get("usage")),
             updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             error_code=None,
             error_message=None,
@@ -175,7 +283,7 @@ class HarnessProvider:
             task_id=task_id,
             status=str(report.get("status") or state.get("status") or "created").lower(),
             best_node_id=_best_node_id(state or report),
-            usage=None,  # usage_snapshot 依赖 openjiuwen.rsi.usage，本构建不可用
+            usage=usage_snapshot(report.get("usage")) or usage_snapshot(state.get("usage")),
             artifact_index=self._artifact_index(task_id, state or report),
             summary=_report_summary(report or state),
         )
@@ -183,9 +291,8 @@ class HarnessProvider:
     def get_tree(self, task_id: str) -> TreeResponse:
         state = self._load_yaml(task_id, _STATE_FILE) or {}
         if "epoch_checkpoints" in state:
-            # _epoch_events 是 raise-only 桩（引擎未随本构建分发），内联调用以消除
-            # 「无返回值函数结果赋值」的静态告警；异常仍在同一求值点抛出，兜底路径不变。
-            nodes = [event.node for event in _epoch_events(state)]
+            events = _epoch_events(state)
+            nodes = [event.node for event in events]
             depths = {"h0": 0}
             for node in nodes[1:]:
                 depths[node.node_id] = depths.get(node.parent_id, 0) + 1
@@ -287,25 +394,65 @@ class HarnessProvider:
 
     # -- 内部 --
 
-    @staticmethod
-    def _resolve_orchestrator(request: HarnessEngineRequest) -> Any:
-        del request
-        # SingleHarnessIterativeOptimizationOrchestrator 未随本构建分发。
-        raise NotImplementedError("harness optimization is not available in this build")
+    def _resolve_orchestrator(self, request: HarnessEngineRequest) -> Any:
+        if self._orchestrator is not None:
+            return self._orchestrator
+        config = self._build_config(request)
+        return SingleHarnessIterativeOptimizationOrchestrator(config)
+
+    def _build_config(self, request: HarnessEngineRequest) -> AutoCoordinatingHarnessConfig:
+        config_path = request.orchestrator_config_path or self._orchestrator_config_path
+        if config_path:
+            from openjiuwen.rsi.harness_rsi.config import (  # noqa: PLC0415
+                load_auto_coordinating_harness_config,
+            )
+
+            config = load_auto_coordinating_harness_config(str(config_path))
+        elif self._orchestrator_config is not None:
+            config = AutoCoordinatingHarnessConfig.from_dict(dict(self._orchestrator_config))
+        else:
+            default_path = Path(self._tasks_root) / _DEFAULT_CONFIG_PATH
+            from openjiuwen.rsi.harness_rsi.config import (  # noqa: PLC0415
+                load_auto_coordinating_harness_config,
+            )
+
+            config = load_auto_coordinating_harness_config(str(default_path))
+        # A task profile already contains materialized model file paths.  Do
+        # not overwrite them with the public model IDs when the Provider is
+        # invoked by the production service.
+        if config_path:
+            return config
+        return self._apply_model_refs(config, request.model_refs)
 
     @staticmethod
-    def _build_config(request: HarnessEngineRequest) -> Any:
-        del request
-        # AutoCoordinatingHarnessConfig / load_auto_coordinating_harness_config
-        # 未随本构建分发。
-        raise NotImplementedError("harness optimization is not available in this build")
-
-    @staticmethod
-    def _apply_model_refs(config: Any, model_refs: dict[str, Any] | None) -> Any:
+    def _apply_model_refs(
+        config: AutoCoordinatingHarnessConfig,
+        model_refs: dict[str, Any] | None,
+    ) -> AutoCoordinatingHarnessConfig:
         """把任务 model_refs（tester=评估 / optimizer=优化）翻译进 ModelConfigs。"""
-        del config, model_refs
-        # ModelConfigs 未随本构建分发。
-        raise NotImplementedError("harness optimization is not available in this build")
+        refs = {str(k): str(v).strip() for k, v in (model_refs or {}).items() if str(v or "").strip()}
+        if not refs:
+            return config
+        from dataclasses import replace  # noqa: PLC0415
+
+        from openjiuwen.rsi import ModelConfigs  # noqa: PLC0415
+
+        model_configs = ModelConfigs(
+            evaluation=refs.get("tester") or config.model_configs.evaluation,
+            analysis=refs.get("optimizer") or config.model_configs.analysis,
+            member_optimization=refs.get("optimizer") or config.model_configs.member_optimization,
+        )
+        return replace(
+            config,
+            model_configs=model_configs,
+            evaluator=replace(config.evaluator, model_config_ref=model_configs.evaluation),
+            evaluation_result_analyzer=replace(
+                config.evaluation_result_analyzer, model_config_ref=model_configs.analysis
+            ),
+            member_optimizer=replace(
+                config.member_optimizer, model_config_ref=model_configs.member_optimization
+            ),
+        )
 
     def _validate_materialized_paths(self, request: HarnessEngineRequest) -> None:
         """Fail closed for task-private paths while retaining mock compatibility."""
@@ -389,8 +536,23 @@ class HarnessProvider:
             if actual_hash != expected_hash:
                 self._raise_material_error(resume, f"{role} 材料已变化")
 
-        # 数据集文件级清单校验依赖 harness_rsi 的 case_files 工具，本构建不可用；
-        # 上方的任务级快照校验仍覆盖 dataset 整体哈希。
+        file_hashes = (materials.get("input_snapshot") or {}).get("files", {})
+        if file_hashes:
+            from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+                resolve_dataset_file,
+            )
+
+            dataset_root = Path(actual_paths["dataset"]).resolve().parent
+            if not isinstance(file_hashes, dict):
+                self._raise_material_error(resume, "dataset file manifest is invalid")
+            for relative, expected_hash in file_hashes.items():
+                try:
+                    path = resolve_dataset_file(dataset_root, relative)
+                    matches = _sha256(path) == expected_hash
+                except (OSError, ValueError, TypeError):
+                    matches = False
+                if not matches:
+                    self._raise_material_error(resume, f"dataset file changed or missing: {relative}")
 
         harness_snapshot = materials.get("harness_snapshot")
         if isinstance(harness_snapshot, dict):
@@ -572,10 +734,12 @@ class HarnessProvider:
 
 
 def _epoch_events(state: dict[str, Any]) -> list[Any]:
-    del state
-    # events_translate 未随本构建分发，Epoch 投影显式不可用；
-    # 调用方（get_tree/_artifact_index）的异常由服务层回退到本地投影兜底。
-    raise NotImplementedError("harness optimization is not available in this build")
+    events = [root_node_event(state)]
+    events.extend(epoch_node_event(state, item) for item in state.get("epoch_checkpoints", []))
+    active = active_epoch_node_event(state)
+    if active is not None:
+        events.append(active)
+    return events
 
 
 def _best_node_id(state: dict[str, Any]) -> str | None:

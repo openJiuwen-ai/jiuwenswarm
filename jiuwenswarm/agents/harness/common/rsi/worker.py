@@ -80,6 +80,7 @@ class RsiWorker:
         # 请求 pause/terminate 时用来提前让出执行位；见 ``_run_until_slot_free``。
         self._slot_released: dict[str, asyncio.Future[None]] = {}
         self._winding_down: set[asyncio.Task[Any]] = set()
+        self._closed = False
         # Providers that return before their durable snapshot reaches a
         # terminal state are polled here.  There is no implicit wall-clock
         # deadline: long-running paper/retrieval workflows must be allowed to
@@ -93,6 +94,36 @@ class RsiWorker:
 
     # -- 队列 --
 
+    async def aclose(self) -> None:
+        """Cancel and await every background task owned by this worker.
+
+        Running executions retain the existing cancellation/TERMINATED
+        semantics. Queued work stays durable and restart recovery pauses it.
+        Snapshot children before cancelling supervisors: their cleanup removes
+        the registration without implicitly cancelling an asyncio.wait child.
+        """
+        self._closed = True
+        tasks = {self._run_task, *self._execution_tasks.values(),
+                 *self._execution_runners.values(), *self._control_tasks.values(),
+                 *self._winding_down}
+        running_ids = set(self._execution_tasks) | set(self._execution_runners)
+        if self._running_task_id:
+            running_ids.add(self._running_task_id)
+        tasks.discard(None)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # A runner cancelled before its first scheduling turn never enters
+        # _execute_task's cancellation handler.
+        for task_id in running_ids:
+            if self.store.get(task_id).status == TaskStatus.RUNNING.value:
+                self._mark_terminated(task_id)
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RsiNotReady("RSI worker is closed")
+
     def enqueue(self, task_id: str) -> str:
         """入队（内部 v3 §4.2 语义）。返回 QUEUED。
 
@@ -100,6 +131,7 @@ class RsiWorker:
           ``_ensure_runner`` 在运行中时自动跳过（并发=1 语义）。
         - 已排队任务幂等短路，避免状态机 QUEUED→QUEUED 自冲突。
         """
+        self._require_open()
         task = self.store.get(task_id)
         if task.status == TaskStatus.PAUSED.value:
             self._conflict(task_id, "PAUSED 任务请走 resume")
@@ -187,6 +219,7 @@ class RsiWorker:
         - 排队中被 pause（从未真实执行，含服务重启丢队列）→ 恢复只是重新入队，
           执行走 ``adapter.run()`` 全新开始，不需要 Provider 的断点恢复。
         """
+        self._require_open()
         task = self.store.get(task_id)
         if task.status != TaskStatus.PAUSED.value:
             self._conflict(task_id, "仅 PAUSED 可 resume")
@@ -218,10 +251,12 @@ class RsiWorker:
     # -- 内部 --
 
     def _ensure_runner(self) -> None:
+        self._require_open()
         if self._run_task is not None and not self._run_task.done():
             return
         try:
-            self._run_task = asyncio.create_task(self._run_loop())
+            loop = asyncio.get_running_loop()
+            self._run_task = loop.create_task(self._run_loop())
         except RuntimeError:
             # 无运行中事件循环（同步上下文/单测/冷启动脚本）：入队成功但执行延后，
             # 由事件循环就绪后的下一次 enqueue 或显式 _ensure_runner 接管（内部 v3 §4.2）。

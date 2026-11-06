@@ -293,10 +293,10 @@ def _default_zen_models() -> list[dict[str, Any]]:
 
 def _default_model_builder(mcc: dict[str, Any], mco: dict[str, Any]) -> Any:
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        build_model_from_entry,
+        JiuWenSwarmDeepAdapter,
     )
 
-    return build_model_from_entry(mcc, mco)
+    return JiuWenSwarmDeepAdapter._build_model_from_entry(mcc, mco)
 
 
 __all__ = [

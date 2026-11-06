@@ -130,10 +130,8 @@ class RsiTaskService:
             scenario_raw, artifact_type_raw,
             artifact_type_required=(scenario_raw == Scenario.ARTIFACT.value),
         )
-        # 本构建只随 openjiuwen 分发 program_opt / paper_opt 引擎：
-        # harness 优化分支显式下线（工厂不再构造对应 adapter）。
-        if scenario is Scenario.HARNESS:
-            raise RsiScenarioNotSupported("harness optimization is not available in this build")
+        if scenario is not Scenario.HARNESS:
+            raise RsiScenarioNotSupported("Only Harness optimization is available in this build")
         name = str(params.get("name") or "").strip()
         if not name or len(name) > 100:
             raise RsiBadRequest("实验名称必填且 1–100 字符")
@@ -987,6 +985,7 @@ _PROVIDER_QUERY_FALLBACK = (
     NotImplementedError,
     OSError,
     RsiNotReady,
+    RsiScenarioNotSupported,
 )
 
 
