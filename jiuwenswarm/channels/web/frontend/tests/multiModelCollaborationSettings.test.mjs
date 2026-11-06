@@ -277,8 +277,8 @@ test('computer control is the last experimental section and other sections retai
     'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
-    'design-mode',
     'computer-control',
+    'design-mode',
   ]);
 });
 
