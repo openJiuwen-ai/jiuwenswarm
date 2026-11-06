@@ -196,10 +196,12 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
             wanted_settings.add(setting)
         specs = cfg.get("scene_specs")
         if isinstance(specs, dict):
-            if str(specs.get("setting_id") or "").strip():
-                wanted_settings.add(str(specs["setting_id"]).strip())
-            if str(specs.get("scene_name") or "").strip():
-                wanted_settings.add(str(specs["scene_name"]).strip().lower())
+            spec_setting = str(specs.get("setting_id") or "").strip()
+            if spec_setting:
+                wanted_settings.add(spec_setting)
+            spec_name = str(specs.get("scene_name") or "").strip()
+            if spec_name:
+                wanted_settings.add(spec_name.lower())
     keep: set[str] = set()
     for node in nodes:
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
@@ -216,7 +218,7 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
         elif pipeline == "scene":
             setting = str(cfg.get("setting_id") or "").strip()
             label = str(node.get("label") or "").strip().lower()
-            if (setting and setting in wanted_settings) or (label and label in wanted_settings):
+            if setting in wanted_settings or label in wanted_settings:
                 keep.add(str(node.get("id")))
     return keep
 
