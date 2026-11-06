@@ -1,0 +1,389 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""交付台账与占位卡（P6 静默吞回复兜底）。
+
+supervisor 在派发接受时刻登记台账（deadline 墙钟），用户可见白名单帧送达即重置；
+到期未冲刷时按占位帧线缆五要素（构造先例 ``server/gateway_push/wire.py``
+``build_server_push_wire``）经网关 socket 直发 ``chat.error`` 占位卡。
+台账只存投递身份与游标，不存用户正文。
+
+契约全文见
+``.agents/agent-docs/specs/jiuwenswarm/server/supervisor/S_01_delivery-ledger.md``。
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import logging
+import os
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
+
+logger = logging.getLogger(__name__)
+
+# 占位卡线缆顶层 request_id 后缀（与真实回复天然不同键，网关按该键独立建流）。
+PLACEHOLDER_REQUEST_SUFFIX = ":p6"
+
+# 占位状态机：pending → pending_flush → sent（吸收终态）；
+# pending/pending_flush → retracted（取消未送达占位，无线缆动作）/ failed。
+PLACEHOLDER_PENDING = "pending"
+PLACEHOLDER_PENDING_FLUSH = "pending_flush"
+PLACEHOLDER_SENT = "sent"
+PLACEHOLDER_RETRACTED = "retracted"
+PLACEHOLDER_FAILED = "failed"
+PLACEHOLDER_TERMINAL_STATES = frozenset({PLACEHOLDER_SENT, PLACEHOLDER_RETRACTED, PLACEHOLDER_FAILED})
+
+# 用户可见白名单：send True 即重置 deadline；流式模式 chat.delta 也计。
+VISIBLE_EVENT_WHITELIST = frozenset({"chat.final", "chat.error", "chat.ask_user_question"})
+STREAM_VISIBLE_EVENT_WHITELIST = VISIBLE_EVENT_WHITELIST | {"chat.delta"}
+
+# 投递身份键（网关 message_handler._DELIVERY_IDENTITY_METADATA_KEYS 的镜像；
+# 单测断言两侧同值防漂移）。台账只允许存这些键的交集，绝不存用户正文。
+DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
+    "app_id",
+    "chat_type",
+    "im_chat_type",
+    "feishu_chat_id",
+    "feishu_open_id",
+    "open_id",
+    "im_sender_user_id",
+    "im_thread_id",
+})
+
+# 分级落盘：sequence 游标与 last_visible_output_ts 批量写阈值（50 帧/2s）。
+_BATCH_FRAMES = 50
+_BATCH_SECONDS = 2.0
+
+_PLACEHOLDER_ERROR_TEXT = "长时间未收到回复，本次处理可能已中断"
+_PLACEHOLDER_RESEND_HINT = "请重新发送该消息重试；如持续无响应，请稍后再试或联系管理员"
+
+
+@dataclass
+class LedgerEntry:
+    scope: list[str] = field(default_factory=list)  # request_scope 五元组（含 session）
+    channel_id: str = ""
+    user_id: str = ""
+    app_id: str = ""
+    agent_ref_json: str = ""
+    session_id: str = ""
+    request_id: str = ""
+    dispatch_id: str = ""
+    worker_instance: str = ""
+    sequence: int = 0
+    last_visible_output_ts: float = 0.0
+    deadline: float = 0.0
+    placeholder_state: str = PLACEHOLDER_PENDING
+    dump_ref: str = ""
+    registered_at: float = 0.0
+    send_failures: int = 0
+    identity_metadata: dict[str, Any] = field(default_factory=dict)
+    dirty_frames: int = 0
+    dirty_at: float = 0.0
+
+
+class DeliveryLedger:
+    """请求交付台账：墙钟 deadline + 分级落盘 + 占位状态机。"""
+
+    def __init__(
+        self,
+        directory: Path | None = None,
+        *,
+        idle_seconds: float = 600.0,
+        expire_seconds: float = 24 * 3600.0,
+        max_push_failures: int = 3,
+    ) -> None:
+        self._directory = Path(directory) if directory is not None else None
+        self._idle_seconds = idle_seconds
+        self._expire_seconds = expire_seconds
+        self._max_push_failures = max_push_failures
+        self._entries: dict[str, LedgerEntry] = {}
+
+    # ------------------------------------------------------------------ dir
+    @property
+    def directory(self) -> Path:
+        if self._directory is None:
+            from jiuwenswarm.common.utils import get_delivery_ledger_dir
+
+            self._directory = get_delivery_ledger_dir()
+        return self._directory
+
+    # ------------------------------------------------------------ mutation
+    def register(
+        self,
+        request: AgentRequest,
+        *,
+        dispatch_id: str,
+        worker_instance: str,
+        deadline: float,
+        dump_ref: str = "",
+    ) -> LedgerEntry:
+        """派发接受时刻登记（同步写）。"""
+        metadata = request.metadata or {}
+        identity = {
+            key: metadata[key]
+            for key in DELIVERY_IDENTITY_METADATA_KEYS
+            if key in metadata and metadata[key] is not None
+        }
+        from jiuwenswarm.server.ipc.protocol import request_scope
+
+        scope = list(request_scope(request))
+        agent_ref_json = scope[3] if len(scope) > 3 else ""
+        entry = LedgerEntry(
+            scope=scope,
+            channel_id=str(request.channel_id or ""),
+            user_id=str(request.user_id or metadata.get("user_id") or ""),
+            app_id=str(metadata.get("app_id") or ""),
+            agent_ref_json=agent_ref_json,
+            session_id=str(request.session_id or ""),
+            request_id=str(request.request_id or ""),
+            dispatch_id=str(dispatch_id or ""),
+            worker_instance=str(worker_instance or ""),
+            deadline=float(deadline),
+            dump_ref=dump_ref,
+            registered_at=time.time(),
+            identity_metadata=identity,
+        )
+        self._entries[entry.request_id] = entry
+        self._flush(entry)
+        return entry
+
+    def pop(self, request_id: str) -> None:
+        self._entries.pop(request_id, None)
+        path = self._entry_path(request_id)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("[DeliveryLedger] remove failed request_id=%s", request_id)
+
+    def on_wire_delivered(
+        self, *, request_id: str, payload: dict[str, Any], now: float | None = None
+    ) -> None:
+        """白名单帧送达：重置 deadline（同步）；pending/pending_flush 转 retracted。
+
+        sent 为吸收终态：占位卡已送达后真实回复迟到仅更新簿记，不再重置 deadline、
+        不改状态（互斥语义=不压制，迟到真实回复照常送达）。
+        """
+        entry = self._entries.get(str(request_id or ""))
+        if entry is None:
+            return
+        now = time.time() if now is None else now
+        sequence = _wire_sequence(payload)
+        if sequence > entry.sequence:
+            entry.sequence = sequence
+            entry.dirty_frames += 1
+            entry.dirty_at = entry.dirty_at or now
+        event = wire_event(payload)
+        if event is None or event not in STREAM_VISIBLE_EVENT_WHITELIST:
+            self._flush_batched(entry, now)
+            return
+        entry.last_visible_output_ts = now
+        if entry.placeholder_state == PLACEHOLDER_SENT:
+            # 已送达占位卡：deadline 停止重置，仅簿记。
+            self._flush(entry)
+            return
+        entry.deadline = now + self._idle_seconds
+        if entry.placeholder_state in {PLACEHOLDER_PENDING, PLACEHOLDER_PENDING_FLUSH}:
+            entry.placeholder_state = PLACEHOLDER_RETRACTED
+        self._flush(entry)
+
+    def transition(self, request_id: str, state: str, *, audit: str = "") -> bool:
+        entry = self._entries.get(str(request_id or ""))
+        if entry is None or entry.placeholder_state == state:
+            return False
+        entry.placeholder_state = state
+        self._flush(entry)
+        if state == PLACEHOLDER_FAILED:
+            logger.warning(
+                "[DeliveryLedger] placeholder %s request_id=%s dispatch_id=%s %s",
+                state, entry.request_id, entry.dispatch_id, audit,
+            )
+        return True
+
+    def note_push_failure(self, request_id: str) -> bool:
+        """连续发送失败留痕；达到阈值转 failed。返回是否转终态。"""
+        entry = self._entries.get(str(request_id or ""))
+        if entry is None:
+            return False
+        entry.send_failures += 1
+        if entry.send_failures >= self._max_push_failures:
+            self.transition(request_id, PLACEHOLDER_FAILED, audit="push_failures_exhausted")
+            return True
+        self._flush(entry)
+        return False
+
+    def mark_sequence_only(self, request_id: str, payload: dict[str, Any], now: float | None = None) -> None:
+        """非白名单帧传输成功：只推进游标（批量），不重置 deadline。"""
+        entry = self._entries.get(str(request_id or ""))
+        if entry is None:
+            return
+        sequence = _wire_sequence(payload)
+        if sequence > entry.sequence:
+            entry.sequence = sequence
+            entry.dirty_frames += 1
+            entry.dirty_at = entry.dirty_at or (time.time() if now is None else now)
+            self._flush_batched(entry, time.time() if now is None else now)
+
+    # ------------------------------------------------------------- queries
+    def entry(self, request_id: str) -> LedgerEntry | None:
+        return self._entries.get(str(request_id or ""))
+
+    def entries(self) -> list[LedgerEntry]:
+        return list(self._entries.values())
+
+    def due_entries(self, now: float | None = None) -> list[LedgerEntry]:
+        now = time.time() if now is None else now
+        return [item for item in self._entries.values()
+                if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
+                and item.deadline > 0 and item.deadline <= now]
+
+    def expired_entries(self, now: float | None = None) -> list[LedgerEntry]:
+        now = time.time() if now is None else now
+        return [item for item in self._entries.values()
+                if item.placeholder_state not in PLACEHOLDER_TERMINAL_STATES
+                and item.registered_at > 0 and now - item.registered_at > self._expire_seconds]
+
+    # ----------------------------------------------------------- persistence
+    def load(self) -> int:
+        """Front 启动重载：逐条读盘，按墙钟判定（deadline 原样保留，由 sweep 判到期）。"""
+        self._entries.clear()
+        directory = self.directory
+        if not directory.is_dir():
+            return 0
+        count = 0
+        for path in sorted(directory.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                logger.warning("[DeliveryLedger] unreadable ledger file %s", path.name)
+                continue
+            if not isinstance(data, dict) or not str(data.get("request_id") or ""):
+                continue
+            entry = LedgerEntry(**{key: value for key, value in data.items()
+                                   if key in LedgerEntry.__dataclass_fields__})
+            self._entries[entry.request_id] = entry
+            count += 1
+        return count
+
+    def _entry_path(self, request_id: str) -> Path:
+        return self.directory / f"{_safe_name(request_id)}.json"
+
+    def _flush(self, entry: LedgerEntry) -> None:
+        """同步写（注册/deadline/状态转移）。"""
+        entry.dirty_frames = 0
+        entry.dirty_at = 0.0
+        data = asdict(entry)
+        for key in ("dirty_frames", "dirty_at"):
+            data.pop(key, None)
+        payload = json.dumps(data, ensure_ascii=False, default=str)
+        path = self._entry_path(entry.request_id)
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        except OSError:
+            logger.warning("[DeliveryLedger] flush failed request_id=%s", entry.request_id, exc_info=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _flush_batched(self, entry: LedgerEntry, now: float) -> None:
+        """游标/可见时间戳批量落盘：满 50 帧或距首批 2s 即落。"""
+        if entry.dirty_frames == 0:
+            return
+        if entry.dirty_frames >= _BATCH_FRAMES or now - (entry.dirty_at or now) >= _BATCH_SECONDS:
+            self._flush(entry)
+
+
+def _safe_name(request_id: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in "-_." else "_" for char in str(request_id))
+    return cleaned[:160] or "unknown"
+
+
+def wire_event(payload: dict[str, Any]) -> str | None:
+    body = payload.get("body") or payload.get("payload")
+    if isinstance(body, dict):
+        nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
+        if isinstance(nested, dict):
+            body = {**body, **nested}
+        event = body.get("event_type")
+        if isinstance(event, str) and event:
+            return event
+    return payload.get("response_kind") if isinstance(payload.get("response_kind"), str) else None
+
+
+def _wire_sequence(payload: dict[str, Any]) -> int:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        runtime_event = metadata.get("runtime_event")
+        if isinstance(runtime_event, dict):
+            try:
+                return int(runtime_event.get("sequence") or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def placeholder_request_id(request_id: str) -> str:
+    return f"{request_id}{PLACEHOLDER_REQUEST_SUFFIX}"
+
+
+def build_placeholder_wire(entry: LedgerEntry) -> dict[str, Any]:
+    """按占位帧线缆五要素构造 wire（build_server_push_wire chunk 分支先例）。
+
+    1. 顶层 metadata 含 E2A_WIRE_SERVER_PUSH_KEY（网关 push 分支受理面）；
+    2. 顶层 request_id=rid+":p6"（线缆顶层字段，网关 Message.id 取该值）；
+    3. 顶层 session_id/channel_id；
+    4. payload=chat.error（含原始 rid 与重发建议文案）；
+    5. metadata 携 request.metadata 投递身份键（DELIVERY_IDENTITY_METADATA_KEYS）与 app_id。
+    """
+    push_rid = placeholder_request_id(entry.request_id)
+    payload = {
+        "event_type": "chat.error",
+        "error": _PLACEHOLDER_ERROR_TEXT,
+        "request_id": entry.request_id,
+        "resend_hint": _PLACEHOLDER_RESEND_HINT,
+    }
+    chunk = AgentResponseChunk(
+        request_id=push_rid,
+        channel_id=entry.channel_id,
+        payload=payload,
+        is_complete=True,
+        agent_ref=None,
+    )
+    wire = encode_agent_chunk_for_wire(chunk, response_id=push_rid, sequence=0, is_stream=False)
+    metadata = dict(wire.get("metadata") or {})
+    for key, value in (entry.identity_metadata or {}).items():
+        metadata.setdefault(key, value)
+    if entry.app_id:
+        metadata.setdefault("app_id", entry.app_id)
+    metadata[E2A_WIRE_SERVER_PUSH_KEY] = True
+    wire["metadata"] = metadata
+    wire["session_id"] = entry.session_id or wire.get("session_id") or ""
+    wire["channel_id"] = entry.channel_id
+    return wire
+
+
+def entry_from_request(request: AgentRequest, *, dispatch_id: str, worker_instance: str,
+                       deadline: float) -> LedgerEntry:
+    return LedgerEntry(
+        request_id=str(request.request_id or ""),
+        dispatch_id=str(dispatch_id or ""),
+        worker_instance=str(worker_instance or ""),
+        deadline=deadline,
+    )
+
+
+def clone_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    return copy.deepcopy(frame)

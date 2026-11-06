@@ -33,6 +33,8 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
     KIND_SUBSCRIBE,
+    KIND_SUBSCRIBE_BY_ID,
+    KIND_WIRE,
     KIND_SNAPSHOT,
     cancel_request,
     load_agent_request,
@@ -171,6 +173,9 @@ class WorkerDispatcher:
             return True
         if kind == KIND_SUBSCRIBE:
             self._spawn(self._subscribe(message, conn, generation), generation)
+            return True
+        if kind == KIND_SUBSCRIBE_BY_ID:
+            self._spawn(self._subscribe_by_id(message, conn, generation), generation)
             return True
         if kind == KIND_SHUTDOWN:
             self.shutdown_requested = True
@@ -748,6 +753,81 @@ class WorkerDispatcher:
         await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
                          "generation": generation, "payload": snapshot})
         await self._bridge.replay(frames, generation, include=include)
+
+
+    async def _subscribe_by_id(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
+        """P6 身份型重放：按台账身份键反查单请求保留帧并回放（携 wire_id 回执链）。
+
+        反查键=(scope[:4], request_id)（与 ``WorkerEventStore._active`` 同键构造）；
+        miss → status=miss；worker_instance 不匹配（worker 重启丢保留帧）→
+        status=history_required；命中 → status=ok 后逐帧 KIND_WIRE 回放。
+        supervisor 侧对 miss/history_required 转占位卡路径。
+        """
+        rid = str(message.get("request_id") or "")
+        identity = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+        after = max(0, int(message.get("after") or 0))
+        query_id = message.get("query_id")
+
+        async def _reply(status: str, **extra: Any) -> None:
+            frame: dict[str, Any] = {"kind": KIND_SUBSCRIBE_BY_ID, "query_id": query_id,
+                                     "request_id": rid, "status": status, "generation": generation}
+            frame.update(extra)
+            try:
+                await conn.send(frame)
+            except (OSError, RuntimeError):
+                logger.info("[Worker] subscribe_by_id reply lost on IPC detach")
+
+        if not rid:
+            await _reply("miss")
+            return
+        channel = str(identity.get("channel_id") or "")
+        user = str(identity.get("user_id") or identity.get("open_id") or "")
+        app = str(identity.get("app_id") or "")
+        agent_ref = identity.get("agent_ref")
+        if agent_ref is not None and not isinstance(agent_ref, str):
+            agent_ref = json.dumps(agent_ref, sort_keys=True, default=str)
+        agent_ref_json = agent_ref or json.dumps(
+            {"mode": "agent", "id": "default"}, sort_keys=True, default=str)
+        identity_key = (channel, user, app, str(agent_ref_json), rid)
+
+        record: DispatchRecord | None = None
+        dispatch_hint = str(message.get("dispatch_id") or "")
+        hinted = self._bridge.events.records.get(dispatch_hint) if dispatch_hint else None
+        if hinted is not None and (*hinted.scope[:4], str(hinted.request.request_id or "")) == identity_key:
+            record = hinted
+        if record is None:
+            for candidate in reversed(self._bridge.events.records.values()):
+                if (*candidate.scope[:4], str(candidate.request.request_id or "")) == identity_key:
+                    record = candidate
+                    break
+        if record is None:
+            # 反查 miss：记录已完成被修剪或键不符 → supervisor 转占位卡路径。
+            await _reply("miss")
+            return
+        if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
+            # worker 重启过（保留帧已失）：supervisor 直接占位卡，不做全量 history 重放。
+            await _reply("history_required", dispatch_id=record.dispatch_id)
+            return
+        frames = self._bridge.events.replay_by_request(record.scope, rid, after=after)
+        await _reply("ok", dispatch_id=record.dispatch_id, count=len(frames))
+        for index, frame in enumerate(frames):
+            if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
+                return
+            payload = frame["payload"]
+            if isinstance(payload, dict):
+                metadata = dict(payload.get("metadata") or {})
+                runtime_event = dict(metadata.get("runtime_event") or {})
+                runtime_event["replayed"] = True
+                metadata["runtime_event"] = runtime_event
+                payload["metadata"] = metadata
+            try:
+                await conn.send({**frame, "kind": KIND_WIRE, "wire_id": uuid.uuid4().hex,
+                                 "generation": generation, "replayed": True})
+            except (OSError, RuntimeError):
+                logger.info("[Worker] subscribe_by_id replay lost on IPC detach")
+                return
+            if index % 32 == 0:
+                await asyncio.sleep(0)
 
 
 def _is_session_work_request(request: AgentRequest) -> bool:
