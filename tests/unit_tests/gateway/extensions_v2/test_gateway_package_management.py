@@ -193,6 +193,54 @@ async def test_gateway_package_install_publish_and_uninstall(tmp_path):
     assert manager.installed() == []
 
 
+HELPER_ENTRY = """\
+from .helpers import ANSWER
+
+
+class Extension:
+    def register(self, registrar):
+        async def handler(event, ops, next_handler):
+            return await next_handler(event)
+
+        registrar.register_event_handler("gateway.request", handler, {}, "user")
+
+
+def create_extension():
+    return Extension()
+"""
+
+
+def _helper_package_zip(folder: Path, answer: str) -> Path:
+    """demo.gateway 0.1.0 whose entry imports a sibling module holding ``answer``."""
+    source = folder / "src"
+    source.mkdir(parents=True)
+    (source / "manifest.yaml").write_text(
+        "schemaVersion: 1\npackage:\n  id: demo.gateway\n  version: 0.1.0\ndomain: gateway\n"
+        "extensions:\n  - id: demo\n    runtime: backend\n    module: extension.py\n", encoding="utf-8")
+    (source / "extension.py").write_text(HELPER_ENTRY, encoding="utf-8")
+    (source / "helpers.py").write_text(f"ANSWER = {answer!r}\n", encoding="utf-8")
+    archive = folder / "demo.gateway-0.1.0.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for file in source.iterdir():
+            bundle.write(file, file.name)
+    return archive
+
+
+async def test_reinstalling_the_same_version_loads_fresh_submodules(tmp_path):
+    """Each load uses new module names, so a reinstall at the same path never reuses cached sibling modules."""
+    runtime = await _runtime(tmp_path)
+    manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")
+    try:
+        for answer in ("first", "second"):
+            reports = await manager.install([_helper_package_zip(tmp_path / answer, answer)])
+            assert [report.status for report in reports] == ["SUCCESS"]
+            [package] = runtime.active_packages()
+            assert package.handlers[0].handler.__globals__["ANSWER"] == answer
+            assert (await manager.uninstall("demo.gateway")).status == "SUCCESS"
+    finally:
+        await runtime.shutdown()
+
+
 async def test_agent_package_is_rejected_without_copying(tmp_path):
     runtime = await _runtime(tmp_path)
     manager = GatewayPackageManager(runtime, tmp_path / "extension_pkgs")

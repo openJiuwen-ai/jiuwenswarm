@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import itertools
 import logging
 import sys
+import threading
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -188,9 +190,20 @@ def _module_relative(module: str) -> Path:
     return relative
 
 
+#: Every load gets new module names, like the Core loader's load serial: a package reinstalled at the
+#: same path and version must not reuse the sibling modules cached in ``sys.modules`` by the earlier load.
+_LOAD_SERIAL = itertools.count(1)
+_LOAD_SERIAL_LOCK = threading.Lock()
+
+
+def _next_load_serial() -> int:
+    with _LOAD_SERIAL_LOCK:
+        return next(_LOAD_SERIAL)
+
+
 def _load_handlers(root: Path, modules: tuple[str, ...]) -> list[HandlerDeclaration]:
     registrar = GatewayRegistrar()
-    serial = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
+    serial = f"{hashlib.sha256(str(root).encode('utf-8')).hexdigest()[:8]}-{_next_load_serial()}-"
     for index, module in enumerate(modules):
         entry_name, created = _load_entry(
             _module_name(root.name, module, f"{serial}{index}"),
