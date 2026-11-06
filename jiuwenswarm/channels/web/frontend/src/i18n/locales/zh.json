@@ -114,8 +114,7 @@
       "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
       "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
       "notSelected": "未选择模型",
-      "openModelSettings": "去设置",
-      "chatAnthropicUnsupported": "设计暂不支持 Anthropic 协议的对话模型。请在「设置」中改为配置 OpenAI 协议的模型后再试。"
+      "openModelSettings": "去设置"
     },
     "activity": {
       "thinking": "思考中",
