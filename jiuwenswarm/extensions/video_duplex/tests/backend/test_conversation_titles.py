@@ -18,6 +18,7 @@ class Channel:
     def __init__(self):
         self.handlers = {}
         self.events = []
+        self.records = []
 
     def register_method(self, method, handler, **_kwargs):
         self.handlers[method] = handler
@@ -34,7 +35,8 @@ def channel(tmp_path, monkeypatch):
     session_metadata._METADATA_QUEUE.join()
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(session_metadata, "_METADATA_CACHE", {})
-    records = []
+    channel = Channel()
+    records = channel.records
     monkeypatch.setattr(session_history, "_enqueue_history_item", lambda _sid, record, **_: records.append(record))
     monkeypatch.setattr(session_history, "load_history_records", lambda _sid: records)
 
@@ -42,8 +44,6 @@ def channel(tmp_path, monkeypatch):
         payload = append_video_conversation(e2a_to_agent_request(envelope))
         return SimpleNamespace(ok=True, payload=payload)
 
-    channel = Channel()
-    channel.records = records
     video_live.register_video_live_handler(
         channel, agent_client=SimpleNamespace(send_request=send_request),
         normalize_media_attachments=lambda value: value,

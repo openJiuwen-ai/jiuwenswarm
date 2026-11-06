@@ -35,17 +35,25 @@ def append_video_conversation(request: AgentRequest) -> dict:
     event_type = params.get("event_type")
     timestamp = params.get("timestamp")
     extra = params.get("extra")
-    if (
-        session == "new"
-        or not isinstance(event_id, str) or not event_id.strip() or len(event_id) > 160
-        or role not in ("user", "assistant")
-        or not isinstance(content, str) or len(content) > 100_000
-        or (event_type is not None and not isinstance(event_type, str))
-        or event_type not in _EVENT_FIELDS
-        or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or timestamp <= 0
-        or (extra is not None and not isinstance(extra, dict))
-    ):
-        raise ValueError("Invalid Full-duplex conversation event")
+    invalid_event = "Invalid Full-duplex conversation event"
+    if session == "new" or role not in ("user", "assistant"):
+        raise ValueError(invalid_event)
+    if not isinstance(event_id, str):
+        raise ValueError(invalid_event)
+    if not event_id.strip() or len(event_id) > 160:
+        raise ValueError(invalid_event)
+    if not isinstance(content, str) or len(content) > 100_000:
+        raise ValueError(invalid_event)
+    if event_type is not None and not isinstance(event_type, str):
+        raise ValueError(invalid_event)
+    if event_type not in _EVENT_FIELDS:
+        raise ValueError(invalid_event)
+    if not isinstance(timestamp, (int, float)):
+        raise ValueError(invalid_event)
+    if not math.isfinite(timestamp) or timestamp <= 0:
+        raise ValueError(invalid_event)
+    if extra is not None and not isinstance(extra, dict):
+        raise ValueError(invalid_event)
 
     safe_extra = {key: extra[key] for key in _EVENT_FIELDS[event_type] if extra and key in extra}
     request_id = f"video-duplex-{event_id}"

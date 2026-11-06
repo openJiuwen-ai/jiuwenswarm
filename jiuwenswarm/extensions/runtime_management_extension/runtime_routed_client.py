@@ -14,6 +14,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from agent_gateway.enterprise.team.route import (
+    TeamRouteResolver,
+    envelope_is_team_scoped,
+    extract_runtime_ready_payload,
+)
 from agent_gateway.routing.agent_client import AgentServerClient
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
@@ -32,11 +37,6 @@ from jiuwenswarm.extensions.runtime_management_extension.session_route_client im
     FatalRouteError,
     RetryableRouteError,
     RuntimeSessionRouteClient,
-)
-from agent_gateway.enterprise.team.route import (
-    TeamRouteResolver,
-    envelope_is_team_scoped,
-    extract_runtime_ready_payload,
 )
 
 logger = logging.getLogger(__name__)

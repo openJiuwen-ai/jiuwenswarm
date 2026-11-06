@@ -267,6 +267,7 @@ async def test_video_runtime_remains_available_when_plugin_page_is_disabled(monk
 async def test_full_duplex_conversation_events_append_visible_session_history(monkeypatch) -> None:
     channel = _video_channel()
     records = []
+
     async def capture(_client, method, params, session_id, _owner, **_kwargs):
         assert method.value == "video.conversation.append"
         records.append({"session_id": session_id, **params})
@@ -331,6 +332,7 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
 async def test_full_duplex_tool_answer_persists_its_presentation(monkeypatch) -> None:
     channel = _video_channel()
     records = []
+
     async def capture(_client, method, params, session_id, _owner, **_kwargs):
         assert method.value == "video.conversation.append"
         records.append({"session_id": session_id, **params})

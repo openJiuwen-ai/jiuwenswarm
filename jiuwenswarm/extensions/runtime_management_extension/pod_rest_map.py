@@ -188,12 +188,11 @@ def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
 
 def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
     route = resolve_runtime_http_route(method, is_stream=is_stream)
-    if route is not None and (
-        route in RUNTIME_HTTP_CHAT_ROUTES
-        or (method in REST_ROUTES and method_has_http_handler(method))
-    ):
-        return route.verb, route.path
-    if route is None and method in REST_ROUTES and method_has_http_handler(method):
+    has_rest_handler = method in REST_ROUTES and method_has_http_handler(method)
+    if route is not None:
+        if route in RUNTIME_HTTP_CHAT_ROUTES or has_rest_handler:
+            return route.verb, route.path
+    elif has_rest_handler:
         return REST_ROUTES[method]
     extra = _enterprise_pod_route(method)
     if extra is not None:

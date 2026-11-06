@@ -18,6 +18,8 @@ from agent_gateway.enterprise.team.quota_policy import DEFAULT_MAX_TEAMMATES, re
 logger = logging.getLogger(__name__)
 
 TEAM_MEMBER_QUOTA_EXCEEDED = "TEAM_MEMBER_QUOTA_EXCEEDED"
+
+
 def teammate_quota_user_message(limit: int) -> str:
     """User-facing spawn failure. ``limit`` is whole-team size including the leader."""
     return (

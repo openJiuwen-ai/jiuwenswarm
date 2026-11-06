@@ -16,11 +16,16 @@ import sys
 from typing import Any
 from urllib.parse import parse_qs
 
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from openjiuwen_protocol.e2a.runtime_http_routes import (
+    RUNTIME_HTTP_API_PREFIX as API_PREFIX,
+    RUNTIME_HTTP_STREAM_OVERRIDES,
+    resolve_runtime_http_route,
+)
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 
 from jiuwenswarm.common.log_context import (
     bind_log_session,
@@ -29,12 +34,6 @@ from jiuwenswarm.common.log_context import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from openjiuwen_protocol.e2a.runtime_http_routes import (
-    RUNTIME_HTTP_API_PREFIX as API_PREFIX,
-    RUNTIME_HTTP_STREAM_OVERRIDES,
-    resolve_runtime_http_route,
-)
-
 from jiuwenswarm.server import http_chat
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
@@ -335,10 +334,9 @@ async def _stop_background_chat(task: asyncio.Task[None]) -> None:
         if not abandoned:
             raise
     finally:
-        if current is None:
-            return
-        for _ in range(parked):
-            current.cancel()
+        if current is not None:
+            for _ in range(parked):
+                current.cancel()
 
 
 async def _runtime_chat(app_services: AppServices, request: Request, req_method: ReqMethod):
@@ -410,6 +408,7 @@ async def _event_frames(request: Request):
                 try:
                     item = task.result()
                 except Exception:
+                    logger.exception("[SessionLive] push queue read failed")
                     continue
                 if isinstance(item, dict):
                     yield _sse_frame(item)

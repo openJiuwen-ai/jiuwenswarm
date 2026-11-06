@@ -759,7 +759,7 @@ async def test_enterprise_events_stream_forwards_fanout(monkeypatch) -> None:
     gen = _event_frames(request)
     try:
         first = await gen.__anext__()
-        assert "agent_gateway.push_ready" in first
+        assert "gateway.push_ready" in first
         publish({"request_id": "team-session-live:s", "session_id": "s"})
         second = await asyncio.wait_for(gen.__anext__(), timeout=1)
         assert "team-session-live:s" in second
@@ -855,3 +855,16 @@ def test_unhandled_urls_are_not_registered() -> None:
     assert ("POST", "/api/v1/sessions/{session_id}/swarmflow/actions/pause") in routes
     assert ("POST", "/api/v1/proactive/actions/feedback") in routes
     assert ("POST", "/api/v1/rpc/{method}") not in routes
+
+
+@pytest.mark.asyncio
+async def test_background_chat_error_propagates_without_current_task(monkeypatch) -> None:
+    from jiuwenswarm.server.agent_http_routes import _stop_background_chat
+
+    async def fail():
+        raise RuntimeError("background chat failed")
+
+    task = asyncio.create_task(fail())
+    monkeypatch.setattr(asyncio, "current_task", lambda: None)
+    with pytest.raises(RuntimeError, match="background chat failed"):
+        await _stop_background_chat(task)
