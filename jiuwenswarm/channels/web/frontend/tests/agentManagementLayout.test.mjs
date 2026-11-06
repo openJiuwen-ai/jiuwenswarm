@@ -573,7 +573,7 @@ test('group card actions keep uninstall in the detail page and install created g
   );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{ suppressInlineError: true \}\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/);
 });
 
 test('failed expert upload install rolls back the import and shows the error in the upload dialog', () => {
@@ -613,9 +613,10 @@ test('uncertain install errors are classified as transport failures', () => {
   // agent_management_request_failed fallback. Behavioral coverage for the
   // classification itself lives in tests/agentManagement.test.mjs.
   assert.match(installOutcomeSource, /const INSTALL_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set\(\[/);
-  for (const code of ['REQUEST_TIMEOUT', 'WS_NOT_READY', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+  for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
     assert.match(installOutcomeSource, new RegExp(`'${code}',`));
   }
+  assert.doesNotMatch(installOutcomeSource, /'WS_NOT_READY',/);
   assert.match(installOutcomeSource, /return INSTALL_TRANSPORT_ERROR_CODES\.has\(code\);/);
   // The fallback code must not be reintroduced as a blanket-uncertain rule:
   // it also wraps codeless backend rejections, which are definite verdicts.

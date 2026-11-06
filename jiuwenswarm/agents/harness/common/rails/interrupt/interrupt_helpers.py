@@ -30,6 +30,10 @@ from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail imp
     is_plan_approval_message,
     strip_inline_plan_approval_choices,
 )
+from jiuwenswarm.agents.harness.common.rails.cua_delegation_approval_rail import (
+    CUA_SUBAGENT_TYPE,
+    is_cua_delegation_approval_message,
+)
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
     ALWAYS_ALLOW,
@@ -1105,6 +1109,8 @@ def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
         return True
+    if is_cua_delegation_approval_message(message):
+        return False
     if tool_name and tool_name not in _CONFIRM_INTERRUPT_TOOLS:
         return True
     if normalized in {"", "Please approve or reject?"}:
@@ -1827,6 +1833,10 @@ def _format_question_from_interaction(
     if plan_approval_options:
         header = "Exit Plan and Execute"
         question = strip_inline_plan_approval_choices(message)
+    elif source == "confirm_interrupt" and is_cua_delegation_approval_message(message):
+        # Name the agent that will act, not the internal task_tool it rides on.
+        header = f"操作确认: {CUA_SUBAGENT_TYPE}"
+        question = message
     elif source == "confirm_interrupt":
         header = f"操作确认: {tool_name}" if tool_name else "操作确认"
         question = message

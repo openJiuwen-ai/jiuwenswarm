@@ -1,13 +1,13 @@
 import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
+import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { webClient } from '../../services/webClient';
 import { buildConversationModelPayload } from '../../multi-session/state/conversationModelSelection';
-import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
-import { findDesignModelsProblem } from './designModelsReadiness';
+import { findDesignModelsProblem } from './designPromptReadiness';
 import { stripMentionAppendix, withMentionAppendix } from './designerMentions';
 import {
   mediaItemsToBootstrapReferences,
@@ -226,7 +226,7 @@ export async function composeDesignerSession(params: {
   try {
     // Same design landing gate as ``submitDesignComposer``: the first message
     // on an empty canvas must fail before the director builds the graph.
-    const modelProblem = await findDesignModelsProblem();
+    const modelProblem = await findDesignModelsProblem(params.sessionId);
     if (modelProblem) {
       throw new Error(modelProblem);
     }

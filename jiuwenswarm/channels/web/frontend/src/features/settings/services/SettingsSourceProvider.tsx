@@ -20,6 +20,12 @@ export type SettingsSourceController = {
 
 const SettingsSourceContext = createContext<SettingsSourceController | null>(null);
 
+export function SettingsSourceVisibility({ when, children }: { when?: string; children: ReactNode }) {
+  const source = useContext(SettingsSourceContext);
+  if (when !== undefined && source?.values[when] !== true && source?.values[when] !== 'true') return null;
+  return children;
+}
+
 export function useSettingsSource(): SettingsSourceController {
   const value = useContext(SettingsSourceContext);
   if (!value) throw new Error('Settings item requires a module settings source');

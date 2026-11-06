@@ -20,7 +20,7 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
-import { findDesignModelsProblem } from '../designModelsReadiness';
+import { findDesignModelsProblem, loadedDesignChatAnthropicProblem } from '../designPromptReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
@@ -191,13 +191,13 @@ export function DesignerChatPanel() {
       return;
     }
     let cancelled = false;
-    void findDesignModelsProblem().then((problem) => {
+    void findDesignModelsProblem(sessionId).then((problem) => {
       if (!cancelled) setBlockedProblem(problem ?? '');
     });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, availableModelCount, configRevision]);
+  }, [sessionId, availableModelCount, configRevision, selectedModelName]);
 
   // "@" offers the canvas nodes by label; mentioned nodes preview above the input.
   const allMentionOptions = useMemo(() => mentionOptions(domainGraph), [domainGraph]);
@@ -305,8 +305,9 @@ export function DesignerChatPanel() {
     if ((!content && attachments.length === 0) || chatBusy) return;
     // Same gate as the landing page: a round needs the chat model and both
     // generation slots, so refuse loudly instead of failing mid-run (#5266).
-    if (blockedProblem) {
-      toast.open({ content: blockedProblem, variant: 'error' });
+    const protocolProblem = loadedDesignChatAnthropicProblem(sessionId, selectedModelName);
+    if (protocolProblem || blockedProblem) {
+      toast.open({ content: protocolProblem || blockedProblem, variant: 'error' });
       return;
     }
     setSending(true);
@@ -353,7 +354,7 @@ export function DesignerChatPanel() {
       .finally(() => {
         setSending(false);
       });
-  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, sessionId, t]);
+  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, selectedModelName, sessionId, t]);
 
   const handleStop = useCallback(() => {
     if (!sessionId) return;
@@ -590,44 +591,42 @@ export function DesignerChatPanel() {
                 stop: t('chat.taskFullDuplexStop'),
               }}
               fallback={
-                <>
-            {isProcessing ? (
-              <button
-                type="button"
-                className="designer-chat-panel__send"
-                onClick={handleStop}
-                aria-label={t('designer.chat.stop')}
-                title={t('designer.chat.stop')}
-                data-testid="designer-chat-panel-stop"
-              >
-                <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="designer-chat-panel__send"
-                disabled={chatBusy || !canSend}
-                onClick={handleSend}
-                aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
-                aria-busy={chatBusy}
-                title={blockedProblem || (chatBusy ? t('designer.chat.running') : undefined)}
-                data-testid="designer-chat-panel-send"
-                data-variant={chatBusy ? 'running' : 'idle'}
-              >
-                {/* A leader round can run for minutes (graph autorun); the button
-                    must read as "working", never as the idle send plane (#5410). */}
-                {chatBusy ? (
-                  <LoaderCircle
-                    className="designer-chat-panel__send-spinner animate-spin"
-                    size={18}
-                    aria-hidden
-                  />
+                isProcessing ? (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    onClick={handleStop}
+                    aria-label={t('designer.chat.stop')}
+                    title={t('designer.chat.stop')}
+                    data-testid="designer-chat-panel-stop"
+                  >
+                    <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
+                  </button>
                 ) : (
-                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-                )}
-              </button>
-            )}
-                </>
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    disabled={chatBusy || !canSend}
+                    onClick={handleSend}
+                    aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                    aria-busy={chatBusy}
+                    title={blockedProblem || (chatBusy ? t('designer.chat.running') : undefined)}
+                    data-testid="designer-chat-panel-send"
+                    data-variant={chatBusy ? 'running' : 'idle'}
+                  >
+                    {/* A leader round can run for minutes (graph autorun); the button
+                        must read as "working", never as the idle send plane (#5410). */}
+                    {chatBusy ? (
+                      <LoaderCircle
+                        className="designer-chat-panel__send-spinner animate-spin"
+                        size={18}
+                        aria-hidden
+                      />
+                    ) : (
+                      <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                    )}
+                  </button>
+                )
               }
             />
           </div>

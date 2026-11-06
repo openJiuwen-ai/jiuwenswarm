@@ -15,6 +15,18 @@
   line-height: 20px;
 }
 
+/* Design 模式不支持归档 */
+.archived-tasks__mode-note {
+  margin: -4px 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-settings-card-subtle);
+  color: var(--color-settings-text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
 .archived-tasks__search {
   width: min(360px, 100%);
   margin-bottom: 16px;

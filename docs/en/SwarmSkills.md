@@ -116,7 +116,7 @@ This swarm skill uses a specialization pipeline pattern (Pattern C) to organize 
 
 ## Workflow
 
-0. **Pre-flight: check dependencies** — read [dependencies.yaml](dependencies.yaml) and verify. Report missing items: `required: true` = likely fails without it; `required: false` = degraded but functional. **User decides** whether to proceed.
+0. **Pre-flight: check dependencies** — read `dependencies.yaml` and verify. Report missing items: `required: true` = likely fails without it; `required: false` = degraded but functional. **User decides** whether to proceed.
 1. **coordinator receives case** — Analyze the case, determine expert needs, create consultation task.
 2. **Experts evaluate in parallel** — internist / surgeon / radiologist independently evaluate and submit specialist opinions.
 3. **coordinator integrates opinions** — Collect all expert opinions, identify disagreements, organize discussion if disagreements exist.
@@ -126,10 +126,10 @@ This swarm skill uses a specialization pipeline pattern (Pattern C) to organize 
 
 | id | Purpose | When dispatched | Input | Key dependencies | Role file |
 |---|---------|----------------|-------|-----------------|-----------|
-| coordinator | Organize experts, consolidate opinions | Every run | User-submitted case | — | [roles/coordinator.md](roles/coordinator.md) |
-| internist | Evaluate from internal medicine perspective | Every run (parallel) | Distributed case materials | — | [roles/internist.md](roles/internist.md) |
-| surgeon | Evaluate from surgical perspective | Every run (parallel) | Distributed case materials | — | [roles/surgeon.md](roles/surgeon.md) |
-| radiologist | Analyze from radiology perspective | Every run (parallel) | Distributed case materials | — | [roles/radiologist.md](roles/radiologist.md) |
+| coordinator | Organize experts, consolidate opinions | Every run | User-submitted case | — | `roles/coordinator.md` |
+| internist | Evaluate from internal medicine perspective | Every run (parallel) | Distributed case materials | — | `roles/internist.md` |
+| surgeon | Evaluate from surgical perspective | Every run (parallel) | Distributed case materials | — | `roles/surgeon.md` |
+| radiologist | Analyze from radiology perspective | Every run (parallel) | Distributed case materials | — | `roles/radiologist.md` |
 
 > Before dispatching each teammate, read the corresponding role file and extract the `## Inline Persona for Teammate` section — paste it directly into the dispatch prompt.
 
@@ -137,10 +137,10 @@ This swarm skill uses a specialization pipeline pattern (Pattern C) to organize 
 
 | File | What it contains | When to read |
 |------|------------------|-------------|
-| [workflow.md](workflow.md) | Mermaid flowchart, step-by-step protocol, integration rules, Final Report format | Before first dispatch — the complete playbook |
-| [bind.md](bind.md) | Resource limits, behavioral constraints, failure handling and degraded modes | When hitting limits, handling failures, or needing degraded-mode rules |
-| [roles/*.md](roles/) | Per-role identity, success criteria, output schema, Inline Persona for Teammate | Before dispatching each teammate — extract Inline Persona |
-| [dependencies.yaml](dependencies.yaml) | External skills and tools required to run | **Startup** — verify deps, report missing items, user decides go/no-go |
+| `workflow.md` | Mermaid flowchart, step-by-step protocol, integration rules, Final Report format | Before first dispatch — the complete playbook |
+| `bind.md` | Resource limits, behavioral constraints, failure handling and degraded modes | When hitting limits, handling failures, or needing degraded-mode rules |
+| `roles/*.md` | Per-role identity, success criteria, output schema, Inline Persona for Teammate | Before dispatching each teammate — extract Inline Persona |
+| `dependencies.yaml` | External skills and tools required to run | **Startup** — verify deps, report missing items, user decides go/no-go |
 ```
 
 **Key field descriptions**:

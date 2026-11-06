@@ -3278,18 +3278,19 @@ function renderAskUserQuestion(rid, payload) {
 }
 
 // The WebUI sends plan_execute / plan_skip / plan_revise for plan approval.
-// The generic ask-user card only has approve/reject options, and a plain
-// "reject" keeps the agent in plan mode instead of finishing the turn (the
-// source of the stuck stop-button state). Map the two generic values.
+// The generic ask-user card only has approve/reject options. A plain "reject"
+// keeps the agent in plan mode instead of finishing the turn (the source of the
+// stuck stop-button state), so map only reject. Keep "approve" unchanged: the
+// IDE has no follow-up "execute" message step, whereas the WebUI does.
 function mapInterruptAnswerValue(pt, value) {
-  if (pt && pt.planApprovalKind === 'plan_approval') {
-    if (value === 'reject') return 'plan_skip';
-    if (value === 'approve') return 'plan_execute';
+  if (pt && pt.planApprovalKind === 'plan_approval' && value === 'reject') {
+    return 'plan_skip';
   }
   return value;
 }
 
 function sendAnswerForInterrupt(pt, rid, source, optionValue, interruptId) {
+  if (!pt || state.pendingTurns[rid] !== pt) return;
   pt.questionAnswered = true;
   // The user chose to continue this turn, so a previous stop click no longer
   // applies; let the resumed stream finish as completed.
@@ -4264,6 +4265,12 @@ sendBtn.addEventListener('click', function() {
     Object.keys(state.pendingTurns).forEach(function(rid) {
       var pt = state.pendingTurns[rid];
       if (pt) {
+        if (pt.pendingQuestion) {
+          pt.pendingQuestion.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
+          pt.pendingQuestion.classList.add('answered');
+          var qStatus = pt.pendingQuestion.querySelector('.question-status');
+          if (qStatus) qStatus.textContent = 'Stopped';
+        }
         pt.stopRequested = true;
         pt.questionAnswered = true;
       }

@@ -35,7 +35,7 @@ popd
 
 echo.
 echo [3/3] Running PyInstaller...
-call uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
+call uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts\jiuwenswarm.spec --noconfirm
 if errorlevel 1 exit /b 1
 
 echo.
@@ -46,6 +46,11 @@ if errorlevel 1 exit /b 1
 echo.
 echo Verifying frozen RSI Harness baseline bundle...
 start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_rsi_bundle.py"
+if errorlevel 1 exit /b 1
+
+echo.
+echo Verifying frozen Computer Use runtime without build tools...
+start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_computer_use_bundle.py"
 if errorlevel 1 exit /b 1
 
 echo.

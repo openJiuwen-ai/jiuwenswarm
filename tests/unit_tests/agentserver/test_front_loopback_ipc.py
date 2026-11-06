@@ -195,7 +195,8 @@ async def test_accept_timeout_reclaims_silent_connections_and_port():
 
 
 async def test_worker_waits_for_transport_auth_before_runtime_load(monkeypatch):
-    listener = FrontLoopbackListener(timeout=0.1)
+    # Allow connection scheduling on busy CI workers before checking auth rejection.
+    listener = FrontLoopbackListener(timeout=3)
     await listener.start(code_identity="a" * 64, data_scope="b" * 64)
     payload = listener.launch_payload()
     payload["token"] = "c" * 64

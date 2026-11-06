@@ -1325,10 +1325,9 @@ class TestStartServicesFallback:
 
         # Make index-1 group occupied; everything else free
         occupied = set(calculate_instance_ports(1).values())
-        real = is_port_available
 
         def fake(host, port):
-            return port not in occupied and real(host, port)
+            return port not in occupied
 
         monkeypatch.setattr(
             "jiuwenswarm.instance_manager.config.is_port_available", fake
@@ -1376,10 +1375,9 @@ class TestStartServicesFallback:
 
         # Force ONLY the index-0 group to be occupied; every higher index free.
         occupied = set(calculate_instance_ports(0).values())
-        real = is_port_available
 
         def fake(host, port):
-            return port not in occupied and real(host, port)
+            return port not in occupied
 
         monkeypatch.setattr(
             "jiuwenswarm.instance_manager.config.is_port_available", fake
@@ -2259,6 +2257,85 @@ class TestIssue2788SafeStop:
         write_pid.assert_called_once()
         assert write_pid.call_args.args == (config, os.getpid(), 123.5, {"schema_version": 2})
         metadata.assert_called_once_with({"app": process}, 123.5)
+
+
+@pytest.mark.parametrize("has_record", [False, True])
+def test_instance_stop_keeps_state_until_worker_exit_is_confirmed(monkeypatch, tmp_path, has_record):
+    from jiuwenswarm.instance_manager import status as status_mod
+
+    config = InstanceConfig("worker-owner", tmp_path, {})
+    if has_record:
+        write_pid_file(config, 4242, started_at=100.0)
+    monkeypatch.setattr(status_mod, "is_process_alive", lambda pid: False)
+    monkeypatch.setattr(status_mod, "_stop_owned_listeners", lambda config, timeout: True)
+    monkeypatch.setattr(status_mod, "_ports_are_clear", lambda config: True)
+    calls = []
+    monkeypatch.setattr(status_mod, "_shutdown_instance_worker", lambda config: calls.append(config) or False,
+                        raising=False)
+    assert status_mod.stop_instance_process(config) is False
+    assert calls == [config]
+    assert (read_pid_file(config) is not None) is has_record
+
+
+def test_instance_worker_cleanup_waits_for_fronts_to_stop(monkeypatch, tmp_path):
+    from jiuwenswarm.instance_manager import status as status_mod
+
+    config = InstanceConfig("worker-owner", tmp_path, {})
+    monkeypatch.setattr(status_mod, "_stop_owned_listeners", lambda config, timeout: False)
+    lifecycle = MagicMock(return_value=True)
+    monkeypatch.setattr(status_mod, "_shutdown_instance_worker", lifecycle, raising=False)
+    assert status_mod.stop_instance_process(config) is False
+    lifecycle.assert_not_called()
+
+
+@pytest.mark.parametrize("service,interrupted,worker_ok,expected", [
+    ("app", False, True, 0), ("app", True, True, 130),
+    ("app", False, False, 1), ("web", False, False, 0),
+])
+def test_launcher_final_shutdown_does_not_treat_web_only_as_worker_owner(
+    monkeypatch, tmp_path, service, interrupted, worker_ok, expected,
+):
+    from jiuwenswarm import start_services
+    from jiuwenswarm.server.supervisor import shutdown
+
+    process = MagicMock()
+    process.poll.return_value = 0
+    order = []
+    monkeypatch.setattr(start_services, "_start_process", lambda *args, **kwargs: process)
+    monkeypatch.setattr(start_services, "_wait_for_services_ready", lambda *args: None)
+    if interrupted:
+        monkeypatch.setattr(start_services, "_wait_for_process_exit", MagicMock(side_effect=KeyboardInterrupt))
+    monkeypatch.setattr(start_services, "_terminate_processes", lambda *args: order.append("fronts-stopped"))
+    lifecycle = MagicMock(side_effect=lambda **kwargs: order.append("worker-stopped") or worker_ok)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", lifecycle)
+    assert start_services._run_processes([(service, ["stub"], tmp_path)], {}) == expected
+    assert order == (["fronts-stopped", "worker-stopped"] if service == "app" else ["fronts-stopped"])
+
+
+def test_launcher_cannot_close_worker_while_front_cleanup_failed(monkeypatch, tmp_path):
+    from jiuwenswarm import start_services
+    from jiuwenswarm.server.supervisor import shutdown
+
+    monkeypatch.setattr(start_services, "_terminate_processes", MagicMock(side_effect=RuntimeError("unknown child")))
+    lifecycle = MagicMock(return_value=True)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", lifecycle)
+    assert start_services._shutdown_services({}, [("app", ["stub"], tmp_path)], tmp_path) is False
+    lifecycle.assert_not_called()
+
+
+def test_default_instance_preserves_pid_record_validation(monkeypatch, tmp_path):
+    from jiuwenswarm import start_services
+
+    config = InstanceConfig("default", tmp_path, {})
+    write_pid_file(config, 4242, started_at=100.0, metadata={"schema_version": 2})
+    command = SimpleNamespace(config=config, status=SimpleNamespace(pid=4242), is_default=True, name="default")
+    tree = MagicMock()
+    monkeypatch.setattr(start_services, "terminate_service_tree", tree)
+    stop = MagicMock(return_value=False)
+    monkeypatch.setattr(start_services, "stop_instance_process", stop)
+    assert start_services.do_stop_instance(command) == 1
+    tree.assert_not_called()
+    stop.assert_called_once_with(config, timeout=10.0)
 
 
 class TestPinnedPortTypes:

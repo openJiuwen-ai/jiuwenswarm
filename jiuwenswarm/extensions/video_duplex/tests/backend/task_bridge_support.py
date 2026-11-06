@@ -4,7 +4,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from agent_gateway.extensions.video_duplex.backend.tasks.bridge import (
+from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import (
     GatewayTaskEndpoint,
     handle_checkpoint_push,
 )

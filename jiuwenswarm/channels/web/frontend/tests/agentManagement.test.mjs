@@ -782,9 +782,10 @@ test('in-flight transport deaths are the only uncertain install outcomes', () =>
   // backend could answer (timeout, dropped socket — including WS_CLOSED,
   // which disconnect() uses to reject in-flight requests). The backend may
   // still complete the install, so the just-imported package must be kept.
-  for (const code of ['REQUEST_TIMEOUT', 'WS_NOT_READY', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+  for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
     assert.equal(isUncertainInstallError({ code }), true, code);
   }
+  assert.equal(isUncertainInstallError({ code: 'WS_NOT_READY' }), false);
 });
 
 test('backend verdicts without a code stay definite so the upload rollback fires', () => {
