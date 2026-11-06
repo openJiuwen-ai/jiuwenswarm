@@ -376,6 +376,9 @@ def _rollback_create(control, binding_store, entity_store, binding, control_enti
 async def handle_team_get(ctx: RequestContext) -> None:
     params = _params(ctx)
     identity = request_identity(ctx.request)
+    if not identity.user_id:
+        await _fail(ctx, "user identity is required", "FORBIDDEN")
+        return
     try:
         entity = resolve_entity(
             team_id=str(params.get("team_id") or ""),
@@ -385,7 +388,7 @@ async def handle_team_get(ctx: RequestContext) -> None:
     except TeamMembershipError as exc:
         await _fail(ctx, str(exc), exc.code)
         return
-    if identity.user_id and not _can_view(entity, identity):
+    if not _can_view(entity, identity):
         await _fail(ctx, "not a member of this team", "FORBIDDEN")
         return
     payload = {"team": _entity_payload(entity, with_members=True)}
@@ -400,25 +403,25 @@ async def handle_team_get(ctx: RequestContext) -> None:
 
 async def handle_team_list(ctx: RequestContext) -> None:
     """Teams owned by the caller plus teams the caller has joined."""
-    await _wait_for_startup_sweep()
     identity = request_identity(ctx.request)
+    if not identity.user_id:
+        await _fail(ctx, "user identity is required", "FORBIDDEN")
+        return
+    await _wait_for_startup_sweep()
     store = get_team_control_store()
     include_deleted = bool(_params(ctx).get("include_deleted"))
-    if identity.user_id:
-        owned = store.list_entities(owner=identity, include_deleted=include_deleted)
-        seen = {e.team_id for e in owned}
-        joined: list[TeamEntityRecord] = []
-        for entity in store.list_entities(include_deleted=include_deleted):
-            if entity.team_id in seen or not entity.owner.same_scope(identity):
-                continue
-            membership = store.get_membership(entity.team_id, identity.user_id)
-            if membership is not None and membership.status in {
-                MEMBERSHIP_STATUS_ACTIVE, MEMBERSHIP_STATUS_PENDING,
-            }:
-                joined.append(entity)
-        teams = owned + joined
-    else:
-        teams = store.list_entities(include_deleted=include_deleted)
+    owned = store.list_entities(owner=identity, include_deleted=include_deleted)
+    seen = {e.team_id for e in owned}
+    joined: list[TeamEntityRecord] = []
+    for entity in store.list_entities(include_deleted=include_deleted):
+        if entity.team_id in seen or not entity.owner.same_scope(identity):
+            continue
+        membership = store.get_membership(entity.team_id, identity.user_id)
+        if membership is not None and membership.status in {
+            MEMBERSHIP_STATUS_ACTIVE, MEMBERSHIP_STATUS_PENDING,
+        }:
+            joined.append(entity)
+    teams = owned + joined
     payload: dict[str, Any] = {"teams": [_entity_payload(e) for e in teams], "count": len(teams)}
     if identity.user_id:
         try:
@@ -438,6 +441,9 @@ async def handle_team_list(ctx: RequestContext) -> None:
 async def handle_team_stop(ctx: RequestContext) -> None:
     params = _params(ctx)
     identity = request_identity(ctx.request)
+    if not identity.user_id:
+        await _fail(ctx, "user identity is required", "FORBIDDEN")
+        return
     try:
         entity = resolve_entity(
             team_id=str(params.get("team_id") or ""),
@@ -447,7 +453,7 @@ async def handle_team_stop(ctx: RequestContext) -> None:
     except TeamMembershipError as exc:
         await _fail(ctx, str(exc), exc.code)
         return
-    if identity.user_id and not _is_owner(entity, identity):
+    if not _is_owner(entity, identity):
         await _fail(ctx, "only the owner can stop the team", "FORBIDDEN")
         return
     stopped = False
@@ -542,6 +548,9 @@ async def handle_team_member_leave(ctx: RequestContext) -> None:
 async def handle_team_members_list(ctx: RequestContext) -> None:
     params = _params(ctx)
     identity = request_identity(ctx.request)
+    if not identity.user_id:
+        await _fail(ctx, "user identity is required", "FORBIDDEN")
+        return
     try:
         entity = resolve_entity(
             team_id=str(params.get("team_id") or ""),
@@ -551,7 +560,7 @@ async def handle_team_members_list(ctx: RequestContext) -> None:
     except TeamMembershipError as exc:
         await _fail(ctx, str(exc), exc.code)
         return
-    if identity.user_id and not _can_view(entity, identity):
+    if not _can_view(entity, identity):
         await _fail(ctx, "not a member of this team", "FORBIDDEN")
         return
     store = get_team_control_store()

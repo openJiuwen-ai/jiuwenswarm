@@ -195,3 +195,29 @@ async def test_member_join_and_leave_via_handlers(store, entity, monkeypatch):
         _request(ReqMethod.TEAM_MEMBER_LEAVE, MEMBER, {"team_id": entity.team_id}),
     )
     assert ok and payload["membership"]["status"] == "left"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name,handler_name", [
+    ("TEAM_GET", "handle_team_get"),
+    ("TEAM_LIST", "handle_team_list"),
+    ("TEAM_STOP", "handle_team_stop"),
+    ("TEAM_MEMBERS_LIST", "handle_team_members_list"),
+])
+@pytest.mark.parametrize("user_id", ["", "   "])
+async def test_team_control_rejects_missing_identity_before_access(
+    monkeypatch, method_name, handler_name, user_id,
+):
+    def unexpected_access(*args, **kwargs):
+        pytest.fail("anonymous request must be rejected before accessing team state")
+
+    monkeypatch.setattr(handlers, "resolve_entity", unexpected_access)
+    monkeypatch.setattr(handlers, "get_team_control_store", unexpected_access)
+    monkeypatch.setattr(handlers, "_wait_for_startup_sweep", unexpected_access)
+    request = _request(
+        getattr(ReqMethod, method_name), OwnerIdentity(user_id, "grp", "bot"),
+        {"team_id": "other-users-team"},
+    )
+    ok, payload = await _call(getattr(handlers, handler_name), request)
+    assert not ok
+    assert payload["code"] == "FORBIDDEN"
