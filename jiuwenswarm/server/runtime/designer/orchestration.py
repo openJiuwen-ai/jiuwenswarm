@@ -4076,45 +4076,41 @@ def _shot_distinctness_patch(graph: DesignerExecutionGraph) -> list[str]:
 
 
 def _cast_focus_alignment_patch(graph: DesignerExecutionGraph) -> list[str]:
-    """Director gate: re-score shot focus from action text so wrong cast is not reused."""
-    from jiuwenswarm.server.runtime.designer.script_analysis import (
-        _focus_character_ids,
-        _match_terms_for_character,
-    )
+    """Director gate: align each clip's cast to the storyboard's on_screen.
 
+    The storyboard agent owns the decision of who is in frame. This pass only
+    propagates that decision onto the clip nodes; it never infers cast from
+    shot prose, so an empty-cast shot stays empty.
+    """
     notes: list[str] = []
     meta = dict(graph.get("metadata") or {})
     analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
     characters = list(analysis.get("characters") or [])
     if not characters:
         return notes
-    for ch in characters:
-        if isinstance(ch, dict) and not ch.get("match_terms"):
-            ch["match_terms"] = _match_terms_for_character(
-                str(ch.get("name") or ""), str(ch.get("description") or "")
-            )
     id_to_name = {
         str(c.get("id")): str(c.get("name") or c.get("id"))
         for c in characters
         if isinstance(c, dict) and c.get("id")
     }
-    # Refresh analysis shots if present. Do not expand a tight focus into a
-    # full-cast keyword match (floods reference images → DashScope fails).
+    # The storyboard agent is the authority for who is on screen. Never re-score
+    # a shot's cast from its prose: a keyword match on character descriptions
+    # cannot tell "empty frame, no people" from a shot that really draws someone,
+    # and widening here floods reference images (DashScope rejects the request).
     for shot in analysis.get("clips") or []:
         if not isinstance(shot, dict):
             continue
-        blob = f"{shot.get('action') or ''} {shot.get('clip_prompt') or ''}"
-        focus = _focus_character_ids(blob, characters)
+        on_screen = shot.get("on_screen")
+        if not isinstance(on_screen, list):
+            continue
+        declared = [str(x) for x in on_screen if str(x).strip()]
         old = [str(x) for x in (shot.get("character_ids") or []) if str(x)]
-        if focus and focus != old:
-            old_set, new_set = set(old), set(focus)
-            if old and old_set.issubset(new_set) and len(new_set) > len(old_set):
-                continue
+        if declared != old:
             notes.append(
                 f"analysis shot {shot.get('clip_index')}: "
-                f"{shot.get('character_ids')} -> {focus}"
+                f"character_ids {old} -> on_screen {declared}"
             )
-            shot["character_ids"] = focus
+            shot["character_ids"] = list(declared)
     meta["script_analysis"] = analysis
 
     # Refresh approved storyboard so the handler writes the corrected focus cast.
@@ -4140,19 +4136,15 @@ def _cast_focus_alignment_patch(graph: DesignerExecutionGraph) -> list[str]:
         role = _role_key(node)
         if role not in {"clip"}:
             continue
-        blob = f"{cfg.get('clip_action') or ''} {(cfg.get('generate') or {}).get('prompt') or ''}"
-        focus = _focus_character_ids(blob, characters)
-        if not focus:
+        on_screen = cfg.get("on_screen")
+        if not isinstance(on_screen, list):
             continue
+        focus = [str(x) for x in on_screen if str(x).strip()]
         old = [str(x) for x in (cfg.get("character_ids") or [])]
         if focus != old:
-            old_set, new_set = set(old), set(focus)
-            # Keep tighter original when keyword match only expands the cast.
-            if old and old_set.issubset(new_set) and len(new_set) > len(old_set):
-                continue
             cfg["character_ids"] = focus
             cfg["cast_names"] = [id_to_name.get(cid, cid) for cid in focus]
-            notes.append(f"{node.get('id')}: cast focus {old} -> {focus}")
+            notes.append(f"{node.get('id')}: cast aligned to on_screen {old} -> {focus}")
             # Prefer SOLO character specs (one character_id) over combined compose aids.
             solo_nodes: list[str] = []
             for cid in focus:
@@ -4208,10 +4200,22 @@ def _cast_focus_alignment_patch(graph: DesignerExecutionGraph) -> list[str]:
                 )
                 costume_parts.append(f"{id_to_name.get(cid, cid)}: {costume}")
             costume_lock = "; ".join(p for p in costume_parts if p).strip("; ")
+            # Identity references exist so the model can draw these people, so
+            # they must never outlive the on-screen cast: an empty-cast clip
+            # emits none, otherwise every still reaches the video model as "in
+            # the scene, partially visible" and a cast-less shot draws people.
+            ref_cids = list(dict.fromkeys(focus))
+            keep_cids = set(ref_cids)
+            ref_nodes = []
+            for nid in cfg.get("character_node_ids") or []:
+                if not str(nid):
+                    continue
+                if keep_cids & set(_spec_character_ids(graph, str(nid))):
+                    ref_nodes.append(str(nid))
             identity_refs = {
-                "character_ids": list(focus),
-                "character_node_ids": list(cfg.get("character_node_ids") or []),
-                "cast_names": list(cfg.get("cast_names") or []),
+                "character_ids": ref_cids,
+                "character_node_ids": ref_nodes,
+                "cast_names": [id_to_name.get(cid, cid) for cid in ref_cids],
                 "costume_lock": costume_lock,
                 "scene_node_id": "n_scene",
                 "prior_clip_node_id": cfg.get("prior_clip_node_id"),
@@ -4377,6 +4381,19 @@ def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> 
             cfg["inputs"] = list(dict.fromkeys(inputs))
             node["config"] = cfg
     return notes
+
+
+def _spec_character_ids(graph: DesignerExecutionGraph, node_id: str) -> list[str]:
+    """Character ids a character-spec node owns (empty for any other node)."""
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict) or str(node.get("id") or "") != node_id:
+            continue
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        ids = [str(x) for x in (cfg.get("character_ids") or []) if str(x)]
+        if not ids and cfg.get("character_id"):
+            ids = [str(cfg.get("character_id"))]
+        return ids
+    return []
 
 
 def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
