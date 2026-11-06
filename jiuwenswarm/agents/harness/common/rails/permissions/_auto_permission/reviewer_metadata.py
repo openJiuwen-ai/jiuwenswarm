@@ -155,6 +155,19 @@ def _text(
     )
 
 
+def _reason_text(
+    metadata: Mapping[str, object],
+    *keys: str,
+    default: str = "",
+) -> str:
+    """Keep the complete final reason; audit applies its own redaction."""
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return default
+
+
 def _reviewer_status(metadata: Mapping[str, object]) -> str:
     status = _text(metadata, "final_reviewer_status", "reviewer_status")
     if status:
@@ -256,12 +269,11 @@ def _reviewer_ui_metadata(
     evidence = (
         host_summary
         if downgraded_allow
-        else _text(
+        else _reason_text(
             merged,
             "evidence_summary",
             "reviewer_reason_summary",
             default=reason,
-            max_length=_REVIEWER_UI_TEXT_MAX_LENGTH,
         )
         if natural_language
         else _host_display_reason(
@@ -315,12 +327,11 @@ def _reviewer_ui_metadata(
         merged["manual_reason_summary"] = (
             host_summary
             if downgraded_allow
-            else _text(
+            else _reason_text(
                 merged,
                 "manual_reason_summary",
                 "reviewer_reason_summary",
                 default=reason,
-                max_length=_REVIEWER_UI_TEXT_MAX_LENGTH,
             )
             if natural_language
             else evidence
