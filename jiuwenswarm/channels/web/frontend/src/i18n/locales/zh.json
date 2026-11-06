@@ -472,7 +472,7 @@
       "extensions": "扩展"
     },
     "extensions": {
-      "description": "扩展提供的启动开场与设置页",
+      "description": "扩展提供的启动开场：播放顺序与停用",
       "unavailable": "扩展服务未连接",
       "loading": "正在读取…",
       "splash": {
@@ -490,12 +490,6 @@
         "reset": "恢复默认顺序",
         "loadFailed": "无法读取开场设置",
         "saveFailed": "保存开场设置失败"
-      },
-      "pages": {
-        "title": "扩展设置",
-        "empty": "没有提供设置页的扩展。",
-        "ariaLabel": "扩展设置页",
-        "loadFailed": "无法读取扩展设置页"
       }
     },
     "feedback": {

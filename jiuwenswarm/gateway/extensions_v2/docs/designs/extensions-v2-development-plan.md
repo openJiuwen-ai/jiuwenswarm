@@ -31,8 +31,9 @@
 | EXTV2-GW-09 | 媒体容器与应用背景 | `MediaSurface` 根组件（图片、视频、沙箱页面）、令牌与来源校验的消息协议、`application.background` 槽位与前端背景宿主 | [F_10](../features/F_10_media-surface-and-background.md) | [S_07](../specs/S_07_media-surface.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_ui_render.py`、`test_gateway_application_assets.py`；前端 `test:webui-components`、`test:webui-protocol`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调随 GW-11） |
 | EXTV2-GW-10 | 受控外观 | `ops.appearance.apply`、宿主派生的强调色与半透明模式、按连接的提供者、包释放时撤销外观并清除实例、重载后重新通知 | [F_11](../features/F_11_controlled-appearance.md) | [S_08](../specs/S_08_appearance.md) | `test_gateway_appearance.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-transport` | Song Haoran | 已实现（单测与浏览器验证通过） |
 | EXTV2-GW-11 | 启动门控与开场队列 | 中性层、候选提示、启动标识、开场声明与提供者、显示型槽位的平台帧、定向 `ui.ready`、`application.splash`、时限与心跳、长按跳过、`ui.closed`、登录入口协调 | [F_12](../features/F_12_startup-gate-and-splash.md) | [S_09](../specs/S_09_startup-splash.md)、[S_07](../specs/S_07_media-surface.md) | `test_gateway_splash.py`、`test_app_web_splash_hint.py`；前端 `test:webui-components` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
-| EXTV2-GW-12 | 应用级设置页 | `application.settings.page` 与“扩展”设置模块；宿主方法；开场顺序与停用及其保存；`ui.closed` 的 `disabled` / `removed`；`FileImport` 与导入凭据、上传路由；`ops.ui.download` 与下载路由；`app_web` 转发（本机与远程浏览器均可用） | [F_13](../features/F_13_application-settings-page.md) | [S_10](../specs/S_10_application-settings.md)、[S_09](../specs/S_09_startup-splash.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_application_settings.py`、`test_gateway_file_transfer.py`、`test_app_web_extension_transfers.py`；前端 `test:webui-components`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
+| EXTV2-GW-12 | 应用级设置页 | `application.settings.page`、“扩展”设置模块（宿主功能）与每个插件单独的设置项（F_13 D-08）；宿主方法；开场顺序与停用及其保存；`ui.closed` 的 `disabled` / `removed`；`FileImport` 与导入凭据、上传路由；`ops.ui.download` 与下载路由；`app_web` 转发（本机与远程浏览器均可用） | [F_13](../features/F_13_application-settings-page.md) | [S_10](../specs/S_10_application-settings.md)、[S_09](../specs/S_09_startup-splash.md)、[S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02](../specs/S_02_ui-render.md) | `test_gateway_application_settings.py`、`test_gateway_file_transfer.py`、`test_app_web_extension_transfers.py`；前端 `test:webui-components`、`test:webui-contracts` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
 | EXTV2-GW-13 | 开场预览 | `ops.splash.preview()`、下行帧 `webui.splash.play`、开场 `ui.ready` 的 `preview` 字段、门控开放后的单次预览播放 | [F_14](../features/F_14_splash-preview.md) | [S_09](../specs/S_09_startup-splash.md) | `test_gateway_splash.py`；前端 `test:webui-components` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
+| EXTV2-GW-14 | 真实环境联调 | 在隔离实例中运行 fork 的 Gateway、AgentServer、`app_web` 与前端构建产物，安装主题背景插件与登录示例，用无头 Chromium 走完首次启动、设置、导入导出、登录前后与断线；联调中发现的缺陷就地修复 | [F_13](../features/F_13_application-settings-page.md)（D-08） | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_10](../specs/S_10_application-settings.md) | `test_gateway_request.py`、`test_gateway_package_management.py`；前端 `test:webui-components`、`test:settings-panel` | Song Haoran | 进行中（A 档真实 Gateway 与 Web 完成；B 档 Electron 外壳待用户同意下载 Electron；打包版由打包团队验证） |
 
 ## 3. 依赖与开工条件
 
@@ -77,6 +78,7 @@ flowchart LR
 | GW-11 | 声明校验与提供者顺序；请求策略拒绝一切时平台帧仍到达包；`ui.closed` 一次性；候选提示；门控四种判定路径；准备、媒体就绪、心跳与上限时限；长按跳过；登录入口推迟；Chromium 中从首帧到开放的完整流程 |
 | GW-12 | 页面列表与定向 `ui.ready`；宿主方法在请求策略与认证门禁之后、无 USER Handler 时仍应答；开场顺序、停用、恢复默认与重启保留、卸载清除；`disabled` / `removed` 只通知一次；导入清单、大小、凭据绑定、远程浏览器可用、过期与断线清理；导出路径边界、一次性与响应头；`app_web` 流式转发；两端组件与槽位结论一致；Chromium 中设置模块、排序、导入与导出往返 |
 | GW-13 | 预览帧只发往调用连接并带声明值；未声明开场、失效激活、无连接时拒绝；停用后仍可预览；`ui.ready` 的 `preview` 必填；前端只在门控开放且空闲时播放一次、不改写启动记录；Chromium 中从设置页点击到播放结束 |
+| GW-14 | 真实 WebChannel 往返（平台帧、外观、背景、开场、设置页、导入导出经 `app_web`）；登录插件存在时登录前后的完整流程；断线后连接状态被清理；同版本卸载重装后执行新代码；与正在使用的 WorkSwarm 隔离（数据、家目录、worker 套接字、端口） |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -104,6 +106,8 @@ flowchart LR
 | 2026-11-05 | GW-12 | 按用户决定，导入与导出对远程浏览器同样开放：移除 Gateway 与 `app_web` 的回环地址判断及前端“只能在本机导入”提示，访问权只来自一次性凭据；Gateway 扩展 483 项、Web 渠道 150 项、前端 WebUI 各套件通过，Chromium 中重跑一致；两台机器间未实测，证据见 F_13 |
 | 2026-11-05 | GW-13 | 建立开场预览条目（壁纸插件设置页的“预览开场”需要），负责人 Song Haoran；开工，方案见 F_14 |
 | 2026-11-05 | GW-13 | 开场预览实现：Gateway 扩展 485 项、Web 渠道 150 项、前端 WebUI 各套件全部通过、构建成功；Chromium 157 中验证从设置页点击到预览播放、结束并恢复界面，证据见 F_14 |
+| 2026-11-06 | GW-12 | 按用户要求修订设置页（F_13 D-08）：“扩展”只放宿主的开场设置，每个插件在设置导航中单独一项；前端 components 270、settings-panel 62（同时修正 GW-12 遗留的模块顺序断言）、WebUI 其余套件、`tsc` 与构建通过，Chromium 与真实应用验证见 F_13-V-11 |
+| 2026-11-06 | GW-14 | 建立真实环境联调条目，负责人 Song Haoran。A 档完成：隔离实例（独立数据目录与家目录、`/tmp` 下的 worker 套接字、第 2 组端口）中，首次启动开场、背景与外观、设置导航与主题背景页、切换、预览、经 `app_web` 的导入（204）与导出、刷新不重播、登录示例存在时登录前的开场与背景及登录后的设置页均通过，控制台无插件相关错误。联调发现并修复两处上游缺陷：渠道断线钩子多传一个参数导致 `notify_gateway_disconnect` 从未执行（S_01 签名）；加载器模块名固定，同版本卸载重装复用缓存的子模块（S_01 不变量 11）。Gateway 扩展 487 项、Web 渠道 150 项通过。首次运行未隔离 worker 套接字，测试实例连上了已安装 WorkSwarm 的常驻 worker（未关闭它，并向其日志目录追加了一行），随即改为独立家目录与套接字 |
 
 ## 6. 风险与待确认
 

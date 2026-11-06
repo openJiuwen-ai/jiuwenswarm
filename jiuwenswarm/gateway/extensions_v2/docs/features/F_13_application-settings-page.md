@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_13 / application-settings-page` |
 | 建档日期 | 2026-11-05 |
-| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07） |
+| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08） |
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
@@ -28,7 +28,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 
 | 场景 | 预期行为 |
 | --- | --- |
-| 安装了带设置页的插件 | 设置页“扩展”模块中出现该插件的页签，内容由插件渲染 |
+| 安装了带设置页的插件 | 设置导航中“扩展”之后出现该插件单独的一项（名称取插件显示名），内容由插件渲染 |
 | 安装了登录插件 | 登录前设置帧被拒绝；登录后正常 |
 | 多个开场插件 | 用户可调整顺序、逐个停用、恢复默认顺序；下次启动按新设置播放 |
 | 未调整过顺序 | 保持“外观提供者优先，其余按安装顺序” |
@@ -58,7 +58,7 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 
 ### 4.1 方案概览
 
-插件声明 `application.settings.page`，在“扩展”设置模块中以页签显示。同一模块中有宿主自带的“启动开场”分组，
+插件声明 `application.settings.page`，在设置导航中单独成项，排在宿主的“扩展”模块之后。“扩展”模块只放宿主自带的“启动开场”分组，
 经宿主方法读写开场偏好；Gateway 把偏好保存在 `<data_dir>/host/splash.json`，`webui.splash.providers` 直接给出生效顺序。
 导入由宿主组件 `FileImport` 发起：前端先取得导入凭据，把用户选中的文件流式上传到 Gateway，
 再以 `ui.change` 把凭据交给插件；Gateway 把凭据换成数据目录中的相对路径。导出由插件调用 `ops.ui.download`，
@@ -111,6 +111,19 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 历史：首版实现（同日）两处路由都只接受回环地址，因为概览把远程浏览器上传列为推迟，而这一点当时没有得到用户的明确答复。
 用户随后决定都放开，回环判断与相应的前端提示一并移除。
 
+#### D-08 每个插件在设置导航中单独一项，“扩展”只放宿主功能（2026-11-06）
+
+首版把所有插件的设置页放在“扩展”模块里，每个插件一个页签。用户试用后要求按插件分开，并保留“扩展”放宿主自己的功能：
+
+- 每个声明 `application.settings.page` 的包在设置导航中单独一项，排在“扩展”之后，顺序同 `webui.settings.pages`（安装顺序）。
+- 名称取插件显示名（与 `webui.settings.pages` 的 `title` 相同），图标统一为拼图图标；选中时只挂载该包的设置页。
+- “扩展”模块只含“启动开场”分组（顺序、停用、恢复默认），说明文字随之改为宿主功能。
+- 插件项在设置页打开且连接可用时读取；读取失败或尚未返回时不显示插件项，连接恢复后重新读取。
+- 宿主访问策略对 `extensions` 模块的结论同样作用于插件项：隐藏“扩展”时不显示插件项，也不发出 `webui.settings.pages`。
+
+放弃的做法：在 manifest 的设置页贡献中另设标题或图标字段（新增契约；用户选择直接用插件名与统一图标）；
+把启动开场移到“常规”或单独成项（用户选择保留“扩展”放宿主功能）。
+
 ### 4.3 替代方案与排除理由
 
 | 方案 | 排除理由 |
@@ -139,7 +152,8 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 | 前端 `catalog/`、`renderer/adapters/webuiFileImport/` | `FileImport` 规则与适配器 |
 | 前端 `transfers/` | 导入服务（凭据、上传、完成）与下载处理 |
 | 前端 `splash/` | 读取 `customized` 合并顺序 |
-| 前端 `features/settings/modules/extensions/` | “扩展”模块：启动开场分组与插件设置页签 |
+| 前端 `features/settings/modules/extensions/` | “扩展”模块：启动开场分组；插件设置项的读取与挂载（`pluginPages.tsx`） |
+| 前端 `features/settings/SettingsPageLayout.tsx` | 在导航中“扩展”之后为每个插件加一项（D-08） |
 | 前端 `react/WebUIAppRoot.tsx` | 提供导入服务，订阅 `webui.download` |
 
 ### 5.2 状态与生命周期
@@ -189,7 +203,7 @@ Chrome for Testing `chrome-headless-shell` 157.0.8103.38。
 | 修订对照（远程开放） | 先把用例改为期望远程可用，在只服务本机的实现上运行 | Gateway 2 项（远程上传、远程下载）、`app_web` 1 项、前端 1 项（403 不再提示“只能在本机导入”）失败；移除回环判断后全部通过 |
 | F_13-V-09 | `tests/unit_tests/gateway/extensions_v2/` 483 项；`tests/unit_tests/channels/web/` 与 `test_trajectory_http.py` 150 项（1 项既有跳过）；前端 contracts 151、protocol 14、components 264、renderer 17、runtime 21、client 22、events 93、transport 9；`test:i18n-locales` 4；`tsc` 与 `npm run build` | 全部通过；构建仅有既有的分包与体积提示 |
 
-F_13-V-10：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验证服务启动真实的 `GatewayRuntime` 与 Gateway 路由，
+F_13-V-10（2026-11-05，D-08 之前的页签布局）：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验证服务启动真实的 `GatewayRuntime` 与 Gateway 路由，
 `/harness-ws` 按 WebChannel 的帧格式把每个请求交给 `GatewayRuntime.intercept`；页面打包真实的 `SettingsPageLayout`
 （“常规”与“扩展”两个模块）、`createWebClientTransport`、导入服务与 `FileImport`，加载 `npm run build` 产出的样式表。
 三个测试包：两个声明设置页与开场，一个只声明开场。
@@ -212,10 +226,20 @@ F_13-V-10：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验
 远程开放的修订之后，以上场景在 Chromium 中重跑，结果一致。浏览器与验证服务都在本机，远程对端只在单元用例中以非回环地址模拟，
 两台机器之间尚未实测。
 
+F_13-V-11（2026-11-06，D-08）：
+
+| 范围 | 环境与命令 | 结果 |
+| --- | --- | --- |
+| 前端单元 | `test:webui-components` 270 项，新增 4 项：插件项排在“扩展”之后、读取条件（访问结果、连接、失败）、只挂载所选包、“扩展”只含宿主功能；在改动前的代码上因 `pluginPages.tsx` 不存在而无法构建。`test:settings-panel` 62 项（修正 GW-12 遗留的模块顺序断言：当时把 `extensionsModule` 加入定义却未更新该断言）；`test:i18n-locales` 4；contracts 151、protocol 14、renderer 17、runtime 21、client 22、events 93、transport 9；`tsc`、`npm run build` | 通过 |
+| 验证页 | `wallpaper-engine/.tools/v2-harness/settings-cdp.mjs`，三个测试包，Chromium 157 | 导航依次为常规、扩展、WorkSwarm Theme Studio、Release Notes；“扩展”只有开场分组、没有导入控件；插件项的标题为插件名，切换时只挂载所选包；导入、导出（地址一次性）、预览与 V-10 一致；“扩展”的行样式与“常规”一致 |
+| 真实应用 | 4.3 隔离实例：fork 的 Gateway、AgentServer、`app_web` 与构建产物，安装主题背景 2.0.0 与登录示例 | 设置导航为“常规……已归档的任务、扩展、主题背景、实验功能”；“扩展”的开场提供者显示“主题背景”；登录前后都能打开插件项 |
+
+验证中发现并修正：插件名较长时按钮随名称撑宽导航列（导航列表为 grid，子项默认最小宽度取内容宽度）；改为按钮可收缩、名称单行省略，完整名称放在悬停提示中。
+
 ### 8.3 验证结论
 
 第 2.2 节场景在单元范围与 Chromium 中成立。浏览器验证中 Gateway 运行时与路由是真实的，WebChannel 以验证服务中的最小实现代替；
-桌面打包版中的保存对话框（`downloadFile`）、真实 WebChannel 往返与登录插件同时存在的流程随壁纸插件联调。暗色主题未单独检查（本条目没有改动主题变量）。
+真实 WebChannel 往返与登录插件同时存在的流程已在 EXTV2-GW-14 的隔离实例中验证（V-11 与开发计划台账）；桌面打包版中的保存对话框（`downloadFile`）尚未验证。暗色主题未单独检查（本条目没有改动主题变量）。
 
 ## 9. 风险与已知遗留
 

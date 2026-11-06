@@ -92,6 +92,19 @@
   height: 16px;
 }
 
+/* Plugin entries carry the plugin's own name (Gateway F_13 D-08): keep long names on one line
+   and let the grid track shrink the button instead of growing with the name. */
+.settings-page__nav nav > .settings-page__nav-button {
+  min-width: 0;
+}
+
+.settings-page__nav-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-page__nav-button:hover:not(:disabled) {
   background: var(--color-sidebar-action-hover);
 }

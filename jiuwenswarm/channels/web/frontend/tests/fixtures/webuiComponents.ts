@@ -47,4 +47,5 @@ export * as transfersModule from '../../src/features/webui/transfers/index.ts';
 export * as applicationSettingsModule from '../../src/features/webui/applicationSettings/index.ts';
 export { WebUIUploadContext } from '../../src/features/webui/renderer/adapters/webuiFileImport/uploadContext.ts';
 export { SplashProviderSettings } from '../../src/features/settings/modules/extensions/SplashProviderSettings.tsx';
-export { ExtensionSettingsPages } from '../../src/features/settings/modules/extensions/ExtensionSettingsPages.tsx';
+export * as pluginPagesModule from '../../src/features/settings/modules/extensions/pluginPages.tsx';
+export { extensionsModule } from '../../src/features/settings/modules/extensions/definition.ts';
