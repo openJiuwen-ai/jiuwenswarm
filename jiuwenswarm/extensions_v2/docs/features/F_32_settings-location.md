@@ -81,3 +81,22 @@ application.settings 的 session/application 支持继续保留，应用范围�
 Error frames preserve a scope allowed by the slot; a disallowed scope uses the slot's declared default for error routing.
 Settings retain both session and application scopes, and application errors target the trusted connection.
 The targeted regression passed 477 backend and 50 frontend tests; catalog revision and remount behavior is unchanged.
+
+## 2026-11-06 主仓迁移
+
+关联特性 Issue #6047。本轮将尚未合入私仓的七个 WebUI、设置目录、轮次用量和文件资源提交迁入主仓 `releases/0.2.9.beta3`，基线为 `f93841910`。主题引擎分支、公共 `SettingField` 及主题素材不在本轮范围。
+
+迁移保留主仓的设置侧栏收起/悬浮逻辑、逐项保存反馈与可见性条件，以及安装插件后通知已挂载客户端重新发送 `ui.ready` 的机制。文件资源清理与已有 ready-client 清理同时保留。轮次用量使用通知中的输入、输出独立值和插件存储，不从主仓已有的总量记录推算拆分值。
+
+主仓 `F_30`、`F_31` 已分别用于服务端命令事件和扩展 CLI；本轮新设置文档使用 `F_32`，TokenWeather 文档使用 `F_33`，同步文件名和引用，保留主仓已有编号。
+
+验证环境使用主仓锁定的 Core `release/v0.1.20.post3`（`bcab21eb28c0c86e66d61d5e92edff4891b3f559`），已执行 `uv sync`；未改动依赖声明与锁文件。
+
+| 范围 | 本轮结果与边界 |
+| --- | --- |
+| 后端与资源路由 | AgentServer WebUI、Gateway 扩展、包管理、安装后下行通知、Web 资源代理及沙箱浏览器集成共 1,239 项通过。pytest 清空默认 addopts 时显式保留 `--asyncio-mode=auto`。 |
+| 前端回归 | 组件、设置插件、契约、协议、运行时、客户端、事件、传输、渲染器、面板、请求上下文、设置和侧栏共 672 项通过，2 项失败。两项设置旧断言在同依赖的未迁移主仓基线均复现，分别涉及既有成功提示 CSS 和 downloads 翻译键；本轮未修改其行为。 |
+| 生产构建 | `npm run build` 通过。 |
+| 浏览器 | Chrome 157 无头浏览器完成既有 WebUI 浏览器用例，以及 TokenWeather 设置开关、刷新保留、中英文详情加载、720px 预览和现有浅色外观检查；检查的共享 CSS 变量均有实际值。 |
+
+浏览器设置验收使用生产组件与受控数据 fixture；资源集成使用真实 HTTP 路由和文件读取、替代的 E2A 传输。主仓当前只提供默认浅色主题，本轮不引入主题引擎，未执行深色主题验收。上述结果不代表真实模型主流程、Chrome 107 或 Windows/Linux/Electron 已完成新的端到端验收。截图和验证日志保存在本轮外部工作产物中，不提交运行日志、覆盖率或个人配置。

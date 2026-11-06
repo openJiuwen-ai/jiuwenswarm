@@ -40,6 +40,6 @@ ZIP 根目录包含 manifest.yaml，通过宿主现有 V2 包安装入口安装�
 
 ## 验证范围
 
-定向测试覆盖真实管理器/EventBus/Ops 公开用量读取、无会话设置、详情打开、自定义样式拒绝和偏好生命周期。前端 `tests/fixtures/token-weather-glass/index.html` 是生产组件联调预览，使用受控用量与目录重放，不能作为真实模型端到端证据。进度和限制见 [F_30](../../docs/features/F_30_token-weather-glass.md)。
+定向测试覆盖真实管理器/EventBus/Ops 公开用量读取、无会话设置、详情打开、自定义样式拒绝和偏好生命周期。前端 `tests/fixtures/token-weather-glass/index.html` 是生产组件联调预览，使用受控用量与目录重放，不能作为真实模型端到端证据。进度和限制见 [F_33](../../docs/features/F_33_token-weather-glass.md)。
 
 通用设置菜单、分类、配置项及 before/after 用法见 [S_18](../../docs/specs/S_18_settings-location.md)。

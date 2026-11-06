@@ -10,7 +10,7 @@
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
 Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon。字段、默认值、必填与事件数据统一遵循
-[S_17 Props 权威规约](../../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
+[S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
 槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`；
 其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。

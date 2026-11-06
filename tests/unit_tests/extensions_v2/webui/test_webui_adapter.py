@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from openjiuwen.core.events import Event, SessionContext
@@ -48,7 +48,11 @@ async def test_list_ready_initializes_each_declared_package_once(monkeypatch, fa
         return UiActionOutput(True, "rendered")
 
     invoke = AsyncMock(side_effect=dispatch)
-    runtime = SimpleNamespace(catalog=lambda: SimpleNamespace(current=lambda: catalog), dispatch=invoke)
+    remember_ready = Mock()
+    runtime = SimpleNamespace(
+        catalog=lambda: SimpleNamespace(current=lambda: catalog), dispatch=invoke,
+        remember_ready_client=remember_ready,
+    )
     monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)
     response = await WebUIDispatchAdapter().handle(AgentRequest(
         request_id="list-ready", channel_id="web", session_id="s1", user_id="user",
@@ -56,6 +60,7 @@ async def test_list_ready_initializes_each_declared_package_once(monkeypatch, fa
             "event": "ui.ready", "target": {"slot_id": slot, "instance_key": "turn-1"},
         },
     ))
+    remember_ready.assert_called_once_with("tab-1", "s1")
     assert [call.args[0].target.package_id for call in invoke.call_args_list] == ["pkg.a", "pkg.b"]
     assert response.ok
     assert response.payload["accepted"] == (failure is None)

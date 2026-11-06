@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | S_18 |
 | 最近修订 | 2026-11-05 |
-| 关联特性 | [F_31](../features/F_31_settings-location.md)、[F_30](../features/F_30_token-weather-glass.md) |
+| 关联特性 | [F_32](../features/F_32_settings-location.md)、[F_33](../features/F_33_token-weather-glass.md) |
 
 ## 1. 范围与职责
 

@@ -1,7 +1,7 @@
 # AgentServer WebUI 文件资源
 
 最近修订：2026-11-05。组件字段以 [S_17](S_17_webui-component-props.md) 为准。
-本文件是 AgentServer 文件资源 API 的契约；实施与验证记录见 [Token Weather 改造](../features/F_30_token-weather-glass.md#2026-11-05-文件资源改造开发中)。
+本文件是 AgentServer 文件资源 API 的契约；实施与验证记录见 [Token Weather 改造](../features/F_33_token-weather-glass.md#2026-11-05-文件资源改造开发中)。
 
 ## API 与职责
 
