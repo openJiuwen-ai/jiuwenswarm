@@ -662,11 +662,18 @@ export interface TeamMemberExecutionEvent {
   }>;
 }
 
+export interface AppMarketPreview {
+  appId: string;
+  name: string;
+  instanceId: string;
+}
+
 /**
  * 单个 session 的运行态。
  * 原 B 类全局字段全部迁移到这里，按 session 隔离。
  */
 export interface SessionRuntime {
+  appMarketPreview?: AppMarketPreview;
   mode: AgentMode;
   selectedModelName: string | null;
   /** Stable `{type,id}` selection; preferred over model_name for runtime/session APIs. */
@@ -843,6 +850,7 @@ interface SessionState {
   clearSelectedSkills: (sessionId: string) => void;
   /** 设置/清除会话级元数据（skill-creator 统一入口等场景） */
   setSessionMetadata: (sessionId: string, metadata: Record<string, unknown> | null) => void;
+  setAppMarketPreview: (sessionId: string, preview: AppMarketPreview | undefined) => void;
   /** 输入栏智能体选择：选择、清空或恢复为不修改 */
   setAgentSelectionIntent: (sessionId: string, intent: AgentSelectionIntent) => void;
   clearAgentSelectionIntent: (sessionId: string, expectedIntent?: AgentSelectionIntent) => void;
@@ -1591,6 +1599,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: { ...runtime, selectedSkills: [] },
         },
       };
+    });
+  },
+
+  setAppMarketPreview: (sessionId, preview) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, appMarketPreview: preview } } };
     });
   },
 

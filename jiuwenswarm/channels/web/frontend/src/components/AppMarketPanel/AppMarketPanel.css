@@ -31,8 +31,19 @@
   flex: 0 0 380px;
 }
 
+.app-market-layout-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
 .app-market-layout-expanded .app-market-list {
   display: none;
+}
+
+.app-market-layout-expanded .app-market-browser-pane {
+  border: 0;
+  border-radius: 0;
 }
 
 .app-market-browser-pane {

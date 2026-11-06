@@ -115,6 +115,7 @@ class AppMarketManager:
                     "app_id": a.app_id,
                     "entry_path": str((Path(a.work_dir) / (a.page_entry_path or "index.html")).resolve()),
                     "source_session": a.source_session,
+                    "editor_session_id": a.editor_session_id,
                     "name": a.name,
                     "version": a.version,
                     "description": a.description or _description(Path(a.work_dir) / (a.page_entry_path or "index.html")),

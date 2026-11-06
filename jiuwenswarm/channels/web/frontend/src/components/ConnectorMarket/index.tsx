@@ -1,4 +1,4 @@
-import { AppMarketPanel } from '../AppMarketPanel';
+import { AppMarketPanel, type AppMarketEditHandler } from '../AppMarketPanel';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConnectorStore, CONNECTOR_ERROR_TOAST_ID } from '../../stores/connectorStore';
@@ -71,6 +71,7 @@ interface ConnectorMarketPanelProps {
    * 不传这个 prop 就退化成原来的"尚未接入"提示（同款可选 prop 处理）。
    */
   onCreateViaChat?: () => void;
+  onEditApp?: AppMarketEditHandler;
 }
 
 export function ConnectorMarketPanel({
@@ -78,6 +79,7 @@ export function ConnectorMarketPanel({
   onUsePluginExample,
   onUseExtension,
   onCreateViaChat,
+  onEditApp,
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
@@ -208,7 +210,7 @@ export function ConnectorMarketPanel({
     <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-panel">
       {view.name === 'market' && (
         <MarketplacePage
-          appMarketPanel={<AppMarketPanel />}
+          appMarketPanel={<AppMarketPanel onEdit={onEditApp} />}
           topTab={topTab}
           onTopTabChange={setTopTab}
           myKind={myKind}

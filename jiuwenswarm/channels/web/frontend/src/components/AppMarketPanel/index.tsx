@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppWindow, Circle, CircleCheck, Loader2, LogOut, Play, RefreshCw, Square, Trash2, ExternalLink } from 'lucide-react';
+import { AppWindow, Circle, CircleCheck, Loader2, LogOut, Pencil, Play, RefreshCw, Square, Trash2, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
 import { CategoryTabs } from '../ui/CategoryTabs/CategoryTabs';
@@ -7,7 +7,7 @@ import { PageCard } from '../ui/PageCard/PageCard';
 import { Button } from '../ui/Button/Button';
 import { AppMarketBrowserPane } from './AppMarketBrowserPane';
 import {
-  closeAppMarketView, hasAppMarketView, readAppMarketInstances, trackAppMarketView, watchAppMarketInstances,
+  closeAppMarketView, hasAppMarketView, readAppMarketInstances, openAppMarketView, watchAppMarketInstances,
   type InstanceInfo,
 } from './appMarketViews';
 import { webAppViews } from './webAppViews';
@@ -21,7 +21,19 @@ interface AppInfo {
   version: string;
   description: string;
   icon_url?: string;
+  entry_path?: string;
+  source_session?: string;
 }
+
+export interface AppMarketEditTarget {
+  appId: string;
+  name: string;
+  instanceId: string;
+  entryPath: string;
+  sourceSession: string;
+}
+
+export type AppMarketEditHandler = (target: AppMarketEditTarget, isCurrent: () => boolean) => void | Promise<void>;
 
 type AppState = 'stopped' | 'starting' | 'running' | 'stopping';
 type PendingAction = 'starting' | 'stopping' | 'deleting';
@@ -56,7 +68,7 @@ function StateIcon({ state, label }: { state: AppState; label: string }) {
   );
 }
 
-export function AppMarketPanel() {
+export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {}) {
   const { t } = useTranslation();
   const isElectron = !!window.jiuwenDesktop?.isElectron;
   const hintKey = isElectron ? 'app-market-desktop-window-hint-dismissed' : PANE_HINT_DISMISSED;
@@ -119,26 +131,26 @@ export function AppMarketPanel() {
     [t],
   );
 
-  const openApplication = async (app: AppInfo, instance: InstanceInfo) => {
+  const openApplication = async (app: AppInfo, instance: InstanceInfo, edit = false) => {
     if (!instance.url) return;
     const revision = ++openRevision.current;
-    let untrack: (() => void) | undefined;
+    const intent = viewIntent.current;
+    const isCurrent = () => revision === openRevision.current && intent === viewIntent.current;
     try {
       const desktop = window.jiuwenDesktop;
       if (desktop?.isElectron) {
         if (!desktop.openMarketApp) throw new Error(t('appMarket.desktopUpdateRequired'));
-        untrack = trackAppMarketView(instance, () => desktop.closeMarketApp?.(app.app_id) ?? false);
-        if (!(await desktop.openMarketApp(app.app_id, instance.url, app.name))) {
-          throw new Error(t('appMarket.openFailed'));
-        }
-      } else {
-        untrack = trackAppMarketView(instance, () => webAppViews.close(app.app_id));
-        webAppViews.open(app.app_id, instance.web_url || instance.url, app.name);
-        if (revision === openRevision.current) setActiveApp({ ...app, instanceId: instance.instance_id });
+        if (edit && !desktop.setMarketAppViewport) throw new Error(t('appMarket.desktopUpdateRequired'));
+      }
+      if (!await openAppMarketView(instance, app.name, edit)) throw new Error(t('appMarket.openFailed'));
+      if (!edit && isCurrent()) setActiveApp({ ...app, instanceId: instance.instance_id });
+      if (edit && isCurrent() && onEdit && app.entry_path) {
+        await onEdit({ appId: app.app_id, name: app.name, instanceId: instance.instance_id,
+          entryPath: app.entry_path, sourceSession: app.source_session || '' }, isCurrent);
       }
     } catch (error) {
-      untrack?.();
-      if (revision === openRevision.current) showError('appMarket.openFailed', error);
+      if (!isCurrent()) return;
+      showError('appMarket.openFailed', error);
     }
   };
 
@@ -163,7 +175,7 @@ export function AppMarketPanel() {
     } catch (error) { showError(errorKey, error); }
   };
 
-  useEffect(() => () => { ++openRevision.current; }, []);
+  useEffect(() => () => { ++openRevision.current; ++viewIntent.current; }, []);
 
   const refresh = useCallback(async () => {
     setListState('loading');
@@ -200,7 +212,7 @@ export function AppMarketPanel() {
     });
   };
 
-  const handleStart = async (app: AppInfo) => {
+  const handleStart = async (app: AppInfo, edit = false) => {
     if (!beginAction(app.app_id, 'starting')) return;
     const intent = ++viewIntent.current;
     try {
@@ -216,7 +228,7 @@ export function AppMarketPanel() {
       // Page loading must not keep the running application's operation lock.
       // Do not steal the pane if the user opened or dismissed another page
       // while this start was in flight.
-      if (intent === viewIntent.current) void openApplication(app, instance);
+      if (intent === viewIntent.current) void openApplication(app, instance, edit);
     } catch (error) {
       showError('appMarket.startFailed', error);
       // Refresh without holding the optimistic state after a failed start.
@@ -353,6 +365,20 @@ export function AppMarketPanel() {
                   titleEnd={<StateIcon state={state} label={t(`appMarket.states.${state}`)} />}
                   actionSlot={
                     <div className="flex shrink-0 items-center gap-2">
+                      {onEdit && app.entry_path && (
+                        <Button variant="secondary" size="sm" icon={<Pencil size={16} aria-hidden="true" />}
+                          data-testid="app-market-edit" title={t('appMarket.edit')} aria-label={t('appMarket.edit')}
+                          disabled={busy} onClick={() => {
+                            if (state === 'running' && instance?.url) {
+                              ++viewIntent.current;
+                              void openApplication(app, instance, true);
+                            } else if (state === 'stopped') {
+                              void handleStart(app, true);
+                            }
+                          }}>
+                          {t('appMarket.edit')}
+                        </Button>
+                      )}
                       {state === 'running' && instance?.url && (
                         <Button
                           variant="secondary"
@@ -414,8 +440,8 @@ export function AppMarketPanel() {
       </div>
       {!isElectron && activeApp && (
         <AppMarketBrowserPane key={activeApp.instanceId} appId={activeApp.app_id} name={activeApp.name}
-          expanded={paneExpanded} onExpand={() => setPaneExpanded(current => !current)}
-          onHide={hideApplication} onClose={() => void closeApplication(activeApp, activeApp.instanceId)}
+          controls={{ expanded: paneExpanded, onExpand: () => setPaneExpanded(current => !current),
+            onHide: hideApplication, onClose: () => void closeApplication(activeApp, activeApp.instanceId) }}
           onError={error => showError('appMarket.openFailed', error)} />
       )}
     </div>

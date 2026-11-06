@@ -87,6 +87,10 @@ class MarketService:
             if not self._skill_adapter.validate(manifest, app_dir):
                 self._logger.error("应用验证失败: %s", manifest.app_id)
                 return None
+            existing = self._storage.load_manifest(manifest.app_id)
+            if existing and existing.owner_id == manifest.owner_id:
+                manifest.editor_session_id = existing.editor_session_id
+                manifest.editor_create_token = existing.editor_create_token
             self._storage.save_manifest(manifest.app_id, manifest)
             self._logger.info("应用已上架: %s v%s", manifest.app_id, manifest.version)
             return manifest

@@ -28,14 +28,17 @@ await i18next
   .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: resources } } });
 const { AppMarketPanel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/index.mjs');
 const { webClient } = await import('../node_modules/.cache/app-market-panel/services/webClient.mjs');
+const { AppMarketSessionPreview, AppMarketPreviewReload } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketSessionPreview.mjs');
+const { useSessionStore } = await import('../node_modules/.cache/app-market-panel/stores/sessionStore.mjs');
 const { webAppViews } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/webAppViews.mjs');
-const { closeAppMarketView } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/appMarketViews.mjs');
+const { closeAppMarketView, trackAppMarketView, hasAppMarketView } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/appMarketViews.mjs');
 test.afterEach(async () => {
   await closeAppMarketView('gomoku');
   await closeAppMarketView('second');
 });
 const app = {
   app_id: 'gomoku',
+  source_session: 'source-session',
   name: 'Gomoku',
   version: '1.2.3',
   description: 'Play five in a row',
@@ -70,7 +73,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-async function mount(handler) {
+async function mount(handler, props = {}) {
   const calls = [];
   const opened = [];
   const previous = webClient.request;
@@ -90,7 +93,7 @@ async function mount(handler) {
   };
   window.confirm = () => true;
   const root = createRoot(document.getElementById('root'));
-  await act(async () => root.render(React.createElement(AppMarketPanel)));
+  await act(async () => root.render(React.createElement(AppMarketPanel, props)));
   let mounted = true;
   const unmount = async () => {
     if (mounted) await act(async () => root.unmount());
@@ -618,4 +621,444 @@ test('a non-running start response is shown as a failure and never opens the app
   } finally {
     await ctx.close();
   }
+});
+
+for (const desktop of [false, true]) {
+  for (const started of [false, true]) {
+    test(`${desktop ? 'Electron' : 'Web'} edit ${started ? 'reuses the running app' : 'starts the stopped app'} before entering a conversation`, async () => {
+      const targets = [];
+      const opens = [];
+      const editable = { ...app, entry_path: 'C:/apps/gomoku/index.html' };
+      if (desktop) window.jiuwenDesktop = {
+        isElectron: true,
+        openMarketApp: async (...args) => { opens.push(args); return true; },
+        closeMarketApp: async () => true,
+        setMarketAppViewport: async () => true,
+      };
+      const ctx = await mount(method => {
+        if (method === 'app_market.list') return { apps: [editable] };
+        if (method === 'app_market.start') return running;
+        return { instances: started ? [running] : [] };
+      }, { onEdit: target => targets.push(target) });
+      try {
+        await click(find('app-market-edit'));
+        await tick();
+        assert.deepEqual(targets, [{ appId: app.app_id, name: app.name, instanceId: running.instance_id,
+          entryPath: editable.entry_path, sourceSession: editable.source_session }]);
+        assert.equal(ctx.calls.filter(call => call.method === 'app_market.start').length, started ? 0 : 1);
+        assert.equal(find('app-market-browser-pane'), null);
+        if (desktop) assert.deepEqual(opens, [[app.app_id, running.url, app.name, true]]);
+        else assert.equal(find('app-market-web-view').src, running.url);
+      } finally { await ctx.close(); delete window.jiuwenDesktop; }
+    });
+  }
+}
+
+test('failed edit startup leaves the user in the market with an error', async () => {
+  const targets = [];
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [{ ...app, entry_path: '/apps/game/index.html' }] };
+    if (method === 'app_market.start') throw new Error('Startup failed');
+    return { instances: [] };
+  }, { onEdit: target => targets.push(target) });
+  try {
+    await click(find('app-market-edit'));
+    assert.deepEqual(targets, []);
+    assert.match(document.querySelector('[role="alert"]').textContent, /Startup failed/);
+    assert.equal(find('app-market-web-view'), null);
+  } finally { await ctx.close(); }
+});
+
+test('session preview reuses the market iframe and clears its binding when the instance stops', async () => {
+  let live = true;
+  let target;
+  const ctx = await mount(method => method === 'app_market.list'
+    ? { apps: [{ ...app, entry_path: '/apps/gomoku/index.html' }] }
+    : { instances: live ? [running] : [] }, { onEdit: value => { target = value; } });
+  let root;
+  try {
+    await click(find('app-market-edit'));
+    const frame = find('app-market-web-view');
+    useSessionStore.getState().ensureRuntime('new');
+    useSessionStore.getState().setAppMarketPreview('new', target);
+    await ctx.unmount();
+    root = createRoot(document.getElementById('root'));
+    await act(async () => root.render(React.createElement(AppMarketSessionPreview, { sessionId: 'new', preview: target })));
+    assert.equal(find('app-market-web-view'), frame);
+    assert.equal(find('app-market-browser-toolbar'), null);
+    const pane = find('app-market-session-preview');
+    assert.equal(pane.dataset.variant, app.app_id);
+    find('app-market-browser-viewport').getBoundingClientRect = () => ({ left: 0, top: 50, width: 1000, height: 700 });
+    await act(async () => { pane.style.zIndex = '9999'; });
+    await tick(); await tick();
+    assert.equal(frame.style.zIndex, '9999');
+    await act(async () => { pane.style.zIndex = ''; });
+    await tick(); await tick();
+    assert.equal(frame.style.zIndex, '10');
+    live = false;
+    await ctx.poll();
+    assert.equal(find('app-market-web-view'), null);
+    assert.equal(useSessionStore.getState().getRuntime('new').appMarketPreview, undefined);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    useSessionStore.getState().removeRuntime('new');
+    await ctx.close();
+  }
+});
+
+test('leaving the market while edit startup is pending cannot navigate to a new conversation later', async () => {
+  const started = deferred();
+  const targets = [];
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [{ ...app, entry_path: '/apps/game/index.html' }] };
+    if (method === 'app_market.start') return started.promise;
+    return { instances: [] };
+  }, { onEdit: target => targets.push(target) });
+  try {
+    await click(find('app-market-edit'));
+    await ctx.unmount();
+    await act(async () => started.resolve(running));
+    await tick();
+    assert.deepEqual(targets, []);
+    assert.equal(find('app-market-web-view'), null);
+  } finally { await ctx.close(); }
+});
+
+for (const succeeds of [true, false]) {
+  test(`returning to an Electron edit session after closing its independent window ${succeeds ? 'recreates the page before showing its viewport' : 'clears the binding on recovery failure'}`, async () => {
+    let alive = false;
+    const opened = [];
+    let recovery;
+    window.jiuwenDesktop = {
+      isElectron: true,
+      openMarketApp: async (...args) => {
+        opened.push(args);
+        if (recovery) await recovery.promise;
+        if (recovery && !succeeds) throw new Error('Cannot restore');
+        alive = true;
+        return true;
+      },
+      closeMarketApp: async () => { alive = false; return true; },
+      setMarketAppViewport: async () => alive,
+    };
+    let target;
+    const ctx = await mount(method => method === 'app_market.list'
+      ? { apps: [{ ...app, entry_path: '/apps/game/index.html' }] }
+      : { instances: [running] }, { onEdit: value => { target = value; } });
+    let root;
+    try {
+      await click(find('app-market-edit'));
+      await ctx.unmount();
+      await window.jiuwenDesktop.openMarketApp(app.app_id, running.url, app.name);
+      alive = false; // The independent window was closed while the service stayed running.
+      recovery = deferred();
+      useSessionStore.getState().ensureRuntime('web_edit');
+      useSessionStore.getState().setAppMarketPreview('web_edit', target);
+      root = createRoot(document.getElementById('root'));
+      await act(async () => root.render(React.createElement(AppMarketSessionPreview, { sessionId: 'web_edit', preview: target })));
+      assert.ok(find('app-market-preview-loading'));
+      assert.equal(find('app-market-browser-viewport'), null);
+      await act(async () => recovery.resolve());
+      await tick();
+      assert.deepEqual(opened.at(-1), [app.app_id, running.url, app.name, true]);
+      assert.equal(alive, succeeds);
+      assert.equal(Boolean(find('app-market-browser-viewport')), succeeds);
+      assert.equal(Boolean(useSessionStore.getState().getRuntime('web_edit').appMarketPreview), succeeds);
+    } finally {
+      if (root) await act(async () => root.unmount());
+      useSessionStore.getState().removeRuntime('web_edit');
+      await ctx.close();
+      delete window.jiuwenDesktop;
+    }
+  });
+}
+
+for (const desktop of [false, true]) {
+  test(`${desktop ? 'Electron' : 'Web'} preview can reload repeatedly without restarting its service or changing the view identity`, async () => {
+    let reloads = 0;
+    if (desktop) window.jiuwenDesktop = {
+      isElectron: true,
+      openMarketApp: async () => true,
+      closeMarketApp: async () => true,
+      reloadMarketApp: async appId => { assert.equal(appId, app.app_id); reloads++; return true; },
+    };
+    const ctx = await mount(method => response(method, [running]));
+    let root;
+    const previousReload = webAppViews.reload;
+    try {
+      await click(find('app-market-open'));
+      const frame = find('app-market-web-view');
+      webAppViews.reload = appId => { reloads++; return previousReload(appId); };
+      localStorage.setItem('app-market-reload-test-save', 'saved');
+      await ctx.unmount();
+      root = createRoot(document.getElementById('root'));
+      await act(async () => root.render(React.createElement(AppMarketPreviewReload, {
+        preview: { appId: app.app_id, name: app.name, instanceId: running.instance_id },
+      })));
+      await click(find('app-market-preview-reload'));
+      await click(find('app-market-preview-reload'));
+      assert.equal(reloads, 2);
+      assert.equal(find('app-market-web-view'), frame);
+      assert.equal(localStorage.getItem('app-market-reload-test-save'), 'saved');
+      assert.equal(ctx.calls.some(call => ['app_market.start', 'app_market.stop', 'app_market.delete'].includes(call.method)), false);
+    } finally {
+      if (root) await act(async () => root.unmount());
+      webAppViews.reload = previousReload;
+      localStorage.removeItem('app-market-reload-test-save');
+      await ctx.close();
+      delete window.jiuwenDesktop;
+    }
+  });
+}
+
+for (const desktop of [false, true]) {
+  test(`${desktop ? 'Electron' : 'Web'} stale editor reload cannot reset a replacement app instance`, async () => {
+    let reloads = 0;
+    if (desktop) window.jiuwenDesktop = {
+      isElectron: true, openMarketApp: async () => true, closeMarketApp: async () => true,
+      reloadMarketApp: async () => { reloads++; return true; },
+    };
+    const ctx = await mount(method => response(method, [running]));
+    let root;
+    const original = webAppViews.reload;
+    try {
+      await click(find('app-market-open'));
+      await ctx.unmount();
+      trackAppMarketView({ ...running, instance_id: 'replacement' }, () => true);
+      webAppViews.reload = () => { reloads++; return true; };
+      assert.equal(hasAppMarketView(app.app_id, running.instance_id), false);
+      assert.equal(hasAppMarketView(app.app_id, 'replacement'), true);
+      root = createRoot(document.getElementById('root'));
+      await act(async () => root.render(React.createElement(AppMarketPreviewReload, {
+        preview: { appId: app.app_id, name: app.name, instanceId: running.instance_id },
+      })));
+      await click(find('app-market-preview-reload'));
+      assert.equal(reloads, 0);
+      assert.equal(hasAppMarketView(app.app_id, 'replacement'), true);
+    } finally {
+      if (root) await act(async () => root.unmount());
+      webAppViews.reload = original;
+      await ctx.close();
+      delete window.jiuwenDesktop;
+    }
+  });
+}
+
+import { transform } from 'esbuild';
+
+// Exercise the actual App handoff with a mounted market so unmount invalidates
+// the same intent callback used by production navigation.
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const editStart = appSource.indexOf('onEditApp={') + 'onEditApp={'.length;
+const editEnd = appSource.indexOf('\n                onCreateViaChat', editStart);
+const editCode = appSource.slice(editStart, editEnd).trim().slice(0, -1);
+const compiledEdit = (await transform(`export default ${editCode}`, { loader: 'tsx', format: 'cjs' })).code;
+function editHandler(dependencies) {
+  return new Function(...Object.keys(dependencies), `const module = { exports: {} }; ${compiledEdit}; return module.exports.default;`)(...Object.values(dependencies));
+}
+
+for (const desktop of [false, true]) {
+  for (const canceled of [false, true]) {
+    test(`${desktop ? 'Electron' : 'Web'} edit ${canceled ? 'does not navigate after leaving the market' : 'restores bound history and preserves its draft'}`, async () => {
+      if (desktop) window.jiuwenDesktop = { isElectron: true, openMarketApp: async () => true, closeMarketApp: async () => true, setMarketAppViewport: async () => true };
+      const pending = deferred();
+      const restored = [];
+      const changes = [];
+      const sidRef = { current: 'new' };
+      const store = { getModelSelectionPayload: () => ({}), setAppMarketPreview: (...args) => changes.push(['preview', ...args]) };
+      const draft = { value: 'existing editor draft' };
+      const handler = editHandler({
+        pendingAppEditsRef: { current: new Map() }, creatingSessionRef: { current: false }, sessionIdRef: sidRef,
+        request: () => pending.promise,
+        useSessionStore: { getState: () => store },
+        useChatStore: { getState: () => ({ setInputValue: (_, value) => { draft.value = value; } }) },
+        t: key => key,
+        closeSidebarPeek: () => changes.push('closePeek'),
+        handleRestoreSession: async (id, mode, session, options) => {
+          assert.equal(options.canActivate(), true);
+          restored.push(session); sidRef.current = id;
+        },
+        setHeartbeatPanelOpen: () => changes.push('heartbeat'),
+        setToolPanelHidden: () => changes.push('toolPanel'),
+        setSingleAgentPanelActiveTab: () => changes.push('appTab'),
+        setSingleAgentPanelExpanded: () => changes.push('expanded'),
+      });
+      const ctx = await mount(method => method === 'app_market.list' ? { apps: [{ ...app, entry_path: '/apps/game/index.html' }] } : response(method, [running]), { onEdit: handler });
+      try {
+        await click(find('app-market-edit'));
+        if (canceled) await ctx.unmount();
+        const session = { session_id: 'bound-editor', mode: 'agent', message_count: 8, project_id: '2048' };
+        await act(async () => pending.resolve({ session, created: false }));
+        await tick();
+        assert.deepEqual(restored, canceled ? [] : [session]);
+        assert.equal(draft.value, 'existing editor draft');
+        assert.equal(changes.length > 0, !canceled);
+      } finally { await ctx.close(); delete window.jiuwenDesktop; }
+    });
+  }
+}
+const { AppMarketEditorAction } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketEditorAction.mjs');
+for (const desktop of [false, true]) {
+  for (const stopped of [false, true]) {
+    test(`${desktop ? 'Electron' : 'Web'} editor header restores a closed preview with ${stopped ? 'a stopped' : 'a running'} app`, async () => {
+      let opens = 0;
+      let starts = 0;
+      let live = !stopped;
+      if (desktop) window.jiuwenDesktop = {
+        isElectron: true, openMarketApp: async () => { opens++; return true; },
+        closeMarketApp: async () => true, setMarketAppViewport: async () => true,
+      };
+      const ctx = await mount(method => {
+        if (method === 'app_market.list') return { apps: [{ ...app, editor_session_id: 'editor' }] };
+        if (method === 'app_market.start') { live = true; starts++; return running; }
+        return { instances: live ? [running] : [] };
+      });
+      await ctx.unmount();
+      const previews = [];
+      let root;
+      const render = async () => {
+        root = createRoot(document.getElementById('root'));
+        await act(async () => root.render(React.createElement(AppMarketEditorAction, { sessionId: 'editor', onOpen: preview => previews.push(preview) })));
+      };
+      try {
+        await render();
+        await click(find('app-market-editor-open-preview'));
+        assert.deepEqual(previews[0], { appId: app.app_id, name: app.name, instanceId: running.instance_id });
+        await act(async () => root.unmount());
+        await render();
+        await click(find('app-market-editor-open-preview'));
+        assert.equal(previews.length, 2);
+        assert.equal(starts, stopped ? 1 : 0);
+        assert.equal(ctx.calls.some(call => call.method === 'app_market.edit_session'), false);
+        if (desktop) assert.equal(opens, 2);
+        else assert.ok(find('app-market-web-view'));
+      } finally {
+        if (root) await act(async () => root.unmount());
+        await ctx.close(); delete window.jiuwenDesktop;
+      }
+    });
+  }
+}
+
+test('unbound conversation has no app header action and canceled restore cannot open its page', async () => {
+  const pending = deferred();
+  const ctx = await mount(method => method === 'app_market.list'
+    ? { apps: [{ ...app, editor_session_id: 'editor' }] } : pending.promise);
+  await ctx.unmount();
+  let root = createRoot(document.getElementById('root'));
+  let opens = 0;
+  try {
+    await act(async () => root.render(React.createElement(AppMarketEditorAction, { sessionId: 'other', onOpen: () => opens++ })));
+    assert.equal(find('app-market-editor-open-preview'), null);
+    await act(async () => root.unmount());
+    root = createRoot(document.getElementById('root'));
+    await act(async () => root.render(React.createElement(AppMarketEditorAction, { sessionId: 'editor', onOpen: () => opens++ })));
+    await click(find('app-market-editor-open-preview'));
+    await act(async () => root.unmount()); root = null;
+    await act(async () => pending.resolve({ instances: [running] }));
+    await tick();
+    assert.equal(opens, 0);
+    assert.equal(find('app-market-web-view'), null);
+  } finally { if (root) await act(async () => root.unmount()); await ctx.close(); }
+});
+
+const { useChatStore } = await import('../node_modules/.cache/app-market-panel/stores/chatStore.mjs');
+function firstEditHarness(request) {
+  const sidRef = { current: 'new' };
+  const restores = [];
+  const requests = { current: new Map() };
+  const handler = editHandler({
+    pendingAppEditsRef: requests, creatingSessionRef: { current: false }, sessionIdRef: sidRef,
+    request, useChatStore,
+    useSessionStore: { getState: () => ({ getModelSelectionPayload: () => ({}), setAppMarketPreview: () => {} }) },
+    t: (key, params) => `${key}:${params?.entryPath ?? ''}`,
+    closeSidebarPeek: () => {},
+    handleRestoreSession: async (id, mode, session, options) => {
+      if (!options.canActivate()) return;
+      restores.push(id); sidRef.current = id;
+      useChatStore.getState().ensureRuntime(id);
+    },
+    setHeartbeatPanelOpen: () => {}, setToolPanelHidden: () => {},
+    setSingleAgentPanelActiveTab: () => {}, setSingleAgentPanelExpanded: () => {},
+  });
+  return { handler, restores, requests };
+}
+const editTarget = { appId: 'gomoku', name: 'Gomoku', entryPath: '/game/index.html', instanceId: 'active' };
+const editSession = { session_id: 'first-editor', mode: 'agent', message_count: 0 };
+
+for (const desktop of [false, true]) {
+  test(`${desktop ? 'Electron' : 'Web'} repeated first-edit clicks share one request and keep the source prompt`, async () => {
+    useChatStore.getState().removeRuntime(editSession.session_id);
+    const pending = deferred();
+    let calls = 0;
+    const h = firstEditHarness(() => { calls++; return pending.promise; });
+    if (desktop) window.jiuwenDesktop = { isElectron: true, openMarketApp: async () => true, closeMarketApp: async () => true, setMarketAppViewport: async () => true };
+    const ctx = await mount(method => method === 'app_market.list'
+      ? { apps: [{ ...app, entry_path: editTarget.entryPath }] } : response(method, [running]), { onEdit: h.handler });
+    try {
+      await click(find('app-market-edit'));
+      await click(find('app-market-edit'));
+      assert.equal(calls, 1);
+      await act(async () => pending.resolve({ session: editSession, created: true }));
+      await tick();
+      assert.deepEqual(h.restores, [editSession.session_id]);
+      assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, 'appMarket.editPrompt:/game/index.html');
+      assert.equal(h.requests.current.size, 0);
+    } finally { await ctx.close(); useChatStore.getState().removeRuntime(editSession.session_id); delete window.jiuwenDesktop; }
+  });
+}
+
+test('canceling first edit preserves its prompt for later bound-session reentry without touching another draft', async () => {
+  useChatStore.getState().removeRuntime(editSession.session_id);
+  useChatStore.getState().ensureRuntime('unrelated-draft');
+  useChatStore.getState().setInputValue('unrelated-draft', 'keep my new task');
+  const pending = deferred();
+  let calls = 0;
+  let current = true;
+  const h = firstEditHarness(() => ++calls === 1 ? pending.promise : Promise.resolve({ session: editSession, created: false }));
+  const first = h.handler(editTarget, () => current);
+  current = false;
+  pending.resolve({ session: editSession, created: true });
+  await first;
+  assert.deepEqual(h.restores, []);
+  await h.handler(editTarget, () => true);
+  assert.deepEqual(h.restores, [editSession.session_id]);
+  assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, 'appMarket.editPrompt:/game/index.html');
+  assert.equal(useChatStore.getState().getRuntime('unrelated-draft').inputValue, 'keep my new task');
+  useChatStore.getState().removeRuntime(editSession.session_id);
+  useChatStore.getState().removeRuntime('unrelated-draft');
+});
+
+for (const value of ['user draft', '']) {
+  test(`a late created response preserves ${value ? 'an existing draft' : 'a deliberately cleared draft'}`, async () => {
+    useChatStore.getState().removeRuntime(editSession.session_id);
+    const pending = deferred();
+    const h = firstEditHarness(() => pending.promise);
+    const operation = h.handler(editTarget, () => true);
+    useChatStore.getState().ensureRuntime(editSession.session_id);
+    useChatStore.getState().setInputValue(editSession.session_id, value);
+    pending.resolve({ session: editSession, created: true });
+    await operation;
+    assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, value);
+    await h.handler(editTarget, () => true);
+    assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, value);
+    useChatStore.getState().removeRuntime(editSession.session_id);
+  });
+}
+
+test('a failed coalesced edit releases its request so retry can succeed', async () => {
+  useChatStore.getState().removeRuntime(editSession.session_id);
+  const failure = deferred();
+  let calls = 0;
+  const h = firstEditHarness(() => ++calls === 1 ? failure.promise : Promise.resolve({ session: editSession, created: true }));
+  const first = h.handler(editTarget, () => false);
+  const second = h.handler(editTarget, () => true);
+  failure.reject(new Error('offline'));
+  const results = await Promise.allSettled([first, second]);
+  assert.deepEqual(results.map(result => result.status), ['rejected', 'rejected']);
+  assert.equal(h.requests.current.size, 0);
+  await h.handler(editTarget, () => true);
+  assert.equal(calls, 2);
+  assert.deepEqual(h.restores, [editSession.session_id]);
+  useChatStore.getState().removeRuntime(editSession.session_id);
 });

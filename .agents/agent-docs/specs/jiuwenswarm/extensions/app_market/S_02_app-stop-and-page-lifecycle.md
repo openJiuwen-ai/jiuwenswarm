@@ -34,9 +34,9 @@ files:
 
 ## 页面联动
 
-页面容器遵循 [S_01_app-market-windows](../../channels/desktop/S_01_app-market-windows.md)：普通 Web 使用市场内嵌 iframe，Electron 使用按 `app_id` 隔离的独立窗口。
+页面容器遵循 [S_01_app-market-windows](../../channels/desktop/S_01_app-market-windows.md)：普通 Web 使用按 `app_id` 复用的 iframe，Electron 使用同一原生页面在独立窗口与编辑侧栏间移动。
 
-- 关闭、隐藏应用窗口或页面不停止服务；聊天 browser 页签关闭不控制应用实例。应用页面不记录与聊天会话共享页签的关联。
+- 关闭、隐藏应用窗口或页面不停止服务；聊天 browser 页签关闭不控制应用实例。编辑入口只在前端记录会话与应用预览的展示关联，不将聊天会话或其自动化 browser 页签作为应用进程的生命周期所有者。
 - 停止或删除 RPC 成功后只关闭该 `app_id` 的容器，不关闭或停止其他应用。失败时保留容器；停止成功后的窗口清理异常不回滚已停止的服务状态。
 - 页面绑定实际打开的 `instance_id`。轮询发现该实例已停止或消失时清理对应页面，包括隐藏页面和离开市场后的页面。新实例打开时清理同一应用或同一端口的旧实例页面，过期轮询不得关闭已替换的页面。
 - `app_market.start` 和 `app_market.instances` 返回 `web_url` 作为 Web 内嵌入口，其主机为按 `app_id` 派生的 `workswarm-app-<摘要>.localhost`。端口和入口路径与 `url` 一致。Electron 沿用 `url` 及按应用隔离的持久分区。

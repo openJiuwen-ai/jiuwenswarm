@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
+const { app, BaseWindow, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -17,7 +17,7 @@ const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidate
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
 const { createAppMarketWindows } = require('./app_market_windows.cjs');
-const appMarketWindows = createAppMarketWindows(BrowserWindow, () => mainWindow, resolveIconPath);
+const appMarketWindows = createAppMarketWindows(BaseWindow, WebContentsView, () => mainWindow, resolveIconPath);
 let macUpdateInProgress = false;
 
 const BACKEND_HOST = '127.0.0.1';
@@ -2441,6 +2441,8 @@ async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
 function registerIpcHandlers() {
   registerHandler('desktop:open-market-app', appMarketWindows.open);
   registerHandler('desktop:close-market-app', appMarketWindows.close);
+  registerHandler('desktop:set-market-app-viewport', appMarketWindows.setViewport);
+  registerHandler('desktop:reload-market-app', appMarketWindows.reload);
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;

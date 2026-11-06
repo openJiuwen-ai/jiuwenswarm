@@ -5,19 +5,23 @@ const { createAppMarketWindows } = require('../../jiuwenswarm/channels/desktop/e
 
 function setup(load) {
   const created = [];
+  const surface = () => ({ children: new Set(),
+    addChildView(view) { this.children.add(view); },
+    removeChildView(view) { this.children.delete(view); },
+  });
   const owner = new EventEmitter();
   owner.isDestroyed = () => !!owner.destroyed;
+  owner.contentView = surface();
+  owner.getContentBounds = () => ({ width: 1600, height: 1000 });
+  owner.webContents = { getZoomFactor: () => 1.25 };
   class Window extends EventEmitter {
     constructor(options) {
       super();
       this.options = options;
-      const contents = this.webContents = new EventEmitter();
-      contents.session = { setPermissionRequestHandler: handler => { this.permission = handler; }, setPermissionCheckHandler: () => {} };
-      contents.setWindowOpenHandler = handler => { this.popup = handler; };
-      contents.loadURL = async (url, options) => { this.url = url; this.loads = (this.loads || 0) + 1; if (load) await load(url, options); };
+      this.contentView = surface();
       created.push(this);
     }
-    loadURL(...args) { return this.webContents.loadURL(...args); }
+    getContentBounds() { return { width: 1200, height: 800 }; }
     setMenuBarVisibility() {}
     isDestroyed() { return !!this.destroyed; }
     isMinimized() { return !!this.minimized; }
@@ -25,9 +29,26 @@ function setup(load) {
     show() { this.visible = true; }
     hide() { this.visible = false; }
     focus() { this.focused = true; }
-    destroy() { this.destroyed = true; this.webContents = undefined; this.emit('closed'); }
+    destroy() { this.destroyed = true; this.emit('closed'); }
   }
-  return { owner, created, ...createAppMarketWindows(Window, () => owner, () => 'workswarm.ico') };
+  class View {
+    constructor(options) {
+      this.options = options;
+      const win = created.at(-1);
+      win.appView = this;
+      const contents = this.webContents = win.webContents = new EventEmitter();
+      contents.session = { setPermissionRequestHandler: handler => { win.permission = handler; }, setPermissionCheckHandler: () => {} };
+      contents.setWindowOpenHandler = handler => { win.popup = handler; };
+      contents.loadURL = async (url, options) => { win.url = url; win.loads = (win.loads || 0) + 1; if (load) await load(url, options); };
+      contents.isDestroyed = () => !!this.destroyed;
+      contents.close = options => { this.destroyed = true; this.closeOptions = options; };
+      contents.focus = () => { this.focused = true; };
+      contents.reload = () => { this.reloads = (this.reloads || 0) + 1; };
+    }
+    setBounds(bounds) { this.bounds = bounds; }
+    setVisible(visible) { this.visible = visible; }
+  }
+  return { owner, created, ...createAppMarketWindows(Window, View, () => owner, () => 'workswarm.ico') };
 }
 
 const deferred = () => {
@@ -45,15 +66,14 @@ test('desktop apps use isolated persistent windows without taskbar buttons and w
   assert.equal(created[0].options.title, 'Game · WorkSwarm');
   assert.equal(created[0].options.icon, 'workswarm.ico');
   assert.equal(created[0].options.parent, process.platform === 'win32' ? undefined : owner);
-  const prefs = created[0].options.webPreferences;
+  const prefs = created[0].appView.options.webPreferences;
   assert.equal(prefs.partition, 'persist:app-market-one');
-  assert.notEqual(prefs.partition, created[1].options.webPreferences.partition);
+  assert.notEqual(prefs.partition, created[1].appView.options.webPreferences.partition);
   assert.equal(prefs.nodeIntegration, false);
   assert.equal(prefs.sandbox, true);
   assert.equal(prefs.preload, undefined);
-  let prevented = false;
-  created[0].emit('page-title-updated', { preventDefault: () => { prevented = true; } }, 'Page');
-  assert.equal(prevented, true);
+  created[0].webContents.emit('page-title-updated', {}, 'Page');
+  assert.equal(created[0].options.title, 'Game · WorkSwarm');
   assert.equal(owner.listenerCount('closed'), 1);
   let permission;
   created[0].permission(null, 'camera', allowed => { permission = allowed; });
@@ -94,12 +114,12 @@ test('stopping closes only the matching window and reopening keeps its partition
   const { open, close, created } = setup();
   await open('one', 'http://localhost:8080/');
   await open('two', 'http://localhost:8081/');
-  const partition = created[0].options.webPreferences.partition;
+  const partition = created[0].appView.options.webPreferences.partition;
   close('one'); close('one');
   assert.equal(created[0].destroyed, true);
   assert.equal(created[1].destroyed, undefined);
   await open('one', 'http://localhost:8080/');
-  assert.equal(created[2].options.webPreferences.partition, partition);
+  assert.equal(created[2].appView.options.webPreferences.partition, partition);
   assert.throws(() => close(''), /Invalid application ID/);
 });
 
@@ -196,5 +216,69 @@ test('failed initial load disposes its view, while an entry update failure remai
   fail = true; await assert.rejects(open('one', 'http://localhost:8081/'), /Unavailable/);
   assert.equal(created[1].destroyed, undefined);
   fail = false; await open('one', 'http://localhost:8081/');
+  assert.equal(created.length, 2);
+});
+
+test('editing moves the same native page into the owner and restoring moves it back without reload', async () => {
+  const { open, setViewport, created, owner, close } = setup();
+  await open('one', 'http://localhost:8080/', 'Game');
+  const win = created[0];
+  const view = win.appView;
+  await open('one', 'http://localhost:8080/', 'Game', true);
+  assert.equal(win.visible, false);
+  assert.equal(win.contentView.children.has(view), false);
+  assert.equal(owner.contentView.children.has(view), true);
+  assert.equal(view.visible, false);
+  assert.equal(setViewport('one', { x: 200, y: 100, width: 600, height: 500 }, true), true);
+  assert.deepEqual(view.bounds, { x: 250, y: 125, width: 750, height: 625 });
+  assert.equal(view.focused, true);
+  setViewport('one', null);
+  assert.equal(view.visible, false);
+  assert.equal(view.destroyed, undefined);
+  await open('one', 'http://localhost:8080/', 'Game');
+  assert.equal(win.visible, true);
+  assert.equal(win.contentView.children.has(view), true);
+  assert.equal(owner.contentView.children.has(view), false);
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1200, height: 800 });
+  assert.equal(win.loads, 1);
+  close('one');
+  assert.equal(view.destroyed, true);
+  assert.deepEqual(view.closeOptions, { waitForBeforeUnload: false });
+});
+
+test('embedded pages hide for invalid bounds and owner close disposes all native contents', async () => {
+  const { open, setViewport, created, owner } = setup();
+  await open('one', 'http://localhost:8080/', 'Game', true);
+  await open('two', 'http://localhost:8081/', 'Other', true);
+  setViewport('one', { x: 0, y: 40, width: 800, height: 600 });
+  setViewport('two', { x: 0, y: 40, width: 800, height: 600 });
+  assert.equal(created[0].appView.visible, false);
+  assert.equal(created[1].appView.visible, true);
+  setViewport('two', { x: 0, y: 0, width: NaN, height: 600 });
+  assert.equal(created[1].appView.visible, false);
+  owner.destroyed = true;
+  owner.emit('closed');
+  assert.ok(created.every(win => win.destroyed && win.appView.destroyed));
+});
+
+test('closed standalone page is recreated in the editor with the same partition and supports repeated reloads', async () => {
+  const { open, setViewport, reload, created, owner } = setup();
+  const url = 'http://localhost:8080/';
+  await open('one', url, 'Game', true);
+  await open('one', url, 'Game');
+  const oldView = created[0].appView;
+  created[0].destroy();
+  assert.equal(oldView.destroyed, true);
+  assert.equal(reload('one'), false);
+  await open('one', url, 'Game', true);
+  const newView = created[1].appView;
+  assert.equal(newView.options.webPreferences.partition, oldView.options.webPreferences.partition);
+  assert.equal(owner.contentView.children.has(newView), true);
+  assert.equal(setViewport('one', { x: 0, y: 40, width: 800, height: 600 }), true);
+  assert.equal(newView.visible, true);
+  assert.equal(reload('one'), true);
+  assert.equal(reload('one'), true);
+  assert.equal(newView.reloads, 2);
+  assert.equal(newView.destroyed, undefined);
   assert.equal(created.length, 2);
 });

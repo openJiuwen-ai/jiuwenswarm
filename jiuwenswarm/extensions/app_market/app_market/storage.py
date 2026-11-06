@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -26,14 +27,16 @@ class MarketStorage:
 
     def save_manifest(self, app_id: str, manifest: AppManifest) -> None:
         """保存应用清单到 {data_dir}/apps/{app_id}/manifest.json"""
+        app_dir = self._apps_dir / app_id
+        app_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = app_dir / "manifest.json"
+        temporary = app_dir / f"manifest-{uuid.uuid4().hex}.tmp"
         try:
-            app_dir = self._apps_dir / app_id
-            app_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = app_dir / "manifest.json"
-            with open(manifest_path, "w", encoding="utf-8") as f:
+            with temporary.open("w", encoding="utf-8") as f:
                 json.dump(asdict(manifest), f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error("保存应用清单失败 app_id=%s: %s", app_id, e)
+            os.replace(temporary, manifest_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def load_manifest(self, app_id: str) -> AppManifest | None:
         """从文件加载应用清单"""

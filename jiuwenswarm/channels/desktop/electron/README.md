@@ -6,11 +6,19 @@ an isolated browser `WebContentsView` on the right side of the application.
 
 ## Local files and downloads
 
-App Market HTML entries use separate Electron BrowserWindows, one per stable
-app ID. Windows have WorkSwarm branding and skip taskbar buttons. Minimizing hides
+App Market HTML entries use one WebContentsView per stable app ID, normally
+hosted in a separate BaseWindow. Windows have WorkSwarm branding and skip taskbar buttons. Minimizing hides
 them; the market's Open / restore action restores the existing page without reload.
-The regular Web client keeps its sandboxed iframe panel, with expand, hide and
-close actions; it does not use Electron viewport APIs. Apps must allow embedding.
+Edit creates an empty conversation in the source conversation’s project, with
+the app source path as an unsent draft and an app tab in the
+right sidebar. Electron moves the same native page into the main window; Open /
+restore moves it back without reloading or changing the app's storage partition.
+Returning to an edit session ensures its native page exists; after manually
+closing the standalone window, the page is recreated using the running app's
+entry and persistent partition. The editor's Reload app preview action reloads
+only the page, without restarting its service or clearing browser storage.
+The regular Web client reuses its sandboxed iframe in both market and editor
+panels, with expand, hide and close actions; it does not use Electron viewport APIs. Apps must allow embedding.
 Manual closing does not stop the service. Successful market stop/delete closes
 only that app's page; storage is not cleared. The main window owns cleanup on exit.
 App windows retain persist:app-market-<appId>, sandbox isolation and no preload or

@@ -20,8 +20,10 @@ const desktopApi = Object.freeze({
   getCloseAction: () => invoke('desktop:get-close-action'),
   setCloseAction: action => invoke('desktop:set-close-action', action),
   openExternalUrl: url => invoke('desktop:open-external-url', url),
-  openMarketApp: (appId, url, title) => invoke('desktop:open-market-app', appId, url, title),
+  openMarketApp: (appId, url, title, embedded) => invoke('desktop:open-market-app', appId, url, title, embedded === true),
   closeMarketApp: appId => invoke('desktop:close-market-app', appId),
+  setMarketAppViewport: (appId, bounds, focus) => invoke('desktop:set-market-app-viewport', appId, bounds, focus === true),
+  reloadMarketApp: appId => invoke('desktop:reload-market-app', appId),
   captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
   exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
   onShareImageExportProgress: callback => {

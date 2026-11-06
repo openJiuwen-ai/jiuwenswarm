@@ -1,4 +1,5 @@
 import { webRequest } from '../../services/webClient';
+import { webAppViews } from './webAppViews';
 
 export interface InstanceInfo {
   instance_id: string;
@@ -71,6 +72,25 @@ export function trackAppMarketView(instance: InstanceInfo, close: CloseView) {
 
 export function hasAppMarketView(appId: string, instanceId: string) {
   return views.get(appId)?.instanceId === instanceId;
+}
+
+export async function openAppMarketView(instance: InstanceInfo, name: string, embedded = false) {
+  if (!instance.url) return false;
+  const desktop = window.jiuwenDesktop;
+  if (desktop?.isElectron && (!desktop.openMarketApp || (embedded && !desktop.setMarketAppViewport))) return false;
+  const untrack = trackAppMarketView(instance, () => desktop?.isElectron
+    ? desktop.closeMarketApp?.(instance.app_id) ?? false : webAppViews.close(instance.app_id));
+  try {
+    if (desktop?.isElectron) {
+      const opened = embedded
+        ? await desktop.openMarketApp!(instance.app_id, instance.url, name, true)
+        : await desktop.openMarketApp!(instance.app_id, instance.url, name);
+      if (!opened) { untrack?.(); return false; }
+    } else {
+      webAppViews.open(instance.app_id, instance.web_url || instance.url, name);
+    }
+    return true;
+  } catch (error) { untrack?.(); throw error; }
 }
 
 export async function readAppMarketInstances() {

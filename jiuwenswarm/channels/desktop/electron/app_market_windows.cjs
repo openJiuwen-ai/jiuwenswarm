@@ -1,5 +1,5 @@
-// App windows do not depend on conversation browser panels or headless mode.
-function createAppMarketWindows(BrowserWindow, getOwner, getIcon) {
+// App pages keep one WebContentsView while moving between their window and editor pane.
+function createAppMarketWindows(BaseWindow, WebContentsView, getOwner, getIcon) {
   const windows = new Map();
   let ownerCloseRegistered = false;
   const isWebUrl = value => {
@@ -7,7 +7,7 @@ function createAppMarketWindows(BrowserWindow, getOwner, getIcon) {
   };
   const show = entry => {
     const win = entry.window;
-    if (entry.hidden || win.isDestroyed()) return;
+    if (entry.embedded || entry.hidden || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     win.show(); win.focus();
   };
@@ -15,7 +15,7 @@ function createAppMarketWindows(BrowserWindow, getOwner, getIcon) {
     const navigation = ++entry.navigation;
     entry.loadingUrl = marketUrl;
     try {
-      await entry.window.loadURL(target, options);
+      await entry.view.webContents.loadURL(target, options);
       if (navigation !== entry.navigation || entry.window.isDestroyed()) return false;
       entry.entryUrl = marketUrl;
       entry.loadingUrl = null;
@@ -27,13 +27,31 @@ function createAppMarketWindows(BrowserWindow, getOwner, getIcon) {
       throw error;
     }
   };
-  const open = async (appId, rawUrl, title) => {
+  const resizeWindow = entry => {
+    if (entry.embedded || entry.window.isDestroyed()) return;
+    const { width, height } = entry.window.getContentBounds();
+    entry.view.setBounds({ x: 0, y: 0, width, height });
+  };
+  const present = (entry, embedded) => {
+    if (entry.embedded !== embedded) {
+      const owner = getOwner();
+      const previous = entry.embedded ? owner : entry.window;
+      previous?.contentView.removeChildView(entry.view);
+      (embedded ? owner : entry.window).contentView.addChildView(entry.view);
+      entry.embedded = embedded;
+    }
+    entry.hidden = false;
+    entry.view.setVisible(!embedded);
+    if (embedded) entry.window.hide();
+    else resizeWindow(entry);
+  };
+  const open = async (appId, rawUrl, title, embedded = false) => {
     const url = new URL(rawUrl);
     if (typeof appId !== 'string' || !appId || !isWebUrl(url.href) || url.username || url.password
         || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('Invalid application entry');
     const existing = windows.get(appId);
     if (existing && !existing.window.isDestroyed()) {
-      existing.hidden = false;
+      present(existing, embedded === true);
       if ((existing.loadingUrl || existing.entryUrl) !== url.href && !await loadEntry(existing, url.href)) return true;
       show(existing);
       return true;
@@ -46,24 +64,31 @@ function createAppMarketWindows(BrowserWindow, getOwner, getIcon) {
       });
       ownerCloseRegistered = true;
     }
-    const win = new BrowserWindow({
+    const win = new BaseWindow({
       parent: process.platform === 'win32' ? undefined : owner,
       title: title ? `${String(title)} · WorkSwarm` : 'WorkSwarm',
       icon: getIcon(), skipTaskbar: true,
       width: 1200, height: 800, show: false,
-      webPreferences: {
-        partition: `persist:app-market-${encodeURIComponent(appId)}`,
-        contextIsolation: true, nodeIntegration: false, sandbox: true,
-      },
     });
-    const entry = { window: win, entryUrl: null, loadingUrl: null, navigation: 0, hidden: false };
+    const view = new WebContentsView({ webPreferences: {
+      partition: `persist:app-market-${encodeURIComponent(appId)}`,
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
+    } });
+    const contents = view.webContents;
+    win.contentView.addChildView(view);
+    const entry = { window: win, view, embedded: false, entryUrl: null, loadingUrl: null, navigation: 0, hidden: false };
     windows.set(appId, entry);
     win.setMenuBarVisibility(false);
-    win.on('page-title-updated', event => event.preventDefault());
+    win.on('resize', () => resizeWindow(entry));
     // With no taskbar button, the market's Open / restore action is the restore entry.
     win.on('minimize', () => { entry.hidden = true; win.hide(); });
-    win.on('closed', () => { if (windows.get(appId) === entry) windows.delete(appId); });
-    const contents = win.webContents;
+    win.on('closed', () => {
+      if (windows.get(appId) === entry) windows.delete(appId);
+      const owner = getOwner();
+      if (entry.embedded && owner && !owner.isDestroyed()) owner.contentView.removeChildView(view);
+      if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
+    });
+    present(entry, embedded === true);
     contents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     contents.session.setPermissionCheckHandler(() => false);
     let nativeNavigation = 0;
@@ -101,7 +126,35 @@ function createAppMarketWindows(BrowserWindow, getOwner, getIcon) {
     if (win && !win.isDestroyed()) win.destroy();
     return true;
   };
-  return { open, close };
+  const setViewport = (appId, bounds, focus = false) => {
+    const entry = windows.get(appId);
+    const owner = getOwner();
+    if (!entry || entry.window.isDestroyed() || !owner || owner.isDestroyed()) return false;
+    if (!bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
+        || bounds.width <= 0 || bounds.height <= 0) {
+      if (entry.embedded) entry.view.setVisible(false);
+      return false;
+    }
+    if (!entry.embedded) present(entry, true);
+    const zoom = owner.webContents.getZoomFactor();
+    const size = owner.getContentBounds();
+    const x = Math.max(0, Math.min(Math.round(bounds.x * zoom), size.width));
+    const y = Math.max(0, Math.min(Math.round(bounds.y * zoom), size.height));
+    const width = Math.max(0, Math.min(Math.round(bounds.width * zoom), size.width - x));
+    const height = Math.max(0, Math.min(Math.round(bounds.height * zoom), size.height - y));
+    for (const other of windows.values()) if (other.embedded) other.view.setVisible(false);
+    entry.view.setBounds({ x, y, width, height });
+    entry.view.setVisible(width > 0 && height > 0);
+    if (focus && width > 0 && height > 0) entry.view.webContents.focus();
+    return true;
+  };
+  const reload = appId => {
+    const entry = windows.get(appId);
+    if (!entry || entry.window.isDestroyed()) return false;
+    entry.view.webContents.reload();
+    return true;
+  };
+  return { open, close, setViewport, reload };
 }
 
 module.exports = { createAppMarketWindows };

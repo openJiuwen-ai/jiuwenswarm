@@ -16,6 +16,7 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
  */
 
 import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { AppMarketEditorAction } from './components/AppMarketPanel/AppMarketEditorAction';
 import { ChatPanel } from './components/ChatPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
@@ -652,6 +653,7 @@ function AppContent({
   const historyCursorFailuresRef = useRef(new Map<string, HistoryRestoreFailure>());
   const historyRevealTargetRef = useRef(new Map<string, number>());
   const creatingSessionRef = useRef(false);
+  const pendingAppEditsRef = useRef(new Map<string, Promise<Session>>());
   /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
   const pendingNewConversationRef = useRef(route.kind === 'chat-new');
   const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
@@ -1148,7 +1150,9 @@ function AppContent({
   const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
 
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
+  const appMarketPreview = useSessionStore(s => s.runtimes[sessionId ?? '']?.appMarketPreview);
   const toolPanelHasContent = useMemo(() => {
+    if (appMarketPreview) return true;
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
     // 没有任何会话内容，悬浮收起条不应出现（tool-panel-collapsed 首页闪现 bug）。
     if (isElectron) return sessionId !== NEW_CONVERSATION_ID;
@@ -1165,7 +1169,7 @@ function AppContent({
           || hasMessages
           || hasCodeEnvironment;
     }
-  }, [isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [appMarketPreview, isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
@@ -3755,7 +3759,8 @@ function AppContent({
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean; canActivate?: () => boolean }) => {
+      if (options?.canActivate && !options.canActivate()) return;
       setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
@@ -3784,6 +3789,7 @@ function AppContent({
         }
       }
 
+      if (options?.canActivate && !options.canActivate()) return;
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {
@@ -3869,7 +3875,7 @@ function AppContent({
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean },
+      options?: { skipHistoryLoad?: boolean; canActivate?: () => boolean },
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -4555,6 +4561,16 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                       <ChatPanel
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
+                        conversationCreated={sessionId !== NEW_CONVERSATION_ID}
+                        headerActions={sessionId && sessionId !== NEW_CONVERSATION_ID ? (
+                          <AppMarketEditorAction key={sessionId} sessionId={sessionId} onOpen={preview => {
+                            useSessionStore.getState().setAppMarketPreview(sessionId, preview);
+                            setHeartbeatPanelOpen(false);
+                            setToolPanelHidden(false);
+                            setSingleAgentPanelActiveTab('app');
+                            setSingleAgentPanelExpanded(true);
+                          }} />
+                        ) : undefined}
                         onForkSession={handleForkSession}
                         continuedFromSessionId={continuedFromSessionId}
                         onOpenContinuedFromSession={handleOpenContinuedFromSession}
@@ -4851,6 +4867,41 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
+                onEditApp={async (target, isCurrent) => {
+                  if (creatingSessionRef.current) return;
+                  let pending = pendingAppEditsRef.current.get(target.appId);
+                  if (!pending) {
+                    pending = request<{ session: Session; created: boolean }>(
+                      'app_market.edit_session', {
+                        app_id: target.appId,
+                        title: t('appMarket.editSessionTitle', { name: target.name }),
+                        ...useSessionStore.getState().getModelSelectionPayload(sessionIdRef.current),
+                      }, { timeoutMs: 180_000 }).then(({ session, created }) => {
+                        // Initialize only the new session, even if navigation was canceled.
+                        // An existing runtime includes drafts the user deliberately cleared.
+                        const chatStore = useChatStore.getState();
+                        if (created && !chatStore.getRuntime(session.session_id)) {
+                          chatStore.ensureRuntime(session.session_id);
+                          chatStore.setInputValue(session.session_id,
+                            t('appMarket.editPrompt', { name: target.name, entryPath: target.entryPath }));
+                        }
+                        return session;
+                      }).finally(() => pendingAppEditsRef.current.delete(target.appId));
+                    pendingAppEditsRef.current.set(target.appId, pending);
+                  }
+                  const session = await pending;
+                  if (!isCurrent()) return;
+                  closeSidebarPeek();
+                  await handleRestoreSession(session.session_id, session.mode, session, { canActivate: isCurrent });
+                  if (sessionIdRef.current !== session.session_id) return;
+                  useSessionStore.getState().setAppMarketPreview(session.session_id, {
+                    appId: target.appId, name: target.name, instanceId: target.instanceId,
+                  });
+                  setHeartbeatPanelOpen(false);
+                  setToolPanelHidden(false);
+                  setSingleAgentPanelActiveTab('app');
+                  setSingleAgentPanelExpanded(true);
+                }}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'workswarm-builtin',

@@ -26,6 +26,8 @@ class AppManifest:
     description: str = ""
     icon_url: str = ""
     owner_id: str = ""
+    editor_session_id: str = ""
+    editor_create_token: str = ""
 
 
 @dataclass

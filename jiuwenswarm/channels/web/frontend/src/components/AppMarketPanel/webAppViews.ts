@@ -1,4 +1,4 @@
-type WebAppBounds = Pick<DOMRectReadOnly, 'x' | 'y' | 'width' | 'height'>;
+type WebAppBounds = Pick<DOMRectReadOnly, 'x' | 'y' | 'width' | 'height'> & { zIndex?: number };
 
 // Keep page instances outside the panel's React lifetime, like Electron views.
 const pages = new Map<string, { frame: HTMLIFrameElement; entryUrl: string }>();
@@ -34,6 +34,12 @@ export const webAppViews = {
     pages.delete(appId);
     return true;
   },
+  reload(appId: string) {
+    const page = pages.get(appId);
+    if (!page?.frame.isConnected) return false;
+    page.frame.src = page.frame.src;
+    return true;
+  },
   setViewport(appId: string, bounds: WebAppBounds | null, focus = false) {
     const page = pages.get(appId);
     if (!page) return false;
@@ -55,6 +61,7 @@ export const webAppViews = {
     Object.assign(page.frame.style, {
       left: `${bounds.x}px`, top: `${bounds.y}px`, width: `${bounds.width}px`, height: `${bounds.height}px`,
       visibility: 'visible', pointerEvents: 'auto',
+      zIndex: String(bounds.zIndex ?? 10),
     });
     page.frame.setAttribute('aria-hidden', 'false');
     if (focus) page.frame.focus();

@@ -55,6 +55,10 @@ Text-only NPCs can create sessions with `execution_profile:"app_role"` and `role
 
 普通 Web 端保留应用市场右侧 sandbox iframe 内嵌面板（应用须允许嵌入），支持展开、收起、关闭页面。Electron 使用独立的内置浏览器窗口，不显示子窗口任务栏按钮；最小化后从应用市场“打开／恢复应用”恢复，重复打开不重载当前对局。
 
+两端的“编辑”共用每个应用持久绑定的编辑会话；首次未绑定或确认会话已删除时，在来源会话原项目创建真实空会话并保存关联，预填名称和源码入口（不发送）。再次点击保留原会话历史及草稿，并在右侧展开应用页签；未运行的应用会先启动，失败则留在市场。Electron 在独立窗口与编辑侧栏之间移动同一原生页面，保留运行状态和应用持久分区；Web 复用同一 iframe。关闭编辑页签只隐藏对应预览，不停止服务。侧栏顶栏的“重新加载应用预览”可反复重载页面，不重启服务、不清持久化存档；页面内存态会重置，Web 预览回到应用入口。
+
+Edit creates an empty conversation in the original app conversation’s project, with the app name and source entry prefilled as an unsent draft, and shows the app in the right sidebar on both Web and Electron. A stopped app starts first; startup failure leaves the user in App Market. Electron moves the same native page between its window and the editor without losing its runtime or storage partition. Web reuses the existing iframe. Closing the editor tab does not stop the app. Reload app preview reloads only the page, preserving its service and browser storage. In-memory page state resets; Web previews return to the app entry URL.
+
 关闭窗口或页面后服务继续运行。实例停止、删除或从实例列表消失时，市场清理其对应容器。Electron 使用按应用 ID 划分的持久分区。Web 为每个应用分配专属的 `*.localhost` 主机，避免端口复用时读到其他应用的缓存。浏览器存储按协议、主机和端口隔离，原 `127.0.0.1` 来源的数据不会自动迁移。多存档、世界状态及 NPC 会话绑定由应用存档系统负责。
 
 Closing an app page leaves its service running. The market removes the corresponding page when its instance stops or disappears. Web apps use distinct `*.localhost` origins so a reused port cannot pick up another app's cached resources. Browser storage from the previous `127.0.0.1` origin does not migrate automatically. Electron uses a persistent partition for each app.
@@ -92,3 +96,7 @@ Closing an app page leaves its service running. The market removes the correspon
 - 同一会话可以开发和上架多个应用。
 
 应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md)。
+
+`app_market.edit_session` resolves the app-owned persistent editor conversation through routed Core RPCs. First use creates an empty conversation in the source project; subsequent clicks preserve its history and draft. Only a confirmed missing session permits replacement. Transient errors retain the binding; republishing preserves it, while deleting an app does not delete its conversation. Concurrent requests are serialized per app.
+
+编辑会话标题栏提供“打开应用预览”，关闭侧栏或刷新后都可恢复；应用未运行时先启动。普通会话不显示此入口。The editor header keeps an Open app preview action after closing the pane or refreshing. It starts a stopped app before restoring its preview; ordinary conversations do not show this action.
