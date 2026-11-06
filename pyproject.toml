@@ -19,6 +19,7 @@ dependencies = [
     "loguru>=0.7.3",
     "markdown>=3.4,<4",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@9ec0370818bbb89a1dd446781e56fb063c54cd53#subdirectory=openjiuwen-protocol",
     # Gateway/AgentServer share the reviewed Runtime foundation implementation.
     "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
     "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",

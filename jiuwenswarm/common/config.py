@@ -1398,6 +1398,19 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（RSI 优化平台开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
+        section["enabled"] = bool(value)
+        return data
+
+    update_config(mutator)
+
+
 def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
     """更新 proactive_recommendation 配置段并写回。"""
     data = load_yaml_round_trip(_current_config_yaml_path())

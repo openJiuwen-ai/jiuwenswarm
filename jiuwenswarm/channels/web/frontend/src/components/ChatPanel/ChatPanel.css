@@ -1399,8 +1399,9 @@ overflow: hidden;
   cursor: pointer;
 }
 
-.chat-mode-select__option:hover,
-.chat-mode-select__option:focus-visible {
+/* RSI 旧版模型菜单(.rsi-model-select__menu)自带 hover 样式，排除通用规则避免叠加 */
+.chat-mode-select__option:not(.rsi-model-select__menu *):hover,
+.chat-mode-select__option:not(.rsi-model-select__menu *):focus-visible {
   background: rgba(var(--color-action-primary-rgb), 0.05);
   color: var(--color-text-primary);
   outline: none;
