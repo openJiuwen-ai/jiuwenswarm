@@ -14,6 +14,7 @@ from typing import Any
 DEFAULT_INSTALL_DIR = "extension_pkgs"
 DEFAULT_STORE_DIR = "extension/store"
 DEFAULT_STATE_DIR = "extension/state"
+DEFAULT_EXAMPLES_DIR = "examples"
 INSTALL_DIR_ENV = "EXTENSION_INSTALL_DIR"
 STORE_DIR_ENV = "EXTENSION_STORE_DIR"
 STATE_DIR_ENV = "EXTENSION_STATE_DIR"
@@ -53,6 +54,19 @@ def resolve_state_dir(config: Mapping[str, Any] | None = None) -> Path:
         env_name=STATE_DIR_ENV,
         default=DEFAULT_STATE_DIR,
     )
+
+
+def resolve_examples_dir(config: Mapping[str, Any] | None = None) -> Path:
+    """Resolve the bundled example packages, optionally overridden by config."""
+
+    source = config if config is not None else _read_config()
+    raw = _configured_value(source, "examples_dir")
+    path = Path(raw).expanduser() if raw else Path(__file__).resolve().parent / DEFAULT_EXAMPLES_DIR
+    if not path.is_absolute():
+        from jiuwenswarm.common.utils import get_user_workspace_dir
+
+        path = get_user_workspace_dir() / path
+    return path.resolve()
 
 
 def _resolve_configured_dir(

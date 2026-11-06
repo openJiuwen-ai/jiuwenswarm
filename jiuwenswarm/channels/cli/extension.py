@@ -108,17 +108,13 @@ def inspect_zip(value: str) -> dict[str, str]:
     if source.suffix.lower() != ".zip" or not source.is_file():
         raise ClientError("INVALID_INPUT", "install 需要一个已存在的 ZIP 文件。")
     try:
-        import yaml
-    except ImportError:
-        raise ClientError("DEPENDENCY_MISSING", "读取 ZIP 中的 manifest 需要 PyYAML，请使用目标项目的 Python 环境。") from None
-    try:
         with ZipFile(source) as archive:
-            if archive.namelist().count("manifest.yaml") != 1:
-                raise ValueError("ZIP 根目录必须恰好包含一份 manifest.yaml。")
-            entry = archive.getinfo("manifest.yaml")
+            if archive.namelist().count("manifest.json") != 1:
+                raise ValueError("ZIP 根目录必须恰好包含一份 manifest.json。")
+            entry = archive.getinfo("manifest.json")
             if entry.file_size > 64 * 1024:
-                raise ValueError("manifest.yaml 超过 64 KiB，请检查包内容。")
-            manifest = yaml.safe_load(archive.read(entry))
+                raise ValueError("manifest.json 超过 64 KiB，请检查包内容。")
+            manifest = json.loads(archive.read(entry))
         package = manifest.get("package") if isinstance(manifest, dict) else None
         if not isinstance(package, dict) or not isinstance(package.get("id"), str):
             raise ValueError("manifest 缺少 package.id。")
@@ -128,7 +124,7 @@ def inspect_zip(value: str) -> dict[str, str]:
             raise ValueError("manifest 中的 package.version 必须是非空字符串。")
     except ClientError:
         raise
-    except (BadZipFile, OSError, ValueError, RuntimeError, UnicodeError, yaml.YAMLError) as error:
+    except (BadZipFile, OSError, ValueError, RuntimeError, UnicodeError) as error:
         raise ClientError("INVALID_ZIP", str(error)) from None
     try:
         with source.open("rb") as stream:

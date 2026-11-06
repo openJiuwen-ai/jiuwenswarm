@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "domain": "agentserver",
+    "id": "sample.counter",
+    "version": "1.0.0",
+    "displayName": "State Counter",
+    "description": "Persistent session counter with state-driven panel refresh."
+  },
+  "extensions": [
+    {
+      "id": "counter",
+      "runtime": "backend",
+      "module": "extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "counter.panel",
+        "slot": "conversation.input.below",
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  }
+}

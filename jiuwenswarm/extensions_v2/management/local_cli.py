@@ -13,7 +13,7 @@ from openjiuwen.core.extension import ExtensionFailure, PackageManager
 from jiuwenswarm.common.extension_cli import LocalControl
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter, _parse_params
+from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter, _parse_request
 
 
 async def start_local_cli() -> LocalControl:
@@ -31,7 +31,8 @@ async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
     """Validate host ownership, then reuse the existing management adapter."""
     method = ReqMethod(f"extensions.v2.{action}")
     try:
-        paths, package_id = _parse_params(method.value, params)
+        parsed = _parse_request(method.value, params)
+        paths, package_id = parsed.paths, parsed.package_id
         for path in paths:
             if await asyncio.to_thread(_package_domain, path) != "agentserver":
                 return _error("DOMAIN_MISMATCH", "该 ZIP 属于 Gateway，请使用对应宿主的管理入口。")

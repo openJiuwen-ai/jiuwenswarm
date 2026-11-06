@@ -1,5 +1,6 @@
 # 包含 package resources 目录
 recursive-include jiuwenswarm/resources *
+recursive-include jiuwenswarm/extensions_v2/examples *
 include jiuwenswarm/agents/harness/common/rsi/harness_config.yaml
 include OPEN_SOURCE_SOFTWARE_NOTICE.md
 include scripts/build_config.py
@@ -14,3 +15,5 @@ recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail/skills *
 # 排除 node_modules，避免打包进 wheel
 prune jiuwenswarm/channels/web/frontend/node_modules
 global-exclude node_modules
+# 排除示例包运行时产生的字节码缓存
+global-exclude __pycache__ *.py[cod]

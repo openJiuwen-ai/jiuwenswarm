@@ -123,7 +123,7 @@ class Peer:
 def archive(tmp_path: Path) -> Path:
     path = tmp_path / "中文 package.zip"
     with ZipFile(path, "w") as output:
-        output.writestr("manifest.yaml", 'package:\n  domain: agentserver\n  id: test.pkg\n  version: "1.0.0"\n')
+        output.writestr("manifest.json", '{"package": {"domain": "agentserver", "id": "test.pkg", "version": "1.0.0"}}')
     return path
 
 
@@ -249,7 +249,7 @@ async def test_no_context_is_reported_without_port_search(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_manifest_selects_gateway_host(archive: Path) -> None:
     with ZipFile(archive, "w") as output:
-        output.writestr("manifest.yaml", 'package:\n  domain: gateway\n  id: test.pkg\n  version: "1.0.0"\n')
+        output.writestr("manifest.json", '{"package": {"domain": "gateway", "id": "test.pkg", "version": "1.0.0"}}')
     agent_peer, gateway_peer = Peer(), Peer()
     agent = transport.LocalControl("agent", agent_peer.handle)
     gateway = transport.LocalControl("gateway", gateway_peer.handle)
@@ -310,12 +310,11 @@ async def test_ready_owner_is_notified_and_disconnect_releases_it() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_control_rejects_gateway_zip_before_loading(tmp_path: Path) -> None:
-    import yaml
     root = write_package(tmp_path / "foreign")
-    path = root / "manifest.yaml"
-    manifest = yaml.safe_load(path.read_text())
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_text())
     manifest["package"]["domain"] = "gateway"
-    path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
     response = await handle("install", {"paths": [str(archive_package(root))]})
     assert not response["ok"] and response["payload"]["code"] == "DOMAIN_MISMATCH"
 
@@ -394,13 +393,12 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
 
 @pytest.mark.parametrize("domain", [None, "agent", "GATEWAY", " gateway ", "other", 1])
 def test_cli_rejects_missing_or_illegal_package_domain(tmp_path, domain):
-    import yaml
     path = tmp_path / "invalid-domain.zip"
     package = {"id": "test.pkg", "version": "1.0.0"}
     if domain is not None:
         package["domain"] = domain
     with ZipFile(path, "w") as archive:
-        archive.writestr("manifest.yaml", yaml.safe_dump({"package": package}))
+        archive.writestr("manifest.json", json.dumps({"package": package}))
     with pytest.raises(cli.ClientError, match="package.domain"):
         cli.inspect_zip(str(path))
 

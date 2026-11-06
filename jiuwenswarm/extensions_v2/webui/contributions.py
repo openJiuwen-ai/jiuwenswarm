@@ -10,9 +10,9 @@ from typing import Any
 import hashlib
 import json
 
-import yaml
 from openjiuwen.core.extension import ActivePackageRecord
 
+from jiuwenswarm.extensions_v2.manifest_io import read_manifest_document
 from jiuwenswarm.extensions_v2.webui.constants import RENDERER_WEBUI_TREE, slot_spec
 from jiuwenswarm.extensions_v2.webui.settings import SETTINGS_SLOT, parse_settings
 
@@ -104,7 +104,7 @@ def load_ui_catalog(records: Sequence[ActivePackageRecord]) -> UiCatalog:
     for record in records:
         try:
             package_items = load_package_ui(record)
-        except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
+        except (OSError, UnicodeError, ValueError) as exc:
             errors[record.package_id] = str(exc)
             continue
         if package_items is None:
@@ -116,10 +116,7 @@ def load_ui_catalog(records: Sequence[ActivePackageRecord]) -> UiCatalog:
 def load_package_ui(record: ActivePackageRecord) -> tuple[UiContribution, ...] | None:
     """Return validated UI items for one package, or None when it declares none."""
 
-    manifest_path = record.root / "manifest.yaml"
-    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(raw, Mapping):
-        raise ValueError("manifest.yaml top level must be a mapping")
+    raw = read_manifest_document(record.root)
     ui = raw.get("ui")
     if ui is None:
         return None

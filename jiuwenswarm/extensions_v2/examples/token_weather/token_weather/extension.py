@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Entry point declared by manifest.yaml."""
+"""Entry point declared by manifest.json."""
 
 from __future__ import annotations
 

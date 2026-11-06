@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "domain": "agentserver",
+    "id": "example.session-detach",
+    "version": "1.0.0",
+    "displayName": "Session Detach Example"
+  },
+  "extensions": [
+    {
+      "id": "view-resources",
+      "runtime": "backend",
+      "module": "extension.py"
+    }
+  ]
+}

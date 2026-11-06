@@ -210,24 +210,24 @@ class LocalControl:
 
 def source_domain(path: Path) -> str:
     """Read the declared host without importing package code."""
+    import json
     from zipfile import BadZipFile, ZipFile
-
-    import yaml
 
     try:
         if path.is_dir():
-            manifest_path = path / "manifest.yaml"
+            manifest_path = path / "manifest.json"
             if manifest_path.stat().st_size > 65536:
                 raise ValueError("manifest exceeds 64 KiB")
             raw = manifest_path.read_bytes()
         else:
             with ZipFile(path) as archive:
-                entry = archive.getinfo("manifest.yaml")
+                entry = archive.getinfo("manifest.json")
                 if entry.file_size > 65536:
                     raise ValueError("manifest exceeds 64 KiB")
                 raw = archive.read(entry)
-        manifest = yaml.safe_load(raw)
-    except (OSError, KeyError, BadZipFile, yaml.YAMLError) as error:
+        manifest = json.loads(raw)
+    except (OSError, KeyError, BadZipFile, ValueError, UnicodeError) as error:
         raise ValueError("Cannot read package manifest") from error
-    domain = manifest.get("domain") if isinstance(manifest, dict) else None
-    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else "agent"
+    package = manifest.get("package") if isinstance(manifest, dict) else None
+    domain = package.get("domain") if isinstance(package, dict) else None
+    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else "agent_server"

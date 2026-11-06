@@ -330,7 +330,7 @@ def _about_tab() -> RenderNode:
                     "column",
                     text("本页是 WebUI 插件系统的顶层插件示例，入口位于侧边栏导航区。 / "
                          "A top-level WebUI plugin example whose entry lives in the navigation rail."),
-                    text("manifest.yaml 的 ui 段同时声明 application.menu 与 application.menu.main，"
+                    text("manifest.json 的 ui 段同时声明 application.menu 与 application.menu.main，"
                          "Handler 用 ops.ui.render 返回渲染树。 / The manifest declares both slots; "
                          "the handler renders trees with ops.ui.render."),
                     text("页面数据来自插件包内的演示目录，不代表真实扩展管理器状态。 / "

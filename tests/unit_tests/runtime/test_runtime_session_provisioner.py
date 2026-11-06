@@ -247,10 +247,12 @@ async def test_deleting_a_live_run_notifies_once_before_release(env, tmp_path, m
     monkeypatch.setenv("RUNTIME_END_SESSIONS", str(env.root))
     source = tmp_path / "reader"
     source.mkdir()
-    (source / "manifest.yaml").write_text(
-        "schemaVersion: 1\npackage:\n  id: runtime.end-reader\n  version: 1.0.0\n"
-        "extensions:\n  - id: reader\n    runtime: backend\n    module: extension.py\n", encoding="utf-8",
-    )
+    (source / "manifest.json").write_text(json.dumps({
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": "runtime.end-reader", "version": "1.0.0"},
+        "extensions": [{"id": "reader", "runtime": "backend", "module": "extension.py"}],
+    }), encoding="utf-8")
     (source / "extension.py").write_text('''from dataclasses import asdict
 import json
 import os

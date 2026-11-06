@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "domain": "agentserver",
+    "id": "webui.token-weather",
+    "version": "1.0.0"
+  },
+  "display_name": {
+    "zh": "上下文用量",
+    "en": "Token Weather"
+  },
+  "display_description": {
+    "zh": "展示每轮对话的 token 用量和多轮上下文汇总。",
+    "en": "Shows token usage per turn and the session context summary."
+  },
+  "tags": [
+    {
+      "zh": "上下文",
+      "en": "Context"
+    },
+    {
+      "zh": "用量",
+      "en": "Usage"
+    }
+  ],
+  "extensions": [
+    {
+      "id": "token-weather",
+      "runtime": "backend",
+      "module": "token_weather/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "token-weather.turn",
+        "slot": "message.assistant.meta",
+        "order": 10,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "token-weather.summary",
+        "slot": "conversation.input.below",
+        "order": 20,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  }
+}

@@ -8,10 +8,10 @@ model_name = await ops.session.model()  # str 或 None，不再是模型详情�
 
 默认优先已应用运行快照中的 model_name；缺失时只读保存资料可得的名称。只有稳定选择 ID 而无名称时为 None，不把分组/路由 ID 冒充物理模型名。不创建或切换模型。
 
-在本目录打包，让 ZIP 根直接包含 manifest.yaml 和 extension.py：
+在本目录打包，让 ZIP 根直接包含 manifest.json 和 extension.py：
 
 ```powershell
-Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .\session_model_info.zip
+Compress-Archive -LiteralPath .\manifest.json, .\extension.py -DestinationPath .\session_model_info.zip
 ```
 
 ```text

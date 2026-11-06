@@ -4,7 +4,7 @@ Demonstrates `ops.mcp.*` from a WebUI extension package against a real MCP
 server started from `mcp.json`, plus runtime registration through
 `ops.mcp.register`.
 
-- The panel is declared in `manifest.yaml` on `conversation.panel.right`.
+- The panel is declared in `manifest.json` on `conversation.panel.right`.
 - `mcp.json` declares a stdio server whose tools are `echo`, `add` and
   `server_info`. Loading the package only records the declaration; the first
   `Connect` opens the connection through `mcp.connect`.

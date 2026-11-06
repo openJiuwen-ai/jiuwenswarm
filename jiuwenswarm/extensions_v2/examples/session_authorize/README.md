@@ -1,6 +1,6 @@
 # Session Authorization Probe
 
-把 manifest.yaml 和 extension.py 放在 ZIP 根目录，通过既有扩展安装入口加载。包监听 `context.usage.updated`，在活动 USER Handler 内调用无参 `await ops.session.authorize()`，仅记录是否有结果和 kind，再继续原用量事件；不打印句柄，不获取或保存真实凭据，不进入 ui.render。
+把 manifest.json 和 extension.py 放在 ZIP 根目录，通过既有扩展安装入口加载。包监听 `context.usage.updated`，在活动 USER Handler 内调用无参 `await ops.session.authorize()`，仅记录是否有结果和 kind，再继续原用量事件；不打印句柄，不获取或保存真实凭据，不进入 ui.render。
 
 当前默认没有宿主凭据绑定，正常结果是 None。`{"handle": "...", "kind": "api-key"}` 或 bearer 只表示宿主已签发受管引用，不代表网络请求成功或完成新的 OAuth 授权。方法不接受 service/scopes，也不返回 token。
 

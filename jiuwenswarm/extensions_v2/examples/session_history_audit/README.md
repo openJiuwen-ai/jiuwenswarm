@@ -1,13 +1,13 @@
 # Session history audit / 会话历史审计
 
-这是一个**用户扩展包示例**，不是产品内置包。Worker 已提供 append 事件、共享 Ops 和默认持久化 CORE；用户只安装本目录中的 manifest.yaml 和 extension.py。
+这是一个**用户扩展包示例**，不是产品内置包。Worker 已提供 append 事件、共享 Ops 和默认持久化 CORE；用户只安装本目录中的 manifest.json 和 extension.py。
 
 ## 中文：功能与准备
 
 会话正常执行并发布已有 context.usage.updated 后，本包 on_usage 追加一条结构化审计说明，再查询历史确认。on_append 只匹配 `door=note`、`origin.kind=extension`，以保留块位置的方式给文本加 `[audited]`，或拒绝以 `[block]` 开头的自己的 note。
 
 1. 使用包含 PR04 的 Server 与既有 agent-core，按项目原方式启动。
-2. 将本目录的 manifest.yaml、extension.py 打成 ZIP，安装到 extensions.v2 管理入口。
+2. 将本目录的 manifest.json、extension.py 打成 ZIP，安装到 extensions.v2 管理入口。
 3. 正常发送一条消息，等待真实用量通知，查看宿主日志 `session history audit:` 与历史查询。
 4. 卸载包后用户 Handler 不再调用，已保存历史保留。
 

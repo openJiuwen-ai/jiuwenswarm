@@ -4,11 +4,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from zipfile import ZipFile
-
-import yaml
 
 from openjiuwen.core.events import Event, ExtensionEventBus
 
@@ -115,6 +114,7 @@ def write_package(
     package = root / f"{package_id}-{version}"
     package.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, object] = {
+        "package_type": "extension",
         "schemaVersion": 1,
         "package": {
             "id": package_id,
@@ -137,10 +137,7 @@ def write_package(
                 for required_id, specifier in requires
             ]
         }
-    (package / "manifest.yaml").write_text(
-        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    (package / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if write_module:
         entry = package / module
         entry.parent.mkdir(parents=True, exist_ok=True)

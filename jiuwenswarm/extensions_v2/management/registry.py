@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
@@ -35,9 +34,9 @@ from openjiuwen.core.extension.management import (
     unbind_context,
 )
 
-from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
 from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface
+from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
 
 logger = logging.getLogger(__name__)
 

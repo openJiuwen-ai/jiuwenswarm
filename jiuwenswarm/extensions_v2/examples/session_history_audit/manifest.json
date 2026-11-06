@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "domain": "agentserver",
+    "id": "example.session-history-audit",
+    "version": "1.0.0",
+    "displayName": "Session History Audit"
+  },
+  "extensions": [
+    {
+      "id": "history-audit",
+      "runtime": "backend",
+      "module": "extension.py"
+    }
+  ]
+}

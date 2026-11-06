@@ -11,10 +11,10 @@ percent = context.get("percent")  # 整数百分比；缺失是未知
 
 turns 是已提交原生用户轮次或 None，不统计扩展 note。usage 返回 context/rateLimits/可选 cost。无账本则省略 cost，无额度读数则 []；未知数字不填零。summary 只返回已观察分类子集，full 默认明确不支持额外计数。旧 breakdown=True/False、context_window/turn 存储对象需迁移。
 
-在本目录打包，让 ZIP 根直接包含 manifest.yaml 和 extension.py：
+在本目录打包，让 ZIP 根直接包含 manifest.json 和 extension.py：
 
 ```powershell
-Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .\session_usage_info.zip
+Compress-Archive -LiteralPath .\manifest.json, .\extension.py -DestinationPath .\session_usage_info.zip
 ```
 
 ```text

@@ -10,10 +10,10 @@ if repo is not None:
 
 root 为主工作树根，linked worktree 也返回主根；当前目录另查 cwd。remote 优先 origin.pushurl，并去除 URL 凭据。当前构建无内部仓库清单，internal=False/name=None。旧 branch/head/detached 不再返回。
 
-在本目录打包，让 ZIP 根直接包含 manifest.yaml 和 extension.py：
+在本目录打包，让 ZIP 根直接包含 manifest.json 和 extension.py：
 
 ```powershell
-Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .\session_repo_info.zip
+Compress-Archive -LiteralPath .\manifest.json, .\extension.py -DestinationPath .\session_repo_info.zip
 ```
 
 ```text

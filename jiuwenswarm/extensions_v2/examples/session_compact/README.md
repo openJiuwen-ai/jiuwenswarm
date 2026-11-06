@@ -1,6 +1,6 @@
 # Project Compaction 示例（接口阶段，真实压缩未接入）
 
-依赖本次 Core 压缩 Hook 与 Server session.compact 实现。安装 ZIP 时 manifest.yaml 与 extension.py 位于包根目录。包由 Worker 加载，不需要改前端或调用 ui.render。
+依赖本次 Core 压缩 Hook 与 Server session.compact 实现。安装 ZIP 时 manifest.json 与 extension.py 位于包根目录。包由 Worker 加载，不需要改前端或调用 ui.render。
 
 默认只注册 `session.compact` 策略。当前生产主流程的输入前引擎绑定、手动/自动压缩桥接与任务结束预计算调度均已注释，因此原 command.compact、正常 query、自动阈值和溢出恢复不会调用这个策略。
 

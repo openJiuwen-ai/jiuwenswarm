@@ -5,7 +5,7 @@
 
 ## 安装和验证
 
-1. 使用支持 store 的 Core 版本启动 Swarm，打包本目录的 manifest.yaml、extension.py 和 README.md。
+1. 使用支持 store 的 Core 版本启动 Swarm，打包本目录的 manifest.json、extension.py 和 README.md。
    三个文件均位于 ZIP 根目录，使用现有 `/extension install <ZIP 绝对路径>` 命令安装。
 2. 执行 `/extension query example.store-probe`，确认管理入口返回成功激活的事实。
 3. 完成一轮正常单 Agent 对话，等待用量事件。查看 AgentServer / Runtime Worker 日志：
@@ -33,7 +33,7 @@ saved=False 或异常不能当作已经保存，提交结果不确定时应先�
 
 ## English
 
-Package manifest.yaml, extension.py and README.md at the ZIP root, then install it through the existing extension command.
+Package manifest.json, extension.py and README.md at the ZIP root, then install it through the existing extension command.
 Complete a normal chat round and inspect the Runtime Worker logs for `[store-probe]` and the package JSON for counter.
 Earlier handlers of the usage event must forward with next for this extension to run.
 New sessions, reload and server restart preserve counter; successful uninstall deletes the JSON.

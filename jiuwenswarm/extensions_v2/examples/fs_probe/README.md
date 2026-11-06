@@ -2,7 +2,7 @@
 
 Demonstrates `ops.fs.*` from a WebUI extension package.
 
-- The panel is declared in `manifest.yaml` on `conversation.panel.right`.
+- The panel is declared in `manifest.json` on `conversation.panel.right`.
 - A `context.usage.updated` handler scans the session working directory with
   `fs.list`, `fs.exists`, `fs.read`, `fs.stat`, and `fs.ancestors`.
   `fs.ancestors` stops at the host's `project_root` (or the session directory
