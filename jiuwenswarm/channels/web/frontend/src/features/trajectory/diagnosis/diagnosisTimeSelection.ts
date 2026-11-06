@@ -299,6 +299,24 @@ type NumberedTurnSamples = {
 };
 
 /**
+ * Team harness / internal envelopes that are not real agent work.
+ *
+ * Dropped from shared-axis compression samples and from `user_turn` wall
+ * extents so overnight idle can collapse like a single-Agent session, and so
+ * gap clocks follow real work rather than `team-clock` heartbeats.
+ */
+export function isTeamHarnessNoiseCell(cell: WallClockSample): boolean {
+  const source = cell.messageSource;
+  if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
+    const origin = (source as { origin?: unknown }).origin;
+    if (origin === 'harness_internal') return true;
+  }
+  if (cell.kind !== 'user') return false;
+  const text = `${cell.text ?? ''}\n${cell.inputDetail ?? ''}`;
+  return TEAM_HARNESS_USER_MARK.test(text);
+}
+
+/**
  * True when the cell is an external chat user prompt.
  *
  * `ask_user` resumes and team harness USER rows (`team-clock` / `team-event` /
@@ -307,15 +325,12 @@ type NumberedTurnSamples = {
  */
 export function isExternalUserPromptCell(cell: WallClockSample): boolean {
   if (cell.kind !== 'user') return false;
+  if (isTeamHarnessNoiseCell(cell)) return false;
   const source = cell.messageSource;
   if (source !== null && typeof source === 'object' && !Array.isArray(source)) {
     const kind = (source as { kind?: unknown }).kind;
     if (kind === 'trajectory_ask_user') return false;
-    const origin = (source as { origin?: unknown }).origin;
-    if (origin === 'harness_internal') return false;
   }
-  const text = `${cell.text ?? ''}\n${cell.inputDetail ?? ''}`;
-  if (TEAM_HARNESS_USER_MARK.test(text)) return false;
   return true;
 }
 
@@ -357,6 +372,7 @@ export function collectUserInteractionWallRanges(
     const hasUserPrompt = turnHasExternalUserPrompt(turn);
     for (const group of turn.groups) {
       for (const cell of group.cells) {
+        if (isTeamHarnessNoiseCell(cell)) continue;
         const interval = sampleInterval(cell, nowMs);
         if (interval === null) continue;
         startWallMs = startWallMs === null
@@ -604,6 +620,154 @@ export function formatElapsed(ms: number): string {
   return `${minutes}:${ss}`;
 }
 
+/**
+ * Visible blank between one `user_turn` end and the next start, as a fraction
+ * of the currently visible shared-axis width. Swimlane pads and axis marks
+ * stay in sync via `placeUserTurnAxisEdges`.
+ */
+export const USER_TURN_GAP_FRACTION = 0.02;
+
+/** Half the proportional user_turn gap, in the same units as the visible domain. */
+export function userTurnGapHalfAxisMs(visibleDurationMs: number): number {
+  if (!(visibleDurationMs > 0) || !Number.isFinite(visibleDurationMs)) return 0;
+  return visibleDurationMs * (USER_TURN_GAP_FRACTION / 2);
+}
+
+/** One start/end edge of a `user_turn` after the visible junction gap is applied. */
+export interface UserTurnAxisEdge {
+  turn: number;
+  edge: 'start' | 'end';
+  /** Original compressed-axis position before the junction gap. */
+  axisMs: number;
+  /** Draw position after enforcing the gap to the neighboring user_turn. */
+  displayAxisMs: number;
+  wallMs: number;
+}
+
+/**
+ * Place every `user_turn` start/end on the axis and force a visible gap between
+ * consecutive turns when compression (or raw timing) would leave less than
+ * `USER_TURN_GAP_FRACTION` of the visible width between them.
+ */
+export function placeUserTurnAxisEdges(
+  ranges: readonly SharedTurnAxisRange[],
+  visibleDurationMs: number,
+): UserTurnAxisEdge[] {
+  const gapHalf = userTurnGapHalfAxisMs(visibleDurationMs);
+  const minGap = gapHalf * 2;
+  const edges: UserTurnAxisEdge[] = [];
+  for (const range of ranges) {
+    edges.push({
+      turn: range.turn,
+      edge: 'start',
+      axisMs: range.startAxisMs,
+      displayAxisMs: range.startAxisMs,
+      wallMs: range.startWallMs,
+    });
+    edges.push({
+      turn: range.turn,
+      edge: 'end',
+      axisMs: range.endAxisMs,
+      displayAxisMs: range.endAxisMs,
+      wallMs: range.endWallMs,
+    });
+  }
+  const ordered = [...ranges].sort((left, right) => (
+    left.startAxisMs - right.startAxisMs
+    || left.turn - right.turn
+  ));
+  for (let index = 0; index < ordered.length - 1; index += 1) {
+    const current = ordered[index];
+    const next = ordered[index + 1];
+    if (current === undefined || next === undefined) continue;
+    const endEdge = edges.find(edge => edge.turn === current.turn && edge.edge === 'end');
+    const startEdge = edges.find(edge => edge.turn === next.turn && edge.edge === 'start');
+    if (endEdge === undefined || startEdge === undefined) continue;
+    const span = startEdge.axisMs - endEdge.axisMs;
+    if (span >= minGap) continue;
+    const mid = (endEdge.axisMs + startEdge.axisMs) / 2;
+    endEdge.displayAxisMs = mid - gapHalf;
+    startEdge.displayAxisMs = mid + gapHalf;
+  }
+  return edges;
+}
+
+/** Axis interval used when clipping swimlane spans against display blanks. */
+export interface AxisInterval {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Blank intervals between consecutive `user_turn` display edges.
+ *
+ * Covers forced 2% junctions and wider natural blanks so a long tool/model
+ * span cannot paint through the gap chrome.
+ */
+export function userTurnDisplayGaps(
+  edges: readonly UserTurnAxisEdge[],
+): AxisInterval[] {
+  const startByTurn = new Map<number, UserTurnAxisEdge>();
+  const endByTurn = new Map<number, UserTurnAxisEdge>();
+  for (const edge of edges) {
+    if (edge.edge === 'start') startByTurn.set(edge.turn, edge);
+    else endByTurn.set(edge.turn, edge);
+  }
+  const turns = [...endByTurn.keys()].sort((left, right) => {
+    const leftStart = startByTurn.get(left)?.axisMs ?? 0;
+    const rightStart = startByTurn.get(right)?.axisMs ?? 0;
+    return leftStart - rightStart || left - right;
+  });
+  const gaps: AxisInterval[] = [];
+  for (let index = 0; index < turns.length - 1; index += 1) {
+    const currentTurn = turns[index];
+    const nextTurn = turns[index + 1];
+    if (currentTurn === undefined || nextTurn === undefined) continue;
+    const end = endByTurn.get(currentTurn);
+    const start = startByTurn.get(nextTurn);
+    if (end === undefined || start === undefined) continue;
+    if (start.displayAxisMs > end.displayAxisMs) {
+      gaps.push({ startMs: end.displayAxisMs, endMs: start.displayAxisMs });
+    }
+  }
+  return gaps;
+}
+
+/**
+ * Subtract `user_turn` display gaps from a span.
+ *
+ * Spans wholly inside a gap disappear; spans that cross a gap split into one
+ * piece on each side (call site keeps the same record identity).
+ */
+export function clipIntervalAgainstGaps(
+  startMs: number,
+  endMs: number,
+  gaps: readonly AxisInterval[],
+): AxisInterval[] {
+  if (!(endMs > startMs) || !Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return [];
+  }
+  let pieces: AxisInterval[] = [{ startMs, endMs }];
+  for (const gap of gaps) {
+    if (!(gap.endMs > gap.startMs)) continue;
+    const next: AxisInterval[] = [];
+    for (const piece of pieces) {
+      if (piece.endMs <= gap.startMs || piece.startMs >= gap.endMs) {
+        next.push(piece);
+        continue;
+      }
+      if (piece.startMs < gap.startMs) {
+        next.push({ startMs: piece.startMs, endMs: gap.startMs });
+      }
+      if (piece.endMs > gap.endMs) {
+        next.push({ startMs: gap.endMs, endMs: piece.endMs });
+      }
+    }
+    pieces = next;
+  }
+  return pieces.filter(piece => piece.endMs > piece.startMs);
+}
+
 /** Wall-clock instant as local `HH:mm:ss`, or an empty string when invalid. */
 export function formatAxisClock(ms: number): string {
   if (!Number.isFinite(ms)) return '';
@@ -611,6 +775,21 @@ export function formatAxisClock(ms: number): string {
   if (Number.isNaN(date.getTime())) return '';
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/**
+ * Wall-clock label for `user_turn` start/end marks.
+ *
+ * Date (month-day, no year) and time sit on separate lines so compressed
+ * cross-day junctions stay readable without a long single-line string.
+ */
+export function formatUserTurnClock(ms: number): string {
+  if (!Number.isFinite(ms)) return '';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}\n`
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 /**

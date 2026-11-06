@@ -717,9 +717,22 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   assert.match(panelSource, /useSharedTimeAxis\(sharedTimeAxis, sessionId, subjectSnapshots\)/);
   assert.match(panelSource, /collectUserInteractionWallRanges\(turns\)/);
   assert.match(panelSource, /turnMarkers=\{sharedAxisTurnMarkers\}/);
+  assert.match(panelSource, /userTurnGapRanges: sharedAxisTurnMarkers/);
   assert.match(
     readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
-    /TURN_LANE_GAP_PX = 12/,
+    /placeUserTurnAxisEdges\(ranges, visibleDuration\)/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /clipIntervalAgainstGaps\(span\.start, span\.end, userTurnGaps\)/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/diagnosis/diagnosisTimeSelection.ts', import.meta.url), 'utf8'),
+    /USER_TURN_GAP_FRACTION = 0\.02/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/diagnosis/useSharedTimeAxis.ts', import.meta.url), 'utf8'),
+    /isTeamHarnessNoiseCell\(sample\)/,
   );
   assert.match(panelSource, /const teamContent = laneLayout &&/);
   // Without the selection prop the lanes stay read-only; with it they pick per agent.
@@ -746,6 +759,10 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
 
 test('diagnosis sub-page folds finished stages and offers record management', () => {
   const dir = '../src/features/trajectory/diagnosis/';
+  const sessionHook = readFileSync(new URL(`${dir}useDiagnosisSession.ts`, import.meta.url), 'utf8');
+  // Team sessions may 403 list before team_name exists; keep the empty state, do not banner.
+  assert.match(sessionHook, /isUnsupportedSessionMode\(error\)/);
+  assert.match(sessionHook, /LIST_UNSUPPORTED_RETRIES/);
   const subpage = readFileSync(new URL(`${dir}DiagnosisSubpage.tsx`, import.meta.url), 'utf8');
   const select = readFileSync(new URL(`${dir}DiagnosisRecordSelect.tsx`, import.meta.url), 'utf8');
   assert.match(subpage, /isStageExpanded\(view\.status, userChoice\)|isStageExpanded\(view\.status/);

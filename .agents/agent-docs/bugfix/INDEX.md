@@ -1,7 +1,7 @@
 ---
 title: 故障修复 B索引
-author: openjiuwen_ai
-author_email: openjiuwen_ai@163.com
+author: william9200000
+author_email: wangchen309@h-partners.com
 generated: true
 ---
 

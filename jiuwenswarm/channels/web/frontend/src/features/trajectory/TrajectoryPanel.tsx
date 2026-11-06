@@ -127,6 +127,7 @@ import {
   mainAgentLastNode,
   rawOtelSpanIntervals,
   resolveSelectionWallMs,
+  userTurnGapHalfAxisMs,
   type SharedTurnAxisRange,
 } from './diagnosis/diagnosisTimeSelection';
 import { useSharedTimeAxis } from './diagnosis/useSharedTimeAxis';
@@ -1451,9 +1452,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const toWallRange = (range: TrajectoryTimeRange | null): WallRange | null => {
     if (range === null || timeAxis.toWall === undefined) return null;
     const domain = timeAxis.domain;
-    const gapHalfAxisMs = domain !== null && domain.endMs > domain.startMs
-      ? (domain.endMs - domain.startMs) * (6 / 800)
-      : 0;
+    const viewport = timeAxis.viewport;
+    const gapHalfAxisMs = viewport !== null && viewport.end > viewport.start
+      ? userTurnGapHalfAxisMs(viewport.end - viewport.start)
+      : domain !== null && domain.endMs > domain.startMs
+        ? userTurnGapHalfAxisMs(domain.endMs - domain.startMs)
+        : 0;
     const toWall = timeAxis.toWall;
     const startMs = sharedAxisTurnMarkers.length === 0
       ? toWall(range.start)
@@ -2046,6 +2050,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   ? {
                     sharedTimeDomain: timeAxis.sharedTimeDomain,
                     ...(timeAxis.mapSharedTime === undefined ? {} : { mapSharedTime: timeAxis.mapSharedTime }),
+                    userTurnGapRanges: sharedAxisTurnMarkers,
                     timelineRange: selecting ? laneVisualRange(subjectId) : null,
                     timelineRangeAppearance: 'region',
                     onTimelineRangeChange: selecting
