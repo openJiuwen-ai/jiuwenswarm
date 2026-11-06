@@ -681,7 +681,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 聊天输入区：conversation.input.above、conversation.input.below | [ChatPanel/index.tsx](../../../channels/web/frontend/src/components/ChatPanel/index.tsx) | 输入、选择、禁用、草稿和局部布局 |
 | 消息与轮次：message.assistant.meta、conversation.turn.footer.actions、conversation.session.content.after | [MessageItem.tsx](../../../channels/web/frontend/src/components/ChatPanel/MessageItem.tsx) | 消息归属、轮次操作、状态与事件参数 |
 | 设置页：application.settings | [SettingsPageLayout.tsx](../../../channels/web/frontend/src/features/settings/SettingsPageLayout.tsx) | 表单组件、共享布局与滚动 |
-| 扩展设置页：application.settings.page（Gateway） | [ExtensionSettingsPages.tsx](../../../channels/web/frontend/src/features/settings/modules/extensions/ExtensionSettingsPages.tsx) | 每个包一个页签、表单组件、FileImport、共享布局与滚动 |
+| 扩展设置页：application.settings.page（Gateway） | [pluginPages.tsx](../../../channels/web/frontend/src/features/settings/modules/extensions/pluginPages.tsx) | 每个包在设置导航中单独一项、表单组件、FileImport、共享布局与滚动 |
 | 应用背景：application.background（Gateway） | [WebUIAppRoot.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIAppRoot.tsx)、[WebUIBackgroundHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIBackgroundHost.tsx) | MediaSurface 根、全窗口底层、不接收输入、宿主策略 |
 | 启动开场：application.splash（Gateway） | [WebUISplashGate.tsx](../../../channels/web/frontend/src/features/webui/react/WebUISplashGate.tsx)、[splash/](../../../channels/web/frontend/src/features/webui/splash) | MediaSurface 根、开场层、时限与跳过、登录入口推迟 |
 

@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_13 / application-settings-page` |
 | 建档日期 | 2026-11-05 |
-| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08） |
+| 后续修订 | 2026-11-05：导入与导出对远程浏览器同样开放（D-07）；2026-11-06：每个插件的设置页在设置导航中单独一项，“扩展”模块只放宿主功能（D-08）；与 AgentServer 插件设置并存（D-09） |
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
@@ -124,6 +124,21 @@ GW-11 的开场队列按发布顺序播放全部提供者，用户无法调整�
 放弃的做法：在 manifest 的设置页贡献中另设标题或图标字段（新增契约；用户选择直接用插件名与统一图标）；
 把启动开场移到“常规”或单独成项（用户选择保留“扩展”放宿主功能）。
 
+#### D-09 与 AgentServer 插件设置并存（2026-11-06）
+
+`releases/0.2.9.beta3` 引入了 AgentServer 插件设置：`webui.settings.catalog` 返回 `kind: menu|section|item` 贡献，
+按 location 规则合成进已有设置模块（[S_18](../../../../extensions_v2/docs/specs/S_18_settings-location.md)）；
+S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并存、不合并：
+
+| 机制 | 数据来源 | 呈现 |
+| --- | --- | --- |
+| AgentServer 插件设置（S_18） | `webui.settings.catalog`，插件按 location 声明 | 合成进常规等已有模块的分区与设置项 |
+| Gateway 插件设置页（本特性） | 宿主方法 `webui.settings.pages`，包声明 `application.settings.page` | “扩展”之后每个插件单独一项，挂载该包的设置页 |
+
+`SettingsPageLayout` 先由 `usePluginSettings` 合成 AgentServer 贡献，再在“扩展”模块之后插入 Gateway 插件项；
+目标分支的侧栏收起与悬浮、初始模块、行内保存错误和插件目录错误提示同样作用于插件项。目标分支已移除布局底部通用的
+`application.settings` 宿主，本特性不恢复。统一两套机制（例如让 Gateway 包也按 location 声明设置位置）留待后续评估。
+
 ### 4.3 替代方案与排除理由
 
 | 方案 | 排除理由 |
@@ -190,7 +205,7 @@ S_02 槽位表、概览、计划与模块 `AGENTS.md`；新增中英文界面文
 
 ### 8.2 实际执行与证据
 
-环境：macOS（arm64），Python 3.11.17（`wallpaper-engine/.venv-v2`，agent-core 31fee3a），Node 22.23.4，
+环境：macOS（arm64），Python 3.11.17（独立虚拟环境，agent-core 31fee3a），Node 22.23.4，
 Chrome for Testing `chrome-headless-shell` 157.0.8103.38。
 
 | 编号 | 用例或命令 | 结果 |
@@ -203,7 +218,7 @@ Chrome for Testing `chrome-headless-shell` 157.0.8103.38。
 | 修订对照（远程开放） | 先把用例改为期望远程可用，在只服务本机的实现上运行 | Gateway 2 项（远程上传、远程下载）、`app_web` 1 项、前端 1 项（403 不再提示“只能在本机导入”）失败；移除回环判断后全部通过 |
 | F_13-V-09 | `tests/unit_tests/gateway/extensions_v2/` 483 项；`tests/unit_tests/channels/web/` 与 `test_trajectory_http.py` 150 项（1 项既有跳过）；前端 contracts 151、protocol 14、components 264、renderer 17、runtime 21、client 22、events 93、transport 9；`test:i18n-locales` 4；`tsc` 与 `npm run build` | 全部通过；构建仅有既有的分包与体积提示 |
 
-F_13-V-10（2026-11-05，D-08 之前的页签布局）：验证页（本地 `wallpaper-engine/.tools/v2-harness/`）中，验证服务启动真实的 `GatewayRuntime` 与 Gateway 路由，
+F_13-V-10（2026-11-05，D-08 之前的页签布局）：验证页（本地验证脚本，未随仓库提交）中，验证服务启动真实的 `GatewayRuntime` 与 Gateway 路由，
 `/harness-ws` 按 WebChannel 的帧格式把每个请求交给 `GatewayRuntime.intercept`；页面打包真实的 `SettingsPageLayout`
 （“常规”与“扩展”两个模块）、`createWebClientTransport`、导入服务与 `FileImport`，加载 `npm run build` 产出的样式表。
 三个测试包：两个声明设置页与开场，一个只声明开场。
@@ -231,8 +246,8 @@ F_13-V-11（2026-11-06，D-08）：
 | 范围 | 环境与命令 | 结果 |
 | --- | --- | --- |
 | 前端单元 | `test:webui-components` 270 项，新增 4 项：插件项排在“扩展”之后、读取条件（访问结果、连接、失败）、只挂载所选包、“扩展”只含宿主功能；在改动前的代码上因 `pluginPages.tsx` 不存在而无法构建。`test:settings-panel` 62 项（修正 GW-12 遗留的模块顺序断言：当时把 `extensionsModule` 加入定义却未更新该断言）；`test:i18n-locales` 4；contracts 151、protocol 14、renderer 17、runtime 21、client 22、events 93、transport 9；`tsc`、`npm run build` | 通过 |
-| 验证页 | `wallpaper-engine/.tools/v2-harness/settings-cdp.mjs`，三个测试包，Chromium 157 | 导航依次为常规、扩展、WorkSwarm Theme Studio、Release Notes；“扩展”只有开场分组、没有导入控件；插件项的标题为插件名，切换时只挂载所选包；导入、导出（地址一次性）、预览与 V-10 一致；“扩展”的行样式与“常规”一致 |
-| 真实应用 | 4.3 隔离实例：fork 的 Gateway、AgentServer、`app_web` 与构建产物，安装主题背景 2.0.0 与登录示例 | 设置导航为“常规……已归档的任务、扩展、主题背景、实验功能”；“扩展”的开场提供者显示“主题背景”；登录前后都能打开插件项 |
+| 验证页 | 本地 CDP 验证脚本（未随仓库提交），三个测试包，Chromium 157 | 导航依次为常规、扩展、WorkSwarm Theme Studio、Release Notes；“扩展”只有开场分组、没有导入控件；插件项的标题为插件名，切换时只挂载所选包；导入、导出（地址一次性）、预览与 V-10 一致；“扩展”的行样式与“常规”一致 |
+| 真实应用 | 隔离实例：开发分支的 Gateway、AgentServer、`app_web` 与构建产物，安装主题背景 2.0.0 与登录示例 | 设置导航为“常规……已归档的任务、扩展、主题背景、实验功能”；“扩展”的开场提供者显示“主题背景”；登录前后都能打开插件项 |
 
 验证中发现并修正：插件名较长时按钮随名称撑宽导航列（导航列表为 grid，子项默认最小宽度取内容宽度）；改为按钮可收缩、名称单行省略，完整名称放在悬停提示中。
 
@@ -246,5 +261,6 @@ F_13-V-11（2026-11-06，D-08）：
 - 插件标题不支持多语言，取 manifest `displayName`。
 - 远程浏览器使用导入与导出时，凭据随请求地址经网络传输；部署方应使用 HTTPS。两台机器之间的导入与导出尚未实测。
 - 桌面打包版与真实 Gateway 的联调随壁纸插件进行。
+- Gateway 插件设置页与 AgentServer 插件设置（S_18）是两套机制，统一方式待评估（D-09）。
 - 设置页在 560 px 宽时的既有横向溢出不属于本条目，未处理。
 - `FileImport` 的“完成”状态在插件重新渲染后不保留（节点随新版本重建）；插件应在页面中自行反映导入结果。
