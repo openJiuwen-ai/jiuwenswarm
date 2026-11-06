@@ -134,8 +134,14 @@ interface MutableTask {
 }
 
 const MAIN_SUBJECT_ID = 'main';
-const TASK_CREATED = /^task\.([^.]+)\.created$/;
-const TASK_CHANGED = /^task\.([^.]+)\.(updated|unblocked|completed|cancelled)$/;
+const TASK_CREATED = /^task\.(.+)\.created$/;
+const TASK_CHANGED = /^task\.(.+)\.(updated|unblocked|completed|cancelled)$/;
+const PHASE_FIXED_EVENT_KINDS = new Set<ScheduledControlEventKind>([
+  'verified',
+  'completed',
+  'cancelled',
+  'escalated',
+]);
 
 function firstSpan(record: TrajectoryDetailRecord): OtlpSpan | null {
   return record.otlp === null ? null : (spansOf(record.otlp)[0] ?? null);
@@ -439,9 +445,7 @@ function applyRecord(
 
     const statusPhase = phaseFromStatus(status);
     if (statusPhase !== undefined
-      && event.kind !== 'verified'
-      && event.kind !== 'cancelled'
-      && event.kind !== 'escalated') {
+      && !PHASE_FIXED_EVENT_KINDS.has(event.kind)) {
       task.phase = statusPhase;
     }
   }
