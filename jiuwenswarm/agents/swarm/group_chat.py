@@ -1050,7 +1050,8 @@ class PrivateTaskPolicy(DeepAgentRail):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
         from openjiuwen.core.foundation.llm import ToolMessage
 
-        if ctx.inputs.tool_name in {"start_group_task", "complete_team_run", "ask_user"}:
+        # tool_call relays a searched tool through the normal tool path, so the gate checks the inner call.
+        if ctx.inputs.tool_name in {"start_group_task", "complete_team_run", "ask_user", "tool_call", "tool_search"}:
             return
         current = _private_runs.get(self.key)
         if current is None:
