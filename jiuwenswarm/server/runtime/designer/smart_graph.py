@@ -208,16 +208,16 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
         pipeline = node_pipeline(node)
         if pipeline == "character":
             ids = {str(c) for c in (cfg.get("character_ids") or []) if str(c or "").strip()}
-            names = {
-                str(v).strip().lower()
-                for v in [
-                    *(cfg.get("character_names") or []),
-                    cfg.get("character_name"),
-                    cfg.get("label"),
-                    node.get("label"),
-                ]
-                if str(v or "").strip()
-            }
+            names: set[str] = set()
+            for raw_name in [
+                *(cfg.get("character_names") or []),
+                cfg.get("character_name"),
+                cfg.get("label"),
+                node.get("label"),
+            ]:
+                token = str(raw_name or "").strip()
+                if token:
+                    names.add(token.lower())
             if ids & wanted_chars or names & wanted_names:
                 keep.add(str(node.get("id")))
         elif pipeline == "scene":
