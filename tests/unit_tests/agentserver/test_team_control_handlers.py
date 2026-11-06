@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway_protocol.e2a.wire_codec import parse_agent_server_wire_unary
+from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.request_identity import apply_routing_metadata
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
@@ -24,6 +24,7 @@ from jiuwenswarm.enterprise.team.control_store import (
     set_team_control_store,
 )
 from jiuwenswarm.server.transports.ws_sink import WSSink
+
 
 @pytest.fixture(autouse=True)
 def _register_team_control_methods():

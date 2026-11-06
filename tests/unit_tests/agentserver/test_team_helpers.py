@@ -24,6 +24,7 @@ from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
 )
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
@@ -3161,12 +3162,13 @@ async def test_enterprise_followup_submits_without_taking_the_session_waiter(mon
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-enterprise-followup",
         request_id="req-user-followup",
         channel_id="web",
         metadata={},
         params={"mode": "team"},
+        req_method=ReqMethod.CHAT_SEND,
         user_id="owner",
     )
 

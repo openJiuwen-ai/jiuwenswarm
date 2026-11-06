@@ -11,6 +11,7 @@ import logging
 from os import _exit as exit_process
 import signal
 import sys
+import traceback
 
 
 def _install_stop_handlers(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Callable[[], None]:
@@ -183,6 +184,11 @@ def main() -> None:
         exit_code = 0
     except WorkerForceExit as exc:
         logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
+        # The parent owns stderr; file-only logging must not hide fatal diagnostics.
+        if sys.stderr is not None:
+            print("[Worker] fatal exit with unfinished shutdown steps", file=sys.stderr, flush=True)
+            traceback.print_exception(exc, file=sys.stderr)
+            sys.stderr.flush()
         if stop_background_logging():
             logging.shutdown()
         # A cancelled to_thread load may still own non-daemon executor threads.

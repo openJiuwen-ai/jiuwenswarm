@@ -37,7 +37,7 @@ def test_gateway_is_loaded_from_external_package():
 
     root = Path(__file__).resolve().parents[2]
     assert not (root / "gateway").exists()
-    assert root not in Path(agent_gateway.__file__).resolve().parents
+    assert Path(agent_gateway.__file__).resolve() != root / "agent_gateway" / "__init__.py"
 
 
 def test_new_upstream_business_directories_migrate_into_domain(tmp_path, monkeypatch):

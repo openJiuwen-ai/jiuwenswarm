@@ -846,7 +846,7 @@ async def test_list_and_create_wait_for_startup_sweep_once(
             params={"session_id": session_id, "description": "wait"} if with_session else {},
             metadata=apply_routing_metadata(
                 {}, {"bot_id": "b1", "group_id": "g1", "user_id": "u1"},
-            ) if with_session else {},
+            ),
         )
         return RequestContext(
             request=request,
