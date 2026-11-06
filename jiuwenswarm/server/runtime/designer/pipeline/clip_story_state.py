@@ -47,6 +47,7 @@ _LOCK_MARKERS = (
     "COMPOSED SCENE MASTER",
 )
 
+
 def _tri_state(value: Any) -> bool | None:
     """Agent-declared presence; ``None`` means the agent did not decide."""
     if isinstance(value, bool):

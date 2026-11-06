@@ -210,7 +210,12 @@ def _specs_referenced_by_clips(nodes: list[dict[str, Any]]) -> set[str]:
             ids = {str(c) for c in (cfg.get("character_ids") or []) if str(c or "").strip()}
             names = {
                 str(v).strip().lower()
-                for v in [*(cfg.get("character_names") or []), cfg.get("character_name"), cfg.get("label"), node.get("label")]
+                for v in [
+                    *(cfg.get("character_names") or []),
+                    cfg.get("character_name"),
+                    cfg.get("label"),
+                    node.get("label"),
+                ]
                 if str(v or "").strip()
             }
             if ids & wanted_chars or names & wanted_names:
@@ -267,12 +272,13 @@ def prune_non_contributing_nodes(graph: DesignerExecutionGraph) -> list[str]:
     # later), so identity plates and scene masters are production assets, never
     # optional branches. Combined cast sheets stay prunable: they duplicate what
     # the per-character plates already provide.
-    keep_specs = {
-        str(n.get("id"))
-        for n in nodes
-        if node_pipeline(n) in {"character", "scene"}
-        and not bool((n.get("config") or {}).get("combined_cast"))
-    }
+    keep_specs: set[str] = set()
+    for n in nodes:
+        if node_pipeline(n) not in {"character", "scene"}:
+            continue
+        if bool((n.get("config") or {}).get("combined_cast")):
+            continue
+        keep_specs.add(str(n.get("id")))
     keep_referenced = keep_specs | _specs_referenced_by_clips(nodes)
     orphan = ids - contributing - keep_referenced
     preserved = sorted(orphan & user_added)

@@ -84,12 +84,12 @@ def _merge_analysed_cast(
     in analysis order, so every staged character keeps one spec.
     """
     merged = list(cards)
-    present = {
-        str(cid)
-        for card in merged
-        for cid in (card.get("character_ids") or [card.get("id")])
-        if str(cid or "").strip()
-    }
+    present: set[str] = set()
+    for card in merged:
+        for cid in card.get("character_ids") or [card.get("id")]:
+            token = str(cid or "").strip()
+            if token:
+                present.add(token)
     for entry in analysed:
         if not isinstance(entry, dict):
             continue
