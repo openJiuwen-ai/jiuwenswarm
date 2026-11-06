@@ -297,7 +297,9 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("project.rename", "PATCH", "/projects/{project_id}"),
     ("project.pin", "POST", "/projects/{project_id}/actions/pin"),
     ("project.remove", "DELETE", "/projects/{project_id}"),
-    # 定时任务创建前问「这个项目现在能不能跑」。长连接里已有同名处理，这里补 HTTP。
+    # 定时任务准入：单项目快照。Gateway 后台 events/inventory 轮询走
+    # /projects/actions/lifecycle（见 _lookup_route / declared_http_routes），
+    # 不能塞进本行，否则 REST_ROUTES 同 method 只能留一条。
     ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle"),
     # Gateway 把 cron 工具结果 / 立即执行 run_id / 任务快照回传 Agent（runtime HTTP）。
     ("cron.command.ack", "POST", "/cron/command-ack"),
@@ -432,9 +434,17 @@ def method_has_http_handler(method: str) -> bool:
     return is_http_chat_method(req_method) or req_method in HANDLERS
 
 
+# Gateway lifecycle_handlers 轮询用：全量 events / inventory，无 project_id。
+_PROJECT_LIFECYCLE_FEED_ROUTE: tuple[str, str] = ("POST", "/projects/actions/lifecycle")
+
+
 def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     """返回实际要注册的 ``(方法名, 动词, 路径)``。没有处理函数的不出现。"""
     chosen: dict[tuple[str, str], str] = {}
+    # 固定 /projects/actions/... 必须先于 /projects/{project_id}/... 注册，
+    # 否则 Starlette 会把 ``actions`` 当成 project_id。
+    if method_has_http_handler("project.lifecycle"):
+        chosen[_PROJECT_LIFECYCLE_FEED_ROUTE] = "project.lifecycle"
     for method, (verb, path) in REST_ROUTES.items():
         if not method_has_http_handler(method):
             continue
@@ -444,12 +454,21 @@ def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     return tuple((method, verb, path) for (verb, path), method in chosen.items())
 
 
-def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
+def _lookup_route(
+    method: str,
+    *,
+    is_stream: bool,
+    params: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
     if method in {"chat.send", "chat.resume"}:
         path = "/chat/completions" if method == "chat.send" else "/chat/resume"
         return "POST", path
     if method == "history.get" and is_stream and method_has_http_handler(method):
         return "GET", "/sessions/{session_id}/history/stream"
+    if method == "project.lifecycle" and method_has_http_handler(method):
+        feed = params or {}
+        if feed.get("events") or feed.get("inventory"):
+            return _PROJECT_LIFECYCLE_FEED_ROUTE
     found = REST_ROUTES.get(method)
     if found is not None and method_has_http_handler(method):
         return found[0], found[1]
@@ -513,8 +532,12 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
     if not method:
         raise RestAssemblyError("envelope.method 为空，无法组装 REST")
 
-    verb, template = _lookup_route(method, is_stream=bool(envelope.is_stream))
     values: dict[str, Any] = dict(envelope.params or {})
+    verb, template = _lookup_route(
+        method,
+        is_stream=bool(envelope.is_stream),
+        params=values,
+    )
     if method in _METHODS_WITHOUT_PARAM_SESSION_ID:
         # 勿 setdefault 信封 session_id；并剥掉 params 里误带的客户端临时 id。
         values.pop("session_id", None)
