@@ -36,6 +36,7 @@ from typing import Any
 from openjiuwen.core.foundation.llm import ProviderType
 
 from jiuwenswarm.common.permission_mode import is_auto_permission_mode
+from jiuwenswarm.common.voice.config import tts_panel_defaults, validate_tts_update
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -197,6 +198,9 @@ ASR_ENV_KEYS = {
     "ASR_API_KEY",
     "ASR_MODEL_NAME",
 }
+TTS_ENV_KEYS = {
+    "TTS_API_BASE", "TTS_API_KEY", "TTS_MODEL_NAME", "TTS_VOICE", "TTS_PROVIDER",
+}
 
 
 @dataclass(frozen=True)
@@ -220,7 +224,7 @@ class ConfigChangeSet:
             scopes.add("model")
         if MULTIMODAL_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("multimodal")
-        if ASR_ENV_KEYS & set(self.env_updates):
+        if (ASR_ENV_KEYS | TTS_ENV_KEYS) & set(self.env_updates):
             scopes.add("web_ui")
         if SEARCH_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("search")
@@ -363,6 +367,11 @@ CONFIG_SET_ENV_MAP = {
     "asr_api_base": "ASR_API_BASE",
     "asr_api_key": "ASR_API_KEY",
     "asr_model": "ASR_MODEL_NAME",
+    "tts_api_base": "TTS_API_BASE",
+    "tts_api_key": "TTS_API_KEY",
+    "tts_model": "TTS_MODEL_NAME",
+    "tts_voice": "TTS_VOICE",
+    "tts_provider": "TTS_PROVIDER",
     # agents
     "skills": "SKILLS",
     "max_iterations": "MAX_ITERATIONS",
@@ -1481,6 +1490,11 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
+    if any(key.startswith("tts_") for key in params):
+        try:
+            validate_tts_update(params)
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
     # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
@@ -1520,7 +1534,7 @@ def apply_config_payload(
                     f"{param_key} must be a positive integer or a value such as 256K or 1M"
                 )
             val = str(parsed_context_window)
-        if param_key.endswith("_provider") and val and val not in available_model_providers:
+        if param_key.endswith("_provider") and param_key != "tts_provider" and val and val not in available_model_providers:
             raise ConfigPanelBadRequest(f"Model provider must in: {available_model_providers} ")
         if val is None:
             env_updates[env_key] = ""
@@ -1856,6 +1870,7 @@ async def config_get_handler(
         param_key: os.getenv(env_key) or ""
         for param_key, env_key in CONFIG_SET_ENV_MAP.items()
     }
+    payload.update(tts_panel_defaults())
     payload["app_version"] = get_runtime_version()
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform

@@ -1,0 +1,46 @@
+version: cosyvoice2-2026-10-29
+source: https://docs.siliconflow.cn/docs/userguide/capabilities/text-to-speech
+default_model: FunAudioLLM/CosyVoice2-0.5B
+default_voice: FunAudioLLM/CosyVoice2-0.5B:anna
+default_url: https://api.siliconflow.cn/v1
+voices:
+  - id: anna
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:anna
+    models: &models [FunAudioLLM/CosyVoice2-0.5B]
+    languages: &languages [en, zh-CN]
+    description: Steady female voice.
+  - id: bella
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:bella
+    models: *models
+    languages: *languages
+    description: Passionate female voice.
+  - id: claire
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:claire
+    models: *models
+    languages: *languages
+    description: Gentle female voice.
+  - id: diana
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:diana
+    models: *models
+    languages: *languages
+    description: Cheerful female voice.
+  - id: alex
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:alex
+    models: *models
+    languages: *languages
+    description: Steady male voice.
+  - id: benjamin
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:benjamin
+    models: *models
+    languages: *languages
+    description: Deep male voice.
+  - id: charles
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:charles
+    models: *models
+    languages: *languages
+    description: Magnetic male voice.
+  - id: david
+    provider_voice_id: FunAudioLLM/CosyVoice2-0.5B:david
+    models: *models
+    languages: *languages
+    description: Cheerful male voice.

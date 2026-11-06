@@ -1,0 +1,264 @@
+# Mandarin/English voices from the official Omni catalog (updated 2026-10-16).
+# Languages below describe this application's supported subset, not every provider language.
+# Only voices listed with Mandarin are included; other Chinese language rows are omitted.
+# Keep existing entries first: catalog order breaks ties for new member assignments.
+# This is not the separate Qwen TTS or JoyAI voice catalog.
+version: qwen-omni-2026-10-26-expanded
+default_model: qwen3.8-omni-flash-realtime
+default_voice: Tina
+default_url: ""
+source: https://www.alibabacloud.com/help/en/model-studio/omni-voice-list
+voices:
+  - id: tina
+    provider_voice_id: Tina
+    models: &modern
+      - qwen3.8-omni-flash-realtime
+      - qwen3.5-omni-flash-realtime
+      - qwen3.5-omni-plus-realtime
+    languages: &bilingual [en, zh-CN]
+    description: Warm, clear female voice.
+  - id: serena
+    provider_voice_id: Serena
+    models: *modern
+    languages: *bilingual
+    description: Gentle female voice.
+  - id: ryan
+    provider_voice_id: Ryan
+    models: &shared
+      - qwen3.8-omni-flash-realtime
+      - qwen3.5-omni-flash-realtime
+      - qwen3.5-omni-plus-realtime
+      - qwen3-omni-flash-realtime-2025-09-15
+    languages: *bilingual
+    description: Energetic male voice.
+  - id: katerina
+    provider_voice_id: Katerina
+    models: *shared
+    languages: *bilingual
+    description: Mature female voice.
+  - id: jennifer
+    provider_voice_id: Jennifer
+    models: *shared
+    languages: *bilingual
+    description: American female voice.
+  - id: liora-mira
+    provider_voice_id: Liora Mira
+    models: *modern
+    languages: *bilingual
+    description: Soft, comforting delivery.
+  - id: raymond
+    provider_voice_id: Raymond
+    models: *modern
+    languages: *bilingual
+    description: Clear male delivery.
+  - id: zane
+    provider_voice_id: Zane
+    models: &qwen38
+      - qwen3.8-omni-flash-realtime
+    languages: *bilingual
+    description: Resonant male delivery.
+  - id: mia
+    provider_voice_id: Mia
+    models: *modern
+    languages: *bilingual
+    description: Relaxed female delivery.
+  - id: cici
+    provider_voice_id: Cici
+    models: *qwen38
+    languages: *bilingual
+    description: Bright female delivery.
+  - id: theo-calm
+    provider_voice_id: Theo Calm
+    models: *modern
+    languages: *bilingual
+    description: Calm, reassuring delivery.
+  - id: maia
+    provider_voice_id: Maia
+    models: *modern
+    languages: *bilingual
+    description: Composed female delivery.
+  - id: evan
+    provider_voice_id: Evan
+    models: *modern
+    languages: *bilingual
+    description: Youthful male delivery.
+  - id: momo
+    provider_voice_id: Momo
+    models: *modern
+    languages: *bilingual
+    description: Playful delivery.
+  - id: wil
+    provider_voice_id: Wil
+    models: *modern
+    languages: *bilingual
+    description: Youthful male; Hong Kong/Taiwan accent.
+  - id: angel
+    provider_voice_id: Angel
+    models: *modern
+    languages: *bilingual
+    description: Sweet delivery; slight Taiwanese accent.
+  - id: li-cassian
+    provider_voice_id: Li Cassian
+    models: *modern
+    languages: *bilingual
+    description: Measured delivery.
+  - id: joyner
+    provider_voice_id: Joyner
+    models: *modern
+    languages: *bilingual
+    description: Expressive comic delivery.
+  - id: gold
+    provider_voice_id: Gold
+    models: *modern
+    languages: *bilingual
+    description: American rap style.
+  - id: aiden
+    provider_voice_id: Aiden
+    models: *modern
+    languages: *bilingual
+    description: Young American male delivery.
+  - id: mione
+    provider_voice_id: Mione
+    models: *modern
+    languages: *bilingual
+    description: British female delivery.
+  - id: sohee
+    provider_voice_id: Sohee
+    models: *modern
+    languages: *bilingual
+    description: Expressive Korean female persona.
+  - id: eliska
+    provider_voice_id: Eliška
+    models: *modern
+    languages: *bilingual
+    description: Warm Central European persona.
+  - id: alek
+    provider_voice_id: Alek
+    models: *modern
+    languages: *bilingual
+    description: Reserved Russian persona.
+  - id: arda
+    provider_voice_id: Arda
+    models: *modern
+    languages: *bilingual
+    description: Crisp delivery.
+  - id: dolce
+    provider_voice_id: Dolce
+    models: *modern
+    languages: *bilingual
+    description: Unhurried Italian male persona.
+  - id: lenn
+    provider_voice_id: Lenn
+    models: *modern
+    languages: *bilingual
+    description: Young German male persona.
+  - id: ono-anna
+    provider_voice_id: Ono Anna
+    models: *modern
+    languages: *bilingual
+    description: Playful delivery.
+  - id: sonrisa
+    provider_voice_id: Sonrisa
+    models: *modern
+    languages: *bilingual
+    description: Sociable Latin American female persona.
+  - id: bodega
+    provider_voice_id: Bodega
+    models: *modern
+    languages: *bilingual
+    description: Animated Spanish male persona.
+  - id: andre
+    provider_voice_id: Andre
+    models: *modern
+    languages: *bilingual
+    description: Steady male delivery.
+  - id: radio-gol
+    provider_voice_id: Radio Gol
+    models: *modern
+    languages: *bilingual
+    description: Sports commentary style.
+  - id: rizky
+    provider_voice_id: Rizky
+    models: *modern
+    languages: *bilingual
+    description: Young Indonesian male persona.
+  - id: roya
+    provider_voice_id: Roya
+    models: *modern
+    languages: *bilingual
+    description: Energetic female delivery.
+  - id: hana
+    provider_voice_id: Hana
+    models: *modern
+    languages: *bilingual
+    description: Adult Vietnamese female persona.
+  - id: jakub
+    provider_voice_id: Jakub
+    models: *modern
+    languages: *bilingual
+    description: Young Polish male persona.
+  - id: griet
+    provider_voice_id: Griet
+    models: *modern
+    languages: *bilingual
+    description: Adult Dutch female persona.
+  - id: marina
+    provider_voice_id: Marina
+    models: *modern
+    languages: *bilingual
+    description: Young multicultural female persona.
+  - id: siiri
+    provider_voice_id: Siiri
+    models: *modern
+    languages: *bilingual
+    description: Gentle, unhurried delivery.
+  - id: ingrid
+    provider_voice_id: Ingrid
+    models: *modern
+    languages: *bilingual
+    description: Norwegian female persona.
+  - id: sigga
+    provider_voice_id: Sigga
+    models: *modern
+    languages: *bilingual
+    description: Young Icelandic female persona.
+  - id: bea
+    provider_voice_id: Bea
+    models: *modern
+    languages: *bilingual
+    description: Friendly Filipino female persona.
+  - id: chloe
+    provider_voice_id: Chloe
+    models: *modern
+    languages: *bilingual
+    description: Malaysian female persona.
+  - id: emilien
+    provider_voice_id: Emilien
+    models: *modern
+    languages: *bilingual
+    description: French male persona.
+  - id: long-an-ling-xin
+    provider_voice_id: longanlingxin
+    models: *qwen38
+    languages: *bilingual
+    description: Empathetic delivery.
+  - id: sunnybobi
+    provider_voice_id: Sunnybobi
+    models: &qwen35
+      - qwen3.5-omni-flash-realtime
+      - qwen3.5-omni-plus-realtime
+    languages: *bilingual
+    description: Shy, casual female delivery.
+  - id: ethan
+    provider_voice_id: Ethan
+    models: &qwen35_legacy
+      - qwen3.5-omni-flash-realtime
+      - qwen3.5-omni-plus-realtime
+      - qwen3-omni-flash-realtime-2025-09-15
+    languages: *bilingual
+    description: Upbeat male; northern Mandarin accent.
+  - id: harvey
+    provider_voice_id: Harvey
+    models: *qwen35
+    languages: *bilingual
+    description: Low male delivery.
