@@ -277,7 +277,6 @@ test('computer control is the last experimental section and other sections retai
     'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
-    'computer-control',
     'design-mode',
     'computer-control',
   ]);
