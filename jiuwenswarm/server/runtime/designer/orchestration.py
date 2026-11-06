@@ -52,6 +52,13 @@ def _llm_character_card(
         "name": name,
         "description": str(raw.get("description") or name)[:600],
     }
+    from jiuwenswarm.server.runtime.designer.script_analysis import detect_cast_form
+
+    cast_form, group_size = detect_cast_form(name, card["description"], raw.get("role"))
+    if cast_form:
+        card["cast_form"] = cast_form
+    if group_size:
+        card["cast_group_size"] = group_size[:40]
     parts = normalize_clothing_parts(raw.get("clothing_parts"))
     if not parts:
         earlier = next(

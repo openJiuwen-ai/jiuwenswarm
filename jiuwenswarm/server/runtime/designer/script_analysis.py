@@ -1235,6 +1235,99 @@ def _reference_reads(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     return reads
 
 
+# A cast entry is either one individual or a shared-look group (a team, a pack,
+# a crowd of residents). ``cast_kind`` already means human/brand_mascot/prop, so
+# the group/one split is tracked separately as ``cast_form``.
+_CAST_SINGLE_RE = re.compile(
+    r"(?i)(\bone\s+(?:man|woman|person|individual|adult|figure|hero|girl|boy)\b"
+    r"|\ba\s+single\s+(?:person|individual|man|woman|figure|hero)\b"
+    r"|\bonly\s+one\b|\bthe only\b|\bsolo\b|\balone\b"
+    r"|独自|单独|一名|一位|一个人|孤身|孤零零|唯一)"
+)
+
+_CAST_PLURAL_PERSON_RE = re.compile(
+    r"(?i)\b(?:adults|men|women|children|kids|people|folks|residents|citizens"
+    r"|commuters|shoppers|students|runners|joggers|players|guests|fans|tourists"
+    r"|passers-?by|bystanders|onlookers|spectators|pedestrians|workers"
+    r"|villagers|monks|soldiers|dancers|musicians|singers|pilgrims|worshippers"
+    r"|vendors|teens|teenagers|colleagues|visitors|travellers|travelers"
+    r"|neighbours|neighbors|strangers|relatives|elders|seniors|athletes"
+    r"|exercisers|swimmers|cyclists|volunteers|performers|members)\b"
+)
+
+# Collectives that are groups by definition, in either authoring language.
+# Chinese is matched by whole compound words only: a bare 群/队/组/班/帮/众
+# would also match inside 排队, 组织, 上班, 帮忙 and 观众-shaped words that are
+# not a group, so each cue carries its own disambiguating characters.
+_CAST_GROUP_NOUN_RE = re.compile(
+    r"(?i)(\bcrowd\b|\bgroup\b|\bteam\b|\bensemble\b|\bpack\b|\bflock\b|\bherd\b"
+    r"|\baudience\b|\bcongregation\b|\bfamily\b|\bcouple\b|\bduo\b|\btrio\b|\btwins?\b"
+    r"|\bcrew\b|\bextras\b|\btownsfolk\b|\bprocession\b"
+    r"|团队|群体|人群|群众|群众演员|众人|大家|家族|家族成员|同事|工人们|孩子们"
+    r"|市民|居民|观众|听众|路人|行人|游客|旅客|乘客|顾客|旁观者|围观者|看客"
+    r"|队伍|小队|大队|车队|球队|乐队|舞队|合唱团|仪仗队|方阵|列队"
+    r"|上班族|学生|学生们|年轻人|老人们|老年人|居民们|顾客们|朋友们"
+    r"|晨练者|运动员|志愿者|表演者|晨练市民"
+    r"|一族|一伙|一帮|一班|一批|成群)"
+)
+
+_CAST_CN_COUNT_RE = re.compile(r"[两二三四五六七八九十百千数几]+\s*[个位名人群队组批伙帮]")
+
+_CAST_OF_RE = re.compile(r"(?i)\bof\s+$")
+
+_CAST_COUNT_WORD_RE = re.compile(
+    r"(?i)(a\s+dozen|dozens|a\s+few|several|many|numerous|scores"
+    r"|\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty"
+    r"|thirty|fifty|hundred)\b)"
+)
+
+
+def _cast_group_size(text: str) -> str:
+    """Headcount cue, ignoring ages (``aged fifty to seventy-five``)."""
+    cn = _CAST_CN_COUNT_RE.search(text)
+    if cn:
+        return re.sub(r"\s+", "", cn.group(0))
+    for match in _CAST_COUNT_WORD_RE.finditer(text):
+        # A bare number is only a headcount when people follow it, or when it
+        # counts the collective just named ("a family of four").
+        tail = text[match.end():match.end() + 48]
+        head = text[max(0, match.start() - 8):match.start()]
+        if _CAST_PLURAL_PERSON_RE.search(tail) or _CAST_OF_RE.search(head):
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    return ""
+
+
+def detect_cast_form(name: Any, description: Any = "", role: Any = "") -> tuple[str, str]:
+    """Return ``(cast_form, group_size)`` for one cast entry.
+
+    ``group`` when the entry is a shared-look crowd; the sheet then draws the
+    whole group instead of one stand-in, which every shot asking for a seated
+    team or a running pack would otherwise contradict. Cues are read from any
+    authoring language, and a collective name outranks a one-person plate; with
+    no cue the entry stays ``single`` so nothing about a one-person character
+    changes.
+    """
+    text = " ".join(str(v or "").strip() for v in (name, description, role)).strip()
+    if not text:
+        return "", ""
+    name_text = str(name or "").strip()
+    # A collective subject names the group, so a plate that describes one
+    # stand-in member does not shrink it: "路人" with "one adult passer-by"
+    # still draws a small shared-look group of passers-by.
+    named_group = bool(name_text) and bool(
+        _CAST_GROUP_NOUN_RE.search(name_text) or _CAST_PLURAL_PERSON_RE.search(name_text)
+    )
+    if not named_group and _CAST_SINGLE_RE.search(text):
+        return "single", ""
+    size = _cast_group_size(text)
+    # A plural person noun already means more than one person, so it is a group
+    # even without a count or a collective noun ("seniors in the park").
+    group_cue = named_group or _CAST_GROUP_NOUN_RE.search(text) or _CAST_PLURAL_PERSON_RE.search(text)
+    if size or group_cue:
+        return "group", size
+    return "single", ""
+
+
 def _normalize_llm_analysis(
     parsed: dict[str, Any],
     base: dict[str, Any],
@@ -1266,6 +1359,11 @@ def _normalize_llm_analysis(
             "description": desc,
             "match_terms": _match_terms_for_character(name, desc),
         }
+        cast_form, group_size = detect_cast_form(name, desc, ch.get("role"))
+        if cast_form:
+            entry["cast_form"] = cast_form
+        if group_size:
+            entry["cast_group_size"] = group_size[:40]
         norm_chars.append(entry)
     if not norm_chars and not allow_empty_cast:
         return None
