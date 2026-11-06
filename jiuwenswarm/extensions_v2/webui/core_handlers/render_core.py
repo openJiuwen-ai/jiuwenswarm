@@ -47,7 +47,7 @@ def build_render_core_handler(
         trusted = _trusted_connection(ops)
         connection = current_connection()
         spec = slot_spec(request.target.slot_id)
-        application = spec is not None and spec.scope is SlotScope.APPLICATION
+        application = spec is not None and request.target.resolved_scope == SlotScope.APPLICATION.value
         if application and connection is not None and connection.closed:
             return UiRenderOutput(status=RenderStatus.DELIVERY_FAILED)
         bound, report = apply_slot_scope(request.target, trusted)
@@ -76,6 +76,7 @@ def build_render_core_handler(
                 revision=claim.instance.revision + 1,
                 mode=request.mode,
                 root=request.root,
+                visible_when=request.visible_when,
             )
             report = frame_payload_bytes(preview)
             if not report.ok:
@@ -125,9 +126,12 @@ def _error_target(target: RenderTarget, trusted_connection_id: str) -> RenderTar
     """Route rejected targets according to the slot's scope."""
 
     spec = slot_spec(target.slot_id)
-    if spec is not None and spec.scope is SlotScope.SESSION:
+    scope = target.resolved_scope
+    if spec is not None and not spec.accepts_scope(scope):
+        scope = spec.scope.value
+    if spec is not None and scope == SlotScope.SESSION.value:
         return replace(target, scope=SlotScope.SESSION.value, connection_id="")
-    if spec is not None and spec.scope is SlotScope.APPLICATION and trusted_connection_id:
+    if spec is not None and scope == SlotScope.APPLICATION.value and trusted_connection_id:
         return replace(
             target,
             scope=SlotScope.APPLICATION.value,

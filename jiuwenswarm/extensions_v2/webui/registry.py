@@ -35,6 +35,7 @@ class RenderInstance:
     mode: RenderMode = RenderMode.REPLACE
     root: RenderNode | None = None
     updated_at: float = 0.0
+    visible_when: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,12 +85,14 @@ class ActiveRenderRegistry:
         instance.revision += 1
         instance.mode = request.mode
         instance.root = _snapshot_content(request.root) if request.mode is RenderMode.REPLACE else None
+        instance.visible_when = _snapshot_content(request.visible_when)
         instance.updated_at = time.monotonic()
         return RenderFrame(
             target=instance.target,
             revision=instance.revision,
             mode=instance.mode,
             root=instance.root,
+            visible_when=instance.visible_when,
         )
 
     def restore(self, instance: RenderInstance, previous: RenderInstance) -> None:
@@ -98,6 +101,7 @@ class ActiveRenderRegistry:
         instance.revision = previous.revision
         instance.mode = previous.mode
         instance.root = previous.root
+        instance.visible_when = previous.visible_when
         instance.updated_at = previous.updated_at
 
     @asynccontextmanager

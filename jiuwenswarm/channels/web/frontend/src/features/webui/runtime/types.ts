@@ -50,6 +50,7 @@ export interface WebUIScopeSnapshot {
 }
 
 export interface WebUIMountOptions {
+  scope?: 'session' | 'application';
   /** Keep a consumer mounted without sending a ready notification. */
   notifyReady?: boolean;
   /** 指定实例级消费者；不传表示覆盖整个挂载区。 */

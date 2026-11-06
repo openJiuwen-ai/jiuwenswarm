@@ -45,6 +45,7 @@ export interface WebUISlotRule {
   id: string;
   display: 'list' | 'single';
   scope?: 'session' | 'application';
+  additionalScopes?: readonly ('session' | 'application')[];
   /** list 槽位最多同时渲染的贡献实例数；缺省不限制。 */
   maxVisible?: number;
   /** Panel/Iframe 等专用根组件的许可；普通组件仍可作为根。右侧面板使用此完整白名单。 */

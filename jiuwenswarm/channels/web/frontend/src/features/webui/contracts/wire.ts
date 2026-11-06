@@ -5,6 +5,11 @@
 
 export type WebUIWireRenderMode = 'replace' | 'clear';
 
+export interface WebUIPreferenceBinding {
+  key: string;
+  default: boolean;
+}
+
 /** Required by an activated client-capability adapter; omitted by legacy transports. */
 export interface WebUIWireClientContext {
   activation_generation?: string;
@@ -36,6 +41,7 @@ export interface WebUIWireRenderFrame extends WebUIWireClientContext {
   mode: WebUIWireRenderMode;
   root: WebUIWireNode | null;
   schema_version: number;
+  visible_when?: WebUIPreferenceBinding;
 }
 
 export interface WebUIWireClearFrame extends WebUIWireClientContext {

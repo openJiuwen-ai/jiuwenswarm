@@ -1,31 +1,25 @@
+import { isPluginResourceURL } from '../features/webui/resources/urls.ts';
 import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
 import type { ClientCapabilityHost } from '../features/webui/client/createClientCapabilityHost.ts';
 
 /** Explicit Gateway transport; external URLs retain native fetch behavior. */
 export function createGatewayFetch(host: ClientCapabilityHost, fetcher: typeof fetch = (...args) => fetch(...args)): typeof fetch {
   return async (input, init) => {
-    const asset = host.getPackageAssetState(input);
-    if (!asset && (!host.hasDeclarations() || !host.isGateway(input))) return fetcher(input, init);
-    if (asset?.status === 'inactive') throw new DOMException('Package asset is inactive', 'AbortError');
-    if (!asset) host.refresh();
-    if (!asset && host.isChanging()) throw new DOMException('Request context changed', 'AbortError');
+    const resource = isPluginResourceURL(input, host.getGatewayUrl());
+    if (!resource && (!host.hasDeclarations() || !host.isGateway(input))) return fetcher(input, init);
+    if (!resource) host.refresh();
+    if (!resource && host.isChanging()) throw new DOMException('Request context changed', 'AbortError');
     const epoch = host.getEpoch();
-    const contextSignal = asset ? undefined : host.getSignal();
+    const contextSignal = resource ? undefined : host.getSignal();
     const original = input instanceof Request ? input : null;
     const signal = init && 'signal' in init ? init.signal : original?.signal;
     const controller = new AbortController();
     let abortBody: (() => void) | undefined;
     const abort = () => controller.abort();
-    const isCurrent = () => {
-      if (!asset) return epoch === host.getEpoch();
-      const current = host.getPackageAssetState(input);
-      return current?.status === 'active' && current.version === asset.version;
-    };
-    const releaseAsset = asset ? host.subscribe(() => { if (!isCurrent()) abort(); }) : undefined;
+    const isCurrent = () => resource || epoch === host.getEpoch();
     contextSignal?.addEventListener('abort', abort, { once: true });
     signal?.addEventListener('abort', abort, { once: true });
     const release = () => {
-      releaseAsset?.();
       contextSignal?.removeEventListener('abort', abort);
       signal?.removeEventListener('abort', abort);
       if (abortBody) controller.signal.removeEventListener('abort', abortBody);
@@ -36,12 +30,12 @@ export function createGatewayFetch(host: ClientCapabilityHost, fetcher: typeof f
     };
     try {
       const originalHeaders = new Headers(init?.headers ?? original?.headers);
-      const headers = asset ? originalHeaders : host.bindHTTP(input, originalHeaders);
+      const headers = resource ? originalHeaders : host.bindHTTP(input, originalHeaders);
       const injected = [...headers].some(([name, value]) => originalHeaders.get(name) !== value);
       const response = await fetcher(input, {
         ...init,
         headers,
-        ...(injected || asset ? { redirect: (init?.redirect ?? original?.redirect) === 'manual' ? 'manual' : 'error' } : {}),
+        ...(injected || resource ? { redirect: (init?.redirect ?? original?.redirect) === 'manual' ? 'manual' : 'error' } : {}),
         signal: controller.signal,
       });
       check();

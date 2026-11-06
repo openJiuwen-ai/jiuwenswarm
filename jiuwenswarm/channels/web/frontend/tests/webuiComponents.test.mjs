@@ -470,3 +470,101 @@ test('Box adapter tolerates unnormalized props when used directly', () => {
   assert.match(markup, /data-testid="webui-box"/);
   assert.match(markup, /ant-flex-gap-small/);
 });
+
+test('Box rejects component visibility bindings at any depth and accepts instance visibility metadata', () => {
+  const binding = { key: 'visible', default: false };
+  const box = { component: 'Box', props: { visibleWhen: binding } };
+  for (const root of [box, { component: 'Box', children: [box] }]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame(root)).ok, false);
+  }
+  const root = { component: 'Box', children: [{ component: 'Text', props: { value: 'Usage' } }] };
+  assert.equal(pipeline.processRenderFrame(renderFrame(root, { visible_when: binding })).ok, true);
+});
+
+const visibilityCases = JSON.parse(
+  readFileSync(new URL('./fixtures/webuiInstanceVisibilityCases.json', import.meta.url), 'utf8'),
+);
+for (const { name, valid, ...values } of visibilityCases) {
+  test(`Instance visibility contract: ${name}`, () => {
+    const payload = renderFrame({ component: 'Text', props: { value: 'Usage' } });
+    if (Object.hasOwn(values, 'visible_when')) payload.visible_when = values.visible_when;
+    if (Object.hasOwn(values, 'package_id')) payload.target.package_id = values.package_id;
+    if (values.mode) payload.mode = values.mode;
+    const result =
+      payload.mode === 'clear' ? pipeline.processClearFrame(payload) : pipeline.processRenderFrame(payload);
+    assert.equal(result.ok, valid);
+  });
+}
+
+test('instance visibility is detached from input and explicit null is rejected', () => {
+  const binding = { key: 'visible', default: false };
+  const payload = renderFrame({ component: 'Text', props: { value: 'Usage' } }, { visible_when: binding });
+  const result = pipeline.processRenderFrame(payload);
+  assert.equal(result.ok, true);
+  binding.key = 'mutated';
+  assert.deepEqual(result.value.visibleWhen, { key: 'visible', default: false });
+  assert.equal(Object.isFrozen(result.value.visibleWhen), true);
+  assert.equal(pipeline.processRenderFrame({ ...payload, visible_when: null }).ok, false);
+});
+
+const panelDocumentCases = JSON.parse(
+  readFileSync(new URL('./fixtures/webuiPanelDocumentCases.json', import.meta.url), 'utf8'),
+);
+for (const { name, root, valid } of panelDocumentCases) {
+  test(`Panel document contract: ${name}`, () => {
+    assert.equal(
+      pipeline.processRenderFrame(
+        renderFrame(root, {
+          target: {
+            session_id: 'sess-1',
+            slot_id: root.component === 'Iframe' ? 'conversation.panel.right' : 'conversation.input.above',
+            package_id: 'pkg.demo',
+            instance_key: 'details',
+          },
+        }),
+      ).ok,
+      valid,
+    );
+  });
+}
+
+const localizedTextCases = JSON.parse(
+  readFileSync(new URL('./fixtures/webuiLocalizedTextCases.json', import.meta.url), 'utf8'),
+);
+for (const { name, root, valid } of localizedTextCases) {
+  test(`Localized text contract: ${name}`, () => {
+    assert.equal(pipeline.processRenderFrame(renderFrame(root)).ok, valid);
+  });
+}
+
+test('localized icon-only buttons require a nonempty accessible label in both languages', () => {
+  for (const [label, valid] of [
+    [{ zh: '刷新', en: 'Refresh' }, true],
+    [{ zh: '刷新', en: ' ' }, false],
+    [{ zh: '', en: 'Refresh' }, false],
+  ]) {
+    assert.equal(
+      pipeline.processRenderFrame(
+        renderFrame({
+          component: 'Button',
+          props: {
+            'aria-label': label,
+            icon: 'refresh',
+          },
+        }),
+      ).ok,
+      valid,
+    );
+  }
+});
+
+
+test('normalized client frames retain their host activation stamp for the view lifetime', () => {
+  const root = { component: 'Text', props: { value: 'Client view' } };
+  const result = pipeline.processRenderFrame({ ...renderFrame(root), activation_generation: 'current-activation' });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.activationGeneration, 'current-activation');
+  for (const activation_generation of [null, false, '', {}]) {
+    assert.equal(pipeline.processRenderFrame({ ...renderFrame(root), activation_generation }).ok, false);
+  }
+});

@@ -17,6 +17,7 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.extensions_v2.webui.models import UiRenderInput
+from jiuwenswarm.extensions_v2.webui.resources import WebUIResourceService
 
 
 def build_webui_ops_build_handler(
@@ -24,6 +25,7 @@ def build_webui_ops_build_handler(
     render_event_type: str,
     *,
     render: Callable[[UiRenderInput, SessionContext | None], Awaitable[object]] | None = None,
+    resources: WebUIResourceService | None = None,
 ) -> EventHandler:
     """Build the BUILTIN handler that adds ``ui.render`` to the Ops catalog."""
 
@@ -44,6 +46,10 @@ def build_webui_ops_build_handler(
             raise TypeError("ops.build must return EventHandlerOpsBuilder")
         builder.add_namespace("ui")
         builder.add_method("ui", "render", ui_render)
+        if resources is not None:
+            builder.add_method("ui", "create_resource_dir", resources.create_directory)
+            builder.add_method("ui", "asset_url", resources.asset_url)
+            builder.add_method("ui", "release_resources", resources.release)
         return builder
 
     return webui_ops_build

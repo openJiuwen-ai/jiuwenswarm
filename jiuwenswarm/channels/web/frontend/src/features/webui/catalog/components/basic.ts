@@ -3,6 +3,7 @@ import {
   bool, component, number, object, presetColors, size, text, token, union, validDimension, validURL,
 } from './shared.ts';
 import { WEBUI_ICON_NAMES } from '../../icons/names.ts';
+import { hasNonEmptyLocalizedText, localizedTextRule } from './localizedText.ts';
 
 /** Shared layout, text and button rules for the component protocol. */
 export const basicComponentRules: readonly WebUIComponentRule[] = [
@@ -36,8 +37,13 @@ export const basicComponentRules: readonly WebUIComponentRule[] = [
     },
     allowChildren: true,
     validate: (props) => {
-      if (['width', 'height', 'minHeight', 'maxWidth'].some((field) => props[field] !== undefined
-        && (!validDimension(props[field]) || (['minHeight', 'maxWidth'].includes(field) && props[field] === 'auto')))) {
+      if (
+        ['width', 'height', 'minHeight', 'maxWidth'].some(
+          (field) =>
+            props[field] !== undefined &&
+            (!validDimension(props[field]) || (['minHeight', 'maxWidth'].includes(field) && props[field] === 'auto')),
+        )
+      ) {
         return 'invalid Box dimension';
       }
       if (props.marginInline !== undefined && !validDimension(props.marginInline)) return 'invalid Box inline margin';
@@ -45,7 +51,7 @@ export const basicComponentRules: readonly WebUIComponentRule[] = [
     },
   },
   component('Text', {
-    value: text,
+    value: localizedTextRule,
     type: token('secondary', 'success', 'warning', 'danger'),
     size,
     strong: bool,
@@ -58,36 +64,44 @@ export const basicComponentRules: readonly WebUIComponentRule[] = [
     disabled: bool,
     ellipsis: bool,
   }),
-  component('Button', {
-    // The host maps the protocol text value to Ant Design children.
-    value: text,
-    type: token('default', 'primary', 'dashed', 'link', 'text'),
-    color: token('default', 'primary', 'danger', ...presetColors),
-    variant: token('outlined', 'dashed', 'solid', 'filled', 'text', 'link'),
-    shape: token('default', 'circle', 'round', 'square'),
-    size,
-    danger: bool,
-    ghost: bool,
-    disabled: bool,
-    block: bool,
-    loading: union(bool, object({ delay: number })),
-    href: text,
-    target: token('_self', '_blank'),
-    icon: token(...WEBUI_ICON_NAMES),
-    iconPlacement: token('start', 'end'),
-    'aria-label': text,
-    form: { kind: 'string', maxBytes: 200 },
-  }, {
-    events: { 'ui.click': { kind: 'record', value: text } },
-    validate: (props) => {
-      if (props.form !== undefined && !String(props.form).trim()) return 'form reference is required';
-      const label = String(props.value ?? '').trim();
-      const accessible = String(props['aria-label'] ?? '').trim();
-      if (props.icon && !label && !accessible) return 'icon-only buttons require a non-empty aria-label';
-      if (props.href !== undefined && !validURL(props.href)) return 'invalid button URL';
-      return props.target !== undefined && props.href === undefined ? 'button target requires href' : null;
+  component(
+    'Button',
+    {
+      // The host maps the protocol text value to Ant Design children.
+      value: localizedTextRule,
+      type: token('default', 'primary', 'dashed', 'link', 'text'),
+      color: token('default', 'primary', 'danger', ...presetColors),
+      variant: token('outlined', 'dashed', 'solid', 'filled', 'text', 'link'),
+      shape: token('default', 'circle', 'round', 'square'),
+      size,
+      danger: bool,
+      ghost: bool,
+      disabled: bool,
+      block: bool,
+      loading: union(bool, object({ delay: number })),
+      href: text,
+      target: token('_self', '_blank'),
+      icon: token(...WEBUI_ICON_NAMES),
+      iconPlacement: token('start', 'end'),
+      'aria-label': localizedTextRule,
+      form: { kind: 'string', maxBytes: 200 },
+      openPanel: { kind: 'string', maxBytes: 128 },
     },
-    validateEvent: (_event, data, props) => props.form === undefined && Object.keys(data).length > 0
-      ? 'ordinary Button does not accept form data' : null,
-  }),
+    {
+      events: { 'ui.click': { kind: 'record', value: text } },
+      validate: (props) => {
+        if (props.form !== undefined && !String(props.form).trim()) return 'form reference is required';
+        if (props.openPanel !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(props.openPanel as string)) {
+          return 'invalid panel instance key';
+        }
+        const label = hasNonEmptyLocalizedText(props.value);
+        const accessible = hasNonEmptyLocalizedText(props['aria-label']);
+        if (props.icon && !label && !accessible) return 'icon-only buttons require a non-empty aria-label';
+        if (props.href !== undefined && !validURL(props.href)) return 'invalid button URL';
+        return props.target !== undefined && props.href === undefined ? 'button target requires href' : null;
+      },
+      validateEvent: (_event, data, props) =>
+        props.form === undefined && Object.keys(data).length > 0 ? 'ordinary Button does not accept form data' : null,
+    },
+  ),
 ];

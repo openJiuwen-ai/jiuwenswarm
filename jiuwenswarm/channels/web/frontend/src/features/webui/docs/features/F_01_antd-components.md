@@ -10,7 +10,7 @@ Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../.
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 21 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown` 与 `Icon`），并登记应用范围的 `application.entry`、`application.sidebar.footer` 与 13 个会话范围槽位。登记组件或槽位只表示可查询其规则，
+目录包含 21 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown` 与 `Icon`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍
@@ -357,3 +357,30 @@ Button.icon 从同一图标白名单生成本域规则，不跨宿主 import；G
 
 未运行格式化、静态检查、完整构建或浏览器验证。未更新真实安装副本或重启服务；
 修改仓库示例不会自动更新已安装插件，需按示例说明更新副本并重新加载对应宿主。
+
+### Iframe 最小宽度（2026-11-04）
+
+按 S_17 同步 Iframe.minWidth：有限数值 0..4096px，默认 0。宿主移除适应 / 桌面宽度切换，
+URL 与内联文档使用相同的最小宽度和外层滚动规则，不根据来源类型判断布局。保留刷新、外链和固定沙箱。
+容器尺寸变化只影响布局；插件 replace 仍遵循现有整树重建契约。Token Weather 详情声明 360px。
+
+前端组件与 React 回归 214 项、插件与 Gateway 渲染回归 367 项通过，Vite 打包通过（15.75s）。
+Chrome 组件预览实测容器 306px、iframe 360px、横向滚动距离 54px；恢复宽容器后两者均为 758px，
+水平溢出消失。预览使用受控观测数据，未调用模型。未重载共享真实服务或更新其安装副本。
+
+### Iframe 来源栏与真实安装验证（2026-11-04）
+
+工具栏左侧只读展示插件声明的 src；内联文档显示完整国际化的“插件页面 / Plugin page”。
+来源文字可选择复制，超长单行省略，title 保留完整值。沿用现有字体和语义色变量，
+不新增插件属性或导航能力；固定沙箱、刷新、外链和 minWidth 规则保持原契约。
+显示值是声明的来源，不代表跨域 iframe 内部跳转后的当前地址。
+
+The iframe toolbar shows the configured source URL as selectable, read-only text. Inline documents show
+“Plugin page” in the current interface language. Long sources truncate on one line and retain the full
+value in a native tooltip. This introduces no new plugin props or navigation capability.
+
+前端组件和 React 回归 226 项通过，Vite 打包通过（21.65s）；后端插件、工作台、事件和 Gateway
+渲染定向回归 786 项通过。真实 Chrome 会话确认网页来源 https://www.weather.com.cn/ 与 1280px
+最小宽度、内联详情“插件页面”与 360px 最小宽度。人工核对来源字体 13px、次级文字语义色、
+可选择文字和单行省略均实际生效。截图为本次 plugin-update-200820 输出目录的
+iframe-source-url.png 与 iframe-source-inline.png。本次工具操作未发起模型调用。

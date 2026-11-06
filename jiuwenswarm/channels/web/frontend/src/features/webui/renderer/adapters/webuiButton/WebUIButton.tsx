@@ -8,6 +8,8 @@ import { Button as AntButton, type ButtonProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
 import { buttonIcon } from './buttonIcon.tsx';
 import { useWebUIForms } from '../webuiForm/WebUIForm.tsx';
+import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
+import { useLocalizedText } from '../../useLocalizedText.ts';
 
 const SIZE_MAP: Readonly<Record<string, ButtonProps['size']>> = {
   sm: 'small',
@@ -21,27 +23,47 @@ const SIZE_MAP: Readonly<Record<string, ButtonProps['size']>> = {
 export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterProps) {
   const p = node.props as Pick<
     ButtonProps,
-    | 'type' | 'color' | 'variant' | 'shape' | 'size' | 'danger' | 'ghost' | 'disabled' | 'block'
-    | 'loading' | 'href' | 'target' | 'iconPlacement'
+    | 'type'
+    | 'color'
+    | 'variant'
+    | 'shape'
+    | 'size'
+    | 'danger'
+    | 'ghost'
+    | 'disabled'
+    | 'block'
+    | 'loading'
+    | 'href'
+    | 'target'
+    | 'iconPlacement'
   > & {
-    value?: string;
+    value?: LocalizedText;
     form?: string;
     icon?: string;
-    'aria-label'?: string;
+    'aria-label'?: LocalizedText;
   };
   const forms = useWebUIForms();
-  const label = typeof p.value === 'string' ? p.value : '';
+  const label = useLocalizedText(p.value) ?? '';
   // antd Button 没有 ariaLabel 属性；纯图标按钮的可访问名来自 HTML aria-label。
-  const ariaLabel = typeof p['aria-label'] === 'string' && p['aria-label'].trim() ? p['aria-label'] : undefined;
+  const ariaLabel = useLocalizedText(p['aria-label'])?.trim() || undefined;
   const size = typeof p.size === 'string' ? (SIZE_MAP[p.size] ?? 'medium') : 'medium';
   const disabled = p.disabled === true || !context.connected;
+  const submit = async (data: Record<string, unknown>) => {
+    const result = await emit('ui.click', data);
+    if (result.status === 'sent' && result.receipt?.accepted && typeof node.props.openPanel === 'string') {
+      context.openPanel?.(node.props.openPanel);
+    }
+  };
   const onClick = node.events?.['ui.click'] ? async () => {
-    if (typeof p.form !== 'string') { await emit('ui.click', {}); return; }
+      if (typeof p.form !== 'string') {
+        await submit({});
+        return;
+      }
     const form = forms?.get(p.form);
     if (!form) return;
     try {
       const values = await form.validateFields();
-      await emit('ui.click', values);
+      await submit(values);
     } catch {
       // AntD Form.Item presents local validation errors; no event is sent.
     }

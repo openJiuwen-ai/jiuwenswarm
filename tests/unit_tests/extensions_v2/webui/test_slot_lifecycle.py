@@ -74,12 +74,16 @@ async def test_scope_errors_are_sent_to_the_trusted_connection(scope: str) -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["application", "invalid"])
+@pytest.mark.parametrize("slot_id,scope", [
+    ("conversation.panel.right", "application"),
+    ("conversation.panel.right", "invalid"),
+    ("application.settings", "invalid"),
+])
 @pytest.mark.parametrize("connection_id", ["", "other-socket"])
-async def test_session_scope_errors_are_sent_to_the_chat(scope: str, connection_id: str) -> None:
+async def test_session_scope_errors_are_sent_to_the_chat(slot_id: str, scope: str, connection_id: str) -> None:
     runtime, push = await build_runtime()
     chat_target = RenderTarget(
-        "real-chat", "conversation.panel.right", "pkg", "home",
+        "real-chat", slot_id, "pkg", "home",
         scope=scope, connection_id=connection_id,
     )
     output = await runtime.render(
@@ -94,10 +98,59 @@ async def test_session_scope_errors_are_sent_to_the_chat(scope: str, connection_
     assert message["payload"]["target"] == {
         "scope": "session",
         "session_id": "real-chat",
-        "slot_id": "conversation.panel.right",
+        "slot_id": slot_id,
         "package_id": "pkg",
         "instance_key": "home",
     }
+    assert message["payload"]["code"] == constants.CODE_SCHEMA_ERROR
+    assert runtime.registry.snapshot() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["session", "application"])
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_settings_render_and_errors_preserve_the_allowed_scope(scope: str, rejected: bool) -> None:
+    runtime, push = await build_runtime()
+    session_id = "real-chat" if scope == "session" else ""
+    instance_key = "bad|key" if rejected else "setting"
+    settings_target = RenderTarget(
+        session_id, "application.settings", "pkg", instance_key, scope=scope,
+    )
+    output = await runtime.render(
+        UiRenderInput(settings_target, RenderNode("Text")),
+        SessionContext("real-chat", metadata={"ws_id": "sock-1"}),
+    )
+    assert output.status is (RenderStatus.REJECTED if rejected else RenderStatus.DELIVERED)
+    assert len(push.messages) == 1
+    message = push.messages[0]
+    assert message["payload"]["target"] == settings_target.to_payload()
+    if scope == "application":
+        assert message["metadata"] == {"ws_id": "sock-1"}
+        assert "session_id" not in message
+    else:
+        assert message["session_id"] == session_id
+        assert "metadata" not in message
+    if rejected:
+        assert message["payload"]["code"] == constants.CODE_SCHEMA_ERROR
+        assert runtime.registry.snapshot() == ()
+
+
+@pytest.mark.asyncio
+async def test_application_settings_connection_errors_use_the_trusted_connection() -> None:
+    runtime, push = await build_runtime()
+    settings_target = RenderTarget(
+        "", "application.settings", "pkg", "setting", scope="application", connection_id="other-socket",
+    )
+    output = await runtime.render(
+        UiRenderInput(settings_target, RenderNode("Text")),
+        SessionContext("real-chat", metadata={"ws_id": "sock-1"}),
+    )
+    assert output.status is RenderStatus.REJECTED
+    assert len(push.messages) == 1
+    message = push.messages[0]
+    assert message["metadata"] == {"ws_id": "sock-1"}
+    assert "session_id" not in message
+    assert message["payload"]["target"] == settings_target.to_payload()
     assert message["payload"]["code"] == constants.CODE_SCHEMA_ERROR
     assert runtime.registry.snapshot() == ()
 

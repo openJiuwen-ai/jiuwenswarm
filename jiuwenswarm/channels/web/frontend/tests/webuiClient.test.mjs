@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { createClientCapabilityHost, createGatewayFetch, browserClientCapabilities, webClient, gitWatchClient } from '../node_modules/.cache/webui-client/client.mjs';
+import { createClientCapabilityHost, createGatewayFetch, isPluginResourceURL, resolvePluginResourceURL, browserClientCapabilities, webClient, gitWatchClient } from '../node_modules/.cache/webui-client/client.mjs';
 
 class Storage {
   data = new Map(); reads = 0;
@@ -58,6 +58,9 @@ test('client declarations preserve ordinary WebUI packages while retaining activ
   app.host.configure(removed);
   assert.equal(app.host.acceptsFrame(managed), false);
   assert.equal(app.host.acceptsFrame(ordinary), true);
+  assert.throws(() => app.host.configure({}));
+  assert.equal(app.host.acceptsFrame(ordinary), true, 'ordinary AgentServer frames do not depend on Gateway client declarations');
+  assert.equal(app.host.acceptsFrame(managed), false);
 });
 
 test('finite JSON, key/size/depth limits and native storage failures never change the old record', async () => {
@@ -108,62 +111,44 @@ test('bindings select only their transport, preserve params and read a shared so
   assert.equal(app.storage.reads, 0);
 });
 
-test('package assets match the Gateway route and trusted activation rather than a filename or URL substring', async () => {
+test('published resource addresses are independent of the browser capability package list', async () => {
   const app = await setup([http], { gatewayUrl: () => 'https://gateway.test/api/' });
-  const url = 'https://gateway.test/api/extension-assets/pkg.one/generation-1/images/background.svg';
-  const active = app.host.getPackageAssetState(url);
-  assert.equal(active.status, 'active');
-  assert.deepEqual(app.host.getPackageAssetState(new Request(url + '?version=1')), active);
   await app.set({ credential: 'one' });
-  assert.deepEqual(app.host.getPackageAssetState(url), active);
-  assert.equal(app.host.bindHTTP(url).has('Authorization'), false);
-  assert.equal(app.host.bindHTTP('https://gateway.test/api/protected.png').get('Authorization'), 'Bearer one');
-  for (const other of [
-    'https://external.test/api/extension-assets/pkg.one/generation-1/background.svg',
-    'https://gateway.test/extension-assets/pkg.one/generation-1/background.svg',
-    'https://gateway.test/api/extension-assets-copy/pkg.one/generation-1/background.svg',
-    'https://gateway.test/api/protected?path=/extension-assets/pkg.one/generation-1/background.svg',
-  ]) assert.equal(app.host.getPackageAssetState(other), null);
-  for (const path of ['unknown/generation-1/a.png', 'pkg.one/old/a.png', 'pkg.one/generation-1/', '%ZZ/generation-1/a.png']) {
-    assert.deepEqual(app.host.getPackageAssetState('https://gateway.test/api/extension-assets/' + path), { status: 'inactive' });
+  for (const path of ['pkg.one/generation-1/logo.svg', '_agent/route/resource/page.html', 'unknown/old/file.css']) {
+    const url = 'https://gateway.test/api/extension-assets/' + path;
+    assert.equal(isPluginResourceURL(url, app.host.getGatewayUrl()), true);
+    assert.equal(app.host.bindHTTP(url).has('Authorization'), false);
   }
-  app.host.configure(declarations([http], 'gateway-two'));
-  assert.notEqual(app.host.getPackageAssetState(url).version, active.version);
-  app.host.suspendConnection();
-  assert.deepEqual(app.host.getPackageAssetState(url), { status: 'inactive' });
+  assert.equal(app.host.bindHTTP('https://gateway.test/api/protected.png').get('Authorization'), 'Bearer one');
+  for (const url of ['https://external.test/api/extension-assets/p/g/a.png',
+    'https://gateway.test/extension-assets/p/g/a.png', 'https://gateway.test/api/extension-assets-copy/p/g/a.png']) {
+    assert.equal(isPluginResourceURL(url, app.host.getGatewayUrl()), false);
+  }
+  assert.equal(resolvePluginResourceURL('/extension-assets/_agent/r/id/en.html', 'https://gateway.test/api/', 'file:///app/index.html'),
+    'https://gateway.test/api/extension-assets/_agent/r/id/en.html');
 });
 
-test('package asset loads survive credential changes but reject late results after their activation ends', async () => {
-  for (const change of ['reload', 'remove', 'gateway', 'disconnect', 'invalid']) {
+test('published file loads survive credential and capability declaration changes; their caller owns cancellation', async () => {
+  for (const path of ['pkg.one/generation-1/a.svg', '_agent/route/resource/en.html']) {
     const app = await setup([http]);
-    const url = 'https://gateway.test/extension-assets/pkg.one/generation-1/background.svg';
     let finish;
     let request;
     const boundFetch = createGatewayFetch(app.host, (input, init) => {
       request = init;
       return new Promise((resolve) => { finish = resolve; });
     });
-    const pending = boundFetch(url);
+    const caller = new AbortController();
+    const pending = boundFetch('https://gateway.test/extension-assets/' + path, { signal: caller.signal });
     assert.equal(request.headers.has('Authorization'), false);
     assert.equal(request.redirect, 'error');
     await app.set({ credential: 'changed' });
+    app.host.configure({ ...declarations([]), packages: [] });
+    app.host.suspendConnection();
     assert.equal(request.signal.aborted, false);
-    app.host.configure(declarations([http]));
-    assert.equal(request.signal.aborted, false, 'unchanged activation keeps the in-flight asset');
-    const next = declarations([http]);
-    if (change === 'reload') { next.packages[0].activationGeneration = 'generation-new'; app.host.configure(next); }
-    else if (change === 'remove') { next.packages.shift(); app.host.configure(next); }
-    else if (change === 'gateway') app.host.configure(declarations([http], 'gateway-two'));
-    else if (change === 'disconnect') app.host.suspendConnection();
-    else assert.throws(() => app.host.configure({}));
-    assert.equal(request.signal.aborted, true, change);
-    finish(new Response('late asset'));
-    await assert.rejects(pending, { name: 'AbortError' });
-    if (change === 'gateway') {
-      const fresh = boundFetch(url);
-      finish(new Response('new Gateway asset'));
-      assert.equal(await (await fresh).text(), 'new Gateway asset');
-    } else await assert.rejects(boundFetch(url), { name: 'AbortError' });
+    finish(new Response('file'));
+    const response = await pending;
+    caller.abort();
+    await assert.rejects(response.text(), { name: 'AbortError' });
   }
 });
 
@@ -301,7 +286,7 @@ test('context changes abort an established HTTP/SSE body and reject old buffered
   await assert.rejects(buffered.json());
 });
 
-test('package asset HTTP bodies survive credentials and remain guarded by activation and caller cancellation', async () => {
+test('published file bodies survive credentials and capability changes while honoring caller cancellation', async () => {
   for (const change of ['credentials', 'activation', 'caller']) {
     const app = await setup([http], { gatewayUrl: () => base });
     await app.set({ credential: 'one' });
@@ -312,7 +297,7 @@ test('package asset HTTP bodies survive credentials and remain guarded by activa
     if (change === 'activation') {
       const next = declarations([http]); next.packages[0].activationGeneration = 'new'; app.host.configure(next);
     } else if (change === 'caller') controller.abort();
-    if (change === 'credentials') assert.equal((await response.json()).headers.authorization, undefined);
+    if (change !== 'caller') assert.equal((await response.json()).headers.authorization, undefined);
     else await assert.rejects(response.json(), { name: 'AbortError' });
   }
 });
