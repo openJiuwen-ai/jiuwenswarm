@@ -1132,6 +1132,7 @@ def init_session_metadata(
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
     agent_group_name: str = "",
+    client_app: str = "",
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1172,6 +1173,8 @@ def init_session_metadata(
     }
     if agent_group_name:
         metadata["agent_group_name"] = agent_group_name
+    if client_app:
+        metadata["client_app"] = client_app
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     _write_metadata_sync(session_id, metadata)
@@ -2318,6 +2321,8 @@ def get_all_sessions_metadata(
     Returns:
         (sessions, total): 当前页的会话列表 和 会话总数
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
     sessions_dir = get_agent_sessions_dir()
     if not sessions_dir.exists() or not sessions_dir.is_dir():
         return [], 0
@@ -2384,7 +2389,7 @@ def get_all_sessions_metadata(
                 background_writeback=not state.get("write_blocked"),
             )
 
-        if metadata.get("ephemeral") is True:
+        if metadata.get("ephemeral") is True or conversation_app(metadata) is not None:
             continue
         _apply_batch_projection(metadata, session_id, state, project_states,
                                 (dir_to_projects, id_to_work_mode))

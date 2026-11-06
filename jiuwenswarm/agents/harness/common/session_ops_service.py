@@ -469,6 +469,7 @@ def fork_session(
                 raise
             logger.warning("fork: failed to add forked_from to history: %s", exc)
 
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
     from jiuwenswarm.server.runtime.session.session_metadata import (
         _normalize_session_equipment_names,
         _current_timestamp,
@@ -541,6 +542,9 @@ def fork_session(
             elif key in ("plugin_names", "mcp"):
                 equipment[key] = _normalize_session_equipment_names(value)
         metadata["session_equipment"] = equipment
+    source_app = conversation_app(source_meta)
+    if source_app is not None:
+        metadata["client_app"] = source_app.id
     if selected_record is not None:
         metadata["forked_at"] = {
             "message_id": str(selected_record.get("id") or ""),

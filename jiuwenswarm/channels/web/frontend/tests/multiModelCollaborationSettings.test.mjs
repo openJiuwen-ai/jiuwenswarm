@@ -261,7 +261,7 @@ test('feature flag defaults off and accepts backend booleans', () => {
   assert.equal(isMultiModelCollaborationEnabled(), false);
 });
 
-test('computer control is the last experimental section and other sections retain their order', () => {
+test('experimental sections retain their order with a single computer control section', () => {
   assert.deepEqual(experimentalSectionIds, [
     'asr',
     'task-full-duplex',
@@ -278,7 +278,6 @@ test('computer control is the last experimental section and other sections retai
     'multi-model-collaboration',
     'tool-optimize',
     'design-mode',
-    'computer-control',
   ]);
 });
 

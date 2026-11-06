@@ -1675,6 +1675,8 @@ class SessionArchiveService:
     async def project_batch(
         self, project_id: str, action: str, channel_id: str
     ) -> dict:
+        from jiuwenswarm.server.client_attachments.registry import conversation_app
+
         lc.validate_id(project_id)
         if action not in {"archive", "delete_archived"}:
             raise lc.LifecycleError("BAD_REQUEST", "unknown session batch operation")
@@ -1702,12 +1704,14 @@ class SessionArchiveService:
                 sid = item.session_id
                 meta = item.metadata
                 if action == "archive":
+                    # A client app's conversation stays with its app's client, outside the project.
                     if (
                         item.active
                         and not item.logically_archived
                         and not (
                             meta.get("cron_id")
                             or sid.startswith(("cron_", "heartbeat_"))
+                            or conversation_app(meta) is not None
                         )
                     ):
                         ids.append(sid)

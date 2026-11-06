@@ -133,6 +133,10 @@ class SessionCreateServer(AgentWebSocketServer):
 
         await handle_session_create(build_ws_request_context(self, ws, request, send_lock))
 
+    async def handle_ws_unary_for_test(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """The WebSocket unary entry the gateway reaches, which has its own ``session.create`` path."""
+        await self._handle_unary_impl(ws, request, send_lock)
+
 
 def make_server(runtime: CreateRuntime) -> SessionCreateServer:
     server = SessionCreateServer.__new__(SessionCreateServer)

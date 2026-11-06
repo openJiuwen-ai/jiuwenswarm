@@ -1,61 +1,83 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The app plugins a client may attach with, found in the packages JiuwenSwarm ships (``APP_PACKAGES``).
+"""The client apps JiuwenSwarm ships (``APPS``): what a client may attach with, and what its conversations load.
 
-Each entry names a directory inside an installed Python package, as
-``<package>/<relative dir>``, so it resolves the same from source and from a
-frozen bundle. Every subdirectory of it holding a ``manifest.json`` is an app
-plugin package: its plugin id is the manifest's ``id``, and the tools its
-client may declare are the ``name``s in its ``tools.json``. Its manifest
-carries ``metadata.managed_by: "client_attachments"``, which marks the copy an
-attach installs as JiuwenSwarm's own, so a later attach may refresh it.
+A conversation belongs to the client app its ``session.create`` named
+(``client_app``). Its agent loads the app's package directory as an agent
+template (``manifest.json``: the app's persona, rail and skills). The tools
+the app's client may declare at attach are the ``name``s in the ``tools.json``
+of the same directory. Its agent is built without the capabilities the app
+``leaves_out``. ``client_apps`` resolves each app into a ``ClientApp``;
+``conversation_app`` is the app a conversation belongs to.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.server.client_attachments.errors import ClientAttachError, ClientAttachErrorCode
 
-APP_PACKAGES: tuple[str, ...] = ()
 
-MANAGED_BY = "client_attachments"
+class Capability(StrEnum):
+    """What a conversation's agent is built with that an app's conversations may leave out."""
+
+    # Delegating to subagents: their prompt section and the subagent_* tools.
+    SUBAGENTS = "subagents"
+    # send_file_to_user.
+    FILE_DELIVERY = "file_delivery"
+    # ResponsePromptRail: the prompt sections on the message envelope, on final replies and file delivery, and A2UI.
+    MESSAGE_RULES = "message_rules"
+
+
+# client_app: the app's package directory, ``<package>/<relative dir>`` inside an installed Python package so it
+# resolves the same from source and from a frozen bundle, and the capabilities its conversations leave out.
+APPS: dict[str, tuple[str, frozenset[Capability]]] = {
+    # The slides are the deliverable, the task pane renders no A2UI and the persona sets the message rules.
+    "office-powerpoint": ("jiuwenswarm/office/powerpoint", frozenset({
+        Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES,
+    })),
+}
 
 
 @dataclass(frozen=True)
-class AppPlugin:
-    plugin_id: str
+class ClientApp:
+    id: str
     package_dir: Path
     tool_names: frozenset[str]
+    leaves_out: frozenset[Capability]
 
 
-def app_plugins() -> dict[str, AppPlugin]:
-    """Every app plugin of the shipped packages, by plugin id."""
-    plugins: dict[str, AppPlugin] = {}
-    for entry in APP_PACKAGES:
-        module, _, relative = entry.partition("/")
-        root = Path(importlib.util.find_spec(module).submodule_search_locations[0]) / relative
-        for package_dir in sorted(path for path in root.iterdir() if (path / "manifest.json").is_file()):
-            manifest = _read_json(package_dir / "manifest.json")
-            if (manifest.get("metadata") or {}).get("managed_by") != MANAGED_BY:
-                raise RuntimeError(f"{package_dir}/manifest.json needs metadata.managed_by: {MANAGED_BY!r}")
-            plugin_id = manifest["id"]
-            tool_names = frozenset(tool["name"] for tool in _read_json(package_dir / "tools.json"))
-            plugins[plugin_id] = AppPlugin(plugin_id=plugin_id, package_dir=package_dir, tool_names=tool_names)
-    return plugins
+@lru_cache(maxsize=1)
+def client_apps() -> dict[str, ClientApp]:
+    """Every app JiuwenSwarm ships, by ``client_app``."""
+    apps: dict[str, ClientApp] = {}
+    for app_id, (package, leaves_out) in APPS.items():
+        module, _, relative = package.partition("/")
+        package_dir = Path(importlib.util.find_spec(module).submodule_search_locations[0]) / relative
+        tools = json.loads((package_dir / "tools.json").read_text("utf-8"))
+        apps[app_id] = ClientApp(id=app_id, package_dir=package_dir,
+                                 tool_names=frozenset(tool["name"] for tool in tools), leaves_out=leaves_out)
+    return apps
 
 
-def app_plugin(plugin_id: str) -> AppPlugin:
-    plugin = app_plugins().get(plugin_id)
-    if plugin is None:
+def registered_app(client_app: str) -> ClientApp:
+    app = client_apps().get(client_app)
+    if app is None:
         raise ClientAttachError(
-            ClientAttachErrorCode.PLUGIN_UNAVAILABLE, f"no client attach plugin {plugin_id} is registered")
-    return plugin
+            ClientAttachErrorCode.APP_UNAVAILABLE, f"no client app {client_app} is registered")
+    return app
 
 
-def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text("utf-8"))
+def conversation_app(metadata: Mapping[str, Any] | None) -> ClientApp | None:
+    """The registered app whose client created the conversation (its metadata's ``client_app``), if any.
+
+    Such a conversation shows only in its app's client.
+    """
+    return client_apps().get((metadata or {}).get("client_app") or "")
