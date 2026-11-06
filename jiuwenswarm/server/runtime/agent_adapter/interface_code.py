@@ -3354,6 +3354,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         added_tools = _merge_tool_cards(agent, tool_cards)
 
         rails = self._build_agent_rails(react_config, config_base, mode="code")
+        # AgentSSAS backend 初始化 Task 收口(团队子代理路径): 本方法为同步契约
+        # 无法 await。backend 按(事件循环, ssas 配置指纹)进程级复用, 仅首次装配
+        # 派发初始化 Task; 在途初始化由 rail 的 report_event 入口 _ensure_initialized
+        # 兜底(等待而非丢弃), 窗口期不会丢失安全事件, 已初始化 backend 无窗口期。
         added_rails = sum(1 for rail in rails if _queue_rail_if_missing(agent, rail))
 
         subagents, _should_add_general = self._build_configured_subagents(model, react_config, config_base)

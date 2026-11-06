@@ -913,11 +913,18 @@ logger = logging.getLogger(__name__)
 # asyncio Task 仅被弱引用持有, 未保存引用可能被 GC 中途销毁;
 # done callback 负责: 1) 从集合移除已完成 Task  2) 记录初始化异常(否则异常静默丢失)
 _SSAS_INIT_TASKS: "set[asyncio.Task[None]]" = set()
+# 集合可能被不同线程的事件循环并发增删(实例创建/team member 装配等路径),
+# 遍历前须持锁快照, 避免 "Set changed size during iteration"
+_SSAS_INIT_TASKS_LOCK = threading.Lock()
+# 收口等待上界(秒): 初始化含检测模块加载与一次启动 TTL 清理, 留足余量;
+# 超时告警后放行(fail-open), 后续事件由 backend 的 _ensure_initialized 兜底
+_SSAS_INIT_WAIT_TIMEOUT: float = 30.0
 
 
 def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
     """AgentSSAS backend 初始化 Task 完成回调: 移除引用并记录异常."""
-    _SSAS_INIT_TASKS.discard(task)
+    with _SSAS_INIT_TASKS_LOCK:
+        _SSAS_INIT_TASKS.discard(task)
     if task.cancelled():
         logger.warning("[JiuWenSwarmDeepAdapter] AgentSSAS backend init task cancelled")
         return
@@ -927,17 +934,90 @@ def _log_ssas_init_result(task: "asyncio.Task[None]") -> None:
 
 
 async def _await_ssas_init_tasks() -> None:
-    """等待 AgentSSAS backend 初始化 Task 全部完成(fail-open, 不阻断实例创建).
+    """等待 AgentSSAS backend 初始化 Task 完成(有界等待, fail-open).
 
     rail 构建链路是同步契约, 无法直接 await initialize(), 只能 fire-and-forget
     派发 Task(见 _build_ssas_rail); 本函数在 rail 列表构建完成后统一收口,
     保证 rail 进入 agent 实例前 backend 已完成初始化, 消除"rail 已注册但
     backend 未就绪"的窗口期。初始化异常已由 done callback 记录并告警,
-    此处仅等待, 不再上抛, 保持 fail-open 语义。
+    此处不再上抛, 保持 fail-open 语义。
+
+    防御约束:
+    - 持锁快照避免并发增删触发 RuntimeError; 仅等待当前事件循环的 Task,
+      跨循环等待会抛 RuntimeError 且各循环路径由自己的收口点负责;
+    - asyncio.wait 带超时上界, 避免初始化挂死无限阻塞实例创建;
+      超时仅告警并放行, 后续首个事件仍由 backend report_event 入口的
+      _ensure_initialized 兜底等待(等待而非丢弃)。
     """
-    pending = [task for task in _SSAS_INIT_TASKS if not task.done()]
-    if pending:
-        await asyncio.wait(pending)
+    loop = asyncio.get_running_loop()
+    with _SSAS_INIT_TASKS_LOCK:
+        pending = [
+            task
+            for task in _SSAS_INIT_TASKS
+            if not task.done() and task.get_loop() is loop
+        ]
+    if not pending:
+        return
+    _done, still_pending = await asyncio.wait(
+        pending, timeout=_SSAS_INIT_WAIT_TIMEOUT
+    )
+    if still_pending:
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] AgentSSAS backend init wait timeout after "
+            "%ss (tasks=%d), fail-open and let backend._ensure_initialized backstop",
+            _SSAS_INIT_WAIT_TIMEOUT,
+            len(still_pending),
+        )
+
+
+# AgentSSAS backend 进程级复用缓存: create_instance 会被 reload/权限隔离/
+# 逐 agent 创建反复触发, 无复用时每次新建 inprocess backend(独立 SQLite
+# 连接 + 重复检测模块加载 + 重复周期清理任务)。键为(事件循环对象, ssas 配置
+# 指纹)——持 loop 对象强引用, 避免用 id(loop) 在旧循环被 GC 后发生 id 复用、
+# 新循环误用绑定在已死循环上的 backend; 不同事件循环不共享(asyncio.Lock
+# 等资源绑定循环)。backend 生命周期为进程级, 随进程退出由 OS 回收, 不随
+# 单个 rail 卸载关闭(AgentSSAS 侧后续迭代提供共享 backend 工厂与显式释放后
+# 替换此实现)。
+_SSAS_BACKEND_CACHE: "dict[tuple[Any, str], Any]" = {}
+
+
+class _SharedSSASBackendProxy:
+    """共享 backend 代理: 全量委托目标 backend, close 拦截为 no-op。
+
+    AgentSSASSecurityRail.uninit/close 会释放 backend 持有的资源(SQLite
+    WAL 句柄、httpx 连接等); 共享 backend 不能随单个 rail 卸载关闭,
+    否则其余 rail 的事件会打到已关闭的 backend。代理拦截 close 使生命
+    周期提升到进程级(与 inprocess 模式"backend 与宿主同生命周期"的定位
+    一致), 其余属性/方法按需委托目标 backend。
+    """
+
+    def __init__(self, backend: Any) -> None:
+        self._ssas_backend = backend
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ssas_backend, name)
+
+    async def report_event(self, raw_event: dict[str, Any]) -> Any:
+        return await self._ssas_backend.report_event(raw_event)
+
+    async def close(self) -> None:
+        """no-op: 共享 backend 不随单个 rail 卸载关闭, 见类 docstring。"""
+
+
+def _ssas_backend_fingerprint(ssas_cfg: dict[str, Any]) -> str:
+    """计算共享 backend 的 ssas 配置指纹(键排序稳定, 排除 rail 级旋钮)。
+
+    enabled/rail_priority/decision_policy 只影响 rail 装配不影响 backend,
+    排除后调节这些旋钮不会不必要地新建 backend。
+    """
+    rail_level_keys = {"enabled", "rail_priority", "decision_policy"}
+    fingerprint_src = {
+        key: value for key, value in ssas_cfg.items() if key not in rail_level_keys
+    }
+    try:
+        return json.dumps(fingerprint_src, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return repr(sorted((key, repr(value)) for key, value in fingerprint_src.items()))
 
 
 def _model_name_names_selection(model_name: str, selection: ModelSelection) -> bool:
@@ -11160,35 +11240,69 @@ class JiuWenSwarmDeepAdapter:
                 logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail disabled by config")
                 return None
             ssas_config = AgentSSASConfig.from_dict(ssas_cfg)
-            # 同步创建 backend: INPROCESS 模式直接构造 + initialize
+            # 同步创建 backend: INPROCESS 模式直接构造 + initialize; 复用见下方缓存
             from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
             from agent_ssas.core.framework.access_adapter.agent_remote_backend import AgentSSASRemoteBackend
             from agent_ssas.core.framework.config.settings import AgentSSASMode
-            if ssas_config.mode == AgentSSASMode.HTTP:
-                backend = AgentSSASRemoteBackend(ssas_config)
-            else:
-                backend = AgentSSASBackend(ssas_config)
+            # backend 进程级复用: 同一(事件循环, ssas 配置指纹)内 reload/
+            # 逐 agent 创建/team member 装配共享同一 backend, 避免每次装配
+            # 新建 SQLite 连接与重复初始化; 共享 backend 经 _SharedSSASBackendProxy
+            # 交给 rail, 防止单个 rail 卸载时关闭其余 rail 仍在使用的 backend。
+            backend_key = (asyncio.get_running_loop(), _ssas_backend_fingerprint(ssas_cfg))
+            shared_backend = _SSAS_BACKEND_CACHE.get(backend_key)
+            backend_created = False
+            if shared_backend is None:
+                if ssas_config.mode == AgentSSASMode.HTTP:
+                    shared_backend = AgentSSASRemoteBackend(ssas_config)
+                else:
+                    shared_backend = AgentSSASBackend(ssas_config)
+                _SSAS_BACKEND_CACHE[backend_key] = shared_backend
+                backend_created = True
+            backend: Any = shared_backend
+            if backend_created:
                 # initialize() 是 async: builder 链路(_create_instance ->
                 # _build_agent_rails -> 本方法)必然运行于事件循环内,
                 # fire-and-forget 派发初始化 Task 并保存强引用(done callback
                 # 记录异常, 避免被 GC 中途销毁或异常静默丢失); 随后由
                 # _create_instance 统一 await 收口(见 _await_ssas_init_tasks),
-                # 保证 rail 生效前 backend 完成初始化。若异常态下无运行中
-                # 事件循环, get_running_loop 抛出的 RuntimeError 由外层
-                # except 捕获, 告警并降级为不注册 rail(fail-open)。
+                # 保证 rail 生效前 backend 完成初始化。复用路径不再派发:
+                # initialize 幂等, 已初始化的 backend 由首次装配收口保证。
+                # 若异常态下无运行中事件循环, get_running_loop 抛出的
+                # RuntimeError 由外层 except 捕获, 告警并降级为不注册
+                # rail(fail-open)。
                 init_task = asyncio.get_running_loop().create_task(
                     backend.initialize()
                 )
-                _SSAS_INIT_TASKS.add(init_task)
+                with _SSAS_INIT_TASKS_LOCK:
+                    _SSAS_INIT_TASKS.add(init_task)
                 init_task.add_done_callback(_log_ssas_init_result)
+            else:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] AgentSSASBackend reuse (cache size=%d)",
+                    len(_SSAS_BACKEND_CACHE),
+                )
             rail = AgentSSASSecurityRail(
-                backend=backend,
+                backend=_SharedSSASBackendProxy(backend),
                 policy_name=ssas_config.decision_policy,
             )
+            # 消费配置旋钮 rail_priority: agent-core 按 priority 排序各事件的
+            # 回调链(higher=first)。rail 类默认 80(低于 PermissionInterruptRail
+            # 的 90, 保持"在其他安全 Rail 之后执行, 可观察前序 Rail 的决策"),
+            # 配置后在注册前覆盖实例级 priority, 使该旋钮真实生效。
+            rail_priority = ssas_cfg.get("rail_priority")
+            if rail_priority is not None:
+                try:
+                    rail.priority = int(rail_priority)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] invalid ssas.rail_priority %r, keep rail default 80",
+                        rail_priority,
+                    )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s",
+                "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s, priority=%s",
                 ssas_config.mode,
                 ssas_config.decision_policy,
+                getattr(rail, "priority", 80),
             )
             return rail
         except Exception as exc:
